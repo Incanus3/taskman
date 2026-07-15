@@ -42,7 +42,7 @@ Dependency route:
 
 The domain-model, Cosmos-research, and navigation-prototype tickets are resolved. Their resolution
 comments link the canonical glossary at
-`docs/agent-aware-project-manager/CONTEXT.md` and research asset at
+`docs/CONTEXT.md` and research asset at
 `docs/research/cosmos-session-launch-capabilities.md`; the throwaway navigation artifact is at
 `docs/prototypes/agent-aware-project-manager-navigation-prototype.html`. The map has one linked gist
 for each. `br ready` now returns the Agent Session workflow and Task relationship semantics tickets.
@@ -76,7 +76,7 @@ for the sessions that resolve its tickets.
 
 ### Resolved domain model and Task lifecycle
 
-The canonical detailed vocabulary is in `docs/agent-aware-project-manager/CONTEXT.md`. The following
+The canonical detailed vocabulary is in `docs/CONTEXT.md`. The following
 is the essential resume context:
 
 - A **Project** has exactly one required primary local directory; any local directory is valid and

@@ -13,11 +13,10 @@ the user explicitly changes that decision. First identify the target implementat
 
 ## Authoritative product input
 
-- [MVP Product Specification](../agent-aware-project-manager/MVP_PRODUCT_SPECIFICATION.md) is the
+- [MVP Product Specification](../MVP_PRODUCT_SPECIFICATION.md) is the
   product baseline.
-- [Domain glossary](../agent-aware-project-manager/CONTEXT.md), [Agent Session workflow]
-  (../agent-aware-project-manager/AGENT_SESSION_WORKFLOW.md), and [Task relationship rules]
-  (../agent-aware-project-manager/TASK_RELATIONSHIPS.md) are detailed, already-resolved decisions.
+- [Domain glossary](../CONTEXT.md), [Agent Session workflow](../AGENT_SESSION_WORKFLOW.md), and [Task
+  relationship rules](../TASK_RELATIONSHIPS.md) are detailed, already-resolved decisions.
 - The closed **Chart the Agent-Aware Project Manager MVP** Wayfinder is historical product-discovery
   context. Do not reopen or revise its decisions without a new product decision.
 
