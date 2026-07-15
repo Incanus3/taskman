@@ -8,8 +8,9 @@ Turn the resolved MVP product specification into an implementation architecture 
 ordered set of small, testable delivery tickets. This is a new planning phase, separate from the
 closed product-discovery Wayfinder.
 
-The current Notes repository remains a planning repository. Do not implement the product here unless
-the user explicitly changes that decision. First identify the target implementation repository.
+The current `Incanus3/taskman` repository is now the greenfield implementation repository. Retain the
+existing product and research documentation under `docs/` as the authoritative planning record while
+implementation planning proceeds here.
 
 ## Authoritative product input
 
@@ -32,6 +33,29 @@ tickets with acceptance criteria.
 Start with **Define the implementation host and local application architecture**. Resolve one
 decision at a time through an architecture interview before creating delivery tickets. The first
 decision is which repository owns the implementation and whether it is greenfield.
+
+## Resolved high-level implementation direction
+
+The following technology-shape decisions were resolved during the initial architecture brainstorm on
+2026-07-15:
+
+- The implementation is greenfield in this repository, `Incanus3/taskman`; the existing `docs/`
+  product and research assets remain in place.
+- Use **Elixir/OTP** with **Phoenix LiveView**.
+- Use Phoenix's default **Tailwind-backed component setup** rather than opting out of it.
+- Use the conventional Phoenix application structure with contexts and separate core and web
+  libraries (`lib/taskman/` and `lib/taskman_web/`).
+- Use **PostgreSQL** from the start. The developer will run PostgreSQL manually in Docker.
+- Run the Phoenix application directly with `mix phx.server` during initial development. Do not add
+  Docker Compose or application container orchestration at this stage, preserving Phoenix's normal
+  code reloading for changed files.
+- Prefer a **LiveView-first** browser experience, adding only small, isolated JavaScript hooks when
+  browser behavior genuinely requires them; do not build a JavaScript SPA.
+
+These are intentionally high-level decisions, not a completed architecture. Detailed decisions about
+the Auggie ACP integration, URL and LiveView state mechanics, filesystem boundaries, persistence
+schema, testing seams, and the dependency-ordered implementation backlog remain open for later
+planning discussions.
 
 ## Planning questions to resolve
 
