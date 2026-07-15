@@ -1,0 +1,67 @@
+<!doctype html>
+<!--
+  THROWAWAY UI PROTOTYPE — not product code.
+  Resolved list-first modal navigation reference.
+  Run: python3 -m http.server 8000 --directory docs/prototypes
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Manager Navigation Reference</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.4 Inter, system-ui, sans-serif; color: #e7e9ee; background: #11131a; }
+    * { box-sizing: border-box; } body { margin: 0; min-width: 940px; } button { font: inherit; cursor: pointer; }
+    header { height: 54px; display: flex; align-items: center; gap: 14px; padding: 0 20px; border-bottom: 1px solid #2a2d38; background: #171923; }
+    header strong { font-size: 16px; } .tag, .chip { padding: 3px 8px; border-radius: 99px; background: #252938; color: #c8cee0; font-size: 12px; }
+    .shell { height: calc(100vh - 54px); min-height: 620px; display: grid; grid-template-columns: 240px 1fr; }
+    .nav { padding: 16px 10px; border-right: 1px solid #2a2d38; background: #161822; }
+    .nav h2, .pane h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #9ca5bc; }
+    .tree { list-style: none; padding: 0; margin: 0; } .tree li { padding: 7px 9px; border-radius: 6px; color: #b8bfce; }
+    .tree .project { color: #f3f4f8; font-weight: 650; } .tree .indent { margin-left: 16px; } .tree .selected { background: #2d3656; color: #fff; }
+    .tree small { float: right; color: #8992a8; }
+    .pane { min-width: 0; padding: 18px; border-right: 1px solid #2a2d38; background: #1b1e29; }
+    .breadcrumb { color: #9ca5bc; font-size: 12px; margin-bottom: 8px; } .title-row { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+    h1 { margin: 0; font-size: 22px; } h3 { margin: 0; font-size: 15px; } p { color: #b9c0d0; }
+    .list { margin: 16px 0 0; padding: 0; list-style: none; } .task { display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: center; padding: 11px 8px; border-bottom: 1px solid #303442; }
+    .task.active { margin: 0 -8px; padding-left: 16px; background: #283151; border-radius: 6px; } .dot { width: 9px; height: 9px; border-radius: 50%; background: #75b4ff; }
+    .task small, .muted { color: #929bb0; } .priority { color: #ffbb75; font-size: 12px; }
+    .detail { background: #20232f; } .detail-section { margin-top: 22px; padding-top: 17px; border-top: 1px solid #353a4a; }
+    .check { display: flex; gap: 8px; margin: 9px 0; color: #c5cbda; } .check input { accent-color: #75b4ff; }
+    .session { margin-top: 10px; padding: 12px; border: 1px solid #3c4356; border-radius: 8px; background: #191c27; }
+    .session a { color: #a9c7ff; text-decoration: none; } .session small { color: #9ca5bc; display: block; margin-top: 4px; }
+    .action { padding: 8px 11px; border: 0; border-radius: 6px; background: #698ee9; color: #fff; font-weight: 650; }
+    .secondary { padding: 7px 10px; border: 1px solid #47506a; border-radius: 6px; background: transparent; color: #d9deea; }
+    .timeline { margin-top: 20px; } .event { border-left: 2px solid #647bb8; margin: 0 0 14px 7px; padding: 0 0 0 14px; color: #bec5d4; }
+    .modal-page { padding: 28px; background: #1b1e29; } .table { width: 100%; margin-top: 22px; border-collapse: collapse; color: #cbd1dd; } .table th, .table td { padding: 13px 10px; text-align: left; border-bottom: 1px solid #333847; } .table th { color: #919bb1; font-size: 12px; text-transform: uppercase; }
+    .scrim { position: fixed; inset: 54px 0 0 240px; display: grid; place-items: center; background: rgb(8 10 16 / .62); } .modal { width: min(780px, 74vw); max-height: 80vh; overflow: auto; padding: 24px; border: 1px solid #59627e; border-radius: 12px; background: #222634; box-shadow: 0 18px 60px #0009; }
+    .modal-grid { display: grid; grid-template-columns: 165px 1fr 230px; gap: 22px; } .modal-grid.hierarchy-collapsed { grid-template-columns: 34px 1fr 230px; } .hierarchy { overflow: hidden; padding-right: 12px; border-right: 1px solid #3b4151; transition: width .16s ease; } .hierarchy-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; white-space: nowrap; } .hierarchy-toggle { width: 27px; height: 27px; border: 1px solid #49516a; border-radius: 6px; background: #292e3e; color: #fff; } .hierarchy .tree li { padding: 5px 3px; font-size: 12px; } .hierarchy .tree .selected { display: inline-block; padding: 4px 6px; } .hierarchy .tree ul { list-style: none; margin: 0 0 0 7px; padding: 0 0 0 13px; border-left: 1px solid #65708d; } .hierarchy .tree ul > li { position: relative; } .hierarchy .tree ul > li::before { content: ""; position: absolute; top: 15px; left: -14px; width: 11px; border-top: 1px solid #65708d; } .hierarchy.collapsed { padding-right: 0; } .hierarchy.collapsed .hierarchy-title, .hierarchy.collapsed .tree { display: none; } .callout { padding: 12px; border-radius: 7px; background: #303650; color: #d9e3ff; }
+    details summary { cursor: pointer; color: #e6eaf4; font-weight: 650; } .relationship-table { width: 100%; margin-top: 10px; border-collapse: collapse; color: #cbd1dd; font-size: 12px; } .relationship-table td { padding: 7px 5px; border-bottom: 1px solid #383d4d; } .relationship-table td:last-child { color: #9aa5bd; }
+    .question { color: #ffcf8e; font-size: 12px; } @media (max-width: 1050px) { .modal-grid { grid-template-columns: 165px 1fr 200px; } .modal-grid.hierarchy-collapsed { grid-template-columns: 34px 1fr 200px; } }
+  </style>
+</head>
+<body>
+  <header><strong>Agent-Aware Project Manager</strong><span class="tag">THROWAWAY NAVIGATION PROTOTYPE</span></header>
+  <main class="shell"><aside class="nav">
+    <h2>Projects &amp; Lists</h2><ul class="tree">
+      <li class="project">▾ Website redesign <small>12</small></li>
+      <li class="indent">▾ Marketing <small>6</small></li>
+      <li class="selected indent">&nbsp;&nbsp;▾ Launch <small>3</small></li>
+      <li class="indent">&nbsp;&nbsp;&nbsp;&nbsp;Copy <small>2</small></li>
+      <li class="indent">▸ Engineering <small>3</small></li>
+      <li class="project" style="margin-top:16px">▸ Home automation <small>4</small></li>
+    </ul>
+  </aside><section id="app"></section></main>
+  <script>
+    const session = `<div class="session"><b>Cosmos: copy review</b><small>Augment/Cosmos · created today</small><a href="#">Open external Session ↗</a></div>`;
+    const relatedTasks = `<div class="detail-section"><details open><summary>Related Tasks <span class="muted">2</span></summary><table class="relationship-table"><tbody><tr><td><b>Publish production site</b></td><td>Blocked by</td></tr><tr><td><b>Coordinate launch comms</b></td><td>Relates to</td></tr></tbody></table></details></div>`;
+    const details = `<div class="breadcrumb">Website redesign / Marketing / Launch</div><div class="title-row"><div><h1>Write launch checklist</h1><p>Prepare the final release checklist before publishing the redesigned site.</p></div><span class="chip">In Progress</span></div><div class="detail-section"><h3>Checklist <span class="muted">2 of 5</span></h3><label class="check"><input type="checkbox" checked> Verify redirect rules</label><label class="check"><input type="checkbox" checked> Confirm analytics events</label><label class="check"><input type="checkbox"> Add final launch copy</label></div>${relatedTasks}`;
+    const sessions = `<h2>Activity &amp; Sessions</h2><div class="timeline"><div class="event"><b>Session launched</b><br><small>Cosmos: copy review · today</small></div><div class="event"><b>Task moved to In Progress</b><br><small>Today</small></div></div>${session}<div class="session"><b>Manual research notes</b><small>No Agent Session — personal work</small></div><p class="question">Future option: dock this detail-and-activity view as a right sidebar without replacing the task list.</p>`;
+    function modal() { return `<section class="modal-page"><div class="title-row"><div><div class="breadcrumb">Website redesign / Marketing / Launch</div><h1>Marketing / Launch</h1><p>Three direct Tasks · child Lists: Copy</p></div><button class="action">New Task</button></div><label class="secondary"><input id="include-descendants" type="checkbox"> Include child Lists (1)</label><table class="table"><thead><tr><th>Task</th><th>Status</th><th>Location</th><th>Sessions</th></tr></thead><tbody><tr><td><b>Write launch checklist</b></td><td>In Progress</td><td>Launch</td><td>1</td></tr><tr><td>Approve landing-page copy</td><td>In Review</td><td>Launch</td><td>2</td></tr><tr class="descendant" style="display:none"><td>Campaign QA</td><td>Pending</td><td>Launch / Copy</td><td>0</td></tr></tbody></table><p class="question">Direct Tasks are the default. Selecting Website redesign itself shows its direct Project Tasks; included descendants retain their source List in Location.</p><div class="scrim"><article class="modal"><div class="title-row"><h1>Write launch checklist</h1><button class="secondary">Close</button></div><div id="modal-grid" class="modal-grid"><aside id="task-hierarchy" class="hierarchy"><div class="hierarchy-heading"><button id="hierarchy-toggle" class="hierarchy-toggle" aria-expanded="true" aria-label="Collapse task hierarchy">‹</button><strong class="hierarchy-title">Task hierarchy</strong></div><ul class="tree"><li>▾ Launch website<ul><li><span class="selected">▾ Write launch checklist</span><ul><li>Validate analytics</li></ul></li><li>Prepare release notes</li></ul></li></ul></aside><div>${details}</div><aside>${sessions}<button class="action" style="margin-top:12px">Launch Agent Session</button><button class="secondary" style="margin-top:12px">Attach existing link</button></aside></div></article></div></section>`; }
+    function setHierarchyCollapsed(collapsed) { const grid = document.querySelector('#modal-grid'); const hierarchy = document.querySelector('#task-hierarchy'); const toggle = document.querySelector('#hierarchy-toggle'); if (!grid) return; grid.classList.toggle('hierarchy-collapsed', collapsed); hierarchy.classList.toggle('collapsed', collapsed); toggle.textContent = collapsed ? '›' : '‹'; toggle.setAttribute('aria-expanded', String(!collapsed)); }
+    function render() { document.querySelector('#app').innerHTML = modal(); if (matchMedia('(max-width: 1050px)').matches) setHierarchyCollapsed(true); const toggle = document.querySelector('#hierarchy-toggle'); if (toggle) toggle.onclick = () => setHierarchyCollapsed(!document.querySelector('#modal-grid').classList.contains('hierarchy-collapsed')); }
+    document.addEventListener('change', event => { if (event.target.id === 'include-descendants') document.querySelectorAll('.descendant').forEach(row => { row.style.display = event.target.checked ? 'table-row' : 'none'; }); });
+    render();
+  </script>
+</body>
+</html>
