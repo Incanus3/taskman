@@ -1,4 +1,4 @@
-# Agent-Aware Project Manager — MVP Product Specification
+# Taskman — MVP Product Specification
 
 **Status:** Resolved product specification
 
@@ -131,11 +131,12 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - Configurable workflows, global dashboards, advanced search, saved views, analytics, import, and
   export.
 
-## 9. Decision records
+## 9. Related documents
 
-- [Domain glossary](CONTEXT.md)
-- [Agent Session launch and return workflow](AGENT_SESSION_WORKFLOW.md)
-- [Task relationship semantics and constraints](TASK_RELATIONSHIPS.md)
-- [Auggie and Emdash integration research](research/emdash-and-auggie-orchestration-capabilities.md)
-- [Cosmos capability research](research/cosmos-session-launch-capabilities.md)
-- [Navigation prototype](prototypes/agent-aware-project-manager-navigation-prototype.html)
+- [Domain model and glossary](domain.md)
+- [Task relationship semantics](relationships.md)
+- [Agent Session workflow](agent-sessions.md)
+- [MVP roadmap](../planning/roadmap.md)
+- [Cosmos capability research](../research/cosmos-capabilities.md)
+- [Emdash and Auggie capability research](../research/emdash-auggie-capabilities.md)
+- [Navigation and MVP visual guidance](../prototypes/navigation.html)

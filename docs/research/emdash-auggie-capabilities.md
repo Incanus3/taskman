@@ -1,6 +1,7 @@
 # Emdash and Direct Auggie Orchestration Capabilities
 
-**Researched:** 2026-07-14  
+**Status:** Supporting research for the current Auggie ACP direction
+**Researched:** 2026-07-14
 **Scope:** Whether Agent-Aware Project Manager can replace Cosmos with Emdash, or directly
 orchestrate Auggie while retaining a durable launch-and-return workflow.
 
@@ -51,19 +52,9 @@ load, resume, or list operations.
 
 ## Recommended adapter boundary
 
-1. Treat **Auggie ACP** as the first provider adapter, launched locally with the read-only Project
-   primary-directory path as the ACP session working directory.
-2. The product prepares an editable Task instruction and lets the user choose the exposed model
-   before it starts the agent. It persists provider, model, created time, opaque ACP session ID,
-   directory, label, and the negotiated recovery capabilities.
-3. The launch action creates the Agent Session record only after ACP successfully returns its ID.
-   A failed launch creates no Session record.
-4. Returning to a Session means the product invokes the stored ACP ID via supported recovery, or
-   clearly says that the local session is unavailable. It must never claim a browser or desktop
-   deep link exists unless a provider documents one.
-5. This expands MVP scope from an external-session launcher to **local agent-process lifecycle
-   management**. Whether MVP also displays a live transcript or only offers explicit send/resume
-   controls remains a product decision; neither must imply Task completion.
+This research supports the current Auggie ACP direction. The active launch, attach, resume, and
+persistence contract is maintained in [the Agent Session workflow](../product/agent-sessions.md).
+The research should not be treated as an independent product specification.
 
 ## Sources
 

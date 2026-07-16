@@ -1,5 +1,6 @@
 # Cosmos Session Launch and Deep-Link Capabilities
 
+**Status:** Historical research; superseded as the MVP integration direction
 **Researched:** 2026-07-13
 **Scope:** Current public Augment documentation for the Agent-Aware Project Manager MVP. This records
 what is documented, not an assertion about private or future APIs.
@@ -8,9 +9,9 @@ what is documented, not an assertion about private or future APIs.
 
 Cosmos documents interactive session creation and trigger-driven session creation, but the sources
 reviewed do **not** document an external API or SDK that lets this product create, configure, and then
-receive a direct reference to an arbitrary Cosmos Session. The MVP Cosmos adapter therefore needs a
-manual handoff as its dependable baseline. A preconfigured Cosmos webhook automation is a possible
-separate, less-interactive mode, not a replacement for manual launch.
+receive a direct reference to an arbitrary Cosmos Session. This explains why Cosmos was not selected
+as the MVP integration direction. A preconfigured Cosmos webhook automation is a possible separate,
+less-interactive mode, not a replacement for manual launch.
 
 ## Capability matrix
 
@@ -43,17 +44,15 @@ external system. This can create a Session indirectly, but the reviewed docs do 
 callback that returns its Session URL or ID, a per-event model override, an editable pre-send prompt,
 or a per-event working-directory setting.
 
-## Recommended MVP fallback
+## Historical conclusion at the time of research
 
-For the first Cosmos adapter, prepare a handoff containing the Task title, editable instruction, and
-the read-only Project primary-directory path. Open the generic Cosmos web UI for the user; they choose
-the Expert/model, review and send the instruction, then paste or attach the copied Session link back
-to the Task. Store the Agent Session as a label, provider, URL, and created time. Do not infer Task
-completion from the external Session.
+At the time this research was conducted, the dependable Cosmos fallback was a manual handoff: prepare
+an editable instruction and read-only Project directory path, let the user launch in the Cosmos UI,
+and attach a copied Session link. That is no longer the MVP direction. The current MVP provider and
+workflow are defined in [the Agent Session workflow](../product/agent-sessions.md).
 
-Treat webhook automation as a future optional launch mode that requires a user-preconfigured Expert,
-Environment, and trigger. It must clearly disclose that its first message is event payload rather than
-a user-reviewed prompt, and it cannot rely on an undocumented Session-link callback.
+Webhook automation remains background research only. It must not be treated as an active MVP launch
+path without a new product decision.
 
 ## Non-Cosmos alternative
 

@@ -1,6 +1,7 @@
-# Agent Session Launch and Return Workflow
+# Taskman — Agent Session Workflow
 
-**Resolved:** 2026-07-14
+**Status:** Resolved MVP workflow
+**Decided:** 2026-07-14
 **MVP provider:** Auggie ACP, run locally through a provider-adapter boundary.
 
 ## Scope and boundary

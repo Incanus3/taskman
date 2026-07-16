@@ -1,6 +1,7 @@
-# Task Relationship Semantics and Constraints
+# Taskman — Task Relationship Semantics
 
-**Resolved:** 2026-07-14
+**Status:** Resolved product decision
+**Decided:** 2026-07-14
 
 ## Vocabulary and records
 

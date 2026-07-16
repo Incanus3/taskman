@@ -1,4 +1,4 @@
-# Agent-Aware Project Manager — Lightweight MVP Roadmap
+# Taskman — Lightweight MVP Roadmap
 
 **Status:** Planning baseline
 **Date:** 2026-07-16
@@ -9,14 +9,13 @@ it is next or close to next.
 
 ## Delivery approach
 
+The durable project-wide working and architecture rules live in the [development guide](../development.md).
+This roadmap applies them to the MVP delivery sequence:
+
 - Work top-down through user-visible vertical slices.
-- Keep architecture decisions just-in-time: before a feature is implemented, think through the
-  minimum abstractions and boundaries that feature genuinely needs.
-- Avoid speculative architecture for hypothetical future requirements.
-- Do not avoid a necessary abstraction merely because it is not needed today; design the small,
-  justified seam before adding the feature that needs it.
 - Keep the first implementation narrow and learn from the running application.
-- Do not create detailed tickets for the entire roadmap in advance.
+- Refine a slice only when it is next or close to next; do not create detailed tickets for the entire
+  roadmap in advance.
 
 ## Slices
 

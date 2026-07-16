@@ -1,4 +1,4 @@
-# Agent-Aware Project Manager — Domain Glossary
+# Taskman — Domain Model and Glossary
 
 ## Ownership and organization
 
