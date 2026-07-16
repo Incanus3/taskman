@@ -1,6 +1,6 @@
 # Handoff: Agent-Aware Project Manager Implementation Planning
 
-Date: 2026-07-14
+Date: 2026-07-16
 
 ## Purpose
 
@@ -11,10 +11,6 @@ closed product-discovery Wayfinder.
 The current `Incanus3/taskman` repository is now the greenfield implementation repository. Retain the
 existing product and research documentation under `docs/` as the authoritative planning record while
 implementation planning proceeds here.
-
-The completed product-discovery Wayfinder and its Beads map live in a separate repository. This
-repository's Beads store starts empty: create a new implementation-planning map and delivery backlog
-here rather than importing, recreating, or resuming historical Wayfinder issues.
 
 ## Authoritative product input
 
@@ -32,12 +28,32 @@ persistence design, domain persistence model, browser/server/API boundary, Auggi
 recovery design, test strategy, and a dependency-ordered backlog of tracer-bullet implementation
 tickets with acceptance criteria.
 
-## Current frontier
+## Planning posture
 
-The implementation host and high-level application architecture are resolved. Next, define the
-**persistence and domain-schema architecture**: Ecto schemas and migrations, data ownership and
-constraints, relationship-cycle enforcement, and local database configuration. Resolve one decision
-at a time through an architecture interview before creating delivery tickets.
+The repository, technology direction, and MVP product scope are sufficiently settled to begin
+roadmap-level planning. The project is intentionally planning-only at this stage; Jakub will
+generate the Phoenix application skeleton locally later. No implementation work is implied by this
+document.
+
+The next planning artifact is the [Lightweight MVP Roadmap](../MVP_ROADMAP.md). It is a sequence of
+high-level vertical slices, not a detailed backlog. Refine a slice shortly before it is implemented,
+rather than resolving the entire implementation architecture upfront.
+
+The first product slice is **Projects and basic Tasks**: create a Project, create and manage Tasks in
+it, and view them in the default list-first screen.
+
+## Just-in-time architecture rule
+
+Avoid speculative architecture, but do not skip deliberate design where a real feature needs an
+abstraction. Immediately before each slice, think through the minimum abstractions, boundaries, and
+persistence decisions that the slice genuinely requires. Add only justified seams, while keeping them
+small and replaceable where the product specification identifies a future integration boundary.
+
+## Initial frontier
+
+When implementation begins, start with the application foundation and then the Projects and basic
+Tasks vertical slice. Detailed architecture questions should be answered in the context of the next
+slice that needs them, not as a separate broad architecture phase.
 
 ## Resolved high-level implementation direction
 
@@ -59,13 +75,12 @@ The following technology-shape decisions were resolved during the initial archit
 
 These are intentionally high-level decisions, not a completed architecture. Detailed decisions about
 the Auggie ACP integration, URL and LiveView state mechanics, filesystem boundaries, persistence
-schema, testing seams, and the dependency-ordered implementation backlog remain open for later
-planning discussions.
+schema, testing seams, and the dependency-ordered implementation backlog remain open for later,
+feature-local planning discussions.
 
 ## Planning questions to resolve
 
-1. **Resolved:** target implementation repository, language, framework, package management, and local
-   run model.
+1. Target implementation repository, language, framework, package management, and local run model.
 2. Persistence technology, schema/migration approach, and local data-location rules.
 3. Server/browser process boundary, API shape, and how the browser interacts with local services.
 4. Auggie ACP process ownership, capability negotiation, session-ID persistence, recovery, and
@@ -77,10 +92,11 @@ planning discussions.
 ## Operating rules
 
 - Use the final specification as a constraint, not as an invitation to expand MVP scope.
-- Ask the user one architecture decision at a time and recommend an answer; research external facts
-  rather than asking the user to supply them.
-- Create implementation tickets only after the architectural dependencies they need are resolved.
+- Work top-down through user-visible vertical slices.
+- Before each slice, make the minimum architecture and abstraction decisions needed for that slice.
+- Do not design generalized systems for hypothetical future requirements.
+- Create detailed implementation tickets only when the corresponding slice is next or close to next.
 - Every delivery ticket must declare its user-visible or technical outcome, acceptance criteria,
   tests, and blockers.
-- Keep plan/map state in Beads and flush it after updates. Never implement more than the currently
-  claimed ticket without explicit approval.
+- Keep plan/map state in Beads and flush it after updates when implementation planning begins.
+- Never implement more than the currently claimed ticket without explicit approval.
