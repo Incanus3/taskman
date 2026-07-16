@@ -1,51 +1,47 @@
-# Handoff: Agent-Aware Project Manager Wayfinder
+# Historical Handoff: Agent-Aware Project Manager Wayfinder
 
 Date: 2026-07-14
 
-## Purpose
+## Completion status
 
-Continue the Wayfinder effort for a greenfield product provisionally named **Agent-Aware Project
-Manager**. The destination is a high-level MVP product specification covering the product role,
-use cases, capabilities, workflows, domain vocabulary, interaction model, integration boundary,
-and explicit exclusions.
+The Wayfinder effort for the greenfield **Agent-Aware Project Manager** is complete. It produced the
+resolved MVP product specification, including its role, capabilities, workflows, domain vocabulary,
+interaction model, integration boundary, and explicit exclusions.
 
-This Notes repository contains only the planning map and future planning assets. The product does
-not exist yet and will eventually live in another repository. Implementation is outside this map.
+It was completed in a separate Notes repository. This document preserves its product-discovery
+context; implementation planning and delivery now occur in `Incanus3/taskman`.
 
-## Canonical tracker artifacts
+## Historical tracker artifacts
 
-The canonical source is the repo-local Beads map **Chart the Agent-Aware Project Manager MVP**
-(`notes-kf1`, label `wayfinder:map`). Load that map at low resolution first; fetch child ticket
-bodies only as needed.
+The Beads map **Chart the Agent-Aware Project Manager MVP** (`notes-kf1`, label `wayfinder:map`)
+belonged to the separate Notes repository. Its issues are not present in this repository's Beads
+store and must not be recreated or resumed here.
 
-The map has these child tickets:
+The completed map contained these child tickets:
 
 | Ticket name | Beads key | Type | State |
 | --- | --- | --- | --- |
 | Define the core domain model and Task lifecycle | `notes-kf1.1` | grilling | Closed |
 | Research Cosmos session launch and deep-link capabilities | `notes-kf1.2` | research | Closed |
 | Prototype Project, List, Task, and Agent Session navigation | `notes-kf1.3` | prototype | Closed |
-| Define the Agent Session launch and return workflow | `notes-kf1.4` | grilling | Ready |
-| Synthesize the high-level MVP product specification | `notes-kf1.5` | task | Blocked |
-| Define Task relationship semantics and constraints | `notes-kf1.6` | grilling | Ready |
+| Define the Agent Session launch and return workflow | `notes-kf1.4` | grilling | Closed |
+| Synthesize the high-level MVP product specification | `notes-kf1.5` | task | Closed |
+| Define Task relationship semantics and constraints | `notes-kf1.6` | grilling | Closed |
 
-Dependency route:
+The completed dependency route was:
 
 - **Define the core domain model and Task lifecycle** is resolved; it unlocked the navigation
   prototype and partly unlocked the Agent Session workflow.
 - **Research Cosmos session launch and deep-link capabilities** is resolved; it supplied the remaining
   prerequisite and unlocked the Agent Session workflow.
-- The navigation prototype is resolved. The Agent Session workflow and Task relationship semantics both
-  block final specification synthesis.
-- The final synthesis ticket is an explicit exception to Wayfinder's planning-only default. It may
-  write the destination specification as a Markdown asset in this repository.
+- The navigation prototype, Agent Session workflow, and Task relationship semantics supplied the
+  remaining inputs to final specification synthesis.
+- The final synthesis ticket wrote the resolved MVP product specification.
 
-The domain-model, Cosmos-research, and navigation-prototype tickets are resolved. Their resolution
-comments link the canonical glossary at
+The map is closed. Its resolution comments link the canonical glossary at
 `docs/CONTEXT.md` and research asset at
-`docs/research/cosmos-session-launch-capabilities.md`; the throwaway navigation artifact is at
-`docs/prototypes/agent-aware-project-manager-navigation-prototype.html`. The map has one linked gist
-for each. `br ready` now returns the Agent Session workflow and Task relationship semantics tickets.
+`docs/research/cosmos-session-launch-capabilities.md`; the throwaway navigation artifact remains at
+`docs/prototypes/agent-aware-project-manager-navigation-prototype.html`.
 
 ## Settled charting context
 
@@ -100,8 +96,8 @@ is the essential resume context:
 - Explicit Task relationships are in MVP scope and are distinct from List ownership. The vocabulary is
   directed Blocks / Blocked by, symmetric Relates to, and parent-child. Parent-child is an acyclic,
   same-Project work-breakdown relationship: one parent may have many children, while each child has at
-  most one; it does not alter List ownership or status. Its remaining semantics are in the dedicated
-  **Define Task relationship semantics and constraints** ticket.
+  most one; it does not alter List ownership or status. The resolved details are in
+  `docs/TASK_RELATIONSHIPS.md`.
 
 ### Resolved Cosmos integration research
 
@@ -145,47 +141,9 @@ into this model. Do not restore them or interpret the artifact as an unresolved 
 - Parent-child relationships belong exclusively in the hierarchy. The collapsible Related Tasks table
   is for Blocks / Blocked by and Relates to links.
 
-## Fog still recorded on the map
+## Use in this repository
 
-None. All remaining in-scope decisions are already precise child tickets.
-
-## Operational cautions
-
-- This repository's tracker is `/home/jakub/Notes/.beads`. Normal `br` commands from the repository
-  root now discover it correctly.
-- A parent tracker also exists at `/home/jakub/.beads`. The map was initially created there by
-  mistake, then deleted and recreated locally. Deleted audit tombstones remain in the parent tracker;
-  do not resume those issues.
-- Always refer to maps and tickets by title in human-facing text. Use Beads keys only for CLI lookup.
-- Never resolve more than one Wayfinder ticket in a session. After a ticket is finished, report it,
-  encourage a commit, and wait for explicit approval before beginning another.
-- Claim a chosen ticket before doing any work. For a HITL ticket, the agent must not answer the
-  human side of the interview.
-- After resolution, post the answer as a resolution comment, close the ticket, append only a linked
-  one-line gist to the map's **Decisions so far**, update fog/scope, create and then wire any newly
-  surfaced tickets, and run `br sync --flush-only`.
-
-## Recommended next session
-
-Take exactly one Ready ticket and claim it before work. Unless the user names a ticket, Wayfinder order
-now selects **Define the Agent Session launch and return workflow**. It is a HITL
-grilling decision. Start from the manual Cosmos-handoff baseline above; do not revisit or invent an
-undocumented automatic Cosmos Session-control API. It must settle the exact provider-adapter and
-user-return flow without implementing the product.
-
-**Define Task relationship semantics and constraints** is also now Ready. It is a separate HITL
-grilling decision that must finish relationship cardinality, cross-Project, cycle, and deletion rules.
-Do not resolve it while working the Agent Session workflow.
-
-## Suggested skills
-
-- `wayfinder` — mandatory for map loading, claiming, one-ticket pacing, resolution, and frontier
-  maintenance.
-- `grilling` — for the later Agent Session workflow and other HITL decisions; ask one question at a
-  time and recommend an answer.
-- `domain-modeling` — use the canonical glossary, challenge conflicting terms, and capture genuinely
-  new resolved vocabulary as it crystallizes.
-- `research` plus the official Augment documentation guide — only for newly precise external-platform
-  questions surfaced later.
-- `prototype` — consult its completed artifact only as the primary source for the resolved navigation
-  model; do not treat its throwaway HTML as production code.
+- Treat this document as historical product rationale, not an actionable tracker.
+- Do not run `br` against, recreate, or resume the external Wayfinder issues from this repository.
+- Use [the implementation-planning handoff](agent-aware-project-manager-implementation-planning.md)
+  for current architecture decisions and implementation work.

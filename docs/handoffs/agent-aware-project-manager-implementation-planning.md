@@ -12,6 +12,10 @@ The current `Incanus3/taskman` repository is now the greenfield implementation r
 existing product and research documentation under `docs/` as the authoritative planning record while
 implementation planning proceeds here.
 
+The completed product-discovery Wayfinder and its Beads map live in a separate repository. This
+repository's Beads store starts empty: create a new implementation-planning map and delivery backlog
+here rather than importing, recreating, or resuming historical Wayfinder issues.
+
 ## Authoritative product input
 
 - [MVP Product Specification](../MVP_PRODUCT_SPECIFICATION.md) is the
@@ -28,11 +32,12 @@ persistence design, domain persistence model, browser/server/API boundary, Auggi
 recovery design, test strategy, and a dependency-ordered backlog of tracer-bullet implementation
 tickets with acceptance criteria.
 
-## Initial frontier
+## Current frontier
 
-Start with **Define the implementation host and local application architecture**. Resolve one
-decision at a time through an architecture interview before creating delivery tickets. The first
-decision is which repository owns the implementation and whether it is greenfield.
+The implementation host and high-level application architecture are resolved. Next, define the
+**persistence and domain-schema architecture**: Ecto schemas and migrations, data ownership and
+constraints, relationship-cycle enforcement, and local database configuration. Resolve one decision
+at a time through an architecture interview before creating delivery tickets.
 
 ## Resolved high-level implementation direction
 
@@ -59,7 +64,8 @@ planning discussions.
 
 ## Planning questions to resolve
 
-1. Target implementation repository, language, framework, package management, and local run model.
+1. **Resolved:** target implementation repository, language, framework, package management, and local
+   run model.
 2. Persistence technology, schema/migration approach, and local data-location rules.
 3. Server/browser process boundary, API shape, and how the browser interacts with local services.
 4. Auggie ACP process ownership, capability negotiation, session-ID persistence, recovery, and
