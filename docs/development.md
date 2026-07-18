@@ -25,6 +25,12 @@ Do not design generalized systems for hypothetical future requirements. Converse
 necessary abstraction merely because a broader version of it is not needed yet: design the smallest
 useful seam before adding the feature that needs it.
 
+## Application boundaries
+
+Modules in `TaskmanWeb` interact with persistence through public context APIs. They must not call
+`Taskman.Repo` directly or construct Ecto queries. Context and core-library modules own persistence
+coordination and keep schemas, changesets, queries, and Repo calls out of the web layer.
+
 ## Current technology direction
 
 - The implementation is greenfield in `Incanus3/taskman`.

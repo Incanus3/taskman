@@ -47,9 +47,9 @@ parameters:
 - `Tasks.create_task(project, attrs)`
 - `Tasks.list_tasks_for_project(project)`
 
-The LiveView calls only public context APIs and never calls `Taskman.Repo` directly. A later Lists
-slice may introduce a separate `Taskman.Lists` context; neither Tasks nor future Lists need to be
-placed in the Projects context.
+The web layer calls only public context APIs and never calls `Taskman.Repo` directly or constructs
+Ecto queries. A later Lists slice may introduce a separate `Taskman.Lists` context; neither Tasks
+nor future Lists need to be placed in the Projects context.
 
 ## Persistence model
 
@@ -165,5 +165,5 @@ directories owned by the test.
 - Invalid Project and Task input produces inline errors without losing the surrounding screen.
 - An unknown Project URL preserves a functional Project sidebar and shows the not-found state only
   in the main panel.
-- LiveView modules do not call `Taskman.Repo` directly.
+- Modules in `TaskmanWeb` do not call `Taskman.Repo` directly or construct Ecto queries.
 - Focused context and LiveView tests pass through the normal `mix precommit` workflow.
