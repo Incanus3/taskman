@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Planning baseline
-**Date:** 2026-07-16
+**Status:** Foundation complete; Projects and basic Tasks next
+**Updated:** 2026-07-18
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -32,6 +32,10 @@ Scope:
 
 This is a development foundation, not a product milestone. No deployment or container-orchestration
 work is implied.
+
+**Current state:** Complete. The Phoenix LiveView skeleton runs against PostgreSQL using the
+standard `run_postgres.sh` startup path. The normal `mix precommit` and `mix setup` workflows have
+passed, and the application has been smoke-tested successfully at `http://localhost:4000`.
 
 ### 1. Projects and basic Tasks
 

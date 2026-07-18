@@ -1,32 +1,40 @@
 # Implementation handoff
 
-**Status:** Active planning context
-**Updated:** 2026-07-16
+**Status:** Ready to refine Projects and basic Tasks
+**Updated:** 2026-07-18
 
 ## Current position
 
-Taskman is still in planning; no implementation has started in this repository. The Phoenix
-application skeleton will be generated locally by Jakub when implementation begins.
+The application foundation is complete. The Phoenix LiveView skeleton runs locally against
+PostgreSQL, and the application currently has only the stock root page; no product domain,
+persistence, or Projects-and-Tasks UI work has started.
 
-The high-level technology direction is settled. The first implementation slice is **Projects and
-basic Tasks**: create a Project, create and manage Tasks in it, and view them in the default
-list-first screen.
+`./run_postgres.sh` is the standard local path for starting PostgreSQL. It is optional when a
+compatible PostgreSQL instance is already running on `localhost:5432` with the `postgres` user and
+password.
+
+The high-level technology direction is settled. The first product implementation slice remains
+**Projects and basic Tasks**: create a Project, create and manage Tasks in it, and view them in the
+default list-first screen.
+
+The normal `mix precommit` workflow passed on 2026-07-18 with five tests. The `mix setup` workflow
+has passed, and PostgreSQL, `mix phx.server`, and the landing page at `http://localhost:4000` have
+been verified.
 
 ## Next step
 
-When implementation begins:
+Refine the minimum architecture and immediate implementation work for the first product slice:
 
-1. Generate the Phoenix LiveView application skeleton and configure local PostgreSQL.
-2. Establish the normal local run, formatting, and test workflow.
-3. Refine the minimum architecture needed for the Projects and basic Tasks slice.
-4. Implement that slice as the first real MVP milestone.
+1. Define only the Project and Task persistence, validation, and list-first LiveView decisions
+   required for the initial slice.
+2. Record the immediate implementation work in the repository-local Beads store.
+3. Implement the first thin vertical slice with focused context and LiveView tests.
 
 Use [the MVP roadmap](../planning/roadmap.md) for the high-level sequence. Use [the development
 guide](../development.md) for durable project-wide working rules and technology direction.
 
 ## Planning notes
 
-- Do not begin implementation in the planning phase without explicit direction.
 - Do not resolve the whole architecture or create the entire implementation backlog upfront.
 - Before each slice, make the minimum justified architecture and abstraction decisions that the slice
   needs.
