@@ -65,3 +65,6 @@ context immediately before the relevant feature.
 Every implementation slice should have a clear user-visible or technical outcome and a small,
 meaningful verification gate: focused tests, formatting, a build, a smoke test, or another direct
 inspection appropriate to the change.
+
+Automated tests should cover observable behavior, interactions, and meaningful structure. Do not
+add assertions that only verify styling details such as CSS classes, spacing, colors, or alignment.

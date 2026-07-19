@@ -60,6 +60,16 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-#{other_task.id}")
   end
 
+  test "populated Task list renders column headers", %{conn: conn} do
+    project = project_fixture(%{})
+    _task = task_fixture(project, %{})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    assert has_element?(view, "#task-table-header")
+    assert has_element?(view, "#task-table-header + #tasks")
+  end
+
   test "invalid Project input renders inline errors", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 

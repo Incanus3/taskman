@@ -15,6 +15,7 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:project_not_found?, false)
      |> assign(:project_form, project_form(%Project{}))
      |> assign(:task_form, nil)
+     |> assign(:tasks_empty?, true)
      |> stream(:projects, Projects.list_projects())
      |> stream(:tasks, [])}
   end
@@ -91,6 +92,7 @@ defmodule TaskmanWeb.ProjectLive do
       {:ok, task} ->
         {:noreply,
          socket
+         |> assign(:tasks_empty?, false)
          |> stream_insert(:tasks, task)
          |> push_patch(to: ~p"/projects/#{socket.assigns.selected_project.id}")}
 
@@ -103,6 +105,7 @@ defmodule TaskmanWeb.ProjectLive do
     socket
     |> assign(:selected_project, selected_project)
     |> assign(:project_not_found?, project_not_found?)
+    |> assign(:tasks_empty?, tasks == [])
     |> stream(:projects, Projects.list_projects(), reset: true)
     |> stream(:tasks, tasks, reset: true)
   end
