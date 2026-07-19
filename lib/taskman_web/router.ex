@@ -17,7 +17,8 @@ defmodule TaskmanWeb.Router do
   scope "/", TaskmanWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", ProjectLive, :index
+    live "/projects/:project_id", ProjectLive, :show
   end
 
   # Other scopes may use custom stacks.
