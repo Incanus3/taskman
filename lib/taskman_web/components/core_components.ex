@@ -148,7 +148,7 @@ defmodule TaskmanWeb.CoreComponents do
         <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-6">
           <div
             id={"#{@id}-content"}
-            class="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-2xl shadow-slate-950/20 sm:p-7"
+            class="relative w-full max-w-lg overflow-hidden rounded-2xl bg-slate-900 p-6 text-left align-middle shadow-2xl shadow-black/50 sm:p-7"
             aria-labelledby={"#{@id}-title"}
             role="dialog"
             aria-modal="true"
@@ -159,7 +159,7 @@ defmodule TaskmanWeb.CoreComponents do
           >
             <button
               type="button"
-              class="absolute right-4 top-4 grid size-9 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-indigo-500/10"
+              class="absolute right-4 top-4 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
               phx-click={hide_modal(@on_cancel, @id)}
               aria-label={gettext("Close dialog")}
             >

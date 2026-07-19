@@ -13,6 +13,15 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#main-panel[data-state='no-selection']")
   end
 
+  test "selected workspace and Task modal use dark surfaces", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    assert has_element?(view, "#main-panel.bg-slate-900")
+    assert has_element?(view, "#tasks.bg-slate-900")
+    assert has_element?(view, "#task-modal-content.bg-slate-900")
+  end
+
   test "creates a Project and selects it in the URL", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
