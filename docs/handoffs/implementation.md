@@ -1,50 +1,48 @@
 # Implementation handoff
 
-**Status:** Ready to refine Projects and basic Tasks
-**Updated:** 2026-07-18
+**Status:** First Projects and basic Tasks slice approved and ready for implementation
+**Updated:** 2026-07-19
 
 ## Current position
 
-The application foundation is complete. The Phoenix LiveView skeleton runs locally against
-PostgreSQL, and the application currently has only the stock root page; no product domain,
-persistence, or Projects-and-Tasks UI work has started.
+The application foundation is complete and verified. PostgreSQL, `mix setup`, `mix phx.server`, the
+stock landing page, and the normal `mix precommit` workflow have all been exercised successfully.
+No product-domain persistence or UI has been implemented yet.
 
-`./run_postgres.sh` is the standard local path for starting PostgreSQL. It is optional when a
-compatible PostgreSQL instance is already running on `localhost:5432` with the `postgres` user and
-password.
+The first thin vertical slice has completed design and plan review. Its approved design is
+`docs/specs/2026-07-18-projects-basic-tasks-first-slice-design.md`; its decision-complete execution
+plan is `docs/plans/2026-07-18-projects-basic-tasks-first-slice.md`. Treat those documents as the
+source of truth rather than redesigning the slice during implementation.
 
-The high-level technology direction is settled. The first product implementation slice remains
-**Projects and basic Tasks**: create a Project, create and manage Tasks in it, and view them in the
-default list-first screen.
+Project-wide implementation rules remain canonical in `AGENTS.md` and `docs/development.md`. In
+particular, use their current version-control, application-boundary, Phoenix, testing, and UI
+component guidance rather than copying those rules into slice-specific work.
 
-The normal `mix precommit` workflow passed on 2026-07-18 with five tests. The `mix setup` workflow
-has passed, and PostgreSQL, `mix phx.server`, and the landing page at `http://localhost:4000` have
-been verified.
+## Work tracking
 
-## Next step
+The repository-local Beads epic is `tas-x38` (**Projects and basic Tasks: first vertical slice**).
+Its five child tasks follow the implementation-plan order through blocking dependencies.
 
-Refine the minimum architecture and immediate implementation work for the first product slice:
+The only ready task is `tas-x38.1` (**Add Project persistence boundary**). It corresponds to Task 1
+of the implementation plan. Claim it when implementation begins, follow its red-green steps, and do
+not begin `tas-x38.2` until its dependency is closed.
 
-1. Define only the Project and Task persistence, validation, and list-first LiveView decisions
-   required for the initial slice.
-2. Record the immediate implementation work in the repository-local Beads store.
-3. Implement the first thin vertical slice with focused context and LiveView tests.
+## Resume sequence
 
-Use [the MVP roadmap](../planning/roadmap.md) for the high-level sequence. Use [the development
-guide](../development.md) for durable project-wide working rules and technology direction.
+1. Use `gpt-5.6-terra` for implementation.
+2. Read `AGENTS.md`, this handoff, `docs/development.md`, the approved design, and the approved plan.
+3. Run `but status --format json` before any version-control operation and preserve unrelated work.
+4. Inspect and claim `tas-x38.1` in the repository-local Beads store.
+5. Execute Task 1 from the plan test-first, run its focused verification, and commit only that task's
+   changes using `but`.
+6. Update and close the Bead only after its acceptance criteria are verified; then continue with the
+   next unblocked child task.
 
-## Planning notes
+## Local runtime
 
-- Do not resolve the whole architecture or create the entire implementation backlog upfront.
-- Before each slice, make the minimum justified architecture and abstraction decisions that the slice
-  needs.
-- The product documents under `docs/product/` are the authoritative current behavior.
+`./run_postgres.sh` is the standard local PostgreSQL startup path. It is optional when a compatible
+PostgreSQL instance is already running on `localhost:5432` with the `postgres` user and password.
+Run Phoenix directly with `mix phx.server`.
 
-## Relevant documents
-
-- [MVP specification](../product/mvp-spec.md)
-- [Domain model](../product/domain.md)
-- [Task relationships](../product/relationships.md)
-- [Agent Sessions](../product/agent-sessions.md)
-- [MVP roadmap](../planning/roadmap.md)
-- [Development guide](../development.md)
+The product documents under `docs/product/` remain authoritative for behavior outside decisions
+already fixed by the approved slice design.
