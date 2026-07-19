@@ -10,6 +10,8 @@ separate from product requirements, delivery planning, and session handoffs.
 - Refine the next slice when it is close to implementation; do not create a detailed backlog for the
   entire MVP in advance.
 - Use the product documents as constraints, not as an invitation to expand MVP scope.
+- Prefer subagent-driven development for implementation work when it is available and not explicitly
+  forbidden.
 
 ## Just-in-time architecture
 

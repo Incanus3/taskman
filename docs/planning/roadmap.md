@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Foundation complete; Projects and basic Tasks next
-**Updated:** 2026-07-18
+**Status:** Foundation complete; Projects and basic Tasks in progress
+**Updated:** 2026-07-19
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -53,6 +53,11 @@ Initial scope:
 - Focused context and LiveView tests.
 
 This is the first real MVP milestone and the first slice to guide later architectural decisions.
+
+**Current state:** In progress. The first thin increment is complete: users can create and select
+Projects, then create default Tasks from the selected Project's direct list. Task editing and
+human-controlled lifecycle changes remain as the next increment; this roadmap slice is not yet
+complete.
 
 ### 2. Task detail and navigation
 
