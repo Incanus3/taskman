@@ -10,6 +10,11 @@ do not run `jj` commands here.
 Use the repository-local Beads store for implementation planning and delivery work. The completed
 product-discovery Wayfinder map belonged to another repository and is historical only.
 
+## Development guidance
+
+Read and follow [docs/development.md](docs/development.md). It contains durable project-wide
+engineering guidance that is binding alongside this file; do not duplicate its rules here.
+
 ## Project guidelines
 
 This is a web application written using the Phoenix web framework.
@@ -388,7 +393,7 @@ Where the server handled it via:
 - Form tests are driven by `Phoenix.LiveViewTest`'s `render_submit/2` and `render_change/2` functions
 - Come up with a step-by-step test plan that splits major test cases into small, isolated files. You may start with simpler tests that verify content exists, gradually add interaction tests
 - **Always reference the key element IDs you added in the LiveView templates in your tests** for `Phoenix.LiveViewTest` functions like `element/2`, `has_element/2`, selectors, etc
-- **Never** tests again raw HTML, **always** use `element/2`, `has_element/2`, and similar: `assert has_element?(view, "#my-form")`
+- In application LiveView tests, **never** test raw HTML; use `element/2`, `has_element/2`, and similar: `assert has_element?(view, "#my-form")`. Reusable core-component tests may assert rendered output only for low-level DOM or JavaScript contracts that cannot be exercised through LiveView interactions; do not use this exception for styling.
 - Instead of relying on testing text content, which can change, favor testing for the presence of key elements
 - Focus on testing outcomes rather than implementation details
 - Be aware that `Phoenix.Component` functions like `<.form>` might produce different HTML than expected. Test against the output HTML structure, not your mental model of what you expect it to be

@@ -67,4 +67,6 @@ meaningful verification gate: focused tests, formatting, a build, a smoke test, 
 inspection appropriate to the change.
 
 Automated tests should cover observable behavior, interactions, and meaningful structure. Do not
-add assertions that only verify styling details such as CSS classes, spacing, colors, or alignment.
+add assertions that only verify styling details such as spacing, colors, or alignment. CSS-class
+assertions are appropriate only when they establish functional user-visible state, such as whether
+an element is shown or hidden.

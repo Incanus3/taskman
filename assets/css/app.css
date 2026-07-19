@@ -102,4 +102,7 @@
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
+/* Let the form's gap utility control every New Project field/action gap. */
+#project-form > .fieldset { margin-bottom: 0; }
+
 /* This file is for your main application CSS */

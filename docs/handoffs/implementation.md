@@ -34,7 +34,7 @@ as authorization to expand the remaining roadmap scope.
 
 ## Verification evidence
 
-- `mix precommit` passed with 18 tests and zero failures.
+- `mix precommit` passed with 19 tests and zero failures.
 - The web-boundary proof found no `Taskman.Repo`, `Repo.`, or `Ecto.Query` references in
   `lib/taskman_web`.
 - Browser smoke acceptance covered empty and invalid Project states, Project creation and

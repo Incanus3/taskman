@@ -13,15 +13,6 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#main-panel[data-state='no-selection']")
   end
 
-  test "selected workspace and Task modal use dark surfaces", %{conn: conn} do
-    project = project_fixture(%{})
-    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
-
-    assert has_element?(view, "#main-panel.bg-slate-900")
-    assert has_element?(view, "#tasks.bg-slate-900")
-    assert has_element?(view, "#task-modal-content.bg-slate-900")
-  end
-
   test "creates a Project and selects it in the URL", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
@@ -60,15 +51,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-#{other_task.id}")
   end
 
-  test "populated Task list renders column headers with uniform cell padding", %{conn: conn} do
+  test "populated Task list renders column headers before its Task stream", %{conn: conn} do
     project = project_fixture(%{})
     _task = task_fixture(project, %{})
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    assert has_element?(view, "#task-table-header.px-3.py-3")
     assert has_element?(view, "#task-table-header + #tasks")
-    assert has_element?(view, "#tasks article.px-3.py-3")
   end
 
   test "invalid Project input renders inline errors", %{conn: conn} do
@@ -96,7 +85,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-modal")
   end
 
-  test "successful Task hides the empty state after validation errors", %{conn: conn} do
+  test "successful Task hides the empty state and persists its defaults after validation errors",
+       %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
