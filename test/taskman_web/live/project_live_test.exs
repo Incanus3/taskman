@@ -50,4 +50,47 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-#{selected_task.id}")
     refute has_element?(view, "#task-#{other_task.id}")
   end
+
+  test "invalid Project input renders inline errors", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> form("#project-form", project: %{name: "Taskman", primary_directory: "/not/a/taskman/dir"})
+    |> render_submit()
+
+    assert has_element?(view, "#project-form [data-role='field-error']")
+  end
+
+  test "opens and cancels the new Task modal over the selected list", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Existing"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#add-task") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/new")
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-#{task.id}")
+
+    view |> element("#cancel-task") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}")
+    refute has_element?(view, "#task-modal")
+  end
+
+  test "invalid Task stays in the modal and successful Task appears in the list", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    view |> form("#task-form", task: %{title: ""}) |> render_submit()
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form [data-role='field-error']")
+
+    view |> form("#task-form", task: %{title: "Ship first slice"}) |> render_submit()
+    assert_patch(view, ~p"/projects/#{project.id}")
+    refute has_element?(view, "#task-modal")
+
+    [task] = Taskman.Tasks.list_tasks_for_project(project)
+    assert task.status == :pending
+    assert task.priority == :none
+    assert has_element?(view, "#task-#{task.id}")
+  end
 end

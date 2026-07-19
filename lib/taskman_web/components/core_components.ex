@@ -124,6 +124,56 @@ defmodule TaskmanWeb.CoreComponents do
   end
 
   @doc """
+  Renders an accessible modal dialog.
+  """
+  attr :id, :string, required: true
+  attr :show, :boolean, default: false
+  attr :on_cancel, JS, required: true
+  slot :inner_block, required: true
+
+  def modal(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class="relative z-50"
+      phx-mounted={@show && show_modal(@id)}
+      hidden
+    >
+      <div
+        id={"#{@id}-backdrop"}
+        class="fixed inset-0 bg-slate-950/45 backdrop-blur-[2px]"
+        aria-hidden="true"
+      />
+      <div class="fixed inset-0 overflow-y-auto" role="presentation">
+        <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-6">
+          <div
+            id={"#{@id}-content"}
+            class="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-2xl shadow-slate-950/20 sm:p-7"
+            aria-labelledby={"#{@id}-title"}
+            role="dialog"
+            aria-modal="true"
+            phx-click-away={hide_modal(@on_cancel, @id)}
+            phx-window-keydown={hide_modal(@on_cancel, @id)}
+            phx-key="escape"
+            tabindex="-1"
+          >
+            <button
+              type="button"
+              class="absolute right-4 top-4 grid size-9 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-indigo-500/10"
+              phx-click={hide_modal(@on_cancel, @id)}
+              aria-label={gettext("Close dialog")}
+            >
+              <.icon name="hero-x-mark" class="size-5" />
+            </button>
+            {render_slot(@inner_block)}
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
   Renders an input with label and error messages.
 
   A `Phoenix.HTML.FormField` may be passed as argument,
@@ -305,7 +355,7 @@ defmodule TaskmanWeb.CoreComponents do
   # Helper used by inputs to generate form errors
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <p data-role="field-error" class="mt-1.5 flex gap-2 items-center text-sm text-error">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>
@@ -473,6 +523,40 @@ defmodule TaskmanWeb.CoreComponents do
         {"transition-all ease-in duration-200", "opacity-100 translate-y-0 sm:scale-100",
          "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"}
     )
+  end
+
+  defp show_modal(id) do
+    %JS{}
+    |> JS.push_focus()
+    |> JS.show(to: "##{id}")
+    |> JS.show(
+      to: "##{id}-backdrop",
+      transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
+    )
+    |> JS.show(
+      to: "##{id}-content",
+      transition:
+        {"transition-all ease-out duration-200",
+         "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95",
+         "opacity-100 translate-y-0 sm:scale-100"}
+    )
+    |> JS.focus_first(to: "##{id}-content")
+  end
+
+  defp hide_modal(js, id) do
+    js
+    |> JS.hide(
+      to: "##{id}-content",
+      transition:
+        {"transition-all ease-in duration-150", "opacity-100 translate-y-0 sm:scale-100",
+         "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"}
+    )
+    |> JS.hide(
+      to: "##{id}-backdrop",
+      transition: {"transition-opacity ease-in duration-150", "opacity-100", "opacity-0"}
+    )
+    |> JS.hide(to: "##{id}")
+    |> JS.pop_focus()
   end
 
   @doc """

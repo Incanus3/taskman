@@ -128,14 +128,13 @@
                 {@selected_project.primary_directory}
               </p>
             </div>
-            <button
+            <.link
               id="add-task"
-              type="button"
-              disabled
-              class="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white opacity-60 shadow-sm"
+              patch={~p"/projects/#{@selected_project.id}/tasks/new"}
+              class="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
             >
               Add task
-            </button>
+            </.link>
           </header>
 
           <div
@@ -162,5 +161,20 @@
         </section>
       </main>
     </div>
+
+    <.modal
+      :if={@live_action == :new_task && @selected_project}
+      id="task-modal"
+      show
+      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+    >
+      <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-950">
+        Add task
+      </h2>
+      <p class="mt-2 text-sm leading-6 text-slate-500">
+        Add a direct Task to {@selected_project.name}.
+      </p>
+      <TaskForm.form form={@task_form} cancel={~p"/projects/#{@selected_project.id}"} />
+    </.modal>
   </div>
 </Layouts.app>
