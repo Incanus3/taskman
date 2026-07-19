@@ -529,6 +529,7 @@ defmodule TaskmanWeb.CoreComponents do
     %JS{}
     |> JS.push_focus()
     |> JS.show(to: "##{id}")
+    |> JS.remove_attribute("hidden", to: "##{id}")
     |> JS.show(
       to: "##{id}-backdrop",
       transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
