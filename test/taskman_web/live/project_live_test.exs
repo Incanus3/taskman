@@ -60,14 +60,15 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-#{other_task.id}")
   end
 
-  test "populated Task list renders column headers", %{conn: conn} do
+  test "populated Task list renders column headers with uniform cell padding", %{conn: conn} do
     project = project_fixture(%{})
     _task = task_fixture(project, %{})
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    assert has_element?(view, "#task-table-header")
+    assert has_element?(view, "#task-table-header.px-3.py-3")
     assert has_element?(view, "#task-table-header + #tasks")
+    assert has_element?(view, "#tasks article.px-3.py-3")
   end
 
   test "invalid Project input renders inline errors", %{conn: conn} do
@@ -95,7 +96,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-modal")
   end
 
-  test "invalid Task stays in the modal and successful Task appears in the list", %{conn: conn} do
+  test "successful Task hides the empty state after validation errors", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
@@ -111,5 +112,6 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert task.status == :pending
     assert task.priority == :none
     assert has_element?(view, "#task-#{task.id}")
+    assert has_element?(view, "#tasks-empty.hidden.only\\:block")
   end
 end
