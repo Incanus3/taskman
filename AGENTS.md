@@ -10,6 +10,31 @@ do not run `jj` commands here.
 Use the repository-local Beads store for implementation planning and delivery work. The completed
 product-discovery Wayfinder map belonged to another repository and is historical only.
 
+## Handoffs
+
+Handoffs are short-lived transfer documents for the current workstream. Keep them concise and
+actionable.
+
+Include:
+
+- the current implemented state relevant to the workstream;
+- the exact remaining gap, current blockers, and active Beads issue IDs;
+- decisions and product constraints that directly shape the next increment;
+- the next concrete action or short execution sequence;
+- recent verification evidence only when it establishes the baseline or explains a blocker.
+
+Do not include:
+
+- project-wide development, tooling, model, version-control, work-tracking, or local-setup
+  instructions; place those in `AGENTS.md`, `docs/development.md`, or `README.md` as appropriate;
+- copied product specifications, implementation plans, or broad project history; link to their
+  canonical documents instead;
+- speculative backlog beyond the next increment;
+- stale completed instructions or generic agent workflow checklists.
+
+Update a handoff when the workstream advances so its state, task IDs, blockers, and next action
+remain current.
+
 ## Development guidance
 
 Read and follow [docs/development.md](docs/development.md). It contains durable project-wide

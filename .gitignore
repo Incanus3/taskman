@@ -39,3 +39,6 @@ npm-debug.log
 .codex
 .augment
 .superpowers/
+
+# bv (beads viewer) local config and caches
+.bv/

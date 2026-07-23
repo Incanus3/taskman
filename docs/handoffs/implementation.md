@@ -1,67 +1,61 @@
 # Implementation handoff
 
-**Status:** Projects and basic Tasks first increment complete; roadmap slice remains in progress
-**Updated:** 2026-07-19
+**Status:** Ready to refine Task editing and lifecycle controls
+**Updated:** 2026-07-23
 
-## Current position
+## Current state
 
-The application foundation remains complete and verified. The approved first Projects and basic
-Tasks increment is now implemented: a user can create a Project with a required local directory,
-select it from the URL-backed sidebar, and see its direct Task list. From that list, Add task opens
-a URL-backed, keyboard-focused modal; invalid Task input stays in the modal, while a valid Task
-closes it and appears in the direct list with the default Pending and None badges. Unknown Project
-URLs show a recoverable main-panel not-found state while the sidebar remains usable.
+The first Projects and basic Tasks increment is complete:
 
-The completed increment is defined by
-`docs/specs/2026-07-18-projects-basic-tasks-first-slice-design.md` and
-`docs/plans/2026-07-18-projects-basic-tasks-first-slice.md`. It completes Project
-creation/selection and default Task creation/direct listing only; it does not complete the broader
-Projects and basic Tasks roadmap slice.
+- Projects can be created for existing local directories and selected through URL-backed sidebar
+  navigation.
+- A selected Project shows only its direct Tasks.
+- New Tasks can be created through a URL-backed modal. Invalid input remains in the modal; valid
+  input creates a Pending Task with None priority and updates the list.
+- Unknown Project URLs keep the sidebar usable and isolate the not-found state to the main panel.
 
-Project-wide implementation rules remain canonical in `AGENTS.md` and `docs/development.md`. In
-particular, use their current version-control, application-boundary, Phoenix, testing, and UI
-component guidance rather than copying those rules into slice-specific work.
+The completed increment is recorded in the [approved design](../specs/2026-07-18-projects-basic-tasks-first-slice-design.md),
+the [archived implementation plan](../archive/plans/2026-07-18-projects-basic-tasks-first-slice.md),
+and closed Beads epic `tas-x38`.
 
-## Work tracking
+The broader Projects and basic Tasks roadmap slice remains in progress.
 
-The repository-local Beads epic is `tas-x38` (**Projects and basic Tasks: first vertical slice**).
-Its planned persistence, Project workspace, Task modal, and slice-acceptance work has been
-delivered. Keep future implementation work in the repository-local Beads store.
+## What remains
 
-The next thin increment is Task editing and human-controlled lifecycle controls. Refine that
-increment immediately before implementation; do not treat the completed creation/listing behavior
-as authorization to expand the remaining roadmap scope.
+The persistence model already contains `title`, `description`, `status`, `priority`, and `due_at`,
+including the fixed enum values and database constraints. The current application does not yet
+expose the rest of that model:
 
-## Verification evidence
+- `Taskman.Tasks` has no Task lookup or update API.
+- The Task form supports creation only and exposes only the title.
+- Task rows render fixed Pending and None badges rather than persisted values.
+- There is no edit route, edit form state, update event, or stream refresh for an edited Task.
+- A person cannot explicitly change Task lifecycle state.
 
-- `mix precommit` passed with 19 tests and zero failures.
-- The web-boundary proof found no `Taskman.Repo`, `Repo.`, or `Ecto.Query` references in
-  `lib/taskman_web`.
-- Browser smoke acceptance covered empty and invalid Project states, Project creation and
-  URL-backed selection, the focused Task modal, invalid and valid Task creation, recoverable
-  not-found selection, and responsive layout/focus behavior.
-- Headless Chromium screenshots verified a usable stacked 390 × 844 layout with the Task modal and
-  controls visible, and a usable 1440 × 1000 two-column workspace. A fresh embedded-browser modal
-  session confirmed visible dialog/form state, focus on Close dialog, and no error console messages.
+The next increment is tracked by Beads epic `tas-task-editing-lifecycle-nr1`.
 
-## Resume sequence
+## Constraints for the next increment
 
-1. Use `gpt-5.6-terra` for implementation.
-2. Read `AGENTS.md`, this handoff, `docs/development.md`, and the product documents relevant to
-   Task editing and lifecycle behavior.
-3. Run `but status --format json` before any version-control operation and preserve unrelated work.
-4. Inspect the repository-local Beads store and create or claim the next scoped Task editing and
-   lifecycle work item.
-5. Refine the minimum design and test plan for editing and explicit human-controlled status changes
-   before implementation; do not add automation or broader Task-detail scope.
-6. Implement test-first, run focused verification plus `mix precommit`, and commit only the scoped
-   change using `but`.
+The next increment should finish Task editing and explicit human-controlled lifecycle behavior
+without pulling in the later Task-detail slice.
 
-## Local runtime
+- Editable fields in this slice are title, description, priority, and optional local due date-time.
+- Every status change is initiated by a person. Agent activity, due dates, and other application
+  events never change status automatically.
+- The normal forward lifecycle is Icebox → Pending → In Progress → In Review → Done. In Review may
+  return to Pending or In Progress, and Will Not Do is the other terminal state. Do not hard-gate
+  other human-initiated transitions.
+- The unresolved-blocker warning for Done belongs with Task relationships and is not required before
+  relationship persistence exists.
+- Keep editing in the existing list-first context. Do not add the later Task-detail hierarchy,
+  Activity/Sessions rail, relationships, checklists, deletion, Lists, or Agent Sessions.
 
-`./run_postgres.sh` is the standard local PostgreSQL startup path. It is optional when a compatible
-PostgreSQL instance is already running on `localhost:5432` with the `postgres` user and password.
-Run Phoenix directly with `mix phx.server`.
+## Execution sequence
 
-The product documents under `docs/product/` remain authoritative for behavior outside decisions
-already fixed by the approved slice design.
+1. `tas-task-editing-lifecycle-nr1.1` — refine the URL-backed editing and lifecycle design.
+2. `tas-task-editing-lifecycle-nr1.2` — add Project-scoped Task lookup and update APIs.
+3. `tas-task-editing-lifecycle-nr1.3` — add the URL-backed Task editing flow.
+4. `tas-task-editing-lifecycle-nr1.4` — add human lifecycle controls and persisted row badges.
+5. `tas-task-editing-lifecycle-nr1.5` — run complete acceptance and update delivery status.
+
+The current automated baseline is `mix precommit` with 19 passing tests.

@@ -48,7 +48,7 @@ ExUnit, Phoenix.LiveViewTest, and LazyHTML.
 - Produces: `Projects.change_project/2 :: Ecto.Changeset.t()`
 - Produces: `ProjectsFixtures.project_fixture/1 :: Project.t()` for later tests.
 
-- [ ] **Step 1: Write failing context tests**
+- [x] **Step 1: Write failing context tests**
 
 Create `test/taskman/projects_test.exs` with these focused tests:
 
@@ -95,13 +95,13 @@ defmodule Taskman.ProjectsTest do
 end
 ```
 
-- [ ] **Step 2: Run the test and confirm the expected failure**
+- [x] **Step 2: Run the test and confirm the expected failure**
 
 Run: `mix test test/taskman/projects_test.exs`
 
 Expected: compilation fails because `Taskman.Projects` does not exist.
 
-- [ ] **Step 3: Generate and implement the Project migration**
+- [x] **Step 3: Generate and implement the Project migration**
 
 Run: `mix ecto.gen.migration create_projects`
 
@@ -122,7 +122,7 @@ Run: `mix ecto.migrate`
 
 Expected: the `CreateProjects` migration runs successfully.
 
-- [ ] **Step 4: Implement the Project schema and context**
+- [x] **Step 4: Implement the Project schema and context**
 
 Create `Taskman.Projects.Project` as:
 
@@ -237,7 +237,7 @@ with `Path.expand/1`. `validate_primary_directory/1` must read the field with
 `Ecto.Changeset.get_field/2`, skip blank values already handled by `validate_required/3`, and add
 `"must be an existing directory"` when `File.dir?/1` is false.
 
-- [ ] **Step 5: Add the Project fixture and rerun tests**
+- [x] **Step 5: Add the Project fixture and rerun tests**
 
 Create `Taskman.ProjectsFixtures.project_fixture/1`. Give every fixture a unique default name and
 use a caller-provided existing directory:
@@ -263,7 +263,7 @@ Run: `mix test test/taskman/projects_test.exs`
 
 Expected: all Project context tests pass with zero failures.
 
-- [ ] **Step 6: Commit the Project boundary**
+- [x] **Step 6: Commit the Project boundary**
 
 Run: `but status --format json`, confirm only Task 1 files are uncommitted, then run:
 
@@ -293,7 +293,7 @@ Expected: one new commit on `mvp` and a clean workspace.
 - Produces: `Tasks.change_task/2 :: Ecto.Changeset.t()`
 - Produces: `TasksFixtures.task_fixture/2 :: Task.t()` for LiveView tests.
 
-- [ ] **Step 1: Write failing Task context tests**
+- [x] **Step 1: Write failing Task context tests**
 
 Create tests that prove ownership, defaults, and Project isolation:
 
@@ -340,13 +340,13 @@ defmodule Taskman.TasksTest do
 end
 ```
 
-- [ ] **Step 2: Run the tests and confirm the expected failure**
+- [x] **Step 2: Run the tests and confirm the expected failure**
 
 Run: `mix test test/taskman/tasks_test.exs`
 
 Expected: compilation fails because `Taskman.Tasks` does not exist.
 
-- [ ] **Step 3: Generate and implement the Task migration**
+- [x] **Step 3: Generate and implement the Task migration**
 
 Run: `mix ecto.gen.migration create_tasks`
 
@@ -381,7 +381,7 @@ Run: `mix ecto.migrate`
 
 Expected: the `CreateTasks` migration runs successfully.
 
-- [ ] **Step 4: Implement the Task schema and context**
+- [x] **Step 4: Implement the Task schema and context**
 
 Define `Taskman.Tasks.Task` as:
 
@@ -456,7 +456,7 @@ end
 end
 ```
 
-- [ ] **Step 5: Add Task fixtures and rerun focused tests**
+- [x] **Step 5: Add Task fixtures and rerun focused tests**
 
 Create `Taskman.TasksFixtures.task_fixture/2` as:
 
@@ -478,7 +478,7 @@ Run: `mix test test/taskman/projects_test.exs test/taskman/tasks_test.exs`
 
 Expected: all Project and Task context tests pass with zero failures.
 
-- [ ] **Step 6: Commit the Task boundary**
+- [x] **Step 6: Commit the Task boundary**
 
 Run: `but status --format json`, confirm only Task 2 files are uncommitted, then run:
 
@@ -513,7 +513,7 @@ Expected: one new commit on `mvp` and a clean workspace.
 - Produces stable IDs: `#project-sidebar`, `#project-form`, `#projects`, `#main-panel`,
   `#project-not-found`, `#tasks`, and `#add-task`.
 
-- [ ] **Step 1: Write failing LiveView tests for the shell and Project flow**
+- [x] **Step 1: Write failing LiveView tests for the shell and Project flow**
 
 Create `test/taskman_web/live/project_live_test.exs`, import `Phoenix.LiveViewTest`,
 `Taskman.ProjectsFixtures`, and `Taskman.TasksFixtures`, then add these outcomes:
@@ -574,13 +574,13 @@ end
 end
 ```
 
-- [ ] **Step 2: Run the LiveView test and confirm the expected failure**
+- [x] **Step 2: Run the LiveView test and confirm the expected failure**
 
 Run: `mix test test/taskman_web/live/project_live_test.exs`
 
 Expected: the root route is still a controller route and the LiveView module does not exist.
 
-- [ ] **Step 3: Replace the stock route with LiveView routes**
+- [x] **Step 3: Replace the stock route with LiveView routes**
 
 Inside the existing browser scope, replace `get "/", PageController, :home` with:
 
@@ -592,7 +592,7 @@ live "/projects/:project_id", ProjectLive, :show
 Delete the now-unused stock PageController, PageHTML, home template, and controller test listed in
 this task.
 
-- [ ] **Step 4: Implement LiveView state and events**
+- [x] **Step 4: Implement LiveView state and events**
 
 `ProjectLive.mount/3` initializes `selected_project: nil`, `project_not_found?: false`,
 `project_form: to_form(Projects.change_project(%Project{}))`, and empty Project and Task streams.
@@ -609,7 +609,7 @@ Implement `validate_project` and `save_project` events. Validation sets the chan
 `:validate`. Successful save resets the Project form and uses
 `push_patch(socket, to: ~p"/projects/#{project.id}")`; failed save reassigns the form.
 
-- [ ] **Step 5: Implement the list-first HEEx shell**
+- [x] **Step 5: Implement the list-first HEEx shell**
 
 Create `project_live.html.heex` with this complete first-stage structure:
 
@@ -731,7 +731,7 @@ navigation. Keep `<Layouts.flash_group>` inside `layouts.ex`. Update the root ti
 `" · Taskman"`, remove the generated marketing identity, and remove the generated inline theme
 script because this product shell does not expose that theme control.
 
-- [ ] **Step 6: Run focused tests and format**
+- [x] **Step 6: Run focused tests and format**
 
 Run:
 
@@ -742,7 +742,7 @@ mix test test/taskman_web/live/project_live_test.exs
 
 Expected: all Project shell, selection, isolation, and not-found tests pass with zero failures.
 
-- [ ] **Step 7: Commit the Project LiveView**
+- [x] **Step 7: Commit the Project LiveView**
 
 Run: `but status --format json`, confirm only Task 3 files are uncommitted, then run:
 
@@ -772,7 +772,7 @@ Expected: one new commit on `mvp` and a clean workspace.
 - Produces reusable component: `<TaskForm.form form={@task_form} cancel={path} />`.
 - Produces stable IDs: `#task-modal`, `#task-form`, `#task-title`, and `#cancel-task`.
 
-- [ ] **Step 1: Write failing modal interaction tests**
+- [x] **Step 1: Write failing modal interaction tests**
 
 Add these tests to `project_live_test.exs`:
 
@@ -821,13 +821,13 @@ test "invalid Task stays in the modal and successful Task appears in the list", 
 end
 ```
 
-- [ ] **Step 2: Run the modal tests and confirm the expected failure**
+- [x] **Step 2: Run the modal tests and confirm the expected failure**
 
 Run: `mix test test/taskman_web/live/project_live_test.exs`
 
 Expected: navigation to `/tasks/new` fails because the route and modal do not exist.
 
-- [ ] **Step 3: Add the modal route and accessible core component**
+- [x] **Step 3: Add the modal route and accessible core component**
 
 Add this route after the selected Project route:
 
@@ -845,7 +845,7 @@ opening focuses the first control and closing restores focus. The close button u
 Also update the private field-error component to include `data-role="field-error"` while preserving
 its translated message and icon. Do not call `<.flash_group>` from this component.
 
-- [ ] **Step 4: Add the reusable Task form component**
+- [x] **Step 4: Add the reusable Task form component**
 
 Create `TaskmanWeb.TaskForm` with `use TaskmanWeb, :html`, a required
 `Phoenix.HTML.Form` attribute named `form`, and a required string attribute named `cancel`.
@@ -873,7 +873,7 @@ Implement:
 </.form>
 ```
 
-- [ ] **Step 5: Implement modal state and Task events in ProjectLive**
+- [x] **Step 5: Implement modal state and Task events in ProjectLive**
 
 For `:new_task`, load the Project exactly like `:show`; when valid, assign
 `task_form: to_form(Tasks.change_task(%Task{}))`. When the Project is unknown, render the existing
@@ -910,7 +910,7 @@ Render `<.modal>` only when `@live_action == :new_task` and `@selected_project` 
 heading with a stable ID inside it, render `<TaskForm.form>`, and patch cancel actions back to the
 selected Project URL. Replace Task 3's disabled Add task control with a patch link to the new route.
 
-- [ ] **Step 6: Run focused tests and format**
+- [x] **Step 6: Run focused tests and format**
 
 Run:
 
@@ -921,7 +921,7 @@ mix test test/taskman_web/live/project_live_test.exs
 
 Expected: all modal, validation, creation, isolation, and not-found tests pass with zero failures.
 
-- [ ] **Step 7: Commit Task creation**
+- [x] **Step 7: Commit Task creation**
 
 Run: `but status --format json`, confirm only Task 4 files are uncommitted, then run:
 
@@ -947,7 +947,7 @@ Expected: one new commit on `mvp` and a clean workspace.
 - Produces: current roadmap and handoff documentation naming Task editing and lifecycle controls as
   the next increment.
 
-- [ ] **Step 1: Run the complete automated gate**
+- [x] **Step 1: Run the complete automated gate**
 
 Run:
 
@@ -960,7 +960,7 @@ Expected: compilation succeeds with warnings treated as errors, formatting makes
 the full test suite reports zero failures, and the web layer contains no direct Repo calls or Ecto
 queries.
 
-- [ ] **Step 2: Perform the browser smoke test**
+- [x] **Step 2: Perform the browser smoke test**
 
 Run: `mix phx.server` and verify at `http://localhost:4000`:
 
@@ -976,7 +976,7 @@ Run: `mix phx.server` and verify at `http://localhost:4000`:
 
 Expected: every acceptance path works without browser-console or server errors.
 
-- [ ] **Step 3: Update delivery documentation**
+- [x] **Step 3: Update delivery documentation**
 
 In `docs/planning/roadmap.md`, keep the overall Projects and basic Tasks slice in progress and record
 that Project creation/selection plus default Task creation/direct listing are complete. State that
@@ -986,7 +986,7 @@ In `docs/handoffs/implementation.md`, replace the pre-slice position with the im
 verification evidence, and the next thin increment: Task editing and lifecycle controls. Do not
 claim the full Projects and basic Tasks roadmap slice is complete.
 
-- [ ] **Step 4: Re-run documentation and workspace checks**
+- [x] **Step 4: Re-run documentation and workspace checks**
 
 Run:
 
@@ -999,7 +999,7 @@ but status --format json
 Expected: the documents agree on current state, the diff contains only Task 5 documentation, and no
 unrelated workspace changes exist.
 
-- [ ] **Step 5: Commit verified slice status**
+- [x] **Step 5: Commit verified slice status**
 
 Run:
 
