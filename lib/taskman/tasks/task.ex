@@ -18,7 +18,7 @@ defmodule Taskman.Tasks.Task do
 
   schema "tasks" do
     field :title, :string
-    field :description, :string
+    field :description, :string, default: ""
     field :status, Ecto.Enum, values: @statuses, default: :pending
     field :priority, Ecto.Enum, values: @priorities, default: :none
     field :due_at, :naive_datetime
