@@ -28,10 +28,13 @@ defmodule Taskman.Tasks.Task do
     timestamps(type: :utc_datetime)
   end
 
+  def statuses, do: @statuses
+  def priorities, do: @priorities
+
   def changeset(task, attrs) do
     task
     |> cast(attrs, [:title, :description, :status, :priority, :due_at])
-    |> update_change(:title, &String.trim/1)
+    |> update_change(:title, fn title -> title && String.trim(title) end)
     |> validate_required([:project_id, :title, :status, :priority])
     |> foreign_key_constraint(:project_id)
     |> check_constraint(:status, name: :tasks_status_check)
