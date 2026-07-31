@@ -11,8 +11,18 @@ defmodule Taskman.TasksTest do
     assert {:ok, task} = Tasks.create_task(project, %{title: "First task"})
     assert task.project_id == project.id
     assert task.title == "First task"
+    assert task.description == ""
     assert task.status == :pending
     assert task.priority == :none
+  end
+
+  test "create_task/2 persists an explicitly empty description as an empty string" do
+    project = project_fixture(%{})
+
+    assert {:ok, task} =
+             Tasks.create_task(project, %{title: "Empty description", description: ""})
+
+    assert task.description == ""
   end
 
   test "create_task/2 requires a title and ignores user-owned project IDs" do
