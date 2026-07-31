@@ -11,6 +11,8 @@ config :taskman,
   ecto_repos: [Taskman.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :taskman, :task_autosave_delay_ms, 300
+
 # Configure the endpoint
 config :taskman, TaskmanWeb.Endpoint,
   url: [host: "localhost"],

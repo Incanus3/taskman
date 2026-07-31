@@ -5,6 +5,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Taskman.Tasks
+
   test "root renders the list-first empty state", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
@@ -49,6 +51,115 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_element?(view, "#task-#{selected_task.id}")
     refute has_element?(view, "#task-#{other_task.id}")
+  end
+
+  test "Project patch navigation resets Task rows by their generated stream IDs", %{conn: conn} do
+    project_a = project_fixture(%{})
+    task_a = task_fixture(project_a, %{title: "Project A Task"})
+    project_b = project_fixture(%{})
+    task_b = task_fixture(project_b, %{title: "Project B Task"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project_a.id}")
+
+    assert has_element?(view, "#tasks > #tasks-#{task_a.id}")
+    refute has_element?(view, "#tasks > #tasks-#{task_b.id}")
+
+    view |> element("#project-#{project_b.id}") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project_b.id}")
+    refute has_element?(view, "#tasks > #tasks-#{task_a.id}")
+    refute has_element?(view, "#task-#{task_a.id}")
+    assert has_element?(view, "#tasks > #tasks-#{task_b.id}")
+    assert has_element?(view, "#task-#{task_b.id}")
+  end
+
+  test "opens the canonical Task modal from the row and preserves the list", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Editable", description: "Context"})
+    sibling = task_fixture(project, %{title: "Sibling"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#open-task-#{task.id}") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form")
+    assert has_element?(view, "#task-title[value='Editable']")
+    assert has_element?(view, "#task-description")
+    assert has_element?(view, "#task-#{sibling.id}")
+  end
+
+  test "direct canonical Task URL renders the same modal", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Direct"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form")
+    assert has_element?(view, "#task-#{task.id}")
+  end
+
+  test "invalid Task URLs preserve the selected Project list in a modal not-found state", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    visible = task_fixture(project, %{title: "Visible"})
+    other_project = project_fixture(%{})
+    other = task_fixture(other_project, %{title: "Secret"})
+
+    for task_id <- ["not-an-id", "999999999", Integer.to_string(other.id)] do
+      {:ok, view, _html} = live(conn, "/projects/#{project.id}/tasks/#{task_id}")
+      assert has_element?(view, "#task-modal")
+      assert has_element?(view, "#task-not-found")
+      assert has_element?(view, "#task-#{visible.id}")
+      refute has_element?(view, "#task-form")
+      refute has_element?(view, "#task-#{other.id}")
+    end
+  end
+
+  test "autosaves the targeted Task field and refreshes the streamed row", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending, priority: :none})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "After"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    _ = :sys.get_state(view.pid)
+
+    assert Tasks.get_task_for_project(project, task.id).title == "After"
+    assert has_element?(view, "#task-#{task.id}", "After")
+
+    view
+    |> form("#task-form", task: %{status: "in_review"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    assert Tasks.get_task_for_project(project, task.id).status == :in_review
+    assert has_element?(view, "#task-status-#{task.id}", "In Review")
+  end
+
+  test "an invalid draft does not block another field from saving", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Valid", status: :pending})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: ""})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert Tasks.get_task_for_project(project, task.id).title == "Valid"
+
+    view
+    |> form("#task-form", task: %{status: "in_review"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    updated = Tasks.get_task_for_project(project, task.id)
+    assert updated.title == "Valid"
+    assert updated.status == :in_review
+    assert has_element?(view, "#task-save-status[data-state='not_saved']")
   end
 
   test "populated Task list renders column headers before its Task stream", %{conn: conn} do

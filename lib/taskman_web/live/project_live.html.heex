@@ -156,21 +156,12 @@
                 <.icon name="hero-clipboard-document-list" class="mx-auto size-9 text-slate-600" />
                 <p class="mt-3 text-sm font-medium text-slate-300">No direct tasks yet</p>
               </div>
-              <article
+              <TaskComponents.row
                 :for={{dom_id, task} <- @streams.tasks}
                 id={dom_id}
-                class="grid gap-3 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] sm:items-center"
-              >
-                <p id={"task-#{task.id}"} class="truncate text-sm font-medium text-slate-100">
-                  {task.title}
-                </p>
-                <span class="w-fit rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-semibold text-amber-300 sm:justify-self-center">
-                  Pending
-                </span>
-                <span class="w-fit rounded-full bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 sm:justify-self-center">
-                  None
-                </span>
-              </article>
+                task={task}
+                project_id={@selected_project.id}
+              />
             </div>
           </div>
         </section>
@@ -189,7 +180,61 @@
       <p class="mt-2 text-sm leading-6 text-slate-400">
         Add a direct Task to {@selected_project.name}.
       </p>
-      <TaskForm.form form={@task_form} cancel={~p"/projects/#{@selected_project.id}"} />
+      <TaskForm.form
+        form={@task_form}
+        mode={:new}
+        change="validate_task"
+        submit="save_task"
+        cancel={~p"/projects/#{@selected_project.id}"}
+      />
+    </.modal>
+
+    <.modal
+      :if={@live_action == :show_task && @selected_project && @selected_task}
+      id="task-modal"
+      show
+      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+    >
+      <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
+        Task
+      </h2>
+      <TaskForm.form
+        form={@task_form}
+        mode={:edit}
+        change="autosave_task"
+        cancel={~p"/projects/#{@selected_project.id}"}
+      />
+      <p
+        id="task-save-status"
+        aria-live="polite"
+        data-state={@task_save_state}
+        class="mt-4 text-sm text-slate-400"
+      >
+        {task_save_message(@task_save_state)}
+      </p>
+    </.modal>
+
+    <.modal
+      :if={@live_action == :show_task && @selected_project && @task_not_found?}
+      id="task-modal"
+      show
+      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+    >
+      <div id="task-not-found">
+        <h2 class="pr-10 text-xl font-semibold tracking-tight text-slate-100">Task not found</h2>
+        <p class="mt-2 text-sm leading-6 text-slate-400">
+          This Task does not belong to the selected Project or may have been removed.
+        </p>
+        <div class="mt-6 flex justify-end">
+          <.link
+            id="close-task-not-found"
+            patch={~p"/projects/#{@selected_project.id}"}
+            class="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
+          >
+            Close
+          </.link>
+        </div>
+      </div>
     </.modal>
   </div>
 </Layouts.app>
