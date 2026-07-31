@@ -140,6 +140,40 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-status-#{task.id}", "In Review")
   end
 
+  test "immediately persists priority and refreshes the streamed row", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{priority: :none})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{priority: "urgent"})
+    |> render_change(%{"_target" => ["task", "priority"]})
+
+    assert Tasks.get_task_for_project(project, task.id).priority == :urgent
+    assert has_element?(view, "#task-priority-#{task.id}", "Urgent")
+    assert has_element?(view, "#task-priority option[selected][value='urgent']")
+  end
+
+  test "immediately persists and clears the due date-time", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{due_at: nil})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{due_at: "2026-08-03T16:00"})
+    |> render_change(%{"_target" => ["task", "due_at"]})
+
+    assert Tasks.get_task_for_project(project, task.id).due_at == ~N[2026-08-03 16:00:00]
+    assert has_element?(view, "#task-due-at[value='2026-08-03T16:00']")
+
+    view
+    |> form("#task-form", task: %{due_at: ""})
+    |> render_change(%{"_target" => ["task", "due_at"]})
+
+    assert Tasks.get_task_for_project(project, task.id).due_at == nil
+    assert has_element?(view, "#task-due-at[value='']")
+  end
+
   test "an invalid draft does not block another field from saving", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Valid", status: :pending})

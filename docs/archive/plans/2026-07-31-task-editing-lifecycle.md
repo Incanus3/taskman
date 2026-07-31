@@ -1,5 +1,7 @@
 # Task editing and human-controlled lifecycle implementation plan
 
+**Status:** Completed and archived on 2026-07-31.
+
 > Execute this plan task-by-task. Each task ends with focused verification and a selective
 > commit before the next task begins.
 
@@ -15,7 +17,7 @@ markup.
 Phoenix.LiveViewTest, LazyHTML.
 
 **Required design:** Read
-[`docs/specs/2026-07-31-task-editing-lifecycle-design.md`](../specs/2026-07-31-task-editing-lifecycle-design.md)
+[`docs/specs/2026-07-31-task-editing-lifecycle-design.md`](../../specs/2026-07-31-task-editing-lifecycle-design.md)
 completely before implementation.
 
 ## Global constraints
@@ -77,7 +79,7 @@ completely before implementation.
 - Produces: PostgreSQL rejects `NULL` descriptions and defaults omitted descriptions to `""`.
 - Consumes: existing `Tasks.create_task/2` and `Task.changeset/2`.
 
-- [ ] **Step 1: Add a failing context assertion for the description default**
+- [x] **Step 1: Add a failing context assertion for the description default**
 
 Extend the existing `"create_task/2 assigns ownership and product defaults"` test:
 
@@ -96,7 +98,7 @@ test "create_task/2 persists an explicitly empty description as an empty string"
 end
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the current nullable behavior**
+- [x] **Step 2: Run the focused tests and confirm the current nullable behavior**
 
 Run:
 
@@ -107,7 +109,7 @@ mix test test/taskman/tasks_test.exs
 Expected: at least the default-description assertion fails because the current schema default is
 `nil`.
 
-- [ ] **Step 3: Generate the migration with the repository-required command**
+- [x] **Step 3: Generate the migration with the repository-required command**
 
 Run:
 
@@ -118,7 +120,7 @@ mix ecto.gen.migration make_task_descriptions_non_null
 Expected: Mix prints the exact generated timestamped path under `priv/repo/migrations/`. Use that
 reported path for the next step; do not rename it or invent a timestamp.
 
-- [ ] **Step 4: Implement a reversible backfill and constraint migration**
+- [x] **Step 4: Implement a reversible backfill and constraint migration**
 
 Replace the generated module body with:
 
@@ -140,7 +142,7 @@ end
 
 Keep the generated migration module name unchanged.
 
-- [ ] **Step 5: Set the schema default**
+- [x] **Step 5: Set the schema default**
 
 Change the schema field in `Taskman.Tasks.Task`:
 
@@ -151,7 +153,7 @@ field :description, :string, default: ""
 Keep `description` in the existing cast list. Ecto will resolve a cleared string to the schema
 default while resolving an empty `due_at` to `nil`.
 
-- [ ] **Step 6: Migrate and run focused tests**
+- [x] **Step 6: Migrate and run focused tests**
 
 Run:
 
@@ -162,7 +164,7 @@ mix test test/taskman/tasks_test.exs
 
 Expected: migration succeeds and all Task context tests pass.
 
-- [ ] **Step 7: Commit only the migration, schema, and context-test changes**
+- [x] **Step 7: Commit only the migration, schema, and context-test changes**
 
 Inspect the workspace diff and create a selective commit named
 `enforce non-null Task descriptions` containing only the three files in this task.
@@ -187,7 +189,7 @@ Expected: one new commit exists and all unrelated workspace changes remain uncom
 - Produces: `Task.statuses/0` and `Task.priorities/0` for one fixed source of enum values.
 - Guarantees: submitted `project_id` never moves a Task.
 
-- [ ] **Step 1: Add failing scoped-lookup tests**
+- [x] **Step 1: Add failing scoped-lookup tests**
 
 Add:
 
@@ -209,7 +211,7 @@ end
 
 Import `Taskman.TasksFixtures` at the top of the test module.
 
-- [ ] **Step 2: Add failing update tests**
+- [x] **Step 2: Add failing update tests**
 
 Add:
 
@@ -278,7 +280,7 @@ end
 
 Alias `Taskman.Tasks.Task` in the test module.
 
-- [ ] **Step 3: Run the context tests and verify missing APIs fail**
+- [x] **Step 3: Run the context tests and verify missing APIs fail**
 
 Run:
 
@@ -288,7 +290,7 @@ mix test test/taskman/tasks_test.exs
 
 Expected: compilation or test failure reports that the new context functions do not exist.
 
-- [ ] **Step 4: Expose the fixed enum lists**
+- [x] **Step 4: Expose the fixed enum lists**
 
 In `Taskman.Tasks.Task`, add:
 
@@ -299,7 +301,7 @@ def priorities, do: @priorities
 
 Do not expose mutable or user-derived atoms.
 
-- [ ] **Step 5: Implement the scoped lookup**
+- [x] **Step 5: Implement the scoped lookup**
 
 Add to `Taskman.Tasks`:
 
@@ -318,7 +320,7 @@ end
 def get_task_for_project(%Project{}, _id), do: nil
 ```
 
-- [ ] **Step 6: Implement the ownership-checked update**
+- [x] **Step 6: Implement the ownership-checked update**
 
 Add:
 
@@ -338,7 +340,7 @@ def update_task(%Project{}, %Task{}, _attrs), do: {:error, :not_found}
 
 Keep `project_id` absent from `Task.changeset/2`'s cast list.
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 Run:
 
@@ -348,7 +350,7 @@ mix test test/taskman/tasks_test.exs
 
 Expected: all lookup, ownership, field-update, status, and priority tests pass.
 
-- [ ] **Step 8: Commit the context boundary**
+- [x] **Step 8: Commit the context boundary**
 
 Inspect the workspace diff and create a selective commit named
 `add Project-scoped Task updates` containing only this task's context, schema, and test files.
@@ -377,7 +379,7 @@ Inspect the workspace diff and create a selective commit named
 - At this checkpoint, all fields save immediately. Task 4 changes only title and description to
   scheduled persistence.
 
-- [ ] **Step 1: Add failing route and modal tests**
+- [x] **Step 1: Add failing route and modal tests**
 
 Add tests with stable selectors:
 
@@ -410,7 +412,7 @@ test "direct canonical Task URL renders the same modal", %{conn: conn} do
 end
 ```
 
-- [ ] **Step 2: Add failing not-found isolation tests**
+- [x] **Step 2: Add failing not-found isolation tests**
 
 Cover malformed, missing, and cross-Project IDs:
 
@@ -434,7 +436,7 @@ test "invalid Task URLs preserve the selected Project list in a modal not-found 
 end
 ```
 
-- [ ] **Step 3: Add failing targeted-autosave tests**
+- [x] **Step 3: Add failing targeted-autosave tests**
 
 Add tests for immediate targeted updates:
 
@@ -491,7 +493,7 @@ test "an invalid draft does not block another field from saving", %{conn: conn} 
 end
 ```
 
-- [ ] **Step 4: Add the canonical route**
+- [x] **Step 4: Add the canonical route**
 
 In the browser scope, add:
 
@@ -501,7 +503,7 @@ live "/projects/:project_id/tasks/:task_id", ProjectLive, :show_task
 
 Keep it alongside the existing Project and new-Task routes.
 
-- [ ] **Step 5: Create the Task presentation component**
+- [x] **Step 5: Create the Task presentation component**
 
 Create `TaskmanWeb.TaskComponents` with:
 
@@ -575,7 +577,7 @@ end
 
 Keep color refinements local to this component. Do not test color classes.
 
-- [ ] **Step 6: Extend the Task form component for creation and editing**
+- [x] **Step 6: Extend the Task form component for creation and editing**
 
 Add attrs:
 
@@ -626,7 +628,7 @@ When `@mode == :edit`, additionally render:
 Keep the existing Create and Cancel actions only for `:new`. For `:edit`, render an explicit
 `#close-task` patch link and no submit button.
 
-- [ ] **Step 7: Add canonical modal state to the LiveView**
+- [x] **Step 7: Add canonical modal state to the LiveView**
 
 In `mount/3`, initialize:
 
@@ -652,7 +654,7 @@ Add a `:show_task` `handle_params/3` clause that:
 Add a private `clear_task_modal_state/1` and call it from root, Project, and new-Task route handling
 so stale Task state never survives navigation.
 
-- [ ] **Step 8: Implement immediate field-targeted autosave**
+- [x] **Step 8: Implement immediate field-targeted autosave**
 
 Define:
 
@@ -778,7 +780,7 @@ defp task_save_message(:not_saved), do: "Not saved"
 defp task_save_message(:failed), do: "Couldn’t save changes"
 ```
 
-- [ ] **Step 9: Render rows and the canonical modal**
+- [x] **Step 9: Render rows and the canonical modal**
 
 Replace each inline Task `<article>` with:
 
@@ -814,7 +816,7 @@ patch link. Keep the selected Project and `#tasks` stream visible behind both br
 Update the new-Task component invocation with `mode={:new}`, `change="validate_task"`, and
 `submit="save_task"`.
 
-- [ ] **Step 10: Run focused LiveView tests**
+- [x] **Step 10: Run focused LiveView tests**
 
 Run:
 
@@ -825,7 +827,7 @@ mix test test/taskman_web/live/project_live_test.exs
 Expected: canonical navigation, direct loading, not-found isolation, immediate targeted save, new
 Task behavior, and existing Project behavior all pass.
 
-- [ ] **Step 11: Commit the canonical modal**
+- [x] **Step 11: Commit the canonical modal**
 
 Inspect the workspace diff and create a selective commit named
 `add canonical Task autosave modal` containing only this task's component, router, LiveView,
@@ -852,7 +854,7 @@ template, and test files.
 - Guarantees: stale scheduled messages cannot overwrite newer edits.
 - Guarantees: route changes flush valid dirty fields and discard invalid drafts.
 
-- [ ] **Step 1: Add a failing debounce, stale-message, and flush test**
+- [x] **Step 1: Add a failing debounce, stale-message, and flush test**
 
 Create `TaskmanWeb.ProjectLiveAutosaveTest` in
 `test/taskman_web/live/project_live_autosave_test.exs` with
@@ -907,7 +909,7 @@ test "debounces text, ignores stale messages, and flushes the final value on clo
 end
 ```
 
-- [ ] **Step 2: Run the new test and verify immediate persistence fails it**
+- [x] **Step 2: Run the new test and verify immediate persistence fails it**
 
 Run:
 
@@ -918,7 +920,7 @@ mix test test/taskman_web/live/project_live_autosave_test.exs
 Expected: failure because Task 3 persists text immediately instead of retaining `"Before"` until a
 timer or route flush.
 
-- [ ] **Step 3: Configure normal and test delays**
+- [x] **Step 3: Configure normal and test delays**
 
 Add to `config/config.exs`:
 
@@ -932,7 +934,7 @@ Add to `config/test.exs`:
 config :taskman, :task_autosave_delay_ms, 0
 ```
 
-- [ ] **Step 4: Schedule text saves by revision**
+- [x] **Step 4: Schedule text saves by revision**
 
 Add:
 
@@ -959,7 +961,7 @@ Process.send_after(
 
 Keep status, priority, and due date-time on the immediate `persist_task_field/2` path.
 
-- [ ] **Step 5: Handle current and stale save messages**
+- [x] **Step 5: Handle current and stale save messages**
 
 Add:
 
@@ -980,7 +982,7 @@ def handle_info({:autosave_task_field, _task_id, _field, _revision}, socket) do
 end
 ```
 
-- [ ] **Step 6: Flush valid dirty fields before route state changes**
+- [x] **Step 6: Flush valid dirty fields before route state changes**
 
 At the beginning of every `handle_params/3` path, call:
 
@@ -996,7 +998,7 @@ remain invalid.
 Refactor the duplicate route clauses into one `handle_params/3` dispatcher so this flush cannot be
 accidentally skipped by a future live action.
 
-- [ ] **Step 7: Run autosave and full LiveView tests**
+- [x] **Step 7: Run autosave and full LiveView tests**
 
 Run:
 
@@ -1008,7 +1010,7 @@ mix test test/taskman_web/live/project_live_test.exs
 Expected: no sleeps, no stale overwrite, safe close flush, invalid-field independence, and all
 existing LiveView tests pass.
 
-- [ ] **Step 8: Commit debounce safety**
+- [x] **Step 8: Commit debounce safety**
 
 Inspect the workspace diff and create a selective commit named
 `make Task autosave navigation-safe` containing only this task's config, LiveView, and test files.
@@ -1032,7 +1034,7 @@ Inspect the workspace diff and create a selective commit named
 - Produces: current roadmap and repository-local delivery state.
 - Produces: no live handoff after the workstream is genuinely complete.
 
-- [ ] **Step 1: Run focused context and LiveView tests**
+- [x] **Step 1: Run focused context and LiveView tests**
 
 Run:
 
@@ -1044,7 +1046,7 @@ mix test test/taskman_web/live/project_live_autosave_test.exs
 
 Expected: all focused tests pass.
 
-- [ ] **Step 2: Run the complete repository gate**
+- [x] **Step 2: Run the complete repository gate**
 
 Run:
 
@@ -1055,7 +1057,7 @@ mix precommit
 Expected: compilation with warnings treated as errors, dependency unlock check, formatting, and the
 full test suite all pass.
 
-- [ ] **Step 3: Inspect implementation files for leaked planning terminology**
+- [x] **Step 3: Inspect implementation files for leaked planning terminology**
 
 Run:
 
@@ -1066,7 +1068,7 @@ rg -n "nr1|bead|phase|milestone|implementation plan" lib test
 Expected: no product code, test name, DOM copy, command output, or API contains internal planning
 terminology.
 
-- [ ] **Step 4: Perform responsive browser acceptance**
+- [x] **Step 4: Perform responsive browser acceptance**
 
 Start PostgreSQL through the repository's documented local workflow, run `mix phx.server`, and use
 the embedded browser for the active workspace.
@@ -1087,7 +1089,7 @@ Verify at desktop and narrow widths:
 
 Record only concise acceptance evidence in the canonical delivery documentation.
 
-- [ ] **Step 5: Update authoritative delivery state**
+- [x] **Step 5: Update authoritative delivery state**
 
 After all verification succeeds:
 
@@ -1103,7 +1105,7 @@ After all verification succeeds:
    it has no remaining entries.
 6. Do not include routine command logs or copy the specification into the roadmap.
 
-- [ ] **Step 6: Commit acceptance tests and delivery documentation selectively**
+- [x] **Step 6: Commit acceptance tests and delivery documentation selectively**
 
 Inspect the workspace diff and exclude unrelated pre-existing changes unless they have become the
 canonical file versions intentionally integrated during this task. Create a selective commit named
