@@ -83,10 +83,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-modal-close[aria-label='Close dialog']")
     assert has_element?(view, "#task-form")
     assert has_element?(view, "#task-title[value='Editable']")
     assert has_element?(view, "#task-description")
     assert has_element?(view, "#task-#{sibling.id}")
+    refute has_element?(view, "#close-task")
   end
 
   test "direct canonical Task URL renders the same modal", %{conn: conn} do
@@ -110,7 +112,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     for task_id <- ["not-an-id", "999999999", Integer.to_string(other.id)] do
       {:ok, view, _html} = live(conn, "/projects/#{project.id}/tasks/#{task_id}")
-      assert has_element?(view, "#task-modal")
+      assert has_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
+      assert has_element?(view, "#task-modal-title")
       assert has_element?(view, "#task-not-found")
       assert has_element?(view, "#task-#{visible.id}")
       refute has_element?(view, "#task-form")

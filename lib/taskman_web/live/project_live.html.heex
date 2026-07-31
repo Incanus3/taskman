@@ -202,13 +202,14 @@
         form={@task_form}
         mode={:edit}
         change="autosave_task"
+        submit="submit_task_edit"
         cancel={~p"/projects/#{@selected_project.id}"}
       />
       <p
         id="task-save-status"
         aria-live="polite"
         data-state={@task_save_state}
-        class="mt-4 text-sm text-slate-400"
+        class="mt-4 text-right text-sm text-slate-400"
       >
         {task_save_message(@task_save_state)}
       </p>
@@ -221,7 +222,12 @@
       on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
     >
       <div id="task-not-found">
-        <h2 class="pr-10 text-xl font-semibold tracking-tight text-slate-100">Task not found</h2>
+        <h2
+          id="task-modal-title"
+          class="pr-10 text-xl font-semibold tracking-tight text-slate-100"
+        >
+          Task not found
+        </h2>
         <p class="mt-2 text-sm leading-6 text-slate-400">
           This Task does not belong to the selected Project or may have been removed.
         </p>

@@ -177,6 +177,13 @@ defmodule TaskmanWeb.ProjectLive do
     {:noreply, socket}
   end
 
+  def handle_event("submit_task_edit", _params, socket) do
+    case flush_dirty_task_fields(socket) do
+      {:ok, socket} -> {:noreply, socket}
+      {:error, socket} -> {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info(
         {:autosave_task_field, task_id, field, revision},
@@ -260,15 +267,23 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp flush_dirty_task_fields(%{assigns: %{selected_task: %Task{}}} = socket) do
-    Enum.reduce_while(socket.assigns.task_dirty_fields, {:ok, socket}, fn field, {:ok, socket} ->
-      socket = persist_task_field(socket, field)
+    {socket, save_failed?} =
+      Enum.reduce(socket.assigns.task_dirty_fields, {socket, false}, fn field,
+                                                                        {socket, save_failed?} ->
+        socket =
+          socket
+          |> assign(:task_save_failed?, false)
+          |> persist_task_field(field)
 
-      if socket.assigns.task_save_failed? do
-        {:halt, {:error, socket}}
-      else
-        {:cont, {:ok, socket}}
-      end
-    end)
+        {socket, save_failed? || socket.assigns.task_save_failed?}
+      end)
+
+    socket =
+      socket
+      |> assign(:task_save_failed?, save_failed?)
+      |> refresh_task_save_state()
+
+    if save_failed?, do: {:error, socket}, else: {:ok, socket}
   end
 
   defp flush_dirty_task_fields(socket), do: {:ok, socket}
