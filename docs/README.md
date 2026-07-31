@@ -13,7 +13,6 @@
 - **Prototypes** are visual/product exploration artifacts. They are not production code, but the
   current navigation prototype is broader MVP guidance and should be respected until the real UI
   replaces it.
-- **Handoffs** are short-lived context for transferring current work between sessions or agents.
 - **Archive** contains historical material kept for provenance only. It is not actionable.
 
 ## Product
@@ -26,7 +25,6 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
-- [Task editing and human-controlled lifecycle implementation](plans/2026-07-31-task-editing-lifecycle.md)
 
 ## Specifications
 
@@ -47,10 +45,7 @@
 
 - [Navigation and MVP visual guidance](prototypes/navigation.html)
 
-## Handoffs
-
-- [Task editing lifecycle](handoffs/task-editing-lifecycle.md)
-
 ## Archive
 
+- [Task editing and human-controlled lifecycle implementation plan](archive/plans/2026-07-31-task-editing-lifecycle.md)
 - [Wayfinder history](archive/wayfinder.md)
