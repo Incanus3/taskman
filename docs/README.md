@@ -26,6 +26,13 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
+- [Task editing and human-controlled lifecycle implementation](plans/2026-07-31-task-editing-lifecycle.md)
+
+## Specifications
+
+- [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
+- [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
+- [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
 
 ## Development
 
@@ -42,7 +49,7 @@
 
 ## Handoffs
 
-- [Current implementation handoff](handoffs/implementation.md)
+- [Task editing lifecycle](handoffs/task-editing-lifecycle.md)
 
 ## Archive
 
