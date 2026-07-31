@@ -158,6 +158,7 @@ defmodule TaskmanWeb.CoreComponents do
             tabindex="-1"
           >
             <button
+              id={"#{@id}-close"}
               type="button"
               class="absolute right-4 top-4 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
               phx-click={hide_modal(@on_cancel, @id)}

@@ -62,10 +62,67 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
-    view |> element("#close-task") |> render_click()
+    view |> element("#task-modal-close") |> render_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "Final"
+  end
+
+  test "submitting an edit flushes a valid dirty draft without leaving the canonical modal", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+    task_path = ~p"/projects/#{project.id}/tasks/#{task.id}"
+    {:ok, view, _html} = live(conn, task_path)
+
+    view
+    |> form("#task-form", task: %{title: "Submitted draft"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+
+    view
+    |> form("#task-form", task: %{title: "Submitted draft"})
+    |> render_submit()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form[phx-submit='submit_task_edit']")
+
+    assert has_element?(
+             view,
+             "#submit-task-edit[type='submit'].sr-only[aria-hidden='true'][tabindex='-1']"
+           )
+
+    refute has_element?(view, "#task-form button[type='submit']", "Save")
+    assert Tasks.get_task_for_project(project, task.id).title == "Submitted draft"
+  end
+
+  test "submitting an invalid edit keeps its draft while flushing other valid dirty fields", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", description: "Old description"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "Before", description: "New description"})
+    |> render_change(%{"_target" => ["task", "description"]})
+
+    view
+    |> form("#task-form", task: %{title: "", description: "New description"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    view
+    |> form("#task-form", task: %{title: "", description: "New description"})
+    |> render_submit()
+
+    updated = Tasks.get_task_for_project(project, task.id)
+    assert updated.title == "Before"
+    assert updated.description == "New description"
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-title[value='']")
+    assert has_element?(view, "#task-save-status[data-state='not_saved']")
   end
 
   test "does not reuse an autosave token after reopening the same Task", %{conn: conn} do
@@ -77,7 +134,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     |> form("#task-form", task: %{title: "First lifecycle"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#close-task") |> render_click()
+    view |> element("#task-modal-close") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "First lifecycle"
 
@@ -107,7 +164,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     |> form("#task-form", task: %{title: "", description: "New description"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#close-task") |> render_click()
+    view |> element("#task-modal-close") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
     updated = Tasks.get_task_for_project(project, task.id)
@@ -130,12 +187,28 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     {:ok, view, _html} = live(conn, task_path)
 
     view
-    |> form("#task-form", task: %{status: "in_review"})
+    |> form("#task-form", task: %{title: "Valid alongside failure", status: "pending"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    view
+    |> form("#task-form", task: %{title: "Valid alongside failure", status: "in_review"})
     |> render_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
+
+    view
+    |> form("#task-form", task: %{title: "Valid alongside failure", status: "in_review"})
+    |> render_submit()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-save-status[data-state='failed']")
+    assert has_element?(view, "#task-status option[selected][value='in_review']")
+
+    updated = Tasks.get_task_for_project(project, task.id)
+    assert updated.title == "Valid alongside failure"
+    assert updated.status == :pending
 
     render_patch(view, ~p"/projects/#{project.id}")
     assert_patch(view, ~p"/projects/#{project.id}")

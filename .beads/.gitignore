@@ -4,8 +4,12 @@
 *.db-shm
 *.db-wal
 
+# fsqlite multi-process namespace sidecars
+*.db-fsqlite-*
+
 # Lock files
 *.lock
+.write.lock
 
 # Temporary
 last-touched

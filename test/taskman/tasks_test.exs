@@ -27,6 +27,55 @@ defmodule Taskman.TasksTest do
     assert task.description == ""
   end
 
+  test "the database defaults an omitted Task description to an empty string" do
+    project = project_fixture(%{})
+
+    result =
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        INSERT INTO tasks (project_id, title, inserted_at, updated_at)
+        VALUES ($1, $2, NOW(), NOW())
+        RETURNING id, description
+        """,
+        [project.id, "Database default"]
+      )
+
+    assert [[task_id, ""]] = result.rows
+
+    assert %{rows: [[""]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT description FROM tasks WHERE id = $1",
+               [task_id]
+             )
+  end
+
+  test "the database rejects an explicitly null Task description without aborting the sandbox" do
+    project = project_fixture(%{})
+
+    error =
+      assert_raise Postgrex.Error, fn ->
+        Repo.transaction(
+          fn ->
+            Ecto.Adapters.SQL.query!(
+              Repo,
+              """
+              INSERT INTO tasks (project_id, title, description, inserted_at, updated_at)
+              VALUES ($1, $2, $3, NOW(), NOW())
+              """,
+              [project.id, "Rejected null", nil]
+            )
+          end,
+          mode: :savepoint
+        )
+      end
+
+    assert error.postgres.code == :not_null_violation
+
+    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+  end
+
   test "create_task/2 requires a title and ignores user-owned project IDs" do
     project = project_fixture(%{})
     other_project = project_fixture(%{})

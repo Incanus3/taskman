@@ -19,6 +19,14 @@ defmodule TaskmanWeb.TaskForm do
       phx-change={@change}
       phx-submit={@submit}
     >
+      <button
+        :if={@mode == :edit}
+        id="submit-task-edit"
+        type="submit"
+        class="sr-only pointer-events-none"
+        tabindex="-1"
+        aria-hidden="true"
+      ></button>
       <.input
         field={@form[:title]}
         id="task-title"
@@ -75,15 +83,6 @@ defmodule TaskmanWeb.TaskForm do
         >
           Create task
         </button>
-      </div>
-      <div :if={@mode == :edit} class="mt-6 flex justify-end">
-        <.link
-          id="close-task"
-          patch={@cancel}
-          class="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
-        >
-          Close
-        </.link>
       </div>
     </Phoenix.Component.form>
     """
