@@ -20,6 +20,7 @@ defmodule TaskmanWeb.Router do
     live "/", ProjectLive, :index
     live "/projects/:project_id", ProjectLive, :show
     live "/projects/:project_id/tasks/new", ProjectLive, :new_task
+    live "/projects/:project_id/tasks/:task_id", ProjectLive, :show_task
   end
 
   # Other scopes may use custom stacks.
