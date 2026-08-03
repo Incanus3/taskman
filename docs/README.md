@@ -48,5 +48,6 @@
 
 ## Archive
 
+- [Full Task creation form](archive/plans/2026-08-03-full-task-creation-form.md)
 - [Task editing and human-controlled lifecycle implementation plan](archive/plans/2026-07-31-task-editing-lifecycle.md)
 - [Wayfinder history](archive/wayfinder.md)
