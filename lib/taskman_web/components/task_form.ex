@@ -10,6 +10,7 @@ defmodule TaskmanWeb.TaskForm do
   attr :change, :string, required: true
   attr :submit, :string, default: nil
   attr :cancel, :string, required: true
+  attr :create_enabled?, :boolean, default: false
 
   def form(assigns) do
     ~H"""
@@ -36,7 +37,7 @@ defmodule TaskmanWeb.TaskForm do
         class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
         error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
       />
-      <div :if={@mode == :edit} class="mt-4 space-y-4">
+      <div class="mt-4 space-y-4">
         <.input
           field={@form[:description]}
           id="task-description"
@@ -66,6 +67,7 @@ defmodule TaskmanWeb.TaskForm do
           type="datetime-local"
           label="Due date and time"
           step="60"
+          value={@form[:due_at].value || ""}
         />
       </div>
       <div :if={@mode == :new} class="mt-6 flex justify-end gap-3">
@@ -77,9 +79,11 @@ defmodule TaskmanWeb.TaskForm do
           Cancel
         </.link>
         <button
+          id="create-task"
           type="submit"
+          disabled={!@create_enabled?}
           phx-disable-with="Creating…"
-          class="rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-950/30 transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
+          class="rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-950/30 transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-60"
         >
           Create task
         </button>

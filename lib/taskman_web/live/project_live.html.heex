@@ -186,6 +186,7 @@
         change="validate_task"
         submit="save_task"
         cancel={~p"/projects/#{@selected_project.id}"}
+        create_enabled?={@task_create_enabled?}
       />
     </.modal>
 

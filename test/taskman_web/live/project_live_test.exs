@@ -233,23 +233,124 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-modal")
   end
 
-  test "successful Task hides the empty state and persists its defaults after validation errors",
-       %{conn: conn} do
+  test "canceling a valid new Task draft does not persist it", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> form("#task-form", task: %{title: ""}) |> render_submit()
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-form [data-role='field-error']")
+    task_params = %{
+      title: "Draft only",
+      description: "Keep this draft client-side",
+      status: "in_review",
+      priority: "high",
+      due_at: "2026-08-04T09:30"
+    }
 
-    view |> form("#task-form", task: %{title: "Ship first slice"}) |> render_submit()
+    view
+    |> form("#task-form", task: task_params)
+    |> render_change()
+
+    assert Tasks.list_tasks_for_project(project) == []
+
+    view |> element("#cancel-task") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+    refute has_element?(view, "#task-modal")
+    assert Tasks.list_tasks_for_project(project) == []
+  end
+
+  test "new Task form exposes every editable field and gates creation on validity", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    assert has_element?(view, "#task-title")
+    assert has_element?(view, "#task-description")
+    assert has_element?(view, "#task-status option[selected][value='pending']")
+    assert has_element?(view, "#task-priority option[selected][value='none']")
+    assert has_element?(view, "#task-due-at[value='']")
+    assert has_element?(view, "#create-task[disabled]")
+
+    valid_params = %{
+      title: "Ready to create",
+      description: "",
+      status: "pending",
+      priority: "none",
+      due_at: ""
+    }
+
+    view
+    |> form("#task-form", task: valid_params)
+    |> render_change()
+
+    refute has_element?(view, "#create-task[disabled]")
+
+    view
+    |> form("#task-form", task: Map.put(valid_params, :title, ""))
+    |> render_change()
+
+    assert has_element?(view, "#create-task[disabled]")
+    assert has_element?(view, "#task-form [data-role='field-error']")
+  end
+
+  test "creates every Task field explicitly and closes the modal", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    task_params = %{
+      title: "Ship complete creation",
+      description: "All details supplied up front",
+      status: "in_progress",
+      priority: "urgent",
+      due_at: "2026-08-03T16:00"
+    }
+
+    view
+    |> form("#task-form", task: task_params)
+    |> render_change()
+
+    refute has_element?(view, "#create-task[disabled]")
+
+    view
+    |> form("#task-form", task: task_params)
+    |> render_submit()
+
     assert_patch(view, ~p"/projects/#{project.id}")
     refute has_element?(view, "#task-modal")
 
-    [task] = Taskman.Tasks.list_tasks_for_project(project)
-    assert task.status == :pending
-    assert task.priority == :none
+    [task] = Tasks.list_tasks_for_project(project)
+    assert task.title == "Ship complete creation"
+    assert task.description == "All details supplied up front"
+    assert task.status == :in_progress
+    assert task.priority == :urgent
+    assert task.due_at == ~N[2026-08-03 16:00:00]
     assert has_element?(view, "#task-#{task.id}")
+    assert has_element?(view, "#task-status-#{task.id}", "In Progress")
+    assert has_element?(view, "#task-priority-#{task.id}", "Urgent")
     assert has_element?(view, "#tasks-empty.hidden.only\\:block")
+  end
+
+  test "direct invalid submission preserves the complete draft", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    invalid_params = %{
+      title: "",
+      description: "Keep this draft",
+      status: "in_review",
+      priority: "high",
+      due_at: "2026-08-04T09:30"
+    }
+
+    view
+    |> form("#task-form", task: invalid_params)
+    |> render_submit()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#create-task[disabled]")
+    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert has_element?(view, "#task-description", "Keep this draft")
+    assert has_element?(view, "#task-status option[selected][value='in_review']")
+    assert has_element?(view, "#task-priority option[selected][value='high']")
+    assert has_element?(view, "#task-due-at[value='2026-08-04T09:30']")
+    assert Tasks.list_tasks_for_project(project) == []
   end
 end

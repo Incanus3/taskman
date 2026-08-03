@@ -18,6 +18,7 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:project_not_found?, false)
      |> assign(:project_form, project_form(%Project{}))
      |> assign(:task_form, nil)
+     |> assign(:task_create_enabled?, false)
      |> assign(:tasks_empty?, true)
      |> assign(:selected_task, nil)
      |> assign(:task_not_found?, false)
@@ -52,10 +53,13 @@ defmodule TaskmanWeb.ProjectLive do
        ) do
     case Projects.get_project(project_id) do
       %Project{} = project ->
+        changeset = Tasks.change_task(project)
+
         socket
         |> clear_task_modal_state()
         |> assign_project_state(project, false, Tasks.list_tasks_for_project(project))
-        |> assign(:task_form, to_form(Tasks.change_task(%Task{})))
+        |> assign(:task_form, to_form(changeset))
+        |> assign(:task_create_enabled?, changeset.valid?)
 
       nil ->
         socket
@@ -131,13 +135,15 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   def handle_event("validate_task", %{"task" => task_params}, socket) do
-    form =
-      %Task{}
+    changeset =
+      socket.assigns.selected_project
       |> Tasks.change_task(task_params)
       |> Map.put(:action, :validate)
-      |> to_form()
 
-    {:noreply, assign(socket, :task_form, form)}
+    {:noreply,
+     socket
+     |> assign(:task_form, to_form(changeset))
+     |> assign(:task_create_enabled?, changeset.valid?)}
   end
 
   def handle_event("save_task", %{"task" => task_params}, socket) do
@@ -150,7 +156,10 @@ defmodule TaskmanWeb.ProjectLive do
          |> push_patch(to: ~p"/projects/#{socket.assigns.selected_project.id}")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, :task_form, to_form(changeset))}
+        {:noreply,
+         socket
+         |> assign(:task_form, to_form(changeset))
+         |> assign(:task_create_enabled?, false)}
     end
   end
 
@@ -214,6 +223,7 @@ defmodule TaskmanWeb.ProjectLive do
     |> assign(:selected_task, nil)
     |> assign(:task_not_found?, false)
     |> assign(:task_form, nil)
+    |> assign(:task_create_enabled?, false)
     |> assign(:task_draft, %{})
     |> assign(:task_dirty_fields, MapSet.new())
     |> assign(:task_revisions, %{})
