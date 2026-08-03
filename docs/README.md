@@ -28,6 +28,7 @@
 
 ## Specifications
 
+- [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
 - [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)

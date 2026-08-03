@@ -3,6 +3,10 @@
 **Date:** 2026-07-18
 **Status:** Approved design
 
+> **Superseded in part:** The title-only Task creation decision is replaced by the
+> [Full Task creation form design](2026-08-03-full-task-creation-form-design.md). The remaining
+> first-slice decisions stay authoritative.
+
 ## Goal
 
 Deliver the first thin product workflow: a user can create a Project for a local directory, select

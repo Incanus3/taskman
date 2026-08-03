@@ -4,6 +4,10 @@
 **Status:** Approved design  
 **Delivery issue:** `tas-task-editing-lifecycle-nr1.1`
 
+> **Superseded in part:** Task creation now exposes the complete editable field set as defined by
+> the [Full Task creation form design](2026-08-03-full-task-creation-form-design.md). The Task
+> editing and lifecycle decisions in this document stay authoritative.
+
 ## Goal
 
 Finish Task editing and explicit human-controlled lifecycle behavior in the existing list-first
