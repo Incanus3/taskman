@@ -31,7 +31,14 @@ defmodule Taskman.Tasks do
     |> Repo.insert()
   end
 
-  def change_task(%Task{} = task, attrs \\ %{}) do
+  def change_task(owner, attrs \\ %{})
+
+  def change_task(%Project{id: project_id}, attrs) do
+    %Task{project_id: project_id}
+    |> Task.changeset(attrs)
+  end
+
+  def change_task(%Task{} = task, attrs) do
     Task.changeset(task, attrs)
   end
 

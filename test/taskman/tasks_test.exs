@@ -89,6 +89,29 @@ defmodule Taskman.TasksTest do
     assert task.project_id == project.id
   end
 
+  test "change_task/2 builds a valid Project-owned creation changeset" do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+
+    changeset =
+      Tasks.change_task(project, %{
+        title: "  Planned task  ",
+        description: "Creation details",
+        status: :in_progress,
+        priority: :high,
+        due_at: ~N[2026-08-03 16:00:00],
+        project_id: other_project.id
+      })
+
+    assert changeset.valid?
+    assert Ecto.Changeset.get_field(changeset, :project_id) == project.id
+    assert Ecto.Changeset.get_field(changeset, :title) == "Planned task"
+    assert Ecto.Changeset.get_field(changeset, :description) == "Creation details"
+    assert Ecto.Changeset.get_field(changeset, :status) == :in_progress
+    assert Ecto.Changeset.get_field(changeset, :priority) == :high
+    assert Ecto.Changeset.get_field(changeset, :due_at) == ~N[2026-08-03 16:00:00]
+  end
+
   test "list_tasks_for_project/1 returns only that Project's tasks in stable order" do
     project = project_fixture(%{})
     other_project = project_fixture(%{})
