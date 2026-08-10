@@ -2,9 +2,9 @@
 
 ## Context
 
-Taskman's Elixir CI workflow is defined in `.github/workflows/elixir.yml`. It currently runs directly
-on GitHub's `ubuntu-latest` hosted runner and installs Elixir 1.15.2 with Erlang/OTP 26.0 through
-`erlef/setup-beam`.
+Before this work, Taskman's Elixir CI workflow ran directly on GitHub's `ubuntu-latest` hosted runner
+and installed Elixir 1.15.2 with Erlang/OTP 26.0 through `erlef/setup-beam`. The workflow is defined
+in `.github/workflows/elixir.yml`.
 
 GitHub-hosted Actions does not provide an Alpine runner label. GitHub supports running a job's steps
 inside a container through `jobs.<job_id>.container.image`, while the job still names a Linux host in
@@ -17,6 +17,14 @@ listed in the [Erlang/OTP releases](https://github.com/erlang/otp/releases). Hex
 compatible Alpine image
 `hexpm/elixir:1.20.3-erlang-29.0.5-alpine-3.24.1`.
 
+The first landed container workflow failed in
+[GitHub Actions run 31395719161](https://github.com/Incanus3/taskman/actions/runs/31395719161/job/93478006283)
+because the image had no `git` executable. After Git was installed in an isolated reproduction,
+dependency resolution succeeded and exposed the next missing boundary: tests could not connect to
+PostgreSQL because a job container cannot reach a host service through `localhost`. A local
+two-container reproduction using the job and service images confirmed the complete dependency and
+test path.
+
 ## Requirements and decisions
 
 - Execute the build and test steps inside an Alpine Linux container.
@@ -27,6 +35,10 @@ compatible Alpine image
   environment Ubuntu; ordinary job steps execute inside the configured Alpine container.
 - Remove `erlef/setup-beam`, because the selected image already contains the required Elixir and OTP
   versions.
+- Install Alpine's `git` package before dependency resolution. The HexPM image does not include Git,
+  while Taskman fetches `heroicons` and `daisyui` from GitHub.
+- Run PostgreSQL as a healthy service container and expose its `postgres` service label to the test
+  configuration through `POSTGRES_HOST`. Local tests continue to default to `localhost`.
 - Preserve the workflow's triggers, permissions, checkout, dependency cache, dependency installation,
   and test command.
 
@@ -42,22 +54,30 @@ compatible Alpine image
 
 ## File boundary and behavior
 
-Only `.github/workflows/elixir.yml` needs an implementation change. The `build` job will gain:
+The CI job configuration is owned by `.github/workflows/elixir.yml`. The `build` job uses:
 
 ```yaml
 container:
   image: hexpm/elixir:1.20.3-erlang-29.0.5-alpine-3.24.1
+env:
+  POSTGRES_HOST: postgres
+services:
+  postgres:
+    image: postgres:18.4-alpine3.24
 ```
 
-The existing `Set up Elixir` step will be deleted. No application source, dependencies, runtime
-configuration, or product behavior changes.
+The workflow installs Git with `apk add --no-cache git` before `mix deps.get`. The existing
+`Set up Elixir` step is deleted. `config/test.exs` reads `POSTGRES_HOST` with `localhost` as its
+default so the container job can use the service label without changing local development behavior.
+No application source, dependencies, production runtime configuration, or product behavior changes.
 
 ## Verification
 
 - Parse the edited workflow as YAML.
 - Confirm the pinned container reports Elixir 1.20.3 and Erlang/OTP 29.0.5.
-- Run the workflow's dependency and test commands in the selected container where local Docker
-  support permits it.
+- Confirm dependency resolution succeeds after Git is installed.
+- Run the workflow's test command against the PostgreSQL service topology where local Docker support
+  permits it.
 - Run `mix precommit` after all repository changes, as required by project guidance. If an existing
   external dependency such as PostgreSQL prevents a check, record the exact failure rather than
   broadening this change to redesign the workflow.
@@ -66,8 +86,9 @@ configuration, or product behavior changes.
 
 GitHub still schedules the container on `ubuntu-latest`; that host is an implementation detail of the
 hosted runner. JavaScript actions execute through GitHub's container-action support, while `run`
-steps use the container's default `sh` shell.
+steps use the container's default `sh` shell. Service containers share a Docker network with the job
+container and are addressed by their service label rather than `localhost`.
 
-Implementation consists of adding the pinned job container, deleting the now-redundant setup step,
-and performing the verification above. The workflow should not be expanded with unrelated service,
-cache, action-version, or application changes.
+Implementation consists of using the pinned job container, deleting the redundant setup step,
+installing Git, providing the PostgreSQL service, and performing the verification above. The workflow
+should not be expanded with unrelated services, cache, action-version, or application changes.
