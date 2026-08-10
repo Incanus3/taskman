@@ -28,6 +28,7 @@
 
 ## Specifications
 
+- [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
 - [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
 - [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
@@ -48,6 +49,7 @@
 
 ## Archive
 
+- [Alpine Elixir CI implementation plan](archive/plans/2026-08-10-alpine-elixir-ci.md)
 - [Full Task creation form](archive/plans/2026-08-03-full-task-creation-form.md)
 - [Task editing and human-controlled lifecycle implementation plan](archive/plans/2026-07-31-task-editing-lifecycle.md)
 - [Wayfinder history](archive/wayfinder.md)
