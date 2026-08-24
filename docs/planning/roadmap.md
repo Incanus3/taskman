@@ -76,18 +76,14 @@ Scope:
 
 The URL, modal-state, and browser/server boundary decisions should be made here, not in advance.
 
-**Current state:** Partially complete. The application has a list-first Project workspace and a
-canonical `/projects/:project_id/tasks/:task_id` URL that opens the selected Task in a modal over
-the preserved direct Task list. The modal supports autosaved editing of every current Task field,
-explicit human-controlled lifecycle changes, recoverable unknown and cross-Project URLs, and
-navigation-safe persistence. Focused tests, the repository verification gate, and responsive
-browser acceptance have passed for this implemented baseline.
-
-The remaining gap is the broader Task-detail structure described by the product specification: a
-collapsible parent-child hierarchy and an Activity and Sessions rail with honest initial empty
-states. This increment should establish the layout, accessibility, and interaction behavior without
-implementing parent-child relationships or Agent Session operations before their later roadmap
-slices.
+**Current state:** Complete. The list-first Project workspace keeps the selected Project's direct
+Task list behind a canonical URL-backed Task-detail modal. The modal supports complete autosaved
+editing, explicit human-controlled lifecycle changes, recoverable invalid URLs, a collapsible
+parent-child hierarchy shell, and separate truthful Activity and Sessions empty states. Hierarchy
+preference lasts for the current workspace LiveView, wide layouts push the detail, and narrower
+layouts use an internal overlay while Activity and Sessions reflow below the form. Focused tests,
+the complete repository gate, independent implementation review, and responsive browser acceptance
+have passed.
 
 ### 3. Lists and nested organization
 

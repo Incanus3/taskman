@@ -102,6 +102,49 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-#{task.id}")
   end
 
+  test "found Task renders truthful detail regions without unavailable operations", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Write launch checklist"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    assert has_element?(
+             view,
+             "#taskman-workspace[phx-hook='TaskmanWeb.ProjectLive.TaskDetailLayout']"
+           )
+
+    assert has_element?(view, "#task-modal-content[data-size='wide']")
+    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='false']")
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-toggle[aria-controls='task-hierarchy'][aria-expanded='false'][aria-label='Expand task hierarchy']"
+           )
+
+    assert has_element?(
+             view,
+             "#task-hierarchy [role='tree'] [role='treeitem'][aria-current='true']",
+             "Write launch checklist"
+           )
+
+    assert has_element?(view, "#task-hierarchy-empty", "No parent or child Tasks")
+
+    assert has_element?(
+             view,
+             "#task-activity-empty",
+             "No activity has been recorded for this Task."
+           )
+
+    assert has_element?(
+             view,
+             "#task-sessions-empty",
+             "No Agent Sessions are associated with this Task."
+           )
+
+    refute has_element?(view, "#task-sessions button")
+    refute has_element?(view, "#task-detail-layout [data-session-row]")
+  end
+
   test "invalid Task URLs preserve the selected Project list in a modal not-found state", %{
     conn: conn
   } do
@@ -117,6 +160,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
       assert has_element?(view, "#task-not-found")
       assert has_element?(view, "#task-#{visible.id}")
       refute has_element?(view, "#task-form")
+      refute has_element?(view, "#task-detail-layout")
+      assert has_element?(view, "#task-modal-content[data-size='default']")
       refute has_element?(view, "#task-#{other.id}")
     end
   end

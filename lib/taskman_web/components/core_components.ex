@@ -129,6 +129,7 @@ defmodule TaskmanWeb.CoreComponents do
   attr :id, :string, required: true
   attr :show, :boolean, default: false
   attr :on_cancel, JS, required: true
+  attr :size, :atom, values: [:default, :wide], default: :default
   slot :inner_block, required: true
 
   def modal(assigns) do
@@ -148,7 +149,13 @@ defmodule TaskmanWeb.CoreComponents do
         <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-6">
           <div
             id={"#{@id}-content"}
-            class="relative w-full max-w-lg overflow-hidden rounded-2xl bg-slate-900 p-6 text-left align-middle shadow-2xl shadow-black/50 sm:p-7"
+            data-size={@size}
+            class={[
+              "relative w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-left align-middle shadow-2xl shadow-black/50",
+              @size == :default && "max-w-lg p-6 sm:p-7",
+              @size == :wide &&
+                "max-h-[calc(100dvh-2rem)] max-w-7xl sm:max-h-[calc(100dvh-3rem)]"
+            ]}
             aria-labelledby={"#{@id}-title"}
             role="dialog"
             aria-modal="true"
@@ -160,7 +167,7 @@ defmodule TaskmanWeb.CoreComponents do
             <button
               id={"#{@id}-close"}
               type="button"
-              class="absolute right-4 top-4 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
+              class="absolute right-4 top-4 z-30 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
               phx-click={hide_modal(@on_cancel, @id)}
               aria-label={gettext("Close dialog")}
             >
