@@ -7,6 +7,9 @@
 # fsqlite multi-process namespace sidecars
 *.db-fsqlite-*
 
+# Schema-migration vacuum namespace sidecars
+/.beads.db.schema-migration-*.vacuum-fsqlite-*
+
 # Lock files
 *.lock
 .write.lock

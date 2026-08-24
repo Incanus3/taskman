@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Projects and basic Tasks complete
-**Updated:** 2026-07-31
+**Status:** Task detail and navigation partially complete
+**Updated:** 2026-08-24
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -75,6 +75,19 @@ Scope:
 - Basic accessibility and interaction behavior.
 
 The URL, modal-state, and browser/server boundary decisions should be made here, not in advance.
+
+**Current state:** Partially complete. The application has a list-first Project workspace and a
+canonical `/projects/:project_id/tasks/:task_id` URL that opens the selected Task in a modal over
+the preserved direct Task list. The modal supports autosaved editing of every current Task field,
+explicit human-controlled lifecycle changes, recoverable unknown and cross-Project URLs, and
+navigation-safe persistence. Focused tests, the repository verification gate, and responsive
+browser acceptance have passed for this implemented baseline.
+
+The remaining gap is the broader Task-detail structure described by the product specification: a
+collapsible parent-child hierarchy and an Activity and Sessions rail with honest initial empty
+states. This increment should establish the layout, accessibility, and interaction behavior without
+implementing parent-child relationships or Agent Session operations before their later roadmap
+slices.
 
 ### 3. Lists and nested organization
 
