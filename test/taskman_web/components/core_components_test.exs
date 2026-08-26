@@ -26,6 +26,21 @@ defmodule TaskmanWeb.CoreComponentsTest do
     assert Enum.count(wide_modal) == 1
   end
 
+  test "modal uses an Escape override without running its dismissal transition" do
+    html = render_component(&modal_with_escape_override/1, %{})
+
+    [escape_actions] =
+      html
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#task-modal-content")
+      |> LazyHTML.attribute("phx-window-keydown")
+
+    assert escape_actions =~ "cancel-move-task"
+    refute escape_actions =~ "cancel-task"
+    refute escape_actions =~ ~s("hide")
+    refute escape_actions =~ "pop_focus"
+  end
+
   defp shown_modal(assigns) do
     ~H"""
     <CoreComponents.modal id="task-modal" show on_cancel={JS.push("cancel-task")}>
@@ -41,6 +56,18 @@ defmodule TaskmanWeb.CoreComponentsTest do
     </CoreComponents.modal>
     <CoreComponents.modal id="wide-modal" size={:wide} on_cancel={JS.push("cancel-wide")}>
       <h2 id="wide-modal-title">Wide modal</h2>
+    </CoreComponents.modal>
+    """
+  end
+
+  defp modal_with_escape_override(assigns) do
+    ~H"""
+    <CoreComponents.modal
+      id="task-modal"
+      on_cancel={JS.push("cancel-task")}
+      on_escape={JS.push("cancel-move-task")}
+    >
+      <h2 id="task-modal-title">Task</h2>
     </CoreComponents.modal>
     """
   end

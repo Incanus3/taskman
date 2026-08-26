@@ -4,7 +4,7 @@
     phx-hook=".TaskDetailLayout"
     class="min-h-screen bg-slate-950 text-slate-100"
   >
-    <div class="grid min-h-screen lg:grid-cols-[19rem_minmax(0,1fr)]">
+    <div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
       <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
         <div class="flex h-full flex-col px-5 py-6">
           <div class="mb-8 flex items-center gap-3">
@@ -17,31 +17,15 @@
             </div>
           </div>
 
-          <nav id="projects" phx-update="stream" aria-label="Projects" class="space-y-1">
-            <div
-              id="projects-empty"
-              class="hidden rounded-xl border border-dashed border-slate-700 px-3 py-4 text-sm text-slate-400 only:block"
-            >
-              Create your first Project below.
-            </div>
-            <div :for={{dom_id, project} <- @streams.projects} id={dom_id}>
-              <.link
-                id={"project-#{project.id}"}
-                patch={~p"/projects/#{project.id}"}
-                aria-current={@selected_project && @selected_project.id == project.id && "page"}
-                class={[
-                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition",
-                  @selected_project && @selected_project.id == project.id &&
-                    "bg-white/12 text-white",
-                  (!@selected_project || @selected_project.id != project.id) &&
-                    "text-slate-300 hover:bg-white/7 hover:text-white"
-                ]}
-              >
-                <.icon name="hero-folder" class="size-4 shrink-0" />
-                <span class="truncate">{project.name}</span>
-              </.link>
-            </div>
-          </nav>
+          <WorkspaceNavigation.tree
+            navigation_nodes={@streams.navigation_nodes}
+            selected_project={@selected_project}
+            selected_list={@selected_list}
+            include_children?={@include_children?}
+            active_list_project={@active_list_project}
+            active_list_form={@active_list_form}
+            list_form={@list_form}
+          />
 
           <.form
             for={@project_form}
@@ -82,12 +66,7 @@
 
       <main
         id="main-panel"
-        data-state={
-          if(@project_not_found?,
-            do: "not-found",
-            else: if(@selected_project, do: "selected", else: "no-selection")
-          )
-        }
+        data-state={main_panel_state(assigns)}
         class="min-w-0 bg-slate-900"
       >
         <div
@@ -119,52 +98,163 @@
           </div>
         </section>
 
-        <section :if={@selected_project} class="px-5 py-8 sm:px-8 lg:px-12 lg:py-10">
-          <header class="mb-8 flex items-center justify-between gap-4">
+        <section
+          :if={@location_not_found? && @selected_project}
+          id="location-not-found"
+          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+        >
+          <div class="max-w-md">
+            <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />
+            <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+              List not found
+            </h1>
+            <p class="mt-3 text-sm leading-6 text-slate-400">
+              This List may belong to another Project or may have been removed. Choose another
+              location from the sidebar.
+            </p>
+          </div>
+        </section>
+
+        <section
+          :if={@selected_project && !@location_not_found?}
+          class="px-5 py-8 sm:px-8 lg:px-12 lg:py-10"
+        >
+          <header class="mb-5 flex items-center justify-between gap-4">
             <div class="min-w-0">
               <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
-                Direct list
+                {if(@selected_list, do: "List", else: "Project")}
               </p>
-              <h1 class="mt-1 truncate text-2xl font-semibold tracking-tight text-slate-100">
-                {@selected_project.name}
+              <h1
+                id="location-heading"
+                class="mt-1 min-w-0 text-2xl font-semibold tracking-tight text-slate-100"
+              >
+                <%= if @selected_list do %>
+                  <span
+                    id="location-path"
+                    class="flex min-w-0 items-center gap-2 overflow-hidden"
+                  >
+                    <%= for {task_list, index} <- Enum.with_index(@location_path) do %>
+                      <span :if={index > 0} aria-hidden="true" class="shrink-0 text-slate-600">
+                        /
+                      </span>
+                      <span
+                        aria-current={task_list.id == @selected_list.id && "page"}
+                        class={[
+                          "truncate",
+                          task_list.id == @selected_list.id && "text-slate-100",
+                          task_list.id != @selected_list.id && "text-slate-400"
+                        ]}
+                      >
+                        {task_list.name}
+                      </span>
+                    <% end %>
+                  </span>
+                <% else %>
+                  <span class="block truncate">{@selected_project.name}</span>
+                <% end %>
               </h1>
-              <p class="mt-1 truncate font-mono text-xs text-slate-400">
-                {@selected_project.primary_directory}
-              </p>
             </div>
-            <.link
-              id="add-task"
-              patch={~p"/projects/#{@selected_project.id}/tasks/new"}
-              class="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
-            >
-              Add task
-            </.link>
+            <div class="flex shrink-0 items-center gap-3">
+              <.link
+                id="include-child-lists"
+                patch={browse_path(@selected_project, @selected_list, !@include_children?)}
+                aria-pressed={to_string(@include_children?)}
+                data-state={if(@include_children?, do: "on", else: "off")}
+                class={[
+                  "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition",
+                  @include_children? &&
+                    "border-indigo-400/40 bg-indigo-400/15 text-indigo-100 hover:bg-indigo-400/20",
+                  !@include_children? &&
+                    "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+                ]}
+              >
+                <span>Include child Lists</span>
+                <span
+                  id="include-child-lists-track"
+                  aria-hidden="true"
+                  class={[
+                    "flex h-4 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors",
+                    @include_children? && "bg-indigo-400",
+                    !@include_children? && "bg-slate-600"
+                  ]}
+                >
+                  <span
+                    id="include-child-lists-thumb"
+                    class={[
+                      "size-3 rounded-full bg-white shadow-sm transition-transform",
+                      @include_children? && "translate-x-4",
+                      !@include_children? && "translate-x-0"
+                    ]}
+                  />
+                </span>
+              </.link>
+              <.link
+                id="add-task"
+                patch={new_task_path(@selected_project, @selected_list, @include_children?)}
+                class="inline-flex h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+              >
+                Add task
+              </.link>
+            </div>
           </header>
 
-          <div class="overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20">
+          <div class="rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20">
             <div
               :if={!@tasks_empty?}
               id="task-table-header"
-              class="hidden gap-3 border-b border-slate-700 px-3 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] sm:items-center"
+              class={[
+                "hidden gap-3 border-b border-slate-700 px-3 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid sm:items-center",
+                @include_children? &&
+                  "sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.8fr)_5.5rem_5.5rem_3.5rem]",
+                !@include_children? &&
+                  "sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem_3.5rem]"
+              ]}
             >
               <span>Task</span>
+              <span :if={@include_children?} id="task-location-header">Location</span>
               <span class="w-fit rounded-full bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 sm:justify-self-center">
                 Status
               </span>
               <span class="w-fit rounded-full bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 sm:justify-self-center">
                 Priority
               </span>
+              <span id="task-actions-header" class="sm:justify-self-center">Actions</span>
             </div>
-            <div id="tasks" phx-update="stream" class="bg-slate-900">
+            <div id="tasks" phx-update="stream">
               <div id="tasks-empty" class="hidden px-6 py-16 text-center only:block">
                 <.icon name="hero-clipboard-document-list" class="mx-auto size-9 text-slate-600" />
-                <p class="mt-3 text-sm font-medium text-slate-300">No direct tasks yet</p>
+                <p class="mt-3 text-sm font-medium text-slate-300">
+                  <%= cond do %>
+                    <% @include_children? && @selected_list -> %>
+                      No tasks in this List or its child Lists yet
+                    <% @include_children? -> %>
+                      No tasks in this Project or its child Lists yet
+                    <% @selected_list -> %>
+                      No direct tasks in this List yet
+                    <% true -> %>
+                      No direct tasks yet
+                  <% end %>
+                </p>
               </div>
               <TaskComponents.row
-                :for={{dom_id, task} <- @streams.tasks}
+                :for={{dom_id, task_with_location} <- @streams.tasks}
                 id={dom_id}
-                task={task}
-                project_id={@selected_project.id}
+                task_with_location={task_with_location}
+                task_path={
+                  task_detail_path(
+                    @selected_project,
+                    @selected_list,
+                    task_with_location.task,
+                    @include_children?
+                  )
+                }
+                include_children?={@include_children?}
+                active_move_task={@active_move_task}
+                move_query={@move_query}
+                move_destination={@move_destination}
+                move_options={@move_options}
+                move_options_open?={@move_options_open?}
+                move_error={@move_error}
               />
             </div>
           </div>
@@ -173,49 +263,64 @@
     </div>
 
     <.modal
-      :if={@live_action == :new_task && @selected_project}
+      :if={@live_action == :new_task && @selected_project && !@location_not_found?}
       id="task-modal"
       show
-      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+      on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
     >
       <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
         Add task
       </h2>
       <p class="mt-2 text-sm leading-6 text-slate-400">
-        Add a direct Task to {@selected_project.name}.
+        {if(@selected_list,
+          do: "Add a direct Task to #{@selected_list.name}.",
+          else: "Add a direct Task to #{@selected_project.name}."
+        )}
       </p>
       <TaskForm.form
         form={@task_form}
         mode={:new}
         change="validate_task"
         submit="save_task"
-        cancel={~p"/projects/#{@selected_project.id}"}
+        cancel={browse_path(@selected_project, @selected_list, @include_children?)}
         create_enabled?={@task_create_enabled?}
       />
     </.modal>
 
     <.modal
-      :if={@live_action == :show_task && @selected_project && @selected_task}
+      :if={
+        @live_action == :show_task && @selected_project && !@location_not_found? && @selected_task
+      }
       id="task-modal"
       show
       size={:wide}
-      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+      on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
+      on_escape={if(@active_move_task, do: JS.push("cancel_move_task"), else: nil)}
     >
       <TaskmanWeb.TaskDetail.detail
         task={@selected_task}
         form={@task_form}
         save_state={@task_save_state}
         save_message={task_save_message(@task_save_state)}
-        cancel={~p"/projects/#{@selected_project.id}"}
+        cancel={browse_path(@selected_project, @selected_list, @include_children?)}
         has_hierarchy?={false}
+        active_move_task={@active_move_task}
+        move_query={@move_query}
+        move_destination={@move_destination}
+        move_options={@move_options}
+        move_options_open?={@move_options_open?}
+        move_error={@move_error}
       />
     </.modal>
 
     <.modal
-      :if={@live_action == :show_task && @selected_project && @task_not_found?}
+      :if={
+        @live_action == :show_task && @selected_project && !@location_not_found? &&
+          @task_not_found?
+      }
       id="task-modal"
       show
-      on_cancel={JS.patch(~p"/projects/#{@selected_project.id}")}
+      on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
     >
       <div id="task-not-found">
         <h2
@@ -230,7 +335,7 @@
         <div class="mt-6 flex justify-end">
           <.link
             id="close-task-not-found"
-            patch={~p"/projects/#{@selected_project.id}"}
+            patch={browse_path(@selected_project, @selected_list, @include_children?)}
             class="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
           >
             Close

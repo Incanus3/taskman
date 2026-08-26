@@ -2,13 +2,15 @@
 *.db
 *.db-journal
 *.db-shm
-*.db-wal
+*.db-wal*
 
 # fsqlite multi-process namespace sidecars
 *.db-fsqlite-*
+*.fsqlite-migration-state
 
 # Schema-migration vacuum namespace sidecars
 /.beads.db.schema-migration-*.vacuum-fsqlite-*
+*.vacuum-wal-cert*
 
 # Lock files
 *.lock

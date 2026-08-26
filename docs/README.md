@@ -28,12 +28,13 @@
 
 ## Specifications
 
-- [Task detail and navigation](specs/2026-08-24-task-detail-navigation-design.md)
-- [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
-- [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
-- [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
-- [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
+- [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
+- [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
+- [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
+- [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
+- [Task detail and navigation](specs/2026-08-24-task-detail-navigation-design.md)
+- [Lists and nested organization](specs/2026-08-26-lists-nested-organization-design.md)
 
 ## Development
 
@@ -50,8 +51,10 @@
 
 ## Archive
 
-- [Task detail and navigation implementation plan](archive/plans/2026-08-24-task-detail-navigation.md)
-- [Alpine Elixir CI implementation plan](archive/plans/2026-08-10-alpine-elixir-ci.md)
-- [Full Task creation form](archive/plans/2026-08-03-full-task-creation-form.md)
+- [Foundation documentation update implementation plan](archive/plans/2026-07-18-foundation-documentation-update.md)
+- [Projects and basic Tasks first slice implementation plan](archive/plans/2026-07-18-projects-basic-tasks-first-slice.md)
 - [Task editing and human-controlled lifecycle implementation plan](archive/plans/2026-07-31-task-editing-lifecycle.md)
-- [Wayfinder history](archive/wayfinder.md)
+- [Full Task creation form](archive/plans/2026-08-03-full-task-creation-form.md)
+- [Alpine Elixir CI implementation plan](archive/plans/2026-08-10-alpine-elixir-ci.md)
+- [Task detail and navigation implementation plan](archive/plans/2026-08-24-task-detail-navigation.md)
+- [Lists and nested organization implementation plan](archive/plans/2026-08-26-lists-nested-organization.md)

@@ -2,7 +2,7 @@ defmodule TaskmanWeb.TaskDetail do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.TaskForm
+  alias TaskmanWeb.{MoveTask, TaskForm}
 
   attr :task, Task, required: true
   attr :form, Phoenix.HTML.Form, required: true
@@ -10,6 +10,12 @@ defmodule TaskmanWeb.TaskDetail do
   attr :save_message, :string, required: true
   attr :cancel, :string, required: true
   attr :has_hierarchy?, :boolean, default: false
+  attr :active_move_task, :map, default: nil
+  attr :move_query, :string, default: ""
+  attr :move_destination, :string, default: nil
+  attr :move_options, :list, default: []
+  attr :move_options_open?, :boolean, default: false
+  attr :move_error, :string, default: nil
 
   def detail(assigns) do
     ~H"""
@@ -69,12 +75,31 @@ defmodule TaskmanWeb.TaskDetail do
       <div id="task-detail-content" class="task-detail-content">
         <div class="task-detail-columns">
           <section class="min-w-0 p-6 sm:px-7 sm:pb-7" aria-labelledby="task-modal-title">
-            <h2
-              id="task-modal-title"
-              class="mb-5 pr-10 text-xl font-semibold tracking-tight text-slate-100"
-            >
-              Task
-            </h2>
+            <div class="mb-5 flex items-start justify-between gap-4 pr-10">
+              <h2 id="task-modal-title" class="text-xl font-semibold tracking-tight text-slate-100">
+                Task
+              </h2>
+              <button
+                id={"move-task-detail-button-#{@task.id}"}
+                type="button"
+                phx-click={JS.push_focus() |> JS.push("open_move_task")}
+                phx-value-task-id={@task.id}
+                class="rounded-lg px-2 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+              >
+                Move Task
+              </button>
+            </div>
+            <MoveTask.popover
+              :if={move_active_for?(@active_move_task, @task.id)}
+              task_id={@task.id}
+              query={@move_query}
+              destination={@move_destination}
+              current_destination={move_current_destination(@active_move_task)}
+              options={@move_options}
+              options_open?={@move_options_open?}
+              error={@move_error}
+              window_escape?={false}
+            />
             <TaskForm.form
               form={@form}
               mode={:edit}
@@ -135,4 +160,10 @@ defmodule TaskmanWeb.TaskDetail do
     </div>
     """
   end
+
+  defp move_active_for?(%{task_id: task_id, origin: "detail"}, task_id), do: true
+  defp move_active_for?(_active_move_task, _task_id), do: false
+
+  defp move_current_destination(%{current_destination: destination}), do: destination
+  defp move_current_destination(_active_move_task), do: nil
 end

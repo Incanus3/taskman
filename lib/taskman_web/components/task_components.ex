@@ -1,7 +1,8 @@
 defmodule TaskmanWeb.TaskComponents do
   use TaskmanWeb, :html
 
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{Task, TaskWithLocation}
+  alias TaskmanWeb.MoveTask
 
   @status_labels %{
     icebox: "Icebox",
@@ -26,41 +27,111 @@ defmodule TaskmanWeb.TaskComponents do
   def priority_label(priority), do: Map.fetch!(@priority_labels, priority)
 
   attr :id, :string, required: true
-  attr :task, Task, required: true
-  attr :project_id, :integer, required: true
+  attr :task_with_location, TaskWithLocation, required: true
+  attr :task_path, :string, required: true
+  attr :include_children?, :boolean, default: false
+  attr :active_move_task, :map, default: nil
+  attr :move_query, :string, default: ""
+  attr :move_destination, :string, default: nil
+  attr :move_options, :list, default: []
+  attr :move_options_open?, :boolean, default: false
+  attr :move_error, :string, default: nil
 
   def row(assigns) do
     ~H"""
+    <% task = @task_with_location.task %>
     <article
       id={@id}
-      class="relative grid gap-3 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] sm:items-center"
+      class={[
+        "relative grid gap-3 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:items-center",
+        @include_children? &&
+          "sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.8fr)_5.5rem_5.5rem_3.5rem]",
+        !@include_children? && "sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem_3.5rem]"
+      ]}
     >
       <.link
-        id={"open-task-#{@task.id}"}
-        patch={~p"/projects/#{@project_id}/tasks/#{@task.id}"}
+        id={"open-task-#{task.id}"}
+        patch={@task_path}
         class="absolute inset-0 z-0 rounded-xl outline-none transition hover:bg-white/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400"
       >
-        <span class="sr-only">Open {@task.title}</span>
+        <span class="sr-only">Open {task.title}</span>
       </.link>
+      <div class="pointer-events-none relative z-10 min-w-0">
+        <p
+          id={"task-#{task.id}"}
+          class="pointer-events-none truncate text-sm font-medium text-slate-100"
+        >
+          {task.title}
+        </p>
+      </div>
       <p
-        id={"task-#{@task.id}"}
-        class="pointer-events-none relative z-10 truncate text-sm font-medium text-slate-100"
+        :if={@include_children?}
+        id={"task-location-cell-#{task.id}"}
+        aria-label={"Location: #{location_label(@task_with_location.location_path)}"}
+        title={location_label(@task_with_location.location_path)}
+        class="pointer-events-none relative z-10 min-w-0 truncate text-xs font-medium text-slate-400 sm:text-sm"
       >
-        {@task.title}
+        {location_label(@task_with_location.location_path)}
       </p>
       <span
-        id={"task-status-#{@task.id}"}
+        id={"task-status-#{task.id}"}
         class="pointer-events-none relative z-10 w-fit rounded-full bg-amber-400/10 px-2.5 py-1 text-xs font-semibold text-amber-300 sm:justify-self-center"
       >
-        {status_label(@task.status)}
+        {status_label(task.status)}
       </span>
       <span
-        id={"task-priority-#{@task.id}"}
+        id={"task-priority-#{task.id}"}
         class="pointer-events-none relative z-10 w-fit rounded-full bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300 sm:justify-self-center"
       >
-        {priority_label(@task.priority)}
+        {priority_label(task.priority)}
       </span>
+      <div
+        id={"task-actions-#{task.id}"}
+        class={[
+          "pointer-events-auto relative flex justify-end sm:justify-self-center",
+          move_active_for?(@active_move_task, task.id, "row") && "z-40",
+          !move_active_for?(@active_move_task, task.id, "row") && "z-10"
+        ]}
+      >
+        <button
+          id={"move-task-row-button-#{task.id}"}
+          type="button"
+          phx-click={JS.push_focus() |> JS.push("open_move_task")}
+          phx-value-task-id={task.id}
+          aria-label={"Move #{task.title}"}
+          title="Move Task"
+          class="pointer-events-auto grid size-8 place-items-center rounded-lg border border-slate-700 bg-slate-800 text-slate-300 shadow-sm transition hover:border-indigo-400/50 hover:bg-indigo-400/10 hover:text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+        >
+          <.icon name="hero-arrows-right-left" class="size-4" />
+        </button>
+        <div
+          :if={move_active_for?(@active_move_task, task.id, "row")}
+          data-move-task-popover
+          phx-remove={JS.pop_focus()}
+          class="absolute right-0 top-full z-30 w-80 max-w-[calc(100vw-3rem)]"
+        >
+          <MoveTask.popover
+            task_id={task.id}
+            query={@move_query}
+            destination={@move_destination}
+            current_destination={move_current_destination(@active_move_task)}
+            options={@move_options}
+            options_open?={@move_options_open?}
+            error={@move_error}
+            restore_focus?={false}
+          />
+        </div>
+      </div>
     </article>
     """
   end
+
+  defp location_label([]), do: "Project"
+  defp location_label(location_path), do: Enum.map_join(location_path, " / ", & &1.name)
+
+  defp move_active_for?(%{task_id: task_id, origin: origin}, task_id, origin), do: true
+  defp move_active_for?(_active_move_task, _task_id, _origin), do: false
+
+  defp move_current_destination(%{current_destination: destination}), do: destination
+  defp move_current_destination(_active_move_task), do: nil
 end

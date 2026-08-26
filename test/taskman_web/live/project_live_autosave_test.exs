@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
@@ -221,5 +222,72 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     assert has_element?(view, "#task-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
+  end
+
+  test "closes a dirty Task detail back to its List context and preserves descendants", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    list = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, list, %{title: "Before"})
+
+    task_path =
+      ~p"/projects/#{project.id}/lists/#{list.id}/tasks/#{task.id}?include_children=true"
+
+    {:ok, view, _html} = live(conn, task_path)
+
+    view
+    |> form("#task-form", task: %{title: "After"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    view |> element("#task-modal-close") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
+    assert Tasks.get_task_for_project(project, task.id).title == "After"
+  end
+
+  test "blocks a detail move when a dirty title cannot autosave and keeps both errors visible", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    destination = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, %{title: "Before"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: ""})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert has_element?(view, "#task-form [data-role='field-error']")
+
+    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == nil
+    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
+  end
+
+  test "persists a valid dirty detail draft before moving the Task", %{conn: conn} do
+    project = project_fixture(%{})
+    destination = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, %{title: "Before"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "After"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    moved_task = Tasks.get_task_for_project(project, task.id)
+    assert moved_task.title == "After"
+    assert moved_task.list_id == destination.id
   end
 end
