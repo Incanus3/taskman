@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Task detail and navigation partially complete
-**Updated:** 2026-08-24
+**Status:** Task relationships next
+**Updated:** 2026-08-26
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -91,13 +91,29 @@ have passed.
 
 Scope:
 
-- Create, rename, and delete Lists.
+- Create and rename Lists.
 - Nested List tree.
 - Tasks directly under a Project or one List.
 - Move Tasks between valid locations in the same Project.
 - Optional inclusion of descendant List Tasks while preserving their source List.
 
 The tree representation and query strategy should be designed immediately before this slice.
+
+List deletion is deferred to slice 5 so it ships with the complete recursive impact-warning and
+confirmation contract rather than an unsafe or temporary deletion rule.
+
+**Current state:** Complete. Users can create and rename nested Lists, expand a semantic hierarchy,
+and create Tasks directly under a Project or List. Project and List routes support direct or
+descendant Task views with full Location paths, and same-Project Task movement is available from
+rows and detail while preserving URL and autosave behavior. Focused tests, the final
+`ERL_FLAGS='+S 4' mix precommit` gate (124 passed), wide and measured 390×844 responsive browser
+acceptance, and independent implementation review have passed. The written
+[`Lists and nested organization specification`](../specs/2026-08-26-lists-nested-organization-design.md)
+is approved, implemented, and delivered. Its
+[`implementation plan`](../archive/plans/2026-08-26-lists-nested-organization.md) is archived, and the
+repository-local delivery graph is closed through `tas-lists-nested-organization-8qe.6`.
+
+**Next slice:** Slice 4, Task relationships.
 
 ### 4. Task relationships
 

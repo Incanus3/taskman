@@ -36,7 +36,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#project-not-found")
     refute has_element?(view, "#add-task")
 
-    view |> element("#project-#{project.id}") |> render_click()
+    view |> element("#select-project-#{project.id}") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     assert has_element?(view, "#tasks")
   end
@@ -64,7 +64,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#tasks > #tasks-#{task_a.id}")
     refute has_element?(view, "#tasks > #tasks-#{task_b.id}")
 
-    view |> element("#project-#{project_b.id}") |> render_click()
+    view |> element("#select-project-#{project_b.id}") |> render_click()
 
     assert_patch(view, ~p"/projects/#{project_b.id}")
     refute has_element?(view, "#tasks > #tasks-#{task_a.id}")
@@ -251,6 +251,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
     assert has_element?(view, "#task-table-header + #tasks")
+    assert has_element?(view, "#task-actions-header", "Actions")
   end
 
   test "invalid Project input renders inline errors", %{conn: conn} do

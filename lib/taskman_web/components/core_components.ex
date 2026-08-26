@@ -129,6 +129,7 @@ defmodule TaskmanWeb.CoreComponents do
   attr :id, :string, required: true
   attr :show, :boolean, default: false
   attr :on_cancel, JS, required: true
+  attr :on_escape, JS, default: nil
   attr :size, :atom, values: [:default, :wide], default: :default
   slot :inner_block, required: true
 
@@ -160,7 +161,7 @@ defmodule TaskmanWeb.CoreComponents do
             role="dialog"
             aria-modal="true"
             phx-click-away={hide_modal(@on_cancel, @id)}
-            phx-window-keydown={hide_modal(@on_cancel, @id)}
+            phx-window-keydown={modal_escape(@on_cancel, @on_escape, @id)}
             phx-key="escape"
             tabindex="-1"
           >
@@ -567,6 +568,9 @@ defmodule TaskmanWeb.CoreComponents do
     |> JS.hide(to: "##{id}")
     |> JS.pop_focus()
   end
+
+  defp modal_escape(on_cancel, nil, id), do: hide_modal(on_cancel, id)
+  defp modal_escape(_on_cancel, %JS{} = on_escape, _id), do: on_escape
 
   @doc """
   Translates an error message using gettext.
