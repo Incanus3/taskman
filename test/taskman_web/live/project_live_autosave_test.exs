@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
+  alias TaskmanWeb.{ProjectLive, TaskAutosave}
 
   setup do
     previous = Application.get_env(:taskman, :task_autosave_delay_ms)
@@ -152,6 +153,36 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "First lifecycle"
   end
 
+  test "flushes the current Task and ignores its delayed save after switching Tasks", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    first = task_fixture(project, %{title: "First persisted"})
+    second = task_fixture(project, %{title: "Second persisted"})
+
+    first_path = ~p"/projects/#{project.id}/tasks/#{first.id}"
+    second_path = ~p"/projects/#{project.id}/tasks/#{second.id}"
+    {:ok, view, _html} = live(conn, first_path)
+
+    view
+    |> form("#task-form", task: %{title: "First flushed"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert Tasks.get_task_for_project(project, first.id).title == "First persisted"
+
+    render_patch(view, second_path)
+
+    assert Tasks.get_task_for_project(project, first.id).title == "First flushed"
+    assert has_element?(view, "#task-title[value='Second persisted']")
+    assert has_element?(view, "#task-save-status[data-state='idle']")
+
+    send(view.pid, {:autosave_task_field, first.id, "title", 1})
+    _ = :sys.get_state(view.pid)
+
+    assert Tasks.get_task_for_project(project, second.id).title == "Second persisted"
+    assert has_element?(view, "#task-title[value='Second persisted']")
+  end
+
   test "flushes valid dirty text and discards an invalid dirty title on close", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", description: "Old description"})
@@ -222,6 +253,49 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     assert has_element?(view, "#task-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
+  end
+
+  test "route flushing a cross-Project Task keeps the Task-not-found state", %{conn: _conn} do
+    selected_project = project_fixture(%{})
+    task_project = project_fixture(%{})
+    task = task_fixture(task_project, %{title: "Before"})
+
+    assert {:schedule, autosave, ^task, _delay, _message} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               task_project,
+               task,
+               %{"title" => "Unsaved"},
+               "title"
+             )
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{
+        live_temp: %{},
+        lifecycle: Phoenix.LiveView.Lifecycle.build([])
+      }
+    }
+
+    {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
+
+    socket =
+      %{socket | assigns: Map.merge(socket.assigns, %{live_action: :show_task})}
+      |> Phoenix.Component.assign(:selected_project, selected_project)
+      |> Phoenix.Component.assign(:selected_task, task)
+      |> Phoenix.Component.assign(:task_autosave, autosave)
+
+    params = %{
+      "project_id" => Integer.to_string(selected_project.id),
+      "task_id" => Integer.to_string(task.id)
+    }
+
+    assert {:noreply, socket} = ProjectLive.handle_params(params, nil, socket)
+    assert socket.assigns.selected_task == nil
+    assert socket.assigns.task_not_found?
+    assert socket.assigns.task_autosave.form == nil
+
+    socket = %{socket | assigns: Map.put(socket.assigns, :flash, %{})}
+    assert rendered_to_string(ProjectLive.render(socket.assigns)) =~ ~s(id="task-not-found")
   end
 
   test "closes a dirty Task detail back to its List context and preserves descendants", %{

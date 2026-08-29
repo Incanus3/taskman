@@ -8,10 +8,7 @@ defmodule TaskmanWeb.ProjectLive do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.{TaskComponents, TaskForm, WorkspaceNavigation}
-
-  @editable_task_fields ~w(title description status priority due_at)
-  @debounced_task_fields ~w(title description)
+  alias TaskmanWeb.{TaskAutosave, TaskComponents, TaskForm, WorkspaceNavigation}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -34,18 +31,12 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:location_not_found?, false)
      |> assign(:location_path, [])
      |> assign(:project_form, project_form(%Project{}))
-     |> assign(:task_form, nil)
+     |> assign(:task_create_form, nil)
      |> assign(:task_create_enabled?, false)
      |> assign(:tasks_empty?, true)
      |> assign(:selected_task, nil)
      |> assign(:task_not_found?, false)
-     |> assign(:task_draft, %{})
-     |> assign(:task_dirty_fields, MapSet.new())
-     |> assign(:task_revisions, %{})
-     |> assign(:task_autosave_sequence, 0)
-     |> assign(:task_save_failed?, false)
-     |> assign(:task_saved?, false)
-     |> assign(:task_save_state, :idle)
+     |> assign(:task_autosave, TaskAutosave.empty())
      |> assign(:active_move_task, nil)
      |> assign(:move_query, "")
      |> assign(:move_destination, nil)
@@ -64,7 +55,7 @@ defmodule TaskmanWeb.ProjectLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case flush_dirty_task_fields(socket) do
+    case flush_task_autosave(socket) do
       {:ok, socket} -> {:noreply, apply_route(params, socket)}
       {:error, socket} -> {:noreply, restore_failed_task_route(socket, params)}
     end
@@ -147,7 +138,7 @@ defmodule TaskmanWeb.ProjectLive do
     changeset = Tasks.change_task(socket.assigns.selected_project)
 
     socket
-    |> assign(:task_form, to_form(changeset))
+    |> assign(:task_create_form, to_form(changeset))
     |> assign(:task_create_enabled?, changeset.valid?)
   end
 
@@ -156,7 +147,10 @@ defmodule TaskmanWeb.ProjectLive do
       %Task{} = task ->
         socket
         |> assign(:selected_task, task)
-        |> assign(:task_form, to_form(Tasks.change_task(task)))
+        |> assign(
+          :task_autosave,
+          TaskAutosave.load(socket.assigns.task_autosave, task, saved?: false)
+        )
 
       nil ->
         assign(socket, :task_not_found?, true)
@@ -356,7 +350,7 @@ defmodule TaskmanWeb.ProjectLive do
 
     {:noreply,
      socket
-     |> assign(:task_form, to_form(changeset))
+     |> assign(:task_create_form, to_form(changeset))
      |> assign(:task_create_enabled?, changeset.valid?)}
   end
 
@@ -382,7 +376,7 @@ defmodule TaskmanWeb.ProjectLive do
       {:error, changeset} ->
         {:noreply,
          socket
-         |> assign(:task_form, to_form(changeset))
+         |> assign(:task_create_form, to_form(changeset))
          |> assign(:task_create_enabled?, false)}
     end
   end
@@ -391,27 +385,21 @@ defmodule TaskmanWeb.ProjectLive do
         "autosave_task",
         %{"_target" => ["task", field], "task" => task_params},
         socket
+      ) do
+    result =
+      TaskAutosave.change(
+        socket.assigns.task_autosave,
+        socket.assigns.selected_project,
+        socket.assigns.selected_task,
+        task_params,
+        field
       )
-      when field in @editable_task_fields do
-    socket =
-      socket
-      |> assign(:task_draft, task_params)
-      |> assign(:task_save_failed?, false)
-      |> assign_task_form(task_params)
-      |> mark_task_field_dirty(field)
 
-    socket =
-      if field in @debounced_task_fields do
-        schedule_task_field_save(socket, field)
-      else
-        persist_task_field(socket, field)
-      end
-
-    {:noreply, socket}
+    {:noreply, apply_task_autosave_result(socket, result)}
   end
 
   def handle_event("submit_task_edit", _params, socket) do
-    case flush_dirty_task_fields(socket) do
+    case flush_task_autosave(socket) do
       {:ok, socket} -> {:noreply, socket}
       {:error, socket} -> {:noreply, socket}
     end
@@ -513,17 +501,72 @@ defmodule TaskmanWeb.ProjectLive do
   @impl true
   def handle_info(
         {:autosave_task_field, task_id, field, revision},
-        %{assigns: %{selected_task: %{id: task_id}, task_revisions: revisions}} = socket
+        %{
+          assigns: %{
+            selected_project: %Project{} = project,
+            selected_task: %Task{} = task
+          }
+        } = socket
       ) do
-    if Map.get(revisions, field) == revision do
-      {:noreply, persist_task_field(socket, field)}
-    else
-      {:noreply, socket}
-    end
+    result =
+      TaskAutosave.handle_scheduled_save(
+        socket.assigns.task_autosave,
+        project,
+        task,
+        task_id,
+        field,
+        revision
+      )
+
+    {:noreply, apply_task_autosave_result(socket, result)}
   end
 
   def handle_info({:autosave_task_field, _task_id, _field, _revision}, socket) do
     {:noreply, socket}
+  end
+
+  defp apply_task_autosave_result(socket, {:ok, autosave, task}),
+    do: sync_task_autosave(socket, autosave, task)
+
+  defp apply_task_autosave_result(socket, {:ignored, autosave, task}),
+    do: sync_task_autosave(socket, autosave, task)
+
+  defp apply_task_autosave_result(
+         socket,
+         {:schedule, autosave, task, delay_ms, message}
+       ) do
+    socket
+    |> sync_task_autosave(autosave, task)
+    |> execute_task_autosave_schedule(delay_ms, message)
+  end
+
+  defp apply_task_autosave_result(socket, {:not_found, autosave}) do
+    socket
+    |> assign(:task_autosave, autosave)
+    |> assign(:selected_task, nil)
+    |> assign(:task_not_found?, true)
+  end
+
+  defp sync_task_autosave(socket, autosave, task) do
+    socket = assign(socket, :task_autosave, autosave)
+
+    if socket.assigns.selected_task != task do
+      socket
+      |> assign(:selected_task, task)
+      |> refresh_task_stream()
+    else
+      socket
+    end
+  end
+
+  defp execute_task_autosave_schedule(socket, 0, message) do
+    send(self(), message)
+    socket
+  end
+
+  defp execute_task_autosave_schedule(socket, delay_ms, message) do
+    Process.send_after(self(), message, delay_ms)
+    socket
   end
 
   defp navigation_identity(%{"kind" => "project", "id" => id} = params) do
@@ -789,14 +832,9 @@ defmodule TaskmanWeb.ProjectLive do
     socket
     |> assign(:selected_task, nil)
     |> assign(:task_not_found?, false)
-    |> assign(:task_form, nil)
+    |> assign(:task_create_form, nil)
     |> assign(:task_create_enabled?, false)
-    |> assign(:task_draft, %{})
-    |> assign(:task_dirty_fields, MapSet.new())
-    |> assign(:task_revisions, %{})
-    |> assign(:task_save_failed?, false)
-    |> assign(:task_saved?, false)
-    |> assign(:task_save_state, :idle)
+    |> assign(:task_autosave, TaskAutosave.clear(socket.assigns.task_autosave))
     |> clear_move_state()
   end
 
@@ -898,10 +936,15 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp flush_move_task_fields("detail", socket) do
-    case flush_dirty_task_fields(socket) do
-      {:ok, %{assigns: %{task_form: %{source: %{valid?: true}}}} = socket} -> {:ok, socket}
-      {:ok, socket} -> {:error, socket}
-      {:error, socket} -> {:error, socket}
+    case flush_task_autosave(socket) do
+      {:ok, %{assigns: %{task_autosave: %{form: %{source: %{valid?: true}}}}} = socket} ->
+        {:ok, socket}
+
+      {:ok, socket} ->
+        {:error, socket}
+
+      {:error, socket} ->
+        {:error, socket}
     end
   end
 
@@ -964,13 +1007,10 @@ defmodule TaskmanWeb.ProjectLive do
           %Task{} = task ->
             socket
             |> assign(:selected_task, task)
-            |> assign(:task_form, to_form(Tasks.change_task(task)))
-            |> assign(:task_draft, %{})
-            |> assign(:task_dirty_fields, MapSet.new())
-            |> assign(:task_revisions, %{})
-            |> assign(:task_save_failed?, false)
-            |> assign(:task_saved?, true)
-            |> refresh_task_save_state()
+            |> assign(
+              :task_autosave,
+              TaskAutosave.load(socket.assigns.task_autosave, task, saved?: true)
+            )
 
           nil ->
             socket
@@ -996,71 +1036,27 @@ defmodule TaskmanWeb.ProjectLive do
 
   defp reinsert_active_move_row(socket), do: socket
 
-  defp assign_task_form(socket, params) do
-    form =
-      socket.assigns.selected_task
-      |> Tasks.change_task(params)
-      |> Map.put(:action, :validate)
-      |> to_form()
+  defp flush_task_autosave(
+         %{
+           assigns: %{
+             selected_project: %Project{} = project,
+             selected_task: %Task{} = task
+           }
+         } = socket
+       ) do
+    case TaskAutosave.flush(socket.assigns.task_autosave, project, task) do
+      {:ok, autosave, task} ->
+        {:ok, sync_task_autosave(socket, autosave, task)}
 
-    assign(socket, :task_form, form)
-  end
+      {:error, autosave, task} ->
+        {:error, sync_task_autosave(socket, autosave, task)}
 
-  defp mark_task_field_dirty(socket, field) do
-    assign(
-      socket,
-      :task_dirty_fields,
-      MapSet.put(socket.assigns.task_dirty_fields, field)
-    )
-  end
-
-  defp schedule_task_field_save(socket, field) do
-    revision = socket.assigns.task_autosave_sequence + 1
-
-    socket =
-      socket
-      |> assign(:task_autosave_sequence, revision)
-      |> assign(:task_revisions, Map.put(socket.assigns.task_revisions, field, revision))
-
-    value = Map.get(socket.assigns.task_draft, field)
-    field_changeset = Tasks.change_task(socket.assigns.selected_task, %{field => value})
-
-    if field_changeset.valid? do
-      message = {:autosave_task_field, socket.assigns.selected_task.id, field, revision}
-      schedule_autosave_message(message)
-    end
-
-    refresh_task_save_state(socket)
-  end
-
-  defp schedule_autosave_message(message) do
-    case Application.get_env(:taskman, :task_autosave_delay_ms, 300) do
-      0 -> send(self(), message)
-      delay -> Process.send_after(self(), message, delay)
+      {:not_found, autosave} ->
+        {:ok, apply_task_autosave_result(socket, {:not_found, autosave})}
     end
   end
 
-  defp flush_dirty_task_fields(%{assigns: %{selected_task: %Task{}}} = socket) do
-    {socket, save_failed?} =
-      Enum.reduce(socket.assigns.task_dirty_fields, {socket, false}, fn field,
-                                                                        {socket, save_failed?} ->
-        socket =
-          socket
-          |> assign(:task_save_failed?, false)
-          |> persist_task_field(field)
-
-        {socket, save_failed? || socket.assigns.task_save_failed?}
-      end)
-
-    socket =
-      socket
-      |> assign(:task_save_failed?, save_failed?)
-      |> refresh_task_save_state()
-
-    if save_failed?, do: {:error, socket}, else: {:ok, socket}
-  end
-
-  defp flush_dirty_task_fields(socket), do: {:ok, socket}
+  defp flush_task_autosave(socket), do: {:ok, socket}
 
   defp restore_failed_task_route(
          %{
@@ -1110,65 +1106,6 @@ defmodule TaskmanWeb.ProjectLive do
   defp canonical_query_route?(params, include_children?) do
     Map.get(params, "include_children") == if(include_children?, do: "true", else: nil)
   end
-
-  defp persist_task_field(socket, field) do
-    value = Map.get(socket.assigns.task_draft, field)
-    field_changeset = Tasks.change_task(socket.assigns.selected_task, %{field => value})
-
-    if field_changeset.valid? do
-      save_task_field(socket, field, value)
-    else
-      refresh_task_save_state(socket)
-    end
-  end
-
-  defp save_task_field(socket, field, value) do
-    case Tasks.update_task(
-           socket.assigns.selected_project,
-           socket.assigns.selected_task,
-           %{field => value}
-         ) do
-      {:ok, task} ->
-        socket
-        |> assign(:selected_task, task)
-        |> assign(:task_dirty_fields, MapSet.delete(socket.assigns.task_dirty_fields, field))
-        |> assign(:task_save_failed?, false)
-        |> assign(:task_saved?, true)
-        |> refresh_task_stream()
-        |> assign_task_form(socket.assigns.task_draft)
-        |> refresh_task_save_state()
-
-      {:error, %Ecto.Changeset{}} ->
-        socket
-        |> assign(:task_save_failed?, true)
-        |> refresh_task_save_state()
-
-      {:error, :not_found} ->
-        socket
-        |> assign(:selected_task, nil)
-        |> assign(:task_form, nil)
-        |> assign(:task_not_found?, true)
-    end
-  end
-
-  defp refresh_task_save_state(socket) do
-    task_save_state =
-      cond do
-        socket.assigns.task_save_failed? -> :failed
-        !socket.assigns.task_form.source.valid? -> :not_saved
-        MapSet.size(socket.assigns.task_dirty_fields) > 0 -> :saving
-        socket.assigns.task_saved? -> :saved
-        true -> :idle
-      end
-
-    assign(socket, :task_save_state, task_save_state)
-  end
-
-  defp task_save_message(:idle), do: "Autosaves changes"
-  defp task_save_message(:saving), do: "Saving…"
-  defp task_save_message(:saved), do: "Saved"
-  defp task_save_message(:not_saved), do: "Not saved"
-  defp task_save_message(:failed), do: "Couldn’t save changes"
 
   defp browse_path(%Project{id: project_id}, nil, include_children?) do
     append_include_children(~p"/projects/#{project_id}", include_children?)

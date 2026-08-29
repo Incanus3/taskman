@@ -278,7 +278,7 @@
         )}
       </p>
       <TaskForm.form
-        form={@task_form}
+        form={@task_create_form}
         mode={:new}
         change="validate_task"
         submit="save_task"
@@ -299,9 +299,9 @@
     >
       <TaskmanWeb.TaskDetail.detail
         task={@selected_task}
-        form={@task_form}
-        save_state={@task_save_state}
-        save_message={task_save_message(@task_save_state)}
+        form={@task_autosave.form}
+        save_state={@task_autosave.save_state}
+        save_message={TaskAutosave.message(@task_autosave)}
         cancel={browse_path(@selected_project, @selected_list, @include_children?)}
         has_hierarchy?={false}
         active_move_task={@active_move_task}

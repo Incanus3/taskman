@@ -134,6 +134,16 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     assert has_element?(view, "#task-form")
     refute has_element?(view, "#tasks-#{task.id}")
     refute_patched(view, task_path)
+    assert has_element?(view, "#task-save-status[data-state='saved']")
+
+    view
+    |> form("#task-form", task: %{priority: "urgent"})
+    |> render_change(%{"_target" => ["task", "priority"]})
+
+    assert Tasks.get_task_for_project(project, task.id).priority == :urgent
+    assert has_element?(view, "#task-priority option[selected][value='urgent']")
+    assert has_element?(view, "#task-save-status[data-state='saved']")
+    refute_patched(view, task_path)
   end
 
   test "gives the Task modal sole Escape ownership while its move popover is open", %{conn: conn} do
