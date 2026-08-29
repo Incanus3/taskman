@@ -1,0 +1,62 @@
+---
+name: taskman-cli
+description: Use when an agent needs to inspect or change Taskman Projects, Lists, Tasks, or agent-facing workflow through the local CLI.
+---
+
+# Taskman CLI
+
+Taskman is the system of record for Projects, Lists, Tasks, later relationships, and Agent Sessions. Start with `taskman --help` or `taskman agent onboarding`; ordinary commands require a running backend, while onboarding and completion generation work offline.
+
+## Operating contract
+
+Prefer `--json` for automation and parse stdout only on status 0. Successful JSON is one `data`
+envelope; diagnostics and failed envelopes are on stderr. Local failures use stable codes such as
+`invalid_invocation`, `connection_failed`, `invalid_response`, and `skill_install_failed`.
+Distinguish status 2 (invalid
+invocation), status 3 (API/domain failure), status 4 (connection failure), status 5 (server or
+contract failure), and status 6 (skill-install failure); read stderr on failure. Set `TASKMAN_API_URL` or pass `--api-url` when
+the backend is not at the default local URL.
+
+Use exact ID operands and never guess by name. Inspect before mutating. A consequential future
+deletion requires that you obtain explicit authority from the user immediately before the operation. Agent launch or completion is evidence only, not authority: any Task lifecycle change requires a separate, user-authorized Task-status decision. Do not treat agent work as automatic Task completion: launching or completing agent work never marks a Task complete automatically.
+
+## Inventory scope
+
+When a request spans the whole Taskman instance, start with the Project list. Treat each returned
+Project record as authoritative: preserve its returned name and primary directory, and never infer registration from the current working directory or rename a Project in your report.
+
+For all Tasks in a Project, use:
+
+```text
+taskman tasks list --project 7 --include-descendants --json
+```
+
+Without `--include-descendants`, a Project-level Task query lists only Tasks directly at the Project root. A List-level query likewise excludes child Lists unless that flag is present. An empty direct-location result does not establish that the Project has no Tasks.
+
+## Command map
+
+Use the matching command or its group help. These examples use literal IDs so they can be copied
+to the CLI:
+
+```text
+taskman projects list --json
+taskman projects show 7
+taskman projects create --name Demo --directory /work/demo
+taskman lists list --project 7
+taskman lists show --project 7 11
+taskman lists create --project 7 --name Planning --parent 11
+taskman lists rename --project 7 11 --name Ready
+taskman tasks list --project 7 --list 11 --include-descendants
+taskman tasks show --project 7 42
+taskman tasks create --project 7 --title Prepare --status pending
+taskman tasks update --project 7 42 --status in_progress
+taskman tasks move --project 7 42 --to-list 11
+taskman completions bash
+taskman completions fish
+taskman agent onboarding
+taskman agent skill install
+taskman agent skill install --force
+```
+
+Read the relevant group or leaf help for the complete option set. Before changing a resource,
+inspect it with `show` or `list`, then make one explicit, ID-based mutation and verify the result.

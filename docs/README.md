@@ -25,7 +25,6 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
-- [API, CLI, and agent skill implementation plan](plans/2026-08-29-api-cli-agent-skill.md)
 
 ## Specifications
 
@@ -60,3 +59,4 @@
 - [Alpine Elixir CI implementation plan](archive/plans/2026-08-10-alpine-elixir-ci.md)
 - [Task detail and navigation implementation plan](archive/plans/2026-08-24-task-detail-navigation.md)
 - [Lists and nested organization implementation plan](archive/plans/2026-08-26-lists-nested-organization.md)
+- [API, CLI, and agent skill implementation plan](archive/plans/2026-08-29-api-cli-agent-skill.md)

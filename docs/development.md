@@ -70,3 +70,7 @@ Automated tests should cover observable behavior, interactions, and meaningful s
 add assertions that only verify styling details such as spacing, colors, or alignment. CSS-class
 assertions are appropriate only when they establish functional user-visible state, such as whether
 an element is shown or hidden.
+
+Meaningful persisted or query operations exposed through the UI must ship with corresponding API,
+CLI, help, Bash/Fish completion, bundled skill, and focused verification parity unless the
+accepted feature specification records an explicit exception.

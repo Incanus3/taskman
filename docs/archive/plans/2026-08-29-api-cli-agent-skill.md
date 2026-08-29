@@ -19,7 +19,7 @@ installation are offline CLI commands.
 
 **Spec:** `docs/specs/2026-08-29-api-cli-agent-skill-design.md`
 
-**Status:** Approved
+**Status:** Completed and archived — 2026-08-30
 
 ## Global Constraints
 
