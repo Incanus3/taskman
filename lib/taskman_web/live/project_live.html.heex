@@ -19,12 +19,8 @@
 
           <WorkspaceNavigation.tree
             navigation_nodes={@streams.navigation_nodes}
-            selected_project={@selected_project}
-            selected_list={@selected_list}
             include_children?={@include_children?}
-            active_list_project={@active_list_project}
-            active_list_form={@active_list_form}
-            list_form={@list_form}
+            list_edit={@list_edit}
           />
 
           <.form
@@ -249,12 +245,7 @@
                   )
                 }
                 include_children?={@include_children?}
-                active_move_task={@active_move_task}
-                move_query={@move_query}
-                move_destination={@move_destination}
-                move_options={@move_options}
-                move_options_open?={@move_options_open?}
-                move_error={@move_error}
+                task_move={@task_move}
               />
             </div>
           </div>
@@ -295,21 +286,14 @@
       show
       size={:wide}
       on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
-      on_escape={if(@active_move_task, do: JS.push("cancel_move_task"), else: nil)}
+      on_escape={if(TaskMove.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
     >
       <TaskmanWeb.TaskDetail.detail
         task={@selected_task}
-        form={@task_autosave.form}
-        save_state={@task_autosave.save_state}
-        save_message={TaskAutosave.message(@task_autosave)}
+        task_autosave={@task_autosave}
         cancel={browse_path(@selected_project, @selected_list, @include_children?)}
         has_hierarchy?={false}
-        active_move_task={@active_move_task}
-        move_query={@move_query}
-        move_destination={@move_destination}
-        move_options={@move_options}
-        move_options_open?={@move_options_open?}
-        move_error={@move_error}
+        task_move={@task_move}
       />
     </.modal>
 

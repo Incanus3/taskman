@@ -62,6 +62,48 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     refute has_element?(view, "#move-task-options-#{task.id}")
   end
 
+  test "reopening a selected destination filters its query and refreshes persisted location", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    inbox = list_fixture(project, nil, %{name: "Inbox"})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    archive = list_fixture(project, nil, %{name: "Archive"})
+    task = task_fixture(project, inbox, %{title: "Move me"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    assert {:ok, _moved} = Tasks.move_task(project, task, planning)
+
+    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
+    assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
+
+    persisted_task = Tasks.get_task_for_project(project, task.id)
+    assert {:ok, _moved} = Tasks.move_task(project, persisted_task, inbox)
+
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+
+    assert has_element?(
+             view,
+             "#move-task-search-#{task.id}[aria-expanded='true'][value='Planning']"
+           )
+
+    assert has_element?(
+             view,
+             "#move-task-option-list-#{planning.id}[aria-selected='true'][data-current-location='false']"
+           )
+
+    refute has_element?(view, "#move-task-option-project-#{project.id}")
+    refute has_element?(view, "#move-task-option-list-#{inbox.id}")
+    refute has_element?(view, "#move-task-option-list-#{archive.id}")
+    refute has_element?(view, "#move-task-submit-#{task.id}[disabled]")
+    assert Tasks.get_task_for_project(project, task.id).list_id == inbox.id
+  end
+
   test "lists project and nested List destinations in tree order", %{conn: conn} do
     project = project_fixture(%{})
     planning = list_fixture(project, nil, %{name: "Planning"})
@@ -463,5 +505,59 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
     assert has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
+  end
+
+  test "moves a List-owned Task back to the Project root", %{conn: conn} do
+    project = project_fixture(%{})
+    inbox = list_fixture(project, nil, %{name: "Inbox"})
+    task = task_fixture(project, inbox, %{title: "Move me"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{inbox.id}")
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-project-#{project.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == nil
+    refute has_element?(view, "#tasks-#{task.id}")
+    refute has_element?(view, "#move-task-#{task.id}")
+  end
+
+  test "changing destination search invalidates the previous selection", %{conn: conn} do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+
+    view
+    |> element("#move-task-search-#{task.id}")
+    |> render_keyup(%{"value" => "No matching location"})
+
+    assert has_element?(view, "#move-task-no-results-#{task.id}")
+    refute has_element?(view, "#move-task-options-#{task.id} [aria-selected='true']")
+    assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
+  end
+
+  test "changing Project route clears an open move interaction", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Move me"})
+    destination_project = project_fixture(%{})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    assert has_element?(view, "#move-task-#{task.id}")
+
+    view |> element("#select-project-#{destination_project.id}") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{destination_project.id}")
+    assert has_element?(view, "#project-#{destination_project.id}[aria-current='page']")
+    refute has_element?(view, "#move-task-#{task.id}")
   end
 end

@@ -8,7 +8,15 @@ defmodule TaskmanWeb.ProjectLive do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.{TaskAutosave, TaskComponents, TaskForm, WorkspaceNavigation}
+
+  alias TaskmanWeb.{
+    ListEdit,
+    TaskAutosave,
+    TaskComponents,
+    TaskForm,
+    TaskMove,
+    WorkspaceNavigation
+  }
 
   @impl true
   def mount(_params, _session, socket) do
@@ -37,16 +45,9 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:selected_task, nil)
      |> assign(:task_not_found?, false)
      |> assign(:task_autosave, TaskAutosave.empty())
-     |> assign(:active_move_task, nil)
-     |> assign(:move_query, "")
-     |> assign(:move_destination, nil)
-     |> assign(:move_options, [])
-     |> assign(:move_options_open?, false)
-     |> assign(:move_error, nil)
+     |> assign(:task_move, TaskMove.empty())
      |> assign(:expanded_node_ids, MapSet.new())
-     |> assign(:active_list_project, nil)
-     |> assign(:active_list_form, nil)
-     |> assign(:list_form, nil)
+     |> assign(:list_edit, ListEdit.empty())
      |> stream(:projects, Projects.list_projects())
      |> stream(:tasks, [])
      |> stream(:navigation_nodes, [])
@@ -248,34 +249,26 @@ defmodule TaskmanWeb.ProjectLive do
   def handle_event("cancel_list_form", _params, socket) do
     {:noreply,
      socket
-     |> assign(:active_list_project, nil)
-     |> assign(:active_list_form, nil)
-     |> assign(:list_form, nil)
+     |> clear_list_edit()
      |> refresh_navigation_stream()}
   end
 
   def handle_event("validate_list", %{"list" => list_params}, socket) do
-    case list_form_target(socket) do
-      {:ok, active_list_form, task_list} ->
-        changeset =
-          task_list
-          |> Lists.change_list(list_params)
-          |> Map.put(:action, :validate)
-
+    case ListEdit.validate(socket.assigns.list_edit, list_params) do
+      {:ok, list_edit} ->
         {:noreply,
          socket
-         |> assign(:active_list_form, active_list_form)
-         |> assign(:list_form, to_form(changeset, as: :list))
+         |> assign(:list_edit, list_edit)
          |> refresh_navigation_stream()}
 
-      :error ->
+      {:error, :not_found} ->
         {:noreply, socket}
     end
   end
 
   def handle_event("save_list", %{"list" => list_params}, socket) do
-    case {socket.assigns.active_list_project, list_form_target(socket)} do
-      {%Project{} = project, {:ok, {:new, parent}, _task_list}} ->
+    case {socket.assigns.list_edit, ListEdit.target(socket.assigns.list_edit)} do
+      {%ListEdit{project: %Project{} = project}, {:ok, {:new, parent}, _task_list}} ->
         case Lists.create_list(project, parent, list_params) do
           {:ok, _task_list} ->
             expanded_node_ids =
@@ -287,19 +280,17 @@ defmodule TaskmanWeb.ProjectLive do
             {:noreply,
              socket
              |> assign(:expanded_node_ids, expanded_node_ids)
-             |> assign(:active_list_project, nil)
-             |> assign(:active_list_form, nil)
-             |> assign(:list_form, nil)
+             |> clear_list_edit()
              |> refresh_navigation_stream()}
 
           {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_form_error(socket, changeset)}
+            {:noreply, assign_list_edit_error(socket, changeset)}
 
           {:error, :not_found} ->
             {:noreply, socket}
         end
 
-      {%Project{} = project, {:ok, {:rename, current_list}, _task_list}} ->
+      {%ListEdit{project: %Project{} = project}, {:ok, {:rename, current_list}, _task_list}} ->
         case Lists.rename_list(project, current_list, list_params) do
           {:ok, renamed_list} ->
             selected_list =
@@ -323,15 +314,13 @@ defmodule TaskmanWeb.ProjectLive do
              socket
              |> assign(:selected_list, selected_list)
              |> assign(:location_path, selected_location_path)
-             |> assign(:active_list_project, nil)
-             |> assign(:active_list_form, nil)
-             |> assign(:list_form, nil)
+             |> clear_list_edit()
              |> refresh_navigation_stream()
              |> refresh_task_stream()
              |> refresh_move_surface()}
 
           {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_form_error(socket, changeset)}
+            {:noreply, assign_list_edit_error(socket, changeset)}
 
           {:error, :not_found} ->
             {:noreply, socket}
@@ -410,78 +399,90 @@ defmodule TaskmanWeb.ProjectLive do
       %Project{} = project ->
         case Tasks.get_task_for_project(project, task_id) do
           %Task{} = task ->
-            active_move_task = active_move_task(socket, project, task)
+            task_move =
+              TaskMove.open(
+                socket.assigns.task_move,
+                project,
+                task,
+                task_move_origin(socket, task)
+              )
 
             {:noreply,
              socket
-             |> assign(:active_move_task, active_move_task)
-             |> assign(:move_query, "")
-             |> assign(:move_destination, nil)
-             |> assign(:move_options, move_destination_options(project, task))
-             |> assign(:move_options_open?, false)
-             |> assign(:move_error, nil)
-             |> refresh_move_surface()}
+             |> assign(:task_move, task_move)
+             |> refresh_task_stream()}
 
           nil ->
-            {:noreply, clear_move_state(socket)}
+            {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
         end
 
       nil ->
-        {:noreply, clear_move_state(socket)}
+        {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
     end
   end
 
-  def handle_event("open_move_task", _params, socket), do: {:noreply, clear_move_state(socket)}
+  def handle_event("open_move_task", _params, socket),
+    do: {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
 
   def handle_event("open_move_destinations", _params, socket) do
     {:noreply,
      socket
-     |> assign(:move_options_open?, true)
+     |> assign(:task_move, TaskMove.open_destinations(socket.assigns.task_move))
      |> refresh_move_surface()}
   end
 
   def handle_event("search_move_destinations", %{"value" => query}, socket)
       when is_binary(query) do
-    destination =
-      if query == socket.assigns.move_query, do: socket.assigns.move_destination, else: nil
+    case {socket.assigns.selected_project, socket.assigns.task_move} do
+      {%Project{} = project, %TaskMove{} = task_move} ->
+        if TaskMove.active?(task_move) do
+          case TaskMove.search(task_move, project, query) do
+            {:ok, task_move, _task} ->
+              {:noreply,
+               socket
+               |> assign(:task_move, task_move)
+               |> refresh_task_stream()}
 
-    {:noreply,
-     socket
-     |> assign(:move_query, query)
-     |> assign(:move_destination, destination)
-     |> assign(:move_options_open?, true)
-     |> refresh_move_surface()}
+            {:error, task_move, :task_not_found} ->
+              {:noreply,
+               socket
+               |> assign(:task_move, task_move)
+               |> refresh_task_stream()}
+          end
+        else
+          {:noreply, socket}
+        end
+
+      _no_active_move ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("search_move_destinations", _params, socket), do: {:noreply, socket}
 
   def handle_event("select_move_destination", %{"destination" => destination}, socket)
       when is_binary(destination) do
-    query =
-      Enum.find_value(socket.assigns.move_options, socket.assigns.move_query, fn option ->
-        if option.value == destination, do: option.label
-      end)
-
     {:noreply,
      socket
-     |> assign(:move_query, query)
-     |> assign(:move_destination, destination)
-     |> assign(:move_options_open?, false)
-     |> assign(:move_error, nil)
+     |> assign(:task_move, TaskMove.select_destination(socket.assigns.task_move, destination))
      |> refresh_move_surface()}
   end
 
   def handle_event("select_move_destination", _params, socket), do: {:noreply, socket}
 
   def handle_event("cancel_move_task", _params, socket),
-    do: {:noreply, socket |> clear_move_state() |> refresh_move_surface()}
+    do:
+      {:noreply,
+       socket
+       |> assign(:task_move, TaskMove.clear(socket.assigns.task_move))
+       |> refresh_task_stream()}
 
   def handle_event(
         "submit_move_task",
         _params,
         %{
           assigns: %{
-            active_move_task: %{task_id: task_id, origin: origin},
+            task_move: %TaskMove{active_task: %{origin: origin}},
             selected_project: %Project{} = project
           }
         } =
@@ -489,10 +490,32 @@ defmodule TaskmanWeb.ProjectLive do
       ) do
     case flush_move_task_fields(origin, socket) do
       {:error, socket} ->
-        {:noreply, assign_move_error(socket, "Save the Task before moving it.")}
+        task_move =
+          TaskMove.put_error(
+            socket.assigns.task_move,
+            "Save the Task before moving it."
+          )
+
+        {:noreply,
+         socket
+         |> assign(:task_move, task_move)
+         |> reinsert_active_move_row()}
 
       {:ok, socket} ->
-        submit_task_move(socket, project, task_id)
+        case TaskMove.submit(socket.assigns.task_move, project) do
+          {:ok, task_move, moved_task} ->
+            {:noreply,
+             socket
+             |> assign(:task_move, task_move)
+             |> refresh_selected_task_after_move(moved_task.id)
+             |> refresh_task_stream()}
+
+          {:error, task_move, _reason} ->
+            {:noreply,
+             socket
+             |> assign(:task_move, task_move)
+             |> reinsert_active_move_row()}
+        end
     end
   end
 
@@ -620,13 +643,9 @@ defmodule TaskmanWeb.ProjectLive do
   defp open_new_list_form(socket, project, parent_id) do
     case resolve_parent_list(project, parent_id) do
       {:ok, parent} ->
-        task_list = %TaskList{project_id: project.id, parent_list_id: parent && parent.id}
-
         {:noreply,
          socket
-         |> assign(:active_list_project, project)
-         |> assign(:active_list_form, {:new, parent})
-         |> assign(:list_form, list_form(task_list))
+         |> assign(:list_edit, ListEdit.open_new(project, parent))
          |> refresh_navigation_stream()}
 
       :error ->
@@ -639,9 +658,7 @@ defmodule TaskmanWeb.ProjectLive do
       %TaskList{} = task_list ->
         {:noreply,
          socket
-         |> assign(:active_list_project, project)
-         |> assign(:active_list_form, {:rename, task_list})
-         |> assign(:list_form, list_form(task_list))
+         |> assign(:list_edit, ListEdit.open_rename(project, task_list))
          |> refresh_navigation_stream()}
 
       nil ->
@@ -658,55 +675,14 @@ defmodule TaskmanWeb.ProjectLive do
     end
   end
 
-  defp list_form_target(%{
-         assigns: %{active_list_project: %Project{} = project, active_list_form: {:new, parent}}
-       }) do
-    case parent do
-      nil ->
-        {:ok, {:new, nil}, %TaskList{project_id: project.id}}
-
-      %TaskList{id: parent_id} ->
-        case Lists.get_list_for_project(project, parent_id) do
-          %TaskList{} = fresh_parent ->
-            {:ok, {:new, fresh_parent},
-             %TaskList{project_id: project.id, parent_list_id: fresh_parent.id}}
-
-          nil ->
-            :error
-        end
-    end
-  end
-
-  defp list_form_target(%{
-         assigns: %{
-           active_list_project: %Project{} = project,
-           active_list_form: {:rename, task_list}
-         }
-       }) do
-    case task_list do
-      %TaskList{id: list_id} ->
-        case Lists.get_list_for_project(project, list_id) do
-          %TaskList{} = fresh_list -> {:ok, {:rename, fresh_list}, fresh_list}
-          nil -> :error
-        end
-
-      _invalid ->
-        :error
-    end
-  end
-
-  defp list_form_target(_socket), do: :error
-
-  defp assign_list_form_error(socket, changeset) do
+  defp assign_list_edit_error(socket, changeset) do
     socket
-    |> assign(:list_form, to_form(Map.put(changeset, :action, :validate), as: :list))
+    |> assign(:list_edit, ListEdit.put_error(socket.assigns.list_edit, changeset))
     |> refresh_navigation_stream()
   end
 
-  defp list_form(task_list, attrs \\ %{}) do
-    task_list
-    |> Lists.change_list(attrs)
-    |> to_form(as: :list)
+  defp clear_list_edit(socket) do
+    assign(socket, :list_edit, ListEdit.clear(socket.assigns.list_edit))
   end
 
   defp refresh_navigation_stream(socket) do
@@ -755,9 +731,7 @@ defmodule TaskmanWeb.ProjectLive do
     |> assign(:location_not_found?, location_not_found?)
     |> assign(:include_children?, include_children?)
     |> assign(:location_path, location_path)
-    |> assign(:active_list_project, nil)
-    |> assign(:active_list_form, nil)
-    |> assign(:list_form, nil)
+    |> clear_list_edit()
     |> assign(:tasks_empty?, tasks == [])
     |> stream(:projects, Projects.list_projects(), reset: true)
     |> stream(:tasks, tasks, reset: true)
@@ -784,49 +758,28 @@ defmodule TaskmanWeb.ProjectLive do
          %{
            assigns: %{
              selected_project: %Project{} = project,
-             active_move_task: %{task_id: task_id} = active_move_task
+             task_move: %TaskMove{} = task_move
            }
          } = socket
        ) do
-    case Tasks.get_task_for_project(project, task_id) do
-      %Task{} = task ->
-        all_options = move_destination_options(project, task)
+    if TaskMove.active?(task_move) do
+      case TaskMove.refresh(task_move, project) do
+        {:ok, task_move, _task} ->
+          socket
+          |> assign(:task_move, task_move)
+          |> refresh_task_stream()
 
-        active_move_task =
-          active_move_task
-          |> Map.put(:current_destination, task_destination(task))
-          |> refresh_active_move_task_location(project, task)
-
-        destination =
-          if Enum.any?(all_options, &(&1.value == socket.assigns.move_destination)) do
-            socket.assigns.move_destination
-          else
-            nil
-          end
-
-        socket
-        |> assign(:active_move_task, active_move_task)
-        |> assign(:move_destination, destination)
-        |> assign(:move_options, filtered_move_options(socket, all_options))
-        |> assign(:move_error, nil)
-        |> refresh_task_stream()
-
-      nil ->
-        socket
-        |> clear_move_state()
-        |> refresh_task_stream()
+        {:error, task_move, :task_not_found} ->
+          socket
+          |> assign(:task_move, task_move)
+          |> refresh_task_stream()
+      end
+    else
+      refresh_task_stream(socket)
     end
   end
 
-  defp refresh_move_surface(%{assigns: %{selected_project: %Project{}}} = socket),
-    do: refresh_task_stream(socket)
-
   defp refresh_move_surface(socket), do: socket
-
-  defp refresh_active_move_task_location(%{origin: "row"} = active_move_task, project, task),
-    do: Map.put(active_move_task, :task_with_location, task_with_location(project, task))
-
-  defp refresh_active_move_task_location(active_move_task, _project, _task), do: active_move_task
 
   defp clear_task_modal_state(socket) do
     socket
@@ -835,107 +788,17 @@ defmodule TaskmanWeb.ProjectLive do
     |> assign(:task_create_form, nil)
     |> assign(:task_create_enabled?, false)
     |> assign(:task_autosave, TaskAutosave.clear(socket.assigns.task_autosave))
-    |> clear_move_state()
+    |> assign(:task_move, TaskMove.clear(socket.assigns.task_move))
   end
 
-  defp clear_move_state(socket) do
-    socket
-    |> assign(:active_move_task, nil)
-    |> assign(:move_query, "")
-    |> assign(:move_destination, nil)
-    |> assign(:move_options, [])
-    |> assign(:move_options_open?, false)
-    |> assign(:move_error, nil)
-  end
-
-  defp move_origin(socket, %Task{id: task_id}) do
+  defp task_move_origin(socket, %Task{id: task_id}) do
     case socket.assigns.selected_task do
-      %Task{id: ^task_id} -> "detail"
-      _not_selected -> "row"
+      %Task{id: ^task_id} -> :detail
+      _not_selected -> :row
     end
   end
 
-  defp active_move_task(socket, project, task) do
-    active_move_task = %{
-      task_id: task.id,
-      origin: move_origin(socket, task),
-      current_destination: task_destination(task)
-    }
-
-    if active_move_task.origin == "row" do
-      Map.put(active_move_task, :task_with_location, task_with_location(project, task))
-    else
-      active_move_task
-    end
-  end
-
-  defp task_destination(%Task{list_id: nil}), do: "project"
-  defp task_destination(%Task{list_id: list_id}), do: "list:#{list_id}"
-
-  defp task_with_location(project, task) do
-    task_lists = Lists.list_lists_for_project(project)
-
-    location_path =
-      case Enum.find(task_lists, &(&1.id == task.list_id)) do
-        nil -> []
-        task_list -> Lists.path_for(task_lists, task_list)
-      end
-
-    %TaskWithLocation{task: task, location_path: location_path}
-  end
-
-  defp move_destination_options(project, task) do
-    task_lists = Lists.list_lists_for_project(project)
-
-    [
-      %{
-        id: project.id,
-        value: "project",
-        label: "Project · #{project.name}",
-        current?: is_nil(task.list_id)
-      }
-      | Enum.map(ordered_task_lists(task_lists), fn task_list ->
-          %{
-            id: task_list.id,
-            value: "list:#{task_list.id}",
-            label:
-              task_lists
-              |> Lists.path_for(task_list)
-              |> Enum.map_join(" / ", & &1.name),
-            current?: task.list_id == task_list.id
-          }
-        end)
-    ]
-  end
-
-  defp ordered_task_lists(task_lists) do
-    children_by_parent = Enum.group_by(task_lists, & &1.parent_list_id)
-
-    children_by_parent
-    |> Map.get(nil, [])
-    |> Enum.flat_map(&task_list_preorder(&1, children_by_parent))
-  end
-
-  defp task_list_preorder(task_list, children_by_parent) do
-    [
-      task_list
-      | Enum.flat_map(
-          Map.get(children_by_parent, task_list.id, []),
-          &task_list_preorder(&1, children_by_parent)
-        )
-    ]
-  end
-
-  defp filtered_move_options(socket, options) do
-    Enum.filter(options, fn option ->
-      String.contains?(
-        String.downcase(option.label),
-        String.downcase(socket.assigns.move_query)
-      )
-    end)
-  end
-
-  defp flush_move_task_fields("detail", socket) do
+  defp flush_move_task_fields(:detail, socket) do
     case flush_task_autosave(socket) do
       {:ok, %{assigns: %{task_autosave: %{form: %{source: %{valid?: true}}}}} = socket} ->
         {:ok, socket}
@@ -949,56 +812,6 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp flush_move_task_fields(_origin, socket), do: {:ok, socket}
-
-  defp submit_task_move(socket, project, task_id) do
-    case Tasks.get_task_for_project(project, task_id) do
-      nil ->
-        {:noreply, assign_move_error(socket, "This Task is no longer available.")}
-
-      %Task{} = task ->
-        case resolve_move_destination(project, socket.assigns.move_destination) do
-          {:error, :not_found} ->
-            {:noreply, assign_move_error(socket, "That destination is no longer available.")}
-
-          {:ok, destination} ->
-            complete_task_move(socket, project, task, destination)
-        end
-    end
-  end
-
-  defp resolve_move_destination(_project, "project"), do: {:ok, nil}
-
-  defp resolve_move_destination(project, "list:" <> list_id) do
-    case Lists.get_list_for_project(project, list_id) do
-      %TaskList{} = destination -> {:ok, destination}
-      nil -> {:error, :not_found}
-    end
-  end
-
-  defp resolve_move_destination(_project, _destination), do: {:error, :not_found}
-
-  defp complete_task_move(socket, project, task, destination) do
-    case Tasks.move_task(project, task, destination) do
-      {:ok, _moved_task} ->
-        {:noreply,
-         socket
-         |> refresh_selected_task_after_move(task.id)
-         |> refresh_task_stream()
-         |> clear_move_state()}
-
-      {:error, :unchanged_location} ->
-        {:noreply,
-         socket
-         |> refresh_move_surface()
-         |> assign_move_error("This Task is already in that location.")}
-
-      {:error, :not_found} ->
-        {:noreply, assign_move_error(socket, "That destination is no longer available.")}
-
-      {:error, _reason} ->
-        {:noreply, assign_move_error(socket, "Couldn’t move this Task. Please try again.")}
-    end
-  end
 
   defp refresh_selected_task_after_move(socket, task_id) do
     case socket.assigns.selected_task do
@@ -1021,17 +834,16 @@ defmodule TaskmanWeb.ProjectLive do
     end
   end
 
-  defp assign_move_error(socket, message) do
-    socket
-    |> assign(:move_error, message)
-    |> reinsert_active_move_row()
-  end
-
   defp reinsert_active_move_row(
-         %{assigns: %{active_move_task: %{origin: "row", task_with_location: task_with_location}}} =
-           socket
+         %{
+           assigns: %{
+             task_move: %TaskMove{
+               active_task: %{origin: :row, task_with_location: %TaskWithLocation{} = task}
+             }
+           }
+         } = socket
        ) do
-    stream_insert(socket, :tasks, task_with_location)
+    stream_insert(socket, :tasks, task)
   end
 
   defp reinsert_active_move_row(socket), do: socket

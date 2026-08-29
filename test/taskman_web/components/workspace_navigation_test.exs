@@ -8,7 +8,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
   alias Taskman.Lists.NavigationNode
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias TaskmanWeb.WorkspaceNavigation
+  alias TaskmanWeb.{ListEdit, WorkspaceNavigation}
 
   test "renders a flattened semantic tree with independent controls" do
     project = %Project{id: 7, name: "Taskman", primary_directory: "/workspace/taskman"}
@@ -51,11 +51,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
     html =
       render_component(&WorkspaceNavigation.tree/1, %{
         navigation_nodes: Enum.map(nodes, &{&1.dom_id, &1}),
-        selected_project: project,
-        selected_list: child,
         include_children?: false,
-        active_list_form: nil,
-        list_form: nil
+        list_edit: ListEdit.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -124,11 +121,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
           {"project-7", project_node(project)},
           {list_node.dom_id, list_node}
         ],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_form: nil,
-        list_form: nil
+        list_edit: ListEdit.empty()
       })
       |> LazyHTML.from_fragment()
 
@@ -155,8 +149,6 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
   test "renders the active root and nested List forms with stable IDs" do
     project = %Project{id: 7, name: "Taskman"}
     parent = %TaskList{id: 11, project_id: project.id, name: "Planning"}
-    changeset = Taskman.Lists.change_list(%TaskList{project_id: project.id}, %{})
-    form = Phoenix.Component.to_form(changeset, as: :list)
 
     node = %NavigationNode{
       dom_id: "project-7",
@@ -172,12 +164,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
     root_html =
       render_component(&WorkspaceNavigation.tree/1, %{
         navigation_nodes: [{node.dom_id, node}],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: project,
-        active_list_form: {:new, nil},
-        list_form: form
+        list_edit: ListEdit.open_new(project, nil)
       })
 
     refute Enum.empty?(
@@ -200,12 +188,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
              selected?: false
            }}
         ],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: project,
-        active_list_form: {:new, parent},
-        list_form: form
+        list_edit: ListEdit.open_new(project, parent)
       })
 
     refute Enum.empty?(
@@ -228,12 +212,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
              selected?: false
            }}
         ],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: project,
-        active_list_form: {:rename, parent},
-        list_form: form
+        list_edit: ListEdit.open_rename(project, parent)
       })
 
     refute Enum.empty?(
@@ -291,17 +271,11 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
       selected?: false
     }
 
-    changeset = Taskman.Lists.change_list(task_list, %{})
-
     html =
       render_component(&WorkspaceNavigation.tree/1, %{
         navigation_nodes: [{node.dom_id, node}],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: project,
-        active_list_form: {:rename, task_list},
-        list_form: Phoenix.Component.to_form(changeset, as: :list)
+        list_edit: ListEdit.open_rename(project, task_list)
       })
 
     document = LazyHTML.from_fragment(html)
@@ -329,17 +303,12 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
     second_project = %Project{id: 8, name: "Second"}
     first_node = project_node(first_project)
     second_node = project_node(second_project)
-    changeset = Taskman.Lists.change_list(%TaskList{project_id: first_project.id}, %{})
 
     html =
       render_component(&WorkspaceNavigation.tree/1, %{
         navigation_nodes: [{first_node.dom_id, first_node}, {second_node.dom_id, second_node}],
-        selected_project: first_project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: first_project,
-        active_list_form: {:new, nil},
-        list_form: Phoenix.Component.to_form(changeset, as: :list)
+        list_edit: ListEdit.open_new(first_project, nil)
       })
 
     document = LazyHTML.from_fragment(html)
@@ -368,9 +337,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
     task_list = %TaskList{id: 11, project_id: project.id, name: "Planning"}
 
     [
-      render_form_document(project, project_node(project), {:new, nil}, %TaskList{
-        project_id: project.id
-      }),
+      render_form_document(project, project_node(project), {:new, nil}),
       render_form_document(
         project,
         %NavigationNode{
@@ -383,28 +350,27 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
           expandable?: false,
           selected?: false
         },
-        {:rename, task_list},
-        task_list
+        {:rename, task_list}
       )
     ]
   end
 
-  defp render_form_document(project, node, active_list_form, task_list) do
-    changeset = Taskman.Lists.change_list(task_list, %{})
+  defp render_form_document(project, node, action) do
+    list_edit =
+      case action do
+        {:new, parent} -> ListEdit.open_new(project, parent)
+        {:rename, current_list} -> ListEdit.open_rename(project, current_list)
+      end
 
     document =
       render_component(&WorkspaceNavigation.tree/1, %{
         navigation_nodes: [{node.dom_id, node}],
-        selected_project: project,
-        selected_list: nil,
         include_children?: false,
-        active_list_project: project,
-        active_list_form: active_list_form,
-        list_form: Phoenix.Component.to_form(changeset, as: :list)
+        list_edit: list_edit
       })
       |> LazyHTML.from_fragment()
 
-    {document, form_id(active_list_form)}
+    {document, form_id(action)}
   end
 
   defp form_id({:new, nil}), do: "list-create-form-root"
