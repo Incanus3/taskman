@@ -502,5 +502,5 @@ rather than optional extras.
 
 ## Next-session checklist
 
-1. Review and approve the implementation plan and repository-local Beads delivery graph.
-2. Begin implementation in a fresh session after updating the handoff.
+1. Begin implementation in a fresh session using the approved plan and repository-local Beads
+   delivery graph.
