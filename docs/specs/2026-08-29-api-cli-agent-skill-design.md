@@ -1,6 +1,6 @@
 # API, CLI, and Agent Skill Design
 
-**Status:** Draft for written review  
+**Status:** Approved
 **Date:** 2026-08-29
 
 ## Context
@@ -347,7 +347,7 @@ explains:
   version;
 - that ordinary commands require a running backend;
 - how to install or update the escript with
-  `MIX_ENV=prod mix do escript.build + escript.install --force`;
+  `mix do escript.build + escript.install --force`;
 - that Mix installs it at `~/.mix/escripts/taskman`;
 - that `~/.mix/escripts` must be on `PATH` to invoke it as `taskman`, while
   `~/.mix/escripts/taskman` remains directly invokable without that `PATH` entry;
@@ -502,6 +502,5 @@ rather than optional extras.
 
 ## Next-session checklist
 
-1. Review and approve this written specification.
-2. Create the implementation plan and repository-local Beads delivery graph.
-3. Begin implementation in a fresh session after updating the handoff.
+1. Review and approve the implementation plan and repository-local Beads delivery graph.
+2. Begin implementation in a fresh session after updating the handoff.

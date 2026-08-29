@@ -12,27 +12,27 @@ standard agent-skills location.
 
 ## Durable references
 
-- [Design specification awaiting written review](../specs/2026-08-29-api-cli-agent-skill-design.md)
+- [Approved design specification](../specs/2026-08-29-api-cli-agent-skill-design.md)
+- [Implementation plan awaiting review](../plans/2026-08-29-api-cli-agent-skill.md)
 - [MVP roadmap](../planning/roadmap.md)
 - [MVP product specification](../product/mvp-spec.md)
 
-There is no active Beads issue for this slice yet.
+The active Beads feature is `tas-yty`, with child tasks `tas-yty.1` through `tas-yty.9`.
 
 ## Current checkpoint
 
-The design was approved section by section. The written specification, product contract, roadmap
-ordering, and documentation index have been updated. Slice 4 backfills Project/List/Task parity;
-later slices must maintain UI/API/CLI/help/completion/skill parity. Bash and Fish completions are
+The design and written specification are approved. A detailed TDD implementation plan and Beads
+dependency graph are ready for operator review. Slice 4 backfills Project/List/Task parity; later
+slices must maintain UI/API/CLI/help/completion/skill parity. Bash and Fish completions are
 generated from the shared command registry without backend lookups. `taskman serve` is reserved as
 a future extension and excluded from this slice.
 
 ## Immediate next actions
 
-1. Obtain operator review of the written specification.
-2. After approval, use the writing-plans workflow to create the implementation plan and
-   repository-local Beads delivery graph.
-3. Update this handoff, then begin implementation in a fresh session with
-   `$resume api-cli-agent-skill`.
+1. Obtain operator review and approval of the implementation plan.
+2. Mark the plan approved and update this handoff with any accepted changes.
+3. Begin implementation in a fresh session with `$resume api-cli-agent-skill`, defaulting to the
+   subagent-driven-development workflow unless the operator chooses another approach.
 
 ## Constraints and pending decisions
 
@@ -40,7 +40,7 @@ a future extension and excluded from this slice.
 - Keep the API local-only and unauthenticated under the current MVP boundary.
 - The implementation must preserve the specification's exact endpoint paths, JSON fields, command
   registry, Bash/Fish completion contract, and numeric exit statuses.
-- No implementation is authorized until the written specification is reviewed.
+- No implementation is authorized until the implementation plan is approved.
 
 ## Verification baseline
 

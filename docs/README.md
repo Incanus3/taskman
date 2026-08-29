@@ -25,6 +25,7 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
+- [API, CLI, and agent skill implementation plan](plans/2026-08-29-api-cli-agent-skill.md)
 
 ## Specifications
 
