@@ -26,6 +26,23 @@ defmodule TaskmanWeb.Router do
     live "/projects/:project_id/lists/:list_id/tasks/:task_id", ProjectLive, :show_task
   end
 
+  scope "/api/v1", TaskmanWeb.API do
+    pipe_through :api
+
+    get "/projects", ProjectController, :index
+    post "/projects", ProjectController, :create
+    get "/projects/:project_id", ProjectController, :show
+    get "/projects/:project_id/lists", ListController, :index
+    post "/projects/:project_id/lists", ListController, :create
+    get "/projects/:project_id/lists/:list_id", ListController, :show
+    patch "/projects/:project_id/lists/:list_id", ListController, :update
+    get "/projects/:project_id/tasks", TaskController, :index
+    post "/projects/:project_id/tasks", TaskController, :create
+    get "/projects/:project_id/tasks/:task_id", TaskController, :show
+    patch "/projects/:project_id/tasks/:task_id", TaskController, :update
+    post "/projects/:project_id/tasks/:task_id/move", TaskController, :move
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", TaskmanWeb do
   #   pipe_through :api
