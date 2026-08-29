@@ -21,18 +21,19 @@ The active Beads feature is `tas-yty`, with child tasks `tas-yty.1` through `tas
 
 ## Current checkpoint
 
-The design, written specification, detailed TDD implementation plan, and Beads dependency graph are
-approved. The workstream is at a clean implementation boundary. Slice 4 backfills
-Project/List/Task parity; later slices must maintain UI/API/CLI/help/completion/skill parity. Bash
-and Fish completions are generated from the shared command registry without backend lookups.
-`taskman serve` is reserved as a future extension and excluded from this slice.
+Implementation has started from the approved design and detailed TDD plan. The
+`api-cli-agent-skill` branch is stacked above `api-cli-agent-skill-design`; feature `tas-yty` and
+Tasks 1–3 are implemented and task-reviewed. Commits `mpn`, `npk`, and `ymn` deliver complete
+Project/List/Task JSON API parity; `mkp` enforces the reviewed loopback-only production default.
+All API controller tests and the latest `mix precommit` gate pass. The SDD ledger remains at
+`.superpowers/sdd/2026-08-29-api-cli-agent-skill/progress.md`.
 
 ## Immediate next actions
 
-1. Resume in a fresh session and read the complete approved specification and implementation plan.
-2. Use the subagent-driven-development workflow unless the operator chooses another approach.
-3. Begin with plan Task 1 / Beads issue `tas-yty.1`; Task 4 / `tas-yty.4` is also dependency-ready
-   if the chosen execution workflow explicitly coordinates parallel work.
+1. Continue plan Task 4 / Beads issue `tas-yty.4` using the SDD task/review loop.
+2. Establish the complete declarative command registry, parser/help boundary, and offline escript
+   without starting Phoenix or Repo services.
+3. Preserve every exact command path, option, constraint, lifecycle token, and global precedence.
 
 ## Constraints
 
@@ -45,6 +46,6 @@ and Fish completions are generated from the shared command registry without back
 
 ## Verification baseline
 
-Planning commit `rwz` contains the detailed plan and Beads graph on
-`api-cli-agent-skill-design`. The plan self-check found no unresolved placeholders or whitespace
-errors, all local Markdown links resolved, and `br sync --status` reported the tracker in sync.
+Latest Task 3 evidence: Task API tests passed (20 tests), Task/domain/List tests passed (53 tests),
+all API controller tests passed (34 tests), and `mix precommit` passed (215 tests). Task review
+approved the implementation with only two deferred test-hardening suggestions.

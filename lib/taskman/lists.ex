@@ -15,6 +15,25 @@ defmodule Taskman.Lists do
     |> Repo.all()
   end
 
+  @doc "Flatten Lists in parent-before-descendant order while preserving sibling order."
+  @spec tree_order([TaskList.t()]) :: [TaskList.t()]
+  def tree_order(task_lists) when is_list(task_lists) do
+    children_by_parent = Enum.group_by(task_lists, & &1.parent_list_id)
+
+    {visited, reversed} =
+      flatten_task_lists(
+        Map.get(children_by_parent, nil, []),
+        children_by_parent,
+        MapSet.new(),
+        []
+      )
+
+    remaining = Enum.reject(task_lists, &MapSet.member?(visited, &1.id))
+    {_visited, reversed} = flatten_task_lists(remaining, children_by_parent, visited, reversed)
+
+    Enum.reverse(reversed)
+  end
+
   def get_list_for_project(%Project{id: project_id}, id) when is_integer(id) and id > 0 do
     Repo.get_by(TaskList, id: id, project_id: project_id)
   end
@@ -90,6 +109,27 @@ defmodule Taskman.Lists do
   end
 
   defp do_path_for(_by_id, _task_list, _visited), do: []
+
+  defp flatten_task_lists([], _children_by_parent, visited, reversed),
+    do: {visited, reversed}
+
+  defp flatten_task_lists([task_list | rest], children_by_parent, visited, reversed) do
+    if MapSet.member?(visited, task_list.id) do
+      flatten_task_lists(rest, children_by_parent, visited, reversed)
+    else
+      visited = MapSet.put(visited, task_list.id)
+
+      {visited, reversed} =
+        flatten_task_lists(
+          Map.get(children_by_parent, task_list.id, []),
+          children_by_parent,
+          visited,
+          [task_list | reversed]
+        )
+
+      flatten_task_lists(rest, children_by_parent, visited, reversed)
+    end
+  end
 
   def navigation_nodes(
         projects,
