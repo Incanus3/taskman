@@ -23,17 +23,19 @@ The active Beads feature is `tas-yty`, with child tasks `tas-yty.1` through `tas
 
 Implementation has started from the approved design and detailed TDD plan. The
 `api-cli-agent-skill` branch is stacked above `api-cli-agent-skill-design`; feature `tas-yty` and
-Tasks 1–3 are implemented and task-reviewed. Commits `mpn`, `npk`, and `ymn` deliver complete
-Project/List/Task JSON API parity; `mkp` enforces the reviewed loopback-only production default.
-All API controller tests and the latest `mix precommit` gate pass. The SDD ledger remains at
+Tasks 1–7 are implemented and task-reviewed. API and CLI parity for Projects, Lists, and Tasks is
+complete, and Bash/Fish completions plus offline onboarding are registry-driven and reviewed.
+Completion constraints now behave consistently across both shells, including mixed descendant
+groups and option values that match command names. The latest CLI and `mix precommit` gates pass.
+The SDD ledger remains at
 `.superpowers/sdd/2026-08-29-api-cli-agent-skill/progress.md`.
 
 ## Immediate next actions
 
-1. Continue plan Task 4 / Beads issue `tas-yty.4` using the SDD task/review loop.
-2. Establish the complete declarative command registry, parser/help boundary, and offline escript
-   without starting Phoenix or Repo services.
-3. Preserve every exact command path, option, constraint, lifecycle token, and global precedence.
+1. Continue plan Task 8 / Beads issue `tas-yty.8` using the SDD task/review loop.
+2. Bundle the concise `taskman-cli` agent skill and implement the staged, rollback-safe installer.
+3. Keep installer tests under an injected temporary skills root; never touch the real
+   `~/.agents/skills` directory.
 
 ## Constraints
 
@@ -46,6 +48,7 @@ All API controller tests and the latest `mix precommit` gate pass. The SDD ledge
 
 ## Verification baseline
 
-Latest Task 3 evidence: Task API tests passed (20 tests), Task/domain/List tests passed (53 tests),
-all API controller tests passed (34 tests), and `mix precommit` passed (215 tests). Task review
-approved the implementation with only two deferred test-hardening suggestions.
+Latest Task 7 evidence: focused completion tests passed (11 tests), the full suite passed
+(283 tests), and `mix precommit` passed. Generated Bash/Fish scripts parse successfully, and actual
+shell completion queries verify registry constraints, forbidden globals, and option-value
+collisions. The final scoped Task 7 review approved with no findings.

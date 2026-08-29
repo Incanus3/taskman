@@ -5,6 +5,7 @@ defmodule Taskman.MixProject do
     [
       app: :taskman,
       version: "0.1.0",
+      escript: [main_module: Taskman.CLI, app: nil],
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
