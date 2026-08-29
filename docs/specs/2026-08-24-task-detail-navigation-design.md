@@ -265,7 +265,9 @@ uses `:wide`.
 ### Task-detail component
 
 A project-owned `TaskmanWeb.TaskDetail` function component composes the hierarchy, existing
-`TaskForm`, Activity, Sessions, and autosave status. It does not own state or persistence.
+`TaskForm`, Activity, Sessions, and autosave status. It receives the cohesive
+`%TaskmanWeb.TaskAutosave{}` interaction state rather than separate form, state, and message
+values. It does not own state or persistence.
 
 Stable IDs include:
 

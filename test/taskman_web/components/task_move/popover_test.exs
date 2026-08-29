@@ -1,24 +1,31 @@
-defmodule TaskmanWeb.MoveTaskTest do
+defmodule TaskmanWeb.TaskMove.PopoverTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
 
   import Phoenix.LiveViewTest
 
-  alias TaskmanWeb.MoveTask
+  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.TaskMove.Popover
 
   test "renders a labelled destination combobox with complete location paths" do
     html =
-      render_component(&MoveTask.popover/1, %{
+      render_component(&Popover.popover/1, %{
         task_id: 41,
-        destination: nil,
-        error: nil,
-        options_open?: true,
-        options: [
-          %{id: 1, value: "project", label: "Project · Taskman", current?: false},
-          %{id: 11, value: "list:11", label: "Planning", current?: false},
-          %{id: 12, value: "list:12", label: "Planning / Launch", current?: true}
-        ]
+        task_move: %TaskMove{
+          active_task: %{
+            task_id: 41,
+            origin: :row,
+            current_destination: "list:12",
+            task_with_location: nil
+          },
+          options_open?: true,
+          options: [
+            %{id: 1, value: "project", label: "Project · Taskman", current?: false},
+            %{id: 11, value: "list:11", label: "Planning", current?: false},
+            %{id: 12, value: "list:12", label: "Planning / Launch", current?: true}
+          ]
+        }
       })
 
     document = LazyHTML.from_fragment(html)
@@ -62,13 +69,14 @@ defmodule TaskmanWeb.MoveTaskTest do
 
   test "renders an empty search state, local error, and explicit cancellation" do
     html =
-      render_component(&MoveTask.popover/1, %{
+      render_component(&Popover.popover/1, %{
         task_id: 41,
-        destination: "list:12",
-        current_destination: "list:12",
-        error: "This Task is already in that location.",
-        options_open?: true,
-        options: []
+        task_move:
+          task_move(
+            destination: "list:12",
+            error: "This Task is already in that location.",
+            options_open?: true
+          )
       })
 
     document = LazyHTML.from_fragment(html)
@@ -94,11 +102,9 @@ defmodule TaskmanWeb.MoveTaskTest do
 
   test "focuses a collapsed destination combobox when the popover mounts" do
     html =
-      render_component(&MoveTask.popover/1, %{
+      render_component(&Popover.popover/1, %{
         task_id: 41,
-        destination: nil,
-        error: nil,
-        options: []
+        task_move: task_move()
       })
 
     mounted_actions =
@@ -125,11 +131,9 @@ defmodule TaskmanWeb.MoveTaskTest do
 
   test "restores the previously pushed focus when the popover is removed" do
     html =
-      render_component(&MoveTask.popover/1, %{
+      render_component(&Popover.popover/1, %{
         task_id: 41,
-        destination: nil,
-        error: nil,
-        options: []
+        task_move: task_move()
       })
 
     [remove_actions] =
@@ -143,11 +147,9 @@ defmodule TaskmanWeb.MoveTaskTest do
 
   test "can leave Escape ownership to an enclosing dialog" do
     html =
-      render_component(&MoveTask.popover/1, %{
+      render_component(&Popover.popover/1, %{
         task_id: 41,
-        destination: nil,
-        error: nil,
-        options: [],
+        task_move: task_move(),
         window_escape?: false
       })
 
@@ -166,5 +168,19 @@ defmodule TaskmanWeb.MoveTaskTest do
                "#move-task-41[phx-window-keydown]"
              )
            )
+  end
+
+  defp task_move(overrides \\ []) do
+    struct!(
+      %TaskMove{
+        active_task: %{
+          task_id: 41,
+          origin: :row,
+          current_destination: "list:12",
+          task_with_location: nil
+        }
+      },
+      overrides
+    )
   end
 end

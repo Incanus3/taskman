@@ -2,20 +2,14 @@ defmodule TaskmanWeb.TaskDetail do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.{MoveTask, TaskForm}
+  alias TaskmanWeb.{TaskAutosave, TaskForm, TaskMove}
+  alias TaskmanWeb.TaskMove.Popover
 
   attr :task, Task, required: true
-  attr :form, Phoenix.HTML.Form, required: true
-  attr :save_state, :atom, required: true
-  attr :save_message, :string, required: true
+  attr :task_autosave, TaskAutosave, required: true
   attr :cancel, :string, required: true
   attr :has_hierarchy?, :boolean, default: false
-  attr :active_move_task, :map, default: nil
-  attr :move_query, :string, default: ""
-  attr :move_destination, :string, default: nil
-  attr :move_options, :list, default: []
-  attr :move_options_open?, :boolean, default: false
-  attr :move_error, :string, default: nil
+  attr :task_move, TaskMove, required: true
 
   def detail(assigns) do
     ~H"""
@@ -89,19 +83,14 @@ defmodule TaskmanWeb.TaskDetail do
                 Move Task
               </button>
             </div>
-            <MoveTask.popover
-              :if={move_active_for?(@active_move_task, @task.id)}
+            <Popover.popover
+              :if={TaskMove.active_for?(@task_move, @task.id, :detail)}
               task_id={@task.id}
-              query={@move_query}
-              destination={@move_destination}
-              current_destination={move_current_destination(@active_move_task)}
-              options={@move_options}
-              options_open?={@move_options_open?}
-              error={@move_error}
+              task_move={@task_move}
               window_escape?={false}
             />
             <TaskForm.form
-              form={@form}
+              form={@task_autosave.form}
               mode={:edit}
               change="autosave_task"
               submit="submit_task_edit"
@@ -110,10 +99,10 @@ defmodule TaskmanWeb.TaskDetail do
             <p
               id="task-save-status"
               aria-live="polite"
-              data-state={@save_state}
+              data-state={@task_autosave.save_state}
               class="mt-4 text-right text-sm text-slate-400"
             >
-              {@save_message}
+              {TaskAutosave.message(@task_autosave)}
             </p>
           </section>
 
@@ -160,10 +149,4 @@ defmodule TaskmanWeb.TaskDetail do
     </div>
     """
   end
-
-  defp move_active_for?(%{task_id: task_id, origin: "detail"}, task_id), do: true
-  defp move_active_for?(_active_move_task, _task_id), do: false
-
-  defp move_current_destination(%{current_destination: destination}), do: destination
-  defp move_current_destination(_active_move_task), do: nil
 end

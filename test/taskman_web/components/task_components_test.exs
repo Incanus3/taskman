@@ -7,7 +7,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
 
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.TaskComponents
+  alias TaskmanWeb.{TaskComponents, TaskMove}
 
   test "renders the descendant Task location as its own labelled column cell" do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
@@ -26,11 +26,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: true,
-        active_move_task: nil,
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: TaskMove.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -53,11 +49,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        active_move_task: nil,
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: TaskMove.empty()
       })
 
     assert LazyHTML.from_fragment(html)
@@ -69,17 +61,22 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
+    task_move = %TaskMove{
+      active_task: %{
+        task_id: task.id,
+        origin: :row,
+        current_destination: "project",
+        task_with_location: task_with_location
+      }
+    }
+
     html =
       render_component(&TaskComponents.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        active_move_task: %{task_id: 41, origin: "row", current_destination: "project"},
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: task_move
       })
 
     document = LazyHTML.from_fragment(html)
@@ -109,11 +106,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        active_move_task: nil,
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: TaskMove.empty()
       })
 
     [open_actions] =
@@ -129,17 +122,22 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
+    task_move = %TaskMove{
+      active_task: %{
+        task_id: task.id,
+        origin: :row,
+        current_destination: "project",
+        task_with_location: task_with_location
+      }
+    }
+
     html =
       render_component(&TaskComponents.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        active_move_task: %{task_id: 41, origin: "row", current_destination: "project"},
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: task_move
       })
 
     document = LazyHTML.from_fragment(html)
@@ -160,17 +158,22 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
+    task_move = %TaskMove{
+      active_task: %{
+        task_id: 42,
+        origin: :row,
+        current_destination: "project",
+        task_with_location: task_with_location
+      }
+    }
+
     html =
       render_component(&TaskComponents.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        active_move_task: %{task_id: 42, origin: "row", current_destination: "project"},
-        move_query: "",
-        move_destination: nil,
-        move_options: [],
-        move_error: nil
+        task_move: task_move
       })
 
     refute Enum.empty?(

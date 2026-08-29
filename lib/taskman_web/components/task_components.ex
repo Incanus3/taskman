@@ -2,7 +2,8 @@ defmodule TaskmanWeb.TaskComponents do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.MoveTask
+  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.TaskMove.Popover
 
   @status_labels %{
     icebox: "Icebox",
@@ -30,12 +31,7 @@ defmodule TaskmanWeb.TaskComponents do
   attr :task_with_location, TaskWithLocation, required: true
   attr :task_path, :string, required: true
   attr :include_children?, :boolean, default: false
-  attr :active_move_task, :map, default: nil
-  attr :move_query, :string, default: ""
-  attr :move_destination, :string, default: nil
-  attr :move_options, :list, default: []
-  attr :move_options_open?, :boolean, default: false
-  attr :move_error, :string, default: nil
+  attr :task_move, TaskMove, required: true
 
   def row(assigns) do
     ~H"""
@@ -89,8 +85,8 @@ defmodule TaskmanWeb.TaskComponents do
         id={"task-actions-#{task.id}"}
         class={[
           "pointer-events-auto relative flex justify-end sm:justify-self-center",
-          move_active_for?(@active_move_task, task.id, "row") && "z-40",
-          !move_active_for?(@active_move_task, task.id, "row") && "z-10"
+          TaskMove.active_for?(@task_move, task.id, :row) && "z-40",
+          !TaskMove.active_for?(@task_move, task.id, :row) && "z-10"
         ]}
       >
         <button
@@ -105,19 +101,14 @@ defmodule TaskmanWeb.TaskComponents do
           <.icon name="hero-arrows-right-left" class="size-4" />
         </button>
         <div
-          :if={move_active_for?(@active_move_task, task.id, "row")}
+          :if={TaskMove.active_for?(@task_move, task.id, :row)}
           data-move-task-popover
           phx-remove={JS.pop_focus()}
           class="absolute right-0 top-full z-30 w-80 max-w-[calc(100vw-3rem)]"
         >
-          <MoveTask.popover
+          <Popover.popover
             task_id={task.id}
-            query={@move_query}
-            destination={@move_destination}
-            current_destination={move_current_destination(@active_move_task)}
-            options={@move_options}
-            options_open?={@move_options_open?}
-            error={@move_error}
+            task_move={@task_move}
             restore_focus?={false}
           />
         </div>
@@ -128,10 +119,4 @@ defmodule TaskmanWeb.TaskComponents do
 
   defp location_label([]), do: "Project"
   defp location_label(location_path), do: Enum.map_join(location_path, " / ", & &1.name)
-
-  defp move_active_for?(%{task_id: task_id, origin: origin}, task_id, origin), do: true
-  defp move_active_for?(_active_move_task, _task_id, _origin), do: false
-
-  defp move_current_destination(%{current_destination: destination}), do: destination
-  defp move_current_destination(_active_move_task), do: nil
 end

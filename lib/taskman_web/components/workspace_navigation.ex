@@ -4,6 +4,7 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   alias Taskman.Lists.NavigationNode
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
+  alias TaskmanWeb.ListEdit
 
   @doc """
   Renders the visible Project/List portion of the workspace sidebar.
@@ -12,12 +13,8 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   each supplied flattened node into semantic tree markup and the currently active List form.
   """
   attr :navigation_nodes, :any, required: true
-  attr :selected_project, Project, default: nil
-  attr :selected_list, TaskList, default: nil
   attr :include_children?, :boolean, default: false
-  attr :active_list_project, Project, default: nil
-  attr :active_list_form, :any, default: nil
-  attr :list_form, :any, default: nil
+  attr :list_edit, ListEdit, required: true
 
   def tree(assigns) do
     ~H"""
@@ -134,20 +131,18 @@ defmodule TaskmanWeb.WorkspaceNavigation do
           </button>
         </div>
         <.list_form
-          :if={form_for_node?(@active_list_form, node, @active_list_project)}
-          list_form={@list_form}
-          active_list_form={@active_list_form}
+          :if={ListEdit.active_for?(@list_edit, node)}
+          list_edit={@list_edit}
         />
       </div>
     </nav>
     """
   end
 
-  attr :list_form, :any, required: true
-  attr :active_list_form, :any, required: true
+  attr :list_edit, ListEdit, required: true
 
   defp list_form(assigns) do
-    form_id = form_id(assigns.active_list_form)
+    form_id = ListEdit.form_id(assigns.list_edit)
     assigns = assign(assigns, :form_id, form_id)
 
     ~H"""
@@ -156,7 +151,7 @@ defmodule TaskmanWeb.WorkspaceNavigation do
       class="absolute left-9 right-1 top-full z-30 mt-1 rounded-xl border border-slate-700 bg-slate-900/80 p-3 shadow-lg shadow-black/20"
     >
       <.form
-        for={@list_form}
+        for={@list_edit.form}
         id={@form_id}
         phx-change="validate_list"
         phx-submit="save_list"
@@ -167,11 +162,11 @@ defmodule TaskmanWeb.WorkspaceNavigation do
         class="space-y-2"
       >
         <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-          {form_title(@active_list_form)}
+          {ListEdit.title(@list_edit)}
         </p>
         <.input
           id="list-name"
-          field={@list_form[:name]}
+          field={@list_edit.form[:name]}
           type="text"
           label="List name"
           autocomplete="off"
@@ -201,45 +196,6 @@ defmodule TaskmanWeb.WorkspaceNavigation do
     </div>
     """
   end
-
-  defp form_id({:new, nil}), do: "list-create-form-root"
-  defp form_id({:new, %TaskList{id: id}}), do: "list-create-form-#{id}"
-  defp form_id({:rename, %TaskList{id: id}}), do: "list-rename-form-#{id}"
-
-  defp form_title({:new, nil}), do: "New List"
-  defp form_title({:new, %TaskList{name: name}}), do: "New child List of #{name}"
-  defp form_title({:rename, %TaskList{name: name}}), do: "Rename #{name}"
-
-  defp form_for_node?(
-         {:new, nil},
-         %NavigationNode{kind: :project, project: %Project{id: project_id}},
-         %Project{id: active_project_id}
-       ),
-       do: project_id == active_project_id
-
-  defp form_for_node?(
-         {:new, %TaskList{id: parent_id}},
-         %NavigationNode{
-           kind: :list,
-           task_list: %TaskList{id: id}
-         } = node,
-         %Project{id: active_project_id}
-       ),
-       do: parent_id == id and active_project_id == node_project_id(node)
-
-  defp form_for_node?(
-         {:rename, %TaskList{id: list_id}},
-         %NavigationNode{
-           kind: :list,
-           task_list: %TaskList{id: id}
-         } = node,
-         %Project{id: active_project_id}
-       ),
-       do: list_id == id and active_project_id == node_project_id(node)
-
-  defp form_for_node?(_, _, _), do: false
-
-  defp node_project_id(%NavigationNode{project: %Project{id: id}}), do: id
 
   defp node_id(%NavigationNode{kind: :project, project: %Project{id: id}}), do: id
   defp node_id(%NavigationNode{kind: :list, task_list: %TaskList{id: id}}), do: id
