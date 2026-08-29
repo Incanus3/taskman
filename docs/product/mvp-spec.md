@@ -15,7 +15,7 @@ result; then explicitly mark the Task Done.
 
 ## 2. Users, delivery, and persistence
 
-- One person uses the locally started application in a browser.
+- One person uses the locally started application through its browser UI or accompanying CLI.
 - All product data persists on that machine.
 - A Project has exactly one required primary local directory. Any local directory is valid;
   repository metadata is detected when present.
@@ -33,10 +33,11 @@ result; then explicitly mark the Task Done.
 | **Checklist** | Ordered, informational completion markers on a Task. |
 | **Task relationship** | A Blocks / Blocked by, Relates to, or parent-child association; it is independent of List ownership. |
 
-Tasks may move only between locations in their current Project. A Task starts in **Pending** unless
-explicitly created in **Icebox**. Its fixed lifecycle is **Icebox → Pending → In Progress → In
-Review → Done**; In Review may return to Pending or In Progress. **Will Not Do** is the other
-terminal state. A human explicitly transitions state and reviews work before marking it Done.
+Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
+and a user may explicitly select another lifecycle state during creation. Its fixed lifecycle is
+**Icebox → Pending → In Progress → In Review → Done**; In Review may return to Pending or In
+Progress. **Will Not Do** is the other terminal state. A human explicitly transitions state and
+reviews work before marking it Done.
 
 Task priority is required and exactly one of **None**, **Low**, **Medium**, **High**, or **Urgent**.
 Description, local due date-time, and checklist are optional. Neither checklist progress, due date,
@@ -55,7 +56,30 @@ nor an Agent Session automatically changes Task state.
   Blocked by and Relates to links. Cross-Project relationship entries identify their other Project.
 - A docked right-detail layout is a future enhancement, not the MVP default.
 
-## 5. Task relationships
+## 5. Programmatic access and CLI
+
+Taskman provides a versioned local JSON API and an accompanying `taskman` CLI. Meaningful Project,
+List, and Task operations available in the browser are also available through the CLI where
+terminal use makes sense. Browser-only presentation state is not part of this parity contract.
+
+The CLI:
+
+- calls the running Taskman backend rather than accessing persistence directly;
+- provides readable output by default and deterministic JSON for agent automation;
+- has complete top-level and per-command help;
+- generates Bash and Fish completions from the same command registry as help;
+- includes an agent-onboarding command covering purpose, installation, configuration, and basic
+  usage; and
+- installs its version-matched agent skill to `~/.agents/skills/taskman-cli/`.
+
+Later slices add API, CLI, help, Bash/Fish completion, and skill support alongside every new
+meaningful UI operation. The MVP remains local-only and unauthenticated; this interface does not
+permit remote exposure or multi-user access.
+
+Starting the backend through a future `taskman serve` command is a planned extension point, not an
+MVP requirement of the initial CLI slice.
+
+## 6. Task relationships
 
 | Type | Scope and rules |
 | --- | --- |
@@ -68,7 +92,7 @@ never block its child. Relationships do not automatically transition Tasks. Movi
 unresolved direct blocker to Done requires an explicit warning confirmation; a blocker is resolved
 for that warning when it is Done or Will Not Do.
 
-## 6. Agent Session integration
+## 7. Agent Session integration
 
 ### Auggie ACP adapter
 
@@ -106,7 +130,7 @@ validated attachment, or explicit Resume; it is not live execution status.
 Agent Session actions never change Task lifecycle state. They support human work; they do not finish
 it.
 
-## 7. Deletion and human safeguards
+## 8. Deletion and human safeguards
 
 Projects, Lists, and Tasks may be deleted permanently. Before any recursive deletion, the product
 shows a detailed impact warning and requires a second explicit confirmation.
@@ -118,7 +142,7 @@ shows a detailed impact warning and requires a second explicit confirmation.
   chooses either recursive child-subtree deletion or reparenting direct children to its former parent,
   or to the Project-level hierarchy. Reparented children retain descendants and List ownership.
 
-## 8. Explicit MVP exclusions
+## 9. Explicit MVP exclusions
 
 - Product implementation and deployment; this document specifies the product only.
 - Authentication, public hosting, remote access, synchronization, collaboration, permissions, and
@@ -131,7 +155,7 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - Configurable workflows, global dashboards, advanced search, saved views, analytics, import, and
   export.
 
-## 9. Related documents
+## 10. Related documents
 
 - [Domain model and glossary](domain.md)
 - [Task relationship semantics](relationships.md)
