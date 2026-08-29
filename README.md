@@ -29,6 +29,20 @@ documentation](docs/README.md).
 
 Visit [`localhost:4000`](http://localhost:4000).
 
+## Local CLI
+
+The installable `taskman` escript talks to the running local API. Build and install it from the
+repository with:
+
+```sh
+mix do escript.build + escript.install --force
+~/.mix/escripts/taskman agent onboarding
+```
+
+Mix installs the executable at `~/.mix/escripts/taskman`. Add `~/.mix/escripts` to `PATH` to use
+the bare `taskman` command; the full path above works without that entry. Run `taskman --help` for
+the command groups, options, configuration, and examples.
+
 ## Development
 
 Run the full local verification suite with:

@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** API, CLI, and agent skill next
-**Updated:** 2026-08-29
+**Status:** Task relationships is the next slice
+**Updated:** 2026-08-30
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -113,8 +113,6 @@ is approved, implemented, and delivered. Its
 [`implementation plan`](../archive/plans/2026-08-26-lists-nested-organization.md) is archived, and the
 repository-local delivery graph is closed through `tas-lists-nested-organization-8qe.6`.
 
-**Next slice:** Slice 4, API, CLI, and agent skill.
-
 ### 4. API, CLI, and agent skill
 
 **Outcome:** Users and agents can manage Taskman through a documented CLI backed by a versioned
@@ -139,9 +137,17 @@ Browser-only presentation state is not part of parity. The API and CLI remain lo
 unauthenticated under the current MVP boundary. Starting the backend through a future
 `taskman serve` command is an explicit extension point, not part of this slice.
 
+**Current state:** Complete. The versioned loopback JSON API, Req-backed `taskman` escript,
+readable and JSON output, command help, Bash and Fish completions, onboarding, and version-matched
+skill installer are delivered. Real loopback HTTP coverage, focused API/CLI and installer suites,
+the complete repository gate, implementation-surface scans, independent verification, and final
+whole-branch review have passed.
+
 The
 [`API, CLI, and agent skill specification`](../specs/2026-08-29-api-cli-agent-skill-design.md)
 defines the operation surface and maintenance contract.
+
+**Next slice:** Slice 5, Task relationships.
 
 ### 5. Task relationships
 
