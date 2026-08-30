@@ -72,9 +72,17 @@ defmodule TaskmanWeb.WorkspaceNavigation do
           <.link
             id={selection_link_id(node)}
             patch={selection_path(node, @include_children?)}
+            phx-hook={
+              node.kind == :project && node.project.primary_directory &&
+                "TaskmanWeb.WorkspaceNavigation.ProjectDirectoryPopover"
+            }
             aria-current={node.selected? && "page"}
             aria-label={"Select #{node_label(node)}"}
-            class="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            aria-describedby={
+              node.kind == :project && node.project.primary_directory &&
+                "project-directory-#{node.project.id}"
+            }
+            class="group/project-link relative flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           >
             <.icon
               name={if(node.kind == :project, do: "hero-folder", else: "hero-list-bullet")}
@@ -83,9 +91,10 @@ defmodule TaskmanWeb.WorkspaceNavigation do
             <span class="min-w-0 flex-1 truncate">{node_label(node)}</span>
             <span
               :if={node.kind == :project && node.project.primary_directory}
-              data-project-directory
-              title={node.project.primary_directory}
-              class="min-w-0 max-w-24 truncate text-right font-mono text-[0.625rem] font-normal text-slate-500"
+              id={"project-directory-#{node.project.id}"}
+              role="tooltip"
+              data-project-directory-popover
+              class="pointer-events-auto invisible absolute left-1 top-full z-40 mt-2 w-max max-w-64 translate-y-1 break-all rounded-lg border border-slate-700 bg-slate-900/95 px-2.5 py-2 text-left font-mono text-[0.6875rem] font-normal leading-4 text-slate-300 opacity-0 shadow-xl shadow-black/30 transition duration-150 group-hover/project-link:visible group-hover/project-link:translate-y-0 group-hover/project-link:opacity-100 group-focus-within/project-link:visible group-focus-within/project-link:translate-y-0 group-focus-within/project-link:opacity-100"
             >
               {node.project.primary_directory}
             </span>
@@ -136,6 +145,33 @@ defmodule TaskmanWeb.WorkspaceNavigation do
         />
       </div>
     </nav>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ProjectDirectoryPopover">
+      export default {
+        mounted() {
+          this.tooltip = document.getElementById(this.el.getAttribute("aria-describedby"))
+          this.showTooltip = () => {
+            if (this.tooltip) this.tooltip.hidden = false
+          }
+          this.dismissTooltip = event => {
+            if (event.key !== "Escape" || !this.tooltip) return
+
+            event.preventDefault()
+            event.stopPropagation()
+            this.tooltip.hidden = true
+          }
+
+          this.el.addEventListener("mouseenter", this.showTooltip)
+          this.el.addEventListener("focus", this.showTooltip)
+          this.el.addEventListener("keydown", this.dismissTooltip)
+        },
+
+        destroyed() {
+          this.el.removeEventListener("mouseenter", this.showTooltip)
+          this.el.removeEventListener("focus", this.showTooltip)
+          this.el.removeEventListener("keydown", this.dismissTooltip)
+        }
+      }
+    </script>
     """
   end
 

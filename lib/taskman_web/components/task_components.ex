@@ -38,12 +38,7 @@ defmodule TaskmanWeb.TaskComponents do
     <% task = @task_with_location.task %>
     <article
       id={@id}
-      class={[
-        "relative grid gap-3 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:items-center",
-        @include_children? &&
-          "sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.8fr)_5.5rem_5.5rem_3.5rem]",
-        !@include_children? && "sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem_3.5rem]"
-      ]}
+      class="relative grid gap-3 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:col-span-full sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
     >
       <.link
         id={"open-task-#{task.id}"}
@@ -65,7 +60,7 @@ defmodule TaskmanWeb.TaskComponents do
         id={"task-location-cell-#{task.id}"}
         aria-label={"Location: #{location_label(@task_with_location.location_path)}"}
         title={location_label(@task_with_location.location_path)}
-        class="pointer-events-none relative z-10 min-w-0 truncate text-xs font-medium text-slate-400 sm:text-sm"
+        class="pointer-events-none relative z-10 min-w-0 truncate text-center text-xs font-medium text-slate-400 sm:text-sm"
       >
         {location_label(@task_with_location.location_path)}
       </p>
