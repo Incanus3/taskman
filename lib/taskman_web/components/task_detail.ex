@@ -1,21 +1,23 @@
 defmodule TaskmanWeb.TaskDetail do
   use TaskmanWeb, :html
 
-  alias Taskman.Tasks.Task
-  alias TaskmanWeb.{TaskAutosave, TaskForm, TaskMove}
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
+  alias TaskmanWeb.{TaskAutosave, TaskForm, TaskHierarchy, TaskMove, TaskParentPicker}
   alias TaskmanWeb.TaskMove.Popover
 
   attr :task, Task, required: true
   attr :task_autosave, TaskAutosave, required: true
+  attr :parent_picker, TaskParentPicker, required: true
   attr :cancel, :string, required: true
-  attr :has_hierarchy?, :boolean, default: false
+  attr :task_hierarchy, TaskHierarchy, required: true
+  attr :task_path, :any, required: true
   attr :task_move, TaskMove, required: true
 
   def detail(assigns) do
     ~H"""
     <div
       id="task-detail-layout"
-      data-has-hierarchy={to_string(@has_hierarchy?)}
+      data-has-hierarchy={to_string(hierarchy_content?(@task_hierarchy))}
       data-hierarchy-expanded="false"
       class="task-detail-layout"
     >
@@ -52,15 +54,18 @@ defmodule TaskmanWeb.TaskDetail do
 
         <div class="task-hierarchy-content px-3 pb-5">
           <ul role="tree" aria-label="Task hierarchy" class="border-l border-indigo-400/50 pl-3">
-            <li
-              role="treeitem"
-              aria-current="true"
-              class="rounded-lg bg-indigo-400/10 px-3 py-2 text-sm font-medium text-indigo-100"
-            >
-              {@task.title}
-            </li>
+            <.hierarchy_node
+              node={@task_hierarchy.hierarchy.root}
+              task_hierarchy={@task_hierarchy}
+              task_path={@task_path}
+              level={1}
+            />
           </ul>
-          <p id="task-hierarchy-empty" class="mt-4 text-xs leading-5 text-slate-400">
+          <p
+            :if={!hierarchy_content?(@task_hierarchy)}
+            id="task-hierarchy-empty"
+            class="mt-4 text-xs leading-5 text-slate-400"
+          >
             No parent or child Tasks
           </p>
         </div>
@@ -95,6 +100,7 @@ defmodule TaskmanWeb.TaskDetail do
               change="autosave_task"
               submit="submit_task_edit"
               cancel={@cancel}
+              parent_picker={@parent_picker}
             />
             <p
               id="task-save-status"
@@ -149,4 +155,95 @@ defmodule TaskmanWeb.TaskDetail do
     </div>
     """
   end
+
+  attr :node, HierarchyNode, required: true
+  attr :task_hierarchy, TaskHierarchy, required: true
+  attr :task_path, :any, required: true
+  attr :level, :integer, required: true
+
+  def hierarchy_node(assigns) do
+    collapsible? =
+      has_children?(assigns.node) &&
+        TaskHierarchy.collapsible?(assigns.task_hierarchy, assigns.node.task.id)
+
+    assigns = assign(assigns, :collapsible?, collapsible?)
+
+    ~H"""
+    <li
+      id={"task-hierarchy-node-#{@node.task.id}"}
+      role="treeitem"
+      aria-current={if(@node.task.id == @task_hierarchy.hierarchy.selected_task_id, do: "true")}
+      aria-expanded={
+        if(has_children?(@node),
+          do: to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))
+        )
+      }
+      aria-level={@level}
+      class={[
+        "task-hierarchy-node",
+        @node.task.id == @task_hierarchy.hierarchy.selected_task_id && "task-hierarchy-node-current"
+      ]}
+    >
+      <div class="task-hierarchy-node-row">
+        <button
+          :if={@collapsible?}
+          id={"task-hierarchy-disclosure-#{@node.task.id}"}
+          type="button"
+          phx-click="toggle_task_hierarchy_node"
+          phx-value-task-id={@node.task.id}
+          aria-expanded={to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))}
+          aria-label={"Toggle #{String.trim(@node.task.title || "")}"}
+          class="task-hierarchy-disclosure"
+        >
+          <.icon
+            name={
+              if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
+                do: "hero-chevron-down",
+                else: "hero-chevron-right"
+              )
+            }
+            class="size-3.5"
+          />
+        </button>
+        <span :if={!@collapsible?} class="task-hierarchy-disclosure-spacer" aria-hidden="true"></span>
+        <.link
+          id={"task-hierarchy-link-#{@node.task.id}"}
+          patch={@task_path.(@node.task)}
+          aria-current={if(@node.task.id == @task_hierarchy.hierarchy.selected_task_id, do: "true")}
+          class="task-hierarchy-link"
+        >
+          {@node.task.title}
+        </.link>
+      </div>
+
+      <ul
+        :if={has_children?(@node) && TaskHierarchy.expanded?(@task_hierarchy, @node.task.id)}
+        id={"task-hierarchy-group-#{@node.task.id}"}
+        role="group"
+        class="task-hierarchy-group"
+      >
+        <.hierarchy_node
+          :for={child <- @node.children}
+          node={child}
+          task_hierarchy={@task_hierarchy}
+          task_path={@task_path}
+          level={@level + 1}
+        />
+      </ul>
+    </li>
+    """
+  end
+
+  defp hierarchy_content?(%TaskHierarchy{
+         hierarchy: %Hierarchy{
+           root: %HierarchyNode{task: root_task, children: children},
+           selected_task_id: selected_task_id
+         }
+       }) do
+    root_task.id != selected_task_id or children != []
+  end
+
+  defp hierarchy_content?(%TaskHierarchy{}), do: false
+
+  defp has_children?(%HierarchyNode{children: children}), do: children != []
 end

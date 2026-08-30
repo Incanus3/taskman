@@ -14,7 +14,10 @@ defmodule Taskman.CLI.Output do
   def success(command, data, false) when is_list(data),
     do: readable_collection(command, data)
 
-  def success(_command, data, false) when is_map(data), do: readable_member(data)
+  def success(command, data, false) when is_map(data) do
+    if hierarchy_command?(command), do: readable_hierarchy(data), else: readable_member(data)
+  end
+
   def success(_command, data, false), do: to_string(data) <> "\n"
 
   @doc "Render an API or locally generated error envelope."
@@ -44,7 +47,7 @@ defmodule Taskman.CLI.Output do
         |> IO.iodata_to_binary()
 
       :tasks ->
-        ["ID\tTITLE\tSTATUS\tPRIORITY\tLOCATION\tDUE\n", Enum.map(rows, &task_row/1)]
+        ["ID\tTITLE\tPARENT\tSTATUS\tPRIORITY\tLOCATION\tDUE\n", Enum.map(rows, &task_row/1)]
         |> IO.iodata_to_binary()
 
       _other ->
@@ -83,6 +86,8 @@ defmodule Taskman.CLI.Output do
       value(task, :id),
       "\t",
       value(task, :title),
+      "\t",
+      value(task, :parent_task_id),
       "\t",
       value(task, :status),
       "\t",
@@ -123,6 +128,42 @@ defmodule Taskman.CLI.Output do
     |> IO.iodata_to_binary()
   end
 
+  defp readable_hierarchy(hierarchy) do
+    selected_task_id = fetch_value(hierarchy, :selected_task_id)
+    root = fetch_value(hierarchy, :root)
+
+    [hierarchy_root_line(root, selected_task_id), hierarchy_children(root, selected_task_id, "")]
+    |> IO.iodata_to_binary()
+  end
+
+  defp hierarchy_root_line(node, selected_task_id) do
+    [hierarchy_task_label(fetch_value(node, :task), selected_task_id), "\n"]
+  end
+
+  defp hierarchy_children(node, selected_task_id, prefix) do
+    node
+    |> fetch_value(:children)
+    |> Enum.with_index()
+    |> Enum.map(fn {child, index} ->
+      last? = index == length(fetch_value(node, :children)) - 1
+      connector = if last?, do: "└─ ", else: "├─ "
+      child_prefix = prefix <> if(last?, do: "   ", else: "│  ")
+
+      [
+        prefix,
+        connector,
+        hierarchy_task_label(fetch_value(child, :task), selected_task_id),
+        "\n",
+        hierarchy_children(child, selected_task_id, child_prefix)
+      ]
+    end)
+  end
+
+  defp hierarchy_task_label(task, selected_task_id) do
+    selected = if fetch_value(task, :id) == selected_task_id, do: "  [selected]", else: ""
+    [value(task, :id), "  ", value(task, :title), selected]
+  end
+
   defp project_fields?(project) do
     Enum.all?(@project_fields, fn {key, _label} -> has_value?(project, key) end)
   end
@@ -150,6 +191,12 @@ defmodule Taskman.CLI.Output do
   end
 
   defp resource(_command), do: nil
+
+  defp hierarchy_command?({:tasks, :hierarchy}), do: true
+  defp hierarchy_command?(%Taskman.CLI.Command{handler: {:tasks, :hierarchy}}), do: true
+  defp hierarchy_command?(["tasks", "hierarchy"]), do: true
+  defp hierarchy_command?("tasks hierarchy"), do: true
+  defp hierarchy_command?(_command), do: false
 
   defp has_value?(map, key), do: Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
 

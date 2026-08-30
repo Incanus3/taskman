@@ -163,6 +163,69 @@
   background: rgb(2 6 23 / 0.48);
 }
 
+#task-hierarchy .task-hierarchy-group {
+  margin-left: 0.625rem;
+  border-left: 1px solid rgb(99 102 241 / 0.35);
+  padding-left: 0.625rem;
+}
+
+#task-hierarchy .task-hierarchy-node-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+  padding-block: 0.125rem;
+}
+
+#task-hierarchy .task-hierarchy-disclosure,
+#task-hierarchy .task-hierarchy-disclosure-spacer {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  place-items: center;
+}
+
+#task-hierarchy .task-hierarchy-disclosure {
+  border-radius: 0.375rem;
+  color: rgb(148 163 184);
+}
+
+#task-hierarchy .task-hierarchy-disclosure:hover {
+  background: rgb(30 41 59);
+  color: rgb(255 255 255);
+}
+
+#task-hierarchy .task-hierarchy-disclosure:focus-visible,
+#task-hierarchy .task-hierarchy-link:focus-visible {
+  outline: 2px solid rgb(129 140 248);
+  outline-offset: 2px;
+}
+
+#task-hierarchy .task-hierarchy-link {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.5rem;
+  color: rgb(203 213 225);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#task-hierarchy .task-hierarchy-link:hover {
+  background: rgb(30 41 59);
+  color: rgb(255 255 255);
+}
+
+#task-hierarchy .task-hierarchy-node-current > .task-hierarchy-node-row .task-hierarchy-link {
+  background: rgb(129 140 248 / 0.16);
+  color: rgb(224 231 255);
+  font-weight: 600;
+}
+
 @media (min-width: 80rem) {
   #task-hierarchy {
     position: relative;

@@ -37,6 +37,8 @@ defmodule Taskman.CLI.Onboarding do
   taskman tasks list --project 7 --json
   taskman tasks create --project 7 --title "Prepare launch" --status pending --json
   taskman tasks update --project 7 42 --status in_progress --json
+  taskman tasks update --project 7 42 --parent 41 --json
+  taskman tasks hierarchy --project 7 42 --json
   taskman tasks move --project 7 42 --to-project-root --json
 
   Install shell completions by redirecting the generated source to the standard location:

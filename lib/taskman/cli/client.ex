@@ -16,7 +16,8 @@ defmodule Taskman.CLI.Client do
   @type request_options :: keyword() | map()
   @type runtime_options :: keyword() | map()
   @type error_envelope :: map()
-  @type success_shape :: :any | {:collection | :member, :project | :list | :task}
+  @type success_shape ::
+          :any | :hierarchy | {:collection | :member, :project | :list | :task}
 
   @doc "Make one API request and classify transport and response-contract failures."
   @spec request(atom(), String.t(), request_options(), runtime_options(), success_shape()) ::
@@ -111,6 +112,8 @@ defmodule Taskman.CLI.Client do
   defp valid_success_data?(data, {:member, resource}) when is_map(data),
     do: valid_resource?(data, resource)
 
+  defp valid_success_data?(data, :hierarchy) when is_map(data), do: valid_hierarchy?(data)
+
   defp valid_success_data?(_data, _success_shape), do: false
 
   defp valid_resource?(project, :project) when is_map(project) do
@@ -132,11 +135,12 @@ defmodule Taskman.CLI.Client do
   defp valid_resource?(task, :task) when is_map(task) do
     required_keys?(
       task,
-      ~w(id project_id list_id title description status priority due_at location)
+      ~w(id project_id list_id parent_task_id title description status priority due_at location)
     ) and
       positive_integer?(task["id"]) and
       positive_integer?(task["project_id"]) and
       optional_positive_integer?(task["list_id"]) and
+      optional_positive_integer?(task["parent_task_id"]) and
       is_binary(task["title"]) and
       is_binary(task["description"]) and
       task["status"] in Registry.statuses() and
@@ -146,6 +150,18 @@ defmodule Taskman.CLI.Client do
   end
 
   defp valid_resource?(_resource, _type), do: false
+
+  defp valid_hierarchy?(hierarchy) do
+    required_keys?(hierarchy, ~w(selected_task_id root)) and
+      positive_integer?(hierarchy["selected_task_id"]) and
+      valid_hierarchy_node?(hierarchy["root"])
+  end
+
+  defp valid_hierarchy_node?(%{"task" => task, "children" => children}) when is_list(children) do
+    valid_resource?(task, :task) and Enum.all?(children, &valid_hierarchy_node?/1)
+  end
+
+  defp valid_hierarchy_node?(_node), do: false
 
   defp required_keys?(map, keys), do: Enum.all?(keys, &Map.has_key?(map, &1))
   defp positive_integer?(value), do: is_integer(value) and value > 0

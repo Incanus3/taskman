@@ -5,6 +5,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Taskman.Repo
   alias Taskman.Tasks
 
   test "GET tasks lists direct Project Tasks with a project location", %{conn: conn} do
@@ -20,6 +21,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                  "id" => id,
                  "project_id" => project_id,
                  "list_id" => nil,
+                 "parent_task_id" => nil,
                  "title" => "Direct",
                  "description" => "",
                  "status" => "pending",
@@ -82,6 +84,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                %{
                  "id" => id,
                  "list_id" => list_id,
+                 "parent_task_id" => nil,
                  "title" => "Copy",
                  "location" => %{
                    "kind" => "list",
@@ -155,6 +158,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                "id" => id,
                "project_id" => project_id,
                "list_id" => list_id,
+               "parent_task_id" => nil,
                "title" => "Copy",
                "description" => "Details",
                "status" => "pending",
@@ -206,6 +210,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                "id" => id,
                "project_id" => project_id,
                "list_id" => nil,
+               "parent_task_id" => nil,
                "title" => "Plan release",
                "description" => "Release details",
                "status" => "in_review",
@@ -240,6 +245,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                "id" => id,
                "project_id" => project_id,
                "list_id" => list_id,
+               "parent_task_id" => nil,
                "title" => "List task",
                "description" => "Details",
                "status" => "will_not_do",
@@ -316,6 +322,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                "id" => id,
                "project_id" => project_id,
                "list_id" => nil,
+               "parent_task_id" => nil,
                "title" => "After",
                "description" => "After details",
                "status" => "in_progress",
@@ -370,6 +377,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              "data" => %{
                "id" => id,
                "list_id" => list_id,
+               "parent_task_id" => nil,
                "location" => %{
                  "kind" => "list",
                  "list_id" => location_list_id,
@@ -391,6 +399,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              "data" => %{
                "id" => ^id,
                "list_id" => nil,
+               "parent_task_id" => nil,
                "location" => %{"kind" => "project", "list_id" => nil, "path" => []}
              }
            } = json_response(conn, 200)
@@ -485,5 +494,255 @@ defmodule TaskmanWeb.API.TaskControllerTest do
 
     assert %{"data" => %{"status" => "will_not_do"}} = json_response(conn, 200)
     assert Tasks.get_task_for_project(project, task.id).status == :will_not_do
+  end
+
+  test "Task representations include a nullable parent_task_id", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    child = task_fixture(project, %{title: "Child"}, parent: parent)
+
+    assert %{"data" => representations} =
+             conn
+             |> get("/api/v1/projects/#{project.id}/tasks")
+             |> json_response(200)
+
+    assert Enum.all?(representations, &Map.has_key?(&1, "parent_task_id"))
+    assert Enum.find(representations, &(&1["id"] == parent.id))["parent_task_id"] == nil
+
+    assert %{"data" => %{"parent_task_id" => parent_id}} =
+             build_conn()
+             |> get("/api/v1/projects/#{project.id}/tasks/#{child.id}")
+             |> json_response(200)
+
+    assert parent_id == parent.id
+  end
+
+  test "POST creates a Task with a same-Project parent", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+
+    conn =
+      post(conn, "/api/v1/projects/#{project.id}/tasks", %{
+        "task" => %{"title" => "Child", "parent_task_id" => parent.id}
+      })
+
+    assert %{"data" => %{"id" => child_id, "parent_task_id" => parent_id}} =
+             json_response(conn, 201)
+
+    assert parent_id == parent.id
+    assert Tasks.get_task_for_project(project, child_id).parent_task_id == parent.id
+  end
+
+  test "POST treats omitted and null parent_task_id as project roots", %{conn: conn} do
+    project = project_fixture(%{})
+
+    assert %{"data" => %{"parent_task_id" => nil}} =
+             conn
+             |> post("/api/v1/projects/#{project.id}/tasks", %{
+               "task" => %{"title" => "Omitted parent"}
+             })
+             |> json_response(201)
+
+    assert %{"data" => %{"parent_task_id" => nil}} =
+             build_conn()
+             |> post("/api/v1/projects/#{project.id}/tasks", %{
+               "task" => %{"title" => "Null parent", "parent_task_id" => nil}
+             })
+             |> json_response(201)
+  end
+
+  test "POST rejects malformed or foreign parent_task_id", %{conn: conn} do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    foreign_parent = task_fixture(other_project)
+
+    assert %{"error" => %{"code" => "invalid_request"}} =
+             conn
+             |> post("/api/v1/projects/#{project.id}/tasks", %{
+               "task" => %{"title" => "Malformed", "parent_task_id" => "not-an-id"}
+             })
+             |> json_response(400)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             build_conn()
+             |> post("/api/v1/projects/#{project.id}/tasks", %{
+               "task" => %{"title" => "Foreign", "parent_task_id" => foreign_parent.id}
+             })
+             |> json_response(404)
+  end
+
+  test "PATCH omitting parent_task_id leaves it unchanged and null clears it", %{conn: conn} do
+    project = project_fixture(%{})
+    first_parent = task_fixture(project, %{title: "First parent"})
+    second_parent = task_fixture(project, %{title: "Second parent"})
+    task = task_fixture(project, %{title: "Child"}, parent: first_parent)
+
+    assert %{"data" => %{"parent_task_id" => first_parent_id}} =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
+               "task" => %{"title" => "Still child"}
+             })
+             |> json_response(200)
+
+    assert first_parent_id == first_parent.id
+
+    assert %{"data" => %{"parent_task_id" => second_parent_id}} =
+             build_conn()
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
+               "task" => %{"parent_task_id" => second_parent.id}
+             })
+             |> json_response(200)
+
+    assert second_parent_id == second_parent.id
+
+    assert %{"data" => %{"parent_task_id" => nil}} =
+             build_conn()
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
+               "task" => %{"parent_task_id" => nil}
+             })
+             |> json_response(200)
+  end
+
+  test "PATCH rejects malformed or foreign parent_task_id", %{conn: conn} do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    task = task_fixture(project)
+    foreign_parent = task_fixture(other_project)
+
+    assert %{"error" => %{"code" => "invalid_request"}} =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
+               "task" => %{"parent_task_id" => "not-an-id"}
+             })
+             |> json_response(400)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             build_conn()
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
+               "task" => %{"parent_task_id" => foreign_parent.id}
+             })
+             |> json_response(404)
+  end
+
+  test "PATCH reports self-parent and cycle errors on parent_task_id", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    child = task_fixture(project, %{title: "Child"}, parent: parent)
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "fields" => %{"parent_task_id" => [_message]}
+             }
+           } =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{child.id}", %{
+               "task" => %{"parent_task_id" => child.id}
+             })
+             |> json_response(422)
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "fields" => %{"parent_task_id" => [_message]}
+             }
+           } =
+             build_conn()
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{parent.id}", %{
+               "task" => %{"parent_task_id" => child.id}
+             })
+             |> json_response(422)
+  end
+
+  test "PATCH applies ordinary and parent changes atomically on validation failure", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    child = task_fixture(project, %{title: "Before"}, parent: parent)
+
+    conn =
+      patch(conn, "/api/v1/projects/#{project.id}/tasks/#{child.id}", %{
+        "task" => %{"title" => "Should not persist", "parent_task_id" => child.id}
+      })
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "fields" => %{"parent_task_id" => [_message]}
+             }
+           } = json_response(conn, 422)
+
+    persisted = Tasks.get_task_for_project(project, child.id)
+    assert persisted.title == "Before"
+    assert persisted.parent_task_id == parent.id
+  end
+
+  test "GET hierarchy returns the selected Task tree in stable sibling order", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{title: "Root"})
+    first = task_fixture(project, %{title: "First"}, parent: root)
+    second = task_fixture(project, %{title: "Second"}, parent: root)
+    selected = task_fixture(project, %{title: "Selected"}, parent: first)
+
+    conn = get(conn, "/api/v1/projects/#{project.id}/tasks/#{selected.id}/hierarchy")
+
+    assert %{
+             "data" => %{
+               "selected_task_id" => selected_id,
+               "root" => %{
+                 "task" => %{"id" => root_id, "parent_task_id" => root_parent_id},
+                 "children" => [
+                   %{
+                     "task" => %{"id" => first_id, "parent_task_id" => first_parent_id},
+                     "children" => [
+                       %{
+                         "task" => %{
+                           "id" => selected_node_id,
+                           "parent_task_id" => selected_parent_id
+                         },
+                         "children" => []
+                       }
+                     ]
+                   },
+                   %{
+                     "task" => %{"id" => second_id, "parent_task_id" => second_parent_id},
+                     "children" => []
+                   }
+                 ]
+               }
+             }
+           } = json_response(conn, 200)
+
+    assert selected_id == selected.id
+    assert root_id == root.id
+    assert first_id == first.id
+    assert second_id == second.id
+    assert root_parent_id == nil
+    assert first_parent_id == root.id
+    assert selected_node_id == selected.id
+    assert selected_parent_id == first.id
+    assert second_parent_id == root.id
+  end
+
+  test "GET hierarchy rejects malformed, stale, and foreign Task IDs", %{conn: conn} do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    foreign_task = task_fixture(other_project)
+    stale_task = task_fixture(project)
+    Repo.delete!(stale_task)
+
+    assert %{"error" => %{"code" => "invalid_request"}} =
+             conn
+             |> get("/api/v1/projects/#{project.id}/tasks/not-an-id/hierarchy")
+             |> json_response(400)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             build_conn()
+             |> get("/api/v1/projects/#{project.id}/tasks/#{foreign_task.id}/hierarchy")
+             |> json_response(404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             build_conn()
+             |> get("/api/v1/projects/#{project.id}/tasks/#{stale_task.id}/hierarchy")
+             |> json_response(404)
   end
 end

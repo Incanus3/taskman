@@ -5,6 +5,7 @@ defmodule Taskman.Tasks do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
+  alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
@@ -28,28 +29,46 @@ defmodule Taskman.Tasks do
 
   def get_task_for_project(%Project{}, _id), do: nil
 
+  @spec search_parent_candidates(Project.t(), Task.t() | nil, String.t(), keyword()) ::
+          [TaskWithLocation.t()]
+  def search_parent_candidates(project, current_task, query, opts \\ []) do
+    Hierarchy.search_parent_candidates(project, current_task, query, opts)
+  end
+
+  @spec get_task_hierarchy(Project.t(), Task.t()) ::
+          {:ok, Hierarchy.t()} | {:error, :not_found}
+  def get_task_hierarchy(project, task) do
+    Hierarchy.get_task_hierarchy(project, task)
+  end
+
   def create_task(%Project{id: project_id}, attrs \\ %{}) do
     create_task(%Project{id: project_id}, nil, attrs)
   end
 
-  def create_task(%Project{id: project_id}, nil, attrs) do
-    %Task{project_id: project_id}
-    |> Task.changeset(attrs)
-    |> Repo.insert()
+  def create_task(%Project{} = project, location, attrs) do
+    create_task(project, location, attrs, [])
   end
 
   def create_task(
-        %Project{id: project_id},
-        %TaskList{project_id: project_id, id: list_id},
-        attrs
+        %Project{id: project_id} = project,
+        nil,
+        attrs,
+        opts
       ) do
-    %Task{project_id: project_id, list_id: list_id}
-    |> Task.changeset(attrs)
-    |> Repo.insert()
+    create_task_with_parent(project, %Task{project_id: project_id}, attrs, opts)
   end
 
-  def create_task(%Project{}, %TaskList{}, _attrs), do: {:error, :not_found}
-  def create_task(%Project{}, _location, _attrs), do: {:error, :not_found}
+  def create_task(
+        %Project{id: project_id} = project,
+        %TaskList{project_id: project_id, id: list_id},
+        attrs,
+        opts
+      ) do
+    create_task_with_parent(project, %Task{project_id: project_id, list_id: list_id}, attrs, opts)
+  end
+
+  def create_task(%Project{}, %TaskList{}, _attrs, _opts), do: {:error, :not_found}
+  def create_task(%Project{}, _location, _attrs, _opts), do: {:error, :not_found}
 
   def list_tasks_for_location(project, location, opts \\ [])
 
@@ -221,14 +240,112 @@ defmodule Taskman.Tasks do
   end
 
   def update_task(
-        %Project{id: project_id},
+        %Project{id: project_id} = project,
         %Task{project_id: project_id} = task,
         attrs
       ) do
-    task
-    |> Task.changeset(attrs)
-    |> Repo.update()
+    update_task(project, task, attrs, [])
   end
 
   def update_task(%Project{}, %Task{}, _attrs), do: {:error, :not_found}
+
+  def update_task(
+        %Project{id: project_id} = project,
+        %Task{project_id: project_id} = task,
+        attrs,
+        opts
+      ) do
+    if Keyword.has_key?(opts, :parent) do
+      update_task_with_parent(project, task, attrs, Keyword.get(opts, :parent))
+    else
+      task
+      |> Task.changeset(attrs)
+      |> Repo.update()
+    end
+  end
+
+  def update_task(%Project{}, %Task{}, _attrs, _opts), do: {:error, :not_found}
+
+  defp create_task_with_parent(project, task, attrs, opts) do
+    if Keyword.has_key?(opts, :parent) do
+      persist_parent_mutation(project, task, attrs, Keyword.get(opts, :parent), :create)
+    else
+      task
+      |> Task.changeset(attrs)
+      |> Repo.insert()
+    end
+  end
+
+  defp update_task_with_parent(project, task, attrs, parent) do
+    persist_parent_mutation(project, task, attrs, parent, :update)
+  end
+
+  defp persist_parent_mutation(project, task, attrs, parent, operation) do
+    Repo.transaction(fn ->
+      with %Project{} = locked_project <- lock_project(project),
+           {:ok, persisted_task} <- reload_task(locked_project, task, operation),
+           {:ok, persisted_parent} <- reload_parent(locked_project, parent),
+           :ok <- Hierarchy.validate_parent(persisted_task, persisted_parent, locked_project) do
+        changeset = Task.changeset(persisted_task, attrs)
+
+        changeset
+        |> Ecto.Changeset.put_change(:parent_task_id, persisted_parent && persisted_parent.id)
+        |> persist_parent_mutation(operation)
+      else
+        nil ->
+          Repo.rollback(:not_found)
+
+        {:error, :not_found} ->
+          Repo.rollback(:not_found)
+
+        {:error, :cycle} ->
+          changeset = Task.changeset(task, attrs)
+
+          changeset
+          |> Ecto.Changeset.add_error(:parent_task_id, "would create a cycle")
+          |> Repo.rollback()
+      end
+    end)
+  end
+
+  defp lock_project(%Project{id: project_id}) do
+    Project
+    |> where([project], project.id == ^project_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp reload_task(_project, %Task{} = task, :create), do: {:ok, task}
+
+  defp reload_task(%Project{} = project, %Task{id: task_id}, :update) do
+    case get_task_for_project(project, task_id) do
+      nil -> {:error, :not_found}
+      task -> {:ok, task}
+    end
+  end
+
+  defp reload_parent(_project, nil), do: {:ok, nil}
+
+  defp reload_parent(%Project{} = project, %Task{id: parent_id}) when is_integer(parent_id) do
+    case get_task_for_project(project, parent_id) do
+      nil -> {:error, :not_found}
+      parent -> {:ok, parent}
+    end
+  end
+
+  defp reload_parent(%Project{}, _parent), do: {:error, :not_found}
+
+  defp persist_parent_mutation(changeset, :create) do
+    case Repo.insert(changeset) do
+      {:ok, task} -> task
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp persist_parent_mutation(changeset, :update) do
+    case Repo.update(changeset) do
+      {:ok, task} -> task
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
 end

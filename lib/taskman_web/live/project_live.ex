@@ -14,7 +14,9 @@ defmodule TaskmanWeb.ProjectLive do
     TaskAutosave,
     TaskComponents,
     TaskForm,
+    TaskHierarchy,
     TaskMove,
+    TaskParentPicker,
     WorkspaceNavigation
   }
 
@@ -41,10 +43,14 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:project_form, project_form(%Project{}))
      |> assign(:task_create_form, nil)
      |> assign(:task_create_enabled?, false)
+     |> assign(:task_create_location, nil)
+     |> assign(:task_parent_picker, TaskParentPicker.empty())
      |> assign(:tasks_empty?, true)
      |> assign(:selected_task, nil)
      |> assign(:task_not_found?, false)
+     |> assign(:task_detail_open?, false)
      |> assign(:task_autosave, TaskAutosave.empty())
+     |> assign(:task_hierarchy, TaskHierarchy.empty())
      |> assign(:task_move, TaskMove.empty())
      |> assign(:expanded_node_ids, MapSet.new())
      |> assign(:list_edit, ListEdit.empty())
@@ -79,7 +85,7 @@ defmodule TaskmanWeb.ProjectLive do
 
         socket =
           socket
-          |> clear_task_modal_state()
+          |> clear_modal_state_for_action(action)
           |> assign_project_state(
             project,
             task_list,
@@ -135,12 +141,21 @@ defmodule TaskmanWeb.ProjectLive do
 
   defp apply_action(:show, _params, socket), do: socket
 
-  defp apply_action(:new_task, _params, socket) do
+  defp apply_action(:new_task, params, socket) do
     changeset = Tasks.change_task(socket.assigns.selected_project)
+
+    {task_create_location, task_parent_picker} =
+      task_create_state(
+        socket.assigns.selected_project,
+        socket.assigns.selected_list,
+        params
+      )
 
     socket
     |> assign(:task_create_form, to_form(changeset))
     |> assign(:task_create_enabled?, changeset.valid?)
+    |> assign(:task_create_location, task_create_location)
+    |> assign(:task_parent_picker, task_parent_picker)
   end
 
   defp apply_action(:show_task, %{"task_id" => task_id}, socket) do
@@ -148,13 +163,23 @@ defmodule TaskmanWeb.ProjectLive do
       %Task{} = task ->
         socket
         |> assign(:selected_task, task)
+        |> assign(:task_detail_open?, true)
         |> assign(
           :task_autosave,
           TaskAutosave.load(socket.assigns.task_autosave, task, saved?: false)
         )
+        |> assign(
+          :task_parent_picker,
+          TaskParentPicker.open_edit(
+            TaskParentPicker.empty(),
+            socket.assigns.selected_project,
+            task
+          )
+        )
+        |> reload_task_hierarchy(socket.assigns.selected_project, task)
 
       nil ->
-        assign(socket, :task_not_found?, true)
+        task_not_found_modal_state(socket)
     end
   end
 
@@ -231,6 +256,23 @@ defmodule TaskmanWeb.ProjectLive do
          |> refresh_navigation_stream()}
     end
   end
+
+  def handle_event("toggle_task_hierarchy_node", %{"task-id" => task_id}, socket) do
+    case parse_navigation_identity(task_id) do
+      {:ok, task_id} ->
+        {:noreply,
+         assign(
+           socket,
+           :task_hierarchy,
+           TaskHierarchy.toggle(socket.assigns.task_hierarchy, task_id)
+         )}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_task_hierarchy_node", _params, socket), do: {:noreply, socket}
 
   def handle_event("open_list_form", params, socket) do
     case action_project(socket, params) do
@@ -343,11 +385,73 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:task_create_enabled?, changeset.valid?)}
   end
 
+  def handle_event("open_task_parent_options", _params, socket) do
+    {:noreply,
+     update_task_parent_picker(
+       socket,
+       false,
+       &TaskParentPicker.open_options(&1, socket.assigns.selected_project)
+     )}
+  end
+
+  def handle_event("search_task_parents", %{"parent_query" => query}, socket)
+      when is_binary(query) do
+    picker = socket.assigns.task_parent_picker
+
+    if not picker.options_open? and query == picker.query do
+      {:noreply, socket}
+    else
+      {:noreply,
+       update_task_parent_picker(
+         socket,
+         false,
+         &TaskParentPicker.search(&1, socket.assigns.selected_project, query)
+       )}
+    end
+  end
+
+  def handle_event("task_parent_keydown", %{"key" => key}, socket) when is_binary(key) do
+    picker = socket.assigns.task_parent_picker
+
+    case TaskParentPicker.keydown(picker, key) do
+      {:move, picker} ->
+        {:noreply, assign(socket, :task_parent_picker, picker)}
+
+      {:close, picker} ->
+        {:noreply, assign(socket, :task_parent_picker, picker)}
+
+      {:select, parent_id} ->
+        {:noreply,
+         update_task_parent_picker(
+           socket,
+           true,
+           &TaskParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
+         )}
+
+      :ignore ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_task_parent", %{"parent-id" => parent_id}, socket) do
+    {:noreply,
+     update_task_parent_picker(
+       socket,
+       true,
+       &TaskParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
+     )}
+  end
+
+  def handle_event("clear_task_parent", _params, socket) do
+    {:noreply, update_task_parent_picker(socket, true, &TaskParentPicker.clear_draft/1)}
+  end
+
   def handle_event("save_task", %{"task" => task_params}, socket) do
     case Tasks.create_task(
            socket.assigns.selected_project,
-           socket.assigns.selected_list,
-           task_params
+           socket.assigns.task_create_location,
+           task_params,
+           parent: TaskParentPicker.selected_parent(socket.assigns.task_parent_picker)
          ) do
       {:ok, _task} ->
         socket = refresh_task_stream(socket)
@@ -360,6 +464,17 @@ defmodule TaskmanWeb.ProjectLive do
                socket.assigns.selected_list,
                socket.assigns.include_children?
              )
+         )}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(
+           :task_parent_picker,
+           TaskParentPicker.reject_draft(
+             socket.assigns.task_parent_picker,
+             "That parent Task is no longer available."
+           )
          )}
 
       {:error, changeset} ->
@@ -783,12 +898,54 @@ defmodule TaskmanWeb.ProjectLive do
 
   defp clear_task_modal_state(socket) do
     socket
+    |> clear_transient_task_modal_state()
+    |> clear_task_hierarchy()
+    |> assign(:task_detail_open?, false)
+  end
+
+  defp clear_modal_state_for_action(
+         %{assigns: %{task_detail_open?: true}} = socket,
+         :show_task
+       ) do
+    clear_transient_task_modal_state(socket)
+  end
+
+  defp clear_modal_state_for_action(socket, _action), do: clear_task_modal_state(socket)
+
+  defp clear_transient_task_modal_state(socket) do
+    socket
     |> assign(:selected_task, nil)
     |> assign(:task_not_found?, false)
     |> assign(:task_create_form, nil)
     |> assign(:task_create_enabled?, false)
+    |> assign(:task_create_location, nil)
+    |> assign(:task_parent_picker, TaskParentPicker.empty())
     |> assign(:task_autosave, TaskAutosave.clear(socket.assigns.task_autosave))
     |> assign(:task_move, TaskMove.clear(socket.assigns.task_move))
+  end
+
+  defp clear_task_hierarchy(socket) do
+    assign(socket, :task_hierarchy, TaskHierarchy.clear(socket.assigns.task_hierarchy))
+  end
+
+  defp task_not_found_modal_state(socket) do
+    socket
+    |> clear_task_modal_state()
+    |> assign(:task_not_found?, true)
+  end
+
+  defp reload_task_hierarchy(socket, %Project{} = project, %Task{} = task) do
+    case Tasks.get_task_hierarchy(project, task) do
+      {:ok, hierarchy} ->
+        assign(
+          socket,
+          :task_hierarchy,
+          TaskHierarchy.load(socket.assigns.task_hierarchy, hierarchy)
+        )
+
+      {:error, :not_found} ->
+        task_not_found_modal_state(socket)
+    end
   end
 
   defp task_move_origin(socket, %Task{id: task_id}) do
@@ -927,15 +1084,105 @@ defmodule TaskmanWeb.ProjectLive do
     append_include_children(~p"/projects/#{project_id}/lists/#{list_id}", include_children?)
   end
 
-  defp new_task_path(%Project{id: project_id}, nil, include_children?) do
-    append_include_children(~p"/projects/#{project_id}/tasks/new", include_children?)
+  defp task_create_state(project, selected_list, params) do
+    case Map.fetch(params, "parent_task_id") do
+      :error ->
+        {selected_list, TaskParentPicker.open_create(TaskParentPicker.empty(), project, nil)}
+
+      {:ok, parent_task_id} ->
+        case task_create_parent(project, parent_task_id) do
+          {:ok, parent, location} ->
+            {location, TaskParentPicker.open_create(TaskParentPicker.empty(), project, parent)}
+
+          :error ->
+            {selected_list,
+             TaskParentPicker.empty()
+             |> TaskParentPicker.open_create(project, nil)
+             |> TaskParentPicker.reject_draft("That parent Task is no longer available.")}
+        end
+    end
   end
 
-  defp new_task_path(%Project{id: project_id}, %TaskList{id: list_id}, include_children?) do
-    append_include_children(
-      ~p"/projects/#{project_id}/lists/#{list_id}/tasks/new",
-      include_children?
-    )
+  defp task_create_parent(project, parent_task_id) do
+    with %Task{} = parent <- Tasks.get_task_for_project(project, parent_task_id),
+         {:ok, location} <- task_location(project, parent) do
+      {:ok, parent, location}
+    else
+      _not_found -> :error
+    end
+  end
+
+  defp task_location(_project, %Task{list_id: nil}), do: {:ok, nil}
+
+  defp task_location(project, %Task{list_id: list_id}) do
+    case Lists.get_list_for_project(project, list_id) do
+      %TaskList{} = task_list -> {:ok, task_list}
+      nil -> :error
+    end
+  end
+
+  defp update_task_parent_picker(
+         %{assigns: %{live_action: :new_task, task_parent_picker: %TaskParentPicker{}}} = socket,
+         _save?,
+         transition
+       ) do
+    assign(socket, :task_parent_picker, transition.(socket.assigns.task_parent_picker))
+  end
+
+  defp update_task_parent_picker(
+         %{
+           assigns: %{
+             live_action: :show_task,
+             selected_project: %Project{} = project,
+             selected_task: %Task{} = task,
+             task_parent_picker: %TaskParentPicker{} = picker
+           }
+         } = socket,
+         save?,
+         transition
+       ) do
+    picker = transition.(picker)
+
+    if save? do
+      save_task_parent_picker(socket, project, task, picker)
+    else
+      assign(socket, :task_parent_picker, picker)
+    end
+  end
+
+  defp update_task_parent_picker(socket, _save?, _transition), do: socket
+
+  defp save_task_parent_picker(socket, project, task, picker) do
+    case TaskParentPicker.save_edit(picker, project, task) do
+      {:ok, picker, updated_task} ->
+        socket
+        |> assign(:task_parent_picker, picker)
+        |> assign(:selected_task, updated_task)
+        |> reload_task_hierarchy(project, updated_task)
+        |> refresh_task_stream()
+
+      {:error, picker, _reason} ->
+        assign(socket, :task_parent_picker, picker)
+    end
+  end
+
+  defp new_task_path(project, task_list, include_children?, parent_task_id \\ nil)
+
+  defp new_task_path(%Project{id: project_id}, nil, include_children?, parent_task_id) do
+    ~p"/projects/#{project_id}/tasks/new"
+    |> append_include_children(include_children?)
+    |> append_parent_task_id(parent_task_id)
+  end
+
+  defp new_task_path(
+         %Project{id: project_id},
+         %TaskList{id: list_id},
+         include_children?,
+         parent_task_id
+       ) do
+    ~p"/projects/#{project_id}/lists/#{list_id}/tasks/new"
+    |> append_include_children(include_children?)
+    |> append_parent_task_id(parent_task_id)
   end
 
   defp task_detail_path(
@@ -961,6 +1208,21 @@ defmodule TaskmanWeb.ProjectLive do
 
   defp append_include_children(path, true), do: path <> "?include_children=true"
   defp append_include_children(path, false), do: path
+
+  defp append_parent_task_id(path, nil), do: path
+
+  defp append_parent_task_id(path, parent_task_id) do
+    separator = if String.contains?(path, "?"), do: "&", else: "?"
+    path <> separator <> "parent_task_id=" <> Integer.to_string(parent_task_id)
+  end
+
+  defp task_create_location_copy(%Project{name: project_name}, nil) do
+    "Create this Task in Project #{project_name}."
+  end
+
+  defp task_create_location_copy(%Project{}, %TaskList{name: list_name}) do
+    "Create this Task in List #{list_name}."
+  end
 
   defp project_form(project), do: to_form(Projects.change_project(project))
 end

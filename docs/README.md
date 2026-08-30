@@ -36,6 +36,7 @@
 - [Task detail and navigation](specs/2026-08-24-task-detail-navigation-design.md)
 - [Lists and nested organization](specs/2026-08-26-lists-nested-organization-design.md)
 - [API, CLI, and agent skill](specs/2026-08-29-api-cli-agent-skill-design.md)
+- [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 
 ## Development
 
@@ -60,3 +61,4 @@
 - [Task detail and navigation implementation plan](archive/plans/2026-08-24-task-detail-navigation.md)
 - [Lists and nested organization implementation plan](archive/plans/2026-08-26-lists-nested-organization.md)
 - [API, CLI, and agent skill implementation plan](archive/plans/2026-08-29-api-cli-agent-skill.md)
+- [Parent-child Task hierarchy implementation plan](archive/plans/2026-08-30-parent-child-task-hierarchy.md)

@@ -3,7 +3,7 @@ defmodule TaskmanWeb.TaskForm do
 
   import Phoenix.Component, except: [form: 1]
 
-  alias TaskmanWeb.TaskComponents
+  alias TaskmanWeb.{TaskComponents, TaskParentPicker, TaskParentPickerComponent}
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :mode, :atom, values: [:new, :edit], required: true
@@ -11,6 +11,7 @@ defmodule TaskmanWeb.TaskForm do
   attr :submit, :string, default: nil
   attr :cancel, :string, required: true
   attr :create_enabled?, :boolean, default: false
+  attr :parent_picker, TaskParentPicker, required: true
 
   def form(assigns) do
     ~H"""
@@ -37,6 +38,15 @@ defmodule TaskmanWeb.TaskForm do
         class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
         error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
       />
+      <div class="mt-4">
+        <TaskParentPickerComponent.parent_picker picker={@parent_picker} />
+      </div>
+      <div
+        :if={@parent_picker.error}
+        id="task-parent-focus"
+        phx-mounted={JS.focus(to: "#task-parent-search")}
+      >
+      </div>
       <div class="mt-4 space-y-4">
         <.input
           field={@form[:description]}

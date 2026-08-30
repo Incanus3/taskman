@@ -14,6 +14,7 @@ defmodule Taskman.CLI.ParserTest do
              ~w(lists rename),
              ~w(tasks list),
              ~w(tasks show),
+             ~w(tasks hierarchy),
              ~w(tasks create),
              ~w(tasks update),
              ~w(tasks move),
@@ -136,6 +137,42 @@ defmodule Taskman.CLI.ParserTest do
   test "requires at least one editable option for task updates" do
     assert {:error, _message, ["tasks", "update"]} =
              Parser.parse(~w(tasks update --project 7 42), %{})
+  end
+
+  test "parses parent assignment and removal as Task mutations" do
+    assert {:ok,
+            %Invocation{
+              command: %{path: ["tasks", "create"]},
+              options: %{project: 7, title: "Child", parent: 42}
+            }} = Parser.parse(~w(tasks create --project 7 --title Child --parent 42), %{})
+
+    assert {:ok,
+            %Invocation{
+              command: %{path: ["tasks", "update"]},
+              arguments: %{task_id: 51},
+              options: %{project: 7, parent: 42}
+            }} = Parser.parse(~w(tasks update --project 7 51 --parent 42), %{})
+
+    assert {:ok,
+            %Invocation{
+              command: %{path: ["tasks", "update"]},
+              arguments: %{task_id: 51},
+              options: %{project: 7, no_parent: true}
+            }} = Parser.parse(~w(tasks update --project 7 51 --no-parent), %{})
+  end
+
+  test "rejects contradictory Task parent mutations" do
+    assert {:error, "Options --parent, --no-parent are mutually exclusive", ["tasks", "update"]} =
+             Parser.parse(~w(tasks update --project 7 51 --parent 42 --no-parent), %{})
+  end
+
+  test "parses hierarchy inspection with a Project-scoped Task ID" do
+    assert {:ok,
+            %Invocation{
+              command: %{path: ["tasks", "hierarchy"]},
+              arguments: %{task_id: 51},
+              options: %{project: 7}
+            }} = Parser.parse(~w(tasks hierarchy --project 7 51), %{})
   end
 
   test "rejects both due-date options" do

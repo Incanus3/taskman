@@ -127,6 +127,32 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     assert has_element?(view, "#task-save-status[data-state='not_saved']")
   end
 
+  test "saving an edit parent preserves a dirty ordinary autosave draft", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Before"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "Dirty title"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
+    assert has_element?(view, "#task-title[value='Dirty title']")
+    assert has_element?(view, "#task-save-status[data-state='saving']")
+
+    view |> element("#task-modal-close") |> render_click()
+
+    updated = Tasks.get_task_for_project(project, task.id)
+    assert updated.title == "Dirty title"
+    assert updated.parent_task_id == parent.id
+  end
+
   test "does not reuse an autosave token after reopening the same Task", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})

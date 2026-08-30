@@ -12,7 +12,7 @@ defmodule Taskman.CLI.Skill.BundleTest do
 
     assert skill =~ ~r/\A---\nname: taskman-cli\ndescription: Use when .+\n---\n/s
     assert skill =~ "Taskman is the system of record"
-    assert skill =~ "Projects, Lists, Tasks, later relationships, and Agent Sessions"
+    assert skill =~ "Projects, Lists, Tasks, and Agent Sessions"
     assert skill =~ "taskman --help"
     assert skill =~ "taskman agent onboarding"
     assert skill =~ "ordinary commands require a running backend"
@@ -29,6 +29,11 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "exact ID operands"
     assert skill =~ "never guess by name"
     assert skill =~ "Inspect before mutating"
+    assert skill =~ "parent IDs must be exact and Project-scoped"
+    assert skill =~ "Inspect Tasks before changing parentage"
+    assert skill =~ "tasks update --parent"
+    assert skill =~ "tasks update --no-parent"
+    assert skill =~ "tasks hierarchy"
     assert skill =~ "preserve its returned name and primary directory"
     assert skill =~ "never infer registration from the current working directory"
     assert skill =~ "taskman tasks list --project 7 --include-descendants --json"

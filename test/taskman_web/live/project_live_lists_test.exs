@@ -193,11 +193,116 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
 
     assert has_element?(view, "#location-heading", "Planning")
     assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-create-location", "List Planning")
+    assert has_element?(view, "#task-parent-picker")
+    assert has_element?(view, "#task-parent-search[value='']")
+    refute has_element?(view, "#task-parent-selected")
 
     view |> element("#cancel-task") |> render_click()
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
     refute has_element?(view, "#task-modal")
+  end
+
+  test "Add subtask captures the source List while preserving the Project browse route", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    source = task_fixture(project, planning, %{title: "Plan release"})
+    replacement = task_fixture(project, %{title: "Project replacement"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
+
+    view |> element("#add-subtask-#{source.id}") |> render_click()
+
+    assert_patch(
+      view,
+      ~p"/projects/#{project.id}/tasks/new?include_children=true&parent_task_id=#{source.id}"
+    )
+
+    assert has_element?(view, "#task-#{source.id}")
+    assert has_element?(view, "#task-create-location", "List Planning")
+    assert has_element?(view, "#task-parent-selected", "Plan release")
+
+    view |> element("#task-parent-search") |> render_click()
+
+    view
+    |> element("#task-parent-search")
+    |> render_keyup(%{"parent_query" => "Project replacement"})
+
+    view |> element("#task-parent-option-#{replacement.id}") |> render_click()
+
+    assert has_element?(view, "#task-create-location", "List Planning")
+    assert has_element?(view, "#task-parent-selected", "Project replacement")
+
+    view |> element("#task-parent-clear") |> render_click()
+
+    assert has_element?(view, "#task-create-location", "List Planning")
+    refute has_element?(view, "#task-parent-selected")
+
+    view
+    |> form("#task-form", task: %{title: "Captured List child"})
+    |> render_submit()
+
+    assert_patch(view, ~p"/projects/#{project.id}?include_children=true")
+
+    created =
+      Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Captured List child"))
+
+    assert created.list_id == planning.id
+    assert created.parent_task_id == nil
+    assert has_element?(view, "#task-#{created.id}")
+  end
+
+  test "Add subtask captures a Project-root source location", %{conn: conn} do
+    project = project_fixture(%{})
+    source = task_fixture(project, %{title: "Project root parent"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#add-subtask-#{source.id}") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/new?parent_task_id=#{source.id}")
+    assert has_element?(view, "#task-#{source.id}")
+    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+    assert has_element?(view, "#task-parent-selected", "Project root parent")
+
+    view
+    |> form("#task-form", task: %{title: "Project-root child"})
+    |> render_submit()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    created =
+      Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Project-root child"))
+
+    assert created.list_id == nil
+    assert created.parent_task_id == source.id
+    assert has_element?(view, "#task-#{created.id}")
+  end
+
+  test "creating a List-owned subtask does not refresh it into a direct Project view", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    source = task_fixture(project, planning, %{title: "Plan release"})
+
+    {:ok, view, _html} =
+      live(conn, ~p"/projects/#{project.id}/tasks/new?parent_task_id=#{source.id}")
+
+    view
+    |> form("#task-form", task: %{title: "Hidden List child"})
+    |> render_submit()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    created =
+      Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Hidden List child"))
+
+    assert created.list_id == planning.id
+    assert created.parent_task_id == source.id
+    refute has_element?(view, "#task-#{created.id}")
   end
 
   test "saving a new Task creates it in the selected List and returns to its URL context", %{

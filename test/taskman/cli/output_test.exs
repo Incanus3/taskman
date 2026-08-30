@@ -24,6 +24,42 @@ defmodule Taskman.CLI.OutputTest do
              "ID: 1\nNAME: One\nPRIMARY DIRECTORY: /tmp\n"
   end
 
+  test "readable Task collections include each parent Task ID" do
+    data = [
+      %{
+        "id" => 51,
+        "title" => "Implement parser",
+        "parent_task_id" => 42,
+        "status" => "pending",
+        "priority" => "none",
+        "location" => %{"path" => ["Delivery"]},
+        "due_at" => nil
+      }
+    ]
+
+    assert Output.success({:tasks, :list}, data, false) ==
+             "ID\tTITLE\tPARENT\tSTATUS\tPRIORITY\tLOCATION\tDUE\n" <>
+               "51\tImplement parser\t42\tpending\tnone\tDelivery\t—\n"
+  end
+
+  test "readable hierarchy output keeps API order and marks the selected Task" do
+    data = %{
+      "selected_task_id" => 51,
+      "root" => %{
+        "task" => %{"id" => 42, "title" => "Build import"},
+        "children" => [
+          %{
+            "task" => %{"id" => 51, "title" => "Implement parser"},
+            "children" => []
+          }
+        ]
+      }
+    }
+
+    assert Output.success({:tasks, :hierarchy}, data, false) ==
+             "42  Build import\n└─ 51  Implement parser  [selected]\n"
+  end
+
   test "JSON errors preserve the API envelope and trailing newline" do
     envelope = %{error: %{code: "not_found", message: "Resource not found"}}
 

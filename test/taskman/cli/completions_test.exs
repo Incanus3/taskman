@@ -198,6 +198,26 @@ defmodule Taskman.CLI.CompletionsTest do
   end
 
   @tag :tmp_dir
+  test "Bash omits --no-parent after an inline parent selection", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    File.write!(bash_path, Completions.bash())
+
+    refute "--no-parent" in bash_query(
+             bash_path,
+             ["taskman", "tasks", "update", "--parent=42", "--"]
+           )
+  end
+
+  @tag :tmp_dir
+  test "Fish offers parent assignment for creation and removal for updates", %{tmp_dir: tmp_dir} do
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(fish_path, Completions.fish())
+
+    assert "--parent" in fish_query(fish_path, "taskman tasks create --project 7 --")
+    assert "--no-parent" in fish_query(fish_path, "taskman tasks update --project 7 51 --")
+  end
+
+  @tag :tmp_dir
   test "Bash omits forbidden globals at a constrained command prefix", %{tmp_dir: tmp_dir} do
     bash_path = Path.join(tmp_dir, "taskman.bash")
     File.write!(bash_path, Completions.bash())

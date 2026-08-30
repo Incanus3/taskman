@@ -39,9 +39,23 @@ defmodule Taskman.CLI.Commands.Tasks do
           json?
         )
 
+      :hierarchy ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+
+        request(
+          invocation,
+          :get,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/hierarchy",
+          [],
+          runtime_options,
+          json?,
+          :hierarchy
+        )
+
       :create ->
         task = task_fields(invocation.options)
         task = maybe_put_list(task, invocation.options)
+        task = maybe_put_parent(task, invocation.options)
         body = %{"task" => task}
 
         request(
@@ -57,6 +71,7 @@ defmodule Taskman.CLI.Commands.Tasks do
         task_id = Map.fetch!(invocation.arguments, :task_id)
         task = task_fields(invocation.options)
         task = maybe_clear_due_at(task, invocation.options)
+        task = maybe_update_parent(task, invocation.options)
         body = %{"task" => task}
 
         request(
@@ -119,11 +134,32 @@ defmodule Taskman.CLI.Commands.Tasks do
     end
   end
 
+  defp maybe_put_parent(task, options) do
+    if Map.has_key?(options, :parent) do
+      Map.put(task, "parent_task_id", Map.fetch!(options, :parent))
+    else
+      task
+    end
+  end
+
   defp maybe_clear_due_at(task, options) do
     if Map.get(options, :clear_due_at, false) do
       Map.put(task, "due_at", nil)
     else
       task
+    end
+  end
+
+  defp maybe_update_parent(task, options) do
+    cond do
+      Map.get(options, :no_parent, false) ->
+        Map.put(task, "parent_task_id", nil)
+
+      Map.has_key?(options, :parent) ->
+        Map.put(task, "parent_task_id", Map.fetch!(options, :parent))
+
+      true ->
+        task
     end
   end
 

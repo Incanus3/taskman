@@ -10,6 +10,7 @@ defmodule Taskman.Tasks.Task do
           id: pos_integer() | nil,
           project_id: pos_integer() | nil,
           list_id: pos_integer() | nil,
+          parent_task_id: pos_integer() | nil,
           title: String.t() | nil,
           description: String.t() | nil,
           status: atom(),
@@ -26,6 +27,7 @@ defmodule Taskman.Tasks.Task do
 
     belongs_to :project, Taskman.Projects.Project
     belongs_to :list, Taskman.Lists.TaskList
+    belongs_to :parent_task, __MODULE__
 
     timestamps(type: :utc_datetime)
   end
@@ -40,7 +42,15 @@ defmodule Taskman.Tasks.Task do
     |> validate_required([:project_id, :title, :status, :priority])
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:list_id, name: :tasks_list_id_project_id_fkey)
+    |> foreign_key_constraint(:parent_task_id,
+      name: :tasks_parent_task_id_project_id_fkey,
+      message: "does not exist"
+    )
     |> check_constraint(:status, name: :tasks_status_check)
     |> check_constraint(:priority, name: :tasks_priority_check)
+    |> check_constraint(:parent_task_id,
+      name: :tasks_parent_not_self_check,
+      message: "cannot be its own parent"
+    )
   end
 end

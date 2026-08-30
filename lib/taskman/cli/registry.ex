@@ -133,16 +133,30 @@ defmodule Taskman.CLI.Registry do
         examples: ["taskman tasks show --project 7 42"]
       },
       %Command{
+        path: ~w(tasks hierarchy),
+        summary: "Inspect a Task's connected hierarchy.",
+        usage: "taskman tasks hierarchy --project PROJECT_ID TASK_ID",
+        handler: {:tasks, :hierarchy},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
+            required?: true
+          )
+        ],
+        examples: ["taskman tasks hierarchy --project 7 42"]
+      },
+      %Command{
         path: ~w(tasks create),
         summary: "Create a Task.",
         usage:
-          "taskman tasks create --project PROJECT_ID --title TITLE [--list LIST_ID] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
+          "taskman tasks create --project PROJECT_ID --title TITLE [--parent TASK_ID] [--list LIST_ID] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
         handler: {:tasks, :create},
         options: [
           option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
             required?: true
           ),
           option(:title, "--title", :string, "TITLE", "Task title.", required?: true),
+          option(:parent, "--parent", :positive_integer, "TASK_ID", "Optional parent Task ID."),
           option(:list, "--list", :positive_integer, "LIST_ID", "Optional List ID."),
           option(:description, "--description", :string, "TEXT", "Task description."),
           option(:status, "--status", :string, "STATUS", "Lifecycle status.", values: @statuses),
@@ -159,7 +173,7 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks update),
         summary: "Update editable Task fields or lifecycle state.",
         usage:
-          "taskman tasks update --project PROJECT_ID TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at]",
+          "taskman tasks update --project PROJECT_ID TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent]",
         handler: {:tasks, :update},
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
@@ -179,15 +193,27 @@ defmodule Taskman.CLI.Registry do
             "LOCAL_ISO_8601",
             "Replacement local due date and time."
           ),
-          option(:clear_due_at, "--clear-due-at", :boolean, nil, "Clear the due date.")
+          option(:clear_due_at, "--clear-due-at", :boolean, nil, "Clear the due date."),
+          option(
+            :parent,
+            "--parent",
+            :positive_integer,
+            "PARENT_TASK_ID",
+            "Replacement parent Task ID."
+          ),
+          option(:no_parent, "--no-parent", :boolean, nil, "Clear the parent Task.")
         ],
         constraints: [
-          {:at_least_one, ~w(title description status priority due_at clear_due_at)a},
-          {:mutually_exclusive, [:due_at, :clear_due_at]}
+          {:at_least_one,
+           ~w(title description status priority due_at clear_due_at parent no_parent)a},
+          {:mutually_exclusive, [:due_at, :clear_due_at]},
+          {:mutually_exclusive, [:parent, :no_parent]}
         ],
         examples: [
           "taskman tasks update --project 7 42 --status in_progress",
-          "taskman tasks update --project 7 42 --clear-due-at"
+          "taskman tasks update --project 7 42 --clear-due-at",
+          "taskman tasks update --project 7 42 --parent 41",
+          "taskman tasks update --project 7 42 --no-parent"
         ]
       },
       %Command{

@@ -49,6 +49,23 @@ defmodule Taskman.CLI.HelpTest do
     assert help =~ "Example"
   end
 
+  test "Task hierarchy help documents the exact inspect invocation" do
+    assert Help.render(~w(tasks hierarchy)) =~
+             "taskman tasks hierarchy --project PROJECT_ID TASK_ID"
+  end
+
+  test "Task parent help distinguishes parent assignment from removal" do
+    create_help = Help.render(~w(tasks create))
+    update_help = Help.render(~w(tasks update))
+
+    assert create_help =~
+             "taskman tasks create --project PROJECT_ID --title TITLE [--parent TASK_ID]"
+
+    assert update_help =~ "[--parent PARENT_TASK_ID | --no-parent]"
+    assert update_help =~ "--parent PARENT_TASK_ID"
+    assert update_help =~ "--no-parent"
+  end
+
   test "completion leaf help describes shell output and rejects JSON mode" do
     for shell <- ~w(bash fish) do
       help = Help.render(["completions", shell])

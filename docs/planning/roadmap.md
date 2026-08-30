@@ -1,6 +1,6 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Task relationships is the next slice
+**Status:** Task relationships in progress — parent-child delivered; Relates to next
 **Updated:** 2026-08-30
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
@@ -163,6 +163,16 @@ Add relationship types incrementally:
 Each type should add its persistence, domain validation, UI, and focused invariant tests. Do not
 build a generalized relationship subsystem beyond the concrete rules that the next relationship
 requires.
+
+**Delivered increment:** Parent-child Task hierarchy is defined by the
+[`Parent-child Task hierarchy specification`](../specs/2026-08-30-parent-child-task-hierarchy-design.md).
+Users can create and edit same-Project parentage, add subtasks with inherited Task location,
+navigate a progressive hierarchy in Task detail, and use matching JSON API and CLI contracts while
+List ownership remains independent. Focused and complete repository gates, implementation-surface
+scans, responsive browser acceptance, independent verification, and final whole-branch review
+passed.
+
+**Next increment:** Relates to.
 
 ### 6. Deletion safeguards
 

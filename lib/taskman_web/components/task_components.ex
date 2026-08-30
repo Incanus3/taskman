@@ -32,6 +32,7 @@ defmodule TaskmanWeb.TaskComponents do
   attr :task_path, :string, required: true
   attr :include_children?, :boolean, default: false
   attr :task_move, TaskMove, required: true
+  attr :add_subtask_path, :string, default: nil
 
   def row(assigns) do
     ~H"""
@@ -79,11 +80,21 @@ defmodule TaskmanWeb.TaskComponents do
       <div
         id={"task-actions-#{task.id}"}
         class={[
-          "pointer-events-auto relative flex justify-end sm:justify-self-center",
+          "pointer-events-auto relative flex justify-end gap-2 sm:justify-self-center",
           TaskMove.active_for?(@task_move, task.id, :row) && "z-40",
           !TaskMove.active_for?(@task_move, task.id, :row) && "z-10"
         ]}
       >
+        <.link
+          :if={@add_subtask_path}
+          id={"add-subtask-#{task.id}"}
+          patch={@add_subtask_path}
+          aria-label={"Add subtask to #{task.title}"}
+          title="Add subtask"
+          class="pointer-events-auto grid size-8 place-items-center rounded-lg border border-slate-700 bg-slate-800 text-slate-300 shadow-sm transition hover:border-indigo-400/50 hover:bg-indigo-400/10 hover:text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+        >
+          <.icon name="hero-plus" class="size-4" />
+        </.link>
         <button
           id={"move-task-row-button-#{task.id}"}
           type="button"

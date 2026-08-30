@@ -6,11 +6,13 @@ defmodule TaskmanWeb.API.TaskController do
   alias Taskman.Lists
   alias Taskman.Projects
   alias Taskman.Tasks
+  alias Taskman.Tasks.Hierarchy
+  alias Taskman.Tasks.HierarchyNode
   alias Taskman.Tasks.TaskWithLocation
   alias TaskmanWeb.API.Params
   alias TaskmanWeb.API.Representation
 
-  @editable_fields ~w(title description status priority due_at)
+  @editable_fields ~w(title description status priority due_at parent_task_id)
 
   def index(conn, %{"project_id" => project_id} = params) do
     with {:ok, project} <- fetch_project(project_id),
@@ -28,10 +30,12 @@ defmodule TaskmanWeb.API.TaskController do
   def create(conn, %{"project_id" => project_id, "task" => task_params})
       when is_map(task_params) do
     {list_id, task_attrs} = Map.pop(task_params, "list_id")
+    {parent_task_id, task_attrs, _parent_present?} = pop_parent_task_id(task_attrs)
 
     with {:ok, project} <- fetch_project(project_id),
          {:ok, location} <- resolve_location(project, list_id),
-         {:ok, task} <- Tasks.create_task(project, location, task_attrs) do
+         {:ok, parent} <- resolve_parent(project, parent_task_id),
+         {:ok, task} <- Tasks.create_task(project, location, task_attrs, parent: parent) do
       conn
       |> put_status(:created)
       |> json(%{data: task_data(project, task)})
@@ -49,15 +53,31 @@ defmodule TaskmanWeb.API.TaskController do
 
   def show(_conn, _params), do: {:error, :invalid_request}
 
+  def hierarchy(conn, %{"project_id" => project_id, "task_id" => task_id}) do
+    with {:ok, project} <- fetch_project(project_id),
+         {:ok, task} <- fetch_task(project, task_id),
+         {:ok, hierarchy} <- Tasks.get_task_hierarchy(project, task) do
+      json(conn, %{data: hierarchy_data(hierarchy)})
+    end
+  end
+
+  def hierarchy(_conn, _params), do: {:error, :invalid_request}
+
   def update(
         conn,
         %{"project_id" => project_id, "task_id" => task_id, "task" => task_attrs}
       )
       when is_map(task_attrs) do
+    {parent_task_id, task_attrs_without_parent, parent_present?} =
+      pop_parent_task_id(task_attrs)
+
     with :ok <- validate_update_attrs(task_attrs),
          {:ok, project} <- fetch_project(project_id),
          {:ok, task} <- fetch_task(project, task_id),
-         {:ok, updated} <- Tasks.update_task(project, task, task_attrs) do
+         {:ok, parent_opts} <-
+           resolve_update_parent(project, parent_task_id, parent_present?),
+         {:ok, updated} <-
+           Tasks.update_task(project, task, task_attrs_without_parent, parent_opts) do
       json(conn, %{data: task_data(project, updated)})
     end
   end
@@ -113,6 +133,25 @@ defmodule TaskmanWeb.API.TaskController do
     end
   end
 
+  defp resolve_parent(_project, nil), do: {:ok, nil}
+
+  defp resolve_parent(project, parent_task_id) do
+    with {:ok, id} <- Params.positive_id(parent_task_id) do
+      case Tasks.get_task_for_project(project, id) do
+        nil -> {:error, :not_found}
+        parent -> {:ok, parent}
+      end
+    end
+  end
+
+  defp resolve_update_parent(_project, _parent_task_id, false), do: {:ok, []}
+
+  defp resolve_update_parent(project, parent_task_id, true) do
+    with {:ok, parent} <- resolve_parent(project, parent_task_id) do
+      {:ok, [parent: parent]}
+    end
+  end
+
   defp include_descendants?(%{"include_descendants" => "true"}), do: true
   defp include_descendants?(_params), do: false
 
@@ -125,11 +164,49 @@ defmodule TaskmanWeb.API.TaskController do
   end
 
   defp validate_update_attrs(attrs) do
-    if Enum.any?(@editable_fields, &Map.has_key?(attrs, &1)) do
+    if Enum.any?(@editable_fields, &Map.has_key?(attrs, &1)) or
+         Map.has_key?(attrs, :parent_task_id) do
       :ok
     else
       {:error, :invalid_request}
     end
+  end
+
+  defp pop_parent_task_id(attrs) do
+    cond do
+      Map.has_key?(attrs, "parent_task_id") ->
+        {parent_task_id, attrs} = Map.pop(attrs, "parent_task_id")
+        {parent_task_id, attrs, true}
+
+      Map.has_key?(attrs, :parent_task_id) ->
+        {parent_task_id, attrs} = Map.pop(attrs, :parent_task_id)
+        {parent_task_id, attrs, true}
+
+      true ->
+        {nil, attrs, false}
+    end
+  end
+
+  defp hierarchy_data(%Hierarchy{selected_task_id: selected_task_id, root: root}) do
+    %{
+      selected_task_id: selected_task_id,
+      root: hierarchy_node_data(root)
+    }
+  end
+
+  defp hierarchy_node_data(%HierarchyNode{
+         task: task,
+         location_path: location_path,
+         children: children
+       }) do
+    %{
+      task:
+        Representation.task_with_location(%TaskWithLocation{
+          task: task,
+          location_path: location_path
+        }),
+      children: Enum.map(children, &hierarchy_node_data/1)
+    }
   end
 
   defp task_data(_project, %TaskWithLocation{} = task_with_location),
