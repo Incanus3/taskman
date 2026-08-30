@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Task relationships next
-**Updated:** 2026-08-26
+**Status:** API, CLI, and agent skill next
+**Updated:** 2026-08-29
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -99,7 +99,7 @@ Scope:
 
 The tree representation and query strategy should be designed immediately before this slice.
 
-List deletion is deferred to slice 5 so it ships with the complete recursive impact-warning and
+List deletion is deferred to slice 6 so it ships with the complete recursive impact-warning and
 confirmation contract rather than an unsafe or temporary deletion rule.
 
 **Current state:** Complete. Users can create and rename nested Lists, expand a semantic hierarchy,
@@ -113,9 +113,37 @@ is approved, implemented, and delivered. Its
 [`implementation plan`](../archive/plans/2026-08-26-lists-nested-organization.md) is archived, and the
 repository-local delivery graph is closed through `tas-lists-nested-organization-8qe.6`.
 
-**Next slice:** Slice 4, Task relationships.
+**Next slice:** Slice 4, API, CLI, and agent skill.
 
-### 4. Task relationships
+### 4. API, CLI, and agent skill
+
+**Outcome:** Users and agents can manage Taskman through a documented CLI backed by a versioned
+JSON API.
+
+Scope:
+
+- Add `/api/v1` endpoints for meaningful Project, List, and Task operations delivered in Slices
+  1–3.
+- Build an installable Elixir escript named `taskman` that calls the API with Req.
+- Provide human-readable output by default and deterministic JSON through a global `--json` option.
+- Provide complete top-level, command-group, and leaf-command help.
+- Generate Bash and Fish completions from the same command registry used by help.
+- Add `taskman agent onboarding` with purpose, installation, backend-start, configuration, and
+  basic-usage guidance.
+- Bundle a version-matched agent skill and install it safely to
+  `~/.agents/skills/taskman-cli/` through `taskman agent skill install`.
+- Establish UI, API, CLI, help, completion, and skill parity as a completion requirement for
+  meaningful operations in every later slice.
+
+Browser-only presentation state is not part of parity. The API and CLI remain local-only and
+unauthenticated under the current MVP boundary. Starting the backend through a future
+`taskman serve` command is an explicit extension point, not part of this slice.
+
+The
+[`API, CLI, and agent skill specification`](../specs/2026-08-29-api-cli-agent-skill-design.md)
+defines the operation surface and maintenance contract.
+
+### 5. Task relationships
 
 **Outcome:** Task work breakdown and explicit relationships are usable in Task detail.
 
@@ -130,7 +158,7 @@ Each type should add its persistence, domain validation, UI, and focused invaria
 build a generalized relationship subsystem beyond the concrete rules that the next relationship
 requires.
 
-### 5. Deletion safeguards
+### 6. Deletion safeguards
 
 **Outcome:** Destructive operations follow the product's explicit impact-warning and confirmation
 rules.
@@ -147,7 +175,7 @@ Scope:
 Implement this after ownership and relationship behavior exists so impact calculations reflect the
 real model.
 
-### 6. Agent Session launch foundation
+### 7. Agent Session launch foundation
 
 **Outcome:** A user can launch an Auggie session for a Task through a narrow, testable integration
 boundary.
@@ -164,7 +192,7 @@ Scope:
 ACP process ownership, capability negotiation, and recovery details should be designed immediately
 before this slice.
 
-### 7. Attach and resume
+### 8. Attach and resume
 
 **Outcome:** Existing Auggie sessions can be attached and explicitly resumed with clear recovery
 behavior.
@@ -178,7 +206,7 @@ Scope:
 
 Keep this separate from initial launch because attachment and recovery are materially more complex.
 
-### 8. MVP hardening
+### 9. MVP hardening
 
 **Outcome:** The local MVP is coherent, testable, and safe to use.
 
@@ -203,6 +231,9 @@ them:
 - Full filesystem/service architecture before local-directory behavior is implemented.
 - ACP supervision and recovery architecture before Agent Session work.
 - Complete URL and modal-state design before Task detail/navigation.
-- A formal JSON API without a client that needs it.
 - Broad JavaScript conventions without a browser behavior that requires a hook.
 - Compose/deployment packaging, authentication, and multi-user concerns excluded by the MVP.
+- Native standalone CLI packaging before distribution beyond the Elixir/Mix development
+  environment requires it.
+- Starting the backend through `taskman serve` before a dedicated server-lifecycle slice defines
+  its process, database, and failure semantics.

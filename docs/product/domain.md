@@ -75,7 +75,8 @@
 
 ## Task creation
 
-- A new Task requires a non-empty title and starts in **Pending**, unless the user explicitly creates it in **Icebox**.
+- A new Task requires a non-empty title and defaults to **Pending**. A user may explicitly select
+  another lifecycle state during creation.
 - Rich-text description, due date, and checklist are optional when creating a Task. Priority defaults to **None**.
 
 ## Priority
