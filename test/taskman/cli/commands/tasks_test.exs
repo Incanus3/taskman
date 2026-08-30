@@ -15,6 +15,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
             id: 42,
             project_id: 7,
             list_id: 11,
+            parent_task_id: nil,
             title: "Prepare launch",
             description: "Details",
             status: "pending",
@@ -36,8 +37,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     assert result.stderr == ""
 
     assert result.stdout ==
-             "ID\tTITLE\tSTATUS\tPRIORITY\tLOCATION\tDUE\n" <>
-               "42\tPrepare launch\tpending\thigh\tPlanning\t—\n"
+             "ID\tTITLE\tPARENT\tSTATUS\tPRIORITY\tLOCATION\tDUE\n" <>
+               "42\tPrepare launch\t—\tpending\thigh\tPlanning\t—\n"
   end
 
   test "tasks list rejects malformed collection members as an invalid response" do
@@ -48,6 +49,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
             id: 42,
             project_id: 7,
             list_id: 11,
+            parent_task_id: nil,
             title: "Prepare launch",
             description: "Details",
             status: "unknown",
@@ -81,6 +83,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
             id: 42,
             project_id: 7,
             list_id: nil,
+            parent_task_id: nil,
             title: "Prepare launch",
             description: "",
             status: "pending",
@@ -99,7 +102,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     assert result.status == 0
     assert result.stderr == ""
-    assert result.stdout =~ "42\tPrepare launch\tpending\tnone\tProject\t—"
+    assert result.stdout =~ "42\tPrepare launch\t—\tpending\tnone\tProject\t—"
   end
 
   test "shows a task and preserves every response field in JSON mode" do
@@ -107,6 +110,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
       id: 42,
       project_id: 7,
       list_id: 11,
+      parent_task_id: nil,
       title: "Prepare launch",
       description: "Details",
       status: "in_review",
@@ -134,6 +138,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
                "id" => 42,
                "project_id" => 7,
                "list_id" => 11,
+               "parent_task_id" => nil,
                "title" => "Prepare launch",
                "description" => "Details",
                "status" => "in_review",
@@ -236,6 +241,30 @@ defmodule Taskman.CLI.Commands.TasksTest do
     assert result.stdout =~ "TITLE: Root task"
   end
 
+  test "creates a Task with the selected parent ID" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "POST"
+      assert conn.request_path == "/api/v1/projects/7/tasks"
+
+      assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
+               "task" => %{"title" => "Child", "parent_task_id" => 42}
+             }
+
+      conn
+      |> Plug.Conn.put_status(201)
+      |> Req.Test.json(%{data: task_response(%{title: "Child", parent_task_id: 42})})
+    end)
+
+    result =
+      Taskman.CLI.run(
+        ["tasks", "create", "--project", "7", "--title", "Child", "--parent", "42", "--json"],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0
+    assert %{"data" => %{"parent_task_id" => 42}} = Jason.decode!(result.stdout)
+  end
+
   test "updates selected fields and sends a null due date" do
     Req.Test.expect(TaskCommands, fn conn ->
       assert conn.method == "PATCH"
@@ -290,6 +319,65 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     assert result.status == 0
     assert result.stderr == ""
+  end
+
+  test "updates a Task parent and can clear it without another field" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "PATCH"
+      assert conn.request_path == "/api/v1/projects/7/tasks/42"
+
+      assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
+               "task" => %{"parent_task_id" => 41}
+             }
+
+      Req.Test.json(conn, %{data: task_response(%{parent_task_id: 41})})
+    end)
+
+    set_parent =
+      Taskman.CLI.run(
+        ["tasks", "update", "--project", "7", "42", "--parent", "41"],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert set_parent.status == 0
+
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "PATCH"
+      assert conn.request_path == "/api/v1/projects/7/tasks/42"
+
+      assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
+               "task" => %{"parent_task_id" => nil}
+             }
+
+      Req.Test.json(conn, %{data: task_response(%{parent_task_id: nil})})
+    end)
+
+    clear_parent =
+      Taskman.CLI.run(
+        ["tasks", "update", "--project", "7", "42", "--no-parent", "--json"],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert clear_parent.status == 0
+    assert %{"data" => %{"parent_task_id" => nil}} = Jason.decode!(clear_parent.stdout)
+  end
+
+  test "inspects a Task hierarchy through the dedicated endpoint" do
+    response = hierarchy_response() |> Jason.encode!() |> Jason.decode!()
+
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/api/v1/projects/7/tasks/51/hierarchy"
+      Req.Test.json(conn, %{data: response})
+    end)
+
+    result =
+      Taskman.CLI.run(["tasks", "hierarchy", "--project", "7", "51", "--json"],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0
+    assert Jason.decode!(result.stdout) == %{"data" => response}
   end
 
   test "moves a task to a list" do
@@ -349,6 +437,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
         id: 42,
         project_id: 7,
         list_id: 11,
+        parent_task_id: nil,
         title: "Prepare launch",
         description: "Details",
         status: "pending",
@@ -358,5 +447,20 @@ defmodule Taskman.CLI.Commands.TasksTest do
       },
       overrides
     )
+  end
+
+  defp hierarchy_response do
+    %{
+      "selected_task_id" => 51,
+      "root" => %{
+        "task" => task_response(%{id: 42, title: "Build import"}),
+        "children" => [
+          %{
+            "task" => task_response(%{id: 51, parent_task_id: 42, title: "Implement parser"}),
+            "children" => []
+          }
+        ]
+      }
+    }
   end
 end

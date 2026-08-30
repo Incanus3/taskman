@@ -51,6 +51,7 @@ defmodule TaskmanWeb.API.Representation do
       id: task.id,
       project_id: task.project_id,
       list_id: task.list_id,
+      parent_task_id: task.parent_task_id,
       title: task.title,
       description: task.description,
       status: task.status,

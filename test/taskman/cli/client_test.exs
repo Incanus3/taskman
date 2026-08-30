@@ -155,4 +155,102 @@ defmodule Taskman.CLI.ClientTest do
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
+
+  test "requires every Task response to include a nullable positive parent ID" do
+    for parent_task_id <- [nil, 41] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        Req.Test.json(conn, %{data: task_response(%{parent_task_id: parent_task_id})})
+      end)
+
+      assert {:ok, %{"parent_task_id" => ^parent_task_id}} =
+               Client.request(
+                 :get,
+                 "/api/v1/projects/7/tasks/42",
+                 [],
+                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 {:member, :task}
+               )
+    end
+
+    for malformed <- [
+          task_response(%{}) |> Map.delete(:parent_task_id),
+          task_response(%{parent_task_id: 0}),
+          task_response(%{parent_task_id: "41"})
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        Req.Test.json(conn, %{data: malformed})
+      end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(
+                 :get,
+                 "/api/v1/projects/7/tasks/42",
+                 [],
+                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 {:member, :task}
+               )
+    end
+  end
+
+  test "validates every hierarchy node recursively" do
+    valid = hierarchy_response() |> Jason.encode!() |> Jason.decode!()
+
+    Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: valid}) end)
+
+    assert {:ok, ^valid} =
+             Client.request(
+               :get,
+               "/api/v1/projects/7/tasks/51/hierarchy",
+               [],
+               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               :hierarchy
+             )
+
+    malformed =
+      put_in(valid, ["root", "children", Access.at(0)], %{"task" => task_response(%{id: 51})})
+
+    Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: malformed}) end)
+
+    assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+             Client.request(
+               :get,
+               "/api/v1/projects/7/tasks/51/hierarchy",
+               [],
+               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               :hierarchy
+             )
+  end
+
+  defp task_response(overrides) do
+    Map.merge(
+      %{
+        id: 42,
+        project_id: 7,
+        list_id: 11,
+        parent_task_id: nil,
+        title: "Task",
+        description: "",
+        status: "pending",
+        priority: "none",
+        due_at: nil,
+        location: %{kind: "list", list_id: 11, path: ["Planning"]}
+      },
+      overrides
+    )
+  end
+
+  defp hierarchy_response do
+    %{
+      "selected_task_id" => 51,
+      "root" => %{
+        "task" => task_response(%{id: 42, title: "Build import"}),
+        "children" => [
+          %{
+            "task" => task_response(%{id: 51, parent_task_id: 42, title: "Implement parser"}),
+            "children" => []
+          }
+        ]
+      }
+    }
+  end
 end

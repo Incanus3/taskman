@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
@@ -102,6 +103,223 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-#{task.id}")
   end
 
+  test "editing initializes the parent picker from the persisted parent", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"}, parent: parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    assert has_element?(view, "#task-parent-picker")
+    assert has_element?(view, "#task-parent-search[value='Roadmap']")
+    assert has_element?(view, "#task-parent-selected", "Roadmap")
+    assert has_element?(view, "#task-parent-clear")
+  end
+
+  test "selecting an edit parent persists it immediately", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
+    assert has_element?(view, "#task-parent-selected", "Roadmap")
+    assert has_element?(view, "#task-parent-search[value='Roadmap']")
+    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{parent.id}")
+    assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
+  end
+
+  test "keyboard parent selection stays in the picker instead of submitting the task form", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
+
+    assert has_element?(view, "#task-parent-search[aria-activedescendant='task-parent-clear']")
+
+    view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
+
+    assert has_element?(
+             view,
+             "#task-parent-search[aria-activedescendant='task-parent-option-#{parent.id}']"
+           )
+
+    assert has_element?(view, "#task-parent-option-#{parent.id}[data-active='true']")
+
+    view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
+    assert has_element?(view, "#task-parent-selected", "Roadmap")
+    assert has_element?(view, "#task-parent-search[value='Roadmap']")
+    refute has_element?(view, "#task-parent-results")
+    refute has_element?(view, "#new-project-error")
+
+    view |> element("#task-parent-search") |> render_keyup(%{"parent_query" => "Roadmap"})
+    refute has_element?(view, "#task-parent-results")
+  end
+
+  test "keyboard clearing synchronizes the visible parent query and ignores its keyup search", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Root Alpha"})
+    task = task_fixture(project, %{title: "Launch"}, parent: parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
+    view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
+    assert has_element?(view, "#task-parent-search[value='']")
+    refute has_element?(view, "#task-parent-selected")
+
+    view |> element("#task-parent-search") |> render_keyup(%{"parent_query" => ""})
+    refute has_element?(view, "#task-parent-results")
+  end
+
+  test "replacing an edit parent persists it immediately", %{conn: conn} do
+    project = project_fixture(%{})
+    first_parent = task_fixture(project, %{title: "First parent"})
+    second_parent = task_fixture(project, %{title: "Second parent"})
+    task = task_fixture(project, %{title: "Launch"}, parent: first_parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+
+    view
+    |> element("#task-parent-search")
+    |> render_keyup(%{"parent_query" => "Second parent"})
+
+    view |> element("#task-parent-option-#{second_parent.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == second_parent.id
+    assert has_element?(view, "#task-parent-selected", "Second parent")
+    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+  end
+
+  test "selecting an already selected edit parent is idempotent", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"}, parent: parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
+    assert has_element?(view, "#task-parent-selected", "Roadmap")
+    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+  end
+
+  test "clearing an edit parent persists a root Task immediately", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"}, parent: parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-clear") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
+    assert has_element?(view, "#task-parent-search[value='']")
+    refute has_element?(view, "#task-parent-selected")
+    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+  end
+
+  test "a rejected edit parent retains its draft until a different parent is selected", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    original_parent = task_fixture(project, %{title: "Original parent"})
+    rejected_parent = task_fixture(project, %{title: "Rejected parent"})
+    task = task_fixture(project, %{title: "Launch"}, parent: original_parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-search") |> render_click()
+
+    view
+    |> element("#task-parent-search")
+    |> render_keyup(%{"parent_query" => "Rejected parent"})
+
+    assert has_element?(view, "#task-parent-option-#{rejected_parent.id}")
+
+    assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
+
+    view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
+
+    assert has_element?(view, "#task-parent-search[aria-invalid='true']")
+    assert has_element?(view, "#task-parent-error", "would create a cycle")
+    refute has_element?(view, "#task-parent-results")
+    assert has_element?(view, "#task-parent-search[value='Rejected parent']")
+    assert has_element?(view, "#task-parent-selected", "Rejected parent")
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
+    assert has_element?(view, "#task-hierarchy-node-#{original_parent.id}")
+    assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
+    assert has_element?(view, "#task-title[value='Launch']")
+
+    view |> element("#task-parent-search") |> render_click()
+    assert has_element?(view, "#task-parent-error", "would create a cycle")
+
+    view
+    |> element("#task-parent-search")
+    |> render_keyup(%{"parent_query" => "Original parent"})
+
+    view |> element("#task-parent-option-#{original_parent.id}") |> render_click()
+
+    refute has_element?(view, "#task-parent-error")
+    assert has_element?(view, "#task-parent-search[value='Original parent']")
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
+  end
+
+  test "closing a rejected edit parent discards its invalid draft", %{conn: conn} do
+    project = project_fixture(%{})
+    original_parent = task_fixture(project, %{title: "Original parent"})
+    rejected_parent = task_fixture(project, %{title: "Rejected parent"})
+    task = task_fixture(project, %{title: "Launch"}, parent: original_parent)
+    task_path = ~p"/projects/#{project.id}/tasks/#{task.id}"
+
+    {:ok, view, _html} = live(conn, task_path)
+
+    view |> element("#task-parent-search") |> render_click()
+
+    view
+    |> element("#task-parent-search")
+    |> render_keyup(%{"parent_query" => "Rejected parent"})
+
+    assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
+    view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
+
+    assert has_element?(view, "#task-parent-error", "would create a cycle")
+
+    view |> element("#task-modal-close") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    view |> element("#open-task-#{task.id}") |> render_click()
+    assert_patch(view, task_path)
+
+    assert has_element?(view, "#task-parent-search[value='Original parent']")
+    assert has_element?(view, "#task-parent-selected", "Original parent")
+    refute has_element?(view, "#task-parent-error")
+    refute has_element?(view, "#task-parent-results")
+  end
+
   test "found Task renders truthful detail regions without unavailable operations", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Write launch checklist"})
@@ -145,6 +363,143 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-detail-layout [data-session-row]")
   end
 
+  test "shows the selected Task hierarchy context with only required branches expanded", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{title: "Root"})
+    selected = task_fixture(project, %{title: "Selected"}, parent: root)
+    direct_child = task_fixture(project, %{title: "Direct child"}, parent: selected)
+    sibling = task_fixture(project, %{title: "Sibling"}, parent: root)
+    collapsed_child = task_fixture(project, %{title: "Collapsed child"}, parent: sibling)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+
+    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{root.id}[role='treeitem'][aria-level='1']")
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-node-#{selected.id}[role='treeitem'][aria-level='2']"
+           )
+
+    assert has_element?(view, "#task-hierarchy-link-#{selected.id}[aria-current='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{direct_child.id}")
+    assert has_element?(view, "#task-hierarchy-node-#{sibling.id}")
+    refute has_element?(view, "#task-hierarchy-node-#{collapsed_child.id}")
+    refute has_element?(view, "#task-hierarchy-disclosure-#{root.id}")
+    refute has_element?(view, "#task-hierarchy-disclosure-#{selected.id}")
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
+  end
+
+  test "a hierarchy disclosure progressively shows and hides its branch", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{})
+    selected = task_fixture(project, %{}, parent: root)
+    sibling = task_fixture(project, %{}, parent: root)
+    child = task_fixture(project, %{}, parent: sibling)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
+    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+  end
+
+  test "hierarchy links preserve branch expansion within the connected tree", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{})
+    selected = task_fixture(project, %{}, parent: root)
+    direct_child = task_fixture(project, %{}, parent: selected)
+    sibling = task_fixture(project, %{}, parent: root)
+    sibling_child = task_fixture(project, %{}, parent: sibling)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
+    view |> element("#task-hierarchy-link-#{direct_child.id}") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/#{direct_child.id}")
+    assert has_element?(view, "#task-hierarchy-link-#{direct_child.id}[aria-current='true']")
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{sibling_child.id}")
+  end
+
+  test "closing the Task modal clears hierarchy branch expansion", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{})
+    selected = task_fixture(project, %{}, parent: root)
+    sibling = task_fixture(project, %{}, parent: root)
+    child = task_fixture(project, %{}, parent: sibling)
+    task_path = ~p"/projects/#{project.id}/tasks/#{selected.id}"
+
+    {:ok, view, _html} = live(conn, task_path)
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    view |> element("#task-modal-close") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    view |> element("#open-task-#{selected.id}") |> render_click()
+    assert_patch(view, task_path)
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
+    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+  end
+
+  test "loading another connected tree resets hierarchy branch expansion", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{})
+    selected = task_fixture(project, %{}, parent: root)
+    sibling = task_fixture(project, %{}, parent: root)
+    child = task_fixture(project, %{}, parent: sibling)
+    other_root = task_fixture(project, %{})
+    other_selected = task_fixture(project, %{}, parent: other_root)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    view |> element("#open-task-#{other_selected.id}") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/#{other_selected.id}")
+
+    view |> element("#open-task-#{selected.id}") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
+    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+  end
+
+  test "hierarchy navigation preserves List and descendant-inclusion context", %{conn: conn} do
+    project = project_fixture(%{})
+    current_list = list_fixture(project, nil, %{name: "Current"})
+    other_list = list_fixture(project, nil, %{name: "Other"})
+    root = task_fixture(project, other_list, %{title: "Outside current List"})
+    selected = task_fixture(project, current_list, %{title: "Inside current List"}, parent: root)
+
+    {:ok, view, _html} =
+      live(
+        conn,
+        ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{selected.id}?include_children=true"
+      )
+
+    refute has_element?(view, "#task-#{root.id}")
+
+    view |> element("#task-hierarchy-link-#{root.id}") |> render_click()
+
+    assert_patch(
+      view,
+      ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{root.id}?include_children=true"
+    )
+
+    assert has_element?(view, "#task-hierarchy-link-#{root.id}[aria-current='true']")
+    refute has_element?(view, "#task-#{root.id}")
+  end
+
   test "invalid Task URLs preserve the selected Project list in a modal not-found state", %{
     conn: conn
   } do
@@ -164,6 +519,45 @@ defmodule TaskmanWeb.ProjectLiveTest do
       assert has_element?(view, "#task-modal-content[data-size='default']")
       refute has_element?(view, "#task-#{other.id}")
     end
+  end
+
+  test "a Task removed between detail and hierarchy lookup preserves the Task-not-found modal", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    visible = task_fixture(project, %{title: "Visible"})
+    task = task_fixture(project, %{title: "Removed during lookup"})
+    test_pid = self()
+    handler_id = {__MODULE__, make_ref()}
+    telemetry_guard = :atomics.new(1, [])
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:taskman, :repo, :query],
+        fn _event, _measurements, %{query: query, params: params}, _config ->
+          if String.starts_with?(query, "SELECT") and
+               String.contains?(query, ~s(FROM "tasks")) and
+               params == [task.id, project.id] and
+               :atomics.compare_exchange(telemetry_guard, 1, 0, 1) == :ok do
+            Taskman.Repo.delete!(task)
+            send(test_pid, :task_removed_between_detail_and_hierarchy_lookup)
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    assert_receive :task_removed_between_detail_and_hierarchy_lookup
+    assert has_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
+    assert has_element?(view, "#task-not-found")
+    assert has_element?(view, "#task-#{visible.id}")
+    refute has_element?(view, "#task-form")
+    refute has_element?(view, "#task-detail-layout")
+    assert has_element?(view, "#task-modal-content[data-size='default']")
   end
 
   test "autosaves the targeted Task field and refreshes the streamed row", %{conn: conn} do
@@ -277,6 +671,130 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#cancel-task") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     refute has_element?(view, "#task-modal")
+  end
+
+  test "normal New Task starts without a parent at the browsed Project location", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+    assert has_element?(view, "#task-parent-picker")
+    assert has_element?(view, "#task-parent-search[value='']")
+    refute has_element?(view, "#task-parent-selected")
+  end
+
+  test "a Project-wide selected parent persists without changing the browsed location", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    parent = task_fixture(project, planning, %{title: "Plan release"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    view |> element("#task-parent-search") |> render_click()
+    assert has_element?(view, "#task-parent-option-#{parent.id}")
+
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    assert has_element?(view, "#task-parent-selected", "Plan release")
+
+    view
+    |> form("#task-form", task: %{title: "Project-root child"})
+    |> render_submit()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    created =
+      Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Project-root child"))
+
+    assert created.parent_task_id == parent.id
+    assert created.list_id == nil
+    assert has_element?(view, "#task-#{created.id}")
+  end
+
+  test "stale or foreign preselected parent query values stay recoverable without identity leakage",
+       %{
+         conn: conn
+       } do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    foreign_parent = task_fixture(other_project, %{title: "Foreign parent"})
+
+    for parent_task_id <- ["not-an-id", "999999999", Integer.to_string(foreign_parent.id)] do
+      {:ok, view, _html} =
+        live(
+          conn,
+          "/projects/#{project.id}/tasks/new?parent_task_id=#{parent_task_id}"
+        )
+
+      assert has_element?(view, "#task-modal")
+      assert has_element?(view, "#task-form")
+
+      assert has_element?(
+               view,
+               "#task-parent-search[aria-invalid='true'][aria-describedby='task-parent-error'][value='']"
+             )
+
+      assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
+      refute has_element?(view, "#task-parent-selected")
+      refute has_element?(view, "#task-parent-option-#{foreign_parent.id}")
+    end
+  end
+
+  test "a foreign preselected parent query recovers through no-parent creation", %{conn: conn} do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    foreign_parent = task_fixture(other_project, %{title: "Foreign parent"})
+
+    {:ok, view, _html} =
+      live(
+        conn,
+        "/projects/#{project.id}/tasks/new?parent_task_id=#{foreign_parent.id}"
+      )
+
+    assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
+    refute has_element?(view, "#task-parent-selected")
+
+    view
+    |> form("#task-form", task: %{title: "Recovered root Task"})
+    |> render_submit()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+
+    created =
+      Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Recovered root Task"))
+
+    assert created.parent_task_id == nil
+    assert created.list_id == nil
+    assert has_element?(view, "#task-#{created.id}")
+  end
+
+  test "a stale selected parent keeps its draft and reports a recoverable error on creation", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Removed parent"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+
+    Taskman.Repo.delete!(parent)
+
+    view
+    |> form("#task-form", task: %{title: "Child with stale parent"})
+    |> render_submit()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-parent-selected", "Removed parent")
+    assert has_element?(view, "#task-parent-search[aria-invalid='true'][value='Removed parent']")
+    assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
+    refute has_element?(view, "#task-parent-results")
+
+    refute Enum.any?(
+             Tasks.list_tasks_for_project(project),
+             &(&1.title == "Child with stale parent")
+           )
   end
 
   test "canceling a valid new Task draft does not persist it", %{conn: conn} do
@@ -398,5 +916,29 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-priority option[selected][value='high']")
     assert has_element?(view, "#task-due-at[value='2026-08-04T09:30']")
     assert Tasks.list_tasks_for_project(project) == []
+  end
+
+  test "invalid ordinary fields retain the selected parent and captured creation location", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    parent = task_fixture(project, planning, %{title: "Parent in Planning"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+
+    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+
+    view
+    |> form("#task-form", task: %{title: "", description: "Preserve this draft"})
+    |> render_submit()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+    assert has_element?(view, "#task-parent-selected", "Parent in Planning")
+    assert has_element?(view, "#task-parent-search[value='Parent in Planning']")
+    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert has_element?(view, "#task-description", "Preserve this draft")
+    assert Tasks.list_tasks_for_project(project) == [parent]
   end
 end

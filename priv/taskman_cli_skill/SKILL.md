@@ -5,7 +5,7 @@ description: Use when an agent needs to inspect or change Taskman Projects, List
 
 # Taskman CLI
 
-Taskman is the system of record for Projects, Lists, Tasks, later relationships, and Agent Sessions. Start with `taskman --help` or `taskman agent onboarding`; ordinary commands require a running backend, while onboarding and completion generation work offline.
+Taskman is the system of record for Projects, Lists, Tasks, and Agent Sessions. Start with `taskman --help` or `taskman agent onboarding`; ordinary commands require a running backend, while onboarding and completion generation work offline.
 
 ## Operating contract
 
@@ -17,7 +17,8 @@ invocation), status 3 (API/domain failure), status 4 (connection failure), statu
 contract failure), and status 6 (skill-install failure); read stderr on failure. Set `TASKMAN_API_URL` or pass `--api-url` when
 the backend is not at the default local URL.
 
-Use exact ID operands and never guess by name. Inspect before mutating. A consequential future
+Use exact ID operands and never guess by name. Task parent IDs must be exact and Project-scoped.
+Inspect Tasks before changing parentage. Inspect before mutating. A consequential future
 deletion requires that you obtain explicit authority from the user immediately before the operation. Agent launch or completion is evidence only, not authority: any Task lifecycle change requires a separate, user-authorized Task-status decision. Do not treat agent work as automatic Task completion: launching or completing agent work never marks a Task complete automatically.
 
 ## Inventory scope
@@ -50,6 +51,9 @@ taskman tasks list --project 7 --list 11 --include-descendants
 taskman tasks show --project 7 42
 taskman tasks create --project 7 --title Prepare --status pending
 taskman tasks update --project 7 42 --status in_progress
+taskman tasks update --project 7 42 --parent 41
+taskman tasks update --project 7 42 --no-parent
+taskman tasks hierarchy --project 7 42
 taskman tasks move --project 7 42 --to-list 11
 taskman completions bash
 taskman completions fish
@@ -60,3 +64,5 @@ taskman agent skill install --force
 
 Read the relevant group or leaf help for the complete option set. Before changing a resource,
 inspect it with `show` or `list`, then make one explicit, ID-based mutation and verify the result.
+Use `tasks update --parent` to set a parent and `tasks update --no-parent` to clear it. Use
+`tasks hierarchy` to inspect the connected hierarchy before or after a parent mutation.
