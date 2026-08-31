@@ -29,6 +29,9 @@ defmodule TaskmanWeb.TaskDetailTest do
 
     document = LazyHTML.from_fragment(html)
 
+    assert document |> LazyHTML.query("#task-modal-title") |> LazyHTML.text() |> String.trim() ==
+             "Task #41"
+
     refute Enum.empty?(LazyHTML.query(document, "#task-form"))
     refute Enum.empty?(LazyHTML.query(document, "#task-save-status[data-state='saved']"))
     assert LazyHTML.text(LazyHTML.query(document, "#task-save-status")) =~ "Saved"

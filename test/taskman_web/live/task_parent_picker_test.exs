@@ -83,9 +83,32 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     assert hd(title_search.options).location_path == [planning]
   end
 
+  test "keeps the selected parent visible independently of the result page and query" do
+    project = project_fixture(%{})
+
+    for index <- 1..20 do
+      task_fixture(project, %{title: "Earlier #{index}"})
+    end
+
+    selected = task_fixture(project, %{title: "Selected"})
+
+    state =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_create(project, selected)
+      |> TaskParentPicker.open_options(project)
+
+    assert length(state.options) == 20
+    assert hd(state.options).task == selected
+
+    searched = TaskParentPicker.search(state, project, "No matching title")
+
+    assert [%TaskWithLocation{task: ^selected}] = searched.options
+  end
+
   test "opening options loads candidates without clearing a rejected draft error" do
     project = project_fixture(%{})
     parent = task_fixture(project, %{title: "Parent"})
+    _earlier = task_fixture(project, %{title: "Earlier"})
 
     failed =
       TaskParentPicker.empty()
@@ -97,7 +120,39 @@ defmodule TaskmanWeb.TaskParentPickerTest do
 
     assert reopened.options_open?
     assert reopened.selected_parent == parent
+    assert reopened.query == ""
+    assert hd(reopened.options).task == parent
     assert reopened.error == "That parent would create a cycle."
+  end
+
+  test "toggle and outside dismissal close options without changing the draft" do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+
+    open =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_create(project, parent)
+      |> TaskParentPicker.open_options(project)
+      |> TaskParentPicker.reject_draft("Keep this error")
+      |> TaskParentPicker.open_options(project)
+
+    toggled = TaskParentPicker.toggle_options(open, project)
+
+    refute toggled.options_open?
+    assert toggled.selected_parent == parent
+    assert toggled.query == "Parent"
+    assert toggled.error == "Keep this error"
+
+    reopened = TaskParentPicker.toggle_options(toggled, project)
+    assert reopened.options_open?
+    assert reopened.query == ""
+
+    dismissed = TaskParentPicker.close_options(reopened)
+
+    refute dismissed.options_open?
+    assert dismissed.selected_parent == parent
+    assert dismissed.query == "Parent"
+    assert dismissed.error == "Keep this error"
   end
 
   test "selection closes options, labels the draft, and only a different draft clears errors" do

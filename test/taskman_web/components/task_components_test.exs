@@ -9,6 +9,25 @@ defmodule TaskmanWeb.TaskComponentsTest do
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.{TaskComponents, TaskMove}
 
+  test "renders the Task number with the row title" do
+    task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
+    task_with_location = %TaskWithLocation{task: task, location_path: []}
+
+    html =
+      render_component(&TaskComponents.row/1, %{
+        id: "tasks-41",
+        task_with_location: task_with_location,
+        task_path: "/projects/7/tasks/41",
+        include_children?: false,
+        task_move: TaskMove.empty()
+      })
+
+    document = LazyHTML.from_fragment(html)
+
+    assert LazyHTML.text(LazyHTML.query(document, "#task-number-41")) =~ "#41"
+    refute Enum.empty?(LazyHTML.query(document, "#task-identity-41 #task-41"))
+  end
+
   test "renders the descendant Task location as its own labelled column cell" do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
 

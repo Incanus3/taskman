@@ -52,7 +52,7 @@ defmodule TaskmanWeb.TaskDetail do
           </h3>
         </div>
 
-        <div class="task-hierarchy-content px-3 pb-5">
+        <div class="task-hierarchy-content ms-3 px-3 pb-5">
           <ul role="tree" aria-label="Task hierarchy" class="border-l border-indigo-400/50 pl-3">
             <.hierarchy_node
               node={@task_hierarchy.hierarchy.root}
@@ -74,26 +74,36 @@ defmodule TaskmanWeb.TaskDetail do
       <div id="task-detail-content" class="task-detail-content">
         <div class="task-detail-columns">
           <section class="min-w-0 p-6 sm:px-7 sm:pb-7" aria-labelledby="task-modal-title">
-            <div class="mb-5 flex items-start justify-between gap-4 pr-10">
-              <h2 id="task-modal-title" class="text-xl font-semibold tracking-tight text-slate-100">
-                Task
-              </h2>
-              <button
-                id={"move-task-detail-button-#{@task.id}"}
-                type="button"
-                phx-click={JS.push_focus() |> JS.push("open_move_task")}
-                phx-value-task-id={@task.id}
-                class="rounded-lg px-2 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+            <div class="relative mb-5">
+              <div class="flex items-start justify-between gap-4 pr-10 xl:pr-0">
+                <h2
+                  id="task-modal-title"
+                  class="text-xl font-semibold tracking-tight text-slate-100"
+                >
+                  Task #{@task.id}
+                </h2>
+                <button
+                  id={"move-task-detail-button-#{@task.id}"}
+                  type="button"
+                  phx-click={JS.push_focus() |> JS.push("open_move_task")}
+                  phx-value-task-id={@task.id}
+                  class="rounded-lg px-2 py-1 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                >
+                  Move Task
+                </button>
+              </div>
+              <div
+                :if={TaskMove.active_for?(@task_move, @task.id, :detail)}
+                data-move-task-popover
+                class="absolute left-0 right-0 top-full z-30"
               >
-                Move Task
-              </button>
+                <Popover.popover
+                  task_id={@task.id}
+                  task_move={@task_move}
+                  window_escape?={false}
+                />
+              </div>
             </div>
-            <Popover.popover
-              :if={TaskMove.active_for?(@task_move, @task.id, :detail)}
-              task_id={@task.id}
-              task_move={@task_move}
-              window_escape?={false}
-            />
             <TaskForm.form
               form={@task_autosave.form}
               mode={:edit}
@@ -205,7 +215,6 @@ defmodule TaskmanWeb.TaskDetail do
             class="size-3.5"
           />
         </button>
-        <span :if={!@collapsible?} class="task-hierarchy-disclosure-spacer" aria-hidden="true"></span>
         <.link
           id={"task-hierarchy-link-#{@node.task.id}"}
           patch={@task_path.(@node.task)}

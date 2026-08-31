@@ -42,6 +42,24 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "After"
   end
 
+  test "title autosave refreshes the hierarchy projection", %{conn: conn} do
+    Application.put_env(:taskman, :task_autosave_delay_ms, 0)
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    task = task_fixture(project, %{title: "Before"}, parent: parent)
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    assert has_element?(view, "#task-hierarchy-link-#{task.id}", "Before")
+
+    view
+    |> form("#task-form", task: %{title: "After"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    _ = :sys.get_state(view.pid)
+
+    assert has_element?(view, "#task-hierarchy-link-#{task.id}", "After")
+  end
+
   test "debounces text, ignores stale messages, and flushes the final value on close", %{
     conn: conn
   } do
@@ -139,7 +157,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id

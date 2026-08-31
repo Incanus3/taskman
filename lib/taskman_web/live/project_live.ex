@@ -394,6 +394,19 @@ defmodule TaskmanWeb.ProjectLive do
      )}
   end
 
+  def handle_event("toggle_task_parent_options", _params, socket) do
+    {:noreply,
+     update_task_parent_picker(
+       socket,
+       false,
+       &TaskParentPicker.toggle_options(&1, socket.assigns.selected_project)
+     )}
+  end
+
+  def handle_event("close_task_parent_options", _params, socket) do
+    {:noreply, update_task_parent_picker(socket, false, &TaskParentPicker.close_options/1)}
+  end
+
   def handle_event("search_task_parents", %{"parent_query" => query}, socket)
       when is_binary(query) do
     picker = socket.assigns.task_parent_picker
@@ -409,6 +422,8 @@ defmodule TaskmanWeb.ProjectLive do
        )}
     end
   end
+
+  def handle_event("search_task_parents", _params, socket), do: {:noreply, socket}
 
   def handle_event("task_parent_keydown", %{"key" => key}, socket) when is_binary(key) do
     picker = socket.assigns.task_parent_picker
@@ -686,12 +701,25 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp sync_task_autosave(socket, autosave, task) do
+    title_changed? =
+      case socket.assigns.selected_task do
+        %Task{title: title} -> title != task.title
+        _ -> false
+      end
+
     socket = assign(socket, :task_autosave, autosave)
 
-    if socket.assigns.selected_task != task do
-      socket
-      |> assign(:selected_task, task)
-      |> refresh_task_stream()
+    socket =
+      if socket.assigns.selected_task != task do
+        socket
+        |> assign(:selected_task, task)
+        |> refresh_task_stream()
+      else
+        socket
+      end
+
+    if title_changed? do
+      reload_task_hierarchy(socket, socket.assigns.selected_project, task)
     else
       socket
     end
