@@ -34,6 +34,7 @@ defmodule TaskmanWeb.TaskDetailTest do
 
     refute Enum.empty?(LazyHTML.query(document, "#task-form"))
     refute Enum.empty?(LazyHTML.query(document, "#task-save-status[data-state='saved']"))
+    refute Enum.empty?(LazyHTML.query(document, "#move-task-detail-button-41.cursor-pointer"))
     assert LazyHTML.text(LazyHTML.query(document, "#task-save-status")) =~ "Saved"
   end
 

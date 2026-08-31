@@ -151,7 +151,8 @@ defmodule Taskman.CLI.Help do
       value = if option.value_name, do: " #{option.value_name}", else: ""
       values = if option.values == [], do: "", else: " (#{Enum.join(option.values, "|")})"
       required = if option.required?, do: " (required)", else: ""
-      "  #{option.long}#{value}#{values}#{required}\t#{option.help}"
+      repeatable = if option.repeatable?, do: " (repeatable)", else: ""
+      "  #{option.long}#{value}#{values}#{required}#{repeatable}\t#{option.help}"
     end)
   end
 

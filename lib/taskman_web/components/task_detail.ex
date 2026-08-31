@@ -87,7 +87,7 @@ defmodule TaskmanWeb.TaskDetail do
                   type="button"
                   phx-click={JS.push_focus() |> JS.push("open_move_task")}
                   phx-value-task-id={@task.id}
-                  class="rounded-lg px-2 py-1 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                  class="cursor-pointer rounded-lg px-2 py-1 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
                 >
                   Move Task
                 </button>

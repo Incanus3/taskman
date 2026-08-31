@@ -145,6 +145,65 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert id == direct.id
   end
 
+  test "GET tasks filters multiple statuses and sorts by a stored Task field", %{conn: conn} do
+    project = project_fixture(%{})
+    alpha = task_fixture(project, %{title: "Alpha", status: :pending})
+    omega = task_fixture(project, %{title: "omega", status: :done})
+    _excluded = task_fixture(project, %{title: "Zulu", status: :will_not_do})
+
+    conn =
+      get(
+        conn,
+        "/api/v1/projects/#{project.id}/tasks?statuses[]=pending&statuses[]=done&sort=title&direction=desc"
+      )
+
+    assert %{"data" => [%{"id" => omega_id}, %{"id" => alpha_id}]} =
+             json_response(conn, 200)
+
+    assert omega_id == omega.id
+    assert alpha_id == alpha.id
+  end
+
+  test "GET tasks sorts descendant Tasks by Location", %{conn: conn} do
+    project = project_fixture(%{})
+    planning = list_fixture(project, %{name: "Planning"})
+    delivery = list_fixture(project, %{name: "delivery"})
+    planning_task = task_fixture(project, planning, %{title: "Planning task"})
+    delivery_task = task_fixture(project, delivery, %{title: "Delivery task"})
+
+    conn =
+      get(
+        conn,
+        "/api/v1/projects/#{project.id}/tasks?include_descendants=true&sort=location&direction=asc"
+      )
+
+    assert %{"data" => [%{"id" => delivery_id}, %{"id" => planning_id}]} =
+             json_response(conn, 200)
+
+    assert delivery_id == delivery_task.id
+    assert planning_id == planning_task.id
+  end
+
+  test "GET tasks rejects invalid status and sort query combinations", %{conn: conn} do
+    project = project_fixture(%{})
+
+    invalid_queries = [
+      "statuses[]=unknown",
+      "statuses=",
+      "sort=unknown&direction=asc",
+      "sort=title&direction=sideways",
+      "sort=title",
+      "direction=asc",
+      "sort=location&direction=asc"
+    ]
+
+    for query <- invalid_queries do
+      response = get(recycle(conn), "/api/v1/projects/#{project.id}/tasks?#{query}")
+
+      assert %{"error" => %{"code" => "invalid_request"}} = json_response(response, 400)
+    end
+  end
+
   test "GET task shows its owning location", %{conn: conn} do
     project = project_fixture(%{})
     root = list_fixture(project, %{name: "Planning"})

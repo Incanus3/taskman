@@ -134,6 +134,37 @@ defmodule Taskman.CLI.ParserTest do
              Parser.parse(~w(tasks create --project 7 --title Work --priority critical), %{})
   end
 
+  test "parses repeatable status filters and a complete Task list sort" do
+    assert {:ok,
+            %Invocation{
+              command: %{path: ["tasks", "list"]},
+              options: %{
+                project: 7,
+                statuses: ["pending", "done"],
+                sort: "title",
+                direction: "asc"
+              }
+            }} =
+             Parser.parse(
+               ~w(tasks list --project 7 --status pending --status done --sort title --direction asc),
+               %{}
+             )
+  end
+
+  test "rejects invalid or incomplete Task list query options" do
+    invalid_invocations = [
+      ~w(tasks list --project 7 --status unknown),
+      ~w(tasks list --project 7 --sort unknown --direction asc),
+      ~w(tasks list --project 7 --sort title --direction sideways),
+      ~w(tasks list --project 7 --sort title),
+      ~w(tasks list --project 7 --direction asc)
+    ]
+
+    for argv <- invalid_invocations do
+      assert {:error, _message, ["tasks", "list"]} = Parser.parse(argv, %{})
+    end
+  end
+
   test "requires at least one editable option for task updates" do
     assert {:error, _message, ["tasks", "update"]} =
              Parser.parse(~w(tasks update --project 7 42), %{})

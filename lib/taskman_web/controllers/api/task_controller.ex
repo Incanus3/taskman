@@ -8,19 +8,27 @@ defmodule TaskmanWeb.API.TaskController do
   alias Taskman.Tasks
   alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.HierarchyNode
+  alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
   alias TaskmanWeb.API.Params
   alias TaskmanWeb.API.Representation
 
   @editable_fields ~w(title description status priority due_at parent_task_id)
+  @task_sort_fields %{
+    "id" => :id,
+    "title" => :title,
+    "location" => :location,
+    "status" => :status,
+    "priority" => :priority
+  }
+  @sort_directions %{"asc" => :asc, "desc" => :desc}
 
   def index(conn, %{"project_id" => project_id} = params) do
     with {:ok, project} <- fetch_project(project_id),
          {:ok, location} <- resolve_location(project, Map.get(params, "list_id")),
+         {:ok, task_options} <- task_query_options(params),
          {:ok, tasks} <-
-           Tasks.list_tasks_for_location(project, location,
-             include_descendants: include_descendants?(params)
-           ) do
+           Tasks.list_tasks_for_location(project, location, task_options) do
       json(conn, %{data: Enum.map(tasks, &task_data(project, &1))})
     end
   end
@@ -154,6 +162,64 @@ defmodule TaskmanWeb.API.TaskController do
 
   defp include_descendants?(%{"include_descendants" => "true"}), do: true
   defp include_descendants?(_params), do: false
+
+  defp task_query_options(params) do
+    include_descendants? = include_descendants?(params)
+
+    with {:ok, statuses} <- task_statuses(params),
+         {:ok, sort} <- task_sort(params, include_descendants?) do
+      options = [include_descendants: include_descendants?]
+      options = maybe_put_task_option(options, :statuses, statuses)
+      {:ok, maybe_put_task_option(options, :sort, sort)}
+    end
+  end
+
+  defp task_statuses(params) do
+    case Map.fetch(params, "statuses") do
+      :error ->
+        {:ok, nil}
+
+      {:ok, statuses} when is_list(statuses) and statuses != [] ->
+        Enum.reduce_while(statuses, {:ok, []}, fn status, {:ok, parsed} ->
+          case Enum.find(Task.statuses(), &(Atom.to_string(&1) == status)) do
+            nil -> {:halt, {:error, :invalid_request}}
+            parsed_status -> {:cont, {:ok, [parsed_status | parsed]}}
+          end
+        end)
+        |> case do
+          {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+          error -> error
+        end
+
+      {:ok, status} when is_binary(status) and status != "" ->
+        task_statuses(%{"statuses" => [status]})
+
+      {:ok, _invalid} ->
+        {:error, :invalid_request}
+    end
+  end
+
+  defp task_sort(params, include_descendants?) do
+    case {Map.fetch(params, "sort"), Map.fetch(params, "direction")} do
+      {:error, :error} ->
+        {:ok, nil}
+
+      {{:ok, field}, {:ok, direction}} when is_binary(field) and is_binary(direction) ->
+        with {:ok, parsed_field} <- Map.fetch(@task_sort_fields, field),
+             {:ok, parsed_direction} <- Map.fetch(@sort_directions, direction),
+             true <- parsed_field != :location or include_descendants? do
+          {:ok, {parsed_field, parsed_direction}}
+        else
+          _invalid -> {:error, :invalid_request}
+        end
+
+      _incomplete_or_invalid ->
+        {:error, :invalid_request}
+    end
+  end
+
+  defp maybe_put_task_option(options, _key, nil), do: options
+  defp maybe_put_task_option(options, key, value), do: Keyword.put(options, key, value)
 
   defp destination_list_id(destination) do
     if Map.has_key?(destination, "list_id") do

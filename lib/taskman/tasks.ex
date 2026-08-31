@@ -78,13 +78,15 @@ defmodule Taskman.Tasks do
       root_ids = Enum.flat_map(task_lists, &if(is_nil(&1.parent_list_id), do: [&1.id], else: []))
 
       project_id
-      |> list_tasks_for_project_descendants(root_ids)
+      |> list_tasks_for_project_descendants(root_ids, opts)
       |> listed_tasks(task_lists)
+      |> apply_task_options(opts)
       |> then(&{:ok, &1})
     else
       project_id
-      |> list_tasks_for_direct_project()
+      |> list_tasks_for_direct_project(opts)
       |> listed_tasks([])
+      |> apply_task_options(opts)
       |> then(&{:ok, &1})
     end
   end
@@ -103,12 +105,12 @@ defmodule Taskman.Tasks do
       _task_list ->
         tasks =
           if Keyword.get(opts, :include_descendants, false) do
-            list_tasks_for_list_descendants(project_id, list_id)
+            list_tasks_for_list_descendants(project_id, list_id, opts)
           else
-            list_tasks_for_direct_list(project_id, list_id)
+            list_tasks_for_direct_list(project_id, list_id, opts)
           end
 
-        {:ok, listed_tasks(tasks, task_lists)}
+        {:ok, tasks |> listed_tasks(task_lists) |> apply_task_options(opts)}
     end
   end
 
@@ -156,21 +158,21 @@ defmodule Taskman.Tasks do
     end
   end
 
-  defp list_tasks_for_direct_project(project_id) do
+  defp list_tasks_for_direct_project(project_id, opts) do
     Task
     |> where([task], task.project_id == ^project_id and is_nil(task.list_id))
-    |> order_by([task], asc: task.inserted_at, asc: task.id)
+    |> apply_task_query_options(opts)
     |> Repo.all()
   end
 
-  defp list_tasks_for_direct_list(project_id, list_id) do
+  defp list_tasks_for_direct_list(project_id, list_id, opts) do
     Task
     |> where([task], task.project_id == ^project_id and task.list_id == ^list_id)
-    |> order_by([task], asc: task.inserted_at, asc: task.id)
+    |> apply_task_query_options(opts)
     |> Repo.all()
   end
 
-  defp list_tasks_for_project_descendants(project_id, root_ids) do
+  defp list_tasks_for_project_descendants(project_id, root_ids, opts) do
     descendant_lists = descendant_lists_query(project_id, root_ids)
     descendant_ids = from item in "descendant_lists", select: item.id
 
@@ -179,11 +181,11 @@ defmodule Taskman.Tasks do
     |> with_cte("descendant_lists", as: ^descendant_lists)
     |> where([task], task.project_id == ^project_id)
     |> where([task], is_nil(task.list_id) or task.list_id in subquery(descendant_ids))
-    |> order_by([task], asc: task.inserted_at, asc: task.id)
+    |> apply_task_query_options(opts)
     |> Repo.all()
   end
 
-  defp list_tasks_for_list_descendants(project_id, root_id) do
+  defp list_tasks_for_list_descendants(project_id, root_id, opts) do
     descendant_lists = descendant_lists_query(project_id, [root_id])
     descendant_ids = from item in "descendant_lists", select: item.id
 
@@ -192,7 +194,7 @@ defmodule Taskman.Tasks do
     |> with_cte("descendant_lists", as: ^descendant_lists)
     |> where([task], task.project_id == ^project_id)
     |> where([task], task.list_id in subquery(descendant_ids))
-    |> order_by([task], asc: task.inserted_at, asc: task.id)
+    |> apply_task_query_options(opts)
     |> Repo.all()
   end
 
@@ -226,6 +228,86 @@ defmodule Taskman.Tasks do
         location_path: Map.get(paths_by_id, task.list_id, [])
       }
     end)
+  end
+
+  defp apply_task_query_options(query, opts) do
+    statuses = opts |> Keyword.get(:statuses, Task.statuses()) |> normalize_statuses()
+
+    query
+    |> apply_status_filter(statuses)
+    |> apply_task_order(Keyword.get(opts, :sort))
+  end
+
+  defp normalize_statuses(statuses) when is_list(statuses) do
+    Enum.filter(statuses, &(is_atom(&1) and &1 in Task.statuses()))
+  end
+
+  defp normalize_statuses(statuses), do: statuses
+
+  defp apply_status_filter(query, []), do: where(query, false)
+
+  defp apply_status_filter(query, statuses) do
+    where(query, [task], task.status in ^statuses)
+  end
+
+  defp apply_task_order(query, nil), do: default_task_order(query)
+  defp apply_task_order(query, {:location, _direction}), do: default_task_order(query)
+
+  defp apply_task_order(query, {field, direction})
+       when field in [:id, :title, :location, :status, :priority] and
+              direction in [:asc, :desc] do
+    case field do
+      :id ->
+        order_by(query, [task], [{^direction, task.id}])
+
+      :title ->
+        order_by(query, [task], [
+          {^direction, fragment("lower(?)", task.title)},
+          {^direction, task.id}
+        ])
+
+      :status ->
+        order_by(query, [task], [
+          {^direction,
+           fragment(
+             "CASE ? WHEN 'will_not_do' THEN 0 WHEN 'icebox' THEN 1 WHEN 'pending' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'in_review' THEN 4 WHEN 'done' THEN 5 END",
+             task.status
+           )},
+          {^direction, task.id}
+        ])
+
+      :priority ->
+        order_by(query, [task], [
+          {^direction,
+           fragment(
+             "CASE ? WHEN 'none' THEN 0 WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'urgent' THEN 4 END",
+             task.priority
+           )},
+          {^direction, task.id}
+        ])
+    end
+  end
+
+  defp default_task_order(query) do
+    order_by(query, [task], asc: task.inserted_at, asc: task.id)
+  end
+
+  defp apply_task_options(tasks, opts) do
+    sort_listed_tasks(tasks, Keyword.get(opts, :sort))
+  end
+
+  defp sort_listed_tasks(tasks, nil), do: tasks
+
+  defp sort_listed_tasks(tasks, {:location, direction}) when direction in [:asc, :desc] do
+    Enum.sort_by(tasks, &{task_sort_value(&1, :location), &1.task.id}, direction)
+  end
+
+  defp sort_listed_tasks(tasks, {field, direction})
+       when field in [:id, :title, :status, :priority] and direction in [:asc, :desc],
+       do: tasks
+
+  defp task_sort_value(%TaskWithLocation{location_path: location_path}, :location) do
+    Enum.map_join(location_path, " / ", &String.downcase(&1.name))
   end
 
   def change_task(owner, attrs \\ %{})

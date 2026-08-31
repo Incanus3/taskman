@@ -15,7 +15,7 @@ defmodule Taskman.CLI.Commands.Tasks do
     case action do
       :list ->
         query = task_list_query(invocation.options)
-        request_options = if query == %{}, do: [], else: [params: query]
+        request_options = if query == [], do: [], else: [params: query]
 
         request(
           invocation,
@@ -103,9 +103,19 @@ defmodule Taskman.CLI.Commands.Tasks do
   end
 
   defp task_list_query(options) do
-    %{}
-    |> maybe_put_query(:list, "list_id", options)
-    |> maybe_put_query(:include_descendants, "include_descendants", options)
+    scalar_query =
+      %{}
+      |> maybe_put_query(:list, "list_id", options)
+      |> maybe_put_query(:include_descendants, "include_descendants", options)
+      |> maybe_put_query(:sort, "sort", options)
+      |> maybe_put_query(:direction, "direction", options)
+
+    status_query =
+      options
+      |> Map.get(:statuses, [])
+      |> Enum.map(&{"statuses[]", &1})
+
+    Map.to_list(scalar_query) ++ status_query
   end
 
   defp maybe_put_query(query, option, key, options) do

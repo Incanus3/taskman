@@ -34,6 +34,14 @@ taskman tasks list --project 7 --include-descendants --json
 
 Without `--include-descendants`, a Project-level Task query lists only Tasks directly at the Project root. A List-level query likewise excludes child Lists unless that flag is present. An empty direct-location result does not establish that the Project has no Tasks.
 
+Repeat `--status` to include multiple lifecycle states, and omit it to include every status. Use
+`--sort` and `--direction` together. Location sorting requires `--include-descendants` because
+direct-location results do not expose a Location column. For example:
+
+```text
+taskman tasks list --project 7 --status pending --status in_progress --sort priority --direction desc
+```
+
 ## Command map
 
 Use the matching command or its group help. These examples use literal IDs so they can be copied
