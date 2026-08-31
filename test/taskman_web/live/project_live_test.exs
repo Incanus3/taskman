@@ -87,6 +87,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-modal-close[aria-label='Close dialog']")
     assert has_element?(view, "#task-form")
     assert has_element?(view, "#task-title[value='Editable']")
+
+    assert has_element?(
+             view,
+             "#task-title[phx-hook='TaskmanWeb.TaskForm.TaskTitleFocus']"
+           )
+
     assert has_element?(view, "#task-description")
     assert has_element?(view, "#task-#{sibling.id}")
     refute has_element?(view, "#close-task")
@@ -111,9 +117,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     assert has_element?(view, "#task-parent-picker")
-    assert has_element?(view, "#task-parent-search[value='Roadmap']")
-    assert has_element?(view, "#task-parent-selected", "Roadmap")
-    assert has_element?(view, "#task-parent-clear")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_element?(view, "#task-parent-clear")
+
+    view |> element("#task-parent-trigger") |> render_click()
+
+    assert has_element?(view, "#task-parent-results #task-parent-clear[role='option']")
   end
 
   test "selecting an edit parent persists it immediately", %{conn: conn} do
@@ -123,16 +133,60 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-selected", "Roadmap")
-    assert has_element?(view, "#task-parent-search[value='Roadmap']")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
     assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
     assert has_element?(view, "#task-hierarchy-node-#{parent.id}")
     assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
+  end
+
+  test "parent options close from the toggle and close event without changing the draft", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Launch"}, parent: parent)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-trigger") |> render_click()
+    assert has_element?(view, "#task-parent-results")
+
+    view |> element("button[aria-label='Close parent Task options']") |> render_click()
+    refute has_element?(view, "#task-parent-results")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+
+    view |> element("#task-parent-trigger") |> render_click()
+    assert has_element?(view, "#task-parent-results")
+
+    render_click(view, "close_task_parent_options", %{})
+    refute has_element?(view, "#task-parent-results")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
+  end
+
+  test "typing in the edit parent search stays out of task autosave", %{conn: conn} do
+    project = project_fixture(%{})
+    matching_parent = task_fixture(project, %{title: "Roadmap"})
+    other_parent = task_fixture(project, %{title: "Backlog"})
+    task = task_fixture(project, %{title: "Launch"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-trigger") |> render_click()
+
+    view
+    |> element("#task-parent-search")
+    |> render_change(%{"_target" => ["parent_query"], "parent_query" => "Road"})
+
+    assert has_element?(view, "#task-parent-search[value='Road']")
+    assert has_element?(view, "#task-parent-option-#{matching_parent.id}")
+    refute has_element?(view, "#task-parent-option-#{other_parent.id}")
   end
 
   test "keyboard parent selection stays in the picker instead of submitting the task form", %{
@@ -144,7 +198,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
 
     assert has_element?(view, "#task-parent-search[aria-activedescendant='task-parent-clear']")
@@ -161,16 +215,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-selected", "Roadmap")
-    assert has_element?(view, "#task-parent-search[value='Roadmap']")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_element?(view, "#task-parent-search")
     refute has_element?(view, "#task-parent-results")
     refute has_element?(view, "#new-project-error")
-
-    view |> element("#task-parent-search") |> render_keyup(%{"parent_query" => "Roadmap"})
-    refute has_element?(view, "#task-parent-results")
   end
 
-  test "keyboard clearing synchronizes the visible parent query and ignores its keyup search", %{
+  test "keyboard clearing synchronizes the visible parent query", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -179,16 +230,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
-    assert has_element?(view, "#task-parent-search[value='']")
-    refute has_element?(view, "#task-parent-selected")
-
-    view |> element("#task-parent-search") |> render_keyup(%{"parent_query" => ""})
-    refute has_element?(view, "#task-parent-results")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
   end
 
   test "replacing an edit parent persists it immediately", %{conn: conn} do
@@ -199,17 +247,33 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
 
     view
     |> element("#task-parent-search")
-    |> render_keyup(%{"parent_query" => "Second parent"})
+    |> render_change(%{
+      "_target" => ["parent_query"],
+      "parent_query" => "Second parent"
+    })
 
     view |> element("#task-parent-option-#{second_parent.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == second_parent.id
-    assert has_element?(view, "#task-parent-selected", "Second parent")
+    assert has_element?(view, "#task-parent-trigger", "Second parent")
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
+  end
+
+  test "ignores malformed parent search payloads without closing the picker", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Launch"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view |> element("#task-parent-trigger") |> render_click()
+    render_hook(view, "search_task_parents", %{"key" => "a"})
+
+    assert has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-results")
   end
 
   test "selecting an already selected edit parent is idempotent", %{conn: conn} do
@@ -219,11 +283,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-selected", "Roadmap")
+    assert has_element?(view, "#task-parent-trigger", "Roadmap")
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
@@ -234,11 +298,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-clear") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
-    assert has_element?(view, "#task-parent-search[value='']")
-    refute has_element?(view, "#task-parent-selected")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
@@ -252,11 +317,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
 
     view
     |> element("#task-parent-search")
-    |> render_keyup(%{"parent_query" => "Rejected parent"})
+    |> render_change(%{
+      "_target" => ["parent_query"],
+      "parent_query" => "Rejected parent"
+    })
 
     assert has_element?(view, "#task-parent-option-#{rejected_parent.id}")
 
@@ -264,27 +332,36 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
 
-    assert has_element?(view, "#task-parent-search[aria-invalid='true']")
+    assert has_element?(view, "#task-parent-trigger[aria-invalid='true']")
     assert has_element?(view, "#task-parent-error", "would create a cycle")
     refute has_element?(view, "#task-parent-results")
-    assert has_element?(view, "#task-parent-search[value='Rejected parent']")
-    assert has_element?(view, "#task-parent-selected", "Rejected parent")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "Rejected parent")
+
+    assert has_element?(
+             view,
+             "#task-parent-focus[phx-mounted*='task-parent-trigger']"
+           )
+
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
     assert has_element?(view, "#task-hierarchy-node-#{original_parent.id}")
     assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
     assert has_element?(view, "#task-title[value='Launch']")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     assert has_element?(view, "#task-parent-error", "would create a cycle")
 
     view
     |> element("#task-parent-search")
-    |> render_keyup(%{"parent_query" => "Original parent"})
+    |> render_change(%{
+      "_target" => ["parent_query"],
+      "parent_query" => "Original parent"
+    })
 
     view |> element("#task-parent-option-#{original_parent.id}") |> render_click()
 
     refute has_element?(view, "#task-parent-error")
-    assert has_element?(view, "#task-parent-search[value='Original parent']")
+    refute has_element?(view, "#task-parent-search")
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
   end
 
@@ -297,11 +374,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, task_path)
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
 
     view
     |> element("#task-parent-search")
-    |> render_keyup(%{"parent_query" => "Rejected parent"})
+    |> render_change(%{
+      "_target" => ["parent_query"],
+      "parent_query" => "Rejected parent"
+    })
 
     assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
     view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
@@ -314,8 +394,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#open-task-#{task.id}") |> render_click()
     assert_patch(view, task_path)
 
-    assert has_element?(view, "#task-parent-search[value='Original parent']")
-    assert has_element?(view, "#task-parent-selected", "Original parent")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "Original parent")
     refute has_element?(view, "#task-parent-error")
     refute has_element?(view, "#task-parent-results")
   end
@@ -680,8 +760,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-create-location", "Project #{project.name}")
     assert has_element?(view, "#task-parent-picker")
-    assert has_element?(view, "#task-parent-search[value='']")
-    refute has_element?(view, "#task-parent-selected")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
   end
 
   test "a Project-wide selected parent persists without changing the browsed location", %{
@@ -692,11 +772,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, planning, %{title: "Plan release"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     assert has_element?(view, "#task-parent-option-#{parent.id}")
 
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
-    assert has_element?(view, "#task-parent-selected", "Plan release")
+    assert has_element?(view, "#task-parent-trigger", "Plan release")
 
     view
     |> form("#task-form", task: %{title: "Project-root child"})
@@ -732,11 +812,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
       assert has_element?(
                view,
-               "#task-parent-search[aria-invalid='true'][aria-describedby='task-parent-error'][value='']"
+               "#task-parent-trigger[aria-invalid='true'][aria-describedby='task-parent-error']"
              )
 
       assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
-      refute has_element?(view, "#task-parent-selected")
+      assert has_element?(view, "#task-parent-trigger", "No parent")
       refute has_element?(view, "#task-parent-option-#{foreign_parent.id}")
     end
   end
@@ -753,7 +833,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
       )
 
     assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
-    refute has_element?(view, "#task-parent-selected")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
 
     view
     |> form("#task-form", task: %{title: "Recovered root Task"})
@@ -776,7 +856,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, %{title: "Removed parent"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
 
     Taskman.Repo.delete!(parent)
@@ -786,8 +866,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-parent-selected", "Removed parent")
-    assert has_element?(view, "#task-parent-search[aria-invalid='true'][value='Removed parent']")
+    assert has_element?(view, "#task-parent-trigger", "Removed parent")
+    assert has_element?(view, "#task-parent-trigger[aria-invalid='true']")
     assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
     refute has_element?(view, "#task-parent-results")
 
@@ -926,7 +1006,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, planning, %{title: "Parent in Planning"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-option-#{parent.id}") |> render_click()
 
     view
@@ -935,8 +1015,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-create-location", "Project #{project.name}")
-    assert has_element?(view, "#task-parent-selected", "Parent in Planning")
-    assert has_element?(view, "#task-parent-search[value='Parent in Planning']")
+    assert has_element?(view, "#task-parent-trigger", "Parent in Planning")
+    refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#task-form [data-role='field-error']")
     assert has_element?(view, "#task-description", "Preserve this draft")
     assert Tasks.list_tasks_for_project(project) == [parent]

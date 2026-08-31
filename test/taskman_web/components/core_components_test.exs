@@ -15,6 +15,28 @@ defmodule TaskmanWeb.CoreComponentsTest do
              ~s(&quot;remove_attr&quot;,{&quot;to&quot;:&quot;#task-modal&quot;,&quot;attr&quot;:&quot;hidden&quot;})
   end
 
+  test "shown modal focuses its dialog container by default" do
+    [mounted_actions] =
+      render_component(&shown_modal/1, %{})
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#task-modal")
+      |> LazyHTML.attribute("phx-mounted")
+
+    assert mounted_actions =~ ~s("focus",{"to":"#task-modal-content"})
+    refute mounted_actions =~ "focus_first"
+  end
+
+  test "shown modal focuses an explicit initial target" do
+    [mounted_actions] =
+      render_component(&shown_modal_with_initial_focus/1, %{})
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#task-modal")
+      |> LazyHTML.attribute("phx-mounted")
+
+    assert mounted_actions =~ ~s("focus",{"to":"#task-title"})
+    refute mounted_actions =~ "focus_first"
+  end
+
   test "modal keeps the compact default and exposes an opt-in wide size" do
     html = render_component(&sized_modals/1, %{})
     document = LazyHTML.from_fragment(html)
@@ -45,6 +67,19 @@ defmodule TaskmanWeb.CoreComponentsTest do
     ~H"""
     <CoreComponents.modal id="task-modal" show on_cancel={JS.push("cancel-task")}>
       <button id="first-modal-control" type="button">First control</button>
+    </CoreComponents.modal>
+    """
+  end
+
+  defp shown_modal_with_initial_focus(assigns) do
+    ~H"""
+    <CoreComponents.modal
+      id="task-modal"
+      show
+      initial_focus="#task-title"
+      on_cancel={JS.push("cancel-task")}
+    >
+      <input id="task-title" />
     </CoreComponents.modal>
     """
   end

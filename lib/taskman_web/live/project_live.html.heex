@@ -197,15 +197,16 @@
           <div class={[
             "rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:gap-x-0.5",
             @include_children? &&
-              "sm:grid-cols-[minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
+              "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
             !@include_children? &&
-              "sm:grid-cols-[minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
+              "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
           ]}>
             <div
               :if={!@tasks_empty?}
               id="task-table-header"
               class="hidden gap-3 border-b border-slate-700 px-3 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
             >
+              <span id="task-number-header" class="justify-self-start sm:pl-2">#</span>
               <span>Task</span>
               <span :if={@include_children?} id="task-location-header" class="sm:text-center">
                 Location
@@ -270,6 +271,7 @@
       :if={@live_action == :new_task && @selected_project && !@location_not_found?}
       id="task-modal"
       show
+      initial_focus="#task-title"
       on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
     >
       <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
@@ -296,6 +298,7 @@
       id="task-modal"
       show
       size={:wide}
+      initial_focus="#task-title"
       on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
       on_escape={if(TaskMove.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
     >

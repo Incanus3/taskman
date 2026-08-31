@@ -10,14 +10,44 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
     assigns = assign(assigns, :picker_state, assigns.picker)
 
     ~H"""
-    <div id="task-parent-picker" class="relative">
-      <div class="relative">
+    <div
+      id="task-parent-picker"
+      phx-click-away={@picker_state.options_open? && "close_task_parent_options"}
+      class="relative"
+    >
+      <div :if={!@picker_state.options_open?} class="fieldset mb-2">
+        <span class="label">Parent Task</span>
+        <button
+          id="task-parent-trigger"
+          type="button"
+          aria-label="Open parent Task options"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-invalid={@picker_state.error && "true"}
+          aria-describedby={@picker_state.error && "task-parent-error"}
+          phx-click="open_task_parent_options"
+          class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-left text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition hover:border-slate-600 hover:bg-slate-900 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
+        >
+          <span class="min-w-0">
+            <%= if @picker_state.selected_parent do %>
+              <span class="block truncate font-medium">
+                {@picker_state.selected_parent.title}
+              </span>
+            <% else %>
+              <span class="block font-medium text-slate-300">No parent</span>
+            <% end %>
+          </span>
+          <.icon name="hero-chevron-down" class="size-4 shrink-0 text-slate-400" />
+        </button>
+      </div>
+
+      <div :if={@picker_state.options_open?} class="relative">
         <.input
           id="task-parent-search"
           type="search"
           name="parent_query"
           label="Parent Task"
-          value={display_query(@picker_state)}
+          value={@picker_state.query}
           role="combobox"
           aria-controls="task-parent-results"
           aria-expanded={to_string(@picker_state.options_open?)}
@@ -26,9 +56,8 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
           aria-invalid={@picker_state.error && "true"}
           aria-describedby={@picker_state.error && "task-parent-error"}
           autocomplete="off"
-          phx-click="open_task_parent_options"
+          phx-change="search_task_parents"
           phx-keydown="task_parent_keydown"
-          phx-keyup="search_task_parents"
           phx-hook=".TaskParentPickerKeyboard"
           class={[
             "w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 pr-10 text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15",
@@ -39,42 +68,23 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
         />
         <button
           type="button"
-          aria-label="Open parent Task options"
-          phx-click="open_task_parent_options"
-          class="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+          aria-label="Close parent Task options"
+          phx-click="toggle_task_parent_options"
+          class="absolute bottom-3 right-2 grid size-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
         >
           <.icon
             name="hero-chevron-down"
-            class={["size-4 transition", @picker_state.options_open? && "rotate-180"]}
+            class="size-4 rotate-180 transition"
           />
         </button>
       </div>
-
-      <div
-        :if={@picker_state.selected_parent}
-        id="task-parent-selected"
-        class="mt-2 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-2 text-sm text-indigo-100"
-      >
-        <span class="font-medium">{@picker_state.selected_parent.title}</span>
-        <span class="ml-1 text-xs text-indigo-200/70">Task #{@picker_state.selected_parent.id}</span>
-      </div>
-
-      <button
-        :if={show_no_parent?(@picker_state) and not @picker_state.options_open?}
-        id="task-parent-clear"
-        type="button"
-        phx-click="clear_task_parent"
-        class="mt-2 rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
-      >
-        No parent
-      </button>
 
       <div
         :if={@picker_state.options_open?}
         id="task-parent-results"
         role="listbox"
         aria-label="Parent Task options"
-        class="mt-2 max-h-60 space-y-1 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-1 shadow-xl shadow-black/30"
+        class="absolute left-0 right-0 top-full z-30 mt-2 max-h-60 space-y-1 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-1 shadow-xl shadow-black/30"
       >
         <button
           :if={show_no_parent?(@picker_state)}
@@ -126,7 +136,7 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
           <.icon
             :if={selected?(@picker_state, option)}
             name="hero-check"
-            class="mt-0.5 size-4 shrink-0 text-indigo-300"
+            class="size-4 shrink-0 self-center text-indigo-300"
           />
         </button>
       </div>
@@ -144,6 +154,7 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
     <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskParentPickerKeyboard">
       export default {
         mounted() {
+          this.el.focus()
           this.handledKeys = ["ArrowDown", "ArrowUp", "Enter", "Escape"]
 
           this.onKeydown = event => {
@@ -162,25 +173,15 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
             this.pushEvent("task_parent_keydown", {key: event.key})
           }
 
-          this.onKeyup = event => {
-            if (this.handledKeys.includes(event.key)) event.stopPropagation()
-          }
-
           this.el.addEventListener("keydown", this.onKeydown)
-          this.el.addEventListener("keyup", this.onKeyup)
         },
 
         destroyed() {
           this.el.removeEventListener("keydown", this.onKeydown)
-          this.el.removeEventListener("keyup", this.onKeyup)
         }
       }
     </script>
     """
-  end
-
-  defp display_query(%TaskParentPicker{query: query, selected_parent: selected_parent}) do
-    if query == "" and selected_parent, do: selected_parent.title || "", else: query
   end
 
   defp show_no_parent?(%TaskParentPicker{mode: :edit}), do: true

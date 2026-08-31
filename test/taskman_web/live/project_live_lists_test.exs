@@ -111,10 +111,12 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
     project = project_fixture(%{})
     task_list = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, task_list, %{title: "List task"})
+    _direct_task = task_fixture(project, %{title: "Direct task"})
 
     {:ok, descendant_view, _html} =
       live(conn, ~p"/projects/#{project.id}?include_children=true")
 
+    assert has_element?(descendant_view, "#task-number-header", "#")
     assert has_element?(descendant_view, "#task-location-header", "Location")
 
     assert has_element?(
@@ -124,6 +126,7 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
 
     {:ok, direct_view, _html} = live(conn, ~p"/projects/#{project.id}")
 
+    assert has_element?(direct_view, "#task-number-header", "#")
     refute has_element?(direct_view, "#task-location-header")
     refute has_element?(direct_view, "#task-location-cell-#{task.id}")
   end
@@ -195,8 +198,8 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-create-location", "List Planning")
     assert has_element?(view, "#task-parent-picker")
-    assert has_element?(view, "#task-parent-search[value='']")
-    refute has_element?(view, "#task-parent-selected")
+    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
 
     view |> element("#cancel-task") |> render_click()
 
@@ -223,23 +226,27 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
 
     assert has_element?(view, "#task-#{source.id}")
     assert has_element?(view, "#task-create-location", "List Planning")
-    assert has_element?(view, "#task-parent-selected", "Plan release")
+    assert has_element?(view, "#task-parent-trigger", "Plan release")
 
-    view |> element("#task-parent-search") |> render_click()
+    view |> element("#task-parent-trigger") |> render_click()
 
     view
     |> element("#task-parent-search")
-    |> render_keyup(%{"parent_query" => "Project replacement"})
+    |> render_change(%{
+      "_target" => ["parent_query"],
+      "parent_query" => "Project replacement"
+    })
 
     view |> element("#task-parent-option-#{replacement.id}") |> render_click()
 
     assert has_element?(view, "#task-create-location", "List Planning")
-    assert has_element?(view, "#task-parent-selected", "Project replacement")
+    assert has_element?(view, "#task-parent-trigger", "Project replacement")
 
+    view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-clear") |> render_click()
 
     assert has_element?(view, "#task-create-location", "List Planning")
-    refute has_element?(view, "#task-parent-selected")
+    assert has_element?(view, "#task-parent-trigger", "No parent")
 
     view
     |> form("#task-form", task: %{title: "Captured List child"})
@@ -265,7 +272,7 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
     assert_patch(view, ~p"/projects/#{project.id}/tasks/new?parent_task_id=#{source.id}")
     assert has_element?(view, "#task-#{source.id}")
     assert has_element?(view, "#task-create-location", "Project #{project.name}")
-    assert has_element?(view, "#task-parent-selected", "Project root parent")
+    assert has_element?(view, "#task-parent-trigger", "Project root parent")
 
     view
     |> form("#task-form", task: %{title: "Project-root child"})

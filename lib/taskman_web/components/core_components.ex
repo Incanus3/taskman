@@ -131,6 +131,7 @@ defmodule TaskmanWeb.CoreComponents do
   attr :on_cancel, JS, required: true
   attr :on_escape, JS, default: nil
   attr :size, :atom, values: [:default, :wide], default: :default
+  attr :initial_focus, :string, default: nil
   slot :inner_block, required: true
 
   def modal(assigns) do
@@ -138,7 +139,7 @@ defmodule TaskmanWeb.CoreComponents do
     <div
       id={@id}
       class="relative z-50"
-      phx-mounted={@show && show_modal(@id)}
+      phx-mounted={@show && show_modal(@id, @initial_focus)}
       hidden
     >
       <div
@@ -534,23 +535,25 @@ defmodule TaskmanWeb.CoreComponents do
     )
   end
 
-  defp show_modal(id) do
-    %JS{}
-    |> JS.push_focus()
-    |> JS.show(to: "##{id}")
-    |> JS.remove_attribute("hidden", to: "##{id}")
-    |> JS.show(
-      to: "##{id}-backdrop",
-      transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
-    )
-    |> JS.show(
-      to: "##{id}-content",
-      transition:
-        {"transition-all ease-out duration-200",
-         "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95",
-         "opacity-100 translate-y-0 sm:scale-100"}
-    )
-    |> JS.focus_first(to: "##{id}-content")
+  defp show_modal(id, initial_focus) do
+    js =
+      %JS{}
+      |> JS.push_focus()
+      |> JS.show(to: "##{id}")
+      |> JS.remove_attribute("hidden", to: "##{id}")
+      |> JS.show(
+        to: "##{id}-backdrop",
+        transition: {"transition-opacity ease-out duration-200", "opacity-0", "opacity-100"}
+      )
+      |> JS.show(
+        to: "##{id}-content",
+        transition:
+          {"transition-all ease-out duration-200",
+           "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95",
+           "opacity-100 translate-y-0 sm:scale-100"}
+      )
+
+    JS.focus(js, to: initial_focus || "##{id}-content")
   end
 
   defp hide_modal(js, id) do

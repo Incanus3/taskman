@@ -20,6 +20,9 @@ defmodule TaskmanWeb.TaskForm do
       id="task-form"
       phx-change={@change}
       phx-submit={@submit}
+      class={[
+        @mode == :new && "[&>.fieldset:first-child]:mt-4"
+      ]}
     >
       <button
         :if={@mode == :edit}
@@ -34,17 +37,34 @@ defmodule TaskmanWeb.TaskForm do
         id="task-title"
         type="text"
         label="Task title"
+        phx-hook=".TaskTitleFocus"
         autocomplete="off"
         class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
         error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
       />
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskTitleFocus">
+        export default {
+          mounted() {
+            // LiveView retries JS.focus after two frames; wait one more so caret placement wins.
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
+                  this.el.focus()
+                  const end = this.el.value.length
+                  this.el.setSelectionRange(end, end)
+                })
+              })
+            })
+          }
+        }
+      </script>
       <div class="mt-4">
         <TaskParentPickerComponent.parent_picker picker={@parent_picker} />
       </div>
       <div
         :if={@parent_picker.error}
         id="task-parent-focus"
-        phx-mounted={JS.focus(to: "#task-parent-search")}
+        phx-mounted={JS.focus(to: "#task-parent-trigger")}
       >
       </div>
       <div class="mt-4 space-y-4">

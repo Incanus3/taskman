@@ -56,13 +56,31 @@ defmodule TaskmanWeb.TaskParentPicker do
 
   @spec open_options(t(), Project.t()) :: t()
   def open_options(
-        %__MODULE__{current_task: current_task, query: query} = state,
+        %__MODULE__{current_task: current_task, selected_parent: selected_parent} = state,
         %Project{} = project
       ) do
     %{
       state
-      | options: search_candidates(project, current_task, query),
+      | query: "",
+        options: search_candidates(project, current_task, "", selected_parent),
         options_open?: true,
+        active_option_id: nil
+    }
+  end
+
+  @spec toggle_options(t(), Project.t()) :: t()
+  def toggle_options(%__MODULE__{options_open?: true} = state, %Project{}),
+    do: close_options(state)
+
+  def toggle_options(%__MODULE__{} = state, %Project{} = project),
+    do: open_options(state, project)
+
+  @spec close_options(t()) :: t()
+  def close_options(%__MODULE__{} = state) do
+    %{
+      state
+      | query: parent_query(state.selected_parent),
+        options_open?: false,
         active_option_id: nil
     }
   end
@@ -79,7 +97,7 @@ defmodule TaskmanWeb.TaskParentPicker do
     %{
       state
       | query: query,
-        options: search_candidates(project, current_task, query),
+        options: search_candidates(project, current_task, query, state.selected_parent),
         options_open?: true,
         active_option_id: active_option_id
     }
@@ -148,7 +166,7 @@ defmodule TaskmanWeb.TaskParentPicker do
   end
 
   def keydown(%__MODULE__{options_open?: true} = state, "Escape") do
-    {:close, %{state | options_open?: false, active_option_id: nil}}
+    {:close, close_options(state)}
   end
 
   def keydown(%__MODULE__{options_open?: true, active_option_id: active_option_id}, "Enter")
@@ -202,8 +220,26 @@ defmodule TaskmanWeb.TaskParentPicker do
     end
   end
 
-  defp search_candidates(project, current_task, query) do
-    Tasks.search_parent_candidates(project, current_task, query)
+  defp search_candidates(project, current_task, query, selected_parent) do
+    options = Tasks.search_parent_candidates(project, current_task, query)
+
+    selected_options =
+      case selected_parent do
+        %Task{id: selected_id} when is_integer(selected_id) ->
+          Tasks.search_parent_candidates(
+            project,
+            current_task,
+            Integer.to_string(selected_id),
+            limit: 1
+          )
+
+        _ ->
+          []
+      end
+
+    (selected_options ++ options)
+    |> Enum.uniq_by(& &1.task.id)
+    |> Enum.take(20)
   end
 
   defp move_active(%__MODULE__{} = state, key) do

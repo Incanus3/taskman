@@ -105,6 +105,12 @@
 /* Let the form's gap utility control every New Project field/action gap. */
 #project-form > .fieldset { margin-bottom: 0; }
 
+/* Parent removal is handled explicitly by the picker's "No parent" option. */
+#task-parent-search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
+}
+
 #task-detail-layout {
   position: relative;
   display: grid;
@@ -164,7 +170,6 @@
 }
 
 #task-hierarchy .task-hierarchy-group {
-  margin-left: 0.625rem;
   border-left: 1px solid rgb(99 102 241 / 0.35);
   padding-left: 0.625rem;
 }
@@ -177,8 +182,7 @@
   padding-block: 0.125rem;
 }
 
-#task-hierarchy .task-hierarchy-disclosure,
-#task-hierarchy .task-hierarchy-disclosure-spacer {
+#task-hierarchy .task-hierarchy-disclosure {
   display: grid;
   width: 1.5rem;
   height: 1.5rem;
