@@ -8,8 +8,18 @@ defmodule Taskman.CLI.Option do
           value_name: String.t() | nil,
           help: String.t(),
           values: [String.t()],
-          required?: boolean()
+          required?: boolean(),
+          repeatable?: boolean()
         }
 
-  defstruct [:name, :long, :type, :value_name, :help, values: [], required?: false]
+  defstruct [
+    :name,
+    :long,
+    :type,
+    :value_name,
+    :help,
+    values: [],
+    required?: false,
+    repeatable?: false
+  ]
 end

@@ -108,7 +108,7 @@ defmodule Taskman.CLI.Parser do
             parse_tokens(
               remaining,
               options_by_name,
-              Map.put(options, option.name, value),
+              put_option(options, option, value),
               positional,
               path
             )
@@ -161,6 +161,12 @@ defmodule Taskman.CLI.Parser do
   defp cast_option_value(%Option{} = option, _value, path) do
     {:error, "Unsupported option type #{inspect(option.type)} for #{option.long}", path}
   end
+
+  defp put_option(options, %Option{name: name, repeatable?: true}, value) do
+    Map.update(options, name, [value], &(&1 ++ [value]))
+  end
+
+  defp put_option(options, %Option{name: name}, value), do: Map.put(options, name, value)
 
   defp parse_arguments(%Command{arguments: arguments}, positional, path) do
     if length(arguments) != length(positional) do
@@ -219,6 +225,13 @@ defmodule Taskman.CLI.Parser do
           {:cont, :ok}
         else
           {:halt, {:error, "Exactly one of #{format_fields(fields)} is required", path}}
+        end
+
+      {:together, fields}, :ok ->
+        if Enum.count(fields, &Map.has_key?(options, &1)) in [0, length(fields)] do
+          {:cont, :ok}
+        else
+          {:halt, {:error, "Options #{format_fields(fields)} must be used together", path}}
         end
 
       {:forbidden_global, field}, :ok ->

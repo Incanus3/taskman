@@ -247,6 +247,32 @@ defmodule Taskman.CLI.CompletionsTest do
            ]
   end
 
+  @tag :tmp_dir
+  test "Bash and Fish complete Task list filter and sort options", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash_path, Completions.bash())
+    File.write!(fish_path, Completions.fish())
+
+    bash_options = bash_query(bash_path, ["taskman", "tasks", "list", "--"])
+    fish_options = fish_query(fish_path, "taskman tasks list --")
+
+    for option <- ["--status", "--sort", "--direction"] do
+      assert option in bash_options
+      assert option in fish_options
+    end
+
+    assert bash_query(bash_path, ["taskman", "tasks", "list", "--sort", ""]) ==
+             ~w(id title status priority location)
+
+    assert fish_query(fish_path, "taskman tasks list --direction ") == ~w(asc desc)
+
+    assert "--status" in bash_query(
+             bash_path,
+             ["taskman", "tasks", "list", "--status", "pending", "--"]
+           )
+  end
+
   defp fish_query(path, command_line) do
     script = "source #{shell_quote(path)}; complete -C #{shell_quote(command_line)}"
     {output, status} = System.cmd("fish", ["-c", script], stderr_to_stdout: true)

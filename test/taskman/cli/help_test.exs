@@ -66,6 +66,16 @@ defmodule Taskman.CLI.HelpTest do
     assert update_help =~ "--no-parent"
   end
 
+  test "Task list help documents repeatable statuses and paired sorting" do
+    help = Help.render(~w(tasks list))
+
+    assert help =~ "[--status STATUS]... [--sort FIELD --direction asc|desc]"
+    assert help =~ "--status STATUS"
+    assert help =~ "(repeatable)"
+    assert help =~ "--sort FIELD (id|title|status|priority|location)"
+    assert help =~ "--direction DIRECTION (asc|desc)"
+  end
+
   test "completion leaf help describes shell output and rejects JSON mode" do
     for shell <- ~w(bash fish) do
       help = Help.render(["completions", shell])

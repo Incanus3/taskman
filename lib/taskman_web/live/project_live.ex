@@ -9,6 +9,15 @@ defmodule TaskmanWeb.ProjectLive do
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
+  @default_visible_task_statuses Task.statuses() -- [:will_not_do]
+  @task_sort_fields %{
+    "id" => :id,
+    "title" => :title,
+    "location" => :location,
+    "status" => :status,
+    "priority" => :priority
+  }
+
   alias TaskmanWeb.{
     ListEdit,
     TaskAutosave,
@@ -38,6 +47,10 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:project_not_found?, false)
      |> assign(:selected_list, nil)
      |> assign(:include_children?, false)
+     |> assign(:visible_task_statuses, @default_visible_task_statuses)
+     |> assign(:status_filter_form, status_filter_form(@default_visible_task_statuses))
+     |> assign(:task_status_filter_open?, false)
+     |> assign(:task_sort, nil)
      |> assign(:location_not_found?, false)
      |> assign(:location_path, [])
      |> assign(:project_form, project_form(%Project{}))
@@ -54,6 +67,7 @@ defmodule TaskmanWeb.ProjectLive do
      |> assign(:task_move, TaskMove.empty())
      |> assign(:expanded_node_ids, MapSet.new())
      |> assign(:list_edit, ListEdit.empty())
+     |> assign(:tasks_filtered_empty?, false)
      |> stream(:projects, Projects.list_projects())
      |> stream(:tasks, [])
      |> stream(:navigation_nodes, [])
@@ -78,9 +92,20 @@ defmodule TaskmanWeb.ProjectLive do
        when action in [:show, :new_task, :show_task] do
     include_children? = include_children?(params)
 
+    socket =
+      assign(socket, :task_sort, available_task_sort(socket.assigns.task_sort, include_children?))
+
     case resolve_location(params) do
       {:ok, project, task_list} ->
-        tasks = list_tasks_for_location(project, task_list, include_children?)
+        tasks =
+          list_tasks_for_location(
+            project,
+            task_list,
+            include_children?,
+            socket.assigns.visible_task_statuses,
+            socket.assigns.task_sort
+          )
+
         location_path = location_path(project, task_list)
 
         socket =
@@ -183,11 +208,19 @@ defmodule TaskmanWeb.ProjectLive do
     end
   end
 
-  defp list_tasks_for_location(project, task_list, include_children?) do
+  defp list_tasks_for_location(
+         project,
+         task_list,
+         include_children?,
+         visible_statuses,
+         sort
+       ) do
     case Tasks.list_tasks_for_location(
            project,
            task_list,
-           include_descendants: include_children?
+           include_descendants: include_children?,
+           statuses: visible_statuses,
+           sort: sort
          ) do
       {:ok, tasks} -> tasks
       {:error, :not_found} -> []
@@ -236,6 +269,57 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, assign(socket, :project_form, to_form(changeset))}
     end
   end
+
+  def handle_event("toggle_task_status_filter", _params, socket) do
+    {:noreply,
+     update(socket, :task_status_filter_open?, fn task_status_filter_open? ->
+       !task_status_filter_open?
+     end)}
+  end
+
+  def handle_event("close_task_status_filter", _params, socket) do
+    {:noreply, assign(socket, :task_status_filter_open?, false)}
+  end
+
+  def handle_event(
+        "filter_task_statuses",
+        %{"status_filter" => status_filter_params},
+        socket
+      )
+      when is_map(status_filter_params) do
+    visible_statuses =
+      status_filter_params
+      |> Map.get("statuses", [])
+      |> normalize_task_statuses()
+
+    {:noreply, apply_task_status_filter(socket, visible_statuses)}
+  end
+
+  def handle_event("filter_task_statuses", _params, socket), do: {:noreply, socket}
+
+  def handle_event("restore_task_statuses", %{"statuses" => statuses}, socket)
+      when is_list(statuses) do
+    {:noreply, apply_task_status_filter(socket, normalize_task_statuses(statuses))}
+  end
+
+  def handle_event("restore_task_statuses", _params, socket), do: {:noreply, socket}
+
+  def handle_event("sort_tasks", %{"field" => field}, socket) do
+    case Map.fetch(@task_sort_fields, field) do
+      {:ok, field} ->
+        task_sort = next_task_sort(socket.assigns.task_sort, field)
+
+        {:noreply,
+         socket
+         |> assign(:task_sort, task_sort)
+         |> refresh_task_stream()}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("sort_tasks", _params, socket), do: {:noreply, socket}
 
   def handle_event("toggle_navigation_node", params, socket) when is_map(params) do
     case navigation_identity(params) do
@@ -867,15 +951,28 @@ defmodule TaskmanWeb.ProjectLive do
          location_path,
          tasks
        ) do
+    tasks_filtered_empty? =
+      not project_not_found? and
+        not location_not_found? and
+        tasks_filtered_empty?(
+          tasks,
+          selected_project,
+          selected_list,
+          include_children?,
+          socket.assigns.visible_task_statuses
+        )
+
     socket
     |> assign(:selected_project, selected_project)
     |> assign(:selected_list, selected_list)
     |> assign(:project_not_found?, project_not_found?)
     |> assign(:location_not_found?, location_not_found?)
     |> assign(:include_children?, include_children?)
+    |> assign(:task_status_filter_open?, false)
     |> assign(:location_path, location_path)
     |> clear_list_edit()
     |> assign(:tasks_empty?, tasks == [])
+    |> assign(:tasks_filtered_empty?, tasks_filtered_empty?)
     |> stream(:projects, Projects.list_projects(), reset: true)
     |> stream(:tasks, tasks, reset: true)
     |> refresh_navigation_stream()
@@ -890,12 +987,43 @@ defmodule TaskmanWeb.ProjectLive do
            }
          } = socket
        ) do
-    tasks = list_tasks_for_location(project, task_list, include_children?)
+    tasks =
+      list_tasks_for_location(
+        project,
+        task_list,
+        include_children?,
+        socket.assigns.visible_task_statuses,
+        socket.assigns.task_sort
+      )
+
+    tasks_filtered_empty? =
+      tasks_filtered_empty?(
+        tasks,
+        project,
+        task_list,
+        include_children?,
+        socket.assigns.visible_task_statuses
+      )
 
     socket
     |> assign(:tasks_empty?, tasks == [])
+    |> assign(:tasks_filtered_empty?, tasks_filtered_empty?)
     |> stream(:tasks, tasks, reset: true)
   end
+
+  defp tasks_filtered_empty?(
+         [],
+         %Project{} = project,
+         task_list,
+         include_children?,
+         visible_statuses
+       ) do
+    visible_statuses != Task.statuses() and
+      list_tasks_for_location(project, task_list, include_children?, Task.statuses(), nil) != []
+  end
+
+  defp tasks_filtered_empty?(_tasks, _project, _task_list, _include_children?, _visible_statuses),
+    do: false
 
   defp refresh_move_surface(
          %{
@@ -923,6 +1051,39 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp refresh_move_surface(socket), do: socket
+
+  defp apply_task_status_filter(socket, visible_statuses) do
+    socket
+    |> assign(:visible_task_statuses, visible_statuses)
+    |> assign(:status_filter_form, status_filter_form(visible_statuses))
+    |> refresh_task_stream()
+  end
+
+  defp normalize_task_statuses(statuses) do
+    selected = MapSet.new(Enum.filter(statuses, &is_binary/1))
+
+    Enum.filter(Task.statuses(), fn status ->
+      MapSet.member?(selected, Atom.to_string(status))
+    end)
+  end
+
+  defp status_filter_form(statuses) do
+    to_form(%{"statuses" => Enum.map(statuses, &Atom.to_string/1)}, as: :status_filter)
+  end
+
+  defp next_task_sort({field, direction}, field),
+    do: {field, reverse_sort_direction(direction)}
+
+  defp next_task_sort(_current_sort, field) when field in [:status, :priority],
+    do: {field, :desc}
+
+  defp next_task_sort(_current_sort, field), do: {field, :asc}
+
+  defp available_task_sort({:location, _direction}, false), do: nil
+  defp available_task_sort(task_sort, _include_children?), do: task_sort
+
+  defp reverse_sort_direction(:asc), do: :desc
+  defp reverse_sort_direction(:desc), do: :asc
 
   defp clear_task_modal_state(socket) do
     socket

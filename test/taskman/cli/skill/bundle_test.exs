@@ -37,6 +37,9 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "preserve its returned name and primary directory"
     assert skill =~ "never infer registration from the current working directory"
     assert skill =~ "taskman tasks list --project 7 --include-descendants --json"
+    assert skill =~ "--status pending --status in_progress --sort priority --direction desc"
+    assert skill =~ "Repeat `--status` to include multiple lifecycle states"
+    assert skill =~ "Location sorting requires `--include-descendants`"
     assert skill =~ "lists only Tasks directly at the Project root"
 
     assert skill =~

@@ -41,6 +41,43 @@ defmodule Taskman.CLI.Commands.TasksTest do
                "42\tPrepare launch\t—\tpending\thigh\tPlanning\t—\n"
   end
 
+  test "lists Tasks with repeated status filters and field sorting query parameters" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/api/v1/projects/7/tasks"
+
+      assert conn.query_params == %{
+               "statuses" => ["pending", "done"],
+               "sort" => "title",
+               "direction" => "asc"
+             }
+
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    result =
+      Taskman.CLI.run(
+        [
+          "tasks",
+          "list",
+          "--project",
+          "7",
+          "--status",
+          "pending",
+          "--status",
+          "done",
+          "--sort",
+          "title",
+          "--direction",
+          "asc"
+        ],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0, result.stderr
+    assert result.stderr == ""
+  end
+
   test "tasks list rejects malformed collection members as an invalid response" do
     Req.Test.expect(TaskCommands, fn conn ->
       Req.Test.json(conn, %{

@@ -5,6 +5,8 @@ defmodule Taskman.CLI.Registry do
 
   @statuses ~w(icebox pending in_progress in_review done will_not_do)
   @priorities ~w(none low medium high urgent)
+  @task_sort_fields ~w(id title status priority location)
+  @sort_directions ~w(asc desc)
 
   @doc "Lifecycle values accepted by the API and CLI."
   @spec statuses() :: [String.t()]
@@ -102,7 +104,8 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks list),
         summary: "List Tasks for a Project or List.",
-        usage: "taskman tasks list --project PROJECT_ID [--list LIST_ID] [--include-descendants]",
+        usage:
+          "taskman tasks list --project PROJECT_ID [--list LIST_ID] [--include-descendants] [--status STATUS]... [--sort FIELD --direction asc|desc]",
         handler: {:tasks, :list},
         options: [
           option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
@@ -115,9 +118,21 @@ defmodule Taskman.CLI.Registry do
             :boolean,
             nil,
             "Include descendant List Tasks."
+          ),
+          option(:statuses, "--status", :string, "STATUS", "Include this lifecycle status.",
+            values: @statuses,
+            repeatable?: true
+          ),
+          option(:sort, "--sort", :string, "FIELD", "Sort field.", values: @task_sort_fields),
+          option(:direction, "--direction", :string, "DIRECTION", "Sort direction.",
+            values: @sort_directions
           )
         ],
-        examples: ["taskman tasks list --project 7 --list 11 --include-descendants"]
+        constraints: [{:together, [:sort, :direction]}],
+        examples: [
+          "taskman tasks list --project 7 --list 11 --include-descendants",
+          "taskman tasks list --project 7 --status pending --status done --sort title --direction asc"
+        ]
       },
       %Command{
         path: ~w(tasks show),
@@ -329,7 +344,8 @@ defmodule Taskman.CLI.Registry do
       value_name: value_name,
       help: help,
       values: Keyword.get(extra, :values, []),
-      required?: Keyword.get(extra, :required?, false)
+      required?: Keyword.get(extra, :required?, false),
+      repeatable?: Keyword.get(extra, :repeatable?, false)
     }
   end
 

@@ -9,6 +9,53 @@ defmodule TaskmanWeb.TaskComponentsTest do
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.{TaskComponents, TaskMove}
 
+  test "renders the sort button as a full-cell pointer target" do
+    document =
+      render_component(&TaskComponents.sort_header/1, %{
+        id: "task-title-header",
+        label: "Task",
+        field: :title,
+        task_sort: nil
+      })
+      |> LazyHTML.from_fragment()
+
+    [header_classes] =
+      document
+      |> LazyHTML.query("#task-title-header[role='columnheader']")
+      |> LazyHTML.attribute("class")
+
+    [button_classes] =
+      document
+      |> LazyHTML.query(
+        "#task-title-header[role='columnheader'] > #sort-task-title[type='button']"
+      )
+      |> LazyHTML.attribute("class")
+
+    assert Enum.all?(["h-full", "w-full", "self-stretch"], &(&1 in String.split(header_classes)))
+
+    assert Enum.all?(
+             ["h-full", "w-full", "cursor-pointer", "py-3.5"],
+             &(&1 in String.split(button_classes))
+           )
+  end
+
+  test "renders the Statuses dropdown trigger with a pointer cursor" do
+    document =
+      render_component(&TaskComponents.status_filter/1, %{
+        form: to_form(%{"statuses" => []}, as: :status_filter),
+        visible_statuses: [:pending],
+        open?: false
+      })
+      |> LazyHTML.from_fragment()
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#task-status-filter-button.cursor-pointer[aria-haspopup='true']"
+             )
+           )
+  end
+
   test "renders the Task number with the row title" do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
@@ -103,7 +150,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#task-actions-41 #move-task-row-button-41[aria-label='Move Launch'][title='Move Task'] .hero-arrows-right-left"
+               "#task-actions-41 #move-task-row-button-41.cursor-pointer[aria-label='Move Launch'][title='Move Task'] .hero-arrows-right-left"
              )
            )
 
