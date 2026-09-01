@@ -324,4 +324,128 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     assert failed.selected_parent.id == rejected_parent.id
     refute failed.options_open?
   end
+
+  test "reconciles an external parent change without resetting an open search" do
+    project = project_fixture(%{})
+    first_parent = task_fixture(project, %{title: "First parent"})
+    second_parent = task_fixture(project, %{title: "Second parent"})
+    task = task_fixture(project, %{title: "Task"}, parent: first_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.search(project, "Second")
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: second_parent)
+    reconciled = TaskParentPicker.reconcile(picker, project, latest)
+
+    assert reconciled.current_task == latest
+    assert reconciled.selected_parent == second_parent
+    assert reconciled.query == "Second"
+    assert reconciled.options_open?
+    assert reconciled.conflict_parent == nil
+  end
+
+  test "reconcile rebuilds open candidate options from canonical Tasks while preserving the draft" do
+    project = project_fixture(%{})
+    selected_parent = task_fixture(project, %{title: "Roadmap"})
+    task = task_fixture(project, %{title: "Task"}, parent: selected_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.select_draft(project, selected_parent.id)
+      |> TaskParentPicker.search(project, "Road")
+
+    external_candidate = task_fixture(project, %{title: "Roadmap follow-up"})
+    latest = Tasks.get_task_for_project(project, task.id)
+    reconciled = TaskParentPicker.reconcile(picker, project, latest)
+
+    assert reconciled.current_task == latest
+    assert reconciled.selected_parent == selected_parent
+    assert reconciled.query == "Road"
+    assert reconciled.options_open?
+    assert Enum.any?(reconciled.options, &(&1.task.id == external_candidate.id))
+  end
+
+  test "retains a local parent selection when a stale save conflicts and resolves it inline" do
+    project = project_fixture(%{})
+    initial_parent = task_fixture(project, %{title: "Initial"})
+    mine = task_fixture(project, %{title: "Mine"})
+    latest_parent = task_fixture(project, %{title: "Latest"})
+    task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.select_draft(project, mine.id)
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
+
+    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+
+    assert conflicted.current_task == latest
+    assert conflicted.selected_parent == mine
+    assert conflicted.conflict_parent == latest_parent
+
+    assert {:ok, used_latest, ^latest} =
+             TaskParentPicker.resolve_conflict(conflicted, project, :use_latest)
+
+    assert used_latest.selected_parent == latest_parent
+    assert used_latest.conflict_parent == nil
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == latest_parent.id
+  end
+
+  test "keep mine retries the latest parent baseline and clears an uncontested conflict" do
+    project = project_fixture(%{})
+    initial_parent = task_fixture(project, %{title: "Initial"})
+    mine = task_fixture(project, %{title: "Mine"})
+    latest_parent = task_fixture(project, %{title: "Latest"})
+    task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.select_draft(project, mine.id)
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
+    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+
+    assert {:ok, resolved, saved} =
+             TaskParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+
+    assert saved.parent_task_id == mine.id
+    assert resolved.current_task == saved
+    assert resolved.selected_parent == mine
+    assert resolved.conflict_parent == nil
+    refute resolved.parent_conflicted?
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == mine.id
+  end
+
+  test "keep mine remains conflicted when the latest parent changes during conflict resolution" do
+    project = project_fixture(%{})
+    initial_parent = task_fixture(project, %{title: "Initial"})
+    mine = task_fixture(project, %{title: "Mine"})
+    latest_parent = task_fixture(project, %{title: "Latest"})
+    later_parent = task_fixture(project, %{title: "Later"})
+    task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.select_draft(project, mine.id)
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
+    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+
+    assert {:ok, raced} = Tasks.update_task(project, latest, %{}, parent: later_parent)
+
+    assert {:conflict, still_conflicted, ^raced} =
+             TaskParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+
+    assert still_conflicted.current_task == raced
+    assert still_conflicted.selected_parent == mine
+    assert still_conflicted.conflict_parent == later_parent
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == later_parent.id
+  end
 end

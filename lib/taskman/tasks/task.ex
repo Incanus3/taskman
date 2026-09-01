@@ -15,7 +15,8 @@ defmodule Taskman.Tasks.Task do
           description: String.t() | nil,
           status: atom(),
           priority: atom(),
-          due_at: NaiveDateTime.t() | nil
+          due_at: NaiveDateTime.t() | nil,
+          lock_version: pos_integer()
         }
 
   schema "tasks" do
@@ -24,6 +25,7 @@ defmodule Taskman.Tasks.Task do
     field :status, Ecto.Enum, values: @statuses, default: :pending
     field :priority, Ecto.Enum, values: @priorities, default: :none
     field :due_at, :naive_datetime
+    field :lock_version, :integer, default: 1
 
     belongs_to :project, Taskman.Projects.Project
     belongs_to :list, Taskman.Lists.TaskList

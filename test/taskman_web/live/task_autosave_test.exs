@@ -257,6 +257,15 @@ defmodule TaskmanWeb.TaskAutosaveTest do
                autosave,
                project,
                task,
+               %{"title" => "", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, autosave, ^task} =
+             TaskAutosave.change(
+               autosave,
+               project,
+               task,
                %{"title" => "", "status" => "in_review"},
                "status"
              )
@@ -323,5 +332,374 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert cleared.form == nil
     assert cleared.sequence == autosave.sequence
+  end
+
+  test "reconciles clean fields while preserving a dirty title draft" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+
+    assert autosave.baseline == task
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               autosave,
+               project,
+               task,
+               %{"title" => "Mine", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, externally_updated} = Tasks.update_task(project, task, %{status: :in_review})
+
+    reconciled = TaskAutosave.reconcile(autosave, externally_updated)
+
+    assert reconciled.baseline == externally_updated
+    assert reconciled.form[:title].value == "Mine"
+    assert reconciled.form[:status].value == :in_review
+    assert reconciled.draft == %{"title" => "Mine"}
+    assert reconciled.dirty_fields == MapSet.new(["title"])
+    assert reconciled.conflicts == %{}
+  end
+
+  test "reconciles an external change to a dirty field as a conflict and invalidates its timer" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+
+    assert {:schedule, autosave, ^task, 60_000, {:autosave_task_field, _, "title", revision}} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, externally_updated} = Tasks.update_task(project, task, %{title: "Latest"})
+
+    conflicted = TaskAutosave.reconcile(autosave, externally_updated)
+
+    assert conflicted.baseline == externally_updated
+    assert conflicted.form[:title].value == "Mine"
+    assert conflicted.draft == %{"title" => "Mine"}
+    assert conflicted.conflicts == %{"title" => "Latest"}
+    assert TaskAutosave.conflict_value(conflicted, "title") == "Latest"
+    assert conflicted.revisions == %{}
+    assert conflicted.save_state == :conflicted
+    assert TaskAutosave.message(conflicted) == "Resolve conflicting changes"
+
+    assert {:ignored, ^conflicted, ^externally_updated} =
+             TaskAutosave.handle_scheduled_save(
+               conflicted,
+               project,
+               externally_updated,
+               task.id,
+               "title",
+               revision
+             )
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+  end
+
+  test "editing a conflicted debounced field keeps the draft without scheduling or persisting" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+
+    assert {:schedule, autosave, ^task, 60_000,
+            {:autosave_task_field, task_id, "title", revision}} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine"},
+               "title"
+             )
+
+    assert task_id == task.id
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
+    conflicted = TaskAutosave.reconcile(autosave, latest)
+
+    assert {:ok, edited, ^latest} =
+             TaskAutosave.change(
+               conflicted,
+               project,
+               latest,
+               %{"title" => "Mine again"},
+               "title"
+             )
+
+    assert edited.form[:title].value == "Mine again"
+    assert edited.draft == %{"title" => "Mine again"}
+    assert edited.dirty_fields == MapSet.new(["title"])
+    assert edited.conflicts == %{"title" => "Latest"}
+    assert edited.revisions == %{}
+    assert edited.save_state == :conflicted
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+
+    assert {:ignored, ^edited, ^latest} =
+             TaskAutosave.handle_scheduled_save(
+               edited,
+               project,
+               latest,
+               task.id,
+               "title",
+               revision
+             )
+  end
+
+  test "editing a conflicted immediate field keeps the draft without persisting" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{status: :pending})
+    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{status: :done})
+
+    assert {:conflict, conflicted, ^latest} =
+             TaskAutosave.change(
+               autosave,
+               project,
+               task,
+               %{"status" => "in_review"},
+               "status"
+             )
+
+    assert conflicted.form[:status].value == :in_review
+    assert conflicted.conflicts == %{"status" => :done}
+
+    assert {:ok, edited, ^latest} =
+             TaskAutosave.change(
+               conflicted,
+               project,
+               latest,
+               %{"status" => "icebox"},
+               "status"
+             )
+
+    assert edited.form[:status].value == :icebox
+    assert edited.draft == %{"status" => "icebox"}
+    assert edited.dirty_fields == MapSet.new(["status"])
+    assert edited.conflicts == %{"status" => :done}
+    assert edited.revisions == %{}
+    assert edited.save_state == :conflicted
+    assert Tasks.get_task_for_project(project, task.id).status == :done
+  end
+
+  test "replaces a conflict's latest value while retaining unrelated dirty drafts" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", description: "Old", status: :pending})
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "description" => "Old", "status" => "pending"},
+               "title"
+             )
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               autosave,
+               project,
+               task,
+               %{"title" => "Mine", "description" => "Local description", "status" => "pending"},
+               "description"
+             )
+
+    assert {:ok, first_external} = Tasks.update_task(project, task, %{title: "Latest one"})
+    conflicted = TaskAutosave.reconcile(autosave, first_external)
+
+    assert {:ok, second_external} =
+             Tasks.update_task(project, first_external, %{title: "Latest two", status: :done})
+
+    reconciled = TaskAutosave.reconcile(conflicted, second_external)
+
+    assert reconciled.conflicts == %{"title" => "Latest two"}
+    assert reconciled.form[:title].value == "Mine"
+    assert reconciled.form[:description].value == "Local description"
+    assert reconciled.form[:status].value == :done
+    assert reconciled.dirty_fields == MapSet.new(["description", "title"])
+  end
+
+  test "flush refuses unresolved conflicts without writing the local value" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine"},
+               "title"
+             )
+
+    assert {:ok, externally_updated} = Tasks.update_task(project, task, %{title: "Latest"})
+    conflicted = TaskAutosave.reconcile(autosave, externally_updated)
+
+    assert {:error, ^conflicted, ^externally_updated} =
+             TaskAutosave.flush(conflicted, project, externally_updated)
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+  end
+
+  test "use latest clears an ordinary conflict locally without writing" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine"},
+               "title"
+             )
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
+    conflicted = TaskAutosave.reconcile(autosave, latest)
+
+    assert {:ok, resolved, ^latest} =
+             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :use_latest)
+
+    assert resolved.form[:title].value == "Latest"
+    assert resolved.draft == %{}
+    assert resolved.dirty_fields == MapSet.new()
+    assert resolved.revisions == %{}
+    assert resolved.conflicts == %{}
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+  end
+
+  test "keep mine retries only the conflicted field and retains a further conflict" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+
+    assert {:schedule, autosave, ^task, 60_000, _message} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
+    conflicted = TaskAutosave.reconcile(autosave, latest)
+
+    assert {:ok, resolved, saved} =
+             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
+
+    assert saved.title == "Mine"
+    assert resolved.conflicts == %{}
+    assert resolved.dirty_fields == MapSet.new()
+
+    assert {:schedule, autosave, ^saved, 60_000, _message} =
+             TaskAutosave.change(
+               resolved,
+               project,
+               saved,
+               %{"title" => "Mine again", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, latest} = Tasks.update_task(project, saved, %{title: "Latest again"})
+    conflicted = TaskAutosave.reconcile(autosave, latest)
+    assert {:ok, raced} = Tasks.update_task(project, latest, %{title: "Latest after retry"})
+
+    assert {:conflict, retried, ^raced} =
+             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
+
+    assert retried.form[:title].value == "Mine again"
+    assert retried.conflicts == %{"title" => "Latest after retry"}
+    assert retried.save_state == :conflicted
+  end
+
+  test "a direct autosave context conflict reconciles like an external update" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+
+    assert {:schedule, autosave, ^task, 60_000, {:autosave_task_field, _, "title", revision}} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine"},
+               "title"
+             )
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
+
+    assert {:conflict, conflicted, ^latest} =
+             TaskAutosave.handle_scheduled_save(
+               autosave,
+               project,
+               task,
+               task.id,
+               "title",
+               revision
+             )
+
+    assert conflicted.form[:title].value == "Mine"
+    assert conflicted.conflicts == %{"title" => "Latest"}
+    assert conflicted.save_state == :conflicted
+  end
+
+  test "a successful disjoint save detects a conflict in another unsaved field" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", description: "Original description"})
+
+    assert {:schedule, autosave, ^task, 60_000,
+            {:autosave_task_field, _, "title", title_revision}} =
+             TaskAutosave.change(
+               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "description" => "Original description"},
+               "title"
+             )
+
+    assert {:schedule, autosave, ^task, 60_000,
+            {:autosave_task_field, _, "description", description_revision}} =
+             TaskAutosave.change(
+               autosave,
+               project,
+               task,
+               %{"title" => "Mine", "description" => "My description"},
+               "description"
+             )
+
+    assert {:ok, externally_updated} =
+             Tasks.update_task(project, task, %{description: "Latest description"})
+
+    assert {:ok, autosave, title_saved} =
+             TaskAutosave.handle_scheduled_save(
+               autosave,
+               project,
+               task,
+               task.id,
+               "title",
+               title_revision
+             )
+
+    assert title_saved.title == "Mine"
+    assert title_saved.description == "Latest description"
+    assert autosave.form[:description].value == "My description"
+    assert autosave.conflicts == %{"description" => "Latest description"}
+    assert autosave.revisions == %{}
+    assert autosave.save_state == :conflicted
+
+    assert {:ignored, ^autosave, ^title_saved} =
+             TaskAutosave.handle_scheduled_save(
+               autosave,
+               project,
+               title_saved,
+               task.id,
+               "description",
+               description_revision
+             )
+
+    assert externally_updated.description == "Latest description"
+    assert Tasks.get_task_for_project(project, task.id).description == "Latest description"
   end
 end

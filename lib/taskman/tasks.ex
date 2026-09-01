@@ -1,11 +1,13 @@
 defmodule Taskman.Tasks do
   import Ecto.Query
 
+  alias Taskman.ChangeNotifications
   alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
   alias Taskman.Tasks.Hierarchy
+  alias Taskman.Tasks.Mutations
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
@@ -55,7 +57,9 @@ defmodule Taskman.Tasks do
         attrs,
         opts
       ) do
-    create_task_with_parent(project, %Task{project_id: project_id}, attrs, opts)
+    project
+    |> Mutations.create(%Task{project_id: project_id}, attrs, opts)
+    |> publish_task_result(:created)
   end
 
   def create_task(
@@ -64,7 +68,9 @@ defmodule Taskman.Tasks do
         attrs,
         opts
       ) do
-    create_task_with_parent(project, %Task{project_id: project_id, list_id: list_id}, attrs, opts)
+    project
+    |> Mutations.create(%Task{project_id: project_id, list_id: list_id}, attrs, opts)
+    |> publish_task_result(:created)
   end
 
   def create_task(%Project{}, %TaskList{}, _attrs, _opts), do: {:error, :not_found}
@@ -124,7 +130,9 @@ defmodule Taskman.Tasks do
         %Task{project_id: project_id} = task,
         nil
       ) do
-    persist_location_change(project, task, nil)
+    project
+    |> Mutations.move(task, nil)
+    |> publish_task_result(:moved)
   end
 
   def move_task(
@@ -132,31 +140,12 @@ defmodule Taskman.Tasks do
         %Task{project_id: project_id} = task,
         %TaskList{project_id: project_id, id: destination_id}
       ) do
-    case Lists.get_list_for_project(project, destination_id) do
-      nil -> {:error, :not_found}
-      _destination -> persist_location_change(project, task, destination_id)
-    end
+    project
+    |> Mutations.move(task, destination_id)
+    |> publish_task_result(:moved)
   end
 
   def move_task(%Project{}, %Task{}, _destination), do: {:error, :not_found}
-
-  defp persist_location_change(%Project{} = project, %Task{id: task_id}, destination_id) do
-    case get_task_for_project(project, task_id) do
-      nil ->
-        {:error, :not_found}
-
-      %Task{list_id: ^destination_id} ->
-        {:error, :unchanged_location}
-
-      %Task{} = persisted_task ->
-        persisted_task
-        |> Ecto.Changeset.change(list_id: destination_id)
-        |> Ecto.Changeset.foreign_key_constraint(:list_id,
-          name: :tasks_list_id_project_id_fkey
-        )
-        |> Repo.update()
-    end
-  end
 
   defp list_tasks_for_direct_project(project_id, opts) do
     Task
@@ -337,97 +326,20 @@ defmodule Taskman.Tasks do
         attrs,
         opts
       ) do
-    if Keyword.has_key?(opts, :parent) do
-      update_task_with_parent(project, task, attrs, Keyword.get(opts, :parent))
-    else
-      task
-      |> Task.changeset(attrs)
-      |> Repo.update()
-    end
+    project
+    |> Mutations.update(task, attrs, opts)
+    |> publish_task_result(:updated)
   end
 
   def update_task(%Project{}, %Task{}, _attrs, _opts), do: {:error, :not_found}
 
-  defp create_task_with_parent(project, task, attrs, opts) do
-    if Keyword.has_key?(opts, :parent) do
-      persist_parent_mutation(project, task, attrs, Keyword.get(opts, :parent), :create)
-    else
-      task
-      |> Task.changeset(attrs)
-      |> Repo.insert()
+  defp publish_task_result({:ok, task, fields}, operation) do
+    if fields != [] do
+      _ = ChangeNotifications.publish_task(task, operation, fields)
     end
+
+    {:ok, task}
   end
 
-  defp update_task_with_parent(project, task, attrs, parent) do
-    persist_parent_mutation(project, task, attrs, parent, :update)
-  end
-
-  defp persist_parent_mutation(project, task, attrs, parent, operation) do
-    Repo.transaction(fn ->
-      with %Project{} = locked_project <- lock_project(project),
-           {:ok, persisted_task} <- reload_task(locked_project, task, operation),
-           {:ok, persisted_parent} <- reload_parent(locked_project, parent),
-           :ok <- Hierarchy.validate_parent(persisted_task, persisted_parent, locked_project) do
-        changeset = Task.changeset(persisted_task, attrs)
-
-        changeset
-        |> Ecto.Changeset.put_change(:parent_task_id, persisted_parent && persisted_parent.id)
-        |> persist_parent_mutation(operation)
-      else
-        nil ->
-          Repo.rollback(:not_found)
-
-        {:error, :not_found} ->
-          Repo.rollback(:not_found)
-
-        {:error, :cycle} ->
-          changeset = Task.changeset(task, attrs)
-
-          changeset
-          |> Ecto.Changeset.add_error(:parent_task_id, "would create a cycle")
-          |> Repo.rollback()
-      end
-    end)
-  end
-
-  defp lock_project(%Project{id: project_id}) do
-    Project
-    |> where([project], project.id == ^project_id)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-  end
-
-  defp reload_task(_project, %Task{} = task, :create), do: {:ok, task}
-
-  defp reload_task(%Project{} = project, %Task{id: task_id}, :update) do
-    case get_task_for_project(project, task_id) do
-      nil -> {:error, :not_found}
-      task -> {:ok, task}
-    end
-  end
-
-  defp reload_parent(_project, nil), do: {:ok, nil}
-
-  defp reload_parent(%Project{} = project, %Task{id: parent_id}) when is_integer(parent_id) do
-    case get_task_for_project(project, parent_id) do
-      nil -> {:error, :not_found}
-      parent -> {:ok, parent}
-    end
-  end
-
-  defp reload_parent(%Project{}, _parent), do: {:error, :not_found}
-
-  defp persist_parent_mutation(changeset, :create) do
-    case Repo.insert(changeset) do
-      {:ok, task} -> task
-      {:error, changeset} -> Repo.rollback(changeset)
-    end
-  end
-
-  defp persist_parent_mutation(changeset, :update) do
-    case Repo.update(changeset) do
-      {:ok, task} -> task
-      {:error, changeset} -> Repo.rollback(changeset)
-    end
-  end
+  defp publish_task_result(result, _operation), do: result
 end

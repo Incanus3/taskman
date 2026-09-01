@@ -226,7 +226,7 @@ defmodule Taskman.CLI.Output do
     fields
     |> Enum.sort_by(fn {key, _messages} -> to_string(key) end)
     |> Enum.map(fn {key, messages} ->
-      [String.upcase(to_string(key)), ": ", Enum.map_join(List.wrap(messages), ", "), "\n"]
+      [String.upcase(to_string(key)), ": ", Enum.join(List.wrap(messages), ", "), "\n"]
     end)
   end
 

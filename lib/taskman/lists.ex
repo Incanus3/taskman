@@ -1,6 +1,7 @@
 defmodule Taskman.Lists do
   import Ecto.Query
 
+  alias Taskman.ChangeNotifications
   alias Taskman.Lists.NavigationNode
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
@@ -48,9 +49,18 @@ defmodule Taskman.Lists do
   def get_list_for_project(%Project{}, _id), do: nil
 
   def create_list(%Project{id: project_id}, nil, attrs) do
-    %TaskList{project_id: project_id}
-    |> TaskList.changeset(attrs)
-    |> Repo.insert()
+    changeset = TaskList.changeset(%TaskList{project_id: project_id}, attrs)
+    changed_fields = Map.keys(changeset.changes)
+
+    case Repo.insert(changeset) do
+      {:ok, task_list} = result ->
+        fields = changed_fields ++ [:project_id, :parent_list_id]
+        _ = ChangeNotifications.publish_list(task_list, :created, fields)
+        result
+
+      error ->
+        error
+    end
   end
 
   def create_list(
@@ -58,9 +68,23 @@ defmodule Taskman.Lists do
         %TaskList{project_id: project_id, id: parent_id},
         attrs
       ) do
-    %TaskList{project_id: project_id, parent_list_id: parent_id}
-    |> TaskList.changeset(attrs)
-    |> Repo.insert()
+    changeset =
+      TaskList.changeset(
+        %TaskList{project_id: project_id, parent_list_id: parent_id},
+        attrs
+      )
+
+    changed_fields = Map.keys(changeset.changes)
+
+    case Repo.insert(changeset) do
+      {:ok, task_list} = result ->
+        fields = changed_fields ++ [:project_id, :parent_list_id]
+        _ = ChangeNotifications.publish_list(task_list, :created, fields)
+        result
+
+      error ->
+        error
+    end
   end
 
   def create_list(%Project{}, %TaskList{}, _attrs), do: {:error, :not_found}
@@ -74,9 +98,20 @@ defmodule Taskman.Lists do
         %TaskList{project_id: project_id} = task_list,
         attrs
       ) do
-    task_list
-    |> TaskList.changeset(attrs)
-    |> Repo.update()
+    changeset = TaskList.changeset(task_list, attrs)
+    changed_fields = Map.keys(changeset.changes)
+
+    case Repo.update(changeset) do
+      {:ok, renamed} = result ->
+        if changed_fields != [] do
+          _ = ChangeNotifications.publish_list(renamed, :updated, changed_fields)
+        end
+
+        result
+
+      error ->
+        error
+    end
   end
 
   def rename_list(%Project{}, %TaskList{}, _attrs), do: {:error, :not_found}

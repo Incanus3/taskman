@@ -149,6 +149,41 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
       >
         {@picker_state.error}
       </p>
+
+      <div
+        :if={parent_conflict?(@picker_state)}
+        id="task-parent-conflict"
+        role="alert"
+        class="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2.5 text-sm text-amber-100"
+      >
+        <p>
+          Parent Task changed elsewhere. Latest saved parent: {parent_label(
+            @picker_state.conflict_parent
+          )}
+        </p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            id="use-latest-parent_task_id"
+            type="button"
+            phx-click="resolve_task_parent_conflict"
+            phx-value-field="parent_task_id"
+            phx-value-resolution="use_latest"
+            class="rounded-lg border border-amber-200/30 px-2.5 py-1.5 text-xs font-semibold text-amber-50 transition hover:bg-amber-100/10 focus:outline-none focus:ring-2 focus:ring-amber-300/50"
+          >
+            Use latest
+          </button>
+          <button
+            id="keep-mine-parent_task_id"
+            type="button"
+            phx-click="resolve_task_parent_conflict"
+            phx-value-field="parent_task_id"
+            phx-value-resolution="keep_mine"
+            class="rounded-lg border border-amber-200/30 px-2.5 py-1.5 text-xs font-semibold text-amber-50 transition hover:bg-amber-100/10 focus:outline-none focus:ring-2 focus:ring-amber-300/50"
+          >
+            Keep mine
+          </button>
+        </div>
+      </div>
     </div>
 
     <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskParentPickerKeyboard">
@@ -204,4 +239,12 @@ defmodule TaskmanWeb.TaskParentPickerComponent do
 
   defp location_label([]), do: "Project"
   defp location_label(path), do: Enum.map_join(path, " / ", & &1.name)
+
+  defp parent_conflict?(%TaskParentPicker{parent_conflicted?: true}), do: true
+  defp parent_conflict?(%TaskParentPicker{conflict_parent: %Task{}}), do: true
+  defp parent_conflict?(%TaskParentPicker{}), do: false
+
+  defp parent_label(nil), do: "No parent"
+  defp parent_label(%Task{title: title}) when is_binary(title), do: title
+  defp parent_label(%Task{}), do: "No parent"
 end

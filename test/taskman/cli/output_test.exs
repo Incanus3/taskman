@@ -66,6 +66,38 @@ defmodule Taskman.CLI.OutputTest do
     assert Output.error(envelope, true) == Jason.encode!(envelope) <> "\n"
   end
 
+  test "JSON concurrent update errors preserve fields and trailing newline" do
+    envelope = %{
+      "error" => %{
+        "code" => "concurrent_update",
+        "message" => "Task changed concurrently",
+        "fields" => %{
+          "status" => ["changed concurrently"],
+          "title" => ["changed concurrently"]
+        }
+      }
+    }
+
+    assert Output.error(envelope, true) == Jason.encode!(envelope) <> "\n"
+  end
+
+  test "readable concurrent update errors render each conflicting field" do
+    envelope = %{
+      "error" => %{
+        "code" => "concurrent_update",
+        "message" => "Task changed concurrently",
+        "fields" => %{
+          "status" => ["changed concurrently"],
+          "title" => ["changed concurrently"]
+        }
+      }
+    }
+
+    assert Output.error(envelope, false) ==
+             "Error: Task changed concurrently (concurrent_update)\n" <>
+               "STATUS: changed concurrently\nTITLE: changed concurrently\n"
+  end
+
   test "readable errors contain a concise diagnostic" do
     assert Output.error(%{"error" => %{"code" => "not_found", "message" => "Missing"}}, false) ==
              "Error: Missing (not_found)\n"

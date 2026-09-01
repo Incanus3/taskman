@@ -307,7 +307,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
-  test "a rejected edit parent retains its draft until a different parent is selected", %{
+  test "an open parent search drops a candidate that becomes invalid elsewhere", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -330,42 +330,15 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
 
-    view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
+    _ = :sys.get_state(view.pid)
 
-    assert has_element?(view, "#task-parent-trigger[aria-invalid='true']")
-    assert has_element?(view, "#task-parent-error", "would create a cycle")
-    refute has_element?(view, "#task-parent-results")
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "Rejected parent")
-
-    assert has_element?(
-             view,
-             "#task-parent-focus[phx-mounted*='task-parent-trigger']"
-           )
-
-    assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
-    assert has_element?(view, "#task-hierarchy-node-#{original_parent.id}")
-    assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
-    assert has_element?(view, "#task-title[value='Launch']")
-
-    view |> element("#task-parent-trigger") |> render_click()
-    assert has_element?(view, "#task-parent-error", "would create a cycle")
-
-    view
-    |> element("#task-parent-search")
-    |> render_change(%{
-      "_target" => ["parent_query"],
-      "parent_query" => "Original parent"
-    })
-
-    view |> element("#task-parent-option-#{original_parent.id}") |> render_click()
-
-    refute has_element?(view, "#task-parent-error")
-    refute has_element?(view, "#task-parent-search")
+    assert has_element?(view, "#task-parent-search[value='Rejected parent']")
+    refute has_element?(view, "#task-parent-option-#{rejected_parent.id}")
+    assert has_element?(view, "#task-parent-option-#{original_parent.id}[aria-selected='true']")
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
   end
 
-  test "closing a rejected edit parent discards its invalid draft", %{conn: conn} do
+  test "closing a parent search handles a candidate invalidated elsewhere", %{conn: conn} do
     project = project_fixture(%{})
     original_parent = task_fixture(project, %{title: "Original parent"})
     rejected_parent = task_fixture(project, %{title: "Rejected parent"})
@@ -383,10 +356,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
       "parent_query" => "Rejected parent"
     })
 
-    assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
-    view |> element("#task-parent-option-#{rejected_parent.id}") |> render_click()
+    assert {:ok, _} =
+             Task.async(fn -> Tasks.update_task(project, rejected_parent, %{}, parent: task) end)
+             |> Task.await()
 
-    assert has_element?(view, "#task-parent-error", "would create a cycle")
+    _ = :sys.get_state(view.pid)
+
+    refute has_element?(view, "#task-parent-option-#{rejected_parent.id}")
+    assert has_element?(view, "#task-parent-option-#{original_parent.id}[aria-selected='true']")
 
     view |> element("#task-modal-close") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
@@ -396,7 +373,6 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#task-parent-trigger", "Original parent")
-    refute has_element?(view, "#task-parent-error")
     refute has_element?(view, "#task-parent-results")
   end
 

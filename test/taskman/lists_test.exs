@@ -1,6 +1,9 @@
 defmodule Taskman.ListsTest do
-  use Taskman.DataCase, async: true
+  use Taskman.DataCase, async: false
 
+  alias Phoenix.PubSub
+  alias Taskman.ChangeNotifications
+  alias Taskman.ChangeNotifications.Event
   import Taskman.ProjectsFixtures
   import Taskman.ListsFixtures
 
@@ -41,6 +44,67 @@ defmodule Taskman.ListsTest do
     other_parent = list_fixture(project_fixture(%{}), nil)
 
     assert {:error, :not_found} = Lists.create_list(project, other_parent, %{name: "Child"})
+  end
+
+  test "root and child List creation publish workspace events with ownership fields" do
+    project = project_fixture(%{})
+    assert :ok = ChangeNotifications.subscribe_workspace()
+    start_forwarder("workspace:changes")
+
+    assert {:ok, root} = Lists.create_list(project, nil, %{name: "Planning"})
+
+    assert_receive {:forwarded,
+                    %Event{
+                      entity: :list,
+                      operation: :created,
+                      project_id: project_id,
+                      entity_id: root_id,
+                      fields: [:name, :project_id, :parent_list_id]
+                    }}
+
+    assert project_id == project.id
+    assert root_id == root.id
+
+    assert {:ok, child} = Lists.create_list(project, root, %{name: "Launch"})
+
+    assert_receive {:forwarded,
+                    %Event{
+                      entity: :list,
+                      operation: :created,
+                      project_id: ^project_id,
+                      entity_id: child_id,
+                      fields: [:name, :project_id, :parent_list_id]
+                    }}
+
+    assert child_id == child.id
+  end
+
+  test "an invalid List creation or foreign parent publishes no workspace event" do
+    project = project_fixture(%{})
+    other_parent = list_fixture(project_fixture(%{}), nil)
+    assert :ok = ChangeNotifications.subscribe_workspace()
+    start_forwarder("workspace:changes")
+
+    assert {:error, _changeset} = Lists.create_list(project, nil, %{name: "   "})
+    assert {:error, :not_found} = Lists.create_list(project, other_parent, %{name: "Child"})
+    refute_receive {:forwarded, %Event{}}, 50
+  end
+
+  test "successful List creation keeps its result when publication fails" do
+    project = project_fixture(%{})
+    previous = Application.get_env(:taskman, :change_notifications_pubsub)
+    Application.put_env(:taskman, :change_notifications_pubsub, Taskman.MissingPubSub)
+
+    on_exit(fn ->
+      if previous == nil do
+        Application.delete_env(:taskman, :change_notifications_pubsub)
+      else
+        Application.put_env(:taskman, :change_notifications_pubsub, previous)
+      end
+    end)
+
+    assert {:ok, task_list} = Lists.create_list(project, nil, %{name: "Planning"})
+    assert task_list.project_id == project.id
   end
 
   test "gets only Project-owned Lists and rejects malformed IDs" do
@@ -102,6 +166,39 @@ defmodule Taskman.ListsTest do
     assert renamed.parent_list_id == nil
     assert {:error, :not_found} = Lists.rename_list(other_project, task_list, %{name: "Leaked"})
     assert Lists.get_list_for_project(project, task_list.id).name == "After"
+  end
+
+  test "a changed List name publishes an updated workspace event" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project, nil, %{name: "Before"})
+    project_id = project.id
+    task_list_id = task_list.id
+    assert :ok = ChangeNotifications.subscribe_workspace()
+    start_forwarder("workspace:changes")
+
+    assert {:ok, renamed} = Lists.rename_list(project, task_list, %{name: "After"})
+
+    assert_receive {:forwarded,
+                    %Event{
+                      entity: :list,
+                      operation: :updated,
+                      project_id: ^project_id,
+                      entity_id: ^task_list_id,
+                      fields: [:name]
+                    }}
+
+    assert renamed.name == "After"
+  end
+
+  test "a rename whose normalized name is unchanged returns success without an event" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project, nil, %{name: "Before"})
+    assert :ok = ChangeNotifications.subscribe_workspace()
+    start_forwarder("workspace:changes")
+
+    assert {:ok, unchanged} = Lists.rename_list(project, task_list, %{name: "  Before  "})
+    assert unchanged.name == task_list.name
+    refute_receive {:forwarded, %Event{}}, 50
   end
 
   test "builds a depth-first navigation tree and opens selected ancestors" do
@@ -182,5 +279,29 @@ defmodule Taskman.ListsTest do
     assert project_node.expanded?
     assert root_node.selected?
     refute root_node.expanded?
+  end
+
+  defp start_forwarder(topic) do
+    test_pid = self()
+
+    start_supervised!(
+      {Task,
+       fn ->
+         :ok = PubSub.subscribe(Taskman.PubSub, topic)
+         send(test_pid, {:forwarder_ready, topic})
+         forward_messages(test_pid)
+       end},
+      id: {:forwarder, topic}
+    )
+
+    assert_receive {:forwarder_ready, ^topic}
+  end
+
+  defp forward_messages(test_pid) do
+    receive do
+      message ->
+        send(test_pid, {:forwarded, message})
+        forward_messages(test_pid)
+    end
   end
 end

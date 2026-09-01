@@ -24,4 +24,11 @@ defmodule Taskman.TasksFixtures do
     {:ok, task} = Tasks.create_task(project, location, attrs, opts)
     task
   end
+
+  def loaded_task_baselines(project, task) do
+    {
+      Tasks.get_task_for_project(project, task.id),
+      Tasks.get_task_for_project(project, task.id)
+    }
+  end
 end

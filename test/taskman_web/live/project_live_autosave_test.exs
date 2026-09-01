@@ -7,7 +7,7 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
-  alias TaskmanWeb.{ProjectLive, TaskAutosave}
+  alias TaskmanWeb.{ProjectLive, TaskAutosave, TaskParentPicker}
 
   setup do
     previous = Application.get_env(:taskman, :task_autosave_delay_ms)
@@ -407,5 +407,100 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     moved_task = Tasks.get_task_for_project(project, task.id)
     assert moved_task.title == "After"
     assert moved_task.list_id == destination.id
+  end
+
+  test "a same-title autosave race preserves the draft, blocks its old timer, and resolves in place",
+       %{
+         conn: conn
+       } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+    task_path = ~p"/projects/#{project.id}/tasks/#{task.id}"
+    {:ok, view, _html} = live(conn, task_path)
+
+    view
+    |> form("#task-form", task: %{title: "Mine"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
+
+    send(view.pid, {:autosave_task_field, task.id, "title", 1})
+    _ = :sys.get_state(view.pid)
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-title[value='Mine']")
+    assert has_element?(view, "#task-save-status[data-state='conflicted']")
+    assert has_element?(view, "#task-title-conflict[role='alert']")
+    assert has_element?(view, "#use-latest-title")
+    assert has_element?(view, "#keep-mine-title")
+
+    view |> element("#use-latest-title") |> render_click()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-title[value='Latest']")
+    refute has_element?(view, "#task-title-conflict")
+    refute_patched(view, task_path)
+    assert latest.title == "Latest"
+  end
+
+  test "parent selection and clearing stay local while a parent conflict is unresolved" do
+    project = project_fixture(%{})
+    initial_parent = task_fixture(project, %{title: "Initial"})
+    mine = task_fixture(project, %{title: "Mine"})
+    other = task_fixture(project, %{title: "Other"})
+    latest_parent = task_fixture(project, %{title: "Latest"})
+    task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
+
+    picker =
+      TaskParentPicker.empty()
+      |> TaskParentPicker.open_edit(project, task)
+      |> TaskParentPicker.select_draft(project, mine.id)
+
+    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
+
+    assert {:conflict, conflicted_picker, ^latest} =
+             TaskParentPicker.save_edit(picker, project, task)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{
+        live_temp: %{},
+        lifecycle: Phoenix.LiveView.Lifecycle.build([])
+      }
+    }
+
+    {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
+
+    socket =
+      %{socket | assigns: Map.merge(socket.assigns, %{live_action: :show_task})}
+      |> Phoenix.Component.assign(:selected_project, project)
+      |> Phoenix.Component.assign(:selected_task, latest)
+      |> Phoenix.Component.assign(:task_parent_picker, conflicted_picker)
+
+    assert {:noreply, socket} =
+             ProjectLive.handle_event(
+               "select_task_parent",
+               %{"parent-id" => Integer.to_string(other.id)},
+               socket
+             )
+
+    assert socket.assigns.task_parent_picker.selected_parent.id == other.id
+    assert socket.assigns.task_parent_picker.parent_conflicted?
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == latest_parent.id
+
+    assert {:noreply, socket} = ProjectLive.handle_event("clear_task_parent", %{}, socket)
+
+    assert socket.assigns.task_parent_picker.selected_parent == nil
+    assert socket.assigns.task_parent_picker.parent_conflicted?
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == latest_parent.id
+
+    assert {:noreply, _socket} =
+             ProjectLive.handle_event(
+               "resolve_task_parent_conflict",
+               %{"field" => "parent_task_id", "resolution" => "keep_mine"},
+               socket
+             )
+
+    assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
   end
 end

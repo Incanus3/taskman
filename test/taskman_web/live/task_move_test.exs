@@ -162,6 +162,55 @@ defmodule TaskmanWeb.TaskMoveTest do
     assert TaskMove.current_destination(refreshed) == "list:#{planning.id}"
   end
 
+  test "refresh retains an open canonical destination selection and query" do
+    project = project_fixture(%{})
+    planning = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    state =
+      TaskMove.empty()
+      |> TaskMove.open(project, task, :row)
+      |> TaskMove.open_destinations()
+      |> TaskMove.select_destination("list:#{planning.id}")
+      |> TaskMove.open_destinations()
+
+    assert {:ok, updated} =
+             Taskman.Tasks.update_task(project, task, %{title: "Updated elsewhere"})
+
+    assert {:ok, refreshed, ^updated} = TaskMove.refresh(state, project)
+
+    assert refreshed.query == "Planning"
+    assert refreshed.destination == "list:#{planning.id}"
+    assert refreshed.options_open?
+    assert Enum.any?(refreshed.options, &(&1.value == "list:#{planning.id}"))
+  end
+
+  test "refresh updates a selected destination query after a List rename" do
+    project = project_fixture(%{})
+    root = list_fixture(project, nil, %{name: "Before"})
+    child = list_fixture(project, root, %{name: "Launch"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    state =
+      TaskMove.empty()
+      |> TaskMove.open(project, task, :row)
+      |> TaskMove.open_destinations()
+      |> TaskMove.select_destination("list:#{child.id}")
+      |> TaskMove.open_destinations()
+
+    assert {:ok, _renamed} = Taskman.Lists.rename_list(project, root, %{name: "Latest"})
+    assert {:ok, refreshed, ^task} = TaskMove.refresh(state, project)
+
+    assert refreshed.query == "Latest / Launch"
+    assert refreshed.destination == "list:#{child.id}"
+    assert refreshed.options_open?
+
+    assert Enum.any?(
+             refreshed.options,
+             &(&1.value == "list:#{child.id}" and &1.label == "Latest / Launch")
+           )
+  end
+
   test "refresh clears state when the active Task is gone" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Move me"})

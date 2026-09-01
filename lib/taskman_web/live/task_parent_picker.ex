@@ -1,6 +1,7 @@
 defmodule TaskmanWeb.TaskParentPicker do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
+  alias Taskman.Tasks.Conflict
   alias Taskman.Tasks.{Task, TaskWithLocation}
 
   defstruct mode: nil,
@@ -10,6 +11,8 @@ defmodule TaskmanWeb.TaskParentPicker do
             options: [],
             options_open?: false,
             active_option_id: nil,
+            conflict_parent: nil,
+            parent_conflicted?: false,
             error: nil
 
   @type mode :: :create | :edit | nil
@@ -22,6 +25,8 @@ defmodule TaskmanWeb.TaskParentPicker do
           options: [TaskWithLocation.t()],
           options_open?: boolean(),
           active_option_id: String.t() | nil,
+          conflict_parent: Task.t() | nil,
+          parent_conflicted?: boolean(),
           error: String.t() | nil
         }
 
@@ -155,6 +160,64 @@ defmodule TaskmanWeb.TaskParentPicker do
   @spec selected_parent(t()) :: Task.t() | nil
   def selected_parent(%__MODULE__{selected_parent: selected_parent}), do: selected_parent
 
+  @spec reconcile(t(), Project.t(), Task.t()) :: t()
+  def reconcile(%__MODULE__{} = state, %Project{} = project, %Task{} = persisted_task) do
+    persisted_parent = task_parent(project, persisted_task)
+
+    {selected_parent, conflict_parent} =
+      if state.parent_conflicted? do
+        {state.selected_parent, persisted_parent}
+      else
+        {persisted_parent, nil}
+      end
+
+    options =
+      if state.options_open? do
+        search_candidates(project, persisted_task, state.query, selected_parent)
+      else
+        state.options
+      end
+
+    state = %{
+      state
+      | current_task: persisted_task,
+        selected_parent: selected_parent,
+        conflict_parent: conflict_parent,
+        options: options
+    }
+
+    %{state | active_option_id: retain_active_option(state)}
+  end
+
+  @spec resolve_conflict(t(), Project.t(), :use_latest | :keep_mine) ::
+          {:ok, t(), Task.t()} | {:conflict, t(), Task.t()} | {:error, t(), term()}
+  def resolve_conflict(%__MODULE__{} = state, %Project{} = project, resolution)
+      when resolution in [:use_latest, :keep_mine] do
+    if parent_conflict?(state) do
+      case resolution do
+        :use_latest ->
+          resolved = %{
+            state
+            | selected_parent: state.conflict_parent,
+              query: parent_query(state.conflict_parent),
+              conflict_parent: nil,
+              parent_conflicted?: false,
+              error: nil
+          }
+
+          {:ok, resolved, state.current_task}
+
+        :keep_mine ->
+          retry_parent_conflict(state, project)
+      end
+    else
+      {:error, state, :no_conflict}
+    end
+  end
+
+  def resolve_conflict(%__MODULE__{} = state, _project, _resolution),
+    do: {:error, state, :invalid_resolution}
+
   @spec active_option_id(t()) :: String.t() | nil
   def active_option_id(%__MODULE__{active_option_id: active_option_id}), do: active_option_id
 
@@ -190,10 +253,7 @@ defmodule TaskmanWeb.TaskParentPicker do
       ) do
     case Tasks.update_task(project, task, %{}, parent: selected_parent) do
       {:ok, %Task{} = updated_task} ->
-        refreshed_parent =
-          if is_integer(updated_task.parent_task_id) do
-            Tasks.get_task_for_project(project, updated_task.parent_task_id)
-          end
+        refreshed_parent = task_parent(project, updated_task)
 
         refreshed_state = %{
           state
@@ -203,6 +263,8 @@ defmodule TaskmanWeb.TaskParentPicker do
             selected_parent: refreshed_parent,
             options: [],
             options_open?: false,
+            conflict_parent: nil,
+            parent_conflicted?: false,
             error: nil
         }
 
@@ -214,6 +276,9 @@ defmodule TaskmanWeb.TaskParentPicker do
       {:error, %Ecto.Changeset{} = changeset} ->
         message = changeset_error_message(changeset)
         {:error, reject_draft(state, message), changeset}
+
+      {:error, %Conflict{task: current_task}} ->
+        {:conflict, put_parent_conflict(state, project, current_task), current_task}
 
       {:error, reason} ->
         {:error, reject_draft(state, "Couldn’t save the parent. Please try again."), reason}
@@ -267,6 +332,10 @@ defmodule TaskmanWeb.TaskParentPicker do
   defp option_ids(%__MODULE__{} = state) do
     no_parent_ids = if show_no_parent?(state), do: ["task-parent-clear"], else: []
     no_parent_ids ++ Enum.map(state.options, &option_id/1)
+  end
+
+  defp retain_active_option(%__MODULE__{active_option_id: active_option_id} = state) do
+    if active_option_id in option_ids(state), do: active_option_id, else: nil
   end
 
   defp show_no_parent?(%__MODULE__{mode: :edit}), do: true
@@ -338,4 +407,58 @@ defmodule TaskmanWeb.TaskParentPicker do
         false
     end)
   end
+
+  defp retry_parent_conflict(%__MODULE__{} = state, %Project{} = project) do
+    case Tasks.update_task(project, state.current_task, %{}, parent: state.selected_parent) do
+      {:ok, %Task{} = updated_task} ->
+        refreshed_parent = task_parent(project, updated_task)
+
+        {:ok,
+         %{
+           state
+           | current_task: updated_task,
+             selected_parent: refreshed_parent,
+             query: parent_query(refreshed_parent),
+             options: [],
+             options_open?: false,
+             active_option_id: nil,
+             conflict_parent: nil,
+             parent_conflicted?: false,
+             error: nil
+         }, updated_task}
+
+      {:error, %Conflict{task: current_task}} ->
+        {:conflict, put_parent_conflict(state, project, current_task), current_task}
+
+      {:error, :not_found} ->
+        {:error, reject_draft(state, "That parent Task is no longer available."), :not_found}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, reject_draft(state, changeset_error_message(changeset)), changeset}
+
+      {:error, reason} ->
+        {:error, reject_draft(state, "Couldn’t save the parent. Please try again."), reason}
+    end
+  end
+
+  defp put_parent_conflict(%__MODULE__{} = state, %Project{} = project, %Task{} = current_task) do
+    %{
+      state
+      | current_task: current_task,
+        conflict_parent: task_parent(project, current_task),
+        parent_conflicted?: true,
+        error: nil
+    }
+  end
+
+  defp parent_conflict?(%__MODULE__{parent_conflicted?: true}), do: true
+  defp parent_conflict?(%__MODULE__{conflict_parent: %Task{}}), do: true
+  defp parent_conflict?(%__MODULE__{}), do: false
+
+  defp task_parent(%Project{} = project, %Task{parent_task_id: parent_task_id})
+       when is_integer(parent_task_id) do
+    Tasks.get_task_for_project(project, parent_task_id)
+  end
+
+  defp task_parent(%Project{}, %Task{}), do: nil
 end

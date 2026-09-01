@@ -1,6 +1,8 @@
 defmodule TaskmanWeb.ProjectLive do
   use TaskmanWeb, :live_view
 
+  alias Taskman.ChangeNotifications
+  alias Taskman.ChangeNotifications.Event
   alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Projects
@@ -41,37 +43,40 @@ defmodule TaskmanWeb.ProjectLive do
         dom_id: fn %Taskman.Lists.NavigationNode{dom_id: dom_id} -> dom_id end
       )
 
-    {:ok,
-     socket
-     |> assign(:selected_project, nil)
-     |> assign(:project_not_found?, false)
-     |> assign(:selected_list, nil)
-     |> assign(:include_children?, false)
-     |> assign(:visible_task_statuses, @default_visible_task_statuses)
-     |> assign(:status_filter_form, status_filter_form(@default_visible_task_statuses))
-     |> assign(:task_status_filter_open?, false)
-     |> assign(:task_sort, nil)
-     |> assign(:location_not_found?, false)
-     |> assign(:location_path, [])
-     |> assign(:project_form, project_form(%Project{}))
-     |> assign(:task_create_form, nil)
-     |> assign(:task_create_enabled?, false)
-     |> assign(:task_create_location, nil)
-     |> assign(:task_parent_picker, TaskParentPicker.empty())
-     |> assign(:tasks_empty?, true)
-     |> assign(:selected_task, nil)
-     |> assign(:task_not_found?, false)
-     |> assign(:task_detail_open?, false)
-     |> assign(:task_autosave, TaskAutosave.empty())
-     |> assign(:task_hierarchy, TaskHierarchy.empty())
-     |> assign(:task_move, TaskMove.empty())
-     |> assign(:expanded_node_ids, MapSet.new())
-     |> assign(:list_edit, ListEdit.empty())
-     |> assign(:tasks_filtered_empty?, false)
-     |> stream(:projects, Projects.list_projects())
-     |> stream(:tasks, [])
-     |> stream(:navigation_nodes, [])
-     |> refresh_navigation_stream()}
+    socket =
+      socket
+      |> assign(:selected_project, nil)
+      |> assign(:subscribed_project_id, nil)
+      |> assign(:project_not_found?, false)
+      |> assign(:selected_list, nil)
+      |> assign(:include_children?, false)
+      |> assign(:visible_task_statuses, @default_visible_task_statuses)
+      |> assign(:status_filter_form, status_filter_form(@default_visible_task_statuses))
+      |> assign(:task_status_filter_open?, false)
+      |> assign(:task_sort, nil)
+      |> assign(:location_not_found?, false)
+      |> assign(:location_path, [])
+      |> assign(:project_form, project_form(%Project{}))
+      |> assign(:task_create_form, nil)
+      |> assign(:task_create_enabled?, false)
+      |> assign(:task_create_location, nil)
+      |> assign(:task_parent_picker, TaskParentPicker.empty())
+      |> assign(:tasks_empty?, true)
+      |> assign(:selected_task, nil)
+      |> assign(:task_not_found?, false)
+      |> assign(:task_detail_open?, false)
+      |> assign(:task_autosave, TaskAutosave.empty())
+      |> assign(:task_hierarchy, TaskHierarchy.empty())
+      |> assign(:task_move, TaskMove.empty())
+      |> assign(:expanded_node_ids, MapSet.new())
+      |> assign(:list_edit, ListEdit.empty())
+      |> assign(:tasks_filtered_empty?, false)
+      |> stream(:projects, Projects.list_projects())
+      |> stream(:tasks, [])
+      |> stream(:navigation_nodes, [])
+      |> refresh_navigation_stream()
+
+    {:ok, subscribe_workspace(socket)}
   end
 
   @impl true
@@ -608,6 +613,61 @@ defmodule TaskmanWeb.ProjectLive do
     end
   end
 
+  def handle_event(
+        "resolve_task_conflict",
+        %{"field" => field, "resolution" => resolution},
+        %{
+          assigns: %{
+            selected_project: %Project{} = project,
+            selected_task: %Task{} = task,
+            task_autosave: %TaskAutosave{} = autosave
+          }
+        } = socket
+      )
+      when is_binary(field) and is_binary(resolution) do
+    case task_conflict_resolution(resolution) do
+      nil ->
+        {:noreply, socket}
+
+      resolution ->
+        result = TaskAutosave.resolve_conflict(autosave, project, task, field, resolution)
+        {:noreply, apply_task_autosave_result(socket, result)}
+    end
+  end
+
+  def handle_event("resolve_task_conflict", _params, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "resolve_task_parent_conflict",
+        %{"field" => "parent_task_id", "resolution" => resolution},
+        %{
+          assigns: %{
+            selected_project: %Project{} = project,
+            task_parent_picker: %TaskParentPicker{} = picker
+          }
+        } = socket
+      )
+      when is_binary(resolution) do
+    case task_conflict_resolution(resolution) do
+      nil ->
+        {:noreply, socket}
+
+      resolution ->
+        case TaskParentPicker.resolve_conflict(picker, project, resolution) do
+          {:ok, picker, task} ->
+            {:noreply, sync_task_parent_picker(socket, picker, task)}
+
+          {:conflict, picker, task} ->
+            {:noreply, sync_task_parent_picker(socket, picker, task)}
+
+          {:error, picker, _reason} ->
+            {:noreply, assign(socket, :task_parent_picker, picker)}
+        end
+    end
+  end
+
+  def handle_event("resolve_task_parent_conflict", _params, socket), do: {:noreply, socket}
+
   def handle_event("open_move_task", %{"task-id" => task_id}, socket) do
     case socket.assigns.selected_project do
       %Project{} = project ->
@@ -762,10 +822,44 @@ defmodule TaskmanWeb.ProjectLive do
     {:noreply, socket}
   end
 
+  def handle_info(%Event{entity: entity} = event, socket) when entity in [:project, :list] do
+    socket =
+      if well_formed_workspace_event?(event) do
+        reconcile_workspace_event(socket, event)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(
+        %Event{entity: :task} = event,
+        %{assigns: %{selected_project: %Project{} = project}} = socket
+      ) do
+    socket =
+      if well_formed_task_event?(event) and event.project_id == project.id do
+        reconcile_task_event(socket, event)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(%Event{entity: :task}, socket), do: {:noreply, socket}
+  def handle_info(%Event{}, socket), do: {:noreply, socket}
+
   defp apply_task_autosave_result(socket, {:ok, autosave, task}),
     do: sync_task_autosave(socket, autosave, task)
 
   defp apply_task_autosave_result(socket, {:ignored, autosave, task}),
+    do: sync_task_autosave(socket, autosave, task)
+
+  defp apply_task_autosave_result(socket, {:conflict, autosave, task}),
+    do: sync_task_autosave(socket, autosave, task)
+
+  defp apply_task_autosave_result(socket, {:error, autosave, task}),
     do: sync_task_autosave(socket, autosave, task)
 
   defp apply_task_autosave_result(
@@ -800,6 +894,19 @@ defmodule TaskmanWeb.ProjectLive do
         |> refresh_task_stream()
       else
         socket
+      end
+
+    socket =
+      case {
+        socket.assigns.live_action,
+        socket.assigns.selected_project,
+        socket.assigns.task_parent_picker
+      } do
+        {:show_task, %Project{} = project, %TaskParentPicker{} = picker} ->
+          assign(socket, :task_parent_picker, TaskParentPicker.reconcile(picker, project, task))
+
+        _ ->
+          socket
       end
 
     if title_changed? do
@@ -913,6 +1020,19 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp refresh_navigation_stream(socket) do
+    {projects, lists_by_project} = workspace_snapshot()
+    stream_navigation(socket, projects, lists_by_project)
+  end
+
+  defp subscribe_workspace(socket) do
+    if connected?(socket) do
+      _ = ChangeNotifications.subscribe_workspace()
+    end
+
+    socket
+  end
+
+  defp workspace_snapshot do
     projects = Projects.list_projects()
 
     lists_by_project =
@@ -920,6 +1040,10 @@ defmodule TaskmanWeb.ProjectLive do
         {project.id, Lists.list_lists_for_project(project)}
       end)
 
+    {projects, lists_by_project}
+  end
+
+  defp stream_navigation(socket, projects, lists_by_project) do
     nodes =
       Lists.navigation_nodes(
         projects,
@@ -930,6 +1054,109 @@ defmodule TaskmanWeb.ProjectLive do
 
     stream(socket, :navigation_nodes, nodes, reset: true)
   end
+
+  defp reconcile_workspace_event(socket, %Event{entity: :project}) do
+    {projects, lists_by_project} = workspace_snapshot()
+
+    socket
+    |> stream(:projects, projects, reset: true)
+    |> stream_navigation(projects, lists_by_project)
+  end
+
+  defp reconcile_workspace_event(socket, %Event{entity: :list, project_id: project_id}) do
+    {projects, lists_by_project} = workspace_snapshot()
+
+    socket =
+      socket
+      |> assign(
+        :list_edit,
+        ListEdit.reconcile(socket.assigns.list_edit, projects, lists_by_project)
+      )
+      |> stream(:projects, projects, reset: true)
+      |> reconcile_selected_location(project_id, projects, lists_by_project)
+
+    stream_navigation(socket, projects, lists_by_project)
+  end
+
+  defp reconcile_selected_location(
+         socket,
+         event_project_id,
+         projects,
+         lists_by_project
+       ) do
+    if project_id(socket.assigns.selected_project) == event_project_id do
+      case Enum.find(projects, &(&1.id == event_project_id)) do
+        %Project{} = project ->
+          task_lists = Map.get(lists_by_project, event_project_id, [])
+          previous_list = socket.assigns.selected_list
+          selected_list = canonical_selected_list(previous_list, task_lists)
+          location_not_found? = match?(%TaskList{}, previous_list) and is_nil(selected_list)
+          location_path = Lists.path_for(task_lists, selected_list)
+
+          socket =
+            socket
+            |> assign(:selected_project, project)
+            |> assign(:selected_list, selected_list)
+            |> assign(:project_not_found?, false)
+            |> assign(:location_not_found?, location_not_found?)
+            |> assign(:location_path, location_path)
+            |> refresh_task_create_location(task_lists)
+
+          if location_not_found? do
+            clear_selected_location_tasks(socket)
+          else
+            socket
+            |> refresh_task_stream()
+            |> refresh_active_move_state()
+            |> refresh_task_parent_picker()
+            |> reload_open_task_hierarchy()
+          end
+
+        nil ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp canonical_selected_list(nil, _task_lists), do: nil
+
+  defp canonical_selected_list(%TaskList{id: list_id}, task_lists) do
+    Enum.find(task_lists, &(&1.id == list_id))
+  end
+
+  defp refresh_task_create_location(
+         %{assigns: %{task_create_location: %TaskList{id: list_id}}} = socket,
+         task_lists
+       ) do
+    case Enum.find(task_lists, &(&1.id == list_id)) do
+      %TaskList{} = task_list -> assign(socket, :task_create_location, task_list)
+      nil -> socket
+    end
+  end
+
+  defp refresh_task_create_location(socket, _task_lists), do: socket
+
+  defp clear_selected_location_tasks(socket) do
+    socket
+    |> assign(:tasks_empty?, true)
+    |> assign(:tasks_filtered_empty?, false)
+    |> stream(:tasks, [], reset: true)
+  end
+
+  defp refresh_task_parent_picker(
+         %{
+           assigns: %{
+             task_parent_picker: %TaskParentPicker{options_open?: true} = picker,
+             selected_project: %Project{} = project
+           }
+         } = socket
+       ) do
+    assign(socket, :task_parent_picker, TaskParentPicker.search(picker, project, picker.query))
+  end
+
+  defp refresh_task_parent_picker(socket), do: socket
 
   defp selected_location(%{
          assigns: %{selected_project: %Project{id: project_id}, selected_list: nil}
@@ -964,6 +1191,7 @@ defmodule TaskmanWeb.ProjectLive do
 
     socket
     |> assign(:selected_project, selected_project)
+    |> sync_project_task_subscription(selected_project)
     |> assign(:selected_list, selected_list)
     |> assign(:project_not_found?, project_not_found?)
     |> assign(:location_not_found?, location_not_found?)
@@ -977,6 +1205,40 @@ defmodule TaskmanWeb.ProjectLive do
     |> stream(:tasks, tasks, reset: true)
     |> refresh_navigation_stream()
   end
+
+  defp sync_project_task_subscription(socket, desired_project) do
+    desired_project_id = project_id(desired_project)
+    subscribed_project_id = socket.assigns.subscribed_project_id
+
+    cond do
+      not connected?(socket) ->
+        socket
+
+      desired_project_id == subscribed_project_id ->
+        socket
+
+      true ->
+        if is_integer(subscribed_project_id) do
+          ChangeNotifications.unsubscribe_project(subscribed_project_id)
+        end
+
+        case desired_project_id do
+          nil ->
+            assign(socket, :subscribed_project_id, nil)
+
+          project_id ->
+            case ChangeNotifications.subscribe_project(project_id) do
+              :ok -> assign(socket, :subscribed_project_id, project_id)
+              {:error, _reason} -> assign(socket, :subscribed_project_id, nil)
+            end
+        end
+    end
+  end
+
+  defp project_id(%Project{id: project_id}) when is_integer(project_id) and project_id > 0,
+    do: project_id
+
+  defp project_id(_project), do: nil
 
   defp refresh_task_stream(
          %{
@@ -1051,6 +1313,132 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp refresh_move_surface(socket), do: socket
+
+  defp refresh_active_move_state(
+         %{
+           assigns: %{
+             selected_project: %Project{} = project,
+             task_move: %TaskMove{} = task_move
+           }
+         } = socket
+       ) do
+    if TaskMove.active?(task_move) do
+      case TaskMove.refresh(task_move, project) do
+        {:ok, task_move, _task} -> assign(socket, :task_move, task_move)
+        {:error, task_move, :task_not_found} -> assign(socket, :task_move, task_move)
+      end
+    else
+      socket
+    end
+  end
+
+  defp refresh_active_move_state(socket), do: socket
+
+  defp reconcile_task_event(socket, event) do
+    socket =
+      socket
+      |> refresh_task_stream()
+      |> refresh_active_move_state()
+      |> reconcile_open_task_detail(event)
+
+    if task_hierarchy_affected?(event) do
+      reload_open_task_hierarchy(socket)
+    else
+      socket
+    end
+  end
+
+  defp reconcile_open_task_detail(
+         %{
+           assigns: %{
+             live_action: :show_task,
+             selected_project: %Project{} = project,
+             selected_task: %Task{id: task_id} = selected_task,
+             task_autosave: %TaskAutosave{} = autosave,
+             task_parent_picker: %TaskParentPicker{} = picker
+           }
+         } = socket,
+         _event
+       ) do
+    case Tasks.get_task_for_project(project, task_id) do
+      %Task{} = persisted_task ->
+        socket
+        |> assign(:selected_task, persisted_task)
+        |> assign(:task_autosave, TaskAutosave.reconcile(autosave, persisted_task))
+        |> assign(
+          :task_parent_picker,
+          TaskParentPicker.reconcile(picker, project, persisted_task)
+        )
+
+      nil ->
+        assign(socket, :selected_task, selected_task)
+    end
+  end
+
+  defp reconcile_open_task_detail(socket, _event), do: socket
+
+  defp reload_open_task_hierarchy(
+         %{
+           assigns: %{
+             live_action: :show_task,
+             selected_project: %Project{} = project,
+             selected_task: %Task{} = selected_task
+           }
+         } = socket
+       ),
+       do: reload_task_hierarchy(socket, project, selected_task)
+
+  defp reload_open_task_hierarchy(socket), do: socket
+
+  defp well_formed_task_event?(%Event{
+         operation: operation,
+         project_id: project_id,
+         entity_id: entity_id,
+         lock_version: lock_version,
+         fields: fields
+       })
+       when operation in [:created, :updated, :moved] and is_integer(project_id) and
+              project_id > 0 and
+              is_integer(entity_id) and entity_id > 0 and
+              (is_nil(lock_version) or (is_integer(lock_version) and lock_version >= 0)) and
+              is_list(fields) do
+    Enum.all?(fields, &is_atom/1)
+  end
+
+  defp well_formed_task_event?(_event), do: false
+
+  defp well_formed_workspace_event?(%Event{
+         entity: :project,
+         operation: :created,
+         project_id: project_id,
+         entity_id: entity_id,
+         lock_version: nil,
+         fields: fields
+       })
+       when is_integer(project_id) and project_id > 0 and entity_id == project_id and
+              is_list(fields) do
+    Enum.all?(fields, &is_atom/1)
+  end
+
+  defp well_formed_workspace_event?(%Event{
+         entity: :list,
+         operation: operation,
+         project_id: project_id,
+         entity_id: entity_id,
+         lock_version: nil,
+         fields: fields
+       })
+       when operation in [:created, :updated] and is_integer(project_id) and project_id > 0 and
+              is_integer(entity_id) and entity_id > 0 and is_list(fields) do
+    Enum.all?(fields, &is_atom/1)
+  end
+
+  defp well_formed_workspace_event?(_event), do: false
+
+  defp task_hierarchy_affected?(%Event{operation: operation, fields: fields}) do
+    operation in [:created, :moved] or
+      Enum.any?(fields, &(&1 in [:title, :status, :parent_task_id, :list_id]))
+  end
 
   defp apply_task_status_filter(socket, visible_statuses) do
     socket
@@ -1332,7 +1720,7 @@ defmodule TaskmanWeb.ProjectLive do
        ) do
     picker = transition.(picker)
 
-    if save? do
+    if save? and not picker.parent_conflicted? do
       save_task_parent_picker(socket, project, task, picker)
     else
       assign(socket, :task_parent_picker, picker)
@@ -1345,15 +1733,32 @@ defmodule TaskmanWeb.ProjectLive do
     case TaskParentPicker.save_edit(picker, project, task) do
       {:ok, picker, updated_task} ->
         socket
-        |> assign(:task_parent_picker, picker)
-        |> assign(:selected_task, updated_task)
+        |> sync_task_parent_picker(picker, updated_task)
         |> reload_task_hierarchy(project, updated_task)
+        |> refresh_task_stream()
+
+      {:conflict, picker, current_task} ->
+        socket
+        |> sync_task_parent_picker(picker, current_task)
+        |> reload_task_hierarchy(project, current_task)
         |> refresh_task_stream()
 
       {:error, picker, _reason} ->
         assign(socket, :task_parent_picker, picker)
     end
   end
+
+  defp sync_task_parent_picker(socket, %TaskParentPicker{} = picker, %Task{} = task) do
+    autosave = TaskAutosave.reconcile(socket.assigns.task_autosave, task)
+
+    socket
+    |> sync_task_autosave(autosave, task)
+    |> assign(:task_parent_picker, picker)
+  end
+
+  defp task_conflict_resolution("use_latest"), do: :use_latest
+  defp task_conflict_resolution("keep_mine"), do: :keep_mine
+  defp task_conflict_resolution(_resolution), do: nil
 
   defp new_task_path(project, task_list, include_children?, parent_task_id \\ nil)
 
