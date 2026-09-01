@@ -8,7 +8,7 @@ defmodule Taskman.CLI.Client do
   @error_contract %{
     400 => {"invalid_request", 3},
     404 => {"not_found", 3},
-    409 => {"unchanged_location", 3},
+    409 => {["unchanged_location", "concurrent_update"], 3},
     422 => {"validation_failed", 3},
     500 => {"internal_error", 5}
   }
@@ -202,9 +202,9 @@ defmodule Taskman.CLI.Client do
          {:ok, code} <- Map.fetch(error, "code"),
          {:ok, message} <- Map.fetch(error, "message"),
          true <- is_binary(code) and code != "",
-         true <- code == expected_code,
+         true <- valid_error_code?(code, expected_code),
          true <- is_binary(message) and message != "",
-         true <- valid_fields?(error) do
+         true <- valid_fields?(error, code) do
       {:ok, body}
     else
       _ -> :error
@@ -217,7 +217,27 @@ defmodule Taskman.CLI.Client do
     Enum.all?(Map.keys(error), &(&1 in ["code", "message", "fields"]))
   end
 
-  defp valid_fields?(error) do
+  defp valid_error_code?(code, expected_code) when is_binary(expected_code),
+    do: code == expected_code
+
+  defp valid_error_code?(code, expected_codes) when is_list(expected_codes),
+    do: code in expected_codes
+
+  defp valid_fields?(error, "concurrent_update") do
+    case Map.fetch(error, "fields") do
+      {:ok, fields} when is_map(fields) and map_size(fields) > 0 ->
+        Enum.all?(fields, fn {field, messages} ->
+          is_binary(field) and field != "" and
+            is_list(messages) and messages != [] and
+            Enum.all?(messages, &(is_binary(&1) and &1 != ""))
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp valid_fields?(error, _code) do
     case Map.fetch(error, "fields") do
       :error ->
         true

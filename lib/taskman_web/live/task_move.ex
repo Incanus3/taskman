@@ -131,6 +131,7 @@ defmodule TaskmanWeb.TaskMove do
         task_lists = Lists.list_lists_for_project(project)
         options = destination_options(project, task_lists, persisted_task)
         destination = retain_destination(options, state.destination)
+        query = refreshed_query(state, destination, options)
 
         active_task = %{
           active_task
@@ -146,7 +147,8 @@ defmodule TaskmanWeb.TaskMove do
           state
           | active_task: active_task,
             destination: destination,
-            options: filtered_options(options, state.query),
+            query: query,
+            options: filtered_options(options, query),
             error: nil
         }
 
@@ -257,6 +259,16 @@ defmodule TaskmanWeb.TaskMove do
       |> String.contains?(normalized_query)
     end)
   end
+
+  defp refreshed_query(%__MODULE__{destination: destination, query: _query}, destination, options)
+       when is_binary(destination) do
+    case Enum.find(options, &(&1.value == destination)) do
+      %{label: label} -> label
+      nil -> ""
+    end
+  end
+
+  defp refreshed_query(%__MODULE__{query: query}, _destination, _options), do: query
 
   defp ordered_task_lists(task_lists) do
     children_by_parent = Enum.group_by(task_lists, & &1.parent_list_id)

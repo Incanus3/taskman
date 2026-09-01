@@ -1,6 +1,7 @@
 defmodule Taskman.Projects do
   import Ecto.Query
 
+  alias Taskman.ChangeNotifications
   alias Taskman.Projects.Project
   alias Taskman.Repo
 
@@ -22,9 +23,18 @@ defmodule Taskman.Projects do
   def get_project(_id), do: nil
 
   def create_project(attrs \\ %{}) do
-    %Project{}
-    |> change_project(attrs)
-    |> Repo.insert()
+    changeset = change_project(%Project{}, attrs)
+    changed_fields = Map.keys(changeset.changes)
+
+    case Repo.insert(changeset) do
+      {:ok, project} = result ->
+        fields = changed_fields ++ [:name, :primary_directory]
+        _ = ChangeNotifications.publish_project(project, :created, fields)
+        result
+
+      error ->
+        error
+    end
   end
 
   def change_project(%Project{} = project, attrs \\ %{}) do

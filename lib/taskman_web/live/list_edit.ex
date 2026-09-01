@@ -18,6 +18,25 @@ defmodule TaskmanWeb.ListEdit do
   @spec clear(t()) :: t()
   def clear(%__MODULE__{}), do: empty()
 
+  @spec reconcile(t(), [Project.t()], %{optional(pos_integer()) => [TaskList.t()]}) :: t()
+  def reconcile(
+        %__MODULE__{project: %Project{id: project_id}} = state,
+        projects,
+        lists_by_project
+      )
+      when is_list(projects) and is_map(lists_by_project) do
+    case Enum.find(projects, &(&1.id == project_id)) do
+      %Project{} = project ->
+        task_lists = Map.get(lists_by_project, project_id, [])
+        %{state | project: project, action: reconcile_action(state.action, task_lists)}
+
+      nil ->
+        state
+    end
+  end
+
+  def reconcile(%__MODULE__{} = state, _projects, _lists_by_project), do: state
+
   @spec open_new(Project.t(), TaskList.t() | nil) :: t()
   def open_new(%Project{} = project, parent) when is_nil(parent) or is_struct(parent, TaskList) do
     task_list = %TaskList{project_id: project.id, parent_list_id: parent && parent.id}
@@ -129,6 +148,18 @@ defmodule TaskmanWeb.ListEdit do
       do: true
 
   def active_for?(%__MODULE__{}, %NavigationNode{}), do: false
+
+  defp reconcile_action({:new, nil} = action, _task_lists), do: action
+
+  defp reconcile_action({:new, %TaskList{id: parent_id} = parent}, task_lists) do
+    {:new, Enum.find(task_lists, &(&1.id == parent_id)) || parent}
+  end
+
+  defp reconcile_action({:rename, %TaskList{id: list_id} = task_list}, task_lists) do
+    {:rename, Enum.find(task_lists, &(&1.id == list_id)) || task_list}
+  end
+
+  defp reconcile_action(action, _task_lists), do: action
 
   @spec form_id(t()) :: String.t() | nil
   def form_id(%__MODULE__{action: {:new, nil}}), do: "list-create-form-root"

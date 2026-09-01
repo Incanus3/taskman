@@ -4,7 +4,9 @@ defmodule TaskmanWeb.ListEditTest do
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
 
+  alias Taskman.Lists
   alias Taskman.Lists.NavigationNode
+  alias Taskman.Projects
   alias TaskmanWeb.ListEdit
 
   test "clear returns the empty List editing state" do
@@ -52,6 +54,30 @@ defmodule TaskmanWeb.ListEditTest do
 
     assert {:error, :not_found} = ListEdit.validate(state, %{"name" => "Roadmap"})
     assert :error = ListEdit.target(state)
+  end
+
+  test "reconciles canonical Project and List targets without replacing the draft form" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project, %{name: "Before"})
+
+    state =
+      project
+      |> ListEdit.open_rename(task_list)
+      |> then(&ListEdit.validate(&1, %{"name" => "Mine"}))
+      |> elem(1)
+
+    canonical_project = Projects.get_project(project.id)
+
+    assert {:ok, canonical_list} =
+             Lists.rename_list(canonical_project, task_list, %{name: "Latest"})
+
+    refreshed =
+      ListEdit.reconcile(state, [canonical_project], %{canonical_project.id => [canonical_list]})
+
+    assert refreshed.project == canonical_project
+    assert {:ok, {:rename, ^canonical_list}, _target} = ListEdit.target(refreshed)
+    assert refreshed.form[:name].value == "Mine"
+    assert ListEdit.form_id(refreshed) == "list-rename-form-#{task_list.id}"
   end
 
   defp navigation_node(kind, project, task_list) do

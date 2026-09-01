@@ -37,6 +37,11 @@
 - [Lists and nested organization](specs/2026-08-26-lists-nested-organization-design.md)
 - [API, CLI, and agent skill](specs/2026-08-29-api-cli-agent-skill-design.md)
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
+- [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
+
+## Active implementation plans
+
+No implementation plans are currently active.
 
 ## Development
 
@@ -62,3 +67,4 @@
 - [Lists and nested organization implementation plan](archive/plans/2026-08-26-lists-nested-organization.md)
 - [API, CLI, and agent skill implementation plan](archive/plans/2026-08-29-api-cli-agent-skill.md)
 - [Parent-child Task hierarchy implementation plan](archive/plans/2026-08-30-parent-child-task-hierarchy.md)
+- [Immediate cooperative workspace updates implementation plan](archive/plans/2026-09-01-live-workspace-updates.md)

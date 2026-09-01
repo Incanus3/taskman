@@ -6,7 +6,10 @@ defmodule TaskmanWeb.API.TaskControllerTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Repo
+  alias Taskman.Tasks.Conflict
+  alias Taskman.Tasks.Task
   alias Taskman.Tasks
+  alias TaskmanWeb.API.FallbackController
 
   test "GET tasks lists direct Project Tasks with a project location", %{conn: conn} do
     project = project_fixture(%{})
@@ -474,6 +477,24 @@ defmodule TaskmanWeb.API.TaskControllerTest do
       })
 
     assert %{"error" => %{"code" => "unchanged_location"}} = json_response(conn, 409)
+  end
+
+  test "Task conflicts use a stable 409 envelope without exposing the current Task", %{conn: conn} do
+    current = %Task{id: 42, project_id: 7, title: "Current title", lock_version: 9}
+    conflict = %Conflict{task: current, fields: [:title, :status]}
+
+    conn = FallbackController.call(conn, {:error, conflict})
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "concurrent_update",
+               "message" => "Task changed concurrently",
+               "fields" => %{
+                 "status" => ["changed concurrently"],
+                 "title" => ["changed concurrently"]
+               }
+             }
+           }
   end
 
   test "POST move rejects a destination from another Project", %{conn: conn} do

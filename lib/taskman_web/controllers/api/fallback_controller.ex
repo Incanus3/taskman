@@ -15,6 +15,21 @@ defmodule TaskmanWeb.API.FallbackController do
   def call(conn, {:error, :internal_error}),
     do: error(conn, 500, "internal_error", "Internal Server Error")
 
+  def call(conn, {:error, %Taskman.Tasks.Conflict{fields: fields}}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      error: %{
+        code: "concurrent_update",
+        message: "Task changed concurrently",
+        fields:
+          fields
+          |> Enum.sort()
+          |> Map.new(&{Atom.to_string(&1), ["changed concurrently"]})
+      }
+    })
+  end
+
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     conn
     |> put_status(:unprocessable_entity)

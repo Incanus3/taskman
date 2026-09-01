@@ -414,7 +414,7 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     assert has_element?(view, "#task-modal")
   end
 
-  test "rejects a destination that became the Task current location before submission", %{
+  test "refreshes a destination that became the Task current location before submission", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -427,13 +427,22 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
     view |> element("#move-task-search-#{task.id}") |> render_click()
     view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    assert {:ok, _moved} = Tasks.move_task(project, task, planning)
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    assert {:ok, _moved} =
+             Task.async(fn -> Tasks.move_task(project, task, planning) end)
+             |> Task.await()
+
+    _ = :sys.get_state(view.pid)
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert has_element?(view, "#move-task-#{task.id}")
-    assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
+
+    assert has_element?(
+             view,
+             "#move-task-search-#{task.id}[value='Planning'][aria-expanded='false']"
+           )
+
+    assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
   end
 
   test "search refreshes a move surface from the Task persisted location", %{conn: conn} do
@@ -461,7 +470,7 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
   end
 
-  test "an unchanged move rebuilds its current destination before showing the error", %{
+  test "an unchanged move refreshes its current destination before the next interaction", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -474,17 +483,16 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
     view |> element("#move-task-search-#{task.id}") |> render_click()
     view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    assert {:ok, _moved} = Tasks.move_task(project, task, planning)
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    assert {:ok, _moved} =
+             Task.async(fn -> Tasks.move_task(project, task, planning) end)
+             |> Task.await()
 
-    assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
-
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    _ = :sys.get_state(view.pid)
 
     assert has_element?(
              view,
-             "#move-task-option-list-#{planning.id}[data-current-location='true'][aria-selected='true']"
+             "#move-task-search-#{task.id}[value='Planning'][aria-expanded='false']"
            )
 
     assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")

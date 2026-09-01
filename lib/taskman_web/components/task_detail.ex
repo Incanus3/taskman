@@ -111,6 +111,7 @@ defmodule TaskmanWeb.TaskDetail do
               submit="submit_task_edit"
               cancel={@cancel}
               parent_picker={@parent_picker}
+              conflicts={@task_autosave.conflicts}
             />
             <p
               id="task-save-status"

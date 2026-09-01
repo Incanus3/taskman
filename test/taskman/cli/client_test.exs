@@ -41,6 +41,56 @@ defmodule Taskman.CLI.ClientTest do
     end
   end
 
+  test "maps concurrent Task updates to exit status 3 and preserves fields" do
+    envelope = %{
+      error: %{
+        code: "concurrent_update",
+        message: "Task changed concurrently",
+        fields: %{
+          status: ["changed concurrently"],
+          title: ["changed concurrently"]
+        }
+      }
+    }
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      conn
+      |> Plug.Conn.put_status(409)
+      |> Req.Test.json(envelope)
+    end)
+
+    expected = Jason.decode!(Jason.encode!(envelope))
+
+    assert {:error, 3, ^expected} =
+             Client.request(:patch, "/api/v1/projects/7/tasks/42", [],
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "rejects mismatched or malformed concurrent update errors" do
+    for response <- [
+          %{
+            error: %{
+              code: "not_found",
+              message: "failure",
+              fields: %{title: ["changed concurrently"]}
+            }
+          },
+          %{error: %{code: "concurrent_update", message: "failure", fields: "title"}}
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        conn
+        |> Plug.Conn.put_status(409)
+        |> Req.Test.json(response)
+      end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(:patch, "/api/v1/projects/7/tasks/42", [],
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               )
+    end
+  end
+
   test "maps mismatched API error status and code to invalid_response status 5" do
     for {status, code} <- [
           {400, "internal_error"},

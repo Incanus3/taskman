@@ -231,4 +231,33 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     assert Enum.empty?(LazyHTML.query(document, "#task-parent-results"))
     assert LazyHTML.text(LazyHTML.query(document, "#task-parent-trigger")) =~ "Rejected parent"
   end
+
+  test "renders an accessible parent conflict notice with resolution actions" do
+    state = %TaskParentPicker{
+      mode: :edit,
+      selected_parent: %Task{id: 41, title: "Mine", project_id: 7},
+      conflict_parent: %Task{id: 42, title: "Latest parent", project_id: 7}
+    }
+
+    document =
+      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: state})
+      |> LazyHTML.from_fragment()
+
+    refute Enum.empty?(LazyHTML.query(document, "#task-parent-conflict[role='alert']"))
+    assert LazyHTML.text(LazyHTML.query(document, "#task-parent-conflict")) =~ "Latest parent"
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#use-latest-parent_task_id[phx-click='resolve_task_parent_conflict'][phx-value-resolution='use_latest']"
+             )
+           )
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#keep-mine-parent_task_id[phx-click='resolve_task_parent_conflict'][phx-value-resolution='keep_mine']"
+             )
+           )
+  end
 end
