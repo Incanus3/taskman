@@ -25,6 +25,8 @@ config :taskman, Taskman.Mailer, adapter: Swoosh.Adapters.Test
 
 config :taskman, :task_autosave_delay_ms, 0
 
+config :taskman, :token_signing_secret, "test-token-signing-secret"
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 

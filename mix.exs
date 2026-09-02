@@ -45,6 +45,7 @@ defmodule Taskman.MixProject do
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:ash, "~> 3.32"},
+      {:picosat_elixir, "~> 0.2"},
       {:ash_postgres, "~> 2.13"},
       {:ash_phoenix, "~> 2.3"},
       {:ash_authentication, "~> 4.14"},
