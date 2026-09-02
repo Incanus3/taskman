@@ -11,7 +11,6 @@ defmodule Taskman.Accounts.Senders.SendConfirmation do
     email = changeset |> Changeset.get_attribute(:email) |> to_string()
     result = Emails.deliver_email_change_confirmation(email, token)
     Accounts.record_delivery_result(:email_change, token, result)
-    Accounts.log_delivery_failure(result)
     :ok
   end
 end

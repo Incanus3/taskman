@@ -61,11 +61,15 @@ defmodule Taskman.Accounts.Emails do
     |> Mailer.deliver_transactional()
     |> case do
       {:ok, _result} -> :ok
-      {:error, _reason} -> {:error, :delivery_failed}
+      {:error, reason} -> {:error, {:delivery_failed, failure_class(reason)}}
     end
   rescue
-    _exception -> {:error, :delivery_failed}
+    _exception -> {:error, {:delivery_failed, :exception}}
   end
+
+  defp failure_class(reason) when reason in [:closed, :timeout, :unavailable], do: reason
+  defp failure_class({class, _detail}) when class in [:http, :transport], do: class
+  defp failure_class(_reason), do: :unknown
 
   defp setup_url(token), do: url("setup", token)
   defp confirmation_url(token), do: url("confirm-email", token)

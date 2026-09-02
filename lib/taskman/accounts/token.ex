@@ -7,6 +7,8 @@ defmodule Taskman.Accounts.Token do
 
   require Ash.Query
 
+  import Ecto.Query, only: [from: 2]
+
   postgres do
     table "tokens"
     repo Taskman.Repo
@@ -18,6 +20,9 @@ defmodule Taskman.Accounts.Token do
 
   alias AshAuthentication.{Jwt, TokenResource}
   alias Taskman.Accounts
+  alias Taskman.Repo
+
+  @browser_session_purposes ["user"]
 
   @spec valid_for_purpose?(String.t(), String.t(), DateTime.t()) :: :ok | {:error, :invalid_token}
   def valid_for_purpose?(token, purpose, now \\ DateTime.utc_now()) do
@@ -28,6 +33,54 @@ defmodule Taskman.Accounts.Token do
       :ok
     else
       _ -> {:error, :invalid_token}
+    end
+  end
+
+  @doc false
+  @spec claim_for_redemption(String.t(), String.t(), DateTime.t()) ::
+          {:ok, t()} | {:error, :invalid_token}
+  def claim_for_redemption(token, purpose, now \\ DateTime.utc_now()) do
+    with {:ok, %{"jti" => jti}} <- Jwt.peek(token),
+         %__MODULE__{} = stored_token <-
+           Repo.one(
+             from stored_token in __MODULE__,
+               where:
+                 stored_token.jti == ^jti and stored_token.purpose == ^purpose and
+                   stored_token.expires_at > ^now,
+               lock: "FOR UPDATE"
+           ) do
+      {:ok, stored_token}
+    else
+      _ -> {:error, :invalid_token}
+    end
+  end
+
+  @doc false
+  @spec browser_session_purposes() :: [String.t()]
+  def browser_session_purposes, do: @browser_session_purposes
+
+  @doc false
+  @spec revoke_browser_sessions(Taskman.Accounts.User.t(), keyword()) :: :ok | {:error, term()}
+  def revoke_browser_sessions(user, opts \\ []) do
+    case Keyword.get(opts, :session_revoker) do
+      nil ->
+        @browser_session_purposes
+        |> Enum.reduce_while(:ok, fn purpose, :ok ->
+          case revoke_for_subject(user, purpose) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      revoker when is_function(revoker, 1) ->
+        case revoker.(user) do
+          :ok -> :ok
+          {:error, _reason} = error -> error
+          _ -> {:error, :invalid_session_revoker}
+        end
+
+      _ ->
+        {:error, :invalid_session_revoker}
     end
   end
 
