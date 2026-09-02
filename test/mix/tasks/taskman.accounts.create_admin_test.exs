@@ -38,4 +38,18 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
              {:secret, "Confirm password: "}
            ] = FakeTerminal.prompts()
   end
+
+  test "fails safely when terminal input is unavailable without requesting secrets" do
+    FakeTerminal.set_responses([{:error, :simulated_terminal_failure}], [])
+
+    output =
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/Unable to create administrator/, fn ->
+          Mix.Tasks.Taskman.Accounts.CreateAdmin.run([])
+        end
+      end)
+
+    refute output =~ "simulated_terminal_failure"
+    assert [{:visible, "Email: "}] = FakeTerminal.prompts()
+  end
 end
