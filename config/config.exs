@@ -40,6 +40,11 @@ config :phoenix_live_view,
 # at the `config/runtime.exs`.
 config :taskman, Taskman.Mailer, adapter: Swoosh.Adapters.Local
 
+config :taskman,
+  mail_from: {"Taskman", "no-reply@taskman.example.com"},
+  mailer_delivery: Taskman.Mailer,
+  public_url: "https://taskman.example.com"
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",

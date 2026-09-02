@@ -6,6 +6,7 @@ defmodule Taskman.Accounts.User do
     domain: Taskman.Accounts
 
   alias Taskman.Accounts.{ApiKey, Token}
+  alias Taskman.Accounts.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
   alias Taskman.Accounts.User.Status
 
   postgres do
@@ -18,7 +19,7 @@ defmodule Taskman.Accounts.User do
 
     create :create_pending_user do
       primary? true
-      accept [:email]
+      accept [:admin?, :email]
     end
 
     create :bootstrap_user do
@@ -110,6 +111,62 @@ defmodule Taskman.Accounts.User do
       change AshAuthentication.GenerateTokenChange
     end
 
+    update :complete_setup do
+      public? false
+      require_atomic? false
+      accept [:email]
+
+      argument :confirm, :string do
+        allow_nil? false
+        sensitive? true
+      end
+
+      argument :password, :string do
+        allow_nil? false
+        constraints min_length: 8, max_length: 128
+        sensitive? true
+      end
+
+      argument :password_confirmation, :string do
+        allow_nil? false
+        sensitive? true
+      end
+
+      validate {AshAuthentication.Strategy.Password.PasswordConfirmationValidation,
+                strategy_name: :password}
+
+      change AshAuthentication.AddOn.Confirmation.ConfirmChange
+      change set_attribute(:status, :active)
+      change {AshAuthentication.Strategy.Password.HashPasswordChange, strategy_name: :password}
+      change AshAuthentication.GenerateTokenChange
+    end
+
+    update :request_email_change do
+      public? false
+      require_atomic? false
+      accept [:email]
+
+      argument :current_password, :string do
+        allow_nil? false
+        sensitive? true
+      end
+
+      validate {AshAuthentication.Strategy.Password.PasswordValidation,
+                strategy_name: :password, password_argument: :current_password}
+    end
+
+    update :resend_invitation do
+      public? false
+      require_atomic? false
+      accept []
+    end
+
+    update :revoke_invitation do
+      public? false
+      require_atomic? false
+      accept []
+    end
+
     read :sign_in_with_password do
       get? true
 
@@ -190,7 +247,7 @@ defmodule Taskman.Accounts.User do
       token_lifetime {30, :days}
 
       signing_secret fn _, _ ->
-        Application.fetch_env!(:taskman, :token_signing_secret)
+        {:ok, Application.fetch_env!(:taskman, :token_signing_secret)}
       end
     end
 
@@ -204,7 +261,7 @@ defmodule Taskman.Accounts.User do
         require_confirmed_with :confirmed_at
 
         resettable do
-          sender fn _user, _token, _opts -> :ok end
+          sender SendPasswordReset
           token_lifetime {1, :hours}
           request_password_reset_action_name :request_password_reset
           password_reset_action_name :reset_password
@@ -213,6 +270,31 @@ defmodule Taskman.Accounts.User do
 
       api_key do
         api_key_relationship :api_keys
+      end
+    end
+
+    add_ons do
+      confirmation :setup do
+        monitor_fields [:email]
+        token_lifetime {7, :days}
+        confirm_on_create? true
+        confirm_on_update? false
+        confirm_action_name :complete_setup
+        require_interaction? true
+        auto_confirm_actions [:bootstrap_admin, :bootstrap_user]
+        sender SendInvitation
+      end
+
+      confirmation :email_change do
+        monitor_fields [:email]
+        token_lifetime {24, :hours}
+        confirm_on_create? false
+        confirm_on_update? true
+        inhibit_updates? true
+        confirmed_at_field :email_change_confirmed_at
+        confirm_action_name :confirm_email_change
+        require_interaction? true
+        sender SendConfirmation
       end
     end
   end
@@ -229,8 +311,28 @@ defmodule Taskman.Accounts.User do
       authorize_if always()
     end
 
-    policy action(:change_password) do
+    bypass action(:change_password) do
       authorize_if expr(id == ^actor(:id) and status == :active)
+    end
+
+    bypass action(:request_email_change) do
+      authorize_if expr(id == ^actor(:id) and status == :active)
+    end
+
+    bypass [
+      action(:create_pending_user),
+      actor_attribute_equals(:admin?, true),
+      actor_attribute_equals(:status, :active)
+    ] do
+      authorize_if always()
+    end
+
+    bypass [
+      action([:resend_invitation, :revoke_invitation]),
+      actor_attribute_equals(:admin?, true),
+      actor_attribute_equals(:status, :active)
+    ] do
+      authorize_if expr(status == :pending)
     end
 
     policy always() do

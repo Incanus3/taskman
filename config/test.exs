@@ -23,6 +23,11 @@ config :taskman, TaskmanWeb.Endpoint,
 # In test we don't send emails
 config :taskman, Taskman.Mailer, adapter: Swoosh.Adapters.Test
 
+config :taskman,
+  mail_from: {"Taskman", "no-reply@taskman.example.test"},
+  mailer_delivery: Taskman.Mailer,
+  public_url: "https://taskman.example.test"
+
 config :taskman, :task_autosave_delay_ms, 0
 
 config :taskman, :token_signing_secret, "test-token-signing-secret"
