@@ -247,14 +247,25 @@ defmodule Taskman.Accounts do
                  Map.put(params, "reset_token", token),
                  domain: __MODULE__
                ),
-             :ok <- Token.revoke_browser_sessions(updated_user, opts) do
-          {:ok, updated_user}
+             {:ok, revoked_jtis} <-
+               Token.revoke_browser_sessions_with_jtis(updated_user, opts) do
+          {:ok, {updated_user, revoked_jtis}}
         else
           false -> {:error, :invalid_token}
           {:error, _reason} = error -> error
           _ -> {:error, :invalid_token}
         end
       end)
+      |> case do
+        {:ok, {updated_user, revoked_jtis}} ->
+          case Token.broadcast_session_jtis(revoked_jtis) do
+            :ok -> {:ok, updated_user}
+            {:error, _reason} = error -> error
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
     end
   end
 

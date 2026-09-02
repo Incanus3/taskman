@@ -92,12 +92,13 @@ defmodule TaskmanWeb.AuthenticationTest do
     end
 
     conn = get(conn, "/sign-out")
-    assert conn.status == 200
-    document = LazyHTML.from_fragment(html_response(conn, 200))
-    refute Enum.empty?(LazyHTML.query(document, "form[action='/sign-out']"))
+    assert conn.status == 404
 
-    refute Enum.empty?(
-             LazyHTML.query(document, "form[action='/sign-out'] input[name='_csrf_token']")
+    {:ok, view, _html} = live(conn_without_test_bypass, "/")
+
+    assert has_element?(
+             view,
+             "#account-sign-out-link[data-method='delete'][data-to='/sign-out']"
            )
   end
 
@@ -129,7 +130,8 @@ defmodule TaskmanWeb.AuthenticationTest do
              TokenResource.Actions.get_token(Token, %{"jti" => jti(token), "purpose" => "user"})
 
     assert {:ok, %{"exp" => expires_at}} = Jwt.peek(token)
-    assert expires_at - System.system_time(:second) <= 30 * 24 * 60 * 60
+    lifetime = expires_at - System.system_time(:second)
+    assert lifetime in (30 * 24 * 60 * 60 - 5)..(30 * 24 * 60 * 60 + 5)
   end
 
   test "password sign-in follows the stored-session callback", %{conn: conn} do
@@ -155,6 +157,52 @@ defmodule TaskmanWeb.AuthenticationTest do
 
     assert redirected_to(conn) == "/projects/42"
     assert is_binary(get_session(conn, :user_token))
+  end
+
+  test "password sign-in renews the Plug session and retires the previous browser token", %{
+    conn: conn
+  } do
+    email = "renew-#{System.unique_integer([:positive])}@example.com"
+
+    assert {:ok, user} =
+             Taskman.Accounts.bootstrap_admin(%{
+               email: email,
+               password: "fixture-password",
+               password_confirmation: "fixture-password"
+             })
+
+    conn = log_in_user(conn, user)
+    old_token = get_session(conn, :user_token)
+    old_socket = get_session(conn, :live_socket_id)
+    TaskmanWeb.Endpoint.subscribe(old_socket)
+
+    conn =
+      post(conn, "/auth/user/password/sign_in", %{
+        "user" => %{"email" => email, "password" => "fixture-password"}
+      })
+
+    assert conn.private.plug_session_info == :renew
+    new_token = get_session(conn, :user_token)
+    refute new_token == old_token
+    assert :ok = Token.valid_for_purpose?(new_token, "user")
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(old_token, "user")
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^old_socket, event: "disconnect"}
+  end
+
+  test "a new user sign-in retires a valid browser token from the prior user", %{conn: conn} do
+    previous_user = user_fixture()
+    next_user = user_fixture()
+    conn = log_in_user(conn, previous_user)
+    old_token = get_session(conn, :user_token)
+    old_socket = get_session(conn, :live_socket_id)
+    TaskmanWeb.Endpoint.subscribe(old_socket)
+
+    conn = AuthController.log_in_user(conn, next_user)
+    new_token = get_session(conn, :user_token)
+
+    assert :ok = Token.valid_for_purpose?(new_token, "user")
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(old_token, "user")
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^old_socket, event: "disconnect"}
   end
 
   defp jti(token) do

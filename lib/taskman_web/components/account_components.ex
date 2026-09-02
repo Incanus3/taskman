@@ -26,7 +26,8 @@ defmodule TaskmanWeb.AccountComponents do
       </.link>
       <.link
         id="account-sign-out-link"
-        navigate="/sign-out"
+        href="/sign-out"
+        method="delete"
         class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
       >
         Sign out

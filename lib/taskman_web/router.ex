@@ -29,8 +29,7 @@ defmodule TaskmanWeb.Router do
                     AshAuthentication.Phoenix.Overrides.Default
                   ]
 
-    sign_out_route AuthController, "/sign-out",
-      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+    delete "/sign-out", AuthController, :sign_out
 
     auth_routes AuthController, Taskman.Accounts.User
 

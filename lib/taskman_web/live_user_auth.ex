@@ -17,11 +17,9 @@ defmodule TaskmanWeb.LiveUserAuth do
 
   @public_paths [
     "/sign-in",
-    "/sign-out",
     "/setup",
     "/confirm-email",
     "/reset-password",
-    "/password-reset",
     "/auth"
   ]
 

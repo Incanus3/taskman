@@ -20,24 +20,24 @@ defmodule TaskmanWeb.AuthController do
   def success(conn, _activity, user, token) do
     token = token || get_in(user, [Access.key(:__metadata__), Access.key(:token)])
 
-    conn =
-      if is_binary(token) and is_struct(user) do
-        conn
-        |> store_in_session(Ash.Resource.put_metadata(user, :token, token))
-        |> put_session(:live_socket_id, session_topic(token))
-      else
-        conn
-      end
-
     return_to =
       conn
       |> get_session(:return_to)
       |> Kernel.||(conn.params["return_to"])
       |> LiveUserAuth.safe_return_path()
 
-    conn
-    |> delete_session(:return_to)
-    |> redirect(to: return_to)
+    case install_browser_session(conn, user, token) do
+      {:ok, conn} ->
+        conn
+        |> delete_session(:return_to)
+        |> redirect(to: return_to)
+
+      {:error, _reason} ->
+        conn
+        |> delete_session(:return_to)
+        |> put_flash(:error, "Unable to start a secure browser session.")
+        |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+    end
   end
 
   @doc false
@@ -80,11 +80,11 @@ defmodule TaskmanWeb.AuthController do
   @spec log_in_user(Plug.Conn.t(), Ash.Resource.record()) :: Plug.Conn.t()
   def log_in_user(conn, user) when is_struct(user) do
     {:ok, token, _claims} = Jwt.token_for_user(user, %{}, purpose: :user)
-    user = Ash.Resource.put_metadata(user, :token, token)
 
-    conn
-    |> store_in_session(user)
-    |> put_session(:live_socket_id, session_topic(token))
+    case install_browser_session(conn, user, token) do
+      {:ok, conn} -> conn
+      {:error, reason} -> raise "could not establish browser session: #{inspect(reason)}"
+    end
   end
 
   @doc """
@@ -100,49 +100,81 @@ defmodule TaskmanWeb.AuthController do
       when is_struct(user) and is_binary(acting_token) do
     subject = AshAuthentication.user_to_subject(user)
 
-    with :ok <- Token.valid_for_purpose?(acting_token, "user"),
-         {:ok, %{"jti" => acting_jti, "sub" => ^subject}} <- Jwt.peek(acting_token),
-         {:ok, peer_topics} <- Token.browser_session_topics(user, except_jti: acting_jti),
-         {:ok, replacement} <- replace_token_transaction(user, acting_jti),
-         :ok <- broadcast_peer_disconnects(peer_topics) do
-      {:ok, replacement}
-    else
-      {:error, _reason} = error -> error
-      _ -> {:error, :invalid_session}
+    case replace_token_transaction(user, subject, acting_token) do
+      {:ok, {replacement, peer_jtis}} ->
+        case Token.broadcast_session_jtis(peer_jtis) do
+          :ok -> {:ok, replacement}
+          {:error, _reason} = error -> error
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   def replace_session_token(_user, _acting_token), do: {:error, :invalid_session}
 
-  defp replace_token_transaction(user, acting_jti) do
-    subject = AshAuthentication.user_to_subject(user)
-
+  defp replace_token_transaction(user, subject, acting_token) do
     case Ash.transact([Taskman.Accounts.Token], fn ->
-           with :ok <-
-                  Token.revoke_for_subject_except(user, "user", acting_jti, disconnect?: false) do
-             case Jwt.token_for_user(user, %{}, purpose: :user) do
-               {:ok, replacement, _claims} ->
-                 with :ok <- Token.revoke_jti(acting_jti, subject) do
-                   {:ok, replacement}
-                 end
-
-               :error ->
-                 {:error, :session_replacement_failed}
-             end
+           with {:ok, acting_record, claims} <- Token.claim_browser_session(acting_token),
+                %{"jti" => acting_jti, "sub" => ^subject} <- claims,
+                true <- acting_record.subject == subject,
+                {:ok, peer_jtis} <-
+                  Token.revoke_for_subject_except_with_jtis(
+                    user,
+                    "user",
+                    acting_jti,
+                    disconnect?: false
+                  ),
+                {:ok, replacement, _claims} <-
+                  Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user),
+                :ok <- Token.revoke_jti(acting_jti, subject, disconnect?: false) do
+             {:ok, {replacement, peer_jtis}}
+           else
+             :error -> {:error, :session_replacement_failed}
+             false -> {:error, :invalid_session}
+             _ -> {:error, :invalid_session}
            end
          end) do
-      {:ok, {:ok, replacement}} -> {:ok, replacement}
-      {:error, _reason} = error -> error
-      _ -> {:error, :session_replacement_failed}
+      {:ok, {:ok, {replacement, peer_jtis}}} ->
+        {:ok, {replacement, peer_jtis}}
+
+      {:error, %Ash.Error.Unknown.UnknownError{error: "unknown error: :invalid_session"}} ->
+        {:error, :invalid_session}
+
+      {:error,
+       %Ash.Error.Unknown.UnknownError{error: "unknown error: :session_replacement_failed"}} ->
+        {:error, :session_replacement_failed}
+
+      {:error, %Ash.Error.Unknown.UnknownError{error: reason}} ->
+        {:error, reason}
+
+      {:error, _reason} = error ->
+        error
+
+      _ ->
+        {:error, :session_replacement_failed}
     end
   end
 
-  defp broadcast_peer_disconnects(topics) do
-    Enum.reduce_while(topics, :ok, fn topic, :ok ->
-      case Token.broadcast_disconnect(topic) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+  defp install_browser_session(conn, user, token) when is_struct(user) and is_binary(token) do
+    previous_token = get_session(conn, :user_token)
+
+    with {:ok, retired_jtis} <- Token.establish_browser_session(user, token, previous_token),
+         :ok <- Token.broadcast_session_jtis(retired_jtis) do
+      conn =
+        conn
+        |> configure_session(renew: true)
+        |> store_in_session(Ash.Resource.put_metadata(user, :token, token))
+        |> put_session(:live_socket_id, session_topic(token))
+
+      {:ok, conn}
+    else
+      {:error, _reason} = error ->
+        _ = Token.revoke_token(token)
+        error
+    end
   end
+
+  defp install_browser_session(conn, _user, _token), do: {:ok, conn}
 end
