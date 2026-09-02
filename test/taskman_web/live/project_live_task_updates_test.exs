@@ -2,12 +2,17 @@ defmodule TaskmanWeb.ProjectLiveTaskUpdatesTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   test "maintains one live Project task-topic subscription across selection transitions", %{
     conn: conn

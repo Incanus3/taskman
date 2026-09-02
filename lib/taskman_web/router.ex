@@ -1,9 +1,14 @@
 defmodule TaskmanWeb.Router do
   use TaskmanWeb, :router
+  use AshAuthentication.Phoenix.Router
+
+  import TaskmanWeb.LiveUserAuth, only: [capture_return_path: 2]
 
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
+    plug :load_from_session
+    plug :capture_return_path
     plug :fetch_live_flash
     plug :put_root_layout, html: {TaskmanWeb.Layouts, :root}
     plug :protect_from_forgery
@@ -17,13 +22,45 @@ defmodule TaskmanWeb.Router do
   scope "/", TaskmanWeb do
     pipe_through :browser
 
-    live "/", ProjectLive, :index
-    live "/projects/:project_id", ProjectLive, :show
-    live "/projects/:project_id/tasks/new", ProjectLive, :new_task
-    live "/projects/:project_id/tasks/:task_id", ProjectLive, :show_task
-    live "/projects/:project_id/lists/:list_id", ProjectLive, :show
-    live "/projects/:project_id/lists/:list_id/tasks/new", ProjectLive, :new_task
-    live "/projects/:project_id/lists/:list_id/tasks/:task_id", ProjectLive, :show_task
+    sign_in_route reset_path: "/reset-password",
+                  auth_routes_prefix: "/auth",
+                  overrides: [
+                    TaskmanWeb.AuthOverrides,
+                    AshAuthentication.Phoenix.Overrides.Default
+                  ]
+
+    sign_out_route AuthController, "/sign-out",
+      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+
+    auth_routes AuthController, Taskman.Accounts.User
+
+    reset_route path: "/reset-password",
+                auth_routes_prefix: "/auth",
+                overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+
+    confirm_route Taskman.Accounts.User, :setup,
+      path: "/setup",
+      auth_routes_prefix: "/auth",
+      as: :setup,
+      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+
+    confirm_route Taskman.Accounts.User, :email_change,
+      path: "/confirm-email",
+      auth_routes_prefix: "/auth",
+      as: :email_change,
+      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+
+    ash_authentication_live_session :authenticated,
+      on_mount: [{TaskmanWeb.LiveUserAuth, :require_authenticated}],
+      session: {TaskmanWeb.LiveUserAuth, :generate_session, []} do
+      live "/", ProjectLive, :index
+      live "/projects/:project_id", ProjectLive, :show
+      live "/projects/:project_id/tasks/new", ProjectLive, :new_task
+      live "/projects/:project_id/tasks/:task_id", ProjectLive, :show_task
+      live "/projects/:project_id/lists/:list_id", ProjectLive, :show
+      live "/projects/:project_id/lists/:list_id/tasks/new", ProjectLive, :new_task
+      live "/projects/:project_id/lists/:list_id/tasks/:task_id", ProjectLive, :show_task
+    end
   end
 
   scope "/api/v1", TaskmanWeb.API do

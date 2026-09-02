@@ -2,6 +2,7 @@ defmodule Taskman.CLI.EndToEndTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
@@ -177,6 +178,7 @@ defmodule Taskman.CLI.EndToEndTest do
     parent = task_fixture(project, %{title: "CLI parent"})
     project_path = ~p"/projects/#{project.id}"
 
+    conn = log_in_user(conn, user_fixture())
     {:ok, project_view, _html} = live(conn, project_path)
 
     project_create =

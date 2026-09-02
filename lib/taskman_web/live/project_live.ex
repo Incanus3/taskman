@@ -34,6 +34,11 @@ defmodule TaskmanWeb.ProjectLive do
   @impl true
   def mount(_params, _session, socket) do
     socket =
+      socket
+      |> assign_new(:current_scope, fn -> nil end)
+      |> assign_new(:current_user, fn -> nil end)
+
+    socket =
       stream_configure(socket, :tasks,
         dom_id: fn %TaskWithLocation{task: task} -> "tasks-#{task.id}" end
       )

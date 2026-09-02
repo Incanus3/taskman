@@ -2,12 +2,17 @@ defmodule TaskmanWeb.ProjectLiveListsTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
   alias Taskman.Lists
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   test "direct List route renders only direct Tasks for the selected List", %{conn: conn} do
     project = project_fixture(%{})

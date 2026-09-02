@@ -2,9 +2,14 @@ defmodule TaskmanWeb.ProjectLiveTaskTableTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   test "hides Will Not Do by default and restores a browser status selection", %{conn: conn} do
     project = project_fixture(%{})

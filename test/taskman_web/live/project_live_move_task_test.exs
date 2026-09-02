@@ -2,11 +2,16 @@ defmodule TaskmanWeb.ProjectLiveMoveTaskTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   test "filters destinations case-insensitively by their complete path", %{conn: conn} do
     project = project_fixture(%{})

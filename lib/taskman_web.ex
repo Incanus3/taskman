@@ -86,6 +86,7 @@ defmodule TaskmanWeb do
       import Phoenix.HTML
       # Core UI components
       import TaskmanWeb.CoreComponents
+      import TaskmanWeb.AccountComponents
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

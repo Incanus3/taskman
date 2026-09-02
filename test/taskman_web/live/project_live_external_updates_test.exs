@@ -2,9 +2,14 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   test "controller Project and List writes refresh connected navigation without navigation", %{
     conn: conn

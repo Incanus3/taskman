@@ -31,10 +31,24 @@ defmodule TaskmanWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://phoenix.hexdocs.pm/scopes.html)"
 
+  attr :current_user, :any,
+    default: nil,
+    doc: "the authenticated User actor"
+
   slot :inner_block, required: true
 
   def app(assigns) do
+    assigns = assign_new(assigns, :current_user, fn -> nil end)
+
     ~H"""
+    <header
+      :if={@current_user}
+      id="authenticated-navigation"
+      class="flex items-center justify-end border-b border-slate-800 bg-slate-950 px-6 py-3"
+    >
+      <.account_menu current_user={@current_user} />
+    </header>
+
     <main>
       {render_slot(@inner_block)}
     </main>

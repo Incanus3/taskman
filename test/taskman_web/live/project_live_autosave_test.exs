@@ -2,12 +2,17 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
   alias TaskmanWeb.{ProjectLive, TaskAutosave, TaskParentPicker}
+
+  setup %{conn: conn} do
+    {:ok, conn: log_in_user(conn, user_fixture())}
+  end
 
   setup do
     previous = Application.get_env(:taskman, :task_autosave_delay_ms)
