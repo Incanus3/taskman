@@ -52,9 +52,14 @@ context immediately before the relevant feature.
 
 ## Scope discipline
 
-- Keep the current MVP single-user and locally started.
-- Do not add authentication, hosting, synchronization, collaboration, or deployment packaging
-  unless the product scope changes.
+- Keep Project, List, and Task data in one shared workspace without per-user ownership or
+  collaboration permissions.
+- Authentication, hosted access, and OTP release packaging follow the accepted hosted-access
+  specification. Do not expand that boundary into synchronization, collaboration, managed hosting,
+  or speculative multi-user authorization.
+- Ash is initially isolated to the Accounts domain. Do not build new domain capabilities as Ash
+  resources alongside the existing Ecto contexts. A complete domain migration requires its own
+  approved design and coherent migration boundaries.
 - Keep external integrations behind focused boundaries when they first appear; do not design the
   final provider architecture before the first concrete provider feature needs it.
 - Treat product documents as the source of truth for current behavior. Research and prototypes
