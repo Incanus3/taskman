@@ -67,7 +67,12 @@ defmodule Taskman.Accounts.InvitationTest do
     assert {:ok, pending} = Accounts.invite_user(admin, %{email: "rotate@example.com"})
     original_token = receive_token("setup")
 
-    assert {:ok, ^pending} = Accounts.resend_invitation(admin, pending)
+    stale_pending = %{pending | admin?: true}
+
+    assert {:ok, resent} = Accounts.resend_invitation(admin, stale_pending)
+    assert resent.id == pending.id
+    refute resent.admin?
+
     replacement_token = receive_token("setup")
     refute replacement_token == original_token
 
@@ -107,7 +112,8 @@ defmodule Taskman.Accounts.InvitationTest do
     assert pending.status == :pending
 
     Application.put_env(:taskman, :mailer_delivery, Taskman.Mailer)
-    assert {:ok, ^pending} = Accounts.resend_invitation(admin, pending)
+    assert {:ok, resent} = Accounts.resend_invitation(admin, pending)
+    assert resent.id == pending.id
     _token = receive_token("setup")
   end
 

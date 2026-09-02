@@ -82,7 +82,7 @@ defmodule Taskman.Accounts do
       {:ok, {updated_user, token}} ->
         case Emails.deliver_invitation(to_string(updated_user.email), token) do
           :ok ->
-            {:ok, user}
+            {:ok, updated_user}
 
           {:error, _reason} = delivery_error ->
             log_delivery_failure(delivery_error)

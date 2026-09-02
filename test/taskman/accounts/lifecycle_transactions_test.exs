@@ -12,80 +12,122 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
   setup :set_swoosh_global
 
   test "concurrent setup redemption consumes a token exactly once and persists one password" do
-    admin = admin_fixture()
-    assert {:ok, _pending} = Accounts.invite_user(admin, %{email: "concurrent-setup@example.com"})
-    token = receive_token("setup")
+    with_committed_accounts(fn ->
+      admin = committed_admin_fixture()
 
-    attempts = ["first-setup-password", "second-setup-password"]
+      assert {:ok, pending} =
+               Accounts.invite_user(admin, %{email: "concurrent-setup@example.com"})
 
-    results =
-      concurrently(attempts, fn password ->
-        Accounts.complete_setup(token, %{password: password, password_confirmation: password})
-      end)
+      track_committed_user(pending)
+      token = receive_token("setup")
+      attempts = ["first-setup-password", "second-setup-password"]
 
-    successes =
-      Enum.filter(Enum.zip(attempts, results), fn {_password, result} ->
-        match?({:ok, _}, result)
-      end)
+      results =
+        with_update_contention_gate(pending.id, fn release_gate ->
+          concurrently(
+            attempts,
+            fn password ->
+              Accounts.complete_setup(token, %{
+                password: password,
+                password_confirmation: password
+              })
+            end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
 
-    assert [{winning_password, {:ok, active}}] = successes
-    assert active.status == :active
-    assert Argon2Provider.valid?(winning_password, active.hashed_password)
+      successes =
+        Enum.filter(Enum.zip(attempts, results), fn {_password, result} ->
+          match?({:ok, _}, result)
+        end)
 
-    refute Argon2Provider.valid?(
-             Enum.find(attempts, &(&1 != winning_password)),
-             active.hashed_password
-           )
+      assert [{winning_password, {:ok, active}}] = successes
+      assert active.status == :active
+      assert Argon2Provider.valid?(winning_password, active.hashed_password)
+
+      refute Argon2Provider.valid?(
+               Enum.find(attempts, &(&1 != winning_password)),
+               active.hashed_password
+             )
+    end)
   end
 
   test "concurrent email confirmation consumes a token exactly once and persists one address" do
-    user = active_user_fixture("concurrent-confirm-old@example.com")
+    with_committed_accounts(fn ->
+      user = committed_active_user_fixture("concurrent-confirm-old@example.com")
 
-    assert {:ok, _user} =
-             Accounts.request_email_change(
-               user,
-               "concurrent-confirm-new@example.com",
-               "password1"
-             )
+      assert {:ok, _user} =
+               Accounts.request_email_change(
+                 user,
+                 "concurrent-confirm-new@example.com",
+                 "password1"
+               )
 
-    token = receive_token("confirm-email")
+      token = receive_token("confirm-email")
 
-    results = concurrently([:first, :second], fn _ -> Accounts.confirm_email_change(token) end)
+      results =
+        with_token_contention_gate(user, fn release_gate ->
+          concurrently(
+            [:first, :second],
+            fn _ -> Accounts.confirm_email_change(token) end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
 
-    assert [{:ok, changed_user}] = Enum.filter(results, &match?({:ok, _}, &1))
-    assert to_string(changed_user.email) == "concurrent-confirm-new@example.com"
+      assert [{:ok, changed_user}] = Enum.filter(results, &match?({:ok, _}, &1))
+      assert to_string(changed_user.email) == "concurrent-confirm-new@example.com"
 
-    assert {:ok, _user} =
-             Accounts.sign_in_with_password(%{
-               email: "concurrent-confirm-new@example.com",
-               password: "password1"
-             })
+      assert {:ok, _user} =
+               Accounts.sign_in_with_password(%{
+                 email: "concurrent-confirm-new@example.com",
+                 password: "password1"
+               })
+    end)
   end
 
   test "concurrent reset redemption consumes a token exactly once and persists one password" do
-    _user = active_user_fixture("concurrent-reset-redemption@example.com")
-    assert :ok = Accounts.request_password_reset("concurrent-reset-redemption@example.com")
-    token = receive_token("reset-password")
+    with_committed_accounts(fn ->
+      user = committed_active_user_fixture("concurrent-reset-redemption@example.com")
+      assert :ok = Accounts.request_password_reset("concurrent-reset-redemption@example.com")
+      token = receive_token("reset-password")
+      attempts = ["first-replacement-password", "second-replacement-password"]
 
-    attempts = ["first-replacement-password", "second-replacement-password"]
+      results =
+        with_token_contention_gate(user, fn release_gate ->
+          concurrently(
+            attempts,
+            fn password ->
+              Accounts.reset_password(token, %{
+                password: password,
+                password_confirmation: password
+              })
+            end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
 
-    results =
-      concurrently(attempts, fn password ->
-        Accounts.reset_password(token, %{password: password, password_confirmation: password})
-      end)
+      assert [{winning_password, {:ok, changed_user}}] =
+               Enum.filter(Enum.zip(attempts, results), fn {_password, result} ->
+                 match?({:ok, _}, result)
+               end)
 
-    assert [{winning_password, {:ok, changed_user}}] =
-             Enum.filter(Enum.zip(attempts, results), fn {_password, result} ->
-               match?({:ok, _}, result)
-             end)
+      assert Argon2Provider.valid?(winning_password, changed_user.hashed_password)
 
-    assert Argon2Provider.valid?(winning_password, changed_user.hashed_password)
-
-    assert {:ok, _user} =
-             Accounts.sign_in_with_password(%{
-               email: "concurrent-reset-redemption@example.com",
-               password: winning_password
-             })
+      assert {:ok, _user} =
+               Accounts.sign_in_with_password(%{
+                 email: "concurrent-reset-redemption@example.com",
+                 password: winning_password
+               })
+    end)
   end
 
   test "reset revokes browser sessions while preserving an email-change confirmation" do
@@ -142,101 +184,144 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
   end
 
   test "concurrent invitation resends leave one current setup token" do
-    admin = admin_fixture()
-    assert {:ok, pending} = Accounts.invite_user(admin, %{email: "concurrent-resend@example.com"})
-    original_token = receive_token("setup")
+    with_committed_accounts(fn ->
+      admin = committed_admin_fixture()
 
-    results =
-      concurrently([:first, :second], fn _ -> Accounts.resend_invitation(admin, pending) end)
+      assert {:ok, pending} =
+               Accounts.invite_user(admin, %{email: "concurrent-resend@example.com"})
 
-    assert Enum.all?(results, &match?({:ok, _}, &1))
+      track_committed_user(pending)
+      original_token = receive_token("setup")
 
-    replacement_tokens = receive_tokens("setup", 2)
+      results =
+        with_token_contention_gate(pending, fn release_gate ->
+          concurrently(
+            [:first, :second],
+            fn _ -> Accounts.resend_invitation(admin, pending) end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
 
-    valid_tokens =
-      Enum.filter(
-        [original_token | replacement_tokens],
-        &(&1 |> Token.valid_for_purpose?("setup") == :ok)
-      )
+      assert Enum.all?(results, &match?({:ok, _}, &1))
 
-    assert [_current_token] = valid_tokens
+      replacement_tokens = receive_tokens("setup", 2)
+
+      valid_tokens =
+        Enum.filter(
+          [original_token | replacement_tokens],
+          &(&1 |> Token.valid_for_purpose?("setup") == :ok)
+        )
+
+      assert [_current_token] = valid_tokens
+    end)
   end
 
   test "concurrent email-change requests leave one current confirmation token" do
-    user = active_user_fixture("concurrent-email-change@example.com")
+    with_committed_accounts(fn ->
+      user = committed_active_user_fixture("concurrent-email-change@example.com")
 
-    assert {:ok, _user} =
-             Accounts.request_email_change(
-               user,
-               "concurrent-email-change-new@example.com",
-               "password1"
-             )
+      assert {:ok, _user} =
+               Accounts.request_email_change(
+                 user,
+                 "concurrent-email-change-new@example.com",
+                 "password1"
+               )
 
-    original_token = receive_token("confirm-email")
+      original_token = receive_token("confirm-email")
 
-    results =
-      concurrently([:first, :second], fn _ ->
-        Accounts.request_email_change(
-          user,
-          "concurrent-email-change-new@example.com",
-          "password1"
+      results =
+        with_token_contention_gate(user, fn release_gate ->
+          concurrently(
+            [:first, :second],
+            fn _ ->
+              Accounts.request_email_change(
+                user,
+                "concurrent-email-change-new@example.com",
+                "password1"
+              )
+            end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
+
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+
+      replacement_tokens = receive_tokens("confirm-email", 2)
+
+      valid_tokens =
+        Enum.filter(
+          [original_token | replacement_tokens],
+          &(&1 |> Token.valid_for_purpose?("email_change") == :ok)
         )
-      end)
 
-    assert Enum.all?(results, &match?({:ok, _}, &1))
-
-    replacement_tokens = receive_tokens("confirm-email", 2)
-
-    valid_tokens =
-      Enum.filter(
-        [original_token | replacement_tokens],
-        &(&1 |> Token.valid_for_purpose?("email_change") == :ok)
-      )
-
-    assert [_current_token] = valid_tokens
+      assert [_current_token] = valid_tokens
+    end)
   end
 
   test "concurrent reset requests leave one current reset token" do
-    _user = active_user_fixture("concurrent-reset-request@example.com")
-    assert :ok = Accounts.request_password_reset("concurrent-reset-request@example.com")
-    original_token = receive_token("reset-password")
+    with_committed_accounts(fn ->
+      _user = committed_active_user_fixture("concurrent-reset-request@example.com")
+      assert :ok = Accounts.request_password_reset("concurrent-reset-request@example.com")
+      original_token = receive_token("reset-password")
 
-    results =
-      concurrently([:first, :second], fn _ ->
-        Accounts.request_password_reset("concurrent-reset-request@example.com")
-      end)
+      results =
+        concurrently([:first, :second], fn _ ->
+          Accounts.request_password_reset("concurrent-reset-request@example.com")
+        end)
 
-    assert results == [:ok, :ok]
+      assert results == [:ok, :ok]
 
-    replacement_tokens = receive_tokens("reset-password", 2)
+      replacement_tokens = receive_tokens("reset-password", 2)
 
-    valid_tokens =
-      Enum.filter(
-        [original_token | replacement_tokens],
-        &(&1 |> Token.valid_for_purpose?("password_reset") == :ok)
-      )
+      valid_tokens =
+        Enum.filter(
+          [original_token | replacement_tokens],
+          &(&1 |> Token.valid_for_purpose?("password_reset") == :ok)
+        )
 
-    assert [_current_token] = valid_tokens
+      assert [_current_token] = valid_tokens
+    end)
   end
 
   test "concurrent failed invitation resends retain one recoverable setup token" do
-    admin = admin_fixture()
-    assert {:ok, pending} = Accounts.invite_user(admin, %{email: "failed-resend@example.com"})
-    _original_token = receive_token("setup")
+    with_committed_accounts(fn ->
+      admin = committed_admin_fixture()
 
-    mailer_delivery = Application.fetch_env!(:taskman, :mailer_delivery)
-    Application.put_env(:taskman, :mailer_delivery, __MODULE__.FailingMailer)
-    on_exit(fn -> Application.put_env(:taskman, :mailer_delivery, mailer_delivery) end)
+      assert {:ok, pending} =
+               Accounts.invite_user(admin, %{email: "failed-resend@example.com"})
 
-    results =
-      concurrently([:first, :second], fn _ -> Accounts.resend_invitation(admin, pending) end)
+      track_committed_user(pending)
+      _original_token = receive_token("setup")
 
-    assert Enum.all?(results, fn
-             {:error, {:delivery_failed, %{id: id}}} -> id == pending.id
-             _ -> false
-           end)
+      mailer_delivery = Application.fetch_env!(:taskman, :mailer_delivery)
+      Application.put_env(:taskman, :mailer_delivery, __MODULE__.FailingMailer)
+      on_exit(fn -> Application.put_env(:taskman, :mailer_delivery, mailer_delivery) end)
 
-    assert [_current_token] = current_tokens(pending, "setup")
+      results =
+        with_token_contention_gate(pending, fn release_gate ->
+          concurrently(
+            [:first, :second],
+            fn _ -> Accounts.resend_invitation(admin, pending) end,
+            fn workers ->
+              await_lock_contention(workers)
+              release_gate.()
+            end
+          )
+        end)
+
+      assert Enum.all?(results, fn
+               {:error, {:delivery_failed, %{id: id}}} -> id == pending.id
+               _ -> false
+             end)
+
+      assert [_current_token] = current_tokens(pending, "setup")
+    end)
   end
 
   test "delivery logs a sanitized failure class without credential-bearing detail" do
@@ -281,6 +366,48 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
     user
   end
 
+  defp committed_admin_fixture do
+    admin_fixture()
+    |> track_committed_user()
+  end
+
+  defp committed_active_user_fixture(email) do
+    active_user_fixture(email)
+    |> track_committed_user()
+  end
+
+  defp with_committed_accounts(fun) do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      Process.put({__MODULE__, :committed_users}, [])
+
+      try do
+        fun.()
+      after
+        Process.get({__MODULE__, :committed_users}, [])
+        |> Enum.uniq_by(& &1.id)
+        |> Enum.each(&delete_committed_user/1)
+
+        Process.delete({__MODULE__, :committed_users})
+      end
+    end)
+  end
+
+  defp track_committed_user(user) do
+    key = {__MODULE__, :committed_users}
+    Process.put(key, [user | Process.get(key, [])])
+    user
+  end
+
+  defp delete_committed_user(user) do
+    subject = AshAuthentication.user_to_subject(user)
+    Repo.delete_all(from token in Token, where: token.subject == ^subject)
+
+    case Repo.get(Taskman.Accounts.User, user.id) do
+      nil -> :ok
+      persisted_user -> Repo.delete!(persisted_user)
+    end
+  end
+
   defp receive_token(path) do
     assert_receive {:email, email}
 
@@ -300,7 +427,7 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
     Repo.all(from token in Token, where: token.subject == ^subject and token.purpose == ^purpose)
   end
 
-  defp concurrently(inputs, operation) do
+  defp concurrently(inputs, operation, before_await \\ fn _workers -> :ok end) do
     test_pid = self()
 
     coordinator =
@@ -308,10 +435,16 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
         Task.async_stream(
           inputs,
           fn input ->
-            send(test_pid, {:lifecycle_attempt_ready, self()})
+            :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
 
-            receive do
-              :redeem -> operation.(input)
+            try do
+              send(test_pid, {:lifecycle_attempt_ready, self(), database_backend_pid()})
+
+              receive do
+                :redeem -> operation.(input)
+              end
+            after
+              :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
             end
           end,
           max_concurrency: length(inputs),
@@ -320,14 +453,155 @@ defmodule Taskman.Accounts.LifecycleTransactionsTest do
         |> Enum.map(fn {:ok, result} -> result end)
       end)
 
-    worker_pids =
+    workers =
       for _ <- inputs do
-        assert_receive {:lifecycle_attempt_ready, worker_pid}
-        worker_pid
+        assert_receive {:lifecycle_attempt_ready, worker_pid, backend_pid}
+        %{pid: worker_pid, backend_pid: backend_pid}
       end
 
-    Enum.each(worker_pids, &send(&1, :redeem))
+    assert length(Enum.uniq_by(workers, & &1.backend_pid)) == length(inputs)
+
+    Enum.each(workers, &send(&1.pid, :redeem))
+    before_await.(workers)
     Task.await(coordinator, :infinity)
+  end
+
+  defp database_backend_pid do
+    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    backend_pid
+  end
+
+  defp with_update_contention_gate(user_id, fun) do
+    suffix = System.unique_integer([:positive])
+    function_name = "taskman_lifecycle_gate_#{suffix}"
+    trigger_name = "#{function_name}_trigger"
+    gate_key = System.unique_integer([:positive])
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION #{function_name}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.id = '#{user_id}'::uuid THEN
+          PERFORM pg_advisory_xact_lock(#{gate_key});
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER #{trigger_name}
+      BEFORE UPDATE ON users
+      FOR EACH ROW
+      EXECUTE FUNCTION #{function_name}()
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+
+    released? = :atomics.new(1, [])
+
+    release_gate = fn ->
+      if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
+        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+      end
+    end
+
+    try do
+      fun.(release_gate)
+    after
+      release_gate.()
+      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
+      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+    end
+  end
+
+  defp with_token_contention_gate(user, fun) do
+    suffix = System.unique_integer([:positive])
+    function_name = "taskman_lifecycle_token_gate_#{suffix}"
+    trigger_name = "#{function_name}_trigger"
+    gate_key = System.unique_integer([:positive])
+    subject = AshAuthentication.user_to_subject(user)
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION #{function_name}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.subject = '#{subject}' THEN
+          PERFORM pg_advisory_xact_lock(#{gate_key});
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER #{trigger_name}
+      BEFORE INSERT OR UPDATE ON tokens
+      FOR EACH ROW
+      EXECUTE FUNCTION #{function_name}()
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+
+    released? = :atomics.new(1, [])
+
+    release_gate = fn ->
+      if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
+        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+      end
+    end
+
+    try do
+      fun.(release_gate)
+    after
+      release_gate.()
+      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON tokens")
+      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+    end
+  end
+
+  defp await_lock_contention(workers), do: await_lock_contention(workers, 1_000)
+
+  defp await_lock_contention(_workers, 0),
+    do: flunk("workers never reached database lock contention")
+
+  defp await_lock_contention(workers, attempts_left) do
+    backend_pids = Enum.map(workers, & &1.backend_pid)
+
+    assert %{rows: [[waiting_workers]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM pg_stat_activity
+               WHERE pid = ANY($1) AND wait_event_type = 'Lock'
+               """,
+               [backend_pids]
+             )
+
+    if waiting_workers == length(workers) do
+      :ok
+    else
+      await_lock_contention(workers, attempts_left - 1)
+    end
   end
 
   defmodule FailingMailer do
