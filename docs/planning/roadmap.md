@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Task relationships in progress — parent-child delivered; Relates to next
-**Updated:** 2026-08-30
+**Status:** Authenticated hosted access next; Task relationships resume afterward
+**Updated:** 2026-09-02
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -133,9 +133,10 @@ Scope:
 - Establish UI, API, CLI, help, completion, and skill parity as a completion requirement for
   meaningful operations in every later slice.
 
-Browser-only presentation state is not part of parity. The API and CLI remain local-only and
-unauthenticated under the current MVP boundary. Starting the backend through a future
-`taskman serve` command is an explicit extension point, not part of this slice.
+Browser-only presentation state is not part of parity. This slice originally delivered a local-only,
+unauthenticated API and CLI; the authenticated hosted-access insertion below supersedes that
+boundary. Starting the backend through a future `taskman serve` command is an explicit extension
+point, not part of this slice.
 
 **Current state:** Complete. The versioned loopback JSON API, Req-backed `taskman` escript,
 readable and JSON output, command help, Bash and Fish completions, onboarding, and version-matched
@@ -147,7 +148,38 @@ The
 [`API, CLI, and agent skill specification`](../specs/2026-08-29-api-cli-agent-skill-design.md)
 defines the operation surface and maintenance contract.
 
-**Next slice:** Slice 5, Task relationships.
+**Next slice:** Authenticated hosted access, then resume Slice 5 Task relationships.
+
+### Priority insertion: authenticated hosted access
+
+**Outcome:** Explicitly provisioned users can access one shared Taskman workspace through arbitrary
+browsers and authenticated API clients on a web-accessible server.
+
+Scope:
+
+- Add an isolated Ash Accounts domain with AshAuthentication password sessions and expiring API
+  keys.
+- Bootstrap the first administrator locally and manage later invitations through a constrained
+  AshAdmin surface.
+- Add confirmed email changes, password recovery, session/API-key management, immediate account
+  disablement, and permanent self-service/administrator account deletion.
+- Add administrator email correction and confirmation, including fresh setup invitations after
+  changing a pending user's address.
+- Add protected XDG configuration for the `taskman` CLI.
+- Deliver Resend transactional mail through Swoosh and Req.
+- Package Taskman as an OTP release with migration/bootstrap commands and documented systemd/Caddy
+  operation.
+- Preserve all existing Project, List, Task, API, CLI, and notification behavior behind an
+  application-wide access gate.
+
+This increment does not add domain ownership or migrate existing domain resources to Ash. A later
+workstream will design a complete gradual Ash migration; ordinary feature work must not create a
+permanent Ecto/Ash hybrid.
+
+**Current state:** Specification and implementation plan approved; delivery starts with
+`tas-authenticated-hosted-access-2a8.1`. See the
+[`authenticated hosted access specification`](../specs/2026-09-02-authenticated-hosted-access-design.md)
+and [`implementation plan`](../plans/2026-09-02-authenticated-hosted-access.md).
 
 ### 5. Task relationships
 
@@ -172,7 +204,7 @@ List ownership remains independent. Focused and complete repository gates, imple
 scans, responsive browser acceptance, independent verification, and final whole-branch review
 passed.
 
-**Next increment:** Relates to.
+**Next increment after authenticated hosted access:** Relates to.
 
 ### 6. Deletion safeguards
 
@@ -248,7 +280,8 @@ them:
 - ACP supervision and recovery architecture before Agent Session work.
 - Complete URL and modal-state design before Task detail/navigation.
 - Broad JavaScript conventions without a browser behavior that requires a hook.
-- Compose/deployment packaging, authentication, and multi-user concerns excluded by the MVP.
+- Synchronization, collaboration, managed hosting, and per-user domain ownership beyond the
+  accepted authenticated hosted-access boundary.
 - Native standalone CLI packaging before distribution beyond the Elixir/Mix development
   environment requires it.
 - Starting the backend through `taskman serve` before a dedicated server-lifecycle slice defines
