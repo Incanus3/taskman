@@ -6,6 +6,7 @@ defmodule Taskman.Accounts.User do
     domain: Taskman.Accounts
 
   alias Taskman.Accounts.{ApiKey, Token}
+  alias Taskman.Accounts.Changes.ProtectLastAdmin
   alias Taskman.Accounts.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
   alias Taskman.Accounts.User.Status
 
@@ -167,6 +168,103 @@ defmodule Taskman.Accounts.User do
       accept []
     end
 
+    update :enable do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:status, :active)
+    end
+
+    update :disable do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:status, :disabled)
+      change {ProtectLastAdmin, mode: :disable}
+    end
+
+    update :promote do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:admin?, true)
+    end
+
+    update :demote do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:admin?, false)
+      change {ProtectLastAdmin, mode: :demote}
+    end
+
+    update :manage_confirmed_email do
+      public? false
+      require_atomic? false
+      accept [:email]
+    end
+
+    update :manage_unconfirmed_email do
+      public? false
+      require_atomic? false
+      accept [:email]
+    end
+
+    update :replace_pending_email do
+      public? false
+      require_atomic? false
+      accept [:email]
+    end
+
+    update :replace_pending_confirmed_email do
+      public? false
+      require_atomic? false
+      accept [:email]
+      change set_attribute(:confirmed_at, &DateTime.utc_now/0)
+    end
+
+    update :confirm_existing_email do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:confirmed_at, &DateTime.utc_now/0)
+    end
+
+    update :revoke_sessions do
+      public? false
+      require_atomic? false
+      accept []
+      change {ProtectLastAdmin, mode: :sessions}
+    end
+
+    update :revoke_api_keys do
+      public? false
+      require_atomic? false
+      accept []
+      change {ProtectLastAdmin, mode: :api_keys}
+    end
+
+    destroy :admin_delete do
+      public? false
+      require_atomic? false
+      change {ProtectLastAdmin, mode: :delete}
+    end
+
+    destroy :self_delete do
+      public? false
+      require_atomic? false
+
+      argument :current_password, :string do
+        allow_nil? false
+        sensitive? true
+      end
+
+      validate {AshAuthentication.Strategy.Password.PasswordValidation,
+                strategy_name: :password, password_argument: :current_password}
+
+      change {ProtectLastAdmin, mode: :delete}
+    end
+
     read :sign_in_with_password do
       get? true
 
@@ -305,6 +403,13 @@ defmodule Taskman.Accounts.User do
         confirmed_at_field :email_change_confirmed_at
         confirm_action_name :confirm_email_change
         require_interaction? true
+
+        auto_confirm_actions [
+          :manage_confirmed_email,
+          :replace_pending_email,
+          :replace_pending_confirmed_email
+        ]
+
         sender SendConfirmation
       end
     end
@@ -352,6 +457,40 @@ defmodule Taskman.Accounts.User do
       actor_attribute_equals(:status, :active)
     ] do
       authorize_if expr(status == :pending)
+    end
+
+    bypass [
+      action([
+        :enable,
+        :disable,
+        :promote,
+        :demote,
+        :revoke_sessions,
+        :revoke_api_keys
+      ]),
+      actor_attribute_equals(:admin?, true),
+      actor_attribute_equals(:status, :active)
+    ] do
+      authorize_if always()
+    end
+
+    bypass [
+      action([
+        :manage_confirmed_email,
+        :manage_unconfirmed_email,
+        :replace_pending_email,
+        :replace_pending_confirmed_email,
+        :confirm_existing_email,
+        :admin_delete
+      ]),
+      actor_attribute_equals(:admin?, true),
+      actor_attribute_equals(:status, :active)
+    ] do
+      authorize_if expr(id != ^actor(:id))
+    end
+
+    bypass action(:self_delete) do
+      authorize_if expr(id == ^actor(:id) and status == :active)
     end
 
     policy always() do
