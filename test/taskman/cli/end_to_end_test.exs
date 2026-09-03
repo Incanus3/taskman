@@ -45,7 +45,13 @@ defmodule Taskman.CLI.EndToEndTest do
     assert %{"error" => %{"code" => "authentication_required"}} = Jason.decode!(missing.stderr)
 
     rejected_root = Path.join(config_root, "rejected")
-    write_config(rejected_root, api_url, "tm_rejected_http_credential")
+
+    write_config(
+      rejected_root,
+      api_url,
+      "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
+    )
+
     rejected = cli_run(["projects", "list", "--json"], rejected_root)
     assert rejected.status == 7
     assert %{"error" => %{"code" => "unauthorized"}} = Jason.decode!(rejected.stderr)
@@ -454,6 +460,7 @@ defmodule Taskman.CLI.EndToEndTest do
   defp write_config(config_root, api_url, api_key) do
     path = Path.join([config_root, "taskman", "config.json"])
     File.mkdir_p!(Path.dirname(path))
+    :ok = File.chmod(Path.dirname(path), 0o700)
     File.write!(path, Jason.encode!(%{"api_url" => api_url, "api_key" => api_key}))
     :ok = File.chmod(path, 0o600)
   end

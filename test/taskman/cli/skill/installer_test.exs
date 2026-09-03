@@ -112,6 +112,56 @@ defmodule Taskman.CLI.Skill.InstallerTest do
   end
 
   @tag :tmp_dir
+  test "owned updates leave a complete old or new SKILL.md available to concurrent readers", %{
+    tmp_dir: root
+  } do
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+    target = Path.join(root, "taskman-cli")
+    skill_path = Path.join(target, "SKILL.md")
+    stale_contents = "stale credential guidance"
+    File.write!(skill_path, stale_contents)
+
+    FakeSkillFileSystem.observe_before_rename!(fn from, to ->
+      if Path.basename(to) == "SKILL.md" and String.contains?(Path.basename(from), ".stage-") do
+        assert File.read!(skill_path) == stale_contents
+      end
+    end)
+
+    assert {:ok, %{action: :updated}} =
+             Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
+
+    assert File.read!(skill_path) == Bundle.files()["SKILL.md"]
+  end
+
+  @tag :tmp_dir
+  test "refuses symlink target and installer-looking stage or backup siblings", %{tmp_dir: root} do
+    target = Path.join(root, "taskman-cli")
+    linked_directory = Path.join(root, "linked-directory")
+    File.mkdir_p!(linked_directory)
+    File.ln_s!(linked_directory, target)
+
+    assert {:error, :skill_install_failed, target_message} = Installer.install(skills_root: root)
+    assert target_message =~ "symlink"
+
+    File.rm!(target)
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+
+    for {name, label} <- [
+          {".taskman-cli.stage-101", "staging"},
+          {".taskman-cli.backup-202", "backup"}
+        ] do
+      link = Path.join(root, name)
+      File.ln_s!(linked_directory, link)
+
+      assert {:error, :skill_install_failed, message} = Installer.install(skills_root: root)
+      assert message =~ label
+      assert message =~ "symlink"
+      assert File.lstat!(link).type == :symlink
+      File.rm!(link)
+    end
+  end
+
+  @tag :tmp_dir
   test "unrecognized target is refused without changing its contents", %{tmp_dir: root} do
     target = Path.join(root, "taskman-cli")
     File.mkdir_p!(target)
@@ -175,7 +225,7 @@ defmodule Taskman.CLI.Skill.InstallerTest do
   end
 
   @tag :tmp_dir
-  test "a later invocation recovers a preserved backup after restore retries fail", %{
+  test "a failed owned update preserves its complete target for the next invocation", %{
     tmp_dir: root
   } do
     assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
@@ -184,16 +234,14 @@ defmodule Taskman.CLI.Skill.InstallerTest do
     old_skill = File.read!(Path.join(target, "SKILL.md"))
     old_marker = File.read!(marker_path)
     File.write!(marker_path, String.replace(old_marker, Bundle.cli_version(), "0.0.1"))
-    FakeSkillFileSystem.fail_rename_sequence!([:stage_to_target, :restore, :restore])
+    FakeSkillFileSystem.fail_next_rename!(:stage_to_target)
 
     assert {:error, :skill_install_failed, _message} =
              Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
 
-    refute File.exists?(target)
-    exact_backups = exact_backup_siblings(root)
-    assert length(exact_backups) == 1
-    [backup_name] = exact_backups
-    assert File.read!(Path.join(root, backup_name <> "/SKILL.md")) == old_skill
+    assert File.read!(Path.join(target, "SKILL.md")) == old_skill
+    assert File.read!(marker_path) == String.replace(old_marker, Bundle.cli_version(), "0.0.1")
+    assert exact_backup_siblings(root) == []
 
     assert {:ok, %{action: :updated, path: ^target}} =
              Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
@@ -221,7 +269,7 @@ defmodule Taskman.CLI.Skill.InstallerTest do
   end
 
   @tag :tmp_dir
-  test "a failed backup cleanup is retried before a later current result", %{tmp_dir: root} do
+  test "owned updates do not use the old backup cleanup path", %{tmp_dir: root} do
     assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
     target = Path.join(root, "taskman-cli")
     marker_path = Path.join(target, ".taskman-managed.json")
@@ -229,12 +277,7 @@ defmodule Taskman.CLI.Skill.InstallerTest do
     File.write!(marker_path, String.replace(marker, Bundle.cli_version(), "0.0.1"))
     FakeSkillFileSystem.fail_next_rm_rf!()
 
-    assert {:error, :skill_install_failed, _message} =
-             Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
-
-    assert temporary_siblings(root) != []
-
-    assert {:ok, %{action: :current}} =
+    assert {:ok, %{action: :updated}} =
              Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
 
     assert temporary_siblings(root) == []

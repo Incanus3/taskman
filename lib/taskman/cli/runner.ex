@@ -141,16 +141,18 @@ defmodule Taskman.CLI.Runner do
   defp resolved_runtime_options(options, api_key) when is_list(options) do
     options
     |> Keyword.delete(:api_key)
-    |> Keyword.put(:api_key, api_key)
+    |> Keyword.delete(:resolved_api_key)
+    |> Keyword.put(:resolved_api_key, api_key)
   end
 
   defp resolved_runtime_options(options, api_key) when is_map(options) do
     options
     |> Map.delete(:api_key)
-    |> Map.put(:api_key, api_key)
+    |> Map.delete(:resolved_api_key)
+    |> Map.put(:resolved_api_key, api_key)
   end
 
-  defp resolved_runtime_options(_options, api_key), do: [api_key: api_key]
+  defp resolved_runtime_options(_options, api_key), do: [resolved_api_key: api_key]
 
   defp authentication_required(json?) do
     envelope = %{

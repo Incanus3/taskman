@@ -31,10 +31,10 @@ defmodule Taskman.CLI.Client do
     api_url =
       option(runtime_options, :api_url) || option(request_options, :api_url) || @default_api_url
 
-    # Credentials are supplied only by the runner's private runtime channel;
-    # request payload/options are intentionally unable to select an actor.
-    api_key = option(runtime_options, :api_key)
-    req_options = runtime_options |> option(:req_options, []) |> normalize_options()
+    # Credentials are supplied only by the runner's resolved runtime channel.
+    # Neither the old :api_key seam nor request payload/options can select an actor.
+    api_key = option(runtime_options, :resolved_api_key)
+    req_options = safe_req_options(runtime_options)
 
     request_options =
       request_options
@@ -343,10 +343,37 @@ defmodule Taskman.CLI.Client do
     "Taskman API response from #{api_url} was invalid: #{redact_secret(inspect(reason), api_key)}"
   end
 
-  defp redact_secret(value, api_key) when is_binary(api_key) and api_key != "",
-    do: String.replace(value, api_key, "[REDACTED]")
+  defp redact_secret(value, api_key) when is_binary(api_key) and api_key != "" do
+    api_key
+    |> secret_representations()
+    |> Enum.reduce(value, fn representation, redacted ->
+      String.replace(redacted, representation, "[REDACTED]")
+    end)
+  end
 
   defp redact_secret(value, _api_key), do: value
+
+  defp secret_representations(api_key) do
+    inspected = inspect(api_key)
+
+    [api_key, String.trim(inspected, "\"")]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  # The CLI has no public transport customization contract. The single exception is Req.Test's
+  # in-process adapter, which lets tests observe the completed request without participating in
+  # request preparation. In particular, never pass caller-provided auth, headers, plugins, or
+  # request steps to Req.new/1 because those can replace Authorization after the runner resolves it.
+  defp safe_req_options(runtime_options) do
+    case runtime_options
+         |> option(:req_options, [])
+         |> normalize_options()
+         |> Keyword.get(:plug) do
+      {Req.Test, name} when is_atom(name) -> [plug: {Req.Test, name}]
+      _other -> []
+    end
+  end
 
   defp error(code, message), do: %{"error" => %{"code" => code, "message" => message}}
 

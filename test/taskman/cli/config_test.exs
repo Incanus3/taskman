@@ -5,7 +5,7 @@ defmodule Taskman.CLI.ConfigTest do
 
   alias Taskman.CLI.Config
 
-  @api_key "tm_config_test_credential"
+  @api_key "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
 
   @tag :tmp_dir
   test "resolves each setting independently with flag, environment, file, and default precedence",
@@ -15,12 +15,12 @@ defmodule Taskman.CLI.ConfigTest do
     root = Path.join(tmp_dir, "xdg")
     write_config(root, %{"api_url" => "https://file.example", "api_key" => @api_key})
 
-    assert {:ok, %{api_url: "https://flag.example", api_key: "tm_environment_credential"}} =
+    assert {:ok, %{api_url: "https://flag.example", api_key: @api_key}} =
              Config.resolve(
                %{api_url: "https://flag.example"},
                env: %{
                  "TASKMAN_API_URL" => "https://environment.example",
-                 "TASKMAN_API_KEY" => "tm_environment_credential"
+                 "TASKMAN_API_KEY" => @api_key
                },
                config_root: root
              )
@@ -42,6 +42,12 @@ defmodule Taskman.CLI.ConfigTest do
 
     assert Config.path(env: %{"HOME" => tmp_dir}) ==
              Path.join([tmp_dir, ".config", "taskman", "config.json"])
+
+    assert Config.path(env: %{}) ==
+             Path.join([System.user_home!(), ".config", "taskman", "config.json"])
+
+    assert Config.path(env: %{"XDG_CONFIG_HOME" => "", "HOME" => ""}) ==
+             Path.join([System.user_home!(), ".config", "taskman", "config.json"])
   end
 
   @tag :tmp_dir
@@ -51,6 +57,7 @@ defmodule Taskman.CLI.ConfigTest do
     root = Path.join(tmp_dir, "xdg")
     path = config_path(root)
     File.mkdir_p!(Path.dirname(path))
+    File.chmod!(Path.dirname(path), 0o700)
 
     File.write!(path, "not-json")
     :ok = File.chmod(path, 0o600)
@@ -116,6 +123,10 @@ defmodule Taskman.CLI.ConfigTest do
                  assert Path.dirname(from) == Path.dirname(to)
                  assert Path.basename(from) =~ ~r/\A\.config\.json\.stage-/
                  File.rename(from, to)
+               end,
+               sync_directory: fn directory ->
+                 assert directory == Path.dirname(target)
+                 :ok
                end
              )
 
@@ -123,6 +134,38 @@ defmodule Taskman.CLI.ConfigTest do
              Config.resolve(%{}, config_root: root)
 
     assert File.ls!(Path.dirname(target)) == ["config.json"]
+  end
+
+  @tag :tmp_dir
+  test "refuses unsafe locks and recovers only a validated stale lock", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    target = config_path(root)
+    directory = Path.dirname(target)
+    write_config(root, %{"api_key" => @api_key})
+    linked_directory = Path.join(tmp_dir, "linked-lock-directory")
+    File.mkdir_p!(linked_directory)
+    lock_path = target <> ".lock"
+    File.ln_s!(linked_directory, lock_path)
+
+    assert {:error, :invalid_configuration, message} =
+             Config.set_url("https://locked.example", config_root: root)
+
+    assert message =~ "symlink configuration lock"
+    assert File.lstat!(lock_path).type == :symlink
+
+    File.rm!(lock_path)
+    File.mkdir!(lock_path)
+    File.chmod!(lock_path, 0o700)
+    File.write!(Path.join(lock_path, "owner"), "taskman_config_lock_v1")
+
+    assert :ok =
+             Config.set_url("https://recovered-lock.example",
+               config_root: root,
+               stale_lock_after_ms: -1
+             )
+
+    refute File.exists?(lock_path)
+    assert File.ls!(directory) == ["config.json"]
   end
 
   @tag :tmp_dir
@@ -141,6 +184,35 @@ defmodule Taskman.CLI.ConfigTest do
     refute message =~ @api_key
     assert Jason.decode!(File.read!(target))["api_url"] == "https://before.example"
     assert File.ls!(Path.dirname(target)) == ["config.json"]
+  end
+
+  @tag :tmp_dir
+  test "serializes concurrent field updates so neither setting is lost", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    parent = self()
+
+    url_task =
+      Task.async(fn ->
+        Config.set_url("https://concurrent.example",
+          config_root: root,
+          before_write: fn _path ->
+            send(parent, :url_write_has_read_config)
+            assert_receive :finish_url_write
+            :ok
+          end
+        )
+      end)
+
+    assert_receive :url_write_has_read_config
+
+    key_task = Task.async(fn -> Config.set_key(@api_key, config_root: root) end)
+    send(url_task.pid, :finish_url_write)
+
+    assert :ok = Task.await(url_task)
+    assert :ok = Task.await(key_task)
+
+    assert {:ok, %{api_url: "https://concurrent.example", api_key: @api_key}} =
+             Config.resolve(%{}, config_root: root)
   end
 
   @tag :tmp_dir
@@ -167,6 +239,124 @@ defmodule Taskman.CLI.ConfigTest do
     end
   end
 
+  @tag :tmp_dir
+  test "requires exact private modes for existing configuration directories and files", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+    path = config_path(root)
+    File.mkdir_p!(Path.dirname(path))
+    File.chmod!(Path.dirname(path), 0o700)
+    File.write!(path, Jason.encode!(%{"api_key" => @api_key}))
+    File.chmod!(path, 0o600)
+    File.chmod!(Path.dirname(path), 0o755)
+
+    assert {:error, :invalid_configuration, directory_message} =
+             Config.resolve(%{}, config_root: root)
+
+    assert directory_message =~ "directory permissions"
+
+    File.chmod!(Path.dirname(path), 0o700)
+    File.chmod!(path, 0o400)
+
+    assert {:error, :invalid_configuration, file_message} = Config.resolve(%{}, config_root: root)
+    assert file_message =~ "chmod 600"
+  end
+
+  @tag :tmp_dir
+  test "rejects linked config files and descriptor identity replacements", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    path = config_path(root)
+    linked_contents = Jason.encode!(%{"api_key" => @api_key})
+    File.mkdir_p!(Path.dirname(path))
+    File.chmod!(Path.dirname(path), 0o700)
+
+    linked_target = Path.join(tmp_dir, "linked-config.json")
+    File.write!(linked_target, linked_contents)
+    File.chmod!(linked_target, 0o600)
+    File.ln_s!(linked_target, path)
+
+    assert {:error, :invalid_configuration, symlink_message} =
+             Config.resolve(%{}, config_root: root)
+
+    assert symlink_message =~ "regular file"
+
+    File.rm!(path)
+    File.ln!(linked_target, path)
+
+    assert {:error, :invalid_configuration, hardlink_message} =
+             Config.resolve(%{}, config_root: root)
+
+    assert hardlink_message =~ "hard links"
+
+    File.rm!(path)
+    File.write!(path, linked_contents)
+    File.chmod!(path, 0o600)
+
+    assert {:error, :invalid_configuration, replacement_message} =
+             Config.resolve(%{},
+               config_root: root,
+               before_open: fn config_path ->
+                 File.rm!(config_path)
+
+                 File.write!(
+                   config_path,
+                   Jason.encode!(%{
+                     "api_key" => @api_key,
+                     "api_url" => "https://replacement.example"
+                   })
+                 )
+
+                 File.chmod!(config_path, 0o600)
+               end
+             )
+
+    assert replacement_message =~ "changed while it was being read"
+  end
+
+  @tag :tmp_dir
+  test "uses higher-precedence values without validating an ignored lower-precedence URL", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+    write_config(root, %{"api_url" => "ftp://ignored.example", "api_key" => @api_key})
+
+    assert {:ok, %{api_url: "https://override.example", api_key: @api_key}} =
+             Config.resolve(%{api_url: "https://override.example"},
+               config_root: root,
+               env: %{"TASKMAN_API_KEY" => @api_key}
+             )
+  end
+
+  @tag :tmp_dir
+  test "accepts only structurally valid Taskman keys and constrained base URLs", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+
+    assert :ok = Config.set_url("https://[::1]:4001/", config_root: root)
+    assert :ok = Config.set_url("http://localhost:4000", config_root: root)
+
+    for url <- [
+          "https://taskman.example/path",
+          "https://taskman.example:0",
+          "https://taskman.example:65536",
+          "https://user:password@taskman.example",
+          "ssh://taskman.example"
+        ] do
+      assert {:error, :invalid_configuration, _message} = Config.set_url(url, config_root: root)
+    end
+
+    for key <- [
+          "tm_missing",
+          "tm_payload_",
+          "tm_payload_checksum\n",
+          "tm_payload checksum"
+        ] do
+      assert {:error, :invalid_configuration, _message} = Config.set_key(key, config_root: root)
+    end
+  end
+
   test "display confirms a configured key without revealing it" do
     assert Config.display(%{api_url: "https://taskman.example", api_key: @api_key}) == %{
              api_url: "https://taskman.example",
@@ -177,6 +367,7 @@ defmodule Taskman.CLI.ConfigTest do
   defp write_config(root, contents) do
     path = config_path(root)
     File.mkdir_p!(Path.dirname(path))
+    File.chmod!(Path.dirname(path), 0o700)
     File.write!(path, Jason.encode!(contents))
     File.chmod!(path, 0o600)
   end

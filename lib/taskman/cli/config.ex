@@ -7,6 +7,11 @@ defmodule Taskman.CLI.Config do
   @config_directory "taskman"
   @config_filename "config.json"
   @allowed_keys ["api_url", "api_key"]
+  @api_key_pattern ~r/\Atm_[A-Za-z0-9_]+_[A-Za-z0-9]+\z/
+  @lock_marker "taskman_config_lock_v1"
+  @lock_retry_limit 200
+  @lock_retry_delay_ms 10
+  @stale_lock_after_ms 30_000
 
   @typedoc "The API connection settings after source precedence has been applied."
   @type resolved_config :: %{api_url: String.t(), api_key: String.t() | nil}
@@ -27,16 +32,19 @@ defmodule Taskman.CLI.Config do
   def resolve(explicit, options) when is_map(explicit) do
     options = normalize_options(options)
     env = option(options, :env, System.get_env())
+    api_url_override = explicit_value(explicit, :api_url) || env_value(env, "TASKMAN_API_URL")
+    api_key_override = env_value(env, "TASKMAN_API_KEY")
 
-    with {:ok, stored} <- read(path(options), options),
-         api_url <-
-           explicit_value(explicit, :api_url) || env_value(env, "TASKMAN_API_URL") ||
-             stored["api_url"] || @default_api_url,
-         :ok <- validate_url(api_url) do
+    with {:ok, stored} <-
+           read_if_needed(api_url_override, api_key_override, path(options), options),
+         api_url <- api_url_override || stored["api_url"] || @default_api_url,
+         api_key <- api_key_override || stored["api_key"],
+         :ok <- validate_url(api_url),
+         :ok <- validate_optional_api_key(api_key) do
       {:ok,
        %{
          api_url: api_url,
-         api_key: env_value(env, "TASKMAN_API_KEY") || stored["api_key"]
+         api_key: api_key
        }}
     end
   end
@@ -52,28 +60,39 @@ defmodule Taskman.CLI.Config do
     options = normalize_options(options)
 
     with :ok <- validate_url(api_url),
-         {:ok, stored} <- read(path(options), options) do
-      write(Map.put(stored, "api_url", api_url), path(options), options)
+         :ok <- ensure_directory(Path.dirname(path(options))) do
+      with_config_lock(path(options), options, fn ->
+        with {:ok, stored} <- read(path(options), options),
+             :ok <- before_write(path(options), options) do
+          write(Map.put(stored, "api_url", api_url), path(options), options)
+        end
+      end)
     end
   end
 
   def set_url(_api_url, _options),
     do: error("The Taskman API URL must be a valid HTTP or HTTPS base URL")
 
-  @doc "Store a prompted API key without validating or displaying its server-issued contents."
+  @doc "Store a structurally valid prompted API key without displaying it."
   @spec set_key(String.t(), keyword() | map()) ::
           :ok | {:error, :invalid_configuration, String.t()}
   def set_key(api_key, options \\ [])
 
-  def set_key(api_key, options) when is_binary(api_key) and byte_size(api_key) > 0 do
+  def set_key(api_key, options) when is_binary(api_key) do
     options = normalize_options(options)
 
-    with {:ok, stored} <- read(path(options), options) do
-      write(Map.put(stored, "api_key", api_key), path(options), options)
+    with :ok <- validate_api_key(api_key),
+         :ok <- ensure_directory(Path.dirname(path(options))) do
+      with_config_lock(path(options), options, fn ->
+        with {:ok, stored} <- read(path(options), options),
+             :ok <- before_write(path(options), options) do
+          write(Map.put(stored, "api_key", api_key), path(options), options)
+        end
+      end)
     end
   end
 
-  def set_key(_api_key, _options), do: error("The Taskman API key cannot be empty")
+  def set_key(_api_key, _options), do: invalid_api_key()
 
   @doc "Return a display-safe configuration summary."
   @spec display(resolved_config()) :: %{api_url: String.t(), api_key_configured: boolean()}
@@ -81,31 +100,81 @@ defmodule Taskman.CLI.Config do
     %{api_url: api_url, api_key_configured: is_binary(api_key) and api_key != ""}
   end
 
+  defp read_if_needed(nil, _api_key_override, config_path, options),
+    do: read(config_path, options)
+
+  defp read_if_needed(_api_url_override, nil, config_path, options),
+    do: read(config_path, options)
+
+  defp read_if_needed(_api_url_override, _api_key_override, _config_path, _options),
+    do: {:ok, %{}}
+
   defp read(config_path, options) do
-    with {:ok, %File.Stat{type: :regular, mode: mode}} <- File.stat(config_path),
-         :ok <- validate_directory(Path.dirname(config_path)),
-         :ok <- validate_file_mode(mode),
-         {:ok, contents} <- read_file(config_path, options),
-         {:ok, decoded} <- decode(contents),
-         :ok <- validate_shape(decoded),
-         :ok <- validate_stored_url(decoded) do
-      {:ok, decoded}
-    else
-      {:ok, %File.Stat{}} -> error("The Taskman configuration path must be a regular file")
-      {:error, :enoent} -> {:ok, %{}}
-      {:error, _reason} -> error("The Taskman configuration file could not be read")
-      {:error, :invalid_configuration, _message} = result -> result
+    case lstat(config_path) do
+      {:error, :enoent} ->
+        {:ok, %{}}
+
+      {:ok, lstat} ->
+        with :ok <- validate_directory(Path.dirname(config_path)),
+             :ok <- validate_config_file(lstat),
+             :ok <- before_open(config_path, options),
+             {:ok, device} <- open_readonly(config_path) do
+          try do
+            with {:ok, contents} <- read_opened_file(device, options),
+                 {:ok, opened_stat} <- file_info(device),
+                 :ok <- validate_opened_file(lstat, opened_stat),
+                 {:ok, decoded} <- decode(contents),
+                 :ok <- validate_shape(decoded) do
+              {:ok, decoded}
+            else
+              {:error, :invalid_configuration, _message} = result -> result
+              _other -> error("The Taskman configuration file could not be read")
+            end
+          after
+            close_file(device)
+          end
+        end
+
+      {:error, _reason} ->
+        error("The Taskman configuration file could not be read")
     end
   end
 
-  defp read_file(config_path, options) do
+  defp lstat(path), do: File.lstat(path)
+
+  defp before_open(config_path, options) do
+    case option(options, :before_open) do
+      hook when is_function(hook, 1) ->
+        hook.(config_path)
+        :ok
+
+      _other ->
+        :ok
+    end
+  rescue
+    _error -> {:error, :before_open_failed}
+  end
+
+  defp open_readonly(config_path),
+    do: :file.open(String.to_charlist(config_path), [:read, :binary, :raw])
+
+  defp read_opened_file(device, options) do
     case option(options, :read_file) do
-      read_file when is_function(read_file, 1) -> read_file.(config_path)
-      _other -> File.read(config_path)
+      read_file when is_function(read_file, 1) -> read_file.(device)
+      _other -> {:ok, IO.binread(device, :eof)}
     end
   rescue
     _error -> {:error, :read_failed}
   end
+
+  defp file_info(device) do
+    with {:ok, info} <- :file.read_file_info(device) do
+      {:ok, File.Stat.from_record(info)}
+    end
+  end
+
+  defp close_file(nil), do: :ok
+  defp close_file(device), do: :file.close(device)
 
   defp decode(contents) do
     case Jason.decode(contents) do
@@ -129,9 +198,6 @@ defmodule Taskman.CLI.Config do
 
   defp validate_shape(_decoded),
     do: error("The Taskman configuration file must contain an object")
-
-  defp validate_stored_url(%{"api_url" => api_url}), do: validate_url(api_url)
-  defp validate_stored_url(_decoded), do: :ok
 
   defp validate_url(url) when is_binary(url) do
     case URI.new(url) do
@@ -158,6 +224,18 @@ defmodule Taskman.CLI.Config do
   defp validate_url(_url), do: invalid_url()
 
   defp invalid_url, do: error("The Taskman API URL must be a valid HTTP or HTTPS base URL")
+
+  defp validate_optional_api_key(nil), do: :ok
+  defp validate_optional_api_key(api_key), do: validate_api_key(api_key)
+
+  defp validate_api_key(api_key) when is_binary(api_key) do
+    if Regex.match?(@api_key_pattern, api_key), do: :ok, else: invalid_api_key()
+  end
+
+  defp validate_api_key(_api_key), do: invalid_api_key()
+
+  defp invalid_api_key,
+    do: error("The Taskman API key must be a valid server-issued credential")
 
   defp write(config, config_path, options) do
     with :ok <- ensure_directory(Path.dirname(config_path)),
@@ -195,8 +273,8 @@ defmodule Taskman.CLI.Config do
   end
 
   defp validate_directory(directory) do
-    case File.stat(directory) do
-      {:ok, %File.Stat{type: :directory, mode: mode}} when (mode &&& 0o022) == 0 ->
+    case File.lstat(directory) do
+      {:ok, %File.Stat{type: :directory, mode: mode}} when (mode &&& 0o777) == 0o700 ->
         :ok
 
       {:ok, %File.Stat{type: :directory}} ->
@@ -210,7 +288,34 @@ defmodule Taskman.CLI.Config do
     end
   end
 
-  defp validate_file_mode(mode) when (mode &&& 0o077) == 0, do: :ok
+  defp validate_config_file(%File.Stat{type: :regular, links: 1, mode: mode}) do
+    validate_file_mode(mode)
+  end
+
+  defp validate_config_file(%File.Stat{type: :regular, links: links}) when links > 1 do
+    error("The Taskman configuration file must not have hard links")
+  end
+
+  defp validate_config_file(%File.Stat{}) do
+    error("The Taskman configuration path must be a regular file")
+  end
+
+  defp validate_opened_file(expected, opened) do
+    with :ok <- validate_config_file(opened),
+         true <- same_file?(expected, opened) do
+      :ok
+    else
+      false -> error("The Taskman configuration file changed while it was being read")
+      {:error, :invalid_configuration, _message} = result -> result
+    end
+  end
+
+  defp same_file?(expected, opened) do
+    expected.inode == opened.inode and expected.major_device == opened.major_device and
+      expected.minor_device == opened.minor_device and expected.size == opened.size
+  end
+
+  defp validate_file_mode(mode) when (mode &&& 0o777) == 0o600, do: :ok
 
   defp validate_file_mode(_mode) do
     error("Unsafe Taskman configuration file permissions; run chmod 600 on config.json")
@@ -230,7 +335,7 @@ defmodule Taskman.CLI.Config do
                end
              end),
            :ok <- rename(stage, config_path, options) do
-        :ok
+        sync_directory(Path.dirname(config_path), options)
       else
         {:error, _reason} -> error("Could not atomically replace the Taskman configuration file")
       end
@@ -239,10 +344,158 @@ defmodule Taskman.CLI.Config do
       :ok ->
         :ok
 
-      {:error, :invalid_configuration, _message} = error ->
+      _other ->
         _ = File.rm(stage)
-        error
+        error("Could not atomically replace the Taskman configuration file")
     end
+  end
+
+  defp sync_directory(directory, options) do
+    case option(options, :sync_directory) do
+      sync_directory when is_function(sync_directory, 1) -> sync_directory.(directory)
+      _other -> sync_directory(directory)
+    end
+  rescue
+    _error -> {:error, :sync_failed}
+  end
+
+  defp sync_directory(directory) do
+    with {:ok, device} <- :file.open(String.to_charlist(directory), [:read, :raw, :directory]) do
+      try do
+        :file.sync(device)
+      after
+        :file.close(device)
+      end
+    end
+  end
+
+  defp with_config_lock(config_path, options, fun) when is_function(fun, 0) do
+    lock_path = config_path <> ".lock"
+
+    case acquire_lock(lock_path, options, 0) do
+      :ok ->
+        try do
+          fun.()
+        after
+          _ = release_lock(lock_path)
+        end
+
+      {:error, message} ->
+        error(message)
+    end
+  end
+
+  defp acquire_lock(lock_path, options, attempt) do
+    case File.mkdir(lock_path) do
+      :ok ->
+        with :ok <- File.chmod(lock_path, 0o700),
+             :ok <- File.write(Path.join(lock_path, "owner"), @lock_marker, [:exclusive]) do
+          :ok
+        else
+          {:error, _reason} ->
+            _ = File.rm_rf(lock_path)
+            {:error, "The Taskman configuration file could not be locked"}
+        end
+
+      {:error, :eexist} ->
+        with :ok <- recover_stale_lock(lock_path, options),
+             :ok <- wait_for_lock(options, attempt) do
+          acquire_lock(lock_path, options, attempt + 1)
+        end
+
+      {:error, _reason} ->
+        {:error, "The Taskman configuration file could not be locked"}
+    end
+  end
+
+  defp wait_for_lock(options, attempt) do
+    if attempt < option(options, :lock_retry_limit, @lock_retry_limit) do
+      receive do
+      after
+        option(options, :lock_retry_delay_ms, @lock_retry_delay_ms) -> :ok
+      end
+    else
+      {:error, "The Taskman configuration file is busy; try again"}
+    end
+  end
+
+  defp recover_stale_lock(lock_path, options) do
+    case File.lstat(lock_path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "Refusing unsafe symlink configuration lock"}
+
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        if stale_lock?(stat, options) do
+          move_owned_stale_lock(lock_path)
+        else
+          :ok
+        end
+
+      {:ok, _stat} ->
+        {:error, "Refusing unsafe configuration lock"}
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, _reason} ->
+        {:error, "The Taskman configuration file could not be locked"}
+    end
+  end
+
+  defp stale_lock?(%File.Stat{mtime: mtime}, options) do
+    DateTime.diff(DateTime.utc_now(), file_datetime(mtime), :millisecond) >=
+      option(options, :stale_lock_after_ms, @stale_lock_after_ms)
+  end
+
+  defp file_datetime({date, time}) do
+    {date, time}
+    |> NaiveDateTime.from_erl!()
+    |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  defp move_owned_stale_lock(lock_path) do
+    with :ok <- validate_owned_lock(lock_path),
+         stale_path <-
+           lock_path <> ".stale-" <> Integer.to_string(System.unique_integer([:positive])),
+         :ok <- File.rename(lock_path, stale_path),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(stale_path),
+         {:ok, _removed} <- File.rm_rf(stale_path) do
+      :ok
+    else
+      {:error, _reason} -> {:error, "Refusing unsafe stale configuration lock"}
+      _other -> {:error, "Refusing unsafe stale configuration lock"}
+    end
+  end
+
+  defp validate_owned_lock(lock_path) do
+    owner_path = Path.join(lock_path, "owner")
+
+    with {:ok, %File.Stat{type: :regular}} <- File.lstat(owner_path),
+         {:ok, @lock_marker} <- File.read(owner_path),
+         {:ok, entries} <- File.ls(lock_path),
+         true <- entries == ["owner"] do
+      :ok
+    else
+      _other -> {:error, :unowned_lock}
+    end
+  end
+
+  defp release_lock(lock_path) do
+    with :ok <- validate_owned_lock(lock_path),
+         {:ok, _removed} <- File.rm_rf(lock_path) do
+      :ok
+    else
+      _other -> :ok
+    end
+  end
+
+  defp before_write(config_path, options) do
+    case option(options, :before_write) do
+      hook when is_function(hook, 1) -> hook.(config_path)
+      _other -> :ok
+    end
+  rescue
+    _error -> {:error, :before_write_failed}
   end
 
   defp rename(from, to, options) do

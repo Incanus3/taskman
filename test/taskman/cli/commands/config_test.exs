@@ -3,7 +3,7 @@ defmodule Taskman.CLI.Commands.ConfigTest do
 
   alias Taskman.FakeTerminal
 
-  @api_key "tm_prompted_config_credential"
+  @api_key "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
 
   @tag :tmp_dir
   test "set-url, secret-prompted set-key, and show manage private configuration", %{
@@ -60,7 +60,7 @@ defmodule Taskman.CLI.Commands.ConfigTest do
         config_root: root,
         env: %{
           "TASKMAN_API_URL" => "https://environment.example",
-          "TASKMAN_API_KEY" => "tm_environment_config_credential"
+          "TASKMAN_API_KEY" => @api_key
         }
       )
 
@@ -72,7 +72,7 @@ defmodule Taskman.CLI.Commands.ConfigTest do
              Jason.decode!(result.stdout)
 
     refute result.stdout =~ @api_key
-    refute result.stdout =~ "tm_environment_config_credential"
+    refute result.stdout =~ @api_key
   end
 
   test "set-key accepts no positional value or api-key option" do

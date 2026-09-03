@@ -79,7 +79,7 @@ defmodule Taskman.CLITest do
   test "ordinary API commands resolve an environment key and send it only as a bearer header", %{
     tmp_dir: tmp_dir
   } do
-    credential = "tm_runner_environment_credential"
+    credential = "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
 
     Req.Test.expect(TaskmanCLIRunner, fn conn ->
       assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> credential]
@@ -98,5 +98,38 @@ defmodule Taskman.CLITest do
     assert result.stderr == ""
     assert result.stdout == "{\"data\":[]}\n"
     refute result.stdout =~ credential
+  end
+
+  @tag :tmp_dir
+  test "ordinary CLI commands seal the resolved key against runtime authentication overrides", %{
+    tmp_dir: tmp_dir
+  } do
+    resolved = "tm_ResolvedPayload_123456"
+    injected = "tm_InjectedPayload_654321"
+
+    Req.Test.expect(TaskmanCLIRunner, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> resolved]
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    result =
+      Taskman.CLI.run(["projects", "list", "--json"],
+        api_key: injected,
+        config_root: Path.join(tmp_dir, "xdg"),
+        env: %{"TASKMAN_API_KEY" => resolved},
+        req_options: [
+          plug: {Req.Test, TaskmanCLIRunner},
+          auth: {:bearer, injected},
+          headers: [{"authorization", "Bearer " <> injected}],
+          request_steps: [
+            rewrite_actor: fn request ->
+              Req.Request.put_header(request, "authorization", "Bearer " <> injected)
+            end
+          ]
+        ]
+      )
+
+    assert result.status == 0
+    assert result.stdout == "{\"data\":[]}\n"
   end
 end

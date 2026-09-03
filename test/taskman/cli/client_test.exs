@@ -34,8 +34,34 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:ok, []} =
              Client.request(:get, "/api/v1/projects", [],
-               api_key: credential,
+               resolved_api_key: credential,
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "sealed resolved credentials win over caller auth, headers, steps, and the old api_key seam" do
+    resolved = "tm_ResolvedPayload_123456"
+    injected = "tm_InjectedPayload_654321"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> resolved]
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [],
+               api_key: injected,
+               resolved_api_key: resolved,
+               req_options: [
+                 plug: {Req.Test, TaskmanCLIClient},
+                 auth: {:bearer, injected},
+                 headers: [{"AUTHORIZATION", "Bearer " <> injected}],
+                 request_steps: [
+                   rewrite_actor: fn request ->
+                     Req.Request.put_header(request, "authorization", "Bearer " <> injected)
+                   end
+                 ]
+               ]
              )
   end
 
@@ -115,11 +141,28 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
              Client.request(:get, "/api/v1/projects", [],
-               api_key: credential,
+               resolved_api_key: credential,
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
 
     refute message =~ credential
+  end
+
+  test "redacts escaped inspected credential representations" do
+    credential = "tm_escaped_secret\ncontrol"
+
+    Req.Test.expect(TaskmanCLIClient, fn _conn ->
+      raise inspect(%{authorization: "Bearer " <> credential})
+    end)
+
+    assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    refute message =~ "tm_escaped_secret"
+    assert message =~ "[REDACTED]"
   end
 
   test "maps concurrent Task updates to exit status 3 and preserves fields" do
