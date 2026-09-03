@@ -19,12 +19,15 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     root = File.cwd!()
     service_path = Path.join(root, "ops/systemd/taskman.service")
     caddyfile_path = Path.join(root, "ops/caddy/Caddyfile")
+    deployment_path = Path.join(root, "docs/deployment.md")
 
     assert File.exists?(service_path), "expected the versioned-release systemd example"
     assert File.exists?(caddyfile_path), "expected the loopback Caddy example"
+    assert File.exists?(deployment_path), "expected the hosted deployment runbook"
 
     service = File.read!(service_path)
     caddyfile = File.read!(caddyfile_path)
+    deployment = File.read!(deployment_path)
 
     assert service =~ "User=taskman"
     assert service =~ "Group=taskman"
@@ -37,6 +40,12 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
     assert caddyfile =~ "taskman.example.com {"
     assert caddyfile =~ "reverse_proxy 127.0.0.1:4000"
+
+    assert deployment =~
+             "caddy validate --config /etc/caddy/Caddyfile\nsystemctl enable --now caddy.service"
+
+    assert deployment =~
+             ~r/On later\s+Caddyfile changes, validate first and then `systemctl reload caddy\.service`\./
   end
 
   test "an invited user accesses shared work through LiveView and CLI until disabled", %{

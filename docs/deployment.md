@@ -129,10 +129,14 @@ mv -Tf /opt/taskman/current.next /opt/taskman/current
 
 install -o root -g root -m 0644 /tmp/taskman.service /etc/systemd/system/taskman.service
 install -o root -g root -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile
 systemctl daemon-reload
+caddy validate --config /etc/caddy/Caddyfile
+systemctl enable --now caddy.service
 systemctl enable --now taskman.service
-systemctl reload caddy.service
+systemctl status caddy.service --no-pager
+systemctl status taskman.service --no-pager
+journalctl -u caddy.service -b --no-pager
+journalctl -u taskman.service -b --no-pager
 ```
 
 The atomic rename of `current.next` makes `/opt/taskman/current` select exactly one versioned
@@ -140,6 +144,17 @@ release. The service executes `current/bin/migrate` before it starts `current/bi
 migration prevents the new server from starting. Never edit a directory selected by `current`.
 The service also sets `RELEASE_TMP=/var/lib/taskman`, its dedicated writable state directory, so the
 root-managed immutable release remains read-only at runtime.
+
+The Caddy validation must succeed before its first `systemctl enable --now caddy.service`. On later
+Caddyfile changes, validate first and then `systemctl reload caddy.service`. Never enable or reload
+an unvalidated Caddy configuration. Verify the running proxy after either operation:
+
+```sh
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy.service
+systemctl status caddy.service --no-pager
+journalctl -u caddy.service -b --no-pager
+```
 
 Create the first administrator only on the server console. This command lets systemd read the
 root-only environment file while the release itself runs as `taskman`:
