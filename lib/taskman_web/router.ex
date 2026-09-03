@@ -31,6 +31,8 @@ defmodule TaskmanWeb.Router do
                   ]
 
     delete "/sign-out", AuthController, :sign_out
+    post "/account/settings/password", AuthController, :update_password
+    post "/account/settings/delete", AuthController, :delete_account
 
     auth_routes AuthController, Taskman.Accounts.User
 
@@ -54,6 +56,7 @@ defmodule TaskmanWeb.Router do
       on_mount: [{TaskmanWeb.LiveUserAuth, :require_authenticated}],
       session: {TaskmanWeb.LiveUserAuth, :generate_session, []} do
       live "/", ProjectLive, :index
+      live "/account/settings", AccountSettingsLive, :index
       live "/projects/:project_id", ProjectLive, :show
       live "/projects/:project_id/tasks/new", ProjectLive, :new_task
       live "/projects/:project_id/tasks/:task_id", ProjectLive, :show_task

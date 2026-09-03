@@ -35,4 +35,30 @@ defmodule TaskmanWeb.AccountComponents do
     </nav>
     """
   end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :description, :string, default: nil
+  attr :danger?, :boolean, default: false
+  slot :inner_block, required: true
+
+  @doc "Renders a focused section within account settings."
+  def settings_section(assigns) do
+    ~H"""
+    <section
+      id={@id}
+      class={[
+        "rounded-2xl border p-6 shadow-sm",
+        @danger? && "border-rose-500/40 bg-rose-950/20",
+        !@danger? && "border-slate-700 bg-slate-900"
+      ]}
+    >
+      <header class="mb-5">
+        <h2 class="text-lg font-semibold text-slate-100">{@title}</h2>
+        <p :if={@description} class="mt-1 text-sm text-slate-400">{@description}</p>
+      </header>
+      {render_slot(@inner_block)}
+    </section>
+    """
+  end
 end

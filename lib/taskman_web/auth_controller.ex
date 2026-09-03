@@ -12,6 +12,7 @@ defmodule TaskmanWeb.AuthController do
   use AshAuthentication.Phoenix.Controller
 
   alias AshAuthentication.Jwt
+  alias Taskman.Accounts
   alias Taskman.Accounts.Token
   alias TaskmanWeb.LiveUserAuth
 
@@ -64,6 +65,59 @@ defmodule TaskmanWeb.AuthController do
     conn
     |> clear_session(:taskman)
     |> redirect(to: ~p"/sign-in")
+  end
+
+  @doc false
+  def update_password(conn, %{"password_change" => params}) when is_map(params) do
+    user = conn.assigns[:current_user]
+    acting_token = get_session(conn, :user_token)
+
+    with true <- is_struct(user),
+         true <- is_binary(acting_token),
+         {:ok, %{user: updated_user, replacement_session: replacement_token}} <-
+           Accounts.change_password(user, acting_token, params),
+         {:ok, conn} <- install_browser_session(conn, updated_user, replacement_token) do
+      conn
+      |> put_flash(:info, "Password updated.")
+      |> redirect(to: ~p"/account/settings")
+    else
+      _ ->
+        conn
+        |> put_flash(:error, "Unable to update the password.")
+        |> redirect(to: ~p"/account/settings")
+    end
+  end
+
+  def update_password(conn, _params) do
+    conn
+    |> put_flash(:error, "Unable to update the password.")
+    |> redirect(to: ~p"/account/settings")
+  end
+
+  @doc false
+  def delete_account(conn, %{"delete_account" => params}) when is_map(params) do
+    user = conn.assigns[:current_user]
+
+    with true <- is_struct(user),
+         "DELETE" <- Map.get(params, "confirmation"),
+         current_password when is_binary(current_password) <- Map.get(params, "current_password"),
+         :ok <- Accounts.delete_own_account(user, current_password) do
+      conn
+      |> clear_session(:taskman)
+      |> put_flash(:info, "Account deleted.")
+      |> redirect(to: ~p"/sign-in")
+    else
+      _ ->
+        conn
+        |> put_flash(:error, "Account deletion was not completed.")
+        |> redirect(to: ~p"/account/settings")
+    end
+  end
+
+  def delete_account(conn, _params) do
+    conn
+    |> put_flash(:error, "Account deletion was not completed.")
+    |> redirect(to: ~p"/account/settings")
   end
 
   @doc "Returns the session-specific LiveView socket topic for a browser token."

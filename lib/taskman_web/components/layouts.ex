@@ -38,7 +38,7 @@ defmodule TaskmanWeb.Layouts do
   slot :inner_block, required: true
 
   def app(assigns) do
-    assigns = assign_new(assigns, :current_user, fn -> nil end)
+    assigns = assign(assigns, :current_user, assigns.current_user || assigns.current_scope)
 
     ~H"""
     <header

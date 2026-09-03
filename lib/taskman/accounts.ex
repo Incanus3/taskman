@@ -138,6 +138,97 @@ defmodule Taskman.Accounts do
     end
   end
 
+  @spec list_sessions(User.t()) :: {:ok, [map()]} | {:error, term()}
+  def list_sessions(actor) do
+    with {:ok, actor} <- current_api_key_actor(actor) do
+      subject = AshAuthentication.user_to_subject(actor)
+
+      sessions =
+        Repo.all(
+          from token in Token,
+            where: token.subject == ^subject and token.purpose == "user",
+            order_by: [desc: token.created_at, desc: token.jti]
+        )
+        |> Enum.map(fn token ->
+          %{jti: token.jti, created_at: token.created_at, expires_at: token.expires_at}
+        end)
+
+      {:ok, sessions}
+    end
+  end
+
+  @spec revoke_session(User.t(), String.t()) :: :ok | {:error, term()}
+  def revoke_session(actor, jti) when is_binary(jti) do
+    with {:ok, actor} <- current_api_key_actor(actor),
+         true <- stored_browser_session?(actor, jti),
+         :ok <- Token.revoke_jti(jti, AshAuthentication.user_to_subject(actor), disconnect?: true) do
+      :ok
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def revoke_session(_actor, _jti), do: {:error, :invalid_input}
+
+  @spec revoke_other_sessions(User.t(), String.t()) :: :ok | {:error, term()}
+  def revoke_other_sessions(actor, acting_token) when is_binary(acting_token) do
+    with {:ok, actor} <- current_api_key_actor(actor),
+         {:ok, _stored_token, %{"jti" => acting_jti, "sub" => subject}} <-
+           Token.claim_browser_session(acting_token),
+         true <- subject == AshAuthentication.user_to_subject(actor),
+         :ok <- Token.revoke_for_subject_except(actor, "user", acting_jti) do
+      :ok
+    else
+      false -> {:error, :invalid_session}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_session}
+    end
+  end
+
+  def revoke_other_sessions(_actor, _acting_token), do: {:error, :invalid_input}
+
+  @spec change_password(User.t(), map()) :: {:ok, User.t()} | {:error, term()}
+  def change_password(actor, params) when is_map(params) do
+    with {:ok, actor} <- current_api_key_actor(actor) do
+      update_user(actor, :change_password, params, actor: actor)
+    end
+  end
+
+  def change_password(_actor, _params), do: {:error, :invalid_input}
+
+  @spec change_password(User.t(), String.t(), map()) ::
+          {:ok, %{user: User.t(), replacement_session: String.t()}} | {:error, term()}
+  def change_password(actor, acting_token, params)
+      when is_binary(acting_token) and is_map(params) do
+    with {:ok, actor} <- current_api_key_actor(actor) do
+      case transaction(fn ->
+             with {:ok, locked_actor} <- lock_user(actor.id),
+                  {:ok, updated_user} <-
+                    update_user(locked_actor, :change_password, params, actor: actor),
+                  {:ok, replacement_session, peer_jtis} <-
+                    replace_acting_browser_session(updated_user, acting_token) do
+               {:ok,
+                %{
+                  user: updated_user,
+                  replacement_session: replacement_session,
+                  peer_jtis: peer_jtis
+                }}
+             end
+           end) do
+        {:ok, %{peer_jtis: peer_jtis} = result} ->
+          with :ok <- Token.broadcast_session_jtis(peer_jtis) do
+            {:ok, Map.delete(result, :peer_jtis)}
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  def change_password(_actor, _acting_token, _params), do: {:error, :invalid_input}
+
   defp api_key_param(params) do
     case Map.get(params, :api_key, Map.get(params, "api_key")) do
       api_key when is_binary(api_key) ->
@@ -293,6 +384,48 @@ defmodule Taskman.Accounts do
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
 
     Ash.read(query, actor: actor, domain: __MODULE__)
+  end
+
+  defp stored_browser_session?(actor, jti) do
+    subject = AshAuthentication.user_to_subject(actor)
+
+    Repo.exists?(
+      from token in Token,
+        where: token.subject == ^subject and token.purpose == "user" and token.jti == ^jti
+    )
+  end
+
+  defp broadcast_session_topics(topics) do
+    Enum.reduce_while(topics, :ok, fn topic, :ok ->
+      case Token.broadcast_disconnect(topic) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp replace_acting_browser_session(user, acting_token) do
+    subject = AshAuthentication.user_to_subject(user)
+
+    with {:ok, acting_record, %{"jti" => acting_jti, "sub" => ^subject}} <-
+           Token.claim_browser_session(acting_token),
+         true <- acting_record.subject == subject,
+         {:ok, peer_jtis} <-
+           Token.revoke_for_subject_except_with_jtis(
+             user,
+             "user",
+             acting_jti,
+             disconnect?: false
+           ),
+         {:ok, replacement_session, _claims} <-
+           Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user),
+         :ok <- Token.revoke_jti(acting_jti, subject, disconnect?: false) do
+      {:ok, replacement_session, peer_jtis}
+    else
+      false -> {:error, :invalid_session}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_session}
+    end
   end
 
   defp authentication_failed do
@@ -588,15 +721,16 @@ defmodule Taskman.Accounts do
   @spec delete_own_account(User.t(), String.t()) :: :ok | {:error, term()}
   def delete_own_account(actor, current_password)
       when is_struct(actor, User) and is_binary(current_password) do
-    result =
-      actor
-      |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
-      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
-
-    case result do
-      :ok -> :ok
-      {:ok, _user} -> :ok
-      {:error, _reason} = error -> error
+    with {:ok, topics} <- Token.browser_session_topics(actor),
+         result <-
+           actor
+           |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
+           |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__) do
+      case result do
+        :ok -> broadcast_session_topics(topics)
+        {:ok, _user} -> broadcast_session_topics(topics)
+        {:error, _reason} = error -> error
+      end
     end
   end
 
