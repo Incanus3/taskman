@@ -11,16 +11,19 @@ defmodule Taskman.Accounts.User do
     backend RateLimit
   end
 
-  alias Taskman.Accounts.Changes.{
+  alias Taskman.Accounts.User.Changes.{
     DeliverManagedEmail,
     ProtectLastAdmin,
     RequireActiveAdministrator
   }
 
-  alias Taskman.Accounts.Checks.PersistedActiveAdministrator
-  alias Taskman.Accounts.ManualManageEmail
-  alias Taskman.Accounts.Preparations.RequireActiveAdministrator, as: RequireActiveAdminRead
-  alias Taskman.Accounts.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
+  alias Taskman.Accounts.User.Checks.PersistedActiveAdministrator
+  alias Taskman.Accounts.User.ManualUpdates.ManageEmail
+
+  alias Taskman.Accounts.User.Preparations.RequireActiveAdministrator,
+    as: RequireActiveAdminRead
+
+  alias Taskman.Accounts.User.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
   alias Taskman.Accounts.User.Status
 
   postgres do
@@ -253,7 +256,7 @@ defmodule Taskman.Accounts.User do
         allow_nil? false
       end
 
-      manual ManualManageEmail
+      manual ManageEmail
       change DeliverManagedEmail
     end
 

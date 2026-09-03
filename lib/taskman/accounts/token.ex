@@ -27,7 +27,7 @@ defmodule Taskman.Accounts.Token do
       end
 
       change AshAuthentication.TokenResource.StoreTokenChange
-      change Taskman.Accounts.Changes.GuardTokenIssuance
+      change Taskman.Accounts.Token.Changes.GuardIssuance
     end
   end
 
