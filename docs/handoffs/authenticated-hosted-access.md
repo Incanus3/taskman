@@ -1,7 +1,7 @@
 # Authenticated Hosted Access Handoff
 
 **Status:** active
-**Updated:** 2026-09-02
+**Updated:** 2026-09-03
 **Resume:** `$resume authenticated-hosted-access`
 
 ## Objective
@@ -16,23 +16,28 @@ without migrating existing domain resources to Ash.
 - [MVP product specification](../product/mvp-spec.md)
 - [MVP roadmap](../planning/roadmap.md)
 - Beads feature: `tas-authenticated-hosted-access-2a8`
-- Next issue: `tas-authenticated-hosted-access-2a8.1`
+- Completed delivery issue: `tas-authenticated-hosted-access-2a8.13`
 
 ## Checkpoint
 
-The specification and implementation plan are approved. The thirteen-task Beads delivery graph is
-created under `tas-authenticated-hosted-access-2a8`, has no dependency cycles, and starts with the
-AshPostgres/Ecto compatibility gate. Plan review strengthened the existing CLI-skill parity
-contract: CLI `0.2.0`, canonical source, compiled bundle, installed copy, registry coverage,
-examples, and ownership metadata must remain aligned without hard-coding a release version in
-parity tests. No implementation has started.
+Tasks 1–13 are implemented and independently reviewed through commit `88b4e0e`, with the hosted
+branch stacked on the design branch. Authenticated browser, API, administrator, account-management,
+and CLI flows are complete; Accounts remains isolated in Ash while Project, List, and Task remain
+Ecto. Production runtime configuration, release commands, systemd/Caddy examples, deployment and
+rollback guidance, and integrated invited-user-to-disablement coverage are present. Delivery issue
+`tas-authenticated-hosted-access-2a8.13` is closed.
+
+The parent feature `tas-authenticated-hosted-access-2a8` and roadmap checkbox remain open because
+the Caddy binary is unavailable locally. All locally available technical checks passed; the only
+remaining acceptance evidence is host-side validation of `ops/caddy/Caddyfile`.
 
 ## Next actions
 
-1. Stop at this clean-session boundary.
-2. Resume with `$resume authenticated-hosted-access`.
-3. Read the approved spec and plan, claim `tas-authenticated-hosted-access-2a8.1`, and execute its
-   test-first compatibility gate.
+1. On a deployment-compatible host with Caddy installed, run
+   `caddy validate --config ops/caddy/Caddyfile`.
+2. Record the successful validation evidence in the canonical roadmap/handoff state.
+3. Close `tas-authenticated-hosted-access-2a8` and mark the roadmap item complete only after that
+   evidence exists. Deployment and other external changes still require separate authorization.
 
 ## Constraints and uncertainty
 
@@ -45,15 +50,49 @@ parity tests. No implementation has started.
 - Authenticated password changes rotate and preserve the acting browser session while revoking
   other sessions; recovery-link resets revoke every session.
 - Actual server, DNS, Resend-account, and deployment changes remain unauthorized external actions.
-- The first implementation gate must prove unchanged Ecto behavior after adopting
-  `AshPostgres.Repo`.
+- Do not mark the parent feature or roadmap complete until Caddy validation succeeds.
+- Earlier scoped reviews left only non-blocking edge-coverage and compatibility minors; none block
+  the host-side validation step.
 
 ## Verification
 
-The specification was checked against the clean upstream baseline
-`7a0a664caa6c2ef050649b98202df6db8c1ee415`. Documentation self-review found no unresolved
-placeholders, contradictions, or broken local links after the account-deletion and administrator
-email-management amendments and the password-change session correction. The implementation plan
-was checked for specification coverage, file/interface ownership, task ordering, test-first steps,
-local links, and whitespace. The Beads graph reports no dependency cycles and is synchronized to
-JSONL. `mix precommit` passed with 543 tests on 2026-09-02.
+Before Task 1, `mix precommit` passed with 543 tests. Task 1 passed with 545 tests. Task 2 passed 8
+focused Accounts tests, 82 Project/List/Task regressions, the migration-generation check, and
+`mix precommit` with 553 tests on 2026-09-02. Independent reviews found no blocking issues.
+Task 3 passed 16 focused tests after its terminal fix and `mix precommit` with 569 tests; scoped
+re-review confirmed both production-terminal findings were addressed.
+Task 4 passed 27 focused lifecycle/mail tests and `mix precommit` with 596 tests. Scoped re-review
+confirmed transactional single-use, rotation, rollback, and genuine multi-connection contention.
+Task 5 passed 23 focused auth/session tests, 223 LiveView tests, and `mix precommit` with 619 tests.
+Scoped review confirmed all session hardening findings against the final immutable fix.
+Task 6 passed 88 focused Accounts/API/CLI tests and `mix precommit` with 637 tests. Scoped review
+confirmed complete-credential hashing, canonical verification, pre-parser rejection, persisted-user
+authorization, exact expiry behavior, equal-length comparisons, and the narrow runtime CLI seam.
+Task 7 passed 46 focused lifecycle/email/deletion/invitation/session tests and `mix precommit` with
+654 tests. Scoped re-review confirmed transactional revocation and actor locks, locked-state email
+routing, the unified Ash action, lifecycle guards, and genuine database-observed final-admin
+contention.
+Task 8 passed 12 focused settings/session tests, 65 broader auth/account tests, and `mix precommit`
+with 666 tests. Scoped re-review confirmed repeated one-time-key replacement, current/pending email
+state, active-session filtering, single deletion broadcasts, and deterministic change/reset races
+that cannot yield an old-password-authenticated browser session.
+Task 9 passed 21 focused admin tests, 75 related auth/account tests, and `mix precommit` with 687
+tests. Scoped review confirmed server-blocked AshAdmin privilege events, persisted administrator
+checks, safe User inspection and action forms, typed deletion confirmation, label-free exposure,
+and normalized fallback-resistant record routing.
+Task 10 passed 55 focused boundary tests, 76 related auth/API/configuration tests, and precommit;
+a fresh full suite passed 707 tests. Scoped security review confirmed reset limiting before side
+effects, resend guidance, strong distinct secrets, UUID-only log fields, remaining-window retry
+guidance, loopback-only proxy trust, and secure production endpoint settings.
+Task 11 passed 179 requested CLI/API tests and `mix precommit` with 740 tests; the escript reports
+0.2.0. Scoped security review confirmed resolved-key-only Req authentication, descriptor-bound
+config reads, exact modes and durable atomic writes, non-stealing token-owned writer locks, and
+symlink-resistant installer updates with complete old/new skill visibility.
+Task 12 passed 11 focused release/runtime tests, production compile/assets/release assembly, and
+`mix precommit` with 751 tests. Scoped review confirmed migration/bootstrap endpoint isolation,
+executable release overlays, Resend/Req runtime configuration, secret-safe errors, and validated
+canonical sender addresses.
+Task 13 passed its 2 integrated hosted-access tests, migration generation check, production
+compile/assets/release assembly, staged-root systemd validation, and `mix precommit` with 753 tests.
+Scoped re-review confirmed Caddy validation precedes first-install enable/start and later reloads,
+with status/journal checks. Local Caddy validation was not run because the binary is unavailable.
