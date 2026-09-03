@@ -265,12 +265,15 @@ defmodule TaskmanWeb.Live.SessionRevocationTest do
 
   defp forge_signature(token) do
     [header, payload, signature] = String.split(token, ".", parts: 3)
-    replacement = if String.last(signature) == "A", do: "B", else: "A"
 
-    Enum.join(
-      [header, payload, String.slice(signature, 0, String.length(signature) - 1) <> replacement],
-      "."
-    )
+    {:ok, <<first_byte, remaining_bytes::binary>>} =
+      Base.url_decode64(signature, padding: false)
+
+    forged_signature =
+      <<Bitwise.bxor(first_byte, 1), remaining_bytes::binary>>
+      |> Base.url_encode64(padding: false)
+
+    Enum.join([header, payload, forged_signature], ".")
   end
 
   defp with_failing_revocation(failing_jti, fun) do

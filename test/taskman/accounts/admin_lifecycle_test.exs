@@ -130,13 +130,25 @@ defmodule Taskman.Accounts.AdminLifecycleTest do
 
         try do
           results =
-            concurrently([{:first, first, second}, {:second, second, first}], fn
-              {_name, actor, target} ->
-                case action do
-                  :demote -> Accounts.demote_user(actor, target)
-                  :disable -> Accounts.disable_user(actor, target)
-                  :delete -> Accounts.delete_user(actor, target)
-                end
+            with_lifecycle_write_gate([first, second], fn release_gate ->
+              attempts =
+                start_concurrent_attempts([{:first, first, second}, {:second, second, first}], fn
+                  {_name, actor, target} ->
+                    case action do
+                      :demote -> Accounts.demote_user(actor, target)
+                      :disable -> Accounts.disable_user(actor, target)
+                      :delete -> Accounts.delete_user(actor, target)
+                    end
+                end)
+
+              assert 2 == attempts.backend_pids |> Enum.uniq() |> length()
+
+              release_concurrent_attempts(attempts)
+
+              assert :ok = await_backend_blocked_by_peer(attempts.backend_pids)
+
+              release_gate.()
+              await_concurrent_attempts(attempts)
             end)
 
           assert 1 == Enum.count(results, &(match?({:ok, _}, &1) or &1 == :ok))
@@ -314,6 +326,141 @@ defmodule Taskman.Accounts.AdminLifecycleTest do
 
     Enum.each(workers, &send(&1, :run_attempt))
     Task.await(coordinator, :infinity)
+  end
+
+  defp start_concurrent_attempts(inputs, operation) do
+    test_pid = self()
+
+    coordinator =
+      Task.async(fn ->
+        Task.async_stream(
+          inputs,
+          fn input ->
+            :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+
+            try do
+              send(
+                test_pid,
+                {:admin_lifecycle_attempt_ready, self(), database_backend_pid()}
+              )
+
+              receive do
+                :run_attempt -> operation.(input)
+              end
+            after
+              :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+            end
+          end,
+          max_concurrency: length(inputs),
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+      end)
+
+    workers =
+      for _ <- inputs do
+        assert_receive {:admin_lifecycle_attempt_ready, worker, backend_pid}
+        %{pid: worker, backend_pid: backend_pid}
+      end
+
+    %{
+      coordinator: coordinator,
+      workers: workers,
+      backend_pids: Enum.map(workers, & &1.backend_pid)
+    }
+  end
+
+  defp release_concurrent_attempts(%{workers: workers}) do
+    Enum.each(workers, &release_concurrent_attempt/1)
+  end
+
+  defp release_concurrent_attempt(%{pid: pid}), do: send(pid, :run_attempt)
+
+  defp await_concurrent_attempts(%{coordinator: coordinator}),
+    do: Task.await(coordinator, :infinity)
+
+  defp await_backend_blocked_by_peer(backend_pids),
+    do: await_backend_blocked_by_peer(backend_pids, 1_000)
+
+  defp await_backend_blocked_by_peer(_backend_pids, 0),
+    do: flunk("workers never contended on each other's row locks")
+
+  defp await_backend_blocked_by_peer(backend_pids, attempts_left) do
+    backend_ids = Enum.join(backend_pids, ",")
+
+    assert %{rows: rows} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE pid IN (#{backend_ids})"
+             )
+
+    if Enum.any?(rows, fn [pid, blockers] ->
+         Enum.any?(blockers, &(&1 in (backend_pids -- [pid])))
+       end) do
+      :ok
+    else
+      :erlang.yield()
+      await_backend_blocked_by_peer(backend_pids, attempts_left - 1)
+    end
+  end
+
+  defp with_lifecycle_write_gate(users, fun) do
+    suffix = System.unique_integer([:positive])
+    function_name = "taskman_lifecycle_gate_#{suffix}"
+    trigger_name = "#{function_name}_trigger"
+    gate_key = System.unique_integer([:positive])
+    user_ids = users |> Enum.map(&"'#{&1.id}'::uuid") |> Enum.join(", ")
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION #{function_name}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF (TG_OP = 'DELETE' AND OLD.id IN (#{user_ids})) OR
+            (TG_OP <> 'DELETE' AND NEW.id IN (#{user_ids})) THEN
+          PERFORM pg_advisory_xact_lock(#{gate_key});
+        END IF;
+
+        IF TG_OP = 'DELETE' THEN
+          RETURN OLD;
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER #{trigger_name}
+      BEFORE UPDATE OR DELETE ON users
+      FOR EACH ROW
+      EXECUTE FUNCTION #{function_name}()
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+
+    released? = :atomics.new(1, [])
+
+    release_gate = fn ->
+      if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
+        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+      end
+    end
+
+    try do
+      fun.(release_gate)
+    after
+      release_gate.()
+      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
+      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+    end
   end
 
   defp direct_lifecycle_update(user, action, actor) do
