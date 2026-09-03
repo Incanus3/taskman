@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskDetailTest do
+defmodule TaskmanWeb.Tasks.DetailTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
@@ -6,14 +6,15 @@ defmodule TaskmanWeb.TaskDetailTest do
   import Phoenix.LiveViewTest
 
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.{TaskAutosave, TaskDetail, TaskHierarchy, TaskMove, TaskParentPicker}
+  alias TaskmanWeb.{TaskAutosave, TaskHierarchy, TaskMove, TaskParentPicker}
+  alias TaskmanWeb.Tasks.Detail
 
   test "renders the Task form and save status from one autosave state" do
     task = %Task{id: 41, project_id: 7, title: "Launch", status: :pending, priority: :none}
     task_autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: true)
 
     html =
-      render_component(&TaskDetail.detail/1, %{
+      render_component(&Detail.detail/1, %{
         task: task,
         task_autosave: task_autosave,
         parent_picker: TaskParentPicker.empty(),
@@ -42,7 +43,7 @@ defmodule TaskmanWeb.TaskDetailTest do
     hierarchy = hierarchy(2)
 
     html =
-      render_component(&TaskDetail.detail/1, %{
+      render_component(&Detail.detail/1, %{
         task: hierarchy.root.children |> hd() |> Map.fetch!(:task),
         task_autosave: TaskAutosave.load(TaskAutosave.empty(), task(2), saved?: true),
         parent_picker: TaskParentPicker.empty(),
@@ -94,7 +95,7 @@ defmodule TaskmanWeb.TaskDetailTest do
     hierarchy = %Hierarchy{selected_task_id: 7, root: hierarchy_node(7)}
 
     html =
-      render_component(&TaskDetail.detail/1, %{
+      render_component(&Detail.detail/1, %{
         task: task(7),
         task_autosave: TaskAutosave.load(TaskAutosave.empty(), task(7), saved?: true),
         parent_picker: TaskParentPicker.empty(),

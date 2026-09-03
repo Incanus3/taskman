@@ -1,9 +1,9 @@
-defmodule TaskmanWeb.TaskDetail do
+defmodule TaskmanWeb.Tasks.Detail do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.{TaskAutosave, TaskForm, TaskHierarchy, TaskMove, TaskParentPicker}
-  alias TaskmanWeb.TaskMove.Popover
+  alias TaskmanWeb.{TaskAutosave, TaskHierarchy, TaskMove, TaskParentPicker}
+  alias TaskmanWeb.Tasks.{Form, MovePopover}
 
   attr :task, Task, required: true
   attr :task_autosave, TaskAutosave, required: true
@@ -97,14 +97,14 @@ defmodule TaskmanWeb.TaskDetail do
                 data-move-task-popover
                 class="absolute left-0 right-0 top-full z-30"
               >
-                <Popover.popover
+                <MovePopover.popover
                   task_id={@task.id}
                   task_move={@task_move}
                   window_escape?={false}
                 />
               </div>
             </div>
-            <TaskForm.form
+            <Form.form
               form={@task_autosave.form}
               mode={:edit}
               change="autosave_task"

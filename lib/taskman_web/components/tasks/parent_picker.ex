@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskParentPickerComponent do
+defmodule TaskmanWeb.Tasks.ParentPicker do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}

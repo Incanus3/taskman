@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskFormTest do
+defmodule TaskmanWeb.Tasks.FormTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
@@ -7,7 +7,8 @@ defmodule TaskmanWeb.TaskFormTest do
 
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.{TaskForm, TaskParentPicker}
+  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.Tasks.Form
 
   test "renders accessible ordinary-field conflict notices with stable resolution actions" do
     task = %Task{
@@ -20,7 +21,7 @@ defmodule TaskmanWeb.TaskFormTest do
     }
 
     document =
-      render_component(&TaskForm.form/1, %{
+      render_component(&Form.form/1, %{
         form: task |> Tasks.change_task() |> to_form(),
         mode: :edit,
         change: "autosave_task",

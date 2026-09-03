@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskMove.Popover do
+defmodule TaskmanWeb.Tasks.MovePopover do
   use TaskmanWeb, :html
 
   alias TaskmanWeb.TaskMove

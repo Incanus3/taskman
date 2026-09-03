@@ -63,7 +63,7 @@ defmodule TaskmanWeb.ProjectLiveTaskTableTest do
 
     assert has_element?(
              view,
-             "#task-status-filter[phx-hook='TaskmanWeb.TaskComponents.TaskStatusFilterStorage']"
+             "#task-status-filter[phx-hook='TaskmanWeb.Tasks.Table.TaskStatusFilterStorage']"
            )
 
     assert has_element?(

@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskMove.PopoverTest do
+defmodule TaskmanWeb.Tasks.MovePopoverTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
@@ -6,11 +6,11 @@ defmodule TaskmanWeb.TaskMove.PopoverTest do
   import Phoenix.LiveViewTest
 
   alias TaskmanWeb.TaskMove
-  alias TaskmanWeb.TaskMove.Popover
+  alias TaskmanWeb.Tasks.MovePopover
 
   test "renders a labelled destination combobox with complete location paths" do
     html =
-      render_component(&Popover.popover/1, %{
+      render_component(&MovePopover.popover/1, %{
         task_id: 41,
         task_move: %TaskMove{
           active_task: %{
@@ -69,7 +69,7 @@ defmodule TaskmanWeb.TaskMove.PopoverTest do
 
   test "renders an empty search state, local error, and explicit cancellation" do
     html =
-      render_component(&Popover.popover/1, %{
+      render_component(&MovePopover.popover/1, %{
         task_id: 41,
         task_move:
           task_move(
@@ -102,7 +102,7 @@ defmodule TaskmanWeb.TaskMove.PopoverTest do
 
   test "focuses a collapsed destination combobox when the popover mounts" do
     html =
-      render_component(&Popover.popover/1, %{
+      render_component(&MovePopover.popover/1, %{
         task_id: 41,
         task_move: task_move()
       })
@@ -131,7 +131,7 @@ defmodule TaskmanWeb.TaskMove.PopoverTest do
 
   test "restores the previously pushed focus when the popover is removed" do
     html =
-      render_component(&Popover.popover/1, %{
+      render_component(&MovePopover.popover/1, %{
         task_id: 41,
         task_move: task_move()
       })
@@ -147,7 +147,7 @@ defmodule TaskmanWeb.TaskMove.PopoverTest do
 
   test "can leave Escape ownership to an enclosing dialog" do
     html =
-      render_component(&Popover.popover/1, %{
+      render_component(&MovePopover.popover/1, %{
         task_id: 41,
         task_move: task_move(),
         window_escape?: false

@@ -1,9 +1,10 @@
-defmodule TaskmanWeb.TaskForm do
+defmodule TaskmanWeb.Tasks.Form do
   use TaskmanWeb, :html
 
   import Phoenix.Component, except: [form: 1]
 
-  alias TaskmanWeb.{TaskComponents, TaskParentPicker, TaskParentPickerComponent}
+  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.Tasks.{ParentPicker, Table}
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :mode, :atom, values: [:new, :edit], required: true
@@ -65,7 +66,7 @@ defmodule TaskmanWeb.TaskForm do
         }
       </script>
       <div class="mt-4">
-        <TaskParentPickerComponent.parent_picker picker={@parent_picker} />
+        <ParentPicker.parent_picker picker={@parent_picker} />
       </div>
       <div
         :if={@parent_picker.error}
@@ -93,7 +94,7 @@ defmodule TaskmanWeb.TaskForm do
           id="task-status"
           type="select"
           label="Status"
-          options={TaskComponents.status_options()}
+          options={Table.status_options()}
         />
         <.conflict_notice
           :if={Map.has_key?(@conflicts, "status")}
@@ -105,7 +106,7 @@ defmodule TaskmanWeb.TaskForm do
           id="task-priority"
           type="select"
           label="Priority"
-          options={TaskComponents.priority_options()}
+          options={Table.priority_options()}
         />
         <.conflict_notice
           :if={Map.has_key?(@conflicts, "priority")}
@@ -188,10 +189,10 @@ defmodule TaskmanWeb.TaskForm do
   end
 
   defp format_conflict_value("status", value),
-    do: option_label(TaskComponents.status_options(), value)
+    do: option_label(Table.status_options(), value)
 
   defp format_conflict_value("priority", value),
-    do: option_label(TaskComponents.priority_options(), value)
+    do: option_label(Table.priority_options(), value)
 
   defp format_conflict_value("due_at", nil), do: "No due date"
 

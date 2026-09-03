@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskParentPickerComponentTest do
+defmodule TaskmanWeb.Tasks.ParentPickerTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
@@ -7,7 +7,8 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
 
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.{TaskParentPicker, TaskParentPickerComponent}
+  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.Tasks.ParentPicker, as: ParentPickerComponent
 
   test "renders an accessible combobox and stable candidate option IDs" do
     parent = %Task{id: 41, title: "Roadmap", project_id: 7}
@@ -28,7 +29,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     }
 
     document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: state})
+      render_component(&ParentPickerComponent.parent_picker/1, %{picker: state})
       |> LazyHTML.from_fragment()
 
     refute Enum.empty?(LazyHTML.query(document, "#task-parent-picker"))
@@ -44,7 +45,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#task-parent-search[value=''][role='combobox'][aria-controls='task-parent-results'][aria-expanded='true'][phx-hook='TaskmanWeb.TaskParentPickerComponent.TaskParentPickerKeyboard']"
+               "#task-parent-search[value=''][role='combobox'][aria-controls='task-parent-results'][aria-expanded='true'][phx-hook='TaskmanWeb.Tasks.ParentPicker.TaskParentPickerKeyboard']"
              )
            )
 
@@ -74,7 +75,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     parent = %Task{id: 41, title: "Roadmap", project_id: 7}
 
     selected_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{
+      render_component(&ParentPickerComponent.parent_picker/1, %{
         picker: %TaskParentPicker{mode: :create, selected_parent: parent, query: "Roadmap"}
       })
       |> LazyHTML.from_fragment()
@@ -99,7 +100,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     refute LazyHTML.text(LazyHTML.query(selected_document, "#task-parent-trigger")) =~ "Task #41"
 
     no_parent_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{
+      render_component(&ParentPickerComponent.parent_picker/1, %{
         picker: %TaskParentPicker{mode: :create}
       })
       |> LazyHTML.from_fragment()
@@ -122,7 +123,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     }
 
     document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: state})
+      render_component(&ParentPickerComponent.parent_picker/1, %{picker: state})
       |> LazyHTML.from_fragment()
 
     assert LazyHTML.query(
@@ -135,13 +136,13 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
 
     assert LazyHTML.query(document, "#task-parent-option-41[data-title='Roadmap']") != []
 
-    assert File.read!("lib/taskman_web/components/task_parent_picker.ex") =~
+    assert File.read!("lib/taskman_web/components/tasks/parent_picker.ex") =~
              "event.stopPropagation()"
 
-    assert File.read!("lib/taskman_web/components/task_parent_picker.ex") =~
+    assert File.read!("lib/taskman_web/components/tasks/parent_picker.ex") =~
              "this.pushEvent(\"task_parent_keydown\""
 
-    source = File.read!("lib/taskman_web/components/task_parent_picker.ex")
+    source = File.read!("lib/taskman_web/components/tasks/parent_picker.ex")
     assert source =~ "this.el.value ="
     assert source =~ "activeId === \"task-parent-clear\" ? \"\""
     assert source =~ "dataset.title"
@@ -153,13 +154,13 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     closed_edit_state = %TaskParentPicker{mode: :edit, query: "", options: []}
 
     closed_edit_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: closed_edit_state})
+      render_component(&ParentPickerComponent.parent_picker/1, %{picker: closed_edit_state})
       |> LazyHTML.from_fragment()
 
     assert Enum.empty?(LazyHTML.query(closed_edit_document, "#task-parent-clear"))
 
     open_edit_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{
+      render_component(&ParentPickerComponent.parent_picker/1, %{
         picker: %{closed_edit_state | options_open?: true}
       })
       |> LazyHTML.from_fragment()
@@ -179,7 +180,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     }
 
     closed_create_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{
+      render_component(&ParentPickerComponent.parent_picker/1, %{
         picker: closed_create_state
       })
       |> LazyHTML.from_fragment()
@@ -191,7 +192,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
              "Roadmap"
 
     open_create_document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{
+      render_component(&ParentPickerComponent.parent_picker/1, %{
         picker: %{closed_create_state | options_open?: true}
       })
       |> LazyHTML.from_fragment()
@@ -216,7 +217,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     }
 
     document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: state})
+      render_component(&ParentPickerComponent.parent_picker/1, %{picker: state})
       |> LazyHTML.from_fragment()
 
     assert Enum.empty?(LazyHTML.query(document, "#task-parent-search"))
@@ -240,7 +241,7 @@ defmodule TaskmanWeb.TaskParentPickerComponentTest do
     }
 
     document =
-      render_component(&TaskParentPickerComponent.parent_picker/1, %{picker: state})
+      render_component(&ParentPickerComponent.parent_picker/1, %{picker: state})
       |> LazyHTML.from_fragment()
 
     refute Enum.empty?(LazyHTML.query(document, "#task-parent-conflict[role='alert']"))

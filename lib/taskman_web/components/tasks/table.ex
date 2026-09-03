@@ -1,9 +1,9 @@
-defmodule TaskmanWeb.TaskComponents do
+defmodule TaskmanWeb.Tasks.Table do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.TaskMove
-  alias TaskmanWeb.TaskMove.Popover
+  alias TaskmanWeb.Tasks.MovePopover
 
   @status_labels %{
     icebox: "Icebox",
@@ -329,7 +329,7 @@ defmodule TaskmanWeb.TaskComponents do
           phx-remove={JS.pop_focus()}
           class="absolute right-0 top-full z-30 w-80 max-w-[calc(100vw-3rem)]"
         >
-          <Popover.popover
+          <MovePopover.popover
             task_id={task.id}
             task_move={@task_move}
             restore_focus?={false}

@@ -272,7 +272,7 @@ defmodule TaskmanWeb.ProjectLiveTaskUpdatesTest do
     assert has_element?(create, "#task-title[value='Draft']")
     assert has_element?(create, "#task-parent-trigger", "Parent")
     assert has_element?(create, "#task-create-location", "Planning")
-    assert has_element?(create, "#task-title[phx-hook='TaskmanWeb.TaskForm.TaskTitleFocus']")
+    assert has_element?(create, "#task-title[phx-hook='TaskmanWeb.Tasks.Form.TaskTitleFocus']")
     assert has_element?(create, "#task-#{external_task.id}")
     refute_patched(create, create_path)
   end

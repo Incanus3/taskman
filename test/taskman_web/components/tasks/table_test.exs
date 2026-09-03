@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskComponentsTest do
+defmodule TaskmanWeb.Tasks.TableTest do
   use ExUnit.Case, async: true
 
   use Phoenix.Component
@@ -7,11 +7,12 @@ defmodule TaskmanWeb.TaskComponentsTest do
 
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.{TaskComponents, TaskMove}
+  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.Tasks.Table
 
   test "renders the sort button as a full-cell pointer target" do
     document =
-      render_component(&TaskComponents.sort_header/1, %{
+      render_component(&Table.sort_header/1, %{
         id: "task-title-header",
         label: "Task",
         field: :title,
@@ -41,7 +42,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
 
   test "renders the Statuses dropdown trigger with a pointer cursor" do
     document =
-      render_component(&TaskComponents.status_filter/1, %{
+      render_component(&Table.status_filter/1, %{
         form: to_form(%{"statuses" => []}, as: :status_filter),
         visible_statuses: [:pending],
         open?: false
@@ -61,7 +62,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -87,7 +88,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     }
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -110,7 +111,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -137,7 +138,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     }
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -167,7 +168,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -198,7 +199,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     }
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
@@ -234,7 +235,7 @@ defmodule TaskmanWeb.TaskComponentsTest do
     }
 
     html =
-      render_component(&TaskComponents.row/1, %{
+      render_component(&Table.row/1, %{
         id: "tasks-41",
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",

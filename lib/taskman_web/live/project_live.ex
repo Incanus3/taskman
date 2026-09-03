@@ -23,13 +23,13 @@ defmodule TaskmanWeb.ProjectLive do
   alias TaskmanWeb.{
     ListEdit,
     TaskAutosave,
-    TaskComponents,
-    TaskForm,
     TaskHierarchy,
     TaskMove,
     TaskParentPicker,
     WorkspaceNavigation
   }
+
+  alias TaskmanWeb.Tasks.{Detail, Form, Table}
 
   @impl true
   def mount(_params, _session, socket) do

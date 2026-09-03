@@ -95,7 +95,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_element?(
              view,
-             "#task-title[phx-hook='TaskmanWeb.TaskForm.TaskTitleFocus']"
+             "#task-title[phx-hook='TaskmanWeb.Tasks.Form.TaskTitleFocus']"
            )
 
     assert has_element?(view, "#task-description")
