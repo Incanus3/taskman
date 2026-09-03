@@ -46,7 +46,7 @@ defmodule TaskmanWeb.LiveUserAuth do
     if active_admin_user?(user) and is_binary(token) do
       {:cont, assign_authenticated(socket, user, token)}
     else
-      return_to = session |> Map.get("return_to", "/") |> safe_return_path()
+      return_to = (session["return_to"] || session["request_path"] || "/") |> safe_return_path()
       {:halt, Phoenix.LiveView.redirect(socket, to: sign_in_path(return_to))}
     end
   end

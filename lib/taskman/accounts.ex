@@ -1,5 +1,5 @@
 defmodule Taskman.Accounts do
-  use Ash.Domain
+  use Ash.Domain, extensions: [AshAdmin.Domain]
 
   import Ecto.Query, only: [from: 2]
 
@@ -19,6 +19,11 @@ defmodule Taskman.Accounts do
 
   authorization do
     authorize :always
+  end
+
+  admin do
+    show? true
+    show_resources [Taskman.Accounts.User]
   end
 
   resources do

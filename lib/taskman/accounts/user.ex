@@ -1,7 +1,7 @@
 defmodule Taskman.Accounts.User do
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshAuthentication],
+    extensions: [AshAuthentication, AshAdmin.Resource],
     authorizers: [Ash.Policy.Authorizer],
     domain: Taskman.Accounts
 
@@ -22,8 +22,41 @@ defmodule Taskman.Accounts.User do
     repo Taskman.Repo
   end
 
+  admin do
+    show_action :admin_read
+    read_actions [:admin_read]
+    generic_actions []
+    create_actions [:create_pending_user]
+
+    update_actions [
+      :resend_invitation,
+      :revoke_invitation,
+      :enable,
+      :disable,
+      :promote,
+      :demote,
+      :manage_email,
+      :revoke_sessions,
+      :revoke_api_keys
+    ]
+
+    destroy_actions [:admin_delete]
+    table_columns [:email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
+    table_sortable_columns [:email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
+    table_filterable_columns [:email, :status, :admin?]
+    show_sensitive_fields []
+  end
+
   actions do
     defaults [:read]
+
+    read :admin_read do
+      public? false
+
+      prepare build(
+                select: [:id, :email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
+              )
+    end
 
     create :create_pending_user do
       primary? true
@@ -434,6 +467,14 @@ defmodule Taskman.Accounts.User do
                        not is_nil(confirmed_at) and
                        not is_nil(^actor(:confirmed_at))
                    )
+    end
+
+    bypass [
+      action([:read, :admin_read]),
+      actor_attribute_equals(:admin?, true),
+      actor_attribute_equals(:status, :active)
+    ] do
+      authorize_if always()
     end
 
     bypass [

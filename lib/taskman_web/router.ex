@@ -2,6 +2,7 @@ defmodule TaskmanWeb.Router do
   use TaskmanWeb, :router
   use AshAuthentication.Phoenix.Router
 
+  import AshAdmin.Router
   import TaskmanWeb.LiveUserAuth, only: [capture_return_path: 2]
 
   pipeline :browser do
@@ -64,6 +65,15 @@ defmodule TaskmanWeb.Router do
       live "/projects/:project_id/lists/:list_id/tasks/new", ProjectLive, :new_task
       live "/projects/:project_id/lists/:list_id/tasks/:task_id", ProjectLive, :show_task
     end
+  end
+
+  scope "/" do
+    pipe_through :browser
+
+    ash_admin "/admin",
+              AshAuthentication.Phoenix.LiveSession.opts(
+                on_mount: [{TaskmanWeb.LiveUserAuth, :admin_required}]
+              )
   end
 
   scope "/api/v1", TaskmanWeb.API do

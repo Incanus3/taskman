@@ -13,6 +13,8 @@ config :taskman,
 
 config :taskman, ash_domains: [Taskman.Accounts]
 
+config :ash_admin, actor_plug: TaskmanWeb.AshAdminActorPlug
+
 config :taskman, :task_autosave_delay_ms, 300
 
 # Configure the endpoint
