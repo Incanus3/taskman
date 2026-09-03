@@ -17,6 +17,7 @@ without migrating existing domain resources to Ash.
 - [MVP roadmap](../planning/roadmap.md)
 - Beads feature: `tas-authenticated-hosted-access-2a8`
 - Completed delivery issue: `tas-authenticated-hosted-access-2a8.13`
+- Completed CI compatibility issue: `tas-15n`
 
 ## Checkpoint
 
@@ -30,6 +31,10 @@ rollback guidance, and integrated invited-user-to-disablement coverage are prese
 The parent feature `tas-authenticated-hosted-access-2a8` and roadmap checkbox remain open because
 the Caddy binary is unavailable locally. All locally available technical checks passed; the only
 remaining acceptance evidence is host-side validation of `ops/caddy/Caddyfile`.
+
+Alpine CI compatibility is restored: the workflow installs `build-base`, Accounts uses Ash's
+pure-Elixir `simple_sat` fallback instead of the musl-incompatible PicoSAT NIF, and the Token
+resource avoids compile-time expansion of its own struct under the CI toolchain.
 
 ## Next actions
 
@@ -96,3 +101,5 @@ Task 13 passed its 2 integrated hosted-access tests, migration generation check,
 compile/assets/release assembly, staged-root systemd validation, and `mix precommit` with 753 tests.
 Scoped re-review confirmed Caddy validation precedes first-install enable/start and later reloads,
 with status/journal checks. Local Caddy validation was not run because the binary is unavailable.
+CI compatibility issue `tas-15n` passed a clean compile in the exact Alpine CI image, a direct Crux
+solve through `simple_sat`, 90 focused Accounts/Ash Admin tests, and `mix precommit` with 753 tests.

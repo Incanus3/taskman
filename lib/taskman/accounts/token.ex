@@ -322,7 +322,7 @@ defmodule Taskman.Accounts.Token do
          %{"jti" => jti, "sub" => subject}
          when is_binary(jti) and is_binary(subject) <- claims,
          true <- purpose_claim_matches?(claims, purpose),
-         %__MODULE__{} = stored_token <-
+         stored_token when is_struct(stored_token, __MODULE__) <-
            stored_token_for_jti(jti, purpose, subject, now, lock?) do
       {:ok, stored_token, claims}
     else

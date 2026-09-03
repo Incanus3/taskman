@@ -36,7 +36,7 @@ jobs:
 
     steps:
     - name: Install runtime packages
-      run: apk add --no-cache bash fish git tar
+      run: apk add --no-cache bash build-base fish git tar
     - uses: actions/checkout@v4
     - name: Restore dependencies cache
       uses: actions/cache@v3
