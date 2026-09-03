@@ -65,6 +65,39 @@ defmodule Taskman.RuntimeConfigTest do
     end)
   end
 
+  test "production canonicalizes a valid MAIL_FROM address for account email delivery" do
+    with_environment(production_environment(%{"MAIL_FROM" => "No-Reply@Runtime.Test"}), fn ->
+      runtime_config = Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
+
+      assert get_in(runtime_config, [:taskman, :mail_from]) ==
+               {"Taskman", "no-reply@runtime.test"}
+    end)
+  end
+
+  test "production rejects malformed MAIL_FROM values without exposing them" do
+    for mail_from <- [
+          "not-an-address",
+          "@runtime.test",
+          "no-reply@",
+          " no-reply@runtime.test",
+          "no-reply@runtime.test ",
+          "no-reply@runtime.test\r\nBcc: attacker@runtime.test",
+          "Taskman <no-reply@runtime.test>",
+          "no-reply@runtime.test, attacker@runtime.test"
+        ] do
+      with_environment(production_environment(%{"MAIL_FROM" => mail_from}), fn ->
+        error =
+          assert_raise RuntimeError, fn ->
+            Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
+          end
+
+        assert Exception.message(error) =~ "MAIL_FROM"
+        assert Exception.message(error) =~ "single email address"
+        refute Exception.message(error) =~ mail_from
+      end)
+    end
+  end
+
   test "production retains strong and distinct signing secrets" do
     short_secret = String.duplicate("s", 63)
 

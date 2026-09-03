@@ -100,7 +100,22 @@ if config_env() == :prod do
 
   host = require_environment.("PHX_HOST")
   resend_api_key = require_environment.("RESEND_API_KEY")
+
+  valid_mail_from? = fn address ->
+    Regex.match?(
+      ~r/\A[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\z/,
+      address
+    )
+  end
+
   mail_from = require_environment.("MAIL_FROM")
+
+  mail_from =
+    if valid_mail_from?.(mail_from) do
+      String.downcase(mail_from)
+    else
+      raise "environment variable MAIL_FROM must be a single email address in local-part@domain form."
+    end
 
   config :taskman, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
   config :taskman, :token_signing_secret, token_signing_secret
