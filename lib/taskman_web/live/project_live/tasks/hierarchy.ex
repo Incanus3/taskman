@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskHierarchy do
+defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   alias Taskman.Tasks.{Hierarchy, HierarchyNode}
 
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]

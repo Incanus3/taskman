@@ -6,18 +6,19 @@ defmodule TaskmanWeb.Tasks.DetailTest do
   import Phoenix.LiveViewTest
 
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.{TaskAutosave, TaskHierarchy, TaskMove, TaskParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.Detail
 
   test "renders the Task form and save status from one autosave state" do
     task = %Task{id: 41, project_id: 7, title: "Launch", status: :pending, priority: :none}
-    task_autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: true)
+    task_autosave = Autosave.load(Autosave.empty(), task, saved?: true)
 
     html =
       render_component(&Detail.detail/1, %{
         task: task,
         task_autosave: task_autosave,
-        parent_picker: TaskParentPicker.empty(),
+        parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
         task_hierarchy:
           TaskHierarchy.load(
@@ -25,7 +26,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
             %Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
           ),
         task_path: fn task -> "/projects/7/tasks/#{task.id}" end,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -45,12 +46,12 @@ defmodule TaskmanWeb.Tasks.DetailTest do
     html =
       render_component(&Detail.detail/1, %{
         task: hierarchy.root.children |> hd() |> Map.fetch!(:task),
-        task_autosave: TaskAutosave.load(TaskAutosave.empty(), task(2), saved?: true),
-        parent_picker: TaskParentPicker.empty(),
+        task_autosave: Autosave.load(Autosave.empty(), task(2), saved?: true),
+        parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
         task_hierarchy: TaskHierarchy.load(TaskHierarchy.empty(), hierarchy),
         task_path: fn task -> "/projects/7/tasks/#{task.id}" end,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -97,12 +98,12 @@ defmodule TaskmanWeb.Tasks.DetailTest do
     html =
       render_component(&Detail.detail/1, %{
         task: task(7),
-        task_autosave: TaskAutosave.load(TaskAutosave.empty(), task(7), saved?: true),
-        parent_picker: TaskParentPicker.empty(),
+        task_autosave: Autosave.load(Autosave.empty(), task(7), saved?: true),
+        parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
         task_hierarchy: TaskHierarchy.load(TaskHierarchy.empty(), hierarchy),
         task_path: fn task -> "/projects/7/tasks/#{task.id}" end,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     document = LazyHTML.from_fragment(html)

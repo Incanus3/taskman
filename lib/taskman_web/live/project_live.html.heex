@@ -335,7 +335,7 @@
       size={:wide}
       initial_focus="#task-title"
       on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
-      on_escape={if(TaskMove.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
+      on_escape={if(Move.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
     >
       <Detail.detail
         task={@selected_task}

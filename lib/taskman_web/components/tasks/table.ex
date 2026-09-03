@@ -2,7 +2,7 @@ defmodule TaskmanWeb.Tasks.Table do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.ProjectLive.Tasks.Move
   alias TaskmanWeb.Tasks.MovePopover
 
   @status_labels %{
@@ -221,7 +221,7 @@ defmodule TaskmanWeb.Tasks.Table do
   attr :task_with_location, TaskWithLocation, required: true
   attr :task_path, :string, required: true
   attr :include_children?, :boolean, default: false
-  attr :task_move, TaskMove, required: true
+  attr :task_move, Move, required: true
   attr :add_subtask_path, :string, default: nil
 
   def row(assigns) do
@@ -298,8 +298,8 @@ defmodule TaskmanWeb.Tasks.Table do
         id={"task-actions-#{task.id}"}
         class={[
           "pointer-events-auto relative flex justify-end gap-2 sm:justify-self-center",
-          TaskMove.active_for?(@task_move, task.id, :row) && "z-40",
-          !TaskMove.active_for?(@task_move, task.id, :row) && "z-10"
+          Move.active_for?(@task_move, task.id, :row) && "z-40",
+          !Move.active_for?(@task_move, task.id, :row) && "z-10"
         ]}
       >
         <.link
@@ -324,7 +324,7 @@ defmodule TaskmanWeb.Tasks.Table do
           <.icon name="hero-arrows-right-left" class="size-4" />
         </button>
         <div
-          :if={TaskMove.active_for?(@task_move, task.id, :row)}
+          :if={Move.active_for?(@task_move, task.id, :row)}
           data-move-task-popover
           phx-remove={JS.pop_focus()}
           class="absolute right-0 top-full z-30 w-80 max-w-[calc(100vw-3rem)]"

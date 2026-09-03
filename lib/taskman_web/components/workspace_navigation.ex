@@ -4,7 +4,7 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   alias Taskman.Lists.NavigationNode
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias TaskmanWeb.ListEdit
+  alias TaskmanWeb.ProjectLive.ListEdit
 
   @doc """
   Renders the visible Project/List portion of the workspace sidebar.

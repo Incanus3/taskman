@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.ProjectLiveTaskTableTest do
+defmodule TaskmanWeb.ProjectLive.TaskTableTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest

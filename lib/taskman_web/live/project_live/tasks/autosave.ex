@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskAutosave do
+defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Conflict

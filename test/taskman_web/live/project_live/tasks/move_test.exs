@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskMoveTest do
+defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
   use Taskman.DataCase, async: true
 
   import Taskman.ListsFixtures
@@ -6,21 +6,21 @@ defmodule TaskmanWeb.TaskMoveTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.ProjectLive.Tasks.Move
 
   test "empty and clear provide one inactive source of truth" do
-    state = TaskMove.empty()
+    state = Move.empty()
 
-    refute TaskMove.active?(state)
-    refute TaskMove.active_for?(state, 41, :row)
-    assert TaskMove.current_destination(state) == nil
+    refute Move.active?(state)
+    refute Move.active_for?(state, 41, :row)
+    assert Move.current_destination(state) == nil
     assert state.query == ""
     assert state.destination == nil
     assert state.options == []
     refute state.options_open?
     assert state.error == nil
 
-    assert TaskMove.clear(TaskMove.put_error(state, "failure")) == state
+    assert Move.clear(Move.put_error(state, "failure")) == state
   end
 
   test "opens a row movement with cached location and tree-ordered destinations" do
@@ -30,12 +30,12 @@ defmodule TaskmanWeb.TaskMoveTest do
     archive = list_fixture(project, nil, %{name: "Archive"})
     task = task_fixture(project, launch, %{title: "Move me"})
 
-    state = TaskMove.open(TaskMove.empty(), project, task, :row)
+    state = Move.open(Move.empty(), project, task, :row)
 
-    assert TaskMove.active?(state)
-    assert TaskMove.active_for?(state, task.id, :row)
-    refute TaskMove.active_for?(state, task.id, :detail)
-    assert TaskMove.current_destination(state) == "list:#{launch.id}"
+    assert Move.active?(state)
+    assert Move.active_for?(state, task.id, :row)
+    refute Move.active_for?(state, task.id, :detail)
+    assert Move.current_destination(state) == "list:#{launch.id}"
 
     assert %TaskWithLocation{task: ^task, location_path: [^planning, ^launch]} =
              state.active_task.task_with_location
@@ -52,11 +52,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Move me"})
 
-    state = TaskMove.open(TaskMove.empty(), project, task, :detail)
+    state = Move.open(Move.empty(), project, task, :detail)
 
-    assert TaskMove.active_for?(state, task.id, :detail)
+    assert Move.active_for?(state, task.id, :detail)
     assert state.active_task.task_with_location == nil
-    assert TaskMove.current_destination(state) == "project"
+    assert Move.current_destination(state) == "project"
   end
 
   test "opening another Task discards all prior transient state" do
@@ -66,14 +66,14 @@ defmodule TaskmanWeb.TaskMoveTest do
     second = task_fixture(project, destination, %{title: "Second"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, first, :row)
-      |> TaskMove.open_destinations()
-      |> TaskMove.put_error("failure")
+      Move.empty()
+      |> Move.open(project, first, :row)
+      |> Move.open_destinations()
+      |> Move.put_error("failure")
 
-    reopened = TaskMove.open(state, project, second, :detail)
+    reopened = Move.open(state, project, second, :detail)
 
-    assert TaskMove.active_for?(reopened, second.id, :detail)
+    assert Move.active_for?(reopened, second.id, :detail)
     assert reopened.query == ""
     assert reopened.destination == nil
     refute reopened.options_open?
@@ -86,11 +86,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.open_destinations()
-      |> TaskMove.put_error("failure")
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.open_destinations()
+      |> Move.put_error("failure")
+      |> Move.select_destination("list:#{planning.id}")
 
     assert state.destination == "list:#{planning.id}"
     assert state.query == "Planning"
@@ -105,11 +105,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     selected =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
-    assert {:ok, searched, ^task} = TaskMove.search(selected, project, "lAuNcH")
+    assert {:ok, searched, ^task} = Move.search(selected, project, "lAuNcH")
     assert searched.destination == nil
     assert searched.options_open?
     assert Enum.map(searched.options, & &1.value) == ["list:#{launch.id}"]
@@ -121,11 +121,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     selected =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
-    assert {:ok, searched, ^task} = TaskMove.search(selected, project, "Planning")
+    assert {:ok, searched, ^task} = Move.search(selected, project, "Planning")
     assert searched.destination == "list:#{planning.id}"
   end
 
@@ -134,12 +134,12 @@ defmodule TaskmanWeb.TaskMoveTest do
     planning = list_fixture(project, nil, %{name: "Planning"})
     launch = list_fixture(project, planning, %{name: "Launch"})
     task = task_fixture(project, launch, %{title: "Move me"})
-    state = TaskMove.open(TaskMove.empty(), project, task, :row)
+    state = Move.open(Move.empty(), project, task, :row)
 
     assert {:ok, renamed_planning} =
              Taskman.Lists.rename_list(project, planning, %{name: "Roadmap"})
 
-    assert {:ok, refreshed, refreshed_task} = TaskMove.refresh(state, project)
+    assert {:ok, refreshed, refreshed_task} = Move.refresh(state, project)
     assert refreshed_task.id == task.id
 
     assert Enum.any?(
@@ -154,12 +154,12 @@ defmodule TaskmanWeb.TaskMoveTest do
     project = project_fixture(%{})
     planning = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, %{title: "Move me"})
-    state = TaskMove.open(TaskMove.empty(), project, task, :row)
+    state = Move.open(Move.empty(), project, task, :row)
     assert {:ok, _moved} = Taskman.Tasks.move_task(project, task, planning)
 
-    assert {:ok, refreshed, refreshed_task} = TaskMove.refresh(state, project)
+    assert {:ok, refreshed, refreshed_task} = Move.refresh(state, project)
     assert refreshed_task.list_id == planning.id
-    assert TaskMove.current_destination(refreshed) == "list:#{planning.id}"
+    assert Move.current_destination(refreshed) == "list:#{planning.id}"
   end
 
   test "refresh retains an open canonical destination selection and query" do
@@ -168,16 +168,16 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.open_destinations()
-      |> TaskMove.select_destination("list:#{planning.id}")
-      |> TaskMove.open_destinations()
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.open_destinations()
+      |> Move.select_destination("list:#{planning.id}")
+      |> Move.open_destinations()
 
     assert {:ok, updated} =
              Taskman.Tasks.update_task(project, task, %{title: "Updated elsewhere"})
 
-    assert {:ok, refreshed, ^updated} = TaskMove.refresh(state, project)
+    assert {:ok, refreshed, ^updated} = Move.refresh(state, project)
 
     assert refreshed.query == "Planning"
     assert refreshed.destination == "list:#{planning.id}"
@@ -192,14 +192,14 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.open_destinations()
-      |> TaskMove.select_destination("list:#{child.id}")
-      |> TaskMove.open_destinations()
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.open_destinations()
+      |> Move.select_destination("list:#{child.id}")
+      |> Move.open_destinations()
 
     assert {:ok, _renamed} = Taskman.Lists.rename_list(project, root, %{name: "Latest"})
-    assert {:ok, refreshed, ^task} = TaskMove.refresh(state, project)
+    assert {:ok, refreshed, ^task} = Move.refresh(state, project)
 
     assert refreshed.query == "Latest / Launch"
     assert refreshed.destination == "list:#{child.id}"
@@ -214,11 +214,11 @@ defmodule TaskmanWeb.TaskMoveTest do
   test "refresh clears state when the active Task is gone" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Move me"})
-    state = TaskMove.open(TaskMove.empty(), project, task, :row)
+    state = Move.open(Move.empty(), project, task, :row)
     Taskman.Repo.delete!(task)
 
-    assert {:error, cleared, :task_not_found} = TaskMove.refresh(state, project)
-    assert cleared == TaskMove.empty()
+    assert {:error, cleared, :task_not_found} = Move.refresh(state, project)
+    assert cleared == Move.empty()
   end
 
   test "submit moves to a List and clears movement state" do
@@ -227,12 +227,12 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
-    assert {:ok, cleared, moved_task} = TaskMove.submit(state, project)
-    assert cleared == TaskMove.empty()
+    assert {:ok, cleared, moved_task} = Move.submit(state, project)
+    assert cleared == Move.empty()
     assert moved_task.list_id == planning.id
   end
 
@@ -242,12 +242,12 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, inbox, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :detail)
-      |> TaskMove.select_destination("project")
+      Move.empty()
+      |> Move.open(project, task, :detail)
+      |> Move.select_destination("project")
 
-    assert {:ok, cleared, moved_task} = TaskMove.submit(state, project)
-    assert cleared == TaskMove.empty()
+    assert {:ok, cleared, moved_task} = Move.submit(state, project)
+    assert cleared == Move.empty()
     assert moved_task.list_id == nil
   end
 
@@ -257,14 +257,14 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
     cached_row = state.active_task.task_with_location
     Taskman.Repo.delete!(task)
 
-    assert {:error, failed, :task_not_found} = TaskMove.submit(state, project)
+    assert {:error, failed, :task_not_found} = Move.submit(state, project)
     assert failed.active_task.task_with_location == cached_row
     assert failed.error == "This Task is no longer available."
   end
@@ -276,11 +276,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{foreign_list.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{foreign_list.id}")
 
-    assert {:error, failed, :destination_not_found} = TaskMove.submit(state, project)
+    assert {:error, failed, :destination_not_found} = Move.submit(state, project)
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
   end
@@ -290,11 +290,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:not-an-id")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:not-an-id")
 
-    assert {:error, failed, :destination_not_found} = TaskMove.submit(state, project)
+    assert {:error, failed, :destination_not_found} = Move.submit(state, project)
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
   end
@@ -304,11 +304,11 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
+      Move.empty()
+      |> Move.open(project, task, :row)
       |> Map.put(:destination, nil)
 
-    assert {:error, failed, :destination_not_found} = TaskMove.submit(state, project)
+    assert {:error, failed, :destination_not_found} = Move.submit(state, project)
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
   end
@@ -319,13 +319,13 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
     Taskman.Repo.delete!(planning)
 
-    assert {:error, failed, :destination_not_found} = TaskMove.submit(state, project)
+    assert {:error, failed, :destination_not_found} = Move.submit(state, project)
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
   end
@@ -336,14 +336,14 @@ defmodule TaskmanWeb.TaskMoveTest do
     task = task_fixture(project, %{title: "Move me"})
 
     state =
-      TaskMove.empty()
-      |> TaskMove.open(project, task, :row)
-      |> TaskMove.select_destination("list:#{planning.id}")
+      Move.empty()
+      |> Move.open(project, task, :row)
+      |> Move.select_destination("list:#{planning.id}")
 
     assert {:ok, _moved} = Taskman.Tasks.move_task(project, task, planning)
 
-    assert {:error, failed, :unchanged_location} = TaskMove.submit(state, project)
-    assert TaskMove.current_destination(failed) == "list:#{planning.id}"
+    assert {:error, failed, :unchanged_location} = Move.submit(state, project)
+    assert Move.current_destination(failed) == "list:#{planning.id}"
     assert failed.error == "This Task is already in that location."
   end
 end

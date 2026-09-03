@@ -256,7 +256,7 @@ unchanged. Renaming preserves selection and expansion.
 
 Project actions offer **Add List**. List actions offer **Add child List** and **Rename**. These
 actions open compact anchored popovers with forms driven by `to_form/2` and the project-owned input
-component. One socket-free `%TaskmanWeb.ListEdit{}` value owns the active Project, create/rename
+component. One socket-free `%TaskmanWeb.ProjectLive.ListEdit{}` value owns the active Project, create/rename
 target, form, validation, stale-target revalidation, and node-placement policy. There is no
 deletion affordance.
 
@@ -322,7 +322,7 @@ external bundle is introduced.
 
 - `TaskmanWeb.ProjectLive` remains responsible for route interpretation, selected location,
   expansion state, persistence outcomes, streams, and event orchestration.
-- `TaskmanWeb.ListEdit` owns the transient inline List form interaction and revalidates its target
+- `TaskmanWeb.ProjectLive.ListEdit` owns the transient inline List form interaction and revalidates its target
   through public List context APIs.
 - A project-owned `WorkspaceNavigation` function-component module renders the tree and List
   management surfaces from the navigation stream and one `%ListEdit{}` value.

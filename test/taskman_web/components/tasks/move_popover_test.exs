@@ -5,14 +5,14 @@ defmodule TaskmanWeb.Tasks.MovePopoverTest do
 
   import Phoenix.LiveViewTest
 
-  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.ProjectLive.Tasks.Move
   alias TaskmanWeb.Tasks.MovePopover
 
   test "renders a labelled destination combobox with complete location paths" do
     html =
       render_component(&MovePopover.popover/1, %{
         task_id: 41,
-        task_move: %TaskMove{
+        task_move: %Move{
           active_task: %{
             task_id: 41,
             origin: :row,
@@ -172,7 +172,7 @@ defmodule TaskmanWeb.Tasks.MovePopoverTest do
 
   defp task_move(overrides \\ []) do
     struct!(
-      %TaskMove{
+      %Move{
         active_task: %{
           task_id: 41,
           origin: :row,

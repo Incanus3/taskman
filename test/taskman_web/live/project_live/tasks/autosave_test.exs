@@ -1,11 +1,11 @@
-defmodule TaskmanWeb.TaskAutosaveTest do
+defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
   use Taskman.DataCase, async: false
 
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
-  alias TaskmanWeb.TaskAutosave
+  alias TaskmanWeb.ProjectLive.Tasks.Autosave
 
   setup do
     previous = Application.get_env(:taskman, :task_autosave_delay_ms)
@@ -26,16 +26,16 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     first = task_fixture(project, %{title: "First"})
     second = task_fixture(project, %{title: "Second"})
 
-    autosave = TaskAutosave.load(TaskAutosave.empty(), first, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), first, saved?: false)
     assert autosave.form[:title].value == "First"
     assert autosave.save_state == :idle
 
     assert {:schedule, autosave, ^first, 60_000, {:autosave_task_field, first_id, "title", 1}} =
-             TaskAutosave.change(autosave, project, first, %{"title" => "Changed"}, "title")
+             Autosave.change(autosave, project, first, %{"title" => "Changed"}, "title")
 
     assert first_id == first.id
 
-    cleared = TaskAutosave.clear(autosave)
+    cleared = Autosave.clear(autosave)
     assert cleared.sequence == 1
     assert cleared.form == nil
     assert cleared.draft == %{}
@@ -43,7 +43,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert cleared.revisions == %{}
     assert cleared.save_state == :idle
 
-    reloaded = TaskAutosave.load(cleared, second, saved?: true)
+    reloaded = Autosave.load(cleared, second, saved?: true)
     assert reloaded.sequence == 1
     assert reloaded.form[:title].value == "Second"
     assert reloaded.saved?
@@ -51,31 +51,31 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   end
 
   test "save-state messages preserve the existing copy" do
-    autosave = TaskAutosave.empty()
+    autosave = Autosave.empty()
 
-    assert TaskAutosave.message(%{autosave | save_state: :idle}) == "Autosaves changes"
-    assert TaskAutosave.message(%{autosave | save_state: :saving}) == "Saving…"
-    assert TaskAutosave.message(%{autosave | save_state: :saved}) == "Saved"
-    assert TaskAutosave.message(%{autosave | save_state: :not_saved}) == "Not saved"
+    assert Autosave.message(%{autosave | save_state: :idle}) == "Autosaves changes"
+    assert Autosave.message(%{autosave | save_state: :saving}) == "Saving…"
+    assert Autosave.message(%{autosave | save_state: :saved}) == "Saved"
+    assert Autosave.message(%{autosave | save_state: :not_saved}) == "Not saved"
 
-    assert TaskAutosave.message(%{autosave | save_state: :failed}) ==
+    assert Autosave.message(%{autosave | save_state: :failed}) ==
              "Couldn’t save changes"
   end
 
   test "debounced changes return effects and only the current revision persists" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:schedule, autosave, ^task, 60_000, message} =
-             TaskAutosave.change(autosave, project, task, %{"title" => "After"}, "title")
+             Autosave.change(autosave, project, task, %{"title" => "After"}, "title")
 
     assert message == {:autosave_task_field, task.id, "title", 1}
     assert autosave.save_state == :saving
     assert autosave.dirty_fields == MapSet.new(["title"])
 
     assert {:ignored, ^autosave, ^task} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                autosave,
                project,
                task,
@@ -87,7 +87,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
     assert {:ok, autosave, saved_task} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                autosave,
                project,
                task,
@@ -104,19 +104,19 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "an unsupported target is ignored without changing state" do
     project = project_fixture(%{})
     task = task_fixture(project, %{})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ignored, ^autosave, ^task} =
-             TaskAutosave.change(autosave, project, task, %{"project_id" => "9"}, "project_id")
+             Autosave.change(autosave, project, task, %{"project_id" => "9"}, "project_id")
   end
 
   test "an invalid debounced field is not scheduled" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(autosave, project, task, %{"title" => ""}, "title")
+             Autosave.change(autosave, project, task, %{"title" => ""}, "title")
 
     assert autosave.sequence == 0
     assert autosave.save_state == :not_saved
@@ -129,10 +129,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:schedule, _autosave, ^task, 0, {:autosave_task_field, task_id, "title", 1}} =
-             TaskAutosave.change(autosave, project, task, %{"title" => "After"}, "title")
+             Autosave.change(autosave, project, task, %{"title" => "After"}, "title")
 
     assert task_id == task.id
   end
@@ -140,10 +140,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "an immediate field persists while an unrelated invalid draft remains visible" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -152,7 +152,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, autosave, updated_task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -169,10 +169,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "flush persists valid dirty fields and retains invalid fields" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", description: "Old"})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -181,7 +181,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -189,7 +189,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
                "title"
              )
 
-    assert {:ok, autosave, updated_task} = TaskAutosave.flush(autosave, project, task)
+    assert {:ok, autosave, updated_task} = Autosave.flush(autosave, project, task)
     assert updated_task.title == "Before"
     assert updated_task.description == "New"
     assert autosave.dirty_fields == MapSet.new(["title"])
@@ -206,10 +206,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -218,7 +218,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -229,7 +229,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert autosave.save_state == :failed
 
     assert {:error, autosave, partially_updated_task} =
-             TaskAutosave.flush(autosave, project, task)
+             Autosave.flush(autosave, project, task)
 
     assert partially_updated_task.title == "Valid alongside failure"
     assert partially_updated_task.status == :pending
@@ -250,10 +250,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -262,7 +262,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, autosave, ^task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -278,10 +278,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "dirty fields take precedence over a previously saved lifecycle" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ok, autosave, _updated_task} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -293,7 +293,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert autosave.save_state == :saved
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -310,10 +310,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     selected_project = project_fixture(%{})
     foreign_project = project_fixture(%{})
     foreign_task = task_fixture(foreign_project, %{title: "Before", status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), foreign_task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), foreign_task, saved?: false)
 
     assert {:schedule, autosave, ^foreign_task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                foreign_project,
                foreign_task,
@@ -322,7 +322,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:not_found, cleared} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                selected_project,
                foreign_task,
@@ -337,12 +337,12 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "reconciles clean fields while preserving a dirty title draft" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert autosave.baseline == task
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -352,7 +352,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert {:ok, externally_updated} = Tasks.update_task(project, task, %{status: :in_review})
 
-    reconciled = TaskAutosave.reconcile(autosave, externally_updated)
+    reconciled = Autosave.reconcile(autosave, externally_updated)
 
     assert reconciled.baseline == externally_updated
     assert reconciled.form[:title].value == "Mine"
@@ -367,8 +367,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before", status: :pending})
 
     assert {:schedule, autosave, ^task, 60_000, {:autosave_task_field, _, "title", revision}} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine", "status" => "pending"},
@@ -377,19 +377,19 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert {:ok, externally_updated} = Tasks.update_task(project, task, %{title: "Latest"})
 
-    conflicted = TaskAutosave.reconcile(autosave, externally_updated)
+    conflicted = Autosave.reconcile(autosave, externally_updated)
 
     assert conflicted.baseline == externally_updated
     assert conflicted.form[:title].value == "Mine"
     assert conflicted.draft == %{"title" => "Mine"}
     assert conflicted.conflicts == %{"title" => "Latest"}
-    assert TaskAutosave.conflict_value(conflicted, "title") == "Latest"
+    assert Autosave.conflict_value(conflicted, "title") == "Latest"
     assert conflicted.revisions == %{}
     assert conflicted.save_state == :conflicted
-    assert TaskAutosave.message(conflicted) == "Resolve conflicting changes"
+    assert Autosave.message(conflicted) == "Resolve conflicting changes"
 
     assert {:ignored, ^conflicted, ^externally_updated} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                conflicted,
                project,
                externally_updated,
@@ -407,8 +407,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert {:schedule, autosave, ^task, 60_000,
             {:autosave_task_field, task_id, "title", revision}} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine"},
@@ -418,10 +418,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert task_id == task.id
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
-    conflicted = TaskAutosave.reconcile(autosave, latest)
+    conflicted = Autosave.reconcile(autosave, latest)
 
     assert {:ok, edited, ^latest} =
-             TaskAutosave.change(
+             Autosave.change(
                conflicted,
                project,
                latest,
@@ -438,7 +438,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Latest"
 
     assert {:ignored, ^edited, ^latest} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                edited,
                project,
                latest,
@@ -451,12 +451,12 @@ defmodule TaskmanWeb.TaskAutosaveTest do
   test "editing a conflicted immediate field keeps the draft without persisting" do
     project = project_fixture(%{})
     task = task_fixture(project, %{status: :pending})
-    autosave = TaskAutosave.load(TaskAutosave.empty(), task, saved?: false)
+    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{status: :done})
 
     assert {:conflict, conflicted, ^latest} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -468,7 +468,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert conflicted.conflicts == %{"status" => :done}
 
     assert {:ok, edited, ^latest} =
-             TaskAutosave.change(
+             Autosave.change(
                conflicted,
                project,
                latest,
@@ -490,8 +490,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before", description: "Old", status: :pending})
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine", "description" => "Old", "status" => "pending"},
@@ -499,7 +499,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -508,12 +508,12 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, first_external} = Tasks.update_task(project, task, %{title: "Latest one"})
-    conflicted = TaskAutosave.reconcile(autosave, first_external)
+    conflicted = Autosave.reconcile(autosave, first_external)
 
     assert {:ok, second_external} =
              Tasks.update_task(project, first_external, %{title: "Latest two", status: :done})
 
-    reconciled = TaskAutosave.reconcile(conflicted, second_external)
+    reconciled = Autosave.reconcile(conflicted, second_external)
 
     assert reconciled.conflicts == %{"title" => "Latest two"}
     assert reconciled.form[:title].value == "Mine"
@@ -527,8 +527,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before"})
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine"},
@@ -536,10 +536,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, externally_updated} = Tasks.update_task(project, task, %{title: "Latest"})
-    conflicted = TaskAutosave.reconcile(autosave, externally_updated)
+    conflicted = Autosave.reconcile(autosave, externally_updated)
 
     assert {:error, ^conflicted, ^externally_updated} =
-             TaskAutosave.flush(conflicted, project, externally_updated)
+             Autosave.flush(conflicted, project, externally_updated)
 
     assert Tasks.get_task_for_project(project, task.id).title == "Latest"
   end
@@ -549,8 +549,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before"})
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine"},
@@ -558,10 +558,10 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
-    conflicted = TaskAutosave.reconcile(autosave, latest)
+    conflicted = Autosave.reconcile(autosave, latest)
 
     assert {:ok, resolved, ^latest} =
-             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :use_latest)
+             Autosave.resolve_conflict(conflicted, project, latest, "title", :use_latest)
 
     assert resolved.form[:title].value == "Latest"
     assert resolved.draft == %{}
@@ -576,8 +576,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before", status: :pending})
 
     assert {:schedule, autosave, ^task, 60_000, _message} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine", "status" => "pending"},
@@ -585,17 +585,17 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
-    conflicted = TaskAutosave.reconcile(autosave, latest)
+    conflicted = Autosave.reconcile(autosave, latest)
 
     assert {:ok, resolved, saved} =
-             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
+             Autosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
 
     assert saved.title == "Mine"
     assert resolved.conflicts == %{}
     assert resolved.dirty_fields == MapSet.new()
 
     assert {:schedule, autosave, ^saved, 60_000, _message} =
-             TaskAutosave.change(
+             Autosave.change(
                resolved,
                project,
                saved,
@@ -604,11 +604,11 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              )
 
     assert {:ok, latest} = Tasks.update_task(project, saved, %{title: "Latest again"})
-    conflicted = TaskAutosave.reconcile(autosave, latest)
+    conflicted = Autosave.reconcile(autosave, latest)
     assert {:ok, raced} = Tasks.update_task(project, latest, %{title: "Latest after retry"})
 
     assert {:conflict, retried, ^raced} =
-             TaskAutosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
+             Autosave.resolve_conflict(conflicted, project, latest, "title", :keep_mine)
 
     assert retried.form[:title].value == "Mine again"
     assert retried.conflicts == %{"title" => "Latest after retry"}
@@ -620,8 +620,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     task = task_fixture(project, %{title: "Before"})
 
     assert {:schedule, autosave, ^task, 60_000, {:autosave_task_field, _, "title", revision}} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine"},
@@ -631,7 +631,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
 
     assert {:conflict, conflicted, ^latest} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                autosave,
                project,
                task,
@@ -651,8 +651,8 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert {:schedule, autosave, ^task, 60_000,
             {:autosave_task_field, _, "title", title_revision}} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                project,
                task,
                %{"title" => "Mine", "description" => "Original description"},
@@ -661,7 +661,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
 
     assert {:schedule, autosave, ^task, 60_000,
             {:autosave_task_field, _, "description", description_revision}} =
-             TaskAutosave.change(
+             Autosave.change(
                autosave,
                project,
                task,
@@ -673,7 +673,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
              Tasks.update_task(project, task, %{description: "Latest description"})
 
     assert {:ok, autosave, title_saved} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                autosave,
                project,
                task,
@@ -690,7 +690,7 @@ defmodule TaskmanWeb.TaskAutosaveTest do
     assert autosave.save_state == :conflicted
 
     assert {:ignored, ^autosave, ^title_saved} =
-             TaskAutosave.handle_scheduled_save(
+             Autosave.handle_scheduled_save(
                autosave,
                project,
                title_saved,

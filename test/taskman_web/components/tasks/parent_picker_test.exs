@@ -7,14 +7,14 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
 
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
   alias TaskmanWeb.Tasks.ParentPicker, as: ParentPickerComponent
 
   test "renders an accessible combobox and stable candidate option IDs" do
     parent = %Task{id: 41, title: "Roadmap", project_id: 7}
     child = %Task{id: 42, title: "Launch", project_id: 7}
 
-    state = %TaskParentPicker{
+    state = %ParentPicker{
       mode: :create,
       query: "",
       selected_parent: parent,
@@ -76,7 +76,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
 
     selected_document =
       render_component(&ParentPickerComponent.parent_picker/1, %{
-        picker: %TaskParentPicker{mode: :create, selected_parent: parent, query: "Roadmap"}
+        picker: %ParentPicker{mode: :create, selected_parent: parent, query: "Roadmap"}
       })
       |> LazyHTML.from_fragment()
 
@@ -101,7 +101,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
 
     no_parent_document =
       render_component(&ParentPickerComponent.parent_picker/1, %{
-        picker: %TaskParentPicker{mode: :create}
+        picker: %ParentPicker{mode: :create}
       })
       |> LazyHTML.from_fragment()
 
@@ -110,7 +110,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
   end
 
   test "exposes the keyboard active descendant and prevents option buttons from stealing focus" do
-    state = %TaskParentPicker{
+    state = %ParentPicker{
       mode: :edit,
       options_open?: true,
       active_option_id: "task-parent-option-41",
@@ -151,7 +151,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
   test "renders No parent only inside an open eligible picker" do
     selected = %Task{id: 41, title: "Roadmap", project_id: 7}
 
-    closed_edit_state = %TaskParentPicker{mode: :edit, query: "", options: []}
+    closed_edit_state = %ParentPicker{mode: :edit, query: "", options: []}
 
     closed_edit_document =
       render_component(&ParentPickerComponent.parent_picker/1, %{picker: closed_edit_state})
@@ -172,7 +172,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
              )
            )
 
-    closed_create_state = %TaskParentPicker{
+    closed_create_state = %ParentPicker{
       mode: :create,
       query: "Roadmap",
       selected_parent: selected,
@@ -208,7 +208,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
   test "marks the combobox invalid and links a draft-preserving error" do
     rejected = %Task{id: 41, title: "Rejected parent", project_id: 7}
 
-    state = %TaskParentPicker{
+    state = %ParentPicker{
       mode: :edit,
       query: rejected.title,
       selected_parent: rejected,
@@ -234,7 +234,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
   end
 
   test "renders an accessible parent conflict notice with resolution actions" do
-    state = %TaskParentPicker{
+    state = %ParentPicker{
       mode: :edit,
       selected_parent: %Task{id: 41, title: "Mine", project_id: 7},
       conflict_parent: %Task{id: 42, title: "Latest parent", project_id: 7}

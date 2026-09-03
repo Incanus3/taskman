@@ -7,7 +7,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
 
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
   alias TaskmanWeb.Tasks.Form
 
   test "renders accessible ordinary-field conflict notices with stable resolution actions" do
@@ -27,7 +27,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
         change: "autosave_task",
         submit: "submit_task_edit",
         cancel: "/projects/7",
-        parent_picker: TaskParentPicker.empty(),
+        parent_picker: ParentPicker.empty(),
         conflicts: %{"title" => "Latest title"}
       })
       |> LazyHTML.from_fragment()

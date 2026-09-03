@@ -8,7 +8,8 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
   alias Taskman.Lists.NavigationNode
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias TaskmanWeb.{ListEdit, WorkspaceNavigation}
+  alias TaskmanWeb.ProjectLive.ListEdit
+  alias TaskmanWeb.WorkspaceNavigation
 
   test "renders a flattened semantic tree with independent controls" do
     project = %Project{id: 7, name: "Taskman", primary_directory: "/workspace/taskman"}

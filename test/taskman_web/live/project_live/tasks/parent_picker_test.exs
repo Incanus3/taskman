@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskParentPickerTest do
+defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
   use Taskman.DataCase, async: true
 
   import Taskman.ListsFixtures
@@ -7,19 +7,19 @@ defmodule TaskmanWeb.TaskParentPickerTest do
 
   alias Taskman.Tasks
   alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
 
   test "empty state and create initialization start with no parent" do
     project = project_fixture(%{})
 
-    assert %TaskParentPicker{} = empty = TaskParentPicker.empty()
+    assert %ParentPicker{} = empty = ParentPicker.empty()
     assert empty.query == ""
     assert empty.options == []
     assert empty.selected_parent == nil
     refute empty.options_open?
     assert empty.error == nil
 
-    state = TaskParentPicker.open_create(empty, project, nil)
+    state = ParentPicker.open_create(empty, project, nil)
 
     assert state.mode == :create
     assert state.current_task == nil
@@ -33,7 +33,7 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     project = project_fixture(%{})
     parent = task_fixture(project, %{title: "Parent"})
 
-    state = TaskParentPicker.open_create(TaskParentPicker.empty(), project, parent)
+    state = ParentPicker.open_create(ParentPicker.empty(), project, parent)
 
     assert state.mode == :create
     assert state.selected_parent == parent
@@ -47,14 +47,14 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: parent)
     _child = task_fixture(project, %{title: "Child"}, parent: task)
 
-    state = TaskParentPicker.open_edit(TaskParentPicker.empty(), project, task)
+    state = ParentPicker.open_edit(ParentPicker.empty(), project, task)
 
     assert state.mode == :edit
     assert state.current_task == task
     assert state.selected_parent == parent
     assert state.query == "Parent"
 
-    searched = TaskParentPicker.search(state, project, "")
+    searched = ParentPicker.search(state, project, "")
     assert searched.options_open?
     assert [%TaskWithLocation{task: ^parent}] = searched.options
   end
@@ -66,18 +66,18 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     exact = task_fixture(project, planning, %{title: "Roadmap"})
     title_match = task_fixture(project, %{title: "Roadmap #{exact.id} follow-up"})
 
-    state = TaskParentPicker.open_create(TaskParentPicker.empty(), project, nil)
+    state = ParentPicker.open_create(ParentPicker.empty(), project, nil)
 
-    empty = TaskParentPicker.search(state, project, "  ")
+    empty = ParentPicker.search(state, project, "  ")
 
     assert Enum.map(empty.options, & &1.task.id) == [first.id, exact.id, title_match.id]
 
-    exact_search = TaskParentPicker.search(state, project, Integer.to_string(exact.id))
+    exact_search = ParentPicker.search(state, project, Integer.to_string(exact.id))
 
     assert [%TaskWithLocation{task: ^exact}, %TaskWithLocation{task: ^title_match}] =
              exact_search.options
 
-    title_search = TaskParentPicker.search(state, project, "  ROADMAP  ")
+    title_search = ParentPicker.search(state, project, "  ROADMAP  ")
 
     assert Enum.map(title_search.options, & &1.task.id) == [exact.id, title_match.id]
     assert hd(title_search.options).location_path == [planning]
@@ -93,14 +93,14 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     selected = task_fixture(project, %{title: "Selected"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, selected)
-      |> TaskParentPicker.open_options(project)
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, selected)
+      |> ParentPicker.open_options(project)
 
     assert length(state.options) == 20
     assert hd(state.options).task == selected
 
-    searched = TaskParentPicker.search(state, project, "No matching title")
+    searched = ParentPicker.search(state, project, "No matching title")
 
     assert [%TaskWithLocation{task: ^selected}] = searched.options
   end
@@ -111,12 +111,12 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     _earlier = task_fixture(project, %{title: "Earlier"})
 
     failed =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task_fixture(project, %{title: "Task"}))
-      |> TaskParentPicker.select_draft(project, parent.id)
-      |> TaskParentPicker.reject_draft("That parent would create a cycle.")
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task_fixture(project, %{title: "Task"}))
+      |> ParentPicker.select_draft(project, parent.id)
+      |> ParentPicker.reject_draft("That parent would create a cycle.")
 
-    reopened = TaskParentPicker.open_options(failed, project)
+    reopened = ParentPicker.open_options(failed, project)
 
     assert reopened.options_open?
     assert reopened.selected_parent == parent
@@ -130,24 +130,24 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     parent = task_fixture(project, %{title: "Parent"})
 
     open =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, parent)
-      |> TaskParentPicker.open_options(project)
-      |> TaskParentPicker.reject_draft("Keep this error")
-      |> TaskParentPicker.open_options(project)
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, parent)
+      |> ParentPicker.open_options(project)
+      |> ParentPicker.reject_draft("Keep this error")
+      |> ParentPicker.open_options(project)
 
-    toggled = TaskParentPicker.toggle_options(open, project)
+    toggled = ParentPicker.toggle_options(open, project)
 
     refute toggled.options_open?
     assert toggled.selected_parent == parent
     assert toggled.query == "Parent"
     assert toggled.error == "Keep this error"
 
-    reopened = TaskParentPicker.toggle_options(toggled, project)
+    reopened = ParentPicker.toggle_options(toggled, project)
     assert reopened.options_open?
     assert reopened.query == ""
 
-    dismissed = TaskParentPicker.close_options(reopened)
+    dismissed = ParentPicker.close_options(reopened)
 
     refute dismissed.options_open?
     assert dismissed.selected_parent == parent
@@ -161,12 +161,12 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     second = task_fixture(project, %{title: "Second"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, nil)
-      |> TaskParentPicker.search(project, "")
-      |> TaskParentPicker.reject_draft("stale")
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, nil)
+      |> ParentPicker.search(project, "")
+      |> ParentPicker.reject_draft("stale")
 
-    same = TaskParentPicker.select_draft(state, project, first.id)
+    same = ParentPicker.select_draft(state, project, first.id)
 
     assert same.selected_parent == first
     assert same.query == "First"
@@ -175,13 +175,13 @@ defmodule TaskmanWeb.TaskParentPickerTest do
 
     rejected =
       same
-      |> TaskParentPicker.reject_draft("stale")
-      |> TaskParentPicker.select_draft(project, first.id)
+      |> ParentPicker.reject_draft("stale")
+      |> ParentPicker.select_draft(project, first.id)
 
     assert rejected.selected_parent == first
     assert rejected.error == "stale"
 
-    changed = TaskParentPicker.select_draft(rejected, project, second.id)
+    changed = ParentPicker.select_draft(rejected, project, second.id)
     assert changed.selected_parent == second
     assert changed.error == nil
   end
@@ -192,23 +192,23 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     second = task_fixture(project, %{title: "Second"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, nil)
-      |> TaskParentPicker.search(project, "")
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, nil)
+      |> ParentPicker.search(project, "")
 
-    assert {:move, down} = TaskParentPicker.keydown(state, "ArrowDown")
-    assert TaskParentPicker.active_option_id(down) == "task-parent-option-#{first.id}"
+    assert {:move, down} = ParentPicker.keydown(state, "ArrowDown")
+    assert ParentPicker.active_option_id(down) == "task-parent-option-#{first.id}"
 
-    assert TaskParentPicker.active_option_id(TaskParentPicker.search(down, project, "")) ==
+    assert ParentPicker.active_option_id(ParentPicker.search(down, project, "")) ==
              "task-parent-option-#{first.id}"
 
-    assert {:move, second_active} = TaskParentPicker.keydown(down, "ArrowDown")
-    assert TaskParentPicker.active_option_id(second_active) == "task-parent-option-#{second.id}"
+    assert {:move, second_active} = ParentPicker.keydown(down, "ArrowDown")
+    assert ParentPicker.active_option_id(second_active) == "task-parent-option-#{second.id}"
 
-    assert {:move, up} = TaskParentPicker.keydown(second_active, "ArrowUp")
-    assert TaskParentPicker.active_option_id(up) == "task-parent-option-#{first.id}"
+    assert {:move, up} = ParentPicker.keydown(second_active, "ArrowUp")
+    assert ParentPicker.active_option_id(up) == "task-parent-option-#{first.id}"
 
-    assert {:select, selected_id} = TaskParentPicker.keydown(second_active, "Enter")
+    assert {:select, selected_id} = ParentPicker.keydown(second_active, "Enter")
     assert selected_id == second.id
   end
 
@@ -217,14 +217,14 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     _parent = task_fixture(project, %{title: "Parent"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, nil)
-      |> TaskParentPicker.search(project, "")
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, nil)
+      |> ParentPicker.search(project, "")
 
-    assert :ignore = TaskParentPicker.keydown(state, "Enter")
-    assert {:close, closed} = TaskParentPicker.keydown(state, "Escape")
+    assert :ignore = ParentPicker.keydown(state, "Enter")
+    assert {:close, closed} = ParentPicker.keydown(state, "Escape")
     refute closed.options_open?
-    assert TaskParentPicker.active_option_id(closed) == nil
+    assert ParentPicker.active_option_id(closed) == nil
   end
 
   test "keyboard navigation exposes No parent as an option in edit mode" do
@@ -233,13 +233,13 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: parent)
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.search(project, "")
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.search(project, "")
 
-    assert {:move, moved} = TaskParentPicker.keydown(state, "ArrowDown")
-    assert TaskParentPicker.active_option_id(moved) == "task-parent-clear"
-    assert {:select, nil} = TaskParentPicker.keydown(moved, "Enter")
+    assert {:move, moved} = ParentPicker.keydown(state, "ArrowDown")
+    assert ParentPicker.active_option_id(moved) == "task-parent-clear"
+    assert {:select, nil} = ParentPicker.keydown(moved, "Enter")
   end
 
   test "clearing a selected draft exposes No parent and clears the error" do
@@ -247,13 +247,13 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     parent = task_fixture(project, %{title: "Parent"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_create(project, parent)
-      |> TaskParentPicker.reject_draft("stale")
+      ParentPicker.empty()
+      |> ParentPicker.open_create(project, parent)
+      |> ParentPicker.reject_draft("stale")
 
-    cleared = TaskParentPicker.clear_draft(state)
+    cleared = ParentPicker.clear_draft(state)
 
-    assert TaskParentPicker.selected_parent(cleared) == nil
+    assert ParentPicker.selected_parent(cleared) == nil
     assert cleared.query == ""
     refute cleared.options_open?
     assert cleared.error == nil
@@ -266,11 +266,11 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: original_parent)
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, replacement.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, replacement.id)
 
-    assert {:ok, saved, updated} = TaskParentPicker.save_edit(state, project, task)
+    assert {:ok, saved, updated} = ParentPicker.save_edit(state, project, task)
     assert updated.parent_task_id == replacement.id
     assert saved.selected_parent == replacement
     assert saved.current_task.parent_task_id == replacement.id
@@ -285,12 +285,12 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     rejected_parent = task_fixture(project, %{title: "Descendant"}, parent: task)
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, rejected_parent.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, rejected_parent.id)
 
     assert {:error, failed, %Ecto.Changeset{}} =
-             TaskParentPicker.save_edit(state, project, task)
+             ParentPicker.save_edit(state, project, task)
 
     persisted = Tasks.get_task_for_project(project, task.id)
 
@@ -299,11 +299,11 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     assert failed.error == "That parent would create a cycle."
     assert persisted.parent_task_id == original_parent.id
 
-    reopened = TaskParentPicker.open_options(failed, project)
+    reopened = ParentPicker.open_options(failed, project)
     assert reopened.error == failed.error
     assert reopened.selected_parent.id == rejected_parent.id
 
-    changed = TaskParentPicker.select_draft(reopened, project, original_parent.id)
+    changed = ParentPicker.select_draft(reopened, project, original_parent.id)
     assert changed.error == nil
   end
 
@@ -313,13 +313,13 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     rejected_parent = task_fixture(project, %{title: "Removed parent"})
 
     state =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, rejected_parent.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, rejected_parent.id)
 
     Taskman.Repo.delete!(rejected_parent)
 
-    assert {:error, failed, :not_found} = TaskParentPicker.save_edit(state, project, task)
+    assert {:error, failed, :not_found} = ParentPicker.save_edit(state, project, task)
     assert failed.error == "That parent Task is no longer available."
     assert failed.selected_parent.id == rejected_parent.id
     refute failed.options_open?
@@ -332,12 +332,12 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: first_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.search(project, "Second")
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.search(project, "Second")
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: second_parent)
-    reconciled = TaskParentPicker.reconcile(picker, project, latest)
+    reconciled = ParentPicker.reconcile(picker, project, latest)
 
     assert reconciled.current_task == latest
     assert reconciled.selected_parent == second_parent
@@ -352,14 +352,14 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: selected_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, selected_parent.id)
-      |> TaskParentPicker.search(project, "Road")
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, selected_parent.id)
+      |> ParentPicker.search(project, "Road")
 
     external_candidate = task_fixture(project, %{title: "Roadmap follow-up"})
     latest = Tasks.get_task_for_project(project, task.id)
-    reconciled = TaskParentPicker.reconcile(picker, project, latest)
+    reconciled = ParentPicker.reconcile(picker, project, latest)
 
     assert reconciled.current_task == latest
     assert reconciled.selected_parent == selected_parent
@@ -376,20 +376,20 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, mine.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, mine.id)
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
 
-    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
 
     assert conflicted.current_task == latest
     assert conflicted.selected_parent == mine
     assert conflicted.conflict_parent == latest_parent
 
     assert {:ok, used_latest, ^latest} =
-             TaskParentPicker.resolve_conflict(conflicted, project, :use_latest)
+             ParentPicker.resolve_conflict(conflicted, project, :use_latest)
 
     assert used_latest.selected_parent == latest_parent
     assert used_latest.conflict_parent == nil
@@ -404,15 +404,15 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, mine.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, mine.id)
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
-    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
 
     assert {:ok, resolved, saved} =
-             TaskParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+             ParentPicker.resolve_conflict(conflicted, project, :keep_mine)
 
     assert saved.parent_task_id == mine.id
     assert resolved.current_task == saved
@@ -431,17 +431,17 @@ defmodule TaskmanWeb.TaskParentPickerTest do
     task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, mine.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, mine.id)
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
-    assert {:conflict, conflicted, ^latest} = TaskParentPicker.save_edit(picker, project, task)
+    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
 
     assert {:ok, raced} = Tasks.update_task(project, latest, %{}, parent: later_parent)
 
     assert {:conflict, still_conflicted, ^raced} =
-             TaskParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+             ParentPicker.resolve_conflict(conflicted, project, :keep_mine)
 
     assert still_conflicted.current_task == raced
     assert still_conflicted.selected_parent == mine

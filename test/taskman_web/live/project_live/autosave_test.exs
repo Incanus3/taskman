@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.ProjectLiveAutosaveTest do
+defmodule TaskmanWeb.ProjectLive.AutosaveTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -8,7 +8,8 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
   import Taskman.TasksFixtures
 
   alias Taskman.{Repo, Tasks}
-  alias TaskmanWeb.{ProjectLive, TaskAutosave, TaskParentPicker}
+  alias TaskmanWeb.ProjectLive
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, ParentPicker}
 
   setup %{conn: conn} do
     {:ok, conn: log_in_user(conn, user_fixture())}
@@ -310,8 +311,8 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     task = task_fixture(task_project, %{title: "Before"})
 
     assert {:schedule, autosave, ^task, _delay, _message} =
-             TaskAutosave.change(
-               TaskAutosave.load(TaskAutosave.empty(), task, saved?: false),
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
                task_project,
                task,
                %{"title" => "Unsaved"},
@@ -458,14 +459,14 @@ defmodule TaskmanWeb.ProjectLiveAutosaveTest do
     task = task_fixture(project, %{title: "Task"}, parent: initial_parent)
 
     picker =
-      TaskParentPicker.empty()
-      |> TaskParentPicker.open_edit(project, task)
-      |> TaskParentPicker.select_draft(project, mine.id)
+      ParentPicker.empty()
+      |> ParentPicker.open_edit(project, task)
+      |> ParentPicker.select_draft(project, mine.id)
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
 
     assert {:conflict, conflicted_picker, ^latest} =
-             TaskParentPicker.save_edit(picker, project, task)
+             ParentPicker.save_edit(picker, project, task)
 
     socket = %Phoenix.LiveView.Socket{
       private: %{

@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskParentPicker do
+defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Conflict

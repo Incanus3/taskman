@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.TaskMove do
+defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project

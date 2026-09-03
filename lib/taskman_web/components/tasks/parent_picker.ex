@@ -2,9 +2,9 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.TaskParentPicker
+  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker, as: ParentPickerState
 
-  attr :picker, TaskParentPicker, required: true
+  attr :picker, ParentPickerState, required: true
 
   def parent_picker(assigns) do
     assigns = assign(assigns, :picker_state, assigns.picker)
@@ -219,17 +219,17 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
     """
   end
 
-  defp show_no_parent?(%TaskParentPicker{mode: :edit}), do: true
-  defp show_no_parent?(%TaskParentPicker{selected_parent: %Task{}}), do: true
-  defp show_no_parent?(%TaskParentPicker{}), do: false
+  defp show_no_parent?(%ParentPickerState{mode: :edit}), do: true
+  defp show_no_parent?(%ParentPickerState{selected_parent: %Task{}}), do: true
+  defp show_no_parent?(%ParentPickerState{}), do: false
 
   defp selected?(
-         %TaskParentPicker{selected_parent: %Task{id: selected_id}},
+         %ParentPickerState{selected_parent: %Task{id: selected_id}},
          %TaskWithLocation{task: %Task{id: option_id}}
        ),
        do: selected_id == option_id
 
-  defp selected?(%TaskParentPicker{}, %TaskWithLocation{}), do: false
+  defp selected?(%ParentPickerState{}, %TaskWithLocation{}), do: false
 
   defp option_id(%TaskWithLocation{task: %Task{id: id}}), do: "task-parent-option-#{id}"
 
@@ -240,9 +240,9 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
   defp location_label([]), do: "Project"
   defp location_label(path), do: Enum.map_join(path, " / ", & &1.name)
 
-  defp parent_conflict?(%TaskParentPicker{parent_conflicted?: true}), do: true
-  defp parent_conflict?(%TaskParentPicker{conflict_parent: %Task{}}), do: true
-  defp parent_conflict?(%TaskParentPicker{}), do: false
+  defp parent_conflict?(%ParentPickerState{parent_conflicted?: true}), do: true
+  defp parent_conflict?(%ParentPickerState{conflict_parent: %Task{}}), do: true
+  defp parent_conflict?(%ParentPickerState{}), do: false
 
   defp parent_label(nil), do: "No parent"
   defp parent_label(%Task{title: title}) when is_binary(title), do: title

@@ -2,16 +2,17 @@ defmodule TaskmanWeb.Tasks.Detail do
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.{TaskAutosave, TaskHierarchy, TaskMove, TaskParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.{Form, MovePopover}
 
   attr :task, Task, required: true
-  attr :task_autosave, TaskAutosave, required: true
-  attr :parent_picker, TaskParentPicker, required: true
+  attr :task_autosave, Autosave, required: true
+  attr :parent_picker, ParentPicker, required: true
   attr :cancel, :string, required: true
   attr :task_hierarchy, TaskHierarchy, required: true
   attr :task_path, :any, required: true
-  attr :task_move, TaskMove, required: true
+  attr :task_move, Move, required: true
 
   def detail(assigns) do
     ~H"""
@@ -93,7 +94,7 @@ defmodule TaskmanWeb.Tasks.Detail do
                 </button>
               </div>
               <div
-                :if={TaskMove.active_for?(@task_move, @task.id, :detail)}
+                :if={Move.active_for?(@task_move, @task.id, :detail)}
                 data-move-task-popover
                 class="absolute left-0 right-0 top-full z-30"
               >
@@ -119,7 +120,7 @@ defmodule TaskmanWeb.Tasks.Detail do
               data-state={@task_autosave.save_state}
               class="mt-4 text-right text-sm text-slate-400"
             >
-              {TaskAutosave.message(@task_autosave)}
+              {Autosave.message(@task_autosave)}
             </p>
           </section>
 

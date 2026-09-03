@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.ListEditTest do
+defmodule TaskmanWeb.ProjectLive.ListEditTest do
   use Taskman.DataCase, async: true
 
   import Taskman.ListsFixtures
@@ -7,7 +7,7 @@ defmodule TaskmanWeb.ListEditTest do
   alias Taskman.Lists
   alias Taskman.Lists.NavigationNode
   alias Taskman.Projects
-  alias TaskmanWeb.ListEdit
+  alias TaskmanWeb.ProjectLive.ListEdit
 
   test "clear returns the empty List editing state" do
     project = project_fixture(%{})

@@ -1,10 +1,10 @@
 defmodule TaskmanWeb.Tasks.MovePopover do
   use TaskmanWeb, :html
 
-  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.ProjectLive.Tasks.Move
 
   attr :task_id, :integer, required: true
-  attr :task_move, TaskMove, required: true
+  attr :task_move, Move, required: true
   attr :window_escape?, :boolean, default: true
   attr :restore_focus?, :boolean, default: true
 
@@ -127,7 +127,7 @@ defmodule TaskmanWeb.Tasks.MovePopover do
           id={"move-task-submit-#{@task_id}"}
           type="button"
           phx-click="submit_move_task"
-          disabled={@task_move.destination in [nil, TaskMove.current_destination(@task_move)]}
+          disabled={@task_move.destination in [nil, Move.current_destination(@task_move)]}
           class="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Move Task

@@ -1,8 +1,8 @@
-defmodule TaskmanWeb.TaskHierarchyTest do
+defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
   use ExUnit.Case, async: true
 
-  alias TaskmanWeb.TaskHierarchy
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
+  alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
 
   test "loading a hierarchy expands the selected Task and its ancestors" do
     hierarchy = hierarchy(3)

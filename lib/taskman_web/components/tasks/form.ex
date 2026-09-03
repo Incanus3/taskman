@@ -3,8 +3,9 @@ defmodule TaskmanWeb.Tasks.Form do
 
   import Phoenix.Component, except: [form: 1]
 
-  alias TaskmanWeb.TaskParentPicker
-  alias TaskmanWeb.Tasks.{ParentPicker, Table}
+  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
+  alias TaskmanWeb.Tasks.ParentPicker, as: ParentPickerComponent
+  alias TaskmanWeb.Tasks.Table
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :mode, :atom, values: [:new, :edit], required: true
@@ -12,7 +13,7 @@ defmodule TaskmanWeb.Tasks.Form do
   attr :submit, :string, default: nil
   attr :cancel, :string, required: true
   attr :create_enabled?, :boolean, default: false
-  attr :parent_picker, TaskParentPicker, required: true
+  attr :parent_picker, ParentPicker, required: true
   attr :conflicts, :map, default: %{}
 
   def form(assigns) do
@@ -66,7 +67,7 @@ defmodule TaskmanWeb.Tasks.Form do
         }
       </script>
       <div class="mt-4">
-        <ParentPicker.parent_picker picker={@parent_picker} />
+        <ParentPickerComponent.parent_picker picker={@parent_picker} />
       </div>
       <div
         :if={@parent_picker.error}

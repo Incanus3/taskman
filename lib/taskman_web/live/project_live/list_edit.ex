@@ -1,4 +1,4 @@
-defmodule TaskmanWeb.ListEdit do
+defmodule TaskmanWeb.ProjectLive.ListEdit do
   alias Taskman.Lists
   alias Taskman.Lists.{NavigationNode, TaskList}
   alias Taskman.Projects.Project

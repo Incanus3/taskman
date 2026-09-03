@@ -7,7 +7,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
 
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.{Task, TaskWithLocation}
-  alias TaskmanWeb.TaskMove
+  alias TaskmanWeb.ProjectLive.Tasks.Move
   alias TaskmanWeb.Tasks.Table
 
   test "renders the sort button as a full-cell pointer target" do
@@ -67,7 +67,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -93,7 +93,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: true,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     document = LazyHTML.from_fragment(html)
@@ -116,7 +116,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     assert LazyHTML.from_fragment(html)
@@ -128,7 +128,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
-    task_move = %TaskMove{
+    task_move = %Move{
       active_task: %{
         task_id: task.id,
         origin: :row,
@@ -173,7 +173,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
         task_with_location: task_with_location,
         task_path: "/projects/7/tasks/41",
         include_children?: false,
-        task_move: TaskMove.empty()
+        task_move: Move.empty()
       })
 
     [open_actions] =
@@ -189,7 +189,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
-    task_move = %TaskMove{
+    task_move = %Move{
       active_task: %{
         task_id: task.id,
         origin: :row,
@@ -225,7 +225,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
     task_with_location = %TaskWithLocation{task: task, location_path: []}
 
-    task_move = %TaskMove{
+    task_move = %Move{
       active_task: %{
         task_id: 42,
         origin: :row,
