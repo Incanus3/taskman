@@ -30,19 +30,8 @@ defmodule Taskman.Accounts.User do
     generic_actions []
     create_actions [:create_pending_user]
 
-    update_actions [
-      :resend_invitation,
-      :revoke_invitation,
-      :enable,
-      :disable,
-      :promote,
-      :demote,
-      :manage_email,
-      :revoke_sessions,
-      :revoke_api_keys
-    ]
-
-    destroy_actions [:admin_delete]
+    update_actions []
+    destroy_actions []
     table_columns [:email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
     table_sortable_columns [:email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
     table_filterable_columns [:email, :status, :admin?]

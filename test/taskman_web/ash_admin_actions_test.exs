@@ -7,8 +7,10 @@ defmodule TaskmanWeb.AshAdminActionsTest do
 
   require Ash.Query
 
+  alias AshAuthentication.Jwt
   alias Taskman.Accounts
-  alias Taskman.Accounts.User
+  alias Taskman.Accounts.{ApiKey, Token, User}
+  alias Taskman.Repo
 
   setup :set_swoosh_global
 
@@ -18,19 +20,8 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     assert AshAdmin.Resource.generic_actions(User) == []
     assert AshAdmin.Resource.create_actions(User) == [:create_pending_user]
 
-    assert AshAdmin.Resource.update_actions(User) == [
-             :resend_invitation,
-             :revoke_invitation,
-             :enable,
-             :disable,
-             :promote,
-             :demote,
-             :manage_email,
-             :revoke_sessions,
-             :revoke_api_keys
-           ]
-
-    assert AshAdmin.Resource.destroy_actions(User) == [:admin_delete]
+    assert AshAdmin.Resource.update_actions(User) == []
+    assert AshAdmin.Resource.destroy_actions(User) == []
     assert AshAdmin.Resource.show_sensitive_fields(User) == []
 
     assert AshAdmin.Resource.table_columns(User) == [
@@ -52,11 +43,13 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     pending_user = pending_user_fixture()
     assert_receive {:email, _initial_invitation}
 
-    view = admin_action_view(conn, administrator, pending_user, :update, :manage_email)
+    view = admin_user_view(conn, administrator, pending_user)
     replacement_email = "replacement-pending@example.com"
 
     view
-    |> form("#form", %{"form" => %{"email" => replacement_email, "confirmed?" => "false"}})
+    |> form("#admin-user-manage-email", %{
+      "email" => %{"email" => replacement_email, "confirmed?" => "false"}
+    })
     |> render_submit()
 
     assert to_string(read_user!(administrator, pending_user).email) == replacement_email
@@ -70,25 +63,25 @@ defmodule TaskmanWeb.AshAdminActionsTest do
   test "the administrator-delete form confirms and removes a different account", %{conn: conn} do
     administrator = admin_fixture()
     target = user_fixture()
-    view = admin_action_view(conn, administrator, target, :destroy, :admin_delete)
+    view = admin_user_view(conn, administrator, target)
 
-    assert has_element?(view, "#form")
-    assert has_element?(view, "#form input[name='form[confirmation]']")
+    assert has_element?(view, "#admin-user-delete")
+    assert has_element?(view, "#admin-user-delete input[name='delete[confirmation]']")
 
     view
-    |> form("#form", %{"form" => %{}})
+    |> form("#admin-user-delete", %{"delete" => %{}})
     |> render_submit()
 
     assert {:ok, %User{}} = read_user(administrator, target)
 
     view
-    |> form("#form", %{"form" => %{"confirmation" => "no"}})
+    |> form("#admin-user-delete", %{"delete" => %{"confirmation" => "no"}})
     |> render_submit()
 
     assert {:ok, %User{}} = read_user(administrator, target)
 
     view
-    |> form("#form", %{"form" => %{"confirmation" => "DELETE"}})
+    |> form("#admin-user-delete", %{"delete" => %{"confirmation" => "DELETE"}})
     |> render_submit()
 
     assert {:ok, nil} = read_user(administrator, target)
@@ -96,13 +89,13 @@ defmodule TaskmanWeb.AshAdminActionsTest do
 
   test "forged admin protocol events cannot execute a self-targeted delete", %{conn: conn} do
     administrator = admin_fixture()
-    view = admin_action_view(conn, administrator, administrator, :destroy, :admin_delete)
+    view = admin_user_view(conn, administrator, administrator)
 
     render_hook(view, "toggle_authorizing", %{})
     render_hook(view, "clear_actor", %{})
 
     view
-    |> form("#form", %{"form" => %{"confirmation" => "DELETE"}})
+    |> form("#admin-user-delete", %{"delete" => %{"confirmation" => "DELETE"}})
     |> render_submit()
 
     assert {:ok, %User{}} = read_user(administrator, administrator)
@@ -131,6 +124,111 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     inspected_user = read_admin_user(administrator, target)
     assert %Ash.NotLoaded{} = inspected_user.hashed_password
     assert %Ash.NotLoaded{} = inspected_user.email_change_confirmed_at
+  end
+
+  test "all named target administration controls are available only on the safe inspection view",
+       %{
+         conn: conn
+       } do
+    administrator = admin_fixture()
+    target = user_fixture()
+    view = admin_user_view(conn, administrator, target)
+
+    for selector <- [
+          "#admin-user-resend-invitation",
+          "#admin-user-revoke-invitation",
+          "#admin-user-enable",
+          "#admin-user-disable",
+          "#admin-user-promote",
+          "#admin-user-demote",
+          "#admin-user-manage-email",
+          "#admin-user-revoke-sessions",
+          "#admin-user-revoke-api-keys",
+          "#admin-user-delete"
+        ] do
+      assert has_element?(view, selector)
+    end
+
+    assert_safe_admin_surface(view)
+  end
+
+  test "the AshAdmin pending-user invitation form has no original-record internals", %{conn: conn} do
+    administrator = admin_fixture()
+
+    assert {:ok, view, _html} =
+             live(
+               log_in_user(conn, administrator),
+               "/admin?domain=Accounts&resource=User&action_type=create&action=create_pending_user"
+             )
+
+    assert has_element?(view, "#form")
+    assert_safe_admin_surface(view)
+  end
+
+  test "direct generic update and destroy routes redirect before their forms can mount", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    target = user_fixture()
+    conn = log_in_user(conn, administrator)
+    inspection_path = "/admin/users/#{target.id}"
+
+    for {action_type, action} <- [update: :manage_email, destroy: :admin_delete] do
+      assert {:error, {:live_redirect, %{to: ^inspection_path}}} =
+               live(conn, admin_action_path(target, action_type, action))
+    end
+
+    assert {:ok, view, _html} = live(conn, "/admin")
+
+    assert {:error, {:live_redirect, %{to: ^inspection_path}}} =
+             render_patch(view, admin_action_path(target, :update, :manage_email))
+  end
+
+  test "the inspection lifecycle controls update a target account", %{conn: conn} do
+    administrator = admin_fixture()
+    target = user_fixture()
+    view = admin_user_view(conn, administrator, target)
+
+    view
+    |> form("#admin-user-disable")
+    |> render_submit()
+
+    assert :disabled == read_user!(administrator, target).status
+  end
+
+  test "the inspection resend control issues a fresh pending setup invitation", %{conn: conn} do
+    administrator = admin_fixture()
+    pending_user = pending_user_fixture()
+    assert_receive {:email, _initial_invitation}
+    view = admin_user_view(conn, administrator, pending_user)
+
+    view
+    |> form("#admin-user-resend-invitation")
+    |> render_submit()
+
+    assert_receive {:email, email}
+    assert email.to == [{"", to_string(pending_user.email)}]
+    assert email.text_body =~ "/setup/"
+  end
+
+  test "the inspection credential controls revoke browser sessions and API keys", %{conn: conn} do
+    administrator = admin_fixture()
+    target = user_fixture()
+    api_key = api_key_fixture(target)
+    assert {:ok, session_token, _claims} = Jwt.token_for_user(target, %{}, purpose: :user)
+    view = admin_user_view(conn, administrator, target)
+
+    view
+    |> form("#admin-user-revoke-sessions")
+    |> render_submit()
+
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(session_token, "user")
+
+    view
+    |> form("#admin-user-revoke-api-keys")
+    |> render_submit()
+
+    assert %ApiKey{revoked_at: %DateTime{}} = Repo.get!(ApiKey, api_key.id)
   end
 
   test "direct lifecycle calls remain denied to non-admin, disabled, and self-targeting actors" do
@@ -172,9 +270,9 @@ defmodule TaskmanWeb.AshAdminActionsTest do
              |> Ash.destroy(actor: administrator, authorize?: true, domain: Accounts)
   end
 
-  defp admin_action_view(conn, administrator, user, action_type, action) do
+  defp admin_user_view(conn, administrator, user) do
     assert {:ok, view, _html} =
-             live(log_in_user(conn, administrator), admin_action_path(user, action_type, action))
+             live(log_in_user(conn, administrator), "/admin/users/#{user.id}")
 
     view
   end
@@ -206,5 +304,23 @@ defmodule TaskmanWeb.AshAdminActionsTest do
              read_user_with_action(administrator, user, :admin_read)
 
     user
+  end
+
+  defp assert_safe_admin_surface(view) do
+    for label <- [
+          "Original Record",
+          "Hashed Password",
+          "Email Change Confirmed At",
+          "Api Keys",
+          "Valid Api Keys",
+          "hashed_password",
+          "email_change_confirmed_at",
+          "api_keys",
+          "valid_api_keys"
+        ] do
+      refute has_element?(view, "*", label)
+    end
+
+    refute has_element?(view, "button[phx-click='load']")
   end
 end

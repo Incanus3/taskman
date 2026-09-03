@@ -179,15 +179,13 @@ defmodule TaskmanWeb.LiveUserAuth do
     end
   end
 
-  defp user_detail_request?(
-         %{
-           "domain" => "Accounts",
-           "resource" => "User",
-           "primary_key" => primary_key
-         } = params
-       )
+  defp user_detail_request?(%{
+         "domain" => "Accounts",
+         "resource" => "User",
+         "primary_key" => primary_key
+       })
        when is_binary(primary_key) and primary_key != "" do
-    params["action_type"] in [nil, "read"]
+    true
   end
 
   defp user_detail_request?(_params), do: false

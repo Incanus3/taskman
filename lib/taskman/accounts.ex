@@ -731,11 +731,12 @@ defmodule Taskman.Accounts do
 
   def manage_email(_actor, _user, _email, _confirmed?), do: {:error, :invalid_input}
 
-  @spec delete_user(User.t(), User.t()) :: :ok | {:error, term()}
-  def delete_user(actor, user) when is_struct(actor, User) and is_struct(user, User) do
+  @spec delete_user(User.t(), User.t(), String.t()) :: :ok | {:error, term()}
+  def delete_user(actor, user, confirmation)
+      when is_struct(actor, User) and is_struct(user, User) and is_binary(confirmation) do
     result =
       user
-      |> Ash.Changeset.for_destroy(:admin_delete, %{confirmation: "DELETE"})
+      |> Ash.Changeset.for_destroy(:admin_delete, %{confirmation: confirmation})
       |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
 
     case result do
@@ -745,7 +746,10 @@ defmodule Taskman.Accounts do
     end
   end
 
-  def delete_user(_actor, _user), do: {:error, :invalid_input}
+  def delete_user(_actor, _user, _confirmation), do: {:error, :invalid_input}
+
+  @spec delete_user(User.t(), User.t()) :: :ok | {:error, term()}
+  def delete_user(actor, user), do: delete_user(actor, user, "DELETE")
 
   @spec delete_own_account(User.t(), String.t()) :: :ok | {:error, term()}
   def delete_own_account(actor, current_password)
