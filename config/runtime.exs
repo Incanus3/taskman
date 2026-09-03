@@ -101,17 +101,13 @@ if config_env() == :prod do
   host = require_environment.("PHX_HOST")
   resend_api_key = require_environment.("RESEND_API_KEY")
 
-  valid_mail_from? = fn address ->
-    Regex.match?(
-      ~r/\A[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\z/,
-      address
-    )
-  end
+  mail_from_pattern =
+    ~r/\A[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\z/
 
   mail_from = require_environment.("MAIL_FROM")
 
   mail_from =
-    if valid_mail_from?.(mail_from) do
+    if Regex.match?(mail_from_pattern, mail_from) do
       String.downcase(mail_from)
     else
       raise "environment variable MAIL_FROM must be a single email address in local-part@domain form."
