@@ -73,8 +73,8 @@ defmodule TaskmanWeb.AuthenticationTest do
     disabled = user_fixture(%{status: :disabled})
 
     for user <- [pending, disabled] do
-      conn = TaskmanWeb.ConnCase.log_in_user(conn, user)
       assert {:error, {:redirect, %{to: "/sign-in" <> _}}} = live(conn, "/")
+      assert :error = Jwt.token_for_user(user, %{}, purpose: :user)
     end
   end
 

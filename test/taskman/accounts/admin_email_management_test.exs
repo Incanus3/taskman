@@ -5,7 +5,7 @@ defmodule Taskman.Accounts.AdminEmailManagementTest do
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
-  alias Taskman.Accounts.Token
+  alias Taskman.Accounts.{Token, User}
   alias Taskman.Repo
 
   setup :set_swoosh_global
@@ -30,7 +30,7 @@ defmodule Taskman.Accounts.AdminEmailManagementTest do
         end
 
       result =
-        Accounts.manage_email(
+        direct_manage_email(
           administrator,
           target,
           if(changed?, do: new_email, else: old_email),
@@ -147,6 +147,62 @@ defmodule Taskman.Accounts.AdminEmailManagementTest do
     assert_setup_email("delivery-after@example.com")
   end
 
+  test "the single administrative email action owns every direct email-management path" do
+    administrator = admin_fixture("direct-email-administrator@example.com")
+    target = active_fixture("direct-email-target@example.com")
+
+    assert %{} = Ash.Resource.Info.action(User, :manage_email)
+
+    for obsolete_action <- [
+          :manage_confirmed_email,
+          :manage_unconfirmed_email,
+          :replace_pending_email,
+          :replace_pending_confirmed_email,
+          :confirm_existing_email
+        ] do
+      assert is_nil(Ash.Resource.Info.action(User, obsolete_action))
+    end
+
+    assert {:ok, managed} =
+             target
+             |> Ash.Changeset.for_update(:manage_email, %{
+               email: "direct-email-new@example.com",
+               confirmed?: false
+             })
+             |> Ash.update(actor: administrator, authorize?: true, domain: Accounts)
+
+    assert to_string(managed.email) == "direct-email-target@example.com"
+    assert_confirmation_email("direct-email-new@example.com")
+
+    assert {:error, _reason} =
+             direct_manage_email(administrator, administrator, "forbidden@example.com", true)
+  end
+
+  test "administrative email management selects the lifecycle from the locked target state" do
+    administrator = admin_fixture("locked-email-administrator@example.com")
+
+    assert {:ok, pending} =
+             Accounts.invite_user(administrator, %{email: "locked-email-pending@example.com"})
+
+    _setup_token = receive_token("setup")
+
+    active_target =
+      pending
+      |> Ecto.Changeset.change(status: :active, confirmed_at: DateTime.utc_now())
+      |> Repo.update!()
+
+    assert {:ok, managed} =
+             Accounts.manage_email(
+               administrator,
+               pending,
+               "locked-email-replacement@example.com",
+               false
+             )
+
+    assert to_string(managed.email) == to_string(active_target.email)
+    assert_confirmation_email("locked-email-replacement@example.com")
+  end
+
   defp target_fixture(administrator, :pending, email) do
     assert {:ok, pending} = Accounts.invite_user(administrator, %{email: email})
     {pending, receive_token("setup")}
@@ -194,6 +250,12 @@ defmodule Taskman.Accounts.AdminEmailManagementTest do
   defp token_from_email(email, path) do
     [_, token] = Regex.run(~r{https://[^\s<]+/#{path}/([^\s<]+)}, email.text_body)
     URI.decode(token)
+  end
+
+  defp direct_manage_email(administrator, target, email, confirmed?) do
+    target
+    |> Ash.Changeset.for_update(:manage_email, %{email: email, confirmed?: confirmed?})
+    |> Ash.update(actor: administrator, authorize?: true, domain: Accounts)
   end
 
   defmodule FailingMailer do

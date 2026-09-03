@@ -1,11 +1,13 @@
 defmodule Taskman.Accounts.AdminLifecycleTest do
   use Taskman.DataCase, async: false
 
+  import Ecto.Query
+
   import Taskman.AccountsFixtures, only: [pending_user_fixture: 1, user_fixture: 1]
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
-  alias Taskman.Accounts.ApiKey
+  alias Taskman.Accounts.{ApiKey, Token, User}
   alias Taskman.Repo
 
   test "only active administrators can administer accounts" do
@@ -92,6 +94,181 @@ defmodule Taskman.Accounts.AdminLifecycleTest do
     end)
   end
 
+  test "lifecycle actions reject stale administrator authority and invalid transitions" do
+    administrator = admin_fixture("stale-administrator@example.com")
+    survivor = admin_fixture("stale-administrator-survivor@example.com")
+    target = user_fixture(email: "stale-target@example.com")
+    stale_administrator = administrator
+
+    assert {:ok, _demoted} = Accounts.demote_user(administrator, administrator)
+
+    assert {:error, _reason} = direct_lifecycle_update(target, :disable, stale_administrator)
+    assert %{status: :active} = Repo.get!(User, target.id)
+
+    assert {:error, _reason} = direct_lifecycle_update(target, :enable, survivor)
+    assert {:error, _reason} = direct_lifecycle_update(survivor, :promote, survivor)
+    assert {:error, _reason} = direct_lifecycle_update(target, :demote, survivor)
+
+    assert {:error, _reason} = direct_invite(stale_administrator, "stale-invite@example.com")
+
+    assert {:ok, pending} = Accounts.invite_user(survivor, %{email: "stale-resend@example.com"})
+
+    assert {:error, _reason} =
+             direct_lifecycle_update(pending, :resend_invitation, stale_administrator)
+
+    assert {:error, _reason} =
+             direct_lifecycle_update(pending, :revoke_invitation, stale_administrator)
+  end
+
+  test "two active administrators contending to remove each other preserve exactly one active administrator" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      for action <- [:demote, :disable, :delete] do
+        first = admin_fixture("#{action}-first-#{System.unique_integer([:positive])}@example.com")
+
+        second =
+          admin_fixture("#{action}-second-#{System.unique_integer([:positive])}@example.com")
+
+        try do
+          results =
+            concurrently([{:first, first, second}, {:second, second, first}], fn
+              {_name, actor, target} ->
+                case action do
+                  :demote -> Accounts.demote_user(actor, target)
+                  :disable -> Accounts.disable_user(actor, target)
+                  :delete -> Accounts.delete_user(actor, target)
+                end
+            end)
+
+          assert 1 == Enum.count(results, &(match?({:ok, _}, &1) or &1 == :ok))
+          assert 1 == Enum.count(results, &match?({:error, _}, &1))
+
+          assert 1 ==
+                   Repo.aggregate(
+                     from(user in User, where: user.status == :active and user.admin? == true),
+                     :count
+                   )
+        after
+          delete_users([first, second])
+        end
+      end
+    end)
+  end
+
+  test "disabling serializes browser-session issuance with credential revocation" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      suffix = System.unique_integer([:positive])
+      administrator = admin_fixture("session-race-administrator-#{suffix}@example.com")
+      target = user_fixture(email: "session-race-target-#{suffix}@example.com")
+
+      try do
+        with_user_lock(target, fn release_user_lock ->
+          disabler =
+            start_independent_task(:disable, fn ->
+              Accounts.disable_user(administrator, target)
+            end)
+
+          await_backend_lock(disabler.backend_pid)
+
+          issuer =
+            start_independent_task(:session, fn ->
+              Jwt.token_for_user(target, %{}, purpose: :user)
+            end)
+
+          refute_receive {:independent_task_completed, :session, _result}, 50
+
+          release_user_lock.()
+
+          assert {:ok, _disabled} = Task.await(disabler.task, :infinity)
+          assert :error = Task.await(issuer.task, :infinity)
+
+          assert [] =
+                   Repo.all(
+                     from token in Token,
+                       where: token.subject == ^AshAuthentication.user_to_subject(target)
+                   )
+        end)
+      after
+        delete_users([administrator, target])
+      end
+    end)
+  end
+
+  test "disabling broadcasts exactly the browser sessions deleted by its committed transaction" do
+    administrator = admin_fixture("revocation-administrator@example.com")
+    target = user_fixture(email: "revocation-target@example.com")
+
+    assert {:ok, first_session, _claims} = Jwt.token_for_user(target, %{}, purpose: :user)
+    assert {:ok, second_session, _claims} = Jwt.token_for_user(target, %{}, purpose: :user)
+
+    assert {:ok, setup_token, _claims} =
+             Jwt.token_for_user(target, %{"act" => "complete_setup"}, purpose: :setup)
+
+    first_topic = Token.session_topic(first_session)
+    second_topic = Token.session_topic(second_session)
+    setup_topic = Token.session_topic(setup_token)
+
+    TaskmanWeb.Endpoint.subscribe(first_topic)
+    TaskmanWeb.Endpoint.subscribe(second_topic)
+    TaskmanWeb.Endpoint.subscribe(setup_topic)
+
+    assert {:ok, _disabled} = Accounts.disable_user(administrator, target)
+
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_topic, event: "disconnect"}
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^second_topic, event: "disconnect"}
+    refute_receive %Phoenix.Socket.Broadcast{topic: ^setup_topic, event: "disconnect"}
+  end
+
+  test "disabling serializes API-key issuance with credential revocation" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      suffix = System.unique_integer([:positive])
+      administrator = admin_fixture("api-key-race-administrator-#{suffix}@example.com")
+      target = user_fixture(email: "api-key-race-target-#{suffix}@example.com")
+      now = DateTime.utc_now()
+
+      assert {:ok, %{api_key: _key}} =
+               Accounts.create_api_key(
+                 target,
+                 %{name: "Existing credential", expires_at: DateTime.add(now, 86_400, :second)},
+                 now: now
+               )
+
+      try do
+        with_api_key_update_gate(target, fn release_gate ->
+          disabler =
+            start_independent_task(:disable, fn ->
+              Accounts.disable_user(administrator, target)
+            end)
+
+          await_backend_lock(disabler.backend_pid)
+
+          issuer =
+            start_independent_task(:api_key, fn ->
+              Accounts.create_api_key(
+                target,
+                %{name: "Late credential", expires_at: DateTime.add(now, 86_400, :second)},
+                now: now
+              )
+            end)
+
+          refute_receive {:independent_task_completed, :api_key, _result}, 50
+
+          release_gate.()
+
+          assert {:ok, _disabled} = Task.await(disabler.task, :infinity)
+          assert {:error, _reason} = Task.await(issuer.task, :infinity)
+
+          assert [] =
+                   Repo.all(
+                     from key in ApiKey,
+                       where: key.user_id == ^target.id and is_nil(key.revoked_at)
+                   )
+        end)
+      after
+        delete_users([administrator, target])
+      end
+    end)
+  end
+
   defp admin_fixture(email) do
     {:ok, administrator} =
       Accounts.bootstrap_admin(%{
@@ -137,5 +314,169 @@ defmodule Taskman.Accounts.AdminLifecycleTest do
 
     Enum.each(workers, &send(&1, :run_attempt))
     Task.await(coordinator, :infinity)
+  end
+
+  defp direct_lifecycle_update(user, action, actor) do
+    user
+    |> Ash.Changeset.for_update(action, %{})
+    |> Ash.update(actor: actor, authorize?: true, domain: Accounts)
+  end
+
+  defp direct_invite(actor, email) do
+    User
+    |> Ash.Changeset.for_create(:create_pending_user, %{email: email})
+    |> Ash.create(actor: actor, authorize?: true, domain: Accounts)
+  end
+
+  defp start_independent_task(kind, operation) do
+    test_pid = self()
+
+    Task.async(fn ->
+      :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+
+      try do
+        send(test_pid, {:independent_task_started, kind, self(), database_backend_pid()})
+        result = operation.()
+        send(test_pid, {:independent_task_completed, kind, result})
+        result
+      after
+        :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+      end
+    end)
+    |> then(fn task ->
+      assert_receive {:independent_task_started, ^kind, task_pid, backend_pid}
+      assert task_pid == task.pid
+      %{task: task, backend_pid: backend_pid}
+    end)
+  end
+
+  defp with_user_lock(user, fun) do
+    test_pid = self()
+
+    locker =
+      Task.async(fn ->
+        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+
+        try do
+          Repo.transaction(fn ->
+            Repo.one!(
+              from locked_user in User, where: locked_user.id == ^user.id, lock: "FOR UPDATE"
+            )
+
+            send(test_pid, {:user_lock_acquired, self()})
+
+            receive do
+              :release_user_lock -> :ok
+            end
+          end)
+        after
+          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+        end
+      end)
+
+    assert_receive {:user_lock_acquired, locker_pid}
+    assert locker_pid == locker.pid
+    release_lock = fn -> send(locker.pid, :release_user_lock) end
+
+    try do
+      fun.(release_lock)
+    after
+      release_lock.()
+      Task.await(locker, :infinity)
+    end
+  end
+
+  defp with_api_key_update_gate(user, fun) do
+    suffix = System.unique_integer([:positive])
+    function_name = "taskman_api_key_gate_#{suffix}"
+    trigger_name = "#{function_name}_trigger"
+    gate_key = System.unique_integer([:positive])
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION #{function_name}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.user_id = '#{user.id}'::uuid AND NEW.revoked_at IS NOT NULL AND OLD.revoked_at IS NULL THEN
+          PERFORM pg_advisory_xact_lock(#{gate_key});
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER #{trigger_name}
+      BEFORE UPDATE ON api_keys
+      FOR EACH ROW
+      EXECUTE FUNCTION #{function_name}()
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+
+    released? = :atomics.new(1, [])
+
+    release_gate = fn ->
+      if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
+        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+      end
+    end
+
+    try do
+      fun.(release_gate)
+    after
+      release_gate.()
+      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON api_keys")
+      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+    end
+  end
+
+  defp await_backend_lock(backend_pid), do: await_backend_lock(backend_pid, 1_000)
+
+  defp await_backend_lock(_backend_pid, 0),
+    do: flunk("worker never reached database lock contention")
+
+  defp await_backend_lock(backend_pid, attempts_left) do
+    assert %{rows: [[waiting]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT count(*) FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'",
+               [backend_pid]
+             )
+
+    if waiting == 1 do
+      :ok
+    else
+      :erlang.yield()
+      await_backend_lock(backend_pid, attempts_left - 1)
+    end
+  end
+
+  defp database_backend_pid do
+    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    backend_pid
+  end
+
+  defp delete_users(users) do
+    Enum.each(users, fn user ->
+      Repo.delete_all(
+        from token in Token, where: token.subject == ^AshAuthentication.user_to_subject(user)
+      )
+
+      Repo.delete_all(from key in ApiKey, where: key.user_id == ^user.id)
+
+      case Repo.get(User, user.id) do
+        nil -> :ok
+        persisted_user -> Repo.delete!(persisted_user)
+      end
+    end)
   end
 end

@@ -325,9 +325,8 @@ defmodule Taskman.Accounts do
   def resend_invitation(actor, user) do
     with {:ok, actor} <- active_administrator(actor) do
       case transaction(fn ->
-             with {:ok, locked_user} <- lock_user(user.id),
-                  {:ok, updated_user} <-
-                    update_user(locked_user, :resend_invitation, %{}, actor: actor),
+             with {:ok, updated_user} <-
+                    update_user(user, :resend_invitation, %{}, actor: actor),
                   :ok <- Token.revoke_for_subject(updated_user, "setup"),
                   {:ok, token} <- setup_token(updated_user) do
                {:ok, {updated_user, token}}
@@ -353,9 +352,8 @@ defmodule Taskman.Accounts do
   def revoke_invitation(actor, user) do
     with {:ok, actor} <- active_administrator(actor) do
       case transaction(fn ->
-             with {:ok, locked_user} <- lock_user(user.id),
-                  {:ok, updated_user} <-
-                    update_user(locked_user, :revoke_invitation, %{}, actor: actor),
+             with {:ok, updated_user} <-
+                    update_user(user, :revoke_invitation, %{}, actor: actor),
                   :ok <- Token.revoke_for_subject(updated_user, "setup") do
                {:ok, :ok}
              end
@@ -532,11 +530,7 @@ defmodule Taskman.Accounts do
   def enable_user(actor, user), do: update_administrative_user(actor, user, :enable)
 
   @spec disable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def disable_user(actor, user) do
-    with_session_revocation_broadcast(user, fn ->
-      update_administrative_user(actor, user, :disable)
-    end)
-  end
+  def disable_user(actor, user), do: update_administrative_user(actor, user, :disable)
 
   @spec promote_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
   def promote_user(actor, user), do: update_administrative_user(actor, user, :promote)
@@ -546,9 +540,7 @@ defmodule Taskman.Accounts do
 
   @spec revoke_user_sessions(User.t(), User.t()) :: :ok | {:error, term()}
   def revoke_user_sessions(actor, user) do
-    case with_session_revocation_broadcast(user, fn ->
-           update_administrative_user(actor, user, :revoke_sessions)
-         end) do
+    case update_administrative_user(actor, user, :revoke_sessions) do
       {:ok, _user} -> :ok
       {:error, _reason} = error -> error
     end
@@ -567,34 +559,27 @@ defmodule Taskman.Accounts do
   def manage_email(actor, user, email, confirmed?)
       when is_struct(actor, User) and is_struct(user, User) and is_binary(email) and
              is_boolean(confirmed?) do
-    with {:ok, actor} <- active_administrator(actor) do
-      case user.status do
-        :pending ->
-          manage_pending_email(actor, user, email, confirmed?)
+    result =
+      user
+      |> Ash.Changeset.for_update(:manage_email, %{email: email, confirmed?: confirmed?})
+      |> Ash.update(actor: actor, authorize?: true, domain: __MODULE__)
 
-        status when status in [:active, :disabled] ->
-          manage_established_email(actor, user, email, confirmed?)
-
-        _ ->
-          {:error, :invalid_input}
-      end
-    end
+    normalize_managed_email_result(result)
   end
 
   def manage_email(_actor, _user, _email, _confirmed?), do: {:error, :invalid_input}
 
   @spec delete_user(User.t(), User.t()) :: :ok | {:error, term()}
   def delete_user(actor, user) when is_struct(actor, User) and is_struct(user, User) do
-    with {:ok, actor} <- active_administrator(actor) do
-      case with_session_revocation_broadcast(user, fn ->
-             user
-             |> Ash.Changeset.for_destroy(:admin_delete, %{})
-             |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
-           end) do
-        :ok -> :ok
-        {:ok, _user} -> :ok
-        {:error, _reason} = error -> error
-      end
+    result =
+      user
+      |> Ash.Changeset.for_destroy(:admin_delete, %{})
+      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
+
+    case result do
+      :ok -> :ok
+      {:ok, _user} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -603,11 +588,12 @@ defmodule Taskman.Accounts do
   @spec delete_own_account(User.t(), String.t()) :: :ok | {:error, term()}
   def delete_own_account(actor, current_password)
       when is_struct(actor, User) and is_binary(current_password) do
-    case with_session_revocation_broadcast(actor, fn ->
-           actor
-           |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
-           |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
-         end) do
+    result =
+      actor
+      |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
+      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
+
+    case result do
       :ok -> :ok
       {:ok, _user} -> :ok
       {:error, _reason} = error -> error
@@ -657,179 +643,18 @@ defmodule Taskman.Accounts do
 
   defp update_administrative_user(actor, user, action)
        when is_struct(actor, User) and is_struct(user, User) do
-    with {:ok, actor} <- active_administrator(actor) do
-      update_user(user, action, %{}, actor: actor)
-    end
+    update_user(user, action, %{}, actor: actor)
   end
 
   defp update_administrative_user(_actor, _user, _action), do: {:error, :invalid_input}
 
-  defp manage_pending_email(actor, user, email, confirmed?) do
-    case transaction(fn ->
-           with {:ok, locked_user} <- lock_user(user.id),
-                changed? <- email_changed?(locked_user, email),
-                :ok <- pending_email_effect(changed?, confirmed?),
-                {:ok, updated_user} <-
-                  update_user(
-                    locked_user,
-                    pending_email_action(changed?, confirmed?),
-                    pending_email_params(changed?, email),
-                    actor: actor
-                  ),
-                :ok <- revoke_pending_email_change_tokens(updated_user, changed?),
-                :ok <- revoke_replaced_setup_tokens(updated_user, changed?),
-                {:ok, token} <- maybe_setup_token(updated_user, changed?) do
-             {:ok, {updated_user, token}}
-           end
-         end) do
-      {:ok, {updated_user, token}} when is_binary(token) ->
-        case Emails.deliver_invitation(to_string(updated_user.email), token) do
-          :ok ->
-            {:ok, updated_user}
-
-          {:error, _reason} = delivery_error ->
-            log_delivery_failure(delivery_error)
-            {:error, {:delivery_failed, updated_user}}
-        end
-
-      {:ok, {updated_user, nil}} ->
-        {:ok, updated_user}
-
-      {:error, _reason} = error ->
-        error
-    end
+  defp normalize_managed_email_result(
+         {:error, %{errors: [%{value: [delivery_failed: %User{} = user]} | _]}}
+       ) do
+    {:error, {:delivery_failed, user}}
   end
 
-  defp manage_established_email(actor, user, email, confirmed?) do
-    case email_changed?(user, email) do
-      false when confirmed? ->
-        manage_existing_email_confirmation(actor, user)
-
-      false ->
-        {:error, :no_effect}
-
-      true when confirmed? ->
-        case transaction(fn ->
-               with {:ok, locked_user} <- lock_user(user.id),
-                    {:ok, updated_user} <-
-                      update_user(locked_user, :manage_confirmed_email, %{email: email},
-                        actor: actor
-                      ),
-                    :ok <- Token.revoke_for_subject(updated_user, "email_change") do
-                 {:ok, updated_user}
-               end
-             end) do
-          {:ok, updated_user} -> {:ok, updated_user}
-          {:error, _reason} = error -> error
-        end
-
-      true ->
-        manage_unconfirmed_administrative_email(actor, user, email)
-    end
-  end
-
-  defp manage_existing_email_confirmation(actor, user) do
-    case transaction(fn ->
-           with {:ok, locked_user} <- lock_user(user.id),
-                {:ok, updated_user} <-
-                  update_user(locked_user, :confirm_existing_email, %{}, actor: actor),
-                :ok <- Token.revoke_for_subject(updated_user, "email_change") do
-             {:ok, updated_user}
-           end
-         end) do
-      {:ok, updated_user} -> {:ok, updated_user}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp manage_unconfirmed_administrative_email(actor, user, email) do
-    case transaction(fn ->
-           with {:ok, locked_user} <- lock_user(user.id) do
-             with_delivery_result(
-               :email_change,
-               fn ->
-                 update_user(
-                   locked_user,
-                   :manage_unconfirmed_email,
-                   %{email: email},
-                   actor: actor
-                 )
-               end,
-               fn
-                 {:ok, updated_user}, delivery_result, token when is_binary(token) ->
-                   with :ok <- revoke_older_tokens(updated_user, "email_change", token) do
-                     {:ok, {updated_user, delivery_result}}
-                   end
-
-                 {:ok, _updated_user}, nil, _token ->
-                   {:error, :delivery_failed}
-
-                 error, _delivery_result, _token ->
-                   error
-               end
-             )
-           end
-         end) do
-      {:ok, {updated_user, :ok}} ->
-        {:ok, updated_user}
-
-      {:ok, {_updated_user, {:error, _reason} = delivery_error}} ->
-        log_delivery_failure(delivery_error)
-        {:error, :delivery_failed}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp email_changed?(user, email) do
-    String.downcase(String.trim(email)) != String.downcase(to_string(user.email))
-  end
-
-  defp pending_email_effect(true, _confirmed?), do: :ok
-  defp pending_email_effect(false, true), do: :ok
-  defp pending_email_effect(false, false), do: {:error, :no_effect}
-
-  defp pending_email_action(true, true), do: :replace_pending_confirmed_email
-  defp pending_email_action(true, false), do: :replace_pending_email
-  defp pending_email_action(false, true), do: :confirm_existing_email
-
-  defp pending_email_params(true, email), do: %{email: email}
-  defp pending_email_params(false, _email), do: %{}
-
-  defp revoke_pending_email_change_tokens(user, _changed?),
-    do: Token.revoke_for_subject(user, "email_change")
-
-  defp revoke_replaced_setup_tokens(_user, false), do: :ok
-  defp revoke_replaced_setup_tokens(user, true), do: Token.revoke_for_subject(user, "setup")
-  defp maybe_setup_token(_user, false), do: {:ok, nil}
-  defp maybe_setup_token(user, true), do: setup_token(user)
-
-  defp with_session_revocation_broadcast(user, operation) do
-    with {:ok, topics} <- Token.browser_session_topics(user) do
-      case operation.() do
-        :ok ->
-          broadcast_session_topics(topics)
-
-        {:ok, result} ->
-          with :ok <- broadcast_session_topics(topics) do
-            {:ok, result}
-          end
-
-        {:error, _reason} = error ->
-          error
-      end
-    end
-  end
-
-  defp broadcast_session_topics(topics) do
-    Enum.reduce_while(topics, :ok, fn topic, :ok ->
-      case Token.broadcast_disconnect(topic) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
+  defp normalize_managed_email_result(result), do: result
 
   defp update_user(user, action, params, opts) do
     user

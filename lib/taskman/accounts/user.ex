@@ -6,7 +6,14 @@ defmodule Taskman.Accounts.User do
     domain: Taskman.Accounts
 
   alias Taskman.Accounts.{ApiKey, Token}
-  alias Taskman.Accounts.Changes.ProtectLastAdmin
+
+  alias Taskman.Accounts.Changes.{
+    DeliverManagedEmail,
+    ProtectLastAdmin,
+    RequireActiveAdministrator
+  }
+
+  alias Taskman.Accounts.ManualManageEmail
   alias Taskman.Accounts.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
   alias Taskman.Accounts.User.Status
 
@@ -21,6 +28,7 @@ defmodule Taskman.Accounts.User do
     create :create_pending_user do
       primary? true
       accept [:admin?, :email]
+      change RequireActiveAdministrator
     end
 
     create :bootstrap_user do
@@ -160,12 +168,14 @@ defmodule Taskman.Accounts.User do
       public? false
       require_atomic? false
       accept []
+      change {ProtectLastAdmin, mode: :resend_invitation}
     end
 
     update :revoke_invitation do
       public? false
       require_atomic? false
       accept []
+      change {ProtectLastAdmin, mode: :revoke_invitation}
     end
 
     update :enable do
@@ -173,6 +183,7 @@ defmodule Taskman.Accounts.User do
       require_atomic? false
       accept []
       change set_attribute(:status, :active)
+      change {ProtectLastAdmin, mode: :enable}
     end
 
     update :disable do
@@ -188,6 +199,7 @@ defmodule Taskman.Accounts.User do
       require_atomic? false
       accept []
       change set_attribute(:admin?, true)
+      change {ProtectLastAdmin, mode: :promote}
     end
 
     update :demote do
@@ -198,36 +210,21 @@ defmodule Taskman.Accounts.User do
       change {ProtectLastAdmin, mode: :demote}
     end
 
-    update :manage_confirmed_email do
-      public? false
-      require_atomic? false
-      accept [:email]
-    end
-
-    update :manage_unconfirmed_email do
-      public? false
-      require_atomic? false
-      accept [:email]
-    end
-
-    update :replace_pending_email do
-      public? false
-      require_atomic? false
-      accept [:email]
-    end
-
-    update :replace_pending_confirmed_email do
-      public? false
-      require_atomic? false
-      accept [:email]
-      change set_attribute(:confirmed_at, &DateTime.utc_now/0)
-    end
-
-    update :confirm_existing_email do
+    update :manage_email do
       public? false
       require_atomic? false
       accept []
-      change set_attribute(:confirmed_at, &DateTime.utc_now/0)
+
+      argument :email, :ci_string do
+        allow_nil? false
+      end
+
+      argument :confirmed?, :boolean do
+        allow_nil? false
+      end
+
+      manual ManualManageEmail
+      change DeliverManagedEmail
     end
 
     update :revoke_sessions do
@@ -247,7 +244,7 @@ defmodule Taskman.Accounts.User do
     destroy :admin_delete do
       public? false
       require_atomic? false
-      change {ProtectLastAdmin, mode: :delete}
+      change {ProtectLastAdmin, mode: :admin_delete}
     end
 
     destroy :self_delete do
@@ -262,7 +259,7 @@ defmodule Taskman.Accounts.User do
       validate {AshAuthentication.Strategy.Password.PasswordValidation,
                 strategy_name: :password, password_argument: :current_password}
 
-      change {ProtectLastAdmin, mode: :delete}
+      change {ProtectLastAdmin, mode: :self_delete}
     end
 
     read :sign_in_with_password do
@@ -404,11 +401,7 @@ defmodule Taskman.Accounts.User do
         confirm_action_name :confirm_email_change
         require_interaction? true
 
-        auto_confirm_actions [
-          :manage_confirmed_email,
-          :replace_pending_email,
-          :replace_pending_confirmed_email
-        ]
+        auto_confirm_actions []
 
         sender SendConfirmation
       end
@@ -476,11 +469,7 @@ defmodule Taskman.Accounts.User do
 
     bypass [
       action([
-        :manage_confirmed_email,
-        :manage_unconfirmed_email,
-        :replace_pending_email,
-        :replace_pending_confirmed_email,
-        :confirm_existing_email,
+        :manage_email,
         :admin_delete
       ]),
       actor_attribute_equals(:admin?, true),

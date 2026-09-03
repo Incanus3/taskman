@@ -5,6 +5,7 @@ defmodule Taskman.Accounts.ApiKey do
     domain: Taskman.Accounts
 
   alias Taskman.Accounts.ApiKey.Generate
+  alias Taskman.Accounts.Changes.GuardApiKeyIssuance
   alias Taskman.Accounts.User
 
   postgres do
@@ -40,6 +41,7 @@ defmodule Taskman.Accounts.ApiKey do
       public? false
       accept [:expires_at, :name, :user_id]
 
+      change GuardApiKeyIssuance
       change {Generate, prefix: :tm, hash: :api_key_hash}
     end
 

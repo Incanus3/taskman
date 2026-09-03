@@ -16,6 +16,19 @@ defmodule Taskman.Accounts.Token do
 
   actions do
     defaults [:read]
+
+    create :store_token do
+      public? false
+      accept [:extra_data, :purpose]
+
+      argument :token, :string do
+        allow_nil? false
+        sensitive? true
+      end
+
+      change AshAuthentication.TokenResource.StoreTokenChange
+      change Taskman.Accounts.Changes.GuardTokenIssuance
+    end
   end
 
   alias AshAuthentication.{Jwt, TokenResource}
