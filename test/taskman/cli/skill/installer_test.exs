@@ -134,6 +134,36 @@ defmodule Taskman.CLI.Skill.InstallerTest do
   end
 
   @tag :tmp_dir
+  test "a marker-rename failure leaves complete content and a retry repairs exact ownership", %{
+    tmp_dir: root
+  } do
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+    target = Path.join(root, "taskman-cli")
+    skill_path = Path.join(target, "SKILL.md")
+    marker_path = Path.join(target, ".taskman-managed.json")
+    stale_marker = File.read!(marker_path) |> String.replace(Bundle.cli_version(), "0.0.1")
+    File.write!(marker_path, stale_marker)
+    FakeSkillFileSystem.fail_next_rename!(:marker)
+
+    assert {:error, :skill_install_failed, _message} =
+             Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
+
+    assert File.read!(skill_path) == Bundle.files()["SKILL.md"]
+    assert File.read!(marker_path) == stale_marker
+
+    assert {:ok, %{action: :updated}} =
+             Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
+
+    assert File.read!(skill_path) == Bundle.files()["SKILL.md"]
+
+    assert Jason.decode!(File.read!(marker_path)) == %{
+             "installer" => "taskman",
+             "skill" => "taskman-cli",
+             "cli_version" => Bundle.cli_version()
+           }
+  end
+
+  @tag :tmp_dir
   test "refuses symlink target and installer-looking stage or backup siblings", %{tmp_dir: root} do
     target = Path.join(root, "taskman-cli")
     linked_directory = Path.join(root, "linked-directory")

@@ -137,35 +137,113 @@ defmodule Taskman.CLI.ConfigTest do
   end
 
   @tag :tmp_dir
-  test "refuses unsafe locks and recovers only a validated stale lock", %{tmp_dir: tmp_dir} do
+  test "never steals an existing lock, even when it appears aged", %{tmp_dir: tmp_dir} do
     root = Path.join(tmp_dir, "xdg")
     target = config_path(root)
-    directory = Path.dirname(target)
     write_config(root, %{"api_key" => @api_key})
-    linked_directory = Path.join(tmp_dir, "linked-lock-directory")
-    File.mkdir_p!(linked_directory)
     lock_path = target <> ".lock"
-    File.ln_s!(linked_directory, lock_path)
+    parent = self()
+
+    url_task =
+      Task.async(fn ->
+        Config.set_url("https://held-lock.example",
+          config_root: root,
+          before_write: fn _path ->
+            send(parent, :writer_holds_lock)
+            assert_receive :finish_held_writer
+            :ok
+          end
+        )
+      end)
+
+    assert_receive :writer_holds_lock
+
+    # A writer can remain live while its lock looks arbitrarily old (for example
+    # after a clock adjustment).  Age is never evidence that it is safe to take.
+    assert :ok = File.touch(lock_path, {{2000, 1, 1}, {0, 0, 0}})
 
     assert {:error, :invalid_configuration, message} =
-             Config.set_url("https://locked.example", config_root: root)
-
-    assert message =~ "symlink configuration lock"
-    assert File.lstat!(lock_path).type == :symlink
-
-    File.rm!(lock_path)
-    File.mkdir!(lock_path)
-    File.chmod!(lock_path, 0o700)
-    File.write!(Path.join(lock_path, "owner"), "taskman_config_lock_v1")
-
-    assert :ok =
-             Config.set_url("https://recovered-lock.example",
+             Config.set_key(@api_key,
                config_root: root,
-               stale_lock_after_ms: -1
+               lock_retry_limit: 0
              )
 
+    assert message =~ "busy"
+    assert File.lstat!(lock_path).type == :directory
+
+    send(url_task.pid, :finish_held_writer)
+    assert :ok = Task.await(url_task)
+
+    assert {:ok, %{api_url: "https://held-lock.example", api_key: @api_key}} =
+             Config.resolve(%{}, config_root: root)
+
     refute File.exists?(lock_path)
-    assert File.ls!(directory) == ["config.json"]
+  end
+
+  @tag :tmp_dir
+  test "leaves aged, foreign, malformed, and symlink locks untouched", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    target = config_path(root)
+    write_config(root, %{"api_url" => "https://before-lock.example", "api_key" => @api_key})
+    lock_path = target <> ".lock"
+    linked_directory = Path.join(tmp_dir, "linked-lock-directory")
+    File.mkdir_p!(linked_directory)
+
+    locks = [
+      {:aged_owned,
+       fn ->
+         File.mkdir!(lock_path)
+         File.chmod!(lock_path, 0o700)
+         File.write!(Path.join(lock_path, "owner"), "taskman_config_lock_v1:abandoned")
+         :ok = File.touch(lock_path, {{2000, 1, 1}, {0, 0, 0}})
+       end},
+      {:foreign,
+       fn ->
+         File.mkdir!(lock_path)
+         File.chmod!(lock_path, 0o700)
+         File.write!(Path.join(lock_path, "owner"), "foreign-lock")
+       end},
+      {:malformed, fn -> File.write!(lock_path, "not a lock directory") end},
+      {:symlink, fn -> File.ln_s!(linked_directory, lock_path) end}
+    ]
+
+    for {_kind, create_lock} <- locks do
+      create_lock.()
+
+      assert {:error, :invalid_configuration, message} =
+               Config.set_url("https://after-lock.example",
+                 config_root: root,
+                 lock_retry_limit: 0
+               )
+
+      assert message =~ "busy"
+      assert Jason.decode!(File.read!(target))["api_url"] == "https://before-lock.example"
+      assert {:ok, _stat} = File.lstat(lock_path)
+      File.rm_rf!(lock_path)
+    end
+  end
+
+  @tag :tmp_dir
+  test "releases only the lock token acquired by its own writer", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    target = config_path(root)
+    write_config(root, %{"api_key" => @api_key})
+    lock_path = target <> ".lock"
+
+    assert :ok =
+             Config.set_url("https://token-owner.example",
+               config_root: root,
+               before_release: fn ^lock_path ->
+                 File.rm_rf!(lock_path)
+                 File.mkdir!(lock_path)
+                 File.chmod!(lock_path, 0o700)
+                 File.write!(Path.join(lock_path, "owner"), "taskman_config_lock_v1:foreign")
+                 :ok
+               end
+             )
+
+    assert File.read!(Path.join(lock_path, "owner")) == "taskman_config_lock_v1:foreign"
+    assert Jason.decode!(File.read!(target))["api_url"] == "https://token-owner.example"
   end
 
   @tag :tmp_dir
@@ -261,6 +339,35 @@ defmodule Taskman.CLI.ConfigTest do
 
     assert {:error, :invalid_configuration, file_message} = Config.resolve(%{}, config_root: root)
     assert file_message =~ "chmod 600"
+  end
+
+  @tag :tmp_dir
+  test "rejects reported special permission bits on configuration paths", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    path = config_path(root)
+    write_config(root, %{"api_key" => @api_key})
+    directory = Path.dirname(path)
+
+    File.chmod!(path, 0o4600)
+    assert {:ok, %File.Stat{mode: file_mode}} = File.stat(path)
+
+    if (file_mode &&& 0o7000) != 0 do
+      assert {:error, :invalid_configuration, file_message} =
+               Config.resolve(%{}, config_root: root)
+
+      assert file_message =~ "chmod 600"
+    end
+
+    File.chmod!(path, 0o600)
+    File.chmod!(directory, 0o1700)
+    assert {:ok, %File.Stat{mode: directory_mode}} = File.stat(directory)
+
+    if (directory_mode &&& 0o7000) != 0 do
+      assert {:error, :invalid_configuration, directory_message} =
+               Config.resolve(%{}, config_root: root)
+
+      assert directory_message =~ "directory permissions"
+    end
   end
 
   @tag :tmp_dir

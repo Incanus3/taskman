@@ -99,6 +99,11 @@ defmodule Taskman.CLI.Skill.FakeSkillFileSystem do
       String.starts_with?(Path.basename(from), ".taskman-cli.backup-")
   end
 
+  defp rename_should_fail?(:marker, from, to) do
+    Path.basename(to) == ".taskman-managed.json" and
+      String.contains?(Path.basename(from), ".stage-")
+  end
+
   defp rename_should_fail?(:any, _from, _to), do: true
   defp rename_should_fail?(_failure, _from, _to), do: false
 

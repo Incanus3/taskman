@@ -11,7 +11,6 @@ defmodule Taskman.CLI.Config do
   @lock_marker "taskman_config_lock_v1"
   @lock_retry_limit 200
   @lock_retry_delay_ms 10
-  @stale_lock_after_ms 30_000
 
   @typedoc "The API connection settings after source precedence has been applied."
   @type resolved_config :: %{api_url: String.t(), api_key: String.t() | nil}
@@ -274,7 +273,7 @@ defmodule Taskman.CLI.Config do
 
   defp validate_directory(directory) do
     case File.lstat(directory) do
-      {:ok, %File.Stat{type: :directory, mode: mode}} when (mode &&& 0o777) == 0o700 ->
+      {:ok, %File.Stat{type: :directory, mode: mode}} when (mode &&& 0o7777) == 0o700 ->
         :ok
 
       {:ok, %File.Stat{type: :directory}} ->
@@ -315,7 +314,7 @@ defmodule Taskman.CLI.Config do
       expected.minor_device == opened.minor_device and expected.size == opened.size
   end
 
-  defp validate_file_mode(mode) when (mode &&& 0o777) == 0o600, do: :ok
+  defp validate_file_mode(mode) when (mode &&& 0o7777) == 0o600, do: :ok
 
   defp validate_file_mode(_mode) do
     error("Unsafe Taskman configuration file permissions; run chmod 600 on config.json")
@@ -373,11 +372,12 @@ defmodule Taskman.CLI.Config do
     lock_path = config_path <> ".lock"
 
     case acquire_lock(lock_path, options, 0) do
-      :ok ->
+      {:ok, token} ->
         try do
           fun.()
         after
-          _ = release_lock(lock_path)
+          _ = before_release(lock_path, options)
+          _ = release_lock(lock_path, token)
         end
 
       {:error, message} ->
@@ -388,18 +388,19 @@ defmodule Taskman.CLI.Config do
   defp acquire_lock(lock_path, options, attempt) do
     case File.mkdir(lock_path) do
       :ok ->
+        token = lock_token()
+
         with :ok <- File.chmod(lock_path, 0o700),
-             :ok <- File.write(Path.join(lock_path, "owner"), @lock_marker, [:exclusive]) do
-          :ok
+             :ok <- File.write(Path.join(lock_path, "owner"), owner_marker(token), [:exclusive]) do
+          {:ok, token}
         else
           {:error, _reason} ->
-            _ = File.rm_rf(lock_path)
+            _ = File.rmdir(lock_path)
             {:error, "The Taskman configuration file could not be locked"}
         end
 
       {:error, :eexist} ->
-        with :ok <- recover_stale_lock(lock_path, options),
-             :ok <- wait_for_lock(options, attempt) do
+        with :ok <- wait_for_lock(options, attempt) do
           acquire_lock(lock_path, options, attempt + 1)
         end
 
@@ -415,63 +416,24 @@ defmodule Taskman.CLI.Config do
         option(options, :lock_retry_delay_ms, @lock_retry_delay_ms) -> :ok
       end
     else
-      {:error, "The Taskman configuration file is busy; try again"}
+      {:error, "Taskman configuration is busy; try again"}
     end
   end
 
-  defp recover_stale_lock(lock_path, options) do
-    case File.lstat(lock_path) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        {:error, "Refusing unsafe symlink configuration lock"}
-
-      {:ok, %File.Stat{type: :directory} = stat} ->
-        if stale_lock?(stat, options) do
-          move_owned_stale_lock(lock_path)
-        else
-          :ok
-        end
-
-      {:ok, _stat} ->
-        {:error, "Refusing unsafe configuration lock"}
-
-      {:error, :enoent} ->
-        :ok
-
-      {:error, _reason} ->
-        {:error, "The Taskman configuration file could not be locked"}
-    end
+  defp lock_token do
+    :crypto.strong_rand_bytes(24)
+    |> Base.url_encode64(padding: false)
   end
 
-  defp stale_lock?(%File.Stat{mtime: mtime}, options) do
-    DateTime.diff(DateTime.utc_now(), file_datetime(mtime), :millisecond) >=
-      option(options, :stale_lock_after_ms, @stale_lock_after_ms)
-  end
+  defp owner_marker(token), do: @lock_marker <> ":" <> token
 
-  defp file_datetime({date, time}) do
-    {date, time}
-    |> NaiveDateTime.from_erl!()
-    |> DateTime.from_naive!("Etc/UTC")
-  end
-
-  defp move_owned_stale_lock(lock_path) do
-    with :ok <- validate_owned_lock(lock_path),
-         stale_path <-
-           lock_path <> ".stale-" <> Integer.to_string(System.unique_integer([:positive])),
-         :ok <- File.rename(lock_path, stale_path),
-         {:ok, %File.Stat{type: :directory}} <- File.lstat(stale_path),
-         {:ok, _removed} <- File.rm_rf(stale_path) do
-      :ok
-    else
-      {:error, _reason} -> {:error, "Refusing unsafe stale configuration lock"}
-      _other -> {:error, "Refusing unsafe stale configuration lock"}
-    end
-  end
-
-  defp validate_owned_lock(lock_path) do
+  defp validate_owned_lock(lock_path, token) do
     owner_path = Path.join(lock_path, "owner")
 
-    with {:ok, %File.Stat{type: :regular}} <- File.lstat(owner_path),
-         {:ok, @lock_marker} <- File.read(owner_path),
+    with {:ok, %File.Stat{type: :directory}} <- File.lstat(lock_path),
+         {:ok, %File.Stat{type: :regular}} <- File.lstat(owner_path),
+         {:ok, marker} <- File.read(owner_path),
+         true <- marker == owner_marker(token),
          {:ok, entries} <- File.ls(lock_path),
          true <- entries == ["owner"] do
       :ok
@@ -480,13 +442,23 @@ defmodule Taskman.CLI.Config do
     end
   end
 
-  defp release_lock(lock_path) do
-    with :ok <- validate_owned_lock(lock_path),
-         {:ok, _removed} <- File.rm_rf(lock_path) do
+  defp release_lock(lock_path, token) do
+    with :ok <- validate_owned_lock(lock_path, token),
+         :ok <- File.rm(Path.join(lock_path, "owner")),
+         :ok <- File.rmdir(lock_path) do
       :ok
     else
       _other -> :ok
     end
+  end
+
+  defp before_release(lock_path, options) do
+    case option(options, :before_release) do
+      hook when is_function(hook, 1) -> hook.(lock_path)
+      _other -> :ok
+    end
+  rescue
+    _error -> :ok
   end
 
   defp before_write(config_path, options) do
