@@ -2,7 +2,7 @@ defmodule Taskman.CLI.Onboarding do
   @moduledoc "Versioned, offline onboarding guidance for people and agents."
 
   @text """
-  Taskman is a local, single-user system of record for Projects, Lists, and Tasks. It keeps project directories, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, and create Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
+  Taskman is an authenticated shared system of record for Projects, Lists, and Tasks. Explicitly provisioned users work in the same workspace; Tasks do not have per-user ownership or collaboration permissions. Taskman keeps project directories, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, and create Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
 
   Installation
 

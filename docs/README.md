@@ -47,6 +47,7 @@
 ## Development
 
 - [Development guide](development.md)
+- [Dedicated-host deployment runbook](deployment.md)
 
 ## Research
 

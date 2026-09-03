@@ -43,6 +43,9 @@ coordination and keep schemas, changesets, queries, and Repo calls out of the we
 - Use PostgreSQL from the start. PostgreSQL is run manually in Docker during local development.
 - Run Phoenix directly with `mix phx.server`; do not add Docker Compose or application container
   orchestration initially.
+- Local source development remains a supported workflow. Dedicated-host operation uses the approved
+  OTP release behind systemd and loopback Caddy topology; follow the deployment runbook rather than
+  adding a second server lifecycle or container layer.
 - Prefer a LiveView-first browser experience, adding small isolated JavaScript hooks only when
   browser behavior genuinely requires them. Do not build a JavaScript SPA.
 
@@ -79,3 +82,8 @@ an element is shown or hidden.
 Meaningful persisted or query operations exposed through the UI must ship with corresponding API,
 CLI, help, Bash/Fish completion, bundled skill, and focused verification parity unless the
 accepted feature specification records an explicit exception.
+
+For hosted operation, preserve the public boundary: Caddy owns public HTTPS and Phoenix binds to
+loopback. Forwarded client details are trusted only from that immediate loopback proxy. Keep
+runtime secrets outside version control, use versioned immutable releases selected by a `current`
+symlink, and treat migration compatibility and backup/restore evidence as release requirements.
