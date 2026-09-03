@@ -1,6 +1,6 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Authenticated hosted access awaits available-host Caddy validation; Task relationships resume afterward
+**Status:** Authenticated hosted access complete; Task relationships are next
 **Updated:** 2026-09-03
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
@@ -148,7 +148,7 @@ The
 [`API, CLI, and agent skill specification`](../specs/2026-08-29-api-cli-agent-skill-design.md)
 defines the operation surface and maintenance contract.
 
-**Next slice:** Authenticated hosted access, then resume Slice 5 Task relationships.
+**Next slice:** Resume Slice 5 Task relationships with Relates to.
 
 ### Priority insertion: authenticated hosted access
 
@@ -176,10 +176,9 @@ This increment does not add domain ownership or migrate existing domain resource
 workstream will design a complete gradual Ash migration; ordinary feature work must not create a
 permanent Ecto/Ash hybrid.
 
-**Current state:** Focused integrated coverage, migration check, full verification suite, and
-production compilation/assets/release assembly have passed. The systemd syntax check is available;
-Caddy validation remains a bounded environment gap because its binary is unavailable locally. This
-insertion is not marked complete until that remaining available-host validation passes. See the
+**Current state:** Complete. Focused integrated coverage, migration check, full verification suite,
+production compilation/assets/release assembly, staged-root systemd validation, and Caddy 2.11.4
+configuration validation have passed. See the
 [`authenticated hosted access specification`](../specs/2026-09-02-authenticated-hosted-access-design.md)
 and [`implementation plan`](../plans/2026-09-02-authenticated-hosted-access.md).
 
