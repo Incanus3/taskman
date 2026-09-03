@@ -72,11 +72,7 @@ defmodule Taskman.Accounts.AccountDeletionTest do
 
   defp administrator_fixture(email) do
     {:ok, administrator} =
-      Accounts.bootstrap_admin(%{
-        email: email,
-        password: "password1",
-        password_confirmation: "password1"
-      })
+      Accounts.bootstrap_admin(email, "password1")
 
     administrator
   end

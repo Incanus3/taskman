@@ -193,11 +193,10 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
   defp password_administrator do
     {:ok, administrator} =
-      Accounts.bootstrap_admin(%{
-        email: "hosted-admin-#{System.unique_integer([:positive])}@example.com",
-        password: "administrator-password",
-        password_confirmation: "administrator-password"
-      })
+      Accounts.bootstrap_admin(
+        "hosted-admin-#{System.unique_integer([:positive])}@example.com",
+        "administrator-password"
+      )
 
     administrator
   end

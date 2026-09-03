@@ -121,11 +121,7 @@ defmodule Taskman.Accounts.InvitationTest do
     unique = System.unique_integer([:positive])
 
     {:ok, admin} =
-      Accounts.bootstrap_admin(%{
-        email: "admin-#{unique}@example.com",
-        password: "password1",
-        password_confirmation: "password1"
-      })
+      Accounts.bootstrap_admin("admin-#{unique}@example.com", "password1")
 
     admin
   end

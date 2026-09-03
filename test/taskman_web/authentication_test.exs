@@ -141,11 +141,7 @@ defmodule TaskmanWeb.AuthenticationTest do
     email = "signin-#{System.unique_integer([:positive])}@example.com"
 
     assert {:ok, _user} =
-             Taskman.Accounts.bootstrap_admin(%{
-               email: email,
-               password: "fixture-password",
-               password_confirmation: "fixture-password"
-             })
+             Taskman.Accounts.bootstrap_admin(email, "fixture-password")
 
     conn = get(conn, "/sign-in?return_to=%2Fprojects%2F42")
     document = LazyHTML.from_fragment(html_response(conn, 200))
@@ -168,11 +164,7 @@ defmodule TaskmanWeb.AuthenticationTest do
     email = "limited-#{System.unique_integer([:positive])}@example.com"
 
     assert {:ok, _user} =
-             Taskman.Accounts.bootstrap_admin(%{
-               email: email,
-               password: "fixture-password",
-               password_confirmation: "fixture-password"
-             })
+             Taskman.Accounts.bootstrap_admin(email, "fixture-password")
 
     for _ <- 1..10 do
       response =
@@ -203,11 +195,7 @@ defmodule TaskmanWeb.AuthenticationTest do
     email = "reset-limited-#{System.unique_integer([:positive])}@example.com"
 
     assert {:ok, _user} =
-             Taskman.Accounts.bootstrap_admin(%{
-               email: email,
-               password: "fixture-password",
-               password_confirmation: "fixture-password"
-             })
+             Taskman.Accounts.bootstrap_admin(email, "fixture-password")
 
     for _ <- 1..5 do
       response =
@@ -238,11 +226,7 @@ defmodule TaskmanWeb.AuthenticationTest do
     email = "renew-#{System.unique_integer([:positive])}@example.com"
 
     assert {:ok, user} =
-             Taskman.Accounts.bootstrap_admin(%{
-               email: email,
-               password: "fixture-password",
-               password_confirmation: "fixture-password"
-             })
+             Taskman.Accounts.bootstrap_admin(email, "fixture-password")
 
     conn = log_in_user(conn, user)
     old_token = get_session(conn, :user_token)

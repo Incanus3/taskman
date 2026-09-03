@@ -184,11 +184,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
     email = "password-change-#{System.unique_integer([:positive])}@example.com"
 
     {:ok, user} =
-      Accounts.bootstrap_admin(%{
-        email: email,
-        password: "password1",
-        password_confirmation: "password1"
-      })
+      Accounts.bootstrap_admin(email, "password1")
 
     user
   end

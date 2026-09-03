@@ -73,8 +73,10 @@ defmodule Taskman.ReleaseTest do
   test "create_admin fails without echoing a rejected password" do
     assert_release_function(:create_admin, 1)
 
-    password = "short7!"
-    FakeTerminal.set_responses(["release-invalid@example.com"], [password, password])
+    email = "release-existing@example.com"
+    password = "release-existing-password"
+    assert {:ok, _user} = Taskman.Accounts.bootstrap_admin(email, password)
+    FakeTerminal.set_responses([email], [password, password])
 
     output =
       capture_io(fn ->

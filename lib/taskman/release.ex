@@ -3,7 +3,7 @@ defmodule Taskman.Release do
   Release-local tasks that run without Mix or Phoenix endpoint startup.
   """
 
-  alias Taskman.{Accounts, LocalTerminal, Repo}
+  alias Taskman.{Accounts, CredentialPrompts, LocalTerminal, Repo}
 
   @app :taskman
 
@@ -38,7 +38,15 @@ defmodule Taskman.Release do
 
   @spec create_admin(module()) :: :ok | no_return()
   def create_admin(terminal) when is_atom(terminal) do
-    case with_repo(fn -> Accounts.bootstrap_admin_from_terminal(terminal) end) do
+    result =
+      with_repo(fn ->
+        with {:ok, email} <- CredentialPrompts.prompt_for_email(terminal),
+             {:ok, password} <- CredentialPrompts.prompt_for_password(terminal) do
+          Accounts.bootstrap_admin(email, password)
+        end
+      end)
+
+    case result do
       {:ok, {:ok, _user}} ->
         IO.puts("Administrator created.")
         :ok

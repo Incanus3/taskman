@@ -142,11 +142,7 @@ defmodule Taskman.Accounts.PasswordResetTest do
 
   defp active_user_fixture(email) do
     {:ok, user} =
-      Accounts.bootstrap_admin(%{
-        email: email,
-        password: "password1",
-        password_confirmation: "password1"
-      })
+      Accounts.bootstrap_admin(email, "password1")
 
     user
   end
