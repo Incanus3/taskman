@@ -10,19 +10,12 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdmin do
   def run([]) do
     terminal = Application.get_env(:taskman, :terminal, LocalTerminal)
 
-    with email when is_binary(email) <- terminal.prompt("Email: "),
-         password when is_binary(password) <- terminal.prompt_secret("Password: "),
-         password_confirmation when is_binary(password_confirmation) <-
-           terminal.prompt_secret("Confirm password: "),
-         {:ok, _user} <-
-           Accounts.bootstrap_admin(%{
-             email: email,
-             password: password,
-             password_confirmation: password_confirmation
-           }) do
-      Mix.shell().info("Administrator created.")
-    else
-      _result -> Mix.raise("Unable to create administrator.")
+    case Accounts.bootstrap_admin_from_terminal(terminal) do
+      {:ok, _user} ->
+        Mix.shell().info("Administrator created.")
+
+      {:error, :bootstrap_failed} ->
+        Mix.raise("Unable to create administrator.")
     end
   end
 

@@ -60,6 +60,31 @@ defmodule Taskman.Accounts do
 
   def bootstrap_admin(_params), do: {:error, :invalid_input}
 
+  @spec bootstrap_admin_from_terminal(module()) ::
+          {:ok, Taskman.Accounts.User.t()} | {:error, :bootstrap_failed}
+  def bootstrap_admin_from_terminal(terminal) when is_atom(terminal) do
+    with email when is_binary(email) <- terminal.prompt("Email: "),
+         password when is_binary(password) <- terminal.prompt_secret("Password: "),
+         password_confirmation when is_binary(password_confirmation) <-
+           terminal.prompt_secret("Confirm password: "),
+         {:ok, user} <-
+           bootstrap_admin(%{
+             email: email,
+             password: password,
+             password_confirmation: password_confirmation
+           }) do
+      {:ok, user}
+    else
+      _result -> {:error, :bootstrap_failed}
+    end
+  rescue
+    _error -> {:error, :bootstrap_failed}
+  catch
+    _kind, _reason -> {:error, :bootstrap_failed}
+  end
+
+  def bootstrap_admin_from_terminal(_terminal), do: {:error, :bootstrap_failed}
+
   @spec sign_in_with_password(map()) :: {:ok, Taskman.Accounts.User.t()} | {:error, term()}
   def sign_in_with_password(params) when is_map(params) do
     result =

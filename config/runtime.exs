@@ -41,12 +41,21 @@ if config_env() == :dev do
 end
 
 if config_env() == :prod do
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
+  require_environment = fn name ->
+    case System.get_env(name) do
+      nil ->
+        raise "environment variable #{name} is missing."
+
+      value ->
+        if String.trim(value) == "" do
+          raise "environment variable #{name} must not be blank."
+        end
+
+        value
+    end
+  end
+
+  database_url = require_environment.("DATABASE_URL")
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
@@ -89,18 +98,18 @@ if config_env() == :prod do
     raise "SECRET_KEY_BASE and ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET must be distinct."
   end
 
-  host = System.get_env("PHX_HOST") || raise "environment variable PHX_HOST is missing."
-
-  resend_api_key =
-    System.get_env("RESEND_API_KEY") || raise "environment variable RESEND_API_KEY is missing."
-
-  mail_from = System.get_env("MAIL_FROM") || raise "environment variable MAIL_FROM is missing."
+  host = require_environment.("PHX_HOST")
+  resend_api_key = require_environment.("RESEND_API_KEY")
+  mail_from = require_environment.("MAIL_FROM")
 
   config :taskman, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
   config :taskman, :token_signing_secret, token_signing_secret
-  config :taskman, :resend_api_key, resend_api_key
   config :taskman, :mail_from, {"Taskman", mail_from}
   config :taskman, :public_url, "https://" <> host
+
+  config :taskman, Taskman.Mailer,
+    adapter: Swoosh.Adapters.Resend,
+    api_key: resend_api_key
 
   config :taskman, TaskmanWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
