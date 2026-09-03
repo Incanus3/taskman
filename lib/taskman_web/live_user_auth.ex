@@ -24,6 +24,8 @@ defmodule TaskmanWeb.LiveUserAuth do
     "/auth"
   ]
 
+  @admin_users_path "/admin?domain=Accounts&resource=User"
+
   @doc """
   LiveView `on_mount` hook for routes requiring an active confirmed User.
   """
@@ -164,31 +166,34 @@ defmodule TaskmanWeb.LiveUserAuth do
   defp secure_admin_event(_event, _params, socket), do: {:cont, socket}
 
   defp secure_admin_route(params, _url, socket) do
-    cond do
-      not Administration.persisted_active_administrator?(socket.assigns[:current_user]) ->
-        {:halt, Phoenix.LiveView.redirect(socket, to: sign_in_path("/admin"))}
+    if Administration.persisted_active_administrator?(socket.assigns[:current_user]) do
+      case admin_user_destination(params) do
+        {:inspection, user_id} ->
+          {:halt,
+           Phoenix.LiveView.push_navigate(socket,
+             to: "/admin/users/#{user_id}"
+           )}
 
-      user_detail_request?(params) ->
-        {:halt,
-         Phoenix.LiveView.push_navigate(socket,
-           to: "/admin/users/#{params["primary_key"]}"
-         )}
+        :users_table ->
+          {:halt, Phoenix.LiveView.push_navigate(socket, to: @admin_users_path)}
 
-      true ->
-        {:cont, socket}
+        :none ->
+          {:cont, socket}
+      end
+    else
+      {:halt, Phoenix.LiveView.redirect(socket, to: sign_in_path("/admin"))}
     end
   end
 
-  defp user_detail_request?(%{
-         "domain" => "Accounts",
-         "resource" => "User",
-         "primary_key" => primary_key
-       })
-       when is_binary(primary_key) and primary_key != "" do
-    true
+  defp admin_user_destination(%{"primary_key" => primary_key}) when is_binary(primary_key) do
+    case Ecto.UUID.cast(primary_key) do
+      {:ok, user_id} -> {:inspection, user_id}
+      :error -> :users_table
+    end
   end
 
-  defp user_detail_request?(_params), do: false
+  defp admin_user_destination(%{"primary_key" => _primary_key}), do: :users_table
+  defp admin_user_destination(_params), do: :none
 
   defp assign_authenticated(socket, user, token) do
     socket

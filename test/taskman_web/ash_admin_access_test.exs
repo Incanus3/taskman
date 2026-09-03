@@ -57,6 +57,51 @@ defmodule TaskmanWeb.AshAdminAccessTest do
              render_patch(view, admin_read_path(target))
   end
 
+  test "record-targeted routes that AshAdmin resolves to User redirect to safe inspection", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    target = user_fixture()
+    conn = log_in_user(conn, administrator)
+    inspection_path = "/admin/users/#{target.id}"
+
+    for path <- fallback_user_paths(target) do
+      assert {:error, {:live_redirect, %{to: ^inspection_path}}} = live(conn, path)
+    end
+  end
+
+  test "record-targeted LiveView patches that AshAdmin resolves to User redirect to safe inspection",
+       %{conn: conn} do
+    administrator = admin_fixture()
+    target = user_fixture()
+    conn = log_in_user(conn, administrator)
+    inspection_path = "/admin/users/#{target.id}"
+
+    for path <- fallback_user_paths(target) do
+      assert {:ok, view, _html} = live(conn, "/admin")
+
+      assert {:error, {:live_redirect, %{to: ^inspection_path}}} = render_patch(view, path)
+    end
+  end
+
+  test "malformed record keys and duplicate-key final values return to the safe Users table", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    target = user_fixture()
+    conn = log_in_user(conn, administrator)
+    users_table_path = "/admin?domain=Accounts&resource=User"
+
+    for path <- malformed_primary_key_paths(target) do
+      assert {:error, {:live_redirect, %{to: ^users_table_path}}} = live(conn, path)
+
+      assert {:ok, view, _html} = live(conn, "/admin")
+
+      assert {:error, {:live_redirect, %{to: ^users_table_path}}} =
+               render_patch(view, path)
+    end
+  end
+
   test "forged admin protocol events cannot preserve a revoked mounted actor", %{conn: conn} do
     administrator = admin_fixture()
     second_administrator = admin_fixture()
@@ -102,5 +147,28 @@ defmodule TaskmanWeb.AshAdminAccessTest do
     primary_key = AshAdmin.Helpers.encode_primary_key(user)
 
     "/admin?domain=Accounts&resource=User&action_type=read&action=admin_read&primary_key=#{primary_key}"
+  end
+
+  defp fallback_user_paths(user) do
+    primary_key = user.id
+    encoded_primary_key = String.replace(primary_key, "-", "%2D")
+
+    [
+      "/admin?primary_key=#{primary_key}&action_type=read",
+      "/admin?resource=User&action_type=read&primary_key=#{primary_key}",
+      "/admin?domain=Accounts&action_type=read&primary_key=#{primary_key}",
+      "/admin?domain=Unknown&resource=User&action_type=read&primary_key=#{primary_key}",
+      "/admin?domain=Accounts&resource=Unknown&action_type=read&primary_key=#{primary_key}",
+      "/admin?primary_key=#{encoded_primary_key}&action_type=read",
+      "/admin?primary_key=malformed&primary_key=#{primary_key}&action_type=read"
+    ]
+  end
+
+  defp malformed_primary_key_paths(user) do
+    [
+      "/admin?primary_key=not-a-uuid&action_type=read",
+      "/admin?primary_key=#{user.id}&primary_key=not-a-uuid&action_type=read",
+      "/admin?primary_key%5B%5D=#{user.id}&action_type=read"
+    ]
   end
 end
