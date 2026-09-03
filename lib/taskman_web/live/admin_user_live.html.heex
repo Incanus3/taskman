@@ -45,6 +45,13 @@
             >
               <button type="submit">Resend setup invitation</button>
             </.form>
+            <p
+              :if={@resend_invitation_retry_after}
+              id="admin-user-resend-invitation-rate-limited"
+              role="status"
+            >
+              Too many requests. Please try again in {@resend_invitation_retry_after} seconds.
+            </p>
             <.form
               for={@lifecycle_form}
               id="admin-user-revoke-invitation"

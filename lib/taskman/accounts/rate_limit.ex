@@ -29,6 +29,11 @@ defmodule Taskman.Accounts.RateLimit do
   def hit(key, period, limit),
     do: Taskman.Accounts.RateLimitBackend.hit(namespaced_key(key), period, limit)
 
+  @doc false
+  @spec expires_at(String.t(), pos_integer()) :: non_neg_integer()
+  def expires_at(key, period),
+    do: Taskman.Accounts.RateLimitBackend.expires_at(namespaced_key(key), period)
+
   @type limited_action ::
           :sign_in
           | :password_reset
@@ -49,6 +54,42 @@ defmodule Taskman.Accounts.RateLimit do
       end
     end)
   end
+
+  @doc """
+  Returns the remaining retry interval for an Ash rate-limit error.
+
+  Hammer's fixed-window ETS backend exposes the current window expiry, whereas
+  `AshRateLimiter.LimitExceeded` retains only the configured period. Reading
+  that expiry keeps HTTP guidance accurate after the first denied request.
+  """
+  @spec retry_after(term(), keyword()) :: pos_integer() | nil
+  def retry_after(reason, opts \\ [])
+
+  def retry_after(
+        %AshRateLimiter.LimitExceeded{backend: backend, key: key, per: period},
+        opts
+      )
+      when is_atom(backend) and is_binary(key) and is_integer(period) and period > 0 do
+    now = Keyword.get(opts, :now, System.system_time(:millisecond))
+
+    if function_exported?(backend, :expires_at, 2) do
+      backend
+      |> apply(:expires_at, [key, period])
+      |> Kernel.-(now)
+      |> seconds()
+      |> min(seconds(period))
+    else
+      seconds(period)
+    end
+  end
+
+  def retry_after(%{caused_by: reason}, opts), do: retry_after(reason, opts)
+
+  def retry_after(%{errors: errors}, opts) when is_list(errors) do
+    Enum.find_value(errors, &retry_after(&1, opts))
+  end
+
+  def retry_after(_reason, _opts), do: nil
 
   @spec normalized_email(term()) :: String.t()
   def normalized_email(email) when is_binary(email),
@@ -92,6 +133,10 @@ defmodule Taskman.Accounts.RateLimit do
     Process.put(@request_ip_key, normalized_ip(remote_ip))
     :ok
   end
+
+  @doc false
+  @spec request_remote_ip() :: String.t()
+  def request_remote_ip, do: Process.get(@request_ip_key, "unknown")
 
   @doc false
   @spec sign_in_email_key(Ash.Query.t(), map()) :: String.t()

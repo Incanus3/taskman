@@ -33,8 +33,53 @@ defmodule TaskmanWeb.EndpointConfigTest do
       end)
     end
 
+    equal_secret = String.duplicate("e", 64)
+
     with_environment(
-      production_environment(%{"ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET" => "test-secret"}),
+      production_environment(%{
+        "SECRET_KEY_BASE" => equal_secret,
+        "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET" => equal_secret
+      }),
+      fn ->
+        assert_raise RuntimeError, ~r/must be distinct/, fn ->
+          Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
+        end
+      end
+    )
+  end
+
+  test "production rejects blank, weak, and equal signing secrets without echoing them" do
+    for name <- ["SECRET_KEY_BASE", "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET"],
+        value <- ["", "   "] do
+      with_environment(production_environment(%{name => value}), fn ->
+        assert_raise RuntimeError, ~r/environment variable #{name} must not be blank/, fn ->
+          Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
+        end
+      end)
+    end
+
+    short_secret = String.duplicate("s", 63)
+
+    for name <- ["SECRET_KEY_BASE", "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET"] do
+      with_environment(production_environment(%{name => short_secret}), fn ->
+        error =
+          assert_raise RuntimeError,
+                       ~r/environment variable #{name} must be at least 64 bytes/,
+                       fn ->
+                         Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
+                       end
+
+        refute Exception.message(error) =~ short_secret
+      end)
+    end
+
+    equal_secret = String.duplicate("e", 64)
+
+    with_environment(
+      production_environment(%{
+        "SECRET_KEY_BASE" => equal_secret,
+        "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET" => equal_secret
+      }),
       fn ->
         assert_raise RuntimeError, ~r/must be distinct/, fn ->
           Config.Reader.read!("config/runtime.exs", env: :prod, imports: :disabled)
@@ -54,8 +99,8 @@ defmodule TaskmanWeb.EndpointConfigTest do
     Map.merge(
       %{
         "DATABASE_URL" => "ecto://postgres:postgres@localhost/taskman",
-        "SECRET_KEY_BASE" => "test-secret",
-        "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET" => "test-authentication-secret",
+        "SECRET_KEY_BASE" => String.duplicate("s", 64),
+        "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET" => String.duplicate("t", 64),
         "PHX_HOST" => "taskman.test",
         "RESEND_API_KEY" => "re_test-key",
         "MAIL_FROM" => "no-reply@taskman.test"

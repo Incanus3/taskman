@@ -2,12 +2,15 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Swoosh.TestAssertions
   import Taskman.AccountsFixtures
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
   alias Taskman.Accounts.{ApiKey, Token, User}
   alias Taskman.Repo
+
+  setup :set_swoosh_global
 
   test "settings renders the stable account-management surfaces", %{conn: conn} do
     user = user_fixture()
@@ -43,6 +46,32 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
     assert text_at(view, "#current-email-address") == to_string(user.email)
     assert text_at(view, "#pending-email-change") == "Pending confirmation: #{pending_email}"
     assert [""] = values_at(view, "#email-change-form input[name='email_change[email]']", "value")
+  end
+
+  test "email-change requests show retry guidance without a sixth email", %{conn: conn} do
+    {user, conn} = password_user_conn(conn)
+    {:ok, view, _html} = live(conn, "/account/settings")
+    pending_email = "rate-limited-#{System.unique_integer([:positive])}@example.com"
+
+    for _ <- 1..5 do
+      view
+      |> form("#email-change-form", %{
+        "email_change" => %{"email" => pending_email, "current_password" => "password1"}
+      })
+      |> render_submit()
+
+      assert_receive {:email, _email}
+    end
+
+    view
+    |> form("#email-change-form", %{
+      "email_change" => %{"email" => pending_email, "current_password" => "password1"}
+    })
+    |> render_submit()
+
+    assert has_element?(view, "#email-change-rate-limited", "Please try again in")
+    refute_email_sent()
+    assert to_string(Repo.get!(User, user.id).email) == to_string(user.email)
   end
 
   test "settings replaces the displayed plaintext when a second API key is created", %{conn: conn} do

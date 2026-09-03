@@ -32,8 +32,8 @@ defmodule Taskman.Accounts.SecurityLogTest do
       capture_log([level: :info], fn ->
         assert :ok =
                  SecurityLog.record(:sign_in_succeeded,
-                   actor_id: "actor-1",
-                   target_id: "target-1",
+                   actor_id: "00000000-0000-0000-0000-000000000001",
+                   target_id: "00000000-0000-0000-0000-000000000002",
                    metadata: sensitive
                  )
 
@@ -42,8 +42,8 @@ defmodule Taskman.Accounts.SecurityLogTest do
 
     assert output =~ "security_event=sign_in_succeeded"
     assert output =~ "security_event=sign_in_rejected"
-    assert output =~ "actor_id=actor-1"
-    assert output =~ "target_id=target-1"
+    assert output =~ "actor_id=00000000-0000-0000-0000-000000000001"
+    assert output =~ "target_id=00000000-0000-0000-0000-000000000002"
 
     for value <- Map.values(sensitive) do
       refute output =~ value
@@ -70,5 +70,20 @@ defmodule Taskman.Accounts.SecurityLogTest do
     assert output =~ "actor_id=#{user.id}"
     assert output =~ "target_id=#{user.id}"
     refute output =~ plaintext
+  end
+
+  test "only UUID identifiers are rendered, preventing control-character log injection" do
+    output =
+      capture_log([level: :info], fn ->
+        assert :ok =
+                 SecurityLog.record(:sign_in_rejected,
+                   actor_id: "attacker\nsecurity_event=forged",
+                   target_id: "00000000-0000-0000-0000-000000000003\r\nforged=true"
+                 )
+      end)
+
+    assert output =~ "security_event=sign_in_rejected"
+    refute output =~ "security_event=forged"
+    refute output =~ "forged=true"
   end
 end

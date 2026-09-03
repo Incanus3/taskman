@@ -14,7 +14,12 @@ defmodule Taskman.Accounts.SecurityLog do
     ids =
       attrs
       |> Keyword.take([:actor_id, :target_id])
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Enum.flat_map(fn {key, value} ->
+        case Ecto.UUID.cast(value) do
+          {:ok, uuid} -> [{key, uuid}]
+          :error -> []
+        end
+      end)
       |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{value}" end)
 
     suffix = if ids == "", do: "", else: " " <> ids

@@ -36,6 +36,36 @@ defmodule Taskman.Accounts.PasswordResetTest do
     refute_email_sent()
   end
 
+  test "direct reset requests use the public limiter before revoking a token or sending mail" do
+    user = active_user_fixture("direct-rate-limited@example.com")
+    remote_ip = {203, 0, 113, 20}
+
+    token =
+      for _ <- 1..5 do
+        assert :ok =
+                 Accounts.request_password_reset("  DIRECT-RATE-LIMITED@example.com ",
+                   remote_ip: remote_ip
+                 )
+
+        receive_token()
+      end
+      |> List.last()
+
+    # The 429 result does not reveal account existence, and it must not revoke
+    # the fifth token or send another recovery email.
+    assert {:error, retry_after: retry_after} =
+             Accounts.request_password_reset(to_string(user.email), remote_ip: remote_ip)
+
+    assert retry_after >= 1
+    refute_email_sent()
+
+    assert {:ok, _user} =
+             Accounts.reset_password(token, %{
+               password: "replacement-password",
+               password_confirmation: "replacement-password"
+             })
+  end
+
   test "a valid reset changes the password, consumes its token, and invalid attempts do not consume it" do
     user = active_user_fixture("reset@example.com")
     original_hash = user.hashed_password

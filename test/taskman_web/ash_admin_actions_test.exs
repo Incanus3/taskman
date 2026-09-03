@@ -211,6 +211,30 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     assert email.text_body =~ "/setup/"
   end
 
+  test "the inspection resend control shows retry guidance without a sixth invitation", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    pending_user = pending_user_fixture()
+    assert_receive {:email, _initial_invitation}
+    view = admin_user_view(conn, administrator, pending_user)
+
+    for _ <- 1..5 do
+      view
+      |> form("#admin-user-resend-invitation")
+      |> render_submit()
+
+      assert_receive {:email, _invitation}
+    end
+
+    view
+    |> form("#admin-user-resend-invitation")
+    |> render_submit()
+
+    assert has_element?(view, "#admin-user-resend-invitation-rate-limited", "Please try again in")
+    refute_email_sent()
+  end
+
   test "the inspection credential controls revoke browser sessions and API keys", %{conn: conn} do
     administrator = admin_fixture()
     target = user_fixture()

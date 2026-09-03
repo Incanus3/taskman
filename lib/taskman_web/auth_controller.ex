@@ -13,6 +13,7 @@ defmodule TaskmanWeb.AuthController do
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
+  alias Taskman.Accounts.RateLimit
   alias Taskman.Accounts.SecurityLog
   alias Taskman.Accounts.Token
   alias TaskmanWeb.LiveUserAuth
@@ -45,17 +46,12 @@ defmodule TaskmanWeb.AuthController do
 
   @doc false
   @impl AshAuthentication.Phoenix.Controller
-  def failure(conn, activity, %AshRateLimiter.LimitExceeded{per: period}) do
-    log_authentication_result(activity, :rejected, nil)
-    rate_limited_response(conn, period)
-  end
-
   def failure(conn, activity, reason) do
     log_authentication_result(activity, :rejected, nil)
 
-    case rate_limit_period(reason) do
-      period when is_integer(period) ->
-        rate_limited_response(conn, period)
+    case RateLimit.retry_after(reason) do
+      retry_after when is_integer(retry_after) ->
+        rate_limited_response(conn, retry_after)
 
       nil ->
         return_to =
@@ -134,6 +130,16 @@ defmodule TaskmanWeb.AuthController do
     |> put_flash(:error, "Account deletion was not completed.")
     |> redirect(to: ~p"/account/settings")
   end
+
+  @doc false
+  def request_password_reset(conn, %{"user" => %{"email" => email}}) when is_binary(email) do
+    case Accounts.request_password_reset(email, remote_ip: conn.remote_ip) do
+      :ok -> redirect(conn, to: ~p"/")
+      {:error, retry_after: retry_after} -> rate_limited_response(conn, retry_after)
+    end
+  end
+
+  def request_password_reset(conn, _params), do: redirect(conn, to: ~p"/")
 
   @doc "Returns the session-specific LiveView socket topic for a browser token."
   @spec session_topic(String.t()) :: String.t()
@@ -284,21 +290,10 @@ defmodule TaskmanWeb.AuthController do
   defp record_id(%{id: id}) when is_binary(id), do: id
   defp record_id(_user), do: nil
 
-  defp rate_limited_response(conn, period) do
+  defp rate_limited_response(conn, retry_after) do
     conn
-    |> put_resp_header("retry-after", Integer.to_string(max(1, ceil(period / 1_000))))
+    |> put_resp_header("retry-after", Integer.to_string(max(1, retry_after)))
     |> put_resp_content_type("text/plain")
     |> send_resp(429, "Too many requests. Please try again later.")
   end
-
-  defp rate_limit_period(%AshRateLimiter.LimitExceeded{per: period}) when is_integer(period),
-    do: period
-
-  defp rate_limit_period(%{caused_by: reason}), do: rate_limit_period(reason)
-
-  defp rate_limit_period(%{errors: errors}) when is_list(errors) do
-    Enum.find_value(errors, &rate_limit_period/1)
-  end
-
-  defp rate_limit_period(_reason), do: nil
 end

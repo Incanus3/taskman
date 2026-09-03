@@ -717,35 +717,45 @@ defmodule Taskman.Accounts do
     audit(result, :email_change_confirmed, :email_change_confirmation_rejected)
   end
 
-  @spec request_password_reset(String.t()) :: :ok
-  def request_password_reset(email) when is_binary(email) do
-    case transaction(fn ->
-           with {:ok, user} <- lock_eligible_user_by_email(email),
-                :ok <- Token.revoke_for_subject(user, "password_reset"),
-                {:ok, token, _claims} <-
-                  Jwt.token_for_user(user, %{"act" => "reset_password"},
-                    token_lifetime: {1, :hours},
-                    purpose: :password_reset
-                  ) do
-             {:ok, {user, token}}
-           end
-         end) do
-      {:ok, {user, token}} ->
-        case Emails.deliver_password_reset(to_string(user.email), token) do
-          :ok ->
-            :ok
+  @spec request_password_reset(String.t(), keyword()) ::
+          :ok | {:error, retry_after: pos_integer()}
+  def request_password_reset(email, opts \\ [])
 
-          {:error, _reason} = delivery_error ->
-            log_delivery_failure(delivery_error)
-            :ok
-        end
+  def request_password_reset(email, opts) when is_binary(email) and is_list(opts) do
+    normalized_email = RateLimit.normalized_email(email)
 
-      {:error, _reason} ->
-        :ok
+    remote_ip =
+      opts |> Keyword.get(:remote_ip, RateLimit.request_remote_ip()) |> RateLimit.normalized_ip()
+
+    with :ok <- RateLimit.check(:password_reset, email: normalized_email, remote_ip: remote_ip) do
+      case transaction(fn ->
+             with {:ok, user} <- lock_eligible_user_by_email(normalized_email),
+                  :ok <- Token.revoke_for_subject(user, "password_reset"),
+                  {:ok, token, _claims} <-
+                    Jwt.token_for_user(user, %{"act" => "reset_password"},
+                      token_lifetime: {1, :hours},
+                      purpose: :password_reset
+                    ) do
+               {:ok, {user, token}}
+             end
+           end) do
+        {:ok, {user, token}} ->
+          case Emails.deliver_password_reset(to_string(user.email), token) do
+            :ok ->
+              :ok
+
+            {:error, _reason} = delivery_error ->
+              log_delivery_failure(delivery_error)
+              :ok
+          end
+
+        {:error, _reason} ->
+          :ok
+      end
     end
   end
 
-  def request_password_reset(_email), do: :ok
+  def request_password_reset(_email, _opts), do: :ok
 
   @spec reset_password(String.t(), map(), keyword()) :: {:ok, User.t()} | {:error, term()}
   def reset_password(token, params, opts \\ [])

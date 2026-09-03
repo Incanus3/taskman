@@ -63,16 +63,27 @@ if config_env() == :prod do
   # want to use a different value for prod and you most likely don't want
   # to check this value into version control, so we use an environment
   # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+  require_signing_secret = fn name ->
+    case System.get_env(name) do
+      nil ->
+        raise "environment variable #{name} is missing."
 
-  token_signing_secret =
-    System.get_env("ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET") ||
-      raise "environment variable ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET is missing."
+      secret ->
+        cond do
+          String.trim(secret) == "" ->
+            raise "environment variable #{name} must not be blank."
+
+          byte_size(secret) < 64 ->
+            raise "environment variable #{name} must be at least 64 bytes."
+
+          true ->
+            secret
+        end
+    end
+  end
+
+  secret_key_base = require_signing_secret.("SECRET_KEY_BASE")
+  token_signing_secret = require_signing_secret.("ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET")
 
   if token_signing_secret == secret_key_base do
     raise "SECRET_KEY_BASE and ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET must be distinct."

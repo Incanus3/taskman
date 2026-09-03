@@ -13,6 +13,7 @@ defmodule TaskmanWeb.AdminUserLive do
      |> assign_new(:current_scope, fn -> nil end)
      |> assign_new(:current_user, fn -> nil end)
      |> assign(:user, nil)
+     |> assign(:resend_invitation_retry_after, nil)
      |> assign(:lifecycle_form, to_form(%{}, as: :lifecycle))
      |> assign(:email_form, to_form(%{}, as: :email))
      |> assign(:delete_form, to_form(%{}, as: :delete))}
@@ -39,8 +40,24 @@ defmodule TaskmanWeb.AdminUserLive do
   end
 
   @impl true
-  def handle_event("resend_invitation", _params, socket),
-    do: run_target_action(socket, &Accounts.resend_invitation/2, "Setup invitation sent.")
+  def handle_event("resend_invitation", _params, socket) do
+    case Accounts.resend_invitation(socket.assigns.current_user, socket.assigns.user) do
+      :ok ->
+        refresh_user(socket, "Setup invitation sent.")
+
+      {:ok, %User{}} ->
+        refresh_user(socket, "Setup invitation sent.")
+
+      {:error, retry_after: retry_after} ->
+        {:noreply,
+         socket
+         |> assign(:resend_invitation_retry_after, retry_after)
+         |> put_flash(:error, retry_guidance(retry_after))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Account could not be updated.")}
+    end
+  end
 
   def handle_event("revoke_invitation", _params, socket),
     do: run_target_action(socket, &Accounts.revoke_invitation/2, "Setup invitation revoked.")
@@ -105,7 +122,11 @@ defmodule TaskmanWeb.AdminUserLive do
   defp refresh_user(socket, success_message) do
     case read_user(socket, socket.assigns.user.id) do
       {:ok, %User{} = user} ->
-        {:noreply, socket |> assign_user(user) |> put_flash(:info, success_message)}
+        {:noreply,
+         socket
+         |> assign_user(user)
+         |> assign(:resend_invitation_retry_after, nil)
+         |> put_flash(:info, success_message)}
 
       _ ->
         {:noreply, push_navigate(socket, to: "/admin?domain=Accounts&resource=User")}
@@ -140,4 +161,7 @@ defmodule TaskmanWeb.AdminUserLive do
 
   defp confirmed?(value) when value in [true, "true", "on", "1"], do: true
   defp confirmed?(_value), do: false
+
+  defp retry_guidance(retry_after),
+    do: "Too many requests. Please try again in #{retry_after} seconds."
 end

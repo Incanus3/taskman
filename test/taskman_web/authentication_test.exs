@@ -3,11 +3,14 @@ defmodule TaskmanWeb.AuthenticationTest do
 
   import Phoenix.LiveViewTest
   import Plug.Conn
+  import Swoosh.TestAssertions
   import Taskman.AccountsFixtures
 
   alias AshAuthentication.{Jwt, TokenResource}
   alias Taskman.Accounts.Token
   alias TaskmanWeb.{AuthController, LiveUserAuth}
+
+  setup :set_swoosh_global
 
   test "workspace redirects guests to sign-in with a safe internal return path", %{conn: conn} do
     assert {:error, {:redirect, %{to: to}}} = live(conn, "/projects/42/tasks/new")
@@ -194,6 +197,39 @@ defmodule TaskmanWeb.AuthenticationTest do
     assert [retry_after] = get_resp_header(response, "retry-after")
     assert {seconds, ""} = Integer.parse(retry_after)
     assert seconds >= 1
+  end
+
+  test "password-reset requests receive 429 guidance before issuing a sixth token", %{conn: conn} do
+    email = "reset-limited-#{System.unique_integer([:positive])}@example.com"
+
+    assert {:ok, _user} =
+             Taskman.Accounts.bootstrap_admin(%{
+               email: email,
+               password: "fixture-password",
+               password_confirmation: "fixture-password"
+             })
+
+    for _ <- 1..5 do
+      response =
+        conn
+        |> recycle()
+        |> post("/auth/user/password/reset_request", %{"user" => %{"email" => email}})
+
+      assert redirected_to(response) == "/"
+      assert_receive {:email, _email}
+    end
+
+    response =
+      conn
+      |> recycle()
+      |> post("/auth/user/password/reset_request", %{"user" => %{"email" => email}})
+
+    assert response.status == 429
+    assert response.resp_body == "Too many requests. Please try again later."
+    assert [retry_after] = get_resp_header(response, "retry-after")
+    assert {seconds, ""} = Integer.parse(retry_after)
+    assert seconds >= 1
+    refute_email_sent()
   end
 
   test "password sign-in renews the Plug session and retires the previous browser token", %{

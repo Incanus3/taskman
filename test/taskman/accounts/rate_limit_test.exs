@@ -7,6 +7,12 @@ defmodule Taskman.Accounts.RateLimitTest do
     use Hammer, backend: :ets
   end
 
+  defmodule RemainingWindowBackend do
+    def expires_at("one-millisecond-left", 1_000), do: 1_001
+    def expires_at("already-expired", 1_000), do: 1_000
+    def expires_at("three-and-a-quarter-seconds-left", 10_000), do: 13_250
+  end
+
   setup do
     pid = start_supervised!({Limiter, clean_period: :timer.minutes(1)})
     _ = :sys.get_state(pid)
@@ -130,5 +136,21 @@ defmodule Taskman.Accounts.RateLimitTest do
              RateLimit.check(:invalid_api_key, remote_ip: remote_ip, backend: backend)
 
     assert is_integer(retry_after) and retry_after >= 1
+  end
+
+  test "rate-limit errors report the remaining Hammer window with a one-second floor" do
+    limit = %AshRateLimiter.LimitExceeded{
+      backend: RemainingWindowBackend,
+      key: "one-millisecond-left",
+      per: 1_000
+    }
+
+    assert RateLimit.retry_after(limit, now: 1_000) == 1
+
+    expired_limit = %{limit | key: "already-expired"}
+    assert RateLimit.retry_after(expired_limit, now: 1_000) == 1
+
+    remaining_limit = %{limit | key: "three-and-a-quarter-seconds-left", per: 10_000}
+    assert RateLimit.retry_after(remaining_limit, now: 10_000) == 4
   end
 end

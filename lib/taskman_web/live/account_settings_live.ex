@@ -19,6 +19,7 @@ defmodule TaskmanWeb.AccountSettingsLive do
       |> assign(:api_key_form, api_key_form())
       |> assign(:delete_account_form, delete_account_form())
       |> assign(:pending_email_change, nil)
+      |> assign(:email_change_retry_after, nil)
       |> assign(:plaintext_api_key, nil)
       |> assign(:plaintext_api_key_generation, 0)
       |> refresh_email_state()
@@ -43,7 +44,15 @@ defmodule TaskmanWeb.AccountSettingsLive do
         {:noreply,
          socket
          |> refresh_email_state()
+         |> assign(:email_change_retry_after, nil)
          |> put_flash(:info, "Email confirmation sent.")}
+
+      {:error, retry_after: retry_after} ->
+        {:noreply,
+         socket
+         |> assign(:email_form, to_form(params, as: :email_change))
+         |> assign(:email_change_retry_after, retry_after)
+         |> put_flash(:error, retry_guidance(retry_after))}
 
       {:error, _reason} ->
         {:noreply,
@@ -192,4 +201,7 @@ defmodule TaskmanWeb.AccountSettingsLive do
   defp delete_account_form do
     to_form(%{"current_password" => "", "confirmation" => ""}, as: :delete_account)
   end
+
+  defp retry_guidance(retry_after),
+    do: "Too many requests. Please try again in #{retry_after} seconds."
 end

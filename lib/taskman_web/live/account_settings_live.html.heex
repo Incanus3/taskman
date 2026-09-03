@@ -29,6 +29,14 @@
             No email change is pending.
           </p>
         </div>
+        <p
+          :if={@email_change_retry_after}
+          id="email-change-rate-limited"
+          role="status"
+          class="mb-4 text-sm text-amber-200"
+        >
+          Too many requests. Please try again in {@email_change_retry_after} seconds.
+        </p>
         <.form
           for={@email_form}
           id="email-change-form"
