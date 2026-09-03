@@ -1,11 +1,15 @@
 defmodule Taskman.Accounts.User do
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshAuthentication, AshAdmin.Resource],
+    extensions: [AshAuthentication, AshAdmin.Resource, AshRateLimiter],
     authorizers: [Ash.Policy.Authorizer],
     domain: Taskman.Accounts
 
-  alias Taskman.Accounts.{ApiKey, Token}
+  alias Taskman.Accounts.{ApiKey, RateLimit, Token}
+
+  rate_limit do
+    backend RateLimit
+  end
 
   alias Taskman.Accounts.Changes.{
     DeliverManagedEmail,
@@ -308,7 +312,28 @@ defmodule Taskman.Accounts.User do
       end
 
       prepare build(filter: [status: :active])
+
+      prepare {AshRateLimiter.Preparation,
+               limit: 10, per: :timer.minutes(15), key: &RateLimit.sign_in_email_key/2}
+
+      prepare {AshRateLimiter.Preparation,
+               limit: 60, per: :timer.minutes(15), key: &RateLimit.sign_in_ip_key/2}
+
       prepare AshAuthentication.Strategy.Password.SignInPreparation
+    end
+
+    read :request_password_reset do
+      argument :email, :ci_string do
+        allow_nil? false
+      end
+
+      prepare {AshRateLimiter.Preparation,
+               limit: 5, per: :timer.hours(1), key: &RateLimit.password_reset_email_key/2}
+
+      prepare {AshRateLimiter.Preparation,
+               limit: 20, per: :timer.hours(1), key: &RateLimit.password_reset_ip_key/2}
+
+      prepare AshAuthentication.Strategy.Password.RequestPasswordResetPreparation
     end
 
     read :sign_in_with_api_key do

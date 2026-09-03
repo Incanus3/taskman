@@ -70,9 +70,26 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  token_signing_secret =
+    System.get_env("ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET") ||
+      raise "environment variable ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET is missing."
+
+  if token_signing_secret == secret_key_base do
+    raise "SECRET_KEY_BASE and ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET must be distinct."
+  end
+
+  host = System.get_env("PHX_HOST") || raise "environment variable PHX_HOST is missing."
+
+  resend_api_key =
+    System.get_env("RESEND_API_KEY") || raise "environment variable RESEND_API_KEY is missing."
+
+  mail_from = System.get_env("MAIL_FROM") || raise "environment variable MAIL_FROM is missing."
 
   config :taskman, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :taskman, :token_signing_secret, token_signing_secret
+  config :taskman, :resend_api_key, resend_api_key
+  config :taskman, :mail_from, {"Taskman", mail_from}
+  config :taskman, :public_url, "https://" <> host
 
   config :taskman, TaskmanWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

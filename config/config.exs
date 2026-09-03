@@ -17,6 +17,10 @@ config :ash_admin, actor_plug: TaskmanWeb.AshAdminActorPlug
 
 config :taskman, :task_autosave_delay_ms, 300
 
+config :taskman, :ash_rate_limiter, hammer: Taskman.Accounts.RateLimit
+config :taskman, :secure_cookies, false
+config :taskman, :force_ssl?, false
+
 # Configure the endpoint
 config :taskman, TaskmanWeb.Endpoint,
   url: [host: "localhost"],

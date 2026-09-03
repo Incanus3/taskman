@@ -29,6 +29,7 @@ config :taskman,
   public_url: "https://taskman.example.test"
 
 config :taskman, :task_autosave_delay_ms, 0
+config :taskman, :rate_limit_test_isolation, true
 
 config :taskman, :token_signing_secret, "test-token-signing-secret"
 

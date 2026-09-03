@@ -159,6 +159,43 @@ defmodule TaskmanWeb.AuthenticationTest do
     assert is_binary(get_session(conn, :user_token))
   end
 
+  test "sign-in attempts receive enumeration-safe 429 retry guidance after the email limit", %{
+    conn: conn
+  } do
+    email = "limited-#{System.unique_integer([:positive])}@example.com"
+
+    assert {:ok, _user} =
+             Taskman.Accounts.bootstrap_admin(%{
+               email: email,
+               password: "fixture-password",
+               password_confirmation: "fixture-password"
+             })
+
+    for _ <- 1..10 do
+      response =
+        conn
+        |> recycle()
+        |> post("/auth/user/password/sign_in", %{
+          "user" => %{"email" => email, "password" => "wrong-password"}
+        })
+
+      assert redirected_to(response) =~ "/sign-in"
+    end
+
+    response =
+      conn
+      |> recycle()
+      |> post("/auth/user/password/sign_in", %{
+        "user" => %{"email" => email, "password" => "wrong-password"}
+      })
+
+    assert response.status == 429
+    assert response.resp_body == "Too many requests. Please try again later."
+    assert [retry_after] = get_resp_header(response, "retry-after")
+    assert {seconds, ""} = Integer.parse(retry_after)
+    assert seconds >= 1
+  end
+
   test "password sign-in renews the Plug session and retires the previous browser token", %{
     conn: conn
   } do

@@ -12,11 +12,19 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
 
   alias Ash.PlugHelpers
   alias Taskman.Accounts
+  alias Taskman.Accounts.RateLimit
 
   @unauthorized_body %{
     error: %{
       code: "unauthorized",
       message: "Authentication required"
+    }
+  }
+
+  @rate_limited_body %{
+    error: %{
+      code: "rate_limited",
+      message: "Too many requests. Please try again later."
     }
   }
 
@@ -47,11 +55,11 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
             |> put_private(:taskman_api_authenticated?, true)
 
           {:error, _reason} ->
-            unauthorized(conn)
+            invalid_api_key(conn)
         end
 
       {:error, _reason} ->
-        unauthorized(conn)
+        invalid_api_key(conn)
     end
   end
 
@@ -81,6 +89,21 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(401, Jason.encode!(@unauthorized_body))
+    |> halt()
+  end
+
+  defp invalid_api_key(conn) do
+    case RateLimit.check(:invalid_api_key, remote_ip: conn.remote_ip) do
+      :ok -> unauthorized(conn)
+      {:error, retry_after: retry_after} -> rate_limited(conn, retry_after)
+    end
+  end
+
+  defp rate_limited(conn, retry_after) do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(retry_after))
+    |> put_resp_content_type("application/json")
+    |> send_resp(429, Jason.encode!(@rate_limited_body))
     |> halt()
   end
 end

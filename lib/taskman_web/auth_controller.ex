@@ -13,12 +13,14 @@ defmodule TaskmanWeb.AuthController do
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
+  alias Taskman.Accounts.SecurityLog
   alias Taskman.Accounts.Token
   alias TaskmanWeb.LiveUserAuth
 
   @doc false
   @impl AshAuthentication.Phoenix.Controller
-  def success(conn, _activity, user, token) do
+  def success(conn, activity, user, token) do
+    log_authentication_result(activity, :success, user)
     token = token || get_in(user, [Access.key(:__metadata__), Access.key(:token)])
 
     return_to =
@@ -43,16 +45,29 @@ defmodule TaskmanWeb.AuthController do
 
   @doc false
   @impl AshAuthentication.Phoenix.Controller
-  def failure(conn, _activity, _reason) do
-    return_to =
-      conn
-      |> get_session(:return_to)
-      |> Kernel.||(conn.params["return_to"])
-      |> LiveUserAuth.safe_return_path()
+  def failure(conn, activity, %AshRateLimiter.LimitExceeded{per: period}) do
+    log_authentication_result(activity, :rejected, nil)
+    rate_limited_response(conn, period)
+  end
 
-    conn
-    |> put_flash(:error, "The email or password is incorrect.")
-    |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+  def failure(conn, activity, reason) do
+    log_authentication_result(activity, :rejected, nil)
+
+    case rate_limit_period(reason) do
+      period when is_integer(period) ->
+        rate_limited_response(conn, period)
+
+      nil ->
+        return_to =
+          conn
+          |> get_session(:return_to)
+          |> Kernel.||(conn.params["return_to"])
+          |> LiveUserAuth.safe_return_path()
+
+        conn
+        |> put_flash(:error, "The email or password is incorrect.")
+        |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+    end
   end
 
   @doc false
@@ -231,4 +246,59 @@ defmodule TaskmanWeb.AuthController do
   end
 
   defp install_browser_session(conn, _user, _token), do: {:ok, conn}
+
+  defp log_authentication_result({:password, :sign_in}, :success, user) do
+    SecurityLog.record(:sign_in_succeeded, actor_id: record_id(user), target_id: record_id(user))
+  end
+
+  defp log_authentication_result({:password, :sign_in}, :rejected, _user) do
+    SecurityLog.record(:sign_in_rejected)
+  end
+
+  defp log_authentication_result({:setup, :confirm}, :success, user) do
+    SecurityLog.record(:setup_completed, target_id: record_id(user))
+  end
+
+  defp log_authentication_result({:setup, :confirm}, :rejected, _user) do
+    SecurityLog.record(:setup_completion_rejected)
+  end
+
+  defp log_authentication_result({:email_change, :confirm}, :success, user) do
+    SecurityLog.record(:email_change_confirmed, target_id: record_id(user))
+  end
+
+  defp log_authentication_result({:email_change, :confirm}, :rejected, _user) do
+    SecurityLog.record(:email_change_confirmation_rejected)
+  end
+
+  defp log_authentication_result({:password, :reset}, :success, user) do
+    SecurityLog.record(:password_reset, target_id: record_id(user))
+  end
+
+  defp log_authentication_result({:password, :reset}, :rejected, _user) do
+    SecurityLog.record(:password_reset_rejected)
+  end
+
+  defp log_authentication_result(_activity, _result, _user), do: :ok
+
+  defp record_id(%{id: id}) when is_binary(id), do: id
+  defp record_id(_user), do: nil
+
+  defp rate_limited_response(conn, period) do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(max(1, ceil(period / 1_000))))
+    |> put_resp_content_type("text/plain")
+    |> send_resp(429, "Too many requests. Please try again later.")
+  end
+
+  defp rate_limit_period(%AshRateLimiter.LimitExceeded{per: period}) when is_integer(period),
+    do: period
+
+  defp rate_limit_period(%{caused_by: reason}), do: rate_limit_period(reason)
+
+  defp rate_limit_period(%{errors: errors}) when is_list(errors) do
+    Enum.find_value(errors, &rate_limit_period/1)
+  end
+
+  defp rate_limit_period(_reason), do: nil
 end

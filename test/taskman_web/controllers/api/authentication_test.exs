@@ -112,6 +112,32 @@ defmodule TaskmanWeb.API.AuthenticationTest do
     end
   end
 
+  test "invalid API-key attempts eventually return JSON 429 with retry guidance", %{conn: conn} do
+    for _ <- 1..60 do
+      assert %{"error" => %{"code" => "unauthorized"}} =
+               conn
+               |> put_api_key("tm_not-a-valid-key")
+               |> get("/api/v1/projects")
+               |> json_response(401)
+    end
+
+    response =
+      conn
+      |> put_api_key("tm_not-a-valid-key")
+      |> get("/api/v1/projects")
+
+    assert %{
+             "error" => %{
+               "code" => "rate_limited",
+               "message" => "Too many requests. Please try again later."
+             }
+           } = json_response(response, 429)
+
+    assert [retry_after] = get_resp_header(response, "retry-after")
+    assert {seconds, ""} = Integer.parse(retry_after)
+    assert seconds >= 1
+  end
+
   test "a valid key preserves the existing success and error envelopes", %{conn: conn} do
     user = user_fixture()
     now = DateTime.utc_now()
