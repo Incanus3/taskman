@@ -1,7 +1,7 @@
-defmodule Taskman.CLI.OutputTest do
+defmodule Taskman.CLI.Presentation.OutputTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.Output
+  alias Taskman.CLI.Presentation.Output
 
   test "JSON success output is one API data envelope and a trailing newline" do
     data = [%{"id" => 1, "name" => "One", "primary_directory" => "/tmp"}]

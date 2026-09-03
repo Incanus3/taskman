@@ -1,7 +1,9 @@
 defmodule Taskman.CLI.Commands.Config do
   @moduledoc "Offline handlers for protected Taskman CLI configuration."
 
-  alias Taskman.CLI.{Config, Invocation, Output, Result}
+  alias Taskman.CLI.Config
+  alias Taskman.CLI.Execution.{Invocation, Result}
+  alias Taskman.CLI.Presentation.Output
 
   @doc "Execute a configuration command without contacting the Taskman API."
   @spec execute(atom(), Invocation.t(), keyword() | map()) :: Result.t()

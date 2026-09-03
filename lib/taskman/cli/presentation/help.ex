@@ -1,7 +1,8 @@
-defmodule Taskman.CLI.Help do
+defmodule Taskman.CLI.Presentation.Help do
   @moduledoc "Render discoverable top-level, group, and leaf command help."
 
-  alias Taskman.CLI.{Command, Option, Registry}
+  alias Taskman.CLI.Registry
+  alias Taskman.CLI.Registry.{Command, Option}
 
   @doc "Render help for a command path, a group path, or the top level."
   @spec render([String.t()] | String.t()) :: String.t()

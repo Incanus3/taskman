@@ -1,7 +1,9 @@
-defmodule Taskman.CLI.CompletionsTest do
+defmodule Taskman.CLI.Presentation.CompletionsTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.{Command, Completions, Registry}
+  alias Taskman.CLI.Presentation.Completions
+  alias Taskman.CLI.Registry
+  alias Taskman.CLI.Registry.Command
 
   @lifecycle_values ~w(icebox pending in_progress in_review done will_not_do)
   @priority_values ~w(none low medium high urgent)

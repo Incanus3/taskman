@@ -1,7 +1,8 @@
-defmodule Taskman.CLI.HelpTest do
+defmodule Taskman.CLI.Presentation.HelpTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.{Help, Registry}
+  alias Taskman.CLI.Presentation.Help
+  alias Taskman.CLI.Registry
 
   test "top-level help discovers every command group and global option" do
     help = Help.render([])

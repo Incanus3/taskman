@@ -1,11 +1,14 @@
-defmodule Taskman.CLI.Runner do
+defmodule Taskman.CLI.Execution.Runner do
   @moduledoc "Dispatch parsed invocations while keeping IO at the CLI boundary."
 
-  alias Taskman.CLI.{Command, Completions, Config, Invocation, Onboarding, Output, Result}
+  alias Taskman.CLI.{Config, Onboarding}
   alias Taskman.CLI.Commands.Config, as: ConfigCommand
   alias Taskman.CLI.Commands.Lists
   alias Taskman.CLI.Commands.Projects
   alias Taskman.CLI.Commands.Tasks
+  alias Taskman.CLI.Execution.{Invocation, Result}
+  alias Taskman.CLI.Presentation.{Completions, Output}
+  alias Taskman.CLI.Registry.Command
   alias Taskman.CLI.Skill.Installer
 
   @doc "Run a parsed invocation and return a result value."

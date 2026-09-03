@@ -1,7 +1,8 @@
 defmodule Taskman.CLI.Skill.BundleTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.{Parser, Registry}
+  alias Taskman.CLI.Execution.Parser
+  alias Taskman.CLI.Registry
   alias Taskman.CLI.Skill.Bundle
 
   test "bundles a valid, registry-covered skill at compile time" do

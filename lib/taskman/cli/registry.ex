@@ -1,7 +1,7 @@
 defmodule Taskman.CLI.Registry do
   @moduledoc "The single declarative source of truth for the Taskman CLI."
 
-  alias Taskman.CLI.{Argument, Command, Option}
+  alias Taskman.CLI.Registry.{Argument, Command, Option}
 
   @statuses ~w(icebox pending in_progress in_review done will_not_do)
   @priorities ~w(none low medium high urgent)

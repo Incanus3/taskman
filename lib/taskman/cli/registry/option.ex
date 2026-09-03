@@ -1,4 +1,4 @@
-defmodule Taskman.CLI.Option do
+defmodule Taskman.CLI.Registry.Option do
   @moduledoc "Declarative metadata for a command or global option."
 
   @type t :: %__MODULE__{

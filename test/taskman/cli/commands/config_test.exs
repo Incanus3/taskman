@@ -76,12 +76,12 @@ defmodule Taskman.CLI.Commands.ConfigTest do
   end
 
   test "set-key accepts no positional value or api-key option" do
-    assert %Taskman.CLI.Result{status: 2, stderr: positional_error} =
+    assert %Taskman.CLI.Execution.Result{status: 2, stderr: positional_error} =
              Taskman.CLI.run(["config", "set-key", "tm_forbidden"])
 
     assert positional_error =~ "Expected 0 argument(s), got 1"
 
-    assert %Taskman.CLI.Result{status: 2, stderr: option_error} =
+    assert %Taskman.CLI.Execution.Result{status: 2, stderr: option_error} =
              Taskman.CLI.run(["config", "set-key", "--api-key", "tm_forbidden"])
 
     assert option_error =~ "Unknown option --api-key"

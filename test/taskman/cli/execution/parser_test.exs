@@ -1,7 +1,8 @@
-defmodule Taskman.CLI.ParserTest do
+defmodule Taskman.CLI.Execution.ParserTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.{Invocation, Parser, Registry}
+  alias Taskman.CLI.Execution.{Invocation, Parser}
+  alias Taskman.CLI.Registry
 
   test "registry keeps the declared command order" do
     assert Enum.map(Registry.commands(), & &1.path) == [

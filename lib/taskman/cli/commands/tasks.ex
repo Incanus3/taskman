@@ -1,7 +1,9 @@
 defmodule Taskman.CLI.Commands.Tasks do
   @moduledoc "HTTP-backed handlers for Task CLI commands."
 
-  alias Taskman.CLI.{Client, Invocation, Output, Result}
+  alias Taskman.CLI.Client
+  alias Taskman.CLI.Execution.{Invocation, Result}
+  alias Taskman.CLI.Presentation.Output
 
   @task_fields ~w(title description status priority due_at)a
 

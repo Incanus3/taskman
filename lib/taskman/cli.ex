@@ -1,7 +1,8 @@
 defmodule Taskman.CLI do
   @moduledoc "Offline-safe escript entry point for the Taskman command line."
 
-  alias Taskman.CLI.{Help, Parser, Result, Runner}
+  alias Taskman.CLI.Execution.{Parser, Result, Runner}
+  alias Taskman.CLI.Presentation.Help
 
   @version "0.2.0"
 

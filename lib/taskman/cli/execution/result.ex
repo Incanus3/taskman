@@ -1,4 +1,4 @@
-defmodule Taskman.CLI.Result do
+defmodule Taskman.CLI.Execution.Result do
   @moduledoc "A value returned by the CLI before IO is performed."
 
   @type t :: %__MODULE__{

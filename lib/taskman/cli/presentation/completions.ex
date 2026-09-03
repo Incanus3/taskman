@@ -1,4 +1,4 @@
-defmodule Taskman.CLI.Completions do
+defmodule Taskman.CLI.Presentation.Completions do
   @moduledoc "Generate offline Bash and Fish completion scripts from the CLI registry."
 
   alias Taskman.CLI.Registry

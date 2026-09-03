@@ -1,7 +1,9 @@
-defmodule Taskman.CLI.Parser do
+defmodule Taskman.CLI.Execution.Parser do
   @moduledoc "Parse command-line tokens against the declarative CLI registry."
 
-  alias Taskman.CLI.{Command, Invocation, Option, Registry}
+  alias Taskman.CLI.Execution.Invocation
+  alias Taskman.CLI.Registry
+  alias Taskman.CLI.Registry.{Command, Option}
 
   @type parse_result ::
           {:ok, Invocation.t()}

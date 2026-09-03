@@ -1,4 +1,4 @@
-defmodule Taskman.CLI.Output do
+defmodule Taskman.CLI.Presentation.Output do
   @moduledoc "Render one CLI result as readable text or an API-compatible JSON envelope."
 
   @project_fields [
@@ -170,10 +170,10 @@ defmodule Taskman.CLI.Output do
 
   defp resource({resource, _action}) when is_atom(resource), do: resource
   defp resource(:list), do: :projects
-  defp resource(%Taskman.CLI.Command{path: ["projects" | _rest]}), do: :projects
-  defp resource(%Taskman.CLI.Command{path: ["lists" | _rest]}), do: :lists
-  defp resource(%Taskman.CLI.Command{path: ["tasks" | _rest]}), do: :tasks
-  defp resource(%Taskman.CLI.Command{path: [resource | _rest]}), do: resource
+  defp resource(%Taskman.CLI.Registry.Command{path: ["projects" | _rest]}), do: :projects
+  defp resource(%Taskman.CLI.Registry.Command{path: ["lists" | _rest]}), do: :lists
+  defp resource(%Taskman.CLI.Registry.Command{path: ["tasks" | _rest]}), do: :tasks
+  defp resource(%Taskman.CLI.Registry.Command{path: [resource | _rest]}), do: resource
   defp resource(["projects" | _rest]), do: :projects
   defp resource(["lists" | _rest]), do: :lists
   defp resource(["tasks" | _rest]), do: :tasks
@@ -193,7 +193,10 @@ defmodule Taskman.CLI.Output do
   defp resource(_command), do: nil
 
   defp hierarchy_command?({:tasks, :hierarchy}), do: true
-  defp hierarchy_command?(%Taskman.CLI.Command{handler: {:tasks, :hierarchy}}), do: true
+
+  defp hierarchy_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :hierarchy}}),
+    do: true
+
   defp hierarchy_command?(["tasks", "hierarchy"]), do: true
   defp hierarchy_command?("tasks hierarchy"), do: true
   defp hierarchy_command?(_command), do: false

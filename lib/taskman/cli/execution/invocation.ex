@@ -1,7 +1,7 @@
-defmodule Taskman.CLI.Invocation do
+defmodule Taskman.CLI.Execution.Invocation do
   @moduledoc "A parsed command invocation ready for dispatch."
 
-  alias Taskman.CLI.Command
+  alias Taskman.CLI.Registry.Command
 
   @type t :: %__MODULE__{
           command: Command.t(),
