@@ -247,6 +247,60 @@ defmodule Taskman.CLI.ConfigTest do
   end
 
   @tag :tmp_dir
+  test "release leaves a replacement writer's lock intact after ownership validation", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+    target = config_path(root)
+    lock_path = target <> ".lock"
+    parent = self()
+    write_config(root, %{"api_key" => @api_key})
+
+    assert :ok =
+             Config.set_url("https://first-writer.example",
+               config_root: root,
+               after_lock_validation: fn ^lock_path ->
+                 File.rm_rf!(lock_path)
+
+                 replacement_task =
+                   Task.async(fn ->
+                     Config.set_key(@api_key,
+                       config_root: root,
+                       before_write: fn _path ->
+                         send(parent, :replacement_writer_holds_lock)
+                         assert_receive :finish_replacement_writer
+                         :ok
+                       end
+                     )
+                   end)
+
+                 send(parent, {:replacement_writer, replacement_task})
+                 assert_receive :replacement_writer_holds_lock
+                 :ok
+               end
+             )
+
+    assert_receive {:replacement_writer, replacement_task}
+
+    assert {:error, :invalid_configuration, message} =
+             Config.set_url("https://third-writer.example",
+               config_root: root,
+               lock_retry_limit: 0
+             )
+
+    assert message =~ "busy"
+    assert {:ok, %File.Stat{type: :directory}} = File.lstat(lock_path)
+
+    send(replacement_task.pid, :finish_replacement_writer)
+    assert :ok = Task.await(replacement_task)
+
+    assert {:ok, %{api_url: "https://first-writer.example", api_key: @api_key}} =
+             Config.resolve(%{}, config_root: root)
+
+    refute File.exists?(lock_path)
+  end
+
+  @tag :tmp_dir
   test "fails safely when atomic replacement cannot rename the sibling stage", %{tmp_dir: tmp_dir} do
     root = Path.join(tmp_dir, "xdg")
     target = config_path(root)

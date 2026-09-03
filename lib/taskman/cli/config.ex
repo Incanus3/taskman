@@ -377,7 +377,7 @@ defmodule Taskman.CLI.Config do
           fun.()
         after
           _ = before_release(lock_path, options)
-          _ = release_lock(lock_path, token)
+          _ = release_lock(lock_path, token, options)
         end
 
       {:error, message} ->
@@ -391,7 +391,7 @@ defmodule Taskman.CLI.Config do
         token = lock_token()
 
         with :ok <- File.chmod(lock_path, 0o700),
-             :ok <- File.write(Path.join(lock_path, "owner"), owner_marker(token), [:exclusive]) do
+             :ok <- File.write(owner_path(lock_path, token), owner_marker(token), [:exclusive]) do
           {:ok, token}
         else
           {:error, _reason} ->
@@ -427,29 +427,57 @@ defmodule Taskman.CLI.Config do
 
   defp owner_marker(token), do: @lock_marker <> ":" <> token
 
-  defp validate_owned_lock(lock_path, token) do
-    owner_path = Path.join(lock_path, "owner")
+  defp owner_path(lock_path, token), do: Path.join(lock_path, "owner-" <> token)
 
-    with {:ok, %File.Stat{type: :directory}} <- File.lstat(lock_path),
+  defp validate_owned_lock(lock_path, token) do
+    owner_path = owner_path(lock_path, token)
+
+    with {:ok, %File.Stat{type: :directory} = lock_stat} <- File.lstat(lock_path),
          {:ok, %File.Stat{type: :regular}} <- File.lstat(owner_path),
          {:ok, marker} <- File.read(owner_path),
          true <- marker == owner_marker(token),
          {:ok, entries} <- File.ls(lock_path),
-         true <- entries == ["owner"] do
+         true <- entries == [Path.basename(owner_path)] do
+      {:ok, lock_stat}
+    else
+      _other -> {:error, :unowned_lock}
+    end
+  end
+
+  defp release_lock(lock_path, token, options) do
+    with {:ok, lock_stat} <- validate_owned_lock(lock_path, token),
+         :ok <- after_lock_validation(lock_path, options),
+         :ok <- validate_lock_identity(lock_path, lock_stat),
+         :ok <- File.rm(owner_path(lock_path, token)),
+         :ok <- validate_lock_identity(lock_path, lock_stat),
+         :ok <- File.rmdir(lock_path) do
+      :ok
+    else
+      _other -> :ok
+    end
+  end
+
+  defp validate_lock_identity(lock_path, expected) do
+    with {:ok, %File.Stat{type: :directory} = current} <- File.lstat(lock_path),
+         true <- same_location?(expected, current) do
       :ok
     else
       _other -> {:error, :unowned_lock}
     end
   end
 
-  defp release_lock(lock_path, token) do
-    with :ok <- validate_owned_lock(lock_path, token),
-         :ok <- File.rm(Path.join(lock_path, "owner")),
-         :ok <- File.rmdir(lock_path) do
-      :ok
-    else
+  defp same_location?(left, right) do
+    left.inode == right.inode and left.major_device == right.major_device and
+      left.minor_device == right.minor_device
+  end
+
+  defp after_lock_validation(lock_path, options) do
+    case option(options, :after_lock_validation) do
+      hook when is_function(hook, 1) -> hook.(lock_path)
       _other -> :ok
     end
+  rescue
+    _error -> :ok
   end
 
   defp before_release(lock_path, options) do
