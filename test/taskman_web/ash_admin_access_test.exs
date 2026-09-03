@@ -34,6 +34,47 @@ defmodule TaskmanWeb.AshAdminAccessTest do
     assert has_element?(view, "a[href*='resource=User']")
     refute has_element?(view, "a[href*='resource=Token']")
     refute has_element?(view, "a[href*='resource=ApiKey']")
+    refute has_element?(view, "*", "Hashed Password")
+    refute has_element?(view, "*", "Email Change Confirmed At")
+    refute has_element?(view, "*", "Valid Api Keys")
+    refute has_element?(view, "button[phx-click='load'][phx-value-relationship='api_keys']")
+  end
+
+  test "forged admin protocol events cannot reach User details or relationship loads", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    target = user_fixture()
+    conn = log_in_user(conn, administrator)
+    inspection_path = "/admin/users/#{target.id}"
+
+    assert {:ok, view, _html} = live(conn, "/admin")
+
+    render_hook(view, "toggle_authorizing", %{})
+    render_hook(view, "clear_actor", %{})
+
+    assert {:error, {:live_redirect, %{to: ^inspection_path}}} =
+             render_patch(view, admin_read_path(target))
+  end
+
+  test "forged admin protocol events cannot preserve a revoked mounted actor", %{conn: conn} do
+    administrator = admin_fixture()
+    second_administrator = admin_fixture()
+    conn = log_in_user(conn, administrator)
+
+    assert {:ok, view, _html} = live(conn, "/admin")
+
+    assert {:ok, _disabled_administrator} =
+             Accounts.disable_user(second_administrator, administrator)
+
+    render_hook(view, "toggle_authorizing", %{})
+    render_hook(view, "clear_actor", %{})
+
+    assert {:error, {:redirect, %{status: 302, to: "/sign-in?return_to=%2Fadmin"}}} =
+             render_patch(
+               view,
+               "/admin?domain=Accounts&resource=User&action_type=read&action=admin_read"
+             )
   end
 
   test "the AshAdmin actor plug uses the scoped user and tolerates an absent user" do
@@ -55,5 +96,11 @@ defmodule TaskmanWeb.AshAdminAccessTest do
              )
 
     assert [actor: nil] == AshAdminActorPlug.actor_assigns(%Phoenix.LiveView.Socket{}, %{})
+  end
+
+  defp admin_read_path(user) do
+    primary_key = AshAdmin.Helpers.encode_primary_key(user)
+
+    "/admin?domain=Accounts&resource=User&action_type=read&action=admin_read&primary_key=#{primary_key}"
   end
 end

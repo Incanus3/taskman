@@ -73,9 +73,39 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     view = admin_action_view(conn, administrator, target, :destroy, :admin_delete)
 
     assert has_element?(view, "#form")
-    view |> form("#form") |> render_submit()
+    assert has_element?(view, "#form input[name='form[confirmation]']")
+
+    view
+    |> form("#form", %{"form" => %{}})
+    |> render_submit()
+
+    assert {:ok, %User{}} = read_user(administrator, target)
+
+    view
+    |> form("#form", %{"form" => %{"confirmation" => "no"}})
+    |> render_submit()
+
+    assert {:ok, %User{}} = read_user(administrator, target)
+
+    view
+    |> form("#form", %{"form" => %{"confirmation" => "DELETE"}})
+    |> render_submit()
 
     assert {:ok, nil} = read_user(administrator, target)
+  end
+
+  test "forged admin protocol events cannot execute a self-targeted delete", %{conn: conn} do
+    administrator = admin_fixture()
+    view = admin_action_view(conn, administrator, administrator, :destroy, :admin_delete)
+
+    render_hook(view, "toggle_authorizing", %{})
+    render_hook(view, "clear_actor", %{})
+
+    view
+    |> form("#form", %{"form" => %{"confirmation" => "DELETE"}})
+    |> render_submit()
+
+    assert {:ok, %User{}} = read_user(administrator, administrator)
   end
 
   test "the inspection view does not render password hashes or confirmation internals", %{
@@ -83,9 +113,20 @@ defmodule TaskmanWeb.AshAdminActionsTest do
   } do
     administrator = admin_fixture()
     target = user_fixture()
-    view = admin_action_view(conn, administrator, target, :read, :admin_read)
+    conn = log_in_user(conn, administrator)
+    inspection_path = "/admin/users/#{target.id}"
+
+    assert {:error, {:live_redirect, %{to: ^inspection_path}}} =
+             live(conn, admin_action_path(target, :read, :admin_read))
+
+    assert {:ok, view, _html} = live(conn, inspection_path)
 
     refute has_element?(view, "*", "fixture-password-hash")
+    refute has_element?(view, "*", "Hashed Password")
+    refute has_element?(view, "*", "Email Change Confirmed At")
+    refute has_element?(view, "*", "Api Keys")
+    refute has_element?(view, "*", "Valid Api Keys")
+    refute has_element?(view, "button[phx-click='load']")
 
     inspected_user = read_admin_user(administrator, target)
     assert %Ash.NotLoaded{} = inspected_user.hashed_password
@@ -97,9 +138,16 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     ordinary_user = user_fixture()
     administrator = admin_fixture()
     disabled_administrator = admin_fixture()
+    stale_administrator = admin_fixture()
 
     assert {:ok, disabled_administrator} =
              Accounts.disable_user(administrator, disabled_administrator)
+
+    assert {:ok, _disabled_stale_administrator} =
+             Accounts.disable_user(administrator, stale_administrator)
+
+    assert {:error, _reason} = read_user(stale_administrator, target)
+    assert {:error, _reason} = read_user_with_action(stale_administrator, target, :admin_read)
 
     for actor <- [ordinary_user, disabled_administrator] do
       assert {:error, _reason} = read_user(actor, target)
@@ -115,16 +163,26 @@ defmodule TaskmanWeb.AshAdminActionsTest do
              administrator
              |> Ash.Changeset.for_destroy(:admin_delete, %{})
              |> Ash.destroy(actor: administrator, authorize?: true, domain: Accounts)
+
+    delete_target = user_fixture()
+
+    assert {:error, _reason} =
+             delete_target
+             |> Ash.Changeset.for_destroy(:admin_delete, %{})
+             |> Ash.destroy(actor: administrator, authorize?: true, domain: Accounts)
   end
 
   defp admin_action_view(conn, administrator, user, action_type, action) do
+    assert {:ok, view, _html} =
+             live(log_in_user(conn, administrator), admin_action_path(user, action_type, action))
+
+    view
+  end
+
+  defp admin_action_path(user, action_type, action) do
     primary_key = AshAdmin.Helpers.encode_primary_key(user)
 
-    path =
-      "/admin?domain=Accounts&resource=User&action_type=#{action_type}&action=#{action}&primary_key=#{primary_key}"
-
-    assert {:ok, view, _html} = live(log_in_user(conn, administrator), path)
-    view
+    "/admin?domain=Accounts&resource=User&action_type=#{action_type}&action=#{action}&primary_key=#{primary_key}"
   end
 
   defp read_user!(administrator, user) do

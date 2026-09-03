@@ -65,6 +65,12 @@ defmodule TaskmanWeb.Router do
       live "/projects/:project_id/lists/:list_id/tasks/new", ProjectLive, :new_task
       live "/projects/:project_id/lists/:list_id/tasks/:task_id", ProjectLive, :show_task
     end
+
+    ash_authentication_live_session :admin_user_inspection,
+      on_mount: [{TaskmanWeb.LiveUserAuth, :admin_required}],
+      session: {TaskmanWeb.LiveUserAuth, :generate_session, []} do
+      live "/admin/users/:id", AdminUserLive, :show
+    end
   end
 
   scope "/" do

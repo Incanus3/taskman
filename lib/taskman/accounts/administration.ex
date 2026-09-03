@@ -37,4 +37,15 @@ defmodule Taskman.Accounts.Administration do
   @spec active_administrator?(User.t()) :: boolean()
   def active_administrator?(%User{status: :active, admin?: true}), do: true
   def active_administrator?(_user), do: false
+
+  @doc false
+  @spec persisted_active_administrator?(User.t() | term()) :: boolean()
+  def persisted_active_administrator?(%User{id: actor_id}) do
+    Repo.exists?(
+      from user in User,
+        where: user.id == ^actor_id and user.status == :active and user.admin? == true
+    )
+  end
+
+  def persisted_active_administrator?(_actor), do: false
 end

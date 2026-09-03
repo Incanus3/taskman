@@ -735,7 +735,7 @@ defmodule Taskman.Accounts do
   def delete_user(actor, user) when is_struct(actor, User) and is_struct(user, User) do
     result =
       user
-      |> Ash.Changeset.for_destroy(:admin_delete, %{})
+      |> Ash.Changeset.for_destroy(:admin_delete, %{confirmation: "DELETE"})
       |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
 
     case result do

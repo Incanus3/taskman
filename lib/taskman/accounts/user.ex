@@ -13,7 +13,9 @@ defmodule Taskman.Accounts.User do
     RequireActiveAdministrator
   }
 
+  alias Taskman.Accounts.Checks.PersistedActiveAdministrator
   alias Taskman.Accounts.ManualManageEmail
+  alias Taskman.Accounts.Preparations.RequireActiveAdministrator, as: RequireActiveAdminRead
   alias Taskman.Accounts.Senders.{SendConfirmation, SendInvitation, SendPasswordReset}
   alias Taskman.Accounts.User.Status
 
@@ -56,6 +58,8 @@ defmodule Taskman.Accounts.User do
       prepare build(
                 select: [:id, :email, :status, :admin?, :confirmed_at, :inserted_at, :updated_at]
               )
+
+      prepare RequireActiveAdminRead
     end
 
     create :create_pending_user do
@@ -277,6 +281,13 @@ defmodule Taskman.Accounts.User do
     destroy :admin_delete do
       public? false
       require_atomic? false
+
+      argument :confirmation, :string do
+        allow_nil? false
+        description "Type DELETE to permanently remove this account."
+      end
+
+      validate argument_equals(:confirmation, "DELETE")
       change {ProtectLastAdmin, mode: :admin_delete}
     end
 
@@ -469,12 +480,8 @@ defmodule Taskman.Accounts.User do
                    )
     end
 
-    bypass [
-      action([:read, :admin_read]),
-      actor_attribute_equals(:admin?, true),
-      actor_attribute_equals(:status, :active)
-    ] do
-      authorize_if always()
+    bypass action([:read, :admin_read]) do
+      authorize_if PersistedActiveAdministrator
     end
 
     bypass [

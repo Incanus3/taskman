@@ -13,6 +13,7 @@ defmodule TaskmanWeb.LiveUserAuth do
 
   alias Phoenix.LiveView.Socket
   alias Plug.Conn
+  alias Taskman.Accounts.Administration
   alias Taskman.Accounts.Token
 
   @public_paths [
@@ -44,7 +45,19 @@ defmodule TaskmanWeb.LiveUserAuth do
     token = session["user_token"]
 
     if active_admin_user?(user) and is_binary(token) do
-      {:cont, assign_authenticated(socket, user, token)}
+      {:cont,
+       socket
+       |> assign_authenticated(user, token)
+       |> Phoenix.LiveView.attach_hook(
+         :taskman_admin_event_security,
+         :handle_event,
+         &secure_admin_event/3
+       )
+       |> Phoenix.LiveView.attach_hook(
+         :taskman_admin_route_security,
+         :handle_params,
+         &secure_admin_route/3
+       )}
     else
       return_to = (session["return_to"] || session["request_path"] || "/") |> safe_return_path()
       {:halt, Phoenix.LiveView.redirect(socket, to: sign_in_path(return_to))}
@@ -142,6 +155,42 @@ defmodule TaskmanWeb.LiveUserAuth do
        do: true
 
   defp active_admin_user?(_), do: false
+
+  defp secure_admin_event(event, _params, socket)
+       when event in ["toggle_authorizing", "clear_actor"] do
+    {:halt, socket}
+  end
+
+  defp secure_admin_event(_event, _params, socket), do: {:cont, socket}
+
+  defp secure_admin_route(params, _url, socket) do
+    cond do
+      not Administration.persisted_active_administrator?(socket.assigns[:current_user]) ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: sign_in_path("/admin"))}
+
+      user_detail_request?(params) ->
+        {:halt,
+         Phoenix.LiveView.push_navigate(socket,
+           to: "/admin/users/#{params["primary_key"]}"
+         )}
+
+      true ->
+        {:cont, socket}
+    end
+  end
+
+  defp user_detail_request?(
+         %{
+           "domain" => "Accounts",
+           "resource" => "User",
+           "primary_key" => primary_key
+         } = params
+       )
+       when is_binary(primary_key) and primary_key != "" do
+    params["action_type"] in [nil, "read"]
+  end
+
+  defp user_detail_request?(_params), do: false
 
   defp assign_authenticated(socket, user, token) do
     socket
