@@ -49,4 +49,9 @@ defmodule TaskmanWeb.ConnCase do
 
     TaskmanWeb.AuthController.log_in_user(conn, user)
   end
+
+  @doc "Adds an explicit API-key bearer credential to a connection."
+  def put_api_key(conn, plaintext) when is_binary(plaintext) do
+    Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> plaintext)
+  end
 end

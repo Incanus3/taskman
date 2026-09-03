@@ -1,7 +1,24 @@
 defmodule TaskmanWeb.API.ProjectControllerTest do
   use TaskmanWeb.ConnCase, async: true
 
+  import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
+
+  alias Taskman.Accounts
+
+  @api_key_lifetime_seconds 365 * 86_400
+
+  setup %{conn: conn} do
+    user = user_fixture()
+
+    assert {:ok, %{plaintext: plaintext}} =
+             Accounts.create_api_key(user, %{
+               name: "Project tests",
+               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
+             })
+
+    {:ok, conn: put_api_key(conn, plaintext)}
+  end
 
   test "GET /api/v1/projects returns ordered project data", %{conn: conn} do
     first = project_fixture(%{name: "First"})
@@ -45,7 +62,7 @@ defmodule TaskmanWeb.API.ProjectControllerTest do
              conn |> get("/api/v1/projects/not-an-id") |> json_response(400)
 
     assert %{"error" => %{"code" => "not_found"}} =
-             build_conn() |> get("/api/v1/projects/999999999") |> json_response(404)
+             recycle(conn) |> get("/api/v1/projects/999999999") |> json_response(404)
   end
 
   test "malformed JSON requests use the invalid_request error envelope", %{conn: conn} do

@@ -14,10 +14,36 @@ defmodule Taskman.Accounts.ApiKey do
   actions do
     defaults [:read]
 
+    read :list_for_user do
+      filter expr(user_id == ^actor(:id))
+    end
+
+    read :get_for_user do
+      get? true
+      filter expr(user_id == ^actor(:id))
+    end
+
     create :create_for_bootstrap do
       primary? true
       public? false
       accept [:api_key_hash, :expires_at, :name, :user_id]
+    end
+
+    create :create_for_user do
+      public? false
+      accept [:expires_at, :name, :user_id]
+
+      change {
+        AshAuthentication.Strategy.ApiKey.GenerateApiKey,
+        prefix: :tm, hash: :api_key_hash
+      }
+    end
+
+    update :revoke do
+      public? false
+      require_atomic? false
+      accept []
+      change set_attribute(:revoked_at, &DateTime.utc_now/0)
     end
   end
 
@@ -66,6 +92,37 @@ defmodule Taskman.Accounts.ApiKey do
       actor_attribute_equals(:accounts_bootstrap?, true)
     ] do
       authorize_if always()
+    end
+
+    bypass [
+      action(:create_for_user),
+      actor_attribute_equals(:status, :active),
+      expr(not is_nil(^actor(:confirmed_at)))
+    ] do
+      authorize_if expr(user_id == ^actor(:id))
+    end
+
+    bypass [
+      action([:list_for_user, :get_for_user]),
+      actor_attribute_equals(:status, :active),
+      expr(not is_nil(^actor(:confirmed_at)))
+    ] do
+      authorize_if expr(user_id == ^actor(:id))
+    end
+
+    bypass [
+      action(:revoke),
+      actor_attribute_equals(:status, :active),
+      expr(not is_nil(^actor(:confirmed_at)))
+    ] do
+      authorize_if expr(user_id == ^actor(:id))
+    end
+
+    policy [
+      action([:create_for_user, :list_for_user, :get_for_user, :revoke]),
+      actor_attribute_equals(:confirmed_at, nil)
+    ] do
+      forbid_if always()
     end
 
     policy always() do

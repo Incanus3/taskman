@@ -189,6 +189,7 @@ defmodule Taskman.Accounts.User do
         sensitive? true
       end
 
+      prepare build(filter: [status: :active])
       prepare AshAuthentication.Strategy.ApiKey.SignInPreparation
     end
   end
@@ -227,6 +228,10 @@ defmodule Taskman.Accounts.User do
 
   relationships do
     has_many :api_keys, ApiKey
+
+    has_many :valid_api_keys, ApiKey do
+      filter expr(is_nil(revoked_at) and expires_at > now())
+    end
   end
 
   identities do
@@ -269,7 +274,7 @@ defmodule Taskman.Accounts.User do
       end
 
       api_key do
-        api_key_relationship :api_keys
+        api_key_relationship :valid_api_keys
       end
     end
 

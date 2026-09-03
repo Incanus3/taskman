@@ -29,12 +29,18 @@ defmodule Taskman.CLI.Client do
     api_url =
       option(runtime_options, :api_url) || option(request_options, :api_url) || @default_api_url
 
+    api_key = option(runtime_options, :api_key) || option(request_options, :api_key)
     req_options = runtime_options |> option(:req_options, []) |> normalize_options()
-    request_options = Keyword.delete(request_options, :api_url)
+
+    request_options =
+      request_options
+      |> Keyword.delete(:api_url)
+      |> Keyword.delete(:api_key)
 
     try do
       with :ok <- ensure_req_started(),
-           {:ok, response} <- perform_request(method, path, request_options, api_url, req_options) do
+           {:ok, response} <-
+             perform_request(method, path, request_options, api_url, req_options, api_key) do
         classify_response(response, api_url, success_shape)
       else
         {:error, reason} -> classify_transport_error(reason, api_url)
@@ -45,7 +51,7 @@ defmodule Taskman.CLI.Client do
     end
   end
 
-  defp perform_request(method, path, request_options, api_url, req_options) do
+  defp perform_request(method, path, request_options, api_url, req_options, api_key) do
     req =
       Req.new([base_url: api_url, receive_timeout: 15_000, retry: false] ++ req_options)
 
@@ -53,9 +59,17 @@ defmodule Taskman.CLI.Client do
       [method: method, url: path]
       |> maybe_put(request_options, :json, [:json, :json_body])
       |> maybe_put(request_options, :params, [:params, :query])
+      |> maybe_put_bearer_header(api_key)
 
     Req.request(req, options)
   end
+
+  defp maybe_put_bearer_header(options, api_key) when is_binary(api_key) and api_key != "" do
+    headers = Keyword.get(options, :headers, [])
+    Keyword.put(options, :headers, [{"authorization", "Bearer " <> api_key} | headers])
+  end
+
+  defp maybe_put_bearer_header(options, _api_key), do: options
 
   defp maybe_put(options, request_options, key, aliases) do
     case Enum.find(aliases, &Keyword.has_key?(request_options, &1)) do
@@ -345,6 +359,7 @@ defmodule Taskman.CLI.Client do
       {key, value}, acc when is_atom(key) -> Keyword.put(acc, key, value)
       {"api_url", value}, acc -> Keyword.put(acc, :api_url, value)
       {"req_options", value}, acc -> Keyword.put(acc, :req_options, value)
+      {"api_key", value}, acc -> Keyword.put(acc, :api_key, value)
       {"json", value}, acc -> Keyword.put(acc, :json, value)
       {"json_body", value}, acc -> Keyword.put(acc, :json_body, value)
       {"params", value}, acc -> Keyword.put(acc, :params, value)

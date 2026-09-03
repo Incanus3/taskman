@@ -21,6 +21,24 @@ defmodule Taskman.CLI.ClientTest do
              )
   end
 
+  test "adds a bearer credential without putting it in the URL or result" do
+    credential = "tm_test_token_signature"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> credential]
+      assert conn.query_string == ""
+      refute conn.request_path =~ credential
+
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [],
+               api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
   test "maps public API client errors to exit status 3" do
     for {status, code} <- [
           {400, "invalid_request"},

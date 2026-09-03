@@ -1,8 +1,25 @@
 defmodule TaskmanWeb.API.ListControllerTest do
   use TaskmanWeb.ConnCase, async: true
 
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
+
+  alias Taskman.Accounts
+
+  @api_key_lifetime_seconds 365 * 86_400
+
+  setup %{conn: conn} do
+    user = user_fixture()
+
+    assert {:ok, %{plaintext: plaintext}} =
+             Accounts.create_api_key(user, %{
+               name: "List tests",
+               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
+             })
+
+    {:ok, conn: put_api_key(conn, plaintext)}
+  end
 
   test "GET lists returns parent ids and root-to-node paths", %{conn: conn} do
     project = project_fixture(%{})
@@ -197,12 +214,12 @@ defmodule TaskmanWeb.API.ListControllerTest do
     project = project_fixture(%{})
 
     assert %{"error" => %{"code" => "invalid_request"}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/lists/not-an-id")
              |> json_response(400)
 
     assert %{"error" => %{"code" => "invalid_request"}} =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/lists/0", %{"list" => %{"name" => "Nope"}})
              |> json_response(400)
   end

@@ -3,6 +3,12 @@ defmodule TaskmanWeb.API.FallbackController do
 
   alias TaskmanWeb.API.Representation
 
+  def call(conn, {:error, :authentication_required}),
+    do: error(conn, 401, "unauthorized", "Authentication required")
+
+  def call(conn, {:error, :forbidden}),
+    do: error(conn, 403, "forbidden", "Forbidden")
+
   def call(conn, {:error, :not_found}),
     do: error(conn, 404, "not_found", "Resource not found")
 

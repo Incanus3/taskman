@@ -6,7 +6,20 @@ defmodule Taskman.CLI.EndToEndTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  test "creates and inspects a Project through the loopback API" do
+  setup do
+    user = user_fixture()
+    expires_at = DateTime.add(DateTime.utc_now(), 365 * 86_400, :second)
+
+    assert {:ok, %{plaintext: api_key}} =
+             Taskman.Accounts.create_api_key(user, %{
+               name: "CLI end-to-end tests",
+               expires_at: expires_at
+             })
+
+    {:ok, api_key: api_key}
+  end
+
+  test "creates and inspects a Project through the loopback API", %{api_key: api_key} do
     server =
       start_supervised!(
         {Bandit,
@@ -17,17 +30,20 @@ defmodule Taskman.CLI.EndToEndTest do
     api_url = "http://127.0.0.1:#{port}"
 
     create =
-      Taskman.CLI.run([
-        "projects",
-        "create",
-        "--name",
-        "HTTP smoke",
-        "--directory",
-        File.cwd!(),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "projects",
+          "create",
+          "--name",
+          "HTTP smoke",
+          "--directory",
+          File.cwd!(),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert create.status == 0
     assert create.stderr == ""
@@ -44,14 +60,17 @@ defmodule Taskman.CLI.EndToEndTest do
     assert directory == File.cwd!()
 
     show =
-      Taskman.CLI.run([
-        "projects",
-        "show",
-        Integer.to_string(id),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "projects",
+          "show",
+          Integer.to_string(id),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert show.status == 0
     assert show.stderr == ""
@@ -66,7 +85,8 @@ defmodule Taskman.CLI.EndToEndTest do
            }
   end
 
-  test "updates Task parentage and inspects hierarchy through the loopback API" do
+  test "updates Task parentage and inspects hierarchy through the loopback API",
+       %{api_key: api_key} do
     server =
       start_supervised!(
         {Bandit,
@@ -77,65 +97,77 @@ defmodule Taskman.CLI.EndToEndTest do
     api_url = "http://127.0.0.1:#{port}"
 
     project =
-      Taskman.CLI.run([
-        "projects",
-        "create",
-        "--name",
-        "Hierarchy smoke",
-        "--directory",
-        File.cwd!(),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "projects",
+          "create",
+          "--name",
+          "Hierarchy smoke",
+          "--directory",
+          File.cwd!(),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert %{"data" => %{"id" => project_id}} = Jason.decode!(project.stdout)
 
     parent =
-      Taskman.CLI.run([
-        "tasks",
-        "create",
-        "--project",
-        Integer.to_string(project_id),
-        "--title",
-        "Parent",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "create",
+          "--project",
+          Integer.to_string(project_id),
+          "--title",
+          "Parent",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert %{"data" => %{"id" => parent_id, "parent_task_id" => nil}} =
              Jason.decode!(parent.stdout)
 
     child =
-      Taskman.CLI.run([
-        "tasks",
-        "create",
-        "--project",
-        Integer.to_string(project_id),
-        "--title",
-        "Child",
-        "--parent",
-        Integer.to_string(parent_id),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "create",
+          "--project",
+          Integer.to_string(project_id),
+          "--title",
+          "Child",
+          "--parent",
+          Integer.to_string(parent_id),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert %{"data" => %{"id" => child_id, "parent_task_id" => ^parent_id}} =
              Jason.decode!(child.stdout)
 
     hierarchy =
-      Taskman.CLI.run([
-        "tasks",
-        "hierarchy",
-        "--project",
-        Integer.to_string(project_id),
-        Integer.to_string(child_id),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "hierarchy",
+          "--project",
+          Integer.to_string(project_id),
+          Integer.to_string(child_id),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert hierarchy.status == 0
 
@@ -150,22 +182,26 @@ defmodule Taskman.CLI.EndToEndTest do
            } = Jason.decode!(hierarchy.stdout)
 
     clear_parent =
-      Taskman.CLI.run([
-        "tasks",
-        "update",
-        "--project",
-        Integer.to_string(project_id),
-        Integer.to_string(child_id),
-        "--no-parent",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "update",
+          "--project",
+          Integer.to_string(project_id),
+          Integer.to_string(child_id),
+          "--no-parent",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert %{"data" => %{"parent_task_id" => nil}} = Jason.decode!(clear_parent.stdout)
   end
 
-  test "CLI writes refresh connected Project views through the loopback API", %{conn: conn} do
+  test "CLI writes refresh connected Project views through the loopback API",
+       %{conn: conn, api_key: api_key} do
     server =
       start_supervised!(
         {Bandit,
@@ -182,17 +218,20 @@ defmodule Taskman.CLI.EndToEndTest do
     {:ok, project_view, _html} = live(conn, project_path)
 
     project_create =
-      Taskman.CLI.run([
-        "projects",
-        "create",
-        "--name",
-        "CLI Project",
-        "--directory",
-        File.cwd!(),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "projects",
+          "create",
+          "--name",
+          "CLI Project",
+          "--directory",
+          File.cwd!(),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert project_create.status == 0
     assert project_create.stderr == ""
@@ -206,17 +245,20 @@ defmodule Taskman.CLI.EndToEndTest do
     refute_patched(project_view, project_path)
 
     list_create =
-      Taskman.CLI.run([
-        "lists",
-        "create",
-        "--project",
-        Integer.to_string(project.id),
-        "--name",
-        "CLI List",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "lists",
+          "create",
+          "--project",
+          Integer.to_string(project.id),
+          "--name",
+          "CLI List",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert list_create.status == 0
     assert list_create.stderr == ""
@@ -240,18 +282,21 @@ defmodule Taskman.CLI.EndToEndTest do
     refute_patched(project_view, project_path)
 
     list_rename =
-      Taskman.CLI.run([
-        "lists",
-        "rename",
-        "--project",
-        Integer.to_string(project.id),
-        Integer.to_string(list_id),
-        "--name",
-        "CLI Renamed List",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "lists",
+          "rename",
+          "--project",
+          Integer.to_string(project.id),
+          Integer.to_string(list_id),
+          "--name",
+          "CLI Renamed List",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert list_rename.status == 0
     assert list_rename.stderr == ""
@@ -268,19 +313,22 @@ defmodule Taskman.CLI.EndToEndTest do
     {:ok, list_view, _html} = live(conn, list_path)
 
     task_create =
-      Taskman.CLI.run([
-        "tasks",
-        "create",
-        "--project",
-        Integer.to_string(project.id),
-        "--list",
-        Integer.to_string(list_id),
-        "--title",
-        "CLI Task",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "create",
+          "--project",
+          Integer.to_string(project.id),
+          "--list",
+          Integer.to_string(list_id),
+          "--title",
+          "CLI Task",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert task_create.status == 0
     assert task_create.stderr == ""
@@ -305,18 +353,21 @@ defmodule Taskman.CLI.EndToEndTest do
     {:ok, detail, _html} = live(conn, detail_path)
 
     task_update =
-      Taskman.CLI.run([
-        "tasks",
-        "update",
-        "--project",
-        Integer.to_string(project.id),
-        Integer.to_string(task_id),
-        "--title",
-        "CLI Updated Task",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "update",
+          "--project",
+          Integer.to_string(project.id),
+          Integer.to_string(task_id),
+          "--title",
+          "CLI Updated Task",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert task_update.status == 0
     assert task_update.stderr == ""
@@ -331,18 +382,21 @@ defmodule Taskman.CLI.EndToEndTest do
     refute_patched(detail, detail_path)
 
     parent_change =
-      Taskman.CLI.run([
-        "tasks",
-        "update",
-        "--project",
-        Integer.to_string(project.id),
-        Integer.to_string(task_id),
-        "--parent",
-        Integer.to_string(parent.id),
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "update",
+          "--project",
+          Integer.to_string(project.id),
+          Integer.to_string(task_id),
+          "--parent",
+          Integer.to_string(parent.id),
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert parent_change.status == 0
     assert parent_change.stderr == ""
@@ -361,17 +415,20 @@ defmodule Taskman.CLI.EndToEndTest do
     refute_patched(detail, detail_path)
 
     task_move =
-      Taskman.CLI.run([
-        "tasks",
-        "move",
-        "--project",
-        Integer.to_string(project.id),
-        Integer.to_string(task_id),
-        "--to-project-root",
-        "--api-url",
-        api_url,
-        "--json"
-      ])
+      cli_run(
+        [
+          "tasks",
+          "move",
+          "--project",
+          Integer.to_string(project.id),
+          Integer.to_string(task_id),
+          "--to-project-root",
+          "--api-url",
+          api_url,
+          "--json"
+        ],
+        api_key
+      )
 
     assert task_move.status == 0
     assert task_move.stderr == ""
@@ -396,4 +453,6 @@ defmodule Taskman.CLI.EndToEndTest do
   end
 
   defp sync_view(view), do: _ = :sys.get_state(view.pid)
+
+  defp cli_run(args, api_key), do: Taskman.CLI.run(args, api_key: api_key)
 end

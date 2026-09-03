@@ -17,6 +17,7 @@ defmodule TaskmanWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug TaskmanWeb.Plugs.ApiAuthentication
   end
 
   scope "/", TaskmanWeb do

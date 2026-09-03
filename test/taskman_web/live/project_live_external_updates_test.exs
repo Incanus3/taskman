@@ -8,18 +8,31 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
   import Taskman.TasksFixtures
 
   setup %{conn: conn} do
-    {:ok, conn: log_in_user(conn, user_fixture())}
+    user = user_fixture()
+
+    assert {:ok, %{plaintext: api_key}} =
+             Taskman.Accounts.create_api_key(user, %{
+               name: "Live update tests",
+               expires_at: DateTime.add(DateTime.utc_now(), 365 * 86_400, :second)
+             })
+
+    {:ok, conn: log_in_user(conn, user), api_key: api_key}
   end
 
   test "controller Project and List writes refresh connected navigation without navigation", %{
-    conn: conn
+    conn: conn,
+    api_key: api_key
   } do
     {:ok, view, _html} = live(conn, ~p"/")
 
     project_response =
-      post_request("/api/v1/projects", %{
-        "project" => %{"name" => "Controller Project", "primary_directory" => File.cwd!()}
-      })
+      post_request(
+        "/api/v1/projects",
+        %{
+          "project" => %{"name" => "Controller Project", "primary_directory" => File.cwd!()}
+        },
+        api_key
+      )
 
     assert %{"data" => %{"id" => project_id, "name" => "Controller Project"}} =
              json_response(project_response, 201)
@@ -32,9 +45,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     {:ok, view, _html} = live(conn, project_path)
 
     list_response =
-      post_request("/api/v1/projects/#{project_id}/lists", %{
-        "list" => %{"name" => "Controller List"}
-      })
+      post_request(
+        "/api/v1/projects/#{project_id}/lists",
+        %{"list" => %{"name" => "Controller List"}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -52,9 +67,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     refute_patched(view, project_path)
 
     rename_response =
-      patch_request("/api/v1/projects/#{project_id}/lists/#{list_id}", %{
-        "list" => %{"name" => "Renamed by controller"}
-      })
+      patch_request(
+        "/api/v1/projects/#{project_id}/lists/#{list_id}",
+        %{"list" => %{"name" => "Renamed by controller"}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -72,7 +89,8 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
 
   test "controller Task writes refresh a selected detail, hierarchy, and List membership without navigation",
        %{
-         conn: conn
+         conn: conn,
+         api_key: api_key
        } do
     project = project_fixture(%{})
     planning = list_fixture(project, %{name: "Planning"})
@@ -83,9 +101,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     {:ok, view, _html} = live(conn, list_path)
 
     create_response =
-      post_request("/api/v1/projects/#{project.id}/tasks", %{
-        "task" => %{"title" => "Created by controller", "list_id" => planning.id}
-      })
+      post_request(
+        "/api/v1/projects/#{project.id}/tasks",
+        %{"task" => %{"title" => "Created by controller", "list_id" => planning.id}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -110,9 +130,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     {:ok, detail, _html} = live(conn, detail_path)
 
     update_response =
-      patch_request("/api/v1/projects/#{project.id}/tasks/#{task_id}", %{
-        "task" => %{"title" => "Updated by controller"}
-      })
+      patch_request(
+        "/api/v1/projects/#{project.id}/tasks/#{task_id}",
+        %{"task" => %{"title" => "Updated by controller"}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -130,9 +152,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     refute_patched(detail, detail_path)
 
     parent_response =
-      patch_request("/api/v1/projects/#{project.id}/tasks/#{task_id}", %{
-        "task" => %{"parent_task_id" => parent.id}
-      })
+      patch_request(
+        "/api/v1/projects/#{project.id}/tasks/#{task_id}",
+        %{"task" => %{"parent_task_id" => parent.id}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -152,9 +176,11 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     refute_patched(detail, detail_path)
 
     move_response =
-      post_request("/api/v1/projects/#{project.id}/tasks/#{task_id}/move", %{
-        "destination" => %{"list_id" => archive.id}
-      })
+      post_request(
+        "/api/v1/projects/#{project.id}/tasks/#{task_id}/move",
+        %{"destination" => %{"list_id" => archive.id}},
+        api_key
+      )
 
     assert %{
              "data" => %{
@@ -177,13 +203,13 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
     refute_patched(detail, detail_path)
   end
 
-  defp post_request(path, params) do
-    Task.async(fn -> build_conn() |> post(path, params) end)
+  defp post_request(path, params, api_key) do
+    Task.async(fn -> build_conn() |> put_api_key(api_key) |> post(path, params) end)
     |> Task.await()
   end
 
-  defp patch_request(path, params) do
-    Task.async(fn -> build_conn() |> patch(path, params) end)
+  defp patch_request(path, params, api_key) do
+    Task.async(fn -> build_conn() |> put_api_key(api_key) |> patch(path, params) end)
     |> Task.await()
   end
 
