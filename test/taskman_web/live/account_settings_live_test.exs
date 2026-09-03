@@ -22,14 +22,15 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
     assert has_element?(view, "#delete-account-form")
   end
 
-  test "settings requests an email change without replacing the current email", %{conn: conn} do
+  test "settings retains the current email and shows a pending email change", %{conn: conn} do
     {user, conn} = password_user_conn(conn)
     {:ok, view, _html} = live(conn, "/account/settings")
+    pending_email = "changed-#{System.unique_integer([:positive])}@example.com"
 
     view
     |> form("#email-change-form", %{
       "email_change" => %{
-        "email" => "changed-#{System.unique_integer([:positive])}@example.com",
+        "email" => pending_email,
         "current_password" => "password1"
       }
     })
@@ -37,19 +38,61 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
 
     assert %User{} = reloaded_user = Repo.get(User, user.id)
     assert to_string(reloaded_user.email) == to_string(user.email)
+    assert has_element?(view, "#current-email-address")
+    assert has_element?(view, "#pending-email-change")
+    assert text_at(view, "#current-email-address") == to_string(user.email)
+    assert text_at(view, "#pending-email-change") == "Pending confirmation: #{pending_email}"
+    assert [""] = values_at(view, "#email-change-form input[name='email_change[email]']", "value")
   end
 
-  test "settings creates, displays once, and revokes an API key", %{conn: conn} do
+  test "settings replaces the displayed plaintext when a second API key is created", %{conn: conn} do
+    {_user, conn} = password_user_conn(conn)
+    {:ok, view, _html} = live(conn, "/account/settings")
+
+    assert ["365"] =
+             values_at(view, "#api-key-form input[name='api_key[expires_in_days]']", "value")
+
+    view
+    |> form("#api-key-form", %{"api_key" => %{"name" => "First"}})
+    |> render_submit()
+
+    first_plaintext = api_key_plaintext(view)
+
+    view
+    |> form("#api-key-form", %{"api_key" => %{"name" => "Second"}})
+    |> render_submit()
+
+    second_plaintext = api_key_plaintext(view)
+
+    refute second_plaintext == first_plaintext
+    assert [^second_plaintext] = values_at(view, "#api-key-plaintext-value", "value")
+    assert [^second_plaintext] = values_at(view, "#api-key-copy", "data-copy-value")
+  end
+
+  test "settings creates API keys with custom expiry, rejects invalid expiry, displays once, and revokes",
+       %{
+         conn: conn
+       } do
     {user, conn} = password_user_conn(conn)
     {:ok, view, _html} = live(conn, "/account/settings")
 
     view
-    |> form("#api-key-form", %{"api_key" => %{"name" => "Automation"}})
+    |> form("#api-key-form", %{
+      "api_key" => %{"name" => "Automation", "expires_in_days" => "14"}
+    })
     |> render_submit()
 
     assert has_element?(view, "#api-key-plaintext")
     assert {:ok, [%ApiKey{name: "Automation"} = api_key]} = Accounts.list_api_keys(user)
-    assert DateTime.diff(api_key.expires_at, DateTime.utc_now(), :day) in 364..365
+    assert DateTime.diff(api_key.expires_at, DateTime.utc_now(), :day) in 13..14
+
+    view
+    |> form("#api-key-form", %{
+      "api_key" => %{"name" => "Invalid", "expires_in_days" => "366"}
+    })
+    |> render_submit()
+
+    assert {:ok, [_]} = Accounts.list_api_keys(user)
 
     {:ok, view, _html} = live(conn, "/account/settings")
     refute has_element?(view, "#api-key-plaintext")
@@ -81,6 +124,40 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
     assert {:error, :invalid_token} = Token.valid_for_purpose?(peer_token, "user")
   end
 
+  test "settings revokes every other browser session without revoking the acting session", %{
+    conn: conn
+  } do
+    user = user_fixture()
+    conn = log_in_user(conn, user)
+    acting_token = Plug.Conn.get_session(conn, :user_token)
+    peer = log_in_user(build_conn(), user)
+    peer_token = Plug.Conn.get_session(peer, :user_token)
+
+    {:ok, view, _html} = live(conn, "/account/settings")
+
+    view
+    |> element("#revoke-other-sessions")
+    |> render_click()
+
+    assert :ok = Token.valid_for_purpose?(acting_token, "user")
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(peer_token, "user")
+  end
+
+  test "settings excludes a session at its expiration boundary", %{conn: conn} do
+    user = user_fixture()
+    conn = log_in_user(conn, user)
+    token = Plug.Conn.get_session(conn, :user_token)
+    {:ok, %{"jti" => jti}} = Jwt.peek(token)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Token
+    |> Repo.get!(jti)
+    |> Ecto.Changeset.change(expires_at: now)
+    |> Repo.update!()
+
+    assert {:ok, []} = Accounts.list_sessions(user)
+  end
+
   test "settings requires destructive confirmation and deletes a password-confirmed account", %{
     conn: conn
   } do
@@ -104,6 +181,44 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
     assert is_nil(Repo.get(User, user.id))
     assert {:error, :invalid_token} = Token.valid_for_purpose?(token, "user")
     assert_receive %Phoenix.Socket.Broadcast{topic: ^socket, event: "disconnect"}
+    refute_receive %Phoenix.Socket.Broadcast{topic: ^socket, event: "disconnect"}
+  end
+
+  test "settings controllers reject incorrect passwords and destructive confirmation", %{
+    conn: conn
+  } do
+    _remaining_administrator = password_user()
+    user = password_user()
+    conn = log_in_user(conn, user)
+    token = Plug.Conn.get_session(conn, :user_token)
+
+    failed_password_change =
+      post(conn, "/account/settings/password", %{
+        "password_change" => %{
+          "current_password" => "wrong-password",
+          "password" => "replacement-password",
+          "password_confirmation" => "replacement-password"
+        }
+      })
+
+    assert redirected_to(failed_password_change) == "/account/settings"
+    assert :ok = Token.valid_for_purpose?(token, "user")
+
+    failed_confirmation =
+      post(conn, "/account/settings/delete", %{
+        "delete_account" => %{"current_password" => "password1", "confirmation" => "DELETE ME"}
+      })
+
+    assert redirected_to(failed_confirmation) == "/account/settings"
+    assert %User{} = Repo.get(User, user.id)
+
+    failed_deletion =
+      post(conn, "/account/settings/delete", %{
+        "delete_account" => %{"current_password" => "wrong-password", "confirmation" => "DELETE"}
+      })
+
+    assert redirected_to(failed_deletion) == "/account/settings"
+    assert %User{} = Repo.get(User, user.id)
   end
 
   defp password_user_conn(conn) do
@@ -122,5 +237,27 @@ defmodule TaskmanWeb.Live.AccountSettingsLiveTest do
       })
 
     user
+  end
+
+  defp api_key_plaintext(view) do
+    [plaintext] = values_at(view, "#api-key-plaintext-value", "value")
+    plaintext
+  end
+
+  defp text_at(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  defp values_at(view, selector, attribute) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.attribute(attribute)
   end
 end

@@ -138,15 +138,27 @@ defmodule Taskman.Accounts do
     end
   end
 
-  @spec list_sessions(User.t()) :: {:ok, [map()]} | {:error, term()}
-  def list_sessions(actor) do
+  @spec account_settings_state(User.t()) ::
+          {:ok, %{user: User.t(), pending_email: String.t() | nil}} | {:error, term()}
+  def account_settings_state(actor) do
+    with {:ok, actor} <- current_api_key_actor(actor) do
+      {:ok, %{user: actor, pending_email: pending_email_change(actor)}}
+    end
+  end
+
+  @spec list_sessions(User.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_sessions(actor, opts \\ [])
+
+  def list_sessions(actor, opts) when is_list(opts) do
     with {:ok, actor} <- current_api_key_actor(actor) do
       subject = AshAuthentication.user_to_subject(actor)
+      now = Keyword.get(opts, :now, DateTime.utc_now())
 
       sessions =
         Repo.all(
           from token in Token,
-            where: token.subject == ^subject and token.purpose == "user",
+            where:
+              token.subject == ^subject and token.purpose == "user" and token.expires_at > ^now,
             order_by: [desc: token.created_at, desc: token.jti]
         )
         |> Enum.map(fn token ->
@@ -156,6 +168,8 @@ defmodule Taskman.Accounts do
       {:ok, sessions}
     end
   end
+
+  def list_sessions(_actor, _opts), do: {:error, :invalid_input}
 
   @spec revoke_session(User.t(), String.t()) :: :ok | {:error, term()}
   def revoke_session(actor, jti) when is_binary(jti) do
@@ -395,13 +409,23 @@ defmodule Taskman.Accounts do
     )
   end
 
-  defp broadcast_session_topics(topics) do
-    Enum.reduce_while(topics, :ok, fn topic, :ok ->
-      case Token.broadcast_disconnect(topic) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+  defp pending_email_change(actor) do
+    subject = AshAuthentication.user_to_subject(actor)
+    now = DateTime.utc_now()
+
+    Repo.one(
+      from token in Token,
+        where:
+          token.subject == ^subject and token.purpose == "email_change" and
+            token.expires_at > ^now,
+        order_by: [desc: token.created_at],
+        limit: 1,
+        select: token.extra_data
+    )
+    |> case do
+      %{"email" => email} when is_binary(email) -> email
+      _ -> nil
+    end
   end
 
   defp replace_acting_browser_session(user, acting_token) do
@@ -721,16 +745,15 @@ defmodule Taskman.Accounts do
   @spec delete_own_account(User.t(), String.t()) :: :ok | {:error, term()}
   def delete_own_account(actor, current_password)
       when is_struct(actor, User) and is_binary(current_password) do
-    with {:ok, topics} <- Token.browser_session_topics(actor),
-         result <-
-           actor
-           |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
-           |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__) do
-      case result do
-        :ok -> broadcast_session_topics(topics)
-        {:ok, _user} -> broadcast_session_topics(topics)
-        {:error, _reason} = error -> error
-      end
+    result =
+      actor
+      |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
+      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
+
+    case result do
+      :ok -> :ok
+      {:ok, _user} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 

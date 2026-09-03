@@ -16,7 +16,14 @@ defmodule Taskman.Accounts.Changes.GuardTokenIssuance do
           with %User{} = user <-
                  Repo.one(from user in User, where: user.id == ^user_id, lock: "FOR UPDATE"),
                true <- eligible_for_token?(user, changeset) do
-            changeset
+            if password_credential_current?(changeset, user) do
+              changeset
+            else
+              # The password strategy expects token storage to succeed after it has verified a
+              # password. A stale verification is stored as a non-authenticating record instead
+              # of issuing a browser-session token.
+              Ash.Changeset.force_change_attribute(changeset, :purpose, "revocation")
+            end
           else
             _ ->
               Ash.Changeset.add_error(changeset, field: :token, message: "cannot issue a token")
@@ -47,6 +54,18 @@ defmodule Taskman.Accounts.Changes.GuardTokenIssuance do
         {:ok, claims} -> not Map.has_key?(claims, "act")
         _ -> true
       end
+  end
+
+  defp password_credential_current?(changeset, %User{} = current_user) do
+    case {browser_session_token?(changeset),
+          get_in(changeset.context, [:ash_authentication, :user])} do
+      {true, %User{hashed_password: issued_password_hash}}
+      when is_binary(issued_password_hash) and is_binary(current_user.hashed_password) ->
+        issued_password_hash == current_user.hashed_password
+
+      _ ->
+        true
+    end
   end
 
   defp setup_token?(changeset) do

@@ -14,11 +14,14 @@ defmodule TaskmanWeb.AccountSettingsLive do
       |> assign_new(:current_user, fn -> nil end)
       |> stream_configure(:sessions, dom_id: &"session-#{&1.jti}")
       |> stream_configure(:api_keys, dom_id: &"api-key-#{&1.id}")
-      |> assign(:email_form, email_form(socket.assigns.current_user))
+      |> assign(:email_form, email_form())
       |> assign(:password_form, password_form())
       |> assign(:api_key_form, api_key_form())
       |> assign(:delete_account_form, delete_account_form())
+      |> assign(:pending_email_change, nil)
       |> assign(:plaintext_api_key, nil)
+      |> assign(:plaintext_api_key_generation, 0)
+      |> refresh_email_state()
       |> refresh_sessions()
       |> refresh_api_keys()
 
@@ -39,7 +42,7 @@ defmodule TaskmanWeb.AccountSettingsLive do
       {:ok, _user} ->
         {:noreply,
          socket
-         |> assign(:email_form, email_form(socket.assigns.current_user))
+         |> refresh_email_state()
          |> put_flash(:info, "Email confirmation sent.")}
 
       {:error, _reason} ->
@@ -87,6 +90,7 @@ defmodule TaskmanWeb.AccountSettingsLive do
               |> stream_insert(:api_keys, api_key)
               |> assign(:api_key_form, api_key_form())
               |> assign(:plaintext_api_key, plaintext)
+              |> update(:plaintext_api_key_generation, &(&1 + 1))
 
             {:error, _reason} ->
               socket
@@ -123,6 +127,19 @@ defmodule TaskmanWeb.AccountSettingsLive do
     end
   end
 
+  defp refresh_email_state(socket) do
+    case Accounts.account_settings_state(socket.assigns.current_user) do
+      {:ok, %{user: user, pending_email: pending_email}} ->
+        socket
+        |> assign(:current_user, user)
+        |> assign(:pending_email_change, pending_email)
+        |> assign(:email_form, email_form())
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
   defp refresh_api_keys(socket) do
     case Accounts.list_api_keys(socket.assigns.current_user) do
       {:ok, api_keys} -> stream(socket, :api_keys, api_keys, reset: true)
@@ -156,10 +173,8 @@ defmodule TaskmanWeb.AccountSettingsLive do
     end
   end
 
-  defp email_form(user) do
-    to_form(%{"email" => user && to_string(user.email), "current_password" => ""},
-      as: :email_change
-    )
+  defp email_form do
+    to_form(%{"email" => "", "current_password" => ""}, as: :email_change)
   end
 
   defp password_form do
