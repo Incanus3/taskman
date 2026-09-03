@@ -42,6 +42,9 @@ defmodule TaskmanWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  # Authenticate API paths before parsers and content negotiation can reject
+  # malformed or unsupported requests with a different response envelope.
+  plug TaskmanWeb.Plugs.ApiAuthentication
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

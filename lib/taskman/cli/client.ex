@@ -29,7 +29,9 @@ defmodule Taskman.CLI.Client do
     api_url =
       option(runtime_options, :api_url) || option(request_options, :api_url) || @default_api_url
 
-    api_key = option(runtime_options, :api_key) || option(request_options, :api_key)
+    # Credentials are supplied only by the runner's private runtime channel;
+    # request payload/options are intentionally unable to select an actor.
+    api_key = option(runtime_options, :api_key)
     req_options = runtime_options |> option(:req_options, []) |> normalize_options()
 
     request_options =
@@ -359,7 +361,6 @@ defmodule Taskman.CLI.Client do
       {key, value}, acc when is_atom(key) -> Keyword.put(acc, key, value)
       {"api_url", value}, acc -> Keyword.put(acc, :api_url, value)
       {"req_options", value}, acc -> Keyword.put(acc, :req_options, value)
-      {"api_key", value}, acc -> Keyword.put(acc, :api_key, value)
       {"json", value}, acc -> Keyword.put(acc, :json, value)
       {"json_body", value}, acc -> Keyword.put(acc, :json_body, value)
       {"params", value}, acc -> Keyword.put(acc, :params, value)

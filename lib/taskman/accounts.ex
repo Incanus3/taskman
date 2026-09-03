@@ -14,6 +14,8 @@ defmodule Taskman.Accounts do
   @api_key_lifetime_days 365
   @api_key_minimum_lifetime_seconds 86_400
   @api_key_lifetime_seconds @api_key_lifetime_days * 86_400
+  @api_key_digest_bytes 32
+  @dummy_api_key_digest :crypto.hash(:sha256, "taskman-api-key-dummy")
 
   authorization do
     authorize :always
@@ -60,11 +62,7 @@ defmodule Taskman.Accounts do
   @spec sign_in_with_api_key(map(), keyword()) :: {:ok, User.t()} | {:error, term()}
   def sign_in_with_api_key(params, opts) when is_map(params) and is_list(opts) do
     with {:ok, api_key} <- api_key_param(params),
-         true <- valid_api_key_format?(api_key),
-         {:ok, user} <-
-           User
-           |> Info.strategy!(:api_key)
-           |> Strategy.action(:sign_in, %{api_key: api_key}, api_key_strategy_opts(opts)),
+         {:ok, user} <- authenticate_api_key(api_key),
          true <- eligible?(user) do
       {:ok, user}
     else
@@ -73,7 +71,10 @@ defmodule Taskman.Accounts do
     end
   end
 
-  def sign_in_with_api_key(_params, _opts), do: {:error, authentication_failed()}
+  def sign_in_with_api_key(_params, _opts) do
+    _ = compare_dummy_api_key("")
+    {:error, authentication_failed()}
+  end
 
   @spec create_api_key(User.t(), map()) ::
           {:ok, %{api_key: ApiKey.t(), plaintext: String.t()}} | {:error, term()}
@@ -82,7 +83,7 @@ defmodule Taskman.Accounts do
   @spec create_api_key(User.t(), map(), keyword()) ::
           {:ok, %{api_key: ApiKey.t(), plaintext: String.t()}} | {:error, term()}
   def create_api_key(actor, attrs, opts) when is_map(attrs) and is_list(opts) do
-    with :ok <- require_eligible_actor(actor),
+    with {:ok, actor} <- current_api_key_actor(actor),
          {:ok, name} <- api_key_name(attrs),
          {:ok, expires_at} <- api_key_expiration(attrs, opts),
          {:ok, api_key} <-
@@ -107,7 +108,7 @@ defmodule Taskman.Accounts do
 
   @spec list_api_keys(User.t()) :: {:ok, [ApiKey.t()]} | {:error, term()}
   def list_api_keys(actor) do
-    with :ok <- require_eligible_actor(actor),
+    with {:ok, actor} <- current_api_key_actor(actor),
          {:ok, keys} <- list_owned_api_keys(actor) do
       {:ok, keys}
     end
@@ -115,7 +116,7 @@ defmodule Taskman.Accounts do
 
   @spec revoke_api_key(User.t(), Ecto.UUID.t()) :: :ok | {:error, term()}
   def revoke_api_key(actor, id) do
-    with :ok <- require_eligible_actor(actor),
+    with {:ok, actor} <- current_api_key_actor(actor),
          {:ok, uuid} <- Ecto.UUID.cast(id),
          {:ok, api_key} <- fetch_owned_api_key(actor, uuid),
          {:ok, _revoked} <-
@@ -129,28 +130,100 @@ defmodule Taskman.Accounts do
     end
   end
 
-  defp require_eligible_actor(%User{} = actor) do
-    if eligible?(actor), do: :ok, else: {:error, :authentication_required}
-  end
-
-  defp require_eligible_actor(_actor), do: {:error, :authentication_required}
-
   defp api_key_param(params) do
     case Map.get(params, :api_key, Map.get(params, "api_key")) do
-      api_key when is_binary(api_key) -> {:ok, api_key}
-      _ -> {:error, :invalid_credentials}
+      api_key when is_binary(api_key) ->
+        {:ok, api_key}
+
+      _ ->
+        _ = compare_dummy_api_key("")
+        {:error, :invalid_credentials}
     end
   end
 
-  defp valid_api_key_format?(api_key) do
-    Regex.match?(~r/\Atm_[A-Za-z0-9]+_[A-Za-z0-9]+\z/, api_key)
+  defp authenticate_api_key(api_key) when is_binary(api_key) do
+    case canonical_api_key_id(api_key) do
+      {:ok, id} ->
+        query =
+          ApiKey
+          |> Ash.Query.for_read(:for_authentication, %{},
+            domain: __MODULE__,
+            context: authentication_context()
+          )
+          |> Ash.Query.filter(id: id)
+          |> Ash.Query.load(user: Ash.Query.set_context(User, authentication_context()))
+
+        case Ash.read_one(query, domain: __MODULE__) do
+          {:ok, %ApiKey{user: %User{} = user} = api_key_record} ->
+            if api_key_matches?(api_key, api_key_record.api_key_hash) do
+              {:ok, user}
+            else
+              {:error, :invalid_credentials}
+            end
+
+          {:ok, nil} ->
+            _ = compare_dummy_api_key(api_key)
+            {:error, :invalid_credentials}
+
+          {:error, _reason} ->
+            _ = compare_dummy_api_key(api_key)
+            {:error, :invalid_credentials}
+        end
+
+      :error ->
+        _ = compare_dummy_api_key(api_key)
+        {:error, :invalid_credentials}
+    end
   end
 
-  defp api_key_strategy_opts(opts) do
-    opts
-    |> Keyword.take([:tenant, :context])
-    |> Keyword.put(:domain, __MODULE__)
+  defp canonical_api_key_id(api_key) do
+    with ["tm", middle, checksum] <- String.split(api_key, "_", parts: 3),
+         {:ok, payload} <- AshAuthentication.Base.bindecode62(middle),
+         true <- payload != <<>> and :binary.first(payload) != 0,
+         true <- AshAuthentication.Base.encode62(payload) == middle,
+         <<_random_bytes::binary-size(32), id::binary-size(16)>> <- payload,
+         {:ok, checksum_value} <- AshAuthentication.Base.decode62(checksum),
+         true <- AshAuthentication.Base.encode62(checksum_value) == checksum,
+         true <- checksum_value == :erlang.crc32(payload) do
+      {:ok, id}
+    else
+      _ -> :error
+    end
   end
+
+  defp api_key_matches?(api_key, stored_hash) when is_binary(api_key) do
+    digest = :crypto.hash(:sha256, api_key)
+
+    candidate =
+      if is_binary(stored_hash) and byte_size(stored_hash) == @api_key_digest_bytes,
+        do: stored_hash,
+        else: @dummy_api_key_digest
+
+    Plug.Crypto.secure_compare(digest, candidate)
+  end
+
+  defp compare_dummy_api_key(api_key) when is_binary(api_key) do
+    Plug.Crypto.secure_compare(:crypto.hash(:sha256, api_key), @dummy_api_key_digest)
+  end
+
+  defp authentication_context, do: %{private: %{ash_authentication?: true}}
+
+  defp current_api_key_actor(%User{} = actor) do
+    query =
+      User
+      |> Ash.Query.for_read(:api_key_actor, %{},
+        actor: actor,
+        domain: __MODULE__
+      )
+
+    case Ash.read_one(query, actor: actor, domain: __MODULE__) do
+      {:ok, %User{} = current_actor} -> {:ok, current_actor}
+      {:ok, nil} -> {:error, :authentication_required}
+      {:error, _reason} -> {:error, :authentication_required}
+    end
+  end
+
+  defp current_api_key_actor(_actor), do: {:error, :authentication_required}
 
   defp api_key_name(attrs) do
     case Map.get(attrs, :name, Map.get(attrs, "name")) do
@@ -179,13 +252,11 @@ defmodule Taskman.Accounts do
   end
 
   defp validate_api_key_expiration(%DateTime{} = expires_at, %DateTime{} = now) do
-    comparison_now = DateTime.truncate(now, :second)
-    comparison_expiry = DateTime.truncate(expires_at, :second)
-    minimum_expiry = DateTime.add(comparison_now, @api_key_minimum_lifetime_seconds, :second)
-    max_expiry = DateTime.add(comparison_now, @api_key_lifetime_seconds, :second)
+    minimum_expiry = DateTime.add(now, @api_key_minimum_lifetime_seconds, :second)
+    max_expiry = DateTime.add(now, @api_key_lifetime_seconds, :second)
 
-    if DateTime.compare(comparison_expiry, minimum_expiry) != :lt and
-         DateTime.compare(comparison_expiry, max_expiry) != :gt do
+    if DateTime.compare(expires_at, minimum_expiry) != :lt and
+         DateTime.compare(expires_at, max_expiry) != :gt do
       {:ok, expires_at}
     else
       {:error, :invalid_expiration}

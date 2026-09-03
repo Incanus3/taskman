@@ -25,6 +25,18 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
 
   @impl true
   def call(conn, _opts) do
+    if api_request?(conn) do
+      if conn.private[:taskman_api_authenticated?] do
+        conn
+      else
+        authenticate(conn)
+      end
+    else
+      conn
+    end
+  end
+
+  defp authenticate(conn) do
     case bearer_credential(conn) do
       {:ok, credential} ->
         case Accounts.sign_in_with_api_key(%{api_key: credential}) do
@@ -32,6 +44,7 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
             conn
             |> PlugHelpers.set_actor(user)
             |> assign(:current_user, user)
+            |> put_private(:taskman_api_authenticated?, true)
 
           {:error, _reason} ->
             unauthorized(conn)
@@ -40,6 +53,11 @@ defmodule TaskmanWeb.Plugs.ApiAuthentication do
       {:error, _reason} ->
         unauthorized(conn)
     end
+  end
+
+  defp api_request?(conn) do
+    path = conn.request_path || ""
+    path == "/api/v1" or String.starts_with?(path, "/api/v1/")
   end
 
   defp bearer_credential(conn) do

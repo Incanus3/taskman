@@ -12,12 +12,17 @@ defmodule TaskmanWeb.API.TaskControllerTest do
 
   setup %{conn: conn} do
     user = user_fixture()
+    now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: plaintext}} =
-             Accounts.create_api_key(user, %{
-               name: "Task tests",
-               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               user,
+               %{
+                 name: "Task tests",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     {:ok, conn: put_api_key(conn, plaintext)}
   end

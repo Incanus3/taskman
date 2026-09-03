@@ -8,13 +8,18 @@ defmodule Taskman.CLI.EndToEndTest do
 
   setup do
     user = user_fixture()
-    expires_at = DateTime.add(DateTime.utc_now(), 365 * 86_400, :second)
+    now = DateTime.utc_now()
+    expires_at = DateTime.add(now, 365 * 86_400, :second)
 
     assert {:ok, %{plaintext: api_key}} =
-             Taskman.Accounts.create_api_key(user, %{
-               name: "CLI end-to-end tests",
-               expires_at: expires_at
-             })
+             Taskman.Accounts.create_api_key(
+               user,
+               %{
+                 name: "CLI end-to-end tests",
+                 expires_at: expires_at
+               },
+               now: now
+             )
 
     {:ok, api_key: api_key}
   end

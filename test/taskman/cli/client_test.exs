@@ -39,6 +39,37 @@ defmodule Taskman.CLI.ClientTest do
              )
   end
 
+  test "does not take credentials from public request options" do
+    credential = "tm_request_option_must_not_authenticate"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [api_key: credential],
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "does not take credentials from string-keyed request maps" do
+    credential = "tm_string_request_option_must_not_authenticate"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(
+               :get,
+               "/api/v1/projects",
+               %{"api_key" => credential},
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
   test "maps public API client errors to exit status 3" do
     for {status, code} <- [
           {400, "invalid_request"},

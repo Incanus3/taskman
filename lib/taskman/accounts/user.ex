@@ -192,6 +192,12 @@ defmodule Taskman.Accounts.User do
       prepare build(filter: [status: :active])
       prepare AshAuthentication.Strategy.ApiKey.SignInPreparation
     end
+
+    read :api_key_actor do
+      get? true
+      public? false
+      filter expr(status == :active and not is_nil(confirmed_at) and id == ^actor(:id))
+    end
   end
 
   attributes do
@@ -322,6 +328,14 @@ defmodule Taskman.Accounts.User do
 
     bypass action(:request_email_change) do
       authorize_if expr(id == ^actor(:id) and status == :active)
+    end
+
+    bypass action(:api_key_actor) do
+      authorize_if expr(
+                     id == ^actor(:id) and status == :active and
+                       not is_nil(confirmed_at) and
+                       not is_nil(^actor(:confirmed_at))
+                   )
     end
 
     bypass [

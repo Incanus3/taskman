@@ -15,12 +15,17 @@ defmodule TaskmanWeb.API.AuthenticationTest do
     project_fixture(%{})
 
     user = user_fixture()
+    now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: plaintext}} =
-             Accounts.create_api_key(user, %{
-               name: "query-only",
-               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               user,
+               %{
+                 name: "query-only",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     expected = %{
       "error" => %{
@@ -57,14 +62,69 @@ defmodule TaskmanWeb.API.AuthenticationTest do
     assert expected == get(duplicate_conn, "/api/v1/projects") |> json_response(401)
   end
 
+  test "unauthenticated API requests halt before negotiation and body parsing", %{conn: conn} do
+    expected = %{
+      "error" => %{
+        "code" => "unauthorized",
+        "message" => "Authentication required"
+      }
+    }
+
+    assert expected ==
+             conn
+             |> put_req_header("accept", "text/html")
+             |> get("/api/v1/projects")
+             |> json_response(401)
+
+    assert expected ==
+             conn
+             |> put_req_header("accept", "application/json")
+             |> put_req_header("content-type", "application/json")
+             |> post("/api/v1/projects", "{")
+             |> json_response(401)
+
+    assert expected ==
+             conn
+             |> put_req_header("accept", "text/html")
+             |> put_req_header("content-type", "application/xml")
+             |> post("/api/v1/projects", "not-json")
+             |> json_response(401)
+  end
+
+  test "shaped unknown and malformed credentials return the exact 401 envelope", %{conn: conn} do
+    expected = %{
+      "error" => %{
+        "code" => "unauthorized",
+        "message" => "Authentication required"
+      }
+    }
+
+    for credential <- [
+          "tm_a_b",
+          "tm_#{String.duplicate("a", 64)}_b",
+          "tm_#{String.duplicate("a", 64)}_#{String.duplicate("b", 8)}"
+        ] do
+      assert expected ==
+               conn
+               |> put_api_key(credential)
+               |> get("/api/v1/projects")
+               |> json_response(401)
+    end
+  end
+
   test "a valid key preserves the existing success and error envelopes", %{conn: conn} do
     user = user_fixture()
+    now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: plaintext}} =
-             Accounts.create_api_key(user, %{
-               name: "API tests",
-               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               user,
+               %{
+                 name: "API tests",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     project = project_fixture(%{})
 
@@ -77,12 +137,17 @@ defmodule TaskmanWeb.API.AuthenticationTest do
 
   test "duplicate valid Authorization headers are ambiguous and rejected", %{conn: conn} do
     user = user_fixture()
+    now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: plaintext}} =
-             Accounts.create_api_key(user, %{
-               name: "duplicate",
-               expires_at: DateTime.add(DateTime.utc_now(), @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               user,
+               %{
+                 name: "duplicate",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     conn =
       conn
@@ -93,25 +158,40 @@ defmodule TaskmanWeb.API.AuthenticationTest do
              conn |> get("/api/v1/projects") |> json_response(401)
   end
 
-  test "expired, revoked, pending-owner, and disabled-owner keys return 401", %{conn: conn} do
+  test "expired, revoked, pending, disabled, and unconfirmed owners return 401", %{conn: conn} do
     pending = pending_user_fixture()
     disabled = user_fixture(status: :disabled)
+    unconfirmed = user_fixture()
+
+    assert {:ok, _unconfirmed} =
+             unconfirmed
+             |> Ecto.Changeset.change(confirmed_at: nil)
+             |> Repo.update()
+
     active = user_fixture()
     now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: revoked_key, api_key: revoked}} =
-             Accounts.create_api_key(active, %{
-               name: "revoked",
-               expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               active,
+               %{
+                 name: "revoked",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     assert :ok = Accounts.revoke_api_key(active, revoked.id)
 
     assert {:ok, %{plaintext: pending_plaintext, api_key: pending_record}} =
-             Accounts.create_api_key(active, %{
-               name: "pending",
-               expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               active,
+               %{
+                 name: "pending",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     assert {:ok, _pending_record} =
              pending_record
@@ -119,30 +199,79 @@ defmodule TaskmanWeb.API.AuthenticationTest do
              |> Repo.update()
 
     assert {:ok, %{plaintext: disabled_plaintext, api_key: disabled_record}} =
-             Accounts.create_api_key(active, %{
-               name: "disabled",
-               expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
-             })
+             Accounts.create_api_key(
+               active,
+               %{
+                 name: "disabled",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
 
     assert {:ok, _disabled_record} =
              disabled_record
              |> Ecto.Changeset.change(user_id: disabled.id)
              |> Repo.update()
 
+    assert {:ok, %{plaintext: unconfirmed_plaintext, api_key: unconfirmed_record}} =
+             Accounts.create_api_key(
+               active,
+               %{
+                 name: "unconfirmed",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
+
+    assert {:ok, _unconfirmed_record} =
+             unconfirmed_record
+             |> Ecto.Changeset.change(user_id: unconfirmed.id)
+             |> Repo.update()
+
     assert {:ok, %{plaintext: expired_plaintext, api_key: expired_record}} =
-             Accounts.create_api_key(active, %{
-               name: "expired",
-               expires_at: DateTime.add(DateTime.utc_now(), 2 * 86_400, :second)
-             })
+             Accounts.create_api_key(
+               active,
+               %{
+                 name: "expired",
+                 expires_at: DateTime.add(now, 2 * 86_400, :second)
+               },
+               now: now
+             )
 
     assert {:ok, _expired_record} =
              expired_record
              |> Ecto.Changeset.change(expires_at: DateTime.add(now, -1, :second))
              |> Repo.update()
 
-    for key <- [revoked_key, pending_plaintext, disabled_plaintext, expired_plaintext] do
-      assert %{"error" => %{"code" => "unauthorized"}} =
-               conn |> put_api_key(key) |> get("/api/v1/projects") |> json_response(401)
+    expected = %{
+      "error" => %{
+        "code" => "unauthorized",
+        "message" => "Authentication required"
+      }
+    }
+
+    for key <- [
+          revoked_key,
+          pending_plaintext,
+          disabled_plaintext,
+          unconfirmed_plaintext,
+          expired_plaintext
+        ] do
+      assert expected == conn |> put_api_key(key) |> get("/api/v1/projects") |> json_response(401)
     end
+  end
+
+  test "fallback maps forbidden errors to the exact JSON envelope", %{conn: conn} do
+    expected = %{
+      "error" => %{
+        "code" => "forbidden",
+        "message" => "Forbidden"
+      }
+    }
+
+    assert expected ==
+             conn
+             |> TaskmanWeb.API.FallbackController.call({:error, :forbidden})
+             |> json_response(403)
   end
 end

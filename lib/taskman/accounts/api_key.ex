@@ -4,6 +4,7 @@ defmodule Taskman.Accounts.ApiKey do
     authorizers: [Ash.Policy.Authorizer],
     domain: Taskman.Accounts
 
+  alias Taskman.Accounts.ApiKey.Generate
   alias Taskman.Accounts.User
 
   postgres do
@@ -23,6 +24,12 @@ defmodule Taskman.Accounts.ApiKey do
       filter expr(user_id == ^actor(:id))
     end
 
+    read :for_authentication do
+      get? true
+      public? false
+      filter expr(is_nil(revoked_at) and expires_at > now())
+    end
+
     create :create_for_bootstrap do
       primary? true
       public? false
@@ -33,10 +40,7 @@ defmodule Taskman.Accounts.ApiKey do
       public? false
       accept [:expires_at, :name, :user_id]
 
-      change {
-        AshAuthentication.Strategy.ApiKey.GenerateApiKey,
-        prefix: :tm, hash: :api_key_hash
-      }
+      change {Generate, prefix: :tm, hash: :api_key_hash}
     end
 
     update :revoke do

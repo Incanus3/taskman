@@ -9,12 +9,17 @@ defmodule TaskmanWeb.ProjectLiveExternalUpdatesTest do
 
   setup %{conn: conn} do
     user = user_fixture()
+    now = DateTime.utc_now()
 
     assert {:ok, %{plaintext: api_key}} =
-             Taskman.Accounts.create_api_key(user, %{
-               name: "Live update tests",
-               expires_at: DateTime.add(DateTime.utc_now(), 365 * 86_400, :second)
-             })
+             Taskman.Accounts.create_api_key(
+               user,
+               %{
+                 name: "Live update tests",
+                 expires_at: DateTime.add(now, 365 * 86_400, :second)
+               },
+               now: now
+             )
 
     {:ok, conn: log_in_user(conn, user), api_key: api_key}
   end
