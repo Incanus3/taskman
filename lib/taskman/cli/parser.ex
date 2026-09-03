@@ -3,19 +3,17 @@ defmodule Taskman.CLI.Parser do
 
   alias Taskman.CLI.{Command, Invocation, Option, Registry}
 
-  @default_api_url "http://localhost:4000"
-
   @type parse_result ::
           {:ok, Invocation.t()}
           | {:help, [String.t()]}
           | :version
           | {:error, String.t(), [String.t()]}
 
-  @doc "Parse argv and resolve global configuration from the supplied environment."
+  @doc "Parse argv and retain only explicit global CLI options."
   @spec parse([String.t()], map() | keyword()) :: parse_result()
   def parse(argv, env \\ System.get_env())
 
-  def parse(argv, env) when is_list(argv) do
+  def parse(argv, _env) when is_list(argv) do
     case extract_globals(argv) do
       {:error, message, tokens} ->
         {:error, message, usage_path(tokens)}
@@ -34,22 +32,22 @@ defmodule Taskman.CLI.Parser do
             {:error, "Unknown option #{hd(tokens)}", []}
 
           true ->
-            parse_command(tokens, path, cli_api_url, json?, env)
+            parse_command(tokens, path, cli_api_url, json?)
         end
     end
   end
 
   def parse(_argv, _env), do: {:error, "Arguments must be a list", []}
 
-  defp parse_command(_tokens, [], _cli_api_url, _json?, _env) do
+  defp parse_command(_tokens, [], _cli_api_url, _json?) do
     {:error, "A command is required", []}
   end
 
-  defp parse_command(tokens, path, cli_api_url, json?, env) do
+  defp parse_command(tokens, path, cli_api_url, json?) do
     case Registry.find(path) do
       {:ok, %Command{} = command} ->
         command_tokens = Enum.drop(tokens, length(path))
-        global_options = globals(cli_api_url, json?, env)
+        global_options = globals(cli_api_url, json?)
 
         with {:ok, options, positional} <- parse_tokens(command, command_tokens, path),
              {:ok, arguments} <- parse_arguments(command, positional, path),
@@ -87,7 +85,7 @@ defmodule Taskman.CLI.Parser do
 
       case Map.get(options_by_name, option_name) do
         nil ->
-          {:error, "Unknown option #{option_name}", path}
+          {:error, "Unknown option --#{option_name}", path}
 
         %Option{type: :boolean} = option ->
           if inline_value != nil do
@@ -253,33 +251,15 @@ defmodule Taskman.CLI.Parser do
     |> Enum.join(", ")
   end
 
-  defp globals(cli_api_url, json?, env) do
-    api_url = cli_api_url || env_value(env, "TASKMAN_API_URL") || @default_api_url
-    if json?, do: %{api_url: api_url, json: true}, else: %{api_url: api_url}
+  defp globals(cli_api_url, json?) do
+    %{}
+    |> maybe_put_global(:api_url, cli_api_url)
+    |> maybe_put_global(:json, json?)
   end
 
-  defp env_value(env, key) when is_map(env) do
-    Map.get(env, key) ||
-      case key do
-        "TASKMAN_API_URL" -> Map.get(env, :TASKMAN_API_URL)
-        _ -> nil
-      end
-  end
-
-  defp env_value(env, key) when is_list(env) do
-    Enum.find_value(env, fn
-      {^key, value} ->
-        value
-
-      {atom_key, value} when is_atom(atom_key) ->
-        if Atom.to_string(atom_key) == key, do: value
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp env_value(_env, key), do: System.get_env(key)
+  defp maybe_put_global(globals, _key, nil), do: globals
+  defp maybe_put_global(globals, _key, false), do: globals
+  defp maybe_put_global(globals, key, value), do: Map.put(globals, key, value)
 
   defp extract_globals(argv), do: extract_globals(argv, [], nil, false, false, false)
 

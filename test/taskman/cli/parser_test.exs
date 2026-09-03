@@ -18,6 +18,9 @@ defmodule Taskman.CLI.ParserTest do
              ~w(tasks create),
              ~w(tasks update),
              ~w(tasks move),
+             ~w(config set-url),
+             ~w(config set-key),
+             ~w(config show),
              ~w(completions bash),
              ~w(completions fish),
              ~w(agent onboarding),
@@ -77,16 +80,16 @@ defmodule Taskman.CLI.ParserTest do
              Parser.parse(~w(completions fish --json), %{})
   end
 
-  test "uses the environment API URL when the CLI option is absent" do
+  test "leaves environment resolution to the protected configuration layer" do
     assert {:ok, invocation} =
              Parser.parse(~w(projects list), %{"TASKMAN_API_URL" => "http://environment:4000"})
 
-    assert invocation.globals == %{api_url: "http://environment:4000"}
+    assert invocation.globals == %{}
   end
 
-  test "falls back to the loopback API URL" do
+  test "does not materialize a default API URL before configuration resolution" do
     assert {:ok, invocation} = Parser.parse(~w(projects list), %{})
-    assert invocation.globals == %{api_url: "http://localhost:4000"}
+    assert invocation.globals == %{}
   end
 
   test "returns help and version control markers before validating operands" do

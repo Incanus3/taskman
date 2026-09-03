@@ -258,6 +258,28 @@ defmodule Taskman.CLI.Registry do
         ]
       },
       %Command{
+        path: ~w(config set-url),
+        summary: "Store the Taskman API base URL.",
+        usage: "taskman config set-url URL",
+        handler: {:config, :set_url},
+        arguments: [argument(:api_url, "URL", :string, "HTTP or HTTPS Taskman API base URL.")],
+        examples: ["taskman config set-url https://taskman.example.com"]
+      },
+      %Command{
+        path: ~w(config set-key),
+        summary: "Prompt for and store a Taskman API key.",
+        usage: "taskman config set-key",
+        handler: {:config, :set_key},
+        examples: ["taskman config set-key"]
+      },
+      %Command{
+        path: ~w(config show),
+        summary: "Show the resolved Taskman API configuration without revealing its key.",
+        usage: "taskman config show",
+        handler: {:config, :show},
+        examples: ["taskman config show", "taskman config show --json"]
+      },
+      %Command{
         path: ~w(completions bash),
         summary: "Print Bash completion source.",
         usage: "taskman completions bash",

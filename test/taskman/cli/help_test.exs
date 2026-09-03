@@ -6,7 +6,7 @@ defmodule Taskman.CLI.HelpTest do
   test "top-level help discovers every command group and global option" do
     help = Help.render([])
 
-    for group <- ~w(projects lists tasks completions agent) do
+    for group <- ~w(projects lists tasks config completions agent) do
       assert help =~ "taskman #{group}"
     end
 
@@ -24,10 +24,12 @@ defmodule Taskman.CLI.HelpTest do
     end
 
     assert help =~ "TASKMAN_API_URL"
+    assert help =~ "TASKMAN_API_KEY"
+    assert help =~ "config.json"
   end
 
   test "group help lists every child command" do
-    for group <- ~w(projects lists tasks completions agent) do
+    for group <- ~w(projects lists tasks config completions agent) do
       help = Help.render([group])
 
       Registry.commands()
@@ -84,6 +86,15 @@ defmodule Taskman.CLI.HelpTest do
       assert help =~ "--json is invalid"
       refute help =~ "add --json for one API-compatible JSON envelope"
     end
+  end
+
+  test "config leaf help documents secret input, redaction, and authentication status 7" do
+    set_key = Help.render(~w(config set-key))
+    show = Help.render(~w(config show))
+
+    assert set_key =~ "taskman config set-key"
+    assert set_key =~ "7 authentication required"
+    assert show =~ "without revealing its key"
   end
 
   test "every registered leaf has usage and an example" do

@@ -90,6 +90,38 @@ defmodule Taskman.CLI.ClientTest do
     end
   end
 
+  test "maps rejected and forbidden bearer authentication to exit status 7" do
+    for {status, code} <- [{401, "unauthorized"}, {403, "forbidden"}] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        conn
+        |> Plug.Conn.put_status(status)
+        |> Req.Test.json(%{error: %{code: code, message: "Authentication failed"}})
+      end)
+
+      assert {:error, 7, %{"error" => %{"code" => ^code, "message" => "Authentication failed"}}} =
+               Client.request(:get, "/api/v1/projects", [],
+                 api_key: "tm_client_mapping_credential",
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               )
+    end
+  end
+
+  test "redacts a bearer credential if an unexpected transport exception includes it" do
+    credential = "tm_exception_redaction_credential"
+
+    Req.Test.expect(TaskmanCLIClient, fn _conn ->
+      raise "unexpected request detail #{credential}"
+    end)
+
+    assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
+             Client.request(:get, "/api/v1/projects", [],
+               api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    refute message =~ credential
+  end
+
   test "maps concurrent Task updates to exit status 3 and preserves fields" do
     envelope = %{
       error: %{

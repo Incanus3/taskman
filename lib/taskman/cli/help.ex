@@ -53,7 +53,9 @@ defmodule Taskman.CLI.Help do
         [
           "",
           "Configuration:",
-          "  --api-url takes precedence over TASKMAN_API_URL, which defaults to http://localhost:4000.",
+          "  --api-url takes precedence over TASKMAN_API_URL; TASKMAN_API_KEY overrides config.json.",
+          "  Settings are read from ${XDG_CONFIG_HOME:-$HOME/.config}/taskman/config.json.",
+          "  The URL falls back to http://localhost:4000; ordinary API commands require an API key.",
           "  Global options may appear before or after the command path.",
           "",
           "Use taskman <group> --help or taskman <group> <command> --help for details."
@@ -121,7 +123,7 @@ defmodule Taskman.CLI.Help do
         [
           "",
           "Exit statuses:",
-          "  0 success; 2 invalid invocation; 3 API/domain error; 4 connection failure; 5 internal/contract error; 6 skill installation failure.",
+          "  0 success; 2 invalid invocation/configuration; 3 API/domain error; 4 connection failure; 5 internal/contract error; 6 skill installation failure; 7 authentication required, rejected, or forbidden.",
           "",
           "Examples:"
         ] ++ Enum.map(command.examples, &"  #{&1}")
@@ -138,6 +140,7 @@ defmodule Taskman.CLI.Help do
   defp group_summary("projects"), do: "Manage Projects"
   defp group_summary("lists"), do: "Manage Lists"
   defp group_summary("tasks"), do: "Manage Tasks"
+  defp group_summary("config"), do: "Manage CLI API configuration"
   defp group_summary("completions"), do: "Generate shell completions"
   defp group_summary("agent"), do: "Agent onboarding and skill tools"
   defp group_summary(_group), do: "Command group"
@@ -158,10 +161,15 @@ defmodule Taskman.CLI.Help do
 
   defp output_lines(%Command{} = command) do
     output_description =
-      if forbidden_global?(command, :json) do
-        "  This command writes shell source to stdout; --json is invalid."
-      else
-        "  Successful data is readable by default; add --json for one API-compatible JSON envelope."
+      cond do
+        forbidden_global?(command, :json) ->
+          "  This command writes shell source to stdout; --json is invalid."
+
+        config_command?(command) ->
+          "  This command operates on local configuration and does not contact the backend."
+
+        true ->
+          "  Successful data is readable by default; add --json for one API-compatible JSON envelope."
       end
 
     [
@@ -175,6 +183,9 @@ defmodule Taskman.CLI.Help do
   defp forbidden_global?(%Command{constraints: constraints}, option_name) do
     Enum.any?(constraints, &match?({:forbidden_global, ^option_name}, &1))
   end
+
+  defp config_command?(%Command{handler: {:config, _action}}), do: true
+  defp config_command?(_command), do: false
 
   defp prefix?(path, prefix), do: Enum.take(path, length(prefix)) == prefix
 end

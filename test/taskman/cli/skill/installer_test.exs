@@ -15,6 +15,14 @@ defmodule Taskman.CLI.Skill.InstallerTest do
     assert result.cli_version == Bundle.cli_version()
     assert File.regular?(Path.join(target, "SKILL.md"))
     assert File.regular?(Path.join(target, ".taskman-managed.json"))
+    assert File.read!(Path.join(target, "SKILL.md")) == Bundle.files()["SKILL.md"]
+
+    assert Jason.decode!(File.read!(Path.join(target, ".taskman-managed.json"))) == %{
+             "installer" => "taskman",
+             "skill" => "taskman-cli",
+             "cli_version" => Bundle.cli_version()
+           }
+
     assert temporary_siblings(root) == []
   end
 
@@ -79,6 +87,27 @@ defmodule Taskman.CLI.Skill.InstallerTest do
 
     assert {:ok, %{action: :updated, path: ^target}} = Installer.install(skills_root: root)
     assert File.read!(Path.join(target, ".taskman-managed.json")) =~ Bundle.cli_version()
+    assert temporary_siblings(root) == []
+  end
+
+  @tag :tmp_dir
+  test "installer-owned stale content is atomically replaced with the exact current bundle", %{
+    tmp_dir: root
+  } do
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+    target = Path.join(root, "taskman-cli")
+    skill_path = Path.join(target, "SKILL.md")
+    File.write!(skill_path, "stale credential guidance")
+
+    assert {:ok, %{action: :updated, path: ^target, cli_version: version}} =
+             Installer.install(skills_root: root)
+
+    assert version == Bundle.cli_version()
+    assert File.read!(skill_path) == Bundle.files()["SKILL.md"]
+
+    assert Jason.decode!(File.read!(Path.join(target, ".taskman-managed.json")))["cli_version"] ==
+             Bundle.cli_version()
+
     assert temporary_siblings(root) == []
   end
 

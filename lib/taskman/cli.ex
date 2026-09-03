@@ -3,7 +3,7 @@ defmodule Taskman.CLI do
 
   alias Taskman.CLI.{Help, Parser, Result, Runner}
 
-  @version "0.1.0"
+  @version "0.2.0"
 
   @doc "Return the version bundled in the escript."
   @spec version() :: String.t()

@@ -1,12 +1,14 @@
 defmodule Taskman.CLI.EndToEndTest do
   use TaskmanWeb.ConnCase, async: false
 
+  @moduletag :tmp_dir
+
   import Phoenix.LiveViewTest
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  setup do
+  setup %{tmp_dir: tmp_dir} do
     user = user_fixture()
     now = DateTime.utc_now()
     expires_at = DateTime.add(now, 365 * 86_400, :second)
@@ -21,10 +23,13 @@ defmodule Taskman.CLI.EndToEndTest do
                now: now
              )
 
-    {:ok, api_key: api_key}
+    {:ok, api_key: api_key, config_root: Path.join(tmp_dir, "xdg")}
   end
 
-  test "creates and inspects a Project through the loopback API", %{api_key: api_key} do
+  test "creates and inspects a Project through the loopback API", %{
+    api_key: api_key,
+    config_root: config_root
+  } do
     server =
       start_supervised!(
         {Bandit,
@@ -33,6 +38,17 @@ defmodule Taskman.CLI.EndToEndTest do
 
     assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
     api_url = "http://127.0.0.1:#{port}"
+    write_config(config_root, api_url, api_key)
+
+    missing = cli_run(["projects", "list", "--json"], Path.join(config_root, "missing"))
+    assert missing.status == 7
+    assert %{"error" => %{"code" => "authentication_required"}} = Jason.decode!(missing.stderr)
+
+    rejected_root = Path.join(config_root, "rejected")
+    write_config(rejected_root, api_url, "tm_rejected_http_credential")
+    rejected = cli_run(["projects", "list", "--json"], rejected_root)
+    assert rejected.status == 7
+    assert %{"error" => %{"code" => "unauthorized"}} = Jason.decode!(rejected.stderr)
 
     create =
       cli_run(
@@ -43,11 +59,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "HTTP smoke",
           "--directory",
           File.cwd!(),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert create.status == 0
@@ -70,11 +84,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "projects",
           "show",
           Integer.to_string(id),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert show.status == 0
@@ -91,7 +103,7 @@ defmodule Taskman.CLI.EndToEndTest do
   end
 
   test "updates Task parentage and inspects hierarchy through the loopback API",
-       %{api_key: api_key} do
+       %{api_key: api_key, config_root: config_root} do
     server =
       start_supervised!(
         {Bandit,
@@ -100,6 +112,7 @@ defmodule Taskman.CLI.EndToEndTest do
 
     assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
     api_url = "http://127.0.0.1:#{port}"
+    write_config(config_root, api_url, api_key)
 
     project =
       cli_run(
@@ -110,11 +123,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "Hierarchy smoke",
           "--directory",
           File.cwd!(),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert %{"data" => %{"id" => project_id}} = Jason.decode!(project.stdout)
@@ -128,11 +139,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(project_id),
           "--title",
           "Parent",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert %{"data" => %{"id" => parent_id, "parent_task_id" => nil}} =
@@ -149,11 +158,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "Child",
           "--parent",
           Integer.to_string(parent_id),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert %{"data" => %{"id" => child_id, "parent_task_id" => ^parent_id}} =
@@ -167,11 +174,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "--project",
           Integer.to_string(project_id),
           Integer.to_string(child_id),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert hierarchy.status == 0
@@ -195,18 +200,16 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(project_id),
           Integer.to_string(child_id),
           "--no-parent",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert %{"data" => %{"parent_task_id" => nil}} = Jason.decode!(clear_parent.stdout)
   end
 
   test "CLI writes refresh connected Project views through the loopback API",
-       %{conn: conn, api_key: api_key} do
+       %{conn: conn, api_key: api_key, config_root: config_root} do
     server =
       start_supervised!(
         {Bandit,
@@ -215,6 +218,7 @@ defmodule Taskman.CLI.EndToEndTest do
 
     assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
     api_url = "http://127.0.0.1:#{port}"
+    write_config(config_root, api_url, api_key)
     project = project_fixture(%{name: "Browser Project"})
     parent = task_fixture(project, %{title: "CLI parent"})
     project_path = ~p"/projects/#{project.id}"
@@ -231,11 +235,9 @@ defmodule Taskman.CLI.EndToEndTest do
           "CLI Project",
           "--directory",
           File.cwd!(),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert project_create.status == 0
@@ -258,11 +260,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(project.id),
           "--name",
           "CLI List",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert list_create.status == 0
@@ -296,11 +296,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(list_id),
           "--name",
           "CLI Renamed List",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert list_rename.status == 0
@@ -328,11 +326,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(list_id),
           "--title",
           "CLI Task",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert task_create.status == 0
@@ -367,11 +363,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(task_id),
           "--title",
           "CLI Updated Task",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert task_update.status == 0
@@ -396,11 +390,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(task_id),
           "--parent",
           Integer.to_string(parent.id),
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert parent_change.status == 0
@@ -428,11 +420,9 @@ defmodule Taskman.CLI.EndToEndTest do
           Integer.to_string(project.id),
           Integer.to_string(task_id),
           "--to-project-root",
-          "--api-url",
-          api_url,
           "--json"
         ],
-        api_key
+        config_root
       )
 
     assert task_move.status == 0
@@ -459,5 +449,12 @@ defmodule Taskman.CLI.EndToEndTest do
 
   defp sync_view(view), do: _ = :sys.get_state(view.pid)
 
-  defp cli_run(args, api_key), do: Taskman.CLI.run(args, api_key: api_key)
+  defp cli_run(args, config_root), do: Taskman.CLI.run(args, config_root: config_root, env: %{})
+
+  defp write_config(config_root, api_url, api_key) do
+    path = Path.join([config_root, "taskman", "config.json"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(%{"api_url" => api_url, "api_key" => api_key}))
+    :ok = File.chmod(path, 0o600)
+  end
 end

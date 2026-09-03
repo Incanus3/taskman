@@ -1,7 +1,8 @@
 defmodule Taskman.CLI.Runner do
   @moduledoc "Dispatch parsed invocations while keeping IO at the CLI boundary."
 
-  alias Taskman.CLI.{Command, Completions, Invocation, Onboarding, Output, Result}
+  alias Taskman.CLI.{Command, Completions, Config, Invocation, Onboarding, Output, Result}
+  alias Taskman.CLI.Commands.Config, as: ConfigCommand
   alias Taskman.CLI.Commands.Lists
   alias Taskman.CLI.Commands.Projects
   alias Taskman.CLI.Commands.Tasks
@@ -15,21 +16,28 @@ defmodule Taskman.CLI.Runner do
         %Invocation{command: %Command{handler: {:projects, action}}} = invocation,
         runtime_options
       ) do
-    Projects.execute(action, invocation, runtime_options)
+    with_authentication(invocation, runtime_options, &Projects.execute(action, &1, &2))
   end
 
   def run(
         %Invocation{command: %Command{handler: {:lists, action}}} = invocation,
         runtime_options
       ) do
-    Lists.execute(action, invocation, runtime_options)
+    with_authentication(invocation, runtime_options, &Lists.execute(action, &1, &2))
   end
 
   def run(
         %Invocation{command: %Command{handler: {:tasks, action}}} = invocation,
         runtime_options
       ) do
-    Tasks.execute(action, invocation, runtime_options)
+    with_authentication(invocation, runtime_options, &Tasks.execute(action, &1, &2))
+  end
+
+  def run(
+        %Invocation{command: %Command{handler: {:config, action}}} = invocation,
+        runtime_options
+      ) do
+    ConfigCommand.execute(action, invocation, runtime_options)
   end
 
   def run(%Invocation{command: %Command{handler: {:completions, :bash}}}, _runtime_options) do
@@ -113,4 +121,51 @@ defmodule Taskman.CLI.Runner do
     do: Map.put(options, key, value)
 
   defp put_runtime_option(_options, key, value), do: [{key, value}]
+
+  defp with_authentication(invocation, runtime_options, execute) do
+    json? = Map.get(invocation.globals, :json, false)
+
+    case Config.resolve(invocation.globals, runtime_options) do
+      {:ok, %{api_url: api_url, api_key: api_key}} when is_binary(api_key) and api_key != "" ->
+        invocation = %{invocation | globals: Map.put(invocation.globals, :api_url, api_url)}
+        execute.(invocation, resolved_runtime_options(runtime_options, api_key))
+
+      {:ok, _resolved} ->
+        authentication_required(json?)
+
+      {:error, :invalid_configuration, message} ->
+        invalid_configuration(message, json?)
+    end
+  end
+
+  defp resolved_runtime_options(options, api_key) when is_list(options) do
+    options
+    |> Keyword.delete(:api_key)
+    |> Keyword.put(:api_key, api_key)
+  end
+
+  defp resolved_runtime_options(options, api_key) when is_map(options) do
+    options
+    |> Map.delete(:api_key)
+    |> Map.put(:api_key, api_key)
+  end
+
+  defp resolved_runtime_options(_options, api_key), do: [api_key: api_key]
+
+  defp authentication_required(json?) do
+    envelope = %{
+      "error" => %{
+        "code" => "authentication_required",
+        "message" =>
+          "A Taskman API key is required. Run taskman config set-key or set TASKMAN_API_KEY."
+      }
+    }
+
+    %Result{status: 7, stderr: Output.error(envelope, json?)}
+  end
+
+  defp invalid_configuration(message, json?) do
+    envelope = %{"error" => %{"code" => "invalid_configuration", "message" => message}}
+    %Result{status: 2, stderr: Output.error(envelope, json?)}
+  end
 end
