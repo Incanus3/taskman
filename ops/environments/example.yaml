@@ -1,0 +1,35 @@
+# Complete, non-secret environment configuration.
+# Replace the documentation values before using this file for a real host.
+ssh_host: 203.0.113.10
+ssh_port: 2202
+ssh_user: deployer
+host_key_fingerprint: SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+public_hostname: taskman.your-domain.tld
+public_ipv4: 203.0.113.10
+public_ipv6: null
+
+target_os: ubuntu26.04
+architecture: amd64
+application_port: 4000
+distribution_port: 6789
+
+database_name: taskman_prod
+database_role: taskman
+database_host: 127.0.0.1
+database_port: 5432
+pool_size: 10
+mail_from: no-reply@your-domain.tld
+
+managed_root: /opt/taskman
+release_root: /opt/taskman/releases
+deployment_root: /opt/taskman/deployments
+backup_root: /var/backups/taskman
+backup_schedule: '*-*-* 02:15:00'
+backup_retention: 14
+release_retention: 3
+readiness_timeout: 30
+connection_timeout: 10
+
+# Set this only when an explicitly pinned Ubuntu PostgreSQL track is needed.
+postgres_package_track: null

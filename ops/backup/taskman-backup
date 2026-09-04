@@ -1,0 +1,816 @@
+#!/bin/sh
+# Create one validated, root-owned local PostgreSQL backup.
+#
+# The command is intentionally self-contained: the timer and every controller
+# invocation use this same transaction, so there is never a second lifecycle
+# lock acquisition around it.  It emits only one validated BackupRecord JSON
+# object on stdout.  Diagnostics are fixed, secret-free summaries on stderr.
+
+set -eu
+LC_ALL=C
+export LC_ALL
+umask 077
+
+PGPASSFILE=/etc/taskman/pgpass
+export PGPASSFILE
+
+backup_root=
+deployment_root=
+lock_root=/var/lock/taskman
+managed_root=/opt/taskman
+release_root=/opt/taskman/releases
+database_host=
+database_port=
+database_role=
+database_name=
+retention=
+reason=
+requested_current_release=
+candidate_release=
+rollback_confirmation=
+rollback_target_path=
+rollback_target_authority=
+lock_timeout_seconds=0
+already_locked=0
+temporary_dump=
+temporary_record=
+temporary_inventory=
+temporary_safe_inventory=
+temporary_sorted_inventory=
+temporary_authority_releases=
+temporary_authority_activations=
+temporary_authority_sorted=
+final_dump=
+final_record=
+lock_token=
+record_published=0
+dump_published=0
+
+invalid() {
+  printf '%s\n' 'invalid Taskman backup command arguments' >&2
+  exit 2
+}
+
+backup_failure() {
+  printf '%s\n' 'database backup failed; inspect PostgreSQL and backup capacity before retrying' >&2
+  exit 6
+}
+
+safety_failure() {
+  printf '%s\n' 'backup lifecycle state is unsafe; inspect managed backup records before retrying' >&2
+  exit 10
+}
+
+warning() {
+  # Entry names are intentionally omitted: an unrecognized file may contain
+  # an operator-provided secret or terminal control sequence in its name.
+  printf '%s\n' 'taskman backup warning: unrecognized retention entry left in place' >&2
+}
+
+safe_path() {
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *[!A-Za-z0-9_./+-]*|*..*) return 1 ;;
+  esac
+  return 0
+}
+
+safe_release_id() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6$'
+}
+
+safe_identifier() {
+  printf '%s\n' "$1" | grep -Eq '^[a-z_][a-z0-9_]{0,62}$'
+}
+
+safe_host() {
+  case "$1" in
+    127.0.0.1|::1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+safe_reason() {
+  case "$1" in
+    scheduled|pre-deploy|pre-rollback|pre-restore) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+strict_utc() {
+  utc_value=$1
+  canonical_utc=$(date -u -d "$utc_value" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 1
+  test "$canonical_utc" = "$utc_value"
+}
+
+safe_mode() {
+  case "$1" in
+    [0-7][0-7][0-7]) printf '%s\n' "$1" ;;
+    0[0-7][0-7][0-7]) printf '%s\n' "${1#0}" ;;
+    *) return 1 ;;
+  esac
+}
+
+owner_uid=$(id -u)
+owner_gid=$(id -g)
+
+safe_directory() {
+  test -d "$1" && test ! -L "$1" || return 1
+  test "$(stat -c %u -- "$1")" = "$owner_uid" || return 1
+  directory_mode=$(safe_mode "$(stat -c %a -- "$1")") || return 1
+  case "$directory_mode" in
+    [0-7][2367][0-7]|[0-7][0-7][2367]) return 1 ;;
+  esac
+}
+
+safe_private_file() {
+  test -f "$1" && test ! -L "$1" || return 1
+  test "$(stat -c %u:%a -- "$1")" = "$owner_uid:600"
+}
+
+ensure_directory() {
+  if test -e "$1" || test -L "$1"; then
+    safe_directory "$1" || safety_failure
+  else
+    install -d -o "$owner_uid" -g "$owner_gid" -m 750 -- "$1" 2>/dev/null || safety_failure
+    safe_directory "$1" || safety_failure
+  fi
+}
+
+random_hex() {
+  value=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') || return 1
+  printf '%s\n' "$value" | grep -Eq '^[0-9a-f]{32}$' || return 1
+  printf '%s\n' "$value"
+}
+
+metadata_valid() {
+  case "$1" in ''|*[!0-9a-f]*) return 1;; esac
+  test "${#1}" = 32 || return 1
+  printf '%s\n' "$2" | grep -Eq '^[a-z][a-z-]{0,63}$' || return 1
+  case "$3" in ''|*[!0-9]*) return 1;; esac
+  test "$3" -gt 0 || return 1
+  printf '%s\n' "$4" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
+  case "$5" in shared|exclusive) ;; *) return 1;; esac
+}
+
+metadata_store() {
+  if test -n "$metadata_live"; then
+    printf '%s\n' "$metadata_live" > "$lock_metadata"
+  else
+    : > "$lock_metadata"
+  fi
+  chmod 600 -- "$lock_metadata"
+  sync -f "$lock_metadata"
+  sync -f "$lock_root"
+}
+
+metadata_retain_except() {
+  metadata_excluded=$1
+  metadata_live=$(while IFS='|' read -r metadata_token metadata_operation metadata_pid metadata_started metadata_mode metadata_extra || test -n "${metadata_token}${metadata_operation}${metadata_pid}${metadata_started}${metadata_mode}${metadata_extra}"; do
+    test -z "$metadata_extra" || exit 10
+    metadata_valid "$metadata_token" "$metadata_operation" "$metadata_pid" "$metadata_started" "$metadata_mode" || exit 10
+    if kill -0 "$metadata_pid" 2>/dev/null && test "$metadata_token" != "$metadata_excluded"; then
+      printf '%s|%s|%s|%s|%s\n' "$metadata_token" "$metadata_operation" "$metadata_pid" "$metadata_started" "$metadata_mode"
+    fi
+  done < "$lock_metadata") || safety_failure
+  metadata_store
+}
+
+metadata_append() {
+  metadata_retain_except ""
+  if test -n "$metadata_live"; then
+    metadata_live="$metadata_live
+$1|$2|$3|$4|$5"
+  else
+    metadata_live="$1|$2|$3|$4|$5"
+  fi
+  metadata_store
+}
+
+metadata_holder() {
+  while IFS='|' read -r metadata_token metadata_operation metadata_pid metadata_started metadata_mode metadata_extra || test -n "${metadata_token}${metadata_operation}${metadata_pid}${metadata_started}${metadata_mode}${metadata_extra}"; do
+    test -z "$metadata_extra" || exit 10
+    metadata_valid "$metadata_token" "$metadata_operation" "$metadata_pid" "$metadata_started" "$metadata_mode" || exit 10
+    printf '{"schema_version":1,"holder":{"operation":"%s","pid":%s,"started_at":"%s","mode":"%s"}}\n' "$metadata_operation" "$metadata_pid" "$metadata_started" "$metadata_mode"
+    return 0
+  done < "$lock_metadata"
+  printf '%s\n' '{"schema_version":1,"holder":null}'
+}
+
+release_lifecycle_lock() {
+  test -n "$lock_token" || return 0
+  flock -x 8 || return 0
+  metadata_retain_except "$lock_token" || :
+  flock -u 8 || :
+  # The holder metadata is gone while descriptor 9 still owns the exclusive
+  # lifecycle lock.  Only then can another transaction observe a free lock.
+  flock -u 9 || :
+  exec 8>&-
+  exec 9>&-
+  lock_token=
+}
+
+cleanup() {
+  # These paths are generated by this invocation only.  Keep the lifecycle
+  # lock through their removal so a waiting transaction cannot observe an
+  # incomplete publication or stale temporary artifact.
+  test -z "$temporary_dump" || rm -f -- "$temporary_dump" 2>/dev/null || :
+  test -z "$temporary_record" || rm -f -- "$temporary_record" 2>/dev/null || :
+  test -z "$temporary_inventory" || rm -f -- "$temporary_inventory" 2>/dev/null || :
+  test -z "$temporary_safe_inventory" || rm -f -- "$temporary_safe_inventory" 2>/dev/null || :
+  test -z "$temporary_sorted_inventory" || rm -f -- "$temporary_sorted_inventory" 2>/dev/null || :
+  test -z "$temporary_authority_releases" || rm -f -- "$temporary_authority_releases" 2>/dev/null || :
+  test -z "$temporary_authority_activations" || rm -f -- "$temporary_authority_activations" 2>/dev/null || :
+  test -z "$temporary_authority_sorted" || rm -f -- "$temporary_authority_sorted" 2>/dev/null || :
+  if test "$record_published" != 1; then
+    test -z "$final_record" || rm -f -- "$final_record" 2>/dev/null || :
+    test -z "$final_dump" || test "$dump_published" != 1 || rm -f -- "$final_dump" 2>/dev/null || :
+  fi
+  release_lifecycle_lock
+}
+
+trap cleanup EXIT
+# A signal must take the EXIT path rather than run cleanup and resume shell
+# execution with a lock that has just been released.
+trap 'exit 1' HUP INT TERM
+
+while test "$#" -gt 0; do
+  case "$1" in
+    --database-host) database_host=${2-}; shift 2 ;;
+    --database-port) database_port=${2-}; shift 2 ;;
+    --database-role) database_role=${2-}; shift 2 ;;
+    --database-name) database_name=${2-}; shift 2 ;;
+    --backup-root) backup_root=${2-}; shift 2 ;;
+    --deployment-root) deployment_root=${2-}; shift 2 ;;
+    --lock-root) lock_root=${2-}; shift 2 ;;
+    --managed-root) managed_root=${2-}; shift 2 ;;
+    --release-root) release_root=${2-}; shift 2 ;;
+    --retention) retention=${2-}; shift 2 ;;
+    --reason) reason=${2-}; shift 2 ;;
+    --current-release) requested_current_release=${2-}; shift 2 ;;
+    --candidate-release) candidate_release=${2-}; shift 2 ;;
+    --rollback-confirmation) rollback_confirmation=${2-}; shift 2 ;;
+    --rollback-target-path) rollback_target_path=${2-}; shift 2 ;;
+    --rollback-target-authority) rollback_target_authority=${2-}; shift 2 ;;
+    --lock-timeout-seconds) lock_timeout_seconds=${2-}; shift 2 ;;
+    --already-locked) already_locked=1; shift ;;
+    *) invalid ;;
+  esac
+done
+
+safe_host "$database_host" || invalid
+case "$database_port" in ''|*[!0-9]*) invalid;; esac
+test "$database_port" -ge 1 && test "$database_port" -le 65535 || invalid
+safe_identifier "$database_role" || invalid
+safe_identifier "$database_name" || invalid
+safe_path "$backup_root" || invalid
+safe_path "$deployment_root" || invalid
+safe_path "$lock_root" || invalid
+safe_path "$managed_root" || invalid
+safe_path "$release_root" || invalid
+case "$retention" in ''|*[!0-9]*) invalid;; esac
+test "$retention" -gt 0 || invalid
+safe_reason "$reason" || invalid
+case "$lock_timeout_seconds" in ''|*[!0-9]*) invalid;; esac
+case "$already_locked" in 0|1) ;; *) invalid;; esac
+if test -n "$requested_current_release"; then safe_release_id "$requested_current_release" || invalid; fi
+if test -n "$candidate_release"; then safe_release_id "$candidate_release" || invalid; fi
+if test -n "$rollback_confirmation" || test -n "$rollback_target_path" || test -n "$rollback_target_authority"; then
+  test "$reason" = pre-rollback && test -n "$requested_current_release" && test -n "$candidate_release" || invalid
+  test -n "$rollback_confirmation" && test -n "$rollback_target_path" && test -n "$rollback_target_authority" || invalid
+  printf '%s\n' "$rollback_confirmation" | grep -Eq '^activation-[0-9a-f]{32}:(no-change|backward-compatible|restore-required|adopted)(,activation-[0-9a-f]{32}:(no-change|backward-compatible|restore-required|adopted))*$' || invalid
+  safe_path "$rollback_target_path" || invalid
+  case "$rollback_target_authority" in direct|adopted) ;; *) invalid;; esac
+fi
+
+ensure_directory "$lock_root"
+if test "$already_locked" = 1; then
+  inherited_lock_token=${TASKMAN_LIFECYCLE_LOCK_HELD:-}
+  inherited_lock_fd=${TASKMAN_LIFECYCLE_LOCK_FD:-}
+  printf '%s\n' "$inherited_lock_token" | grep -Eq '^[0-9a-f]{32}$' || safety_failure
+  # ``--already-locked`` is an internal, lock-inheritance protocol rather
+  # than an assertion a caller may make. A deploy, rollback, or restore transaction
+  # passes its still-held descriptor 9 through exec; a token and well-shaped
+  # files alone never create authority to bypass the canonical lifecycle lock.
+  test "$inherited_lock_fd" = 9 || safety_failure
+  test -e "/proc/$$/fd/$inherited_lock_fd" || safety_failure
+  lock_file="$lock_root/lifecycle.lock"
+  lock_metadata="$lock_root/lifecycle.lock.meta"
+  safe_private_file "$lock_file" && safe_private_file "$lock_metadata" || safety_failure
+  canonical_lock_inode=$(stat -Lc '%d:%i' -- "$lock_file") || safety_failure
+  inherited_lock_inode=$(stat -Lc '%d:%i' -- "/proc/$$/fd/$inherited_lock_fd") || safety_failure
+  test "$inherited_lock_inode" = "$canonical_lock_inode" || safety_failure
+  flock -n "$inherited_lock_fd" || safety_failure
+  inherited_authority=0
+  while IFS='|' read -r metadata_token metadata_operation metadata_pid metadata_started metadata_mode metadata_extra || test -n "${metadata_token}${metadata_operation}${metadata_pid}${metadata_started}${metadata_mode}${metadata_extra}"; do
+    test -z "$metadata_extra" || safety_failure
+    metadata_valid "$metadata_token" "$metadata_operation" "$metadata_pid" "$metadata_started" "$metadata_mode" || safety_failure
+    if test "$metadata_token" = "$inherited_lock_token" && { test "$metadata_operation" = deploy || test "$metadata_operation" = rollback || test "$metadata_operation" = restore; } && test "$metadata_mode" = exclusive && kill -0 "$metadata_pid" 2>/dev/null; then
+      inherited_authority=1
+    fi
+  done < "$lock_metadata"
+  test "$inherited_authority" = 1 || safety_failure
+else
+  lock_file="$lock_root/lifecycle.lock"
+  lock_metadata="$lock_root/lifecycle.lock.meta"
+  for lock_path in "$lock_file" "$lock_metadata"; do
+    if test -e "$lock_path" || test -L "$lock_path"; then
+      safe_private_file "$lock_path" || safety_failure
+    else
+      : > "$lock_path" || safety_failure
+      chown "$owner_uid:$owner_gid" -- "$lock_path" 2>/dev/null || safety_failure
+      chmod 600 -- "$lock_path" || safety_failure
+      safe_private_file "$lock_path" || safety_failure
+    fi
+  done
+
+  exec 9>"$lock_file"
+  exec 8<>"$lock_metadata"
+  lock_deadline=$(( $(date +%s) + lock_timeout_seconds ))
+  while :; do
+    flock -x 8
+    metadata_retain_except ""
+    if flock -xn 9; then
+      lock_token=$(random_hex) || safety_failure
+      lock_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      metadata_append "$lock_token" backup "$$" "$lock_started" exclusive
+      flock -u 8
+      break
+    fi
+    lock_holder=$(metadata_holder)
+    flock -u 8
+    if test "$(date +%s)" -ge "$lock_deadline"; then
+      printf '%s' "$lock_holder"
+      exit 12
+    fi
+    sleep 1
+  done
+fi
+
+utc_pattern='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+release_id_pattern='[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6'
+backup_id_pattern='backup-[0-9a-f]{32}'
+activation_id_pattern='activation-[0-9a-f]{32}'
+application_version_pattern='[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?'
+optional_release_pattern="(null|\"$release_id_pattern\")"
+optional_backup_pattern="(null|\"$backup_id_pattern\")"
+optional_sha256_pattern='(null|"[0-9a-f]{64}")'
+policy_pattern='(no-change|backward-compatible|restore-required|adopted)'
+migration_item_pattern='\{"filename":"[0-9]{14}_[a-z0-9_]+\.exs","sha256":"[0-9a-f]{64}"\}'
+migrations_pattern="\[($migration_item_pattern(,$migration_item_pattern)*)?\]"
+
+release_canonical_pattern="^\\{\"activated_at\":(null|\"$utc_pattern\"),\"artifact_sha256\":$optional_sha256_pattern,\"backup_id\":$optional_backup_pattern,\"installed_at\":\"$utc_pattern\",\"migration_policy\":\"$policy_pattern\",\"previous_release_id\":$optional_release_pattern,\"release_id\":\"$release_id_pattern\",\"schema_version\":1\\}$"
+release_adoption_pattern="^\\{\"schema_version\":1,\"release_id\":\"$release_id_pattern\",\"artifact_sha256\":$optional_sha256_pattern,\"installed_at\":\"$utc_pattern\",\"activated_at\":(null|\"$utc_pattern\"),\"previous_release_id\":$optional_release_pattern,\"backup_id\":$optional_backup_pattern,\"migration_policy\":\"$policy_pattern\"\\}$"
+activation_canonical_pattern="^\\{\"activated_at\":\"$utc_pattern\",\"activation_id\":\"$activation_id_pattern\",\"backup_id\":$optional_backup_pattern,\"candidate_release_id\":\"$release_id_pattern\",\"migration_policy\":\"$policy_pattern\",\"previous_release_id\":$optional_release_pattern,\"schema_version\":1\\}$"
+activation_adoption_pattern="^\\{\"schema_version\":1,\"activation_id\":\"$activation_id_pattern\",\"previous_release_id\":$optional_release_pattern,\"candidate_release_id\":\"$release_id_pattern\",\"activated_at\":\"$utc_pattern\",\"backup_id\":$optional_backup_pattern,\"migration_policy\":\"$policy_pattern\"\\}$"
+adoption_canonical_pattern="^\\{\"adopted_at\":\"$utc_pattern\",\"application_version\":\"$application_version_pattern\",\"artifact_sha256\":\"unknown\",\"content_sha256\":\"[0-9a-f]{64}\",\"migrations\":$migrations_pattern,\"release_id\":\"$release_id_pattern\",\"release_path\":\"/[A-Za-z0-9_./+-]+\",\"schema_version\":1,\"source_revision\":\"unknown\"\\}$"
+adoption_transaction_pattern="^\\{\"schema_version\":1,\"release_id\":\"$release_id_pattern\",\"adopted_at\":\"$utc_pattern\",\"release_path\":\"/[A-Za-z0-9_./+-]+\",\"content_sha256\":\"[0-9a-f]{64}\",\"application_version\":\"$application_version_pattern\",\"source_revision\":\"unknown\",\"artifact_sha256\":\"unknown\",\"migrations\":$migrations_pattern\\}$"
+
+optional_json_value() {
+  case "$1" in
+    null) printf '\n' ;;
+    \"*\") value=${1#\"}; printf '%s\n' "${value%\"}" ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_migrations() {
+  migration_json=$1
+  printf '%s\n' "$migration_json" | grep -Eq "^$migrations_pattern$" || return 1
+  test "$migration_json" = '[]' && return 0
+  printf '%s\n' "$migration_json" | sed 's/^\[//;s/\]$//;s/},{/}\n{/g' | awk -F '"' '
+    NF != 9 { exit 1 }
+    { name = $4; if (previous != "" && !(name > previous)) exit 1; previous = name }
+  '
+}
+
+validate_release_record() {
+  lifecycle_release_path=$1
+  expected_release_id=$2
+  safe_private_file "$lifecycle_release_path" || return 1
+  lifecycle_release_json=$(cat -- "$lifecycle_release_path") || return 1
+  if ! printf '%s\n' "$lifecycle_release_json" | grep -Eq "$release_canonical_pattern" && ! printf '%s\n' "$lifecycle_release_json" | grep -Eq "$release_adoption_pattern"; then
+    return 1
+  fi
+  lifecycle_release_id=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"release_id":"\([^"]*\)".*$/\1/p')
+  lifecycle_release_installed=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"installed_at":"\([^"]*\)".*$/\1/p')
+  lifecycle_release_activated_raw=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"activated_at":\("[^"]*"\|null\).*$/\1/p')
+  lifecycle_release_previous_raw=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"previous_release_id":\("[^"]*"\|null\).*$/\1/p')
+  lifecycle_release_backup_raw=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"backup_id":\("[^"]*"\|null\).*$/\1/p')
+  lifecycle_release_policy=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"migration_policy":"\([^"]*\)".*$/\1/p')
+  lifecycle_release_artifact=$(printf '%s\n' "$lifecycle_release_json" | sed -n 's/^.*"artifact_sha256":\("[^"]*"\|null\).*$/\1/p')
+  test "$lifecycle_release_id" = "$expected_release_id" || return 1
+  safe_release_id "$lifecycle_release_id" || return 1
+  strict_utc "$lifecycle_release_installed" || return 1
+  lifecycle_release_activated=$(optional_json_value "$lifecycle_release_activated_raw") || return 1
+  lifecycle_release_previous=$(optional_json_value "$lifecycle_release_previous_raw") || return 1
+  lifecycle_release_backup=$(optional_json_value "$lifecycle_release_backup_raw") || return 1
+  test -z "$lifecycle_release_activated" || strict_utc "$lifecycle_release_activated" || return 1
+  test -z "$lifecycle_release_previous" || safe_release_id "$lifecycle_release_previous" || return 1
+  case "$lifecycle_release_backup" in '') ;; *) printf '%s\n' "$lifecycle_release_backup" | grep -Eq "^$backup_id_pattern$" || return 1;; esac
+  case "$lifecycle_release_policy" in no-change|backward-compatible|restore-required|adopted) ;; *) return 1;; esac
+  test "$lifecycle_release_policy" != adopted || test "$lifecycle_release_artifact" = null || return 1
+}
+
+validate_activation_record() {
+  lifecycle_activation_path=$1
+  expected_activation_id=$2
+  safe_private_file "$lifecycle_activation_path" || return 1
+  lifecycle_activation_json=$(cat -- "$lifecycle_activation_path") || return 1
+  if ! printf '%s\n' "$lifecycle_activation_json" | grep -Eq "$activation_canonical_pattern" && ! printf '%s\n' "$lifecycle_activation_json" | grep -Eq "$activation_adoption_pattern"; then
+    return 1
+  fi
+  lifecycle_activation_id=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"activation_id":"\([^"]*\)".*$/\1/p')
+  lifecycle_activation_at=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"activated_at":"\([^"]*\)".*$/\1/p')
+  lifecycle_activation_candidate=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"candidate_release_id":"\([^"]*\)".*$/\1/p')
+  lifecycle_activation_previous_raw=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"previous_release_id":\("[^"]*"\|null\).*$/\1/p')
+  lifecycle_activation_backup_raw=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"backup_id":\("[^"]*"\|null\).*$/\1/p')
+  lifecycle_activation_policy=$(printf '%s\n' "$lifecycle_activation_json" | sed -n 's/^.*"migration_policy":"\([^"]*\)".*$/\1/p')
+  test "$lifecycle_activation_id" = "$expected_activation_id" || return 1
+  printf '%s\n' "$lifecycle_activation_id" | grep -Eq "^$activation_id_pattern$" || return 1
+  safe_release_id "$lifecycle_activation_candidate" || return 1
+  strict_utc "$lifecycle_activation_at" || return 1
+  lifecycle_activation_previous=$(optional_json_value "$lifecycle_activation_previous_raw") || return 1
+  lifecycle_activation_backup=$(optional_json_value "$lifecycle_activation_backup_raw") || return 1
+  test -z "$lifecycle_activation_previous" || safe_release_id "$lifecycle_activation_previous" || return 1
+  case "$lifecycle_activation_backup" in '') ;; *) printf '%s\n' "$lifecycle_activation_backup" | grep -Eq "^$backup_id_pattern$" || return 1;; esac
+  case "$lifecycle_activation_policy" in no-change|backward-compatible|restore-required|adopted) ;; *) return 1;; esac
+}
+
+validate_adoption_marker() {
+  lifecycle_marker=$1
+  expected_release_id=$2
+  safe_private_file "$lifecycle_marker" || return 1
+  lifecycle_marker_json=$(cat -- "$lifecycle_marker") || return 1
+  if ! printf '%s\n' "$lifecycle_marker_json" | grep -Eq "$adoption_canonical_pattern" && ! printf '%s\n' "$lifecycle_marker_json" | grep -Eq "$adoption_transaction_pattern"; then
+    return 1
+  fi
+  lifecycle_adoption_id=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"release_id":"\([^"]*\)".*$/\1/p')
+  lifecycle_adoption_at=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"adopted_at":"\([^"]*\)".*$/\1/p')
+  lifecycle_adoption_path=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"release_path":"\([^"]*\)".*$/\1/p')
+  lifecycle_adoption_content=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"content_sha256":"\([^"]*\)".*$/\1/p')
+  lifecycle_adoption_version=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"application_version":"\([^"]*\)".*$/\1/p')
+  lifecycle_adoption_migrations=$(printf '%s\n' "$lifecycle_marker_json" | sed -n 's/^.*"migrations":\(\[[^]]*\]\).*$/\1/p')
+  test "$lifecycle_adoption_id" = "$expected_release_id" || return 1
+  safe_release_id "$lifecycle_adoption_id" || return 1
+  strict_utc "$lifecycle_adoption_at" || return 1
+  safe_path "$lifecycle_adoption_path" || return 1
+  printf '%s\n' "$lifecycle_adoption_content" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s\n' "$lifecycle_adoption_version" | grep -Eq "^$application_version_pattern$" || return 1
+  test "$lifecycle_adoption_id" = "$lifecycle_adoption_version-$(printf '%s' "$lifecycle_adoption_content" | cut -c1-12)-ubuntu26.04-amd64-otp27.3.4.6" || return 1
+  validate_migrations "$lifecycle_adoption_migrations" || return 1
+}
+
+safe_optional_directory() {
+  test -e "$1" || test -L "$1" || return 0
+  safe_directory "$1"
+}
+
+validate_authoritative_history() {
+  selected_release_path=$1
+  safe_optional_directory "$deployment_root" || return 1
+  safe_optional_directory "$deployment_root/releases" || return 1
+  safe_optional_directory "$deployment_root/activations" || return 1
+  safe_optional_directory "$deployment_root/adoptions" || return 1
+  safe_optional_directory "$deployment_root/adoption-transactions" || return 1
+
+  temporary_authority_releases=$(mktemp "$lock_root/.taskman-backup-authority-releases.XXXXXXXX") || return 1
+  temporary_authority_activations=$(mktemp "$lock_root/.taskman-backup-authority-activations.XXXXXXXX") || return 1
+  temporary_authority_sorted=$(mktemp "$lock_root/.taskman-backup-authority-sorted.XXXXXXXX") || return 1
+
+  release_directory="$deployment_root/releases"
+  if test -d "$release_directory"; then
+    for release_record in "$release_directory"/* "$release_directory"/.[!.]* "$release_directory"/..?*; do
+      test -e "$release_record" || test -L "$release_record" || continue
+      release_name=${release_record##*/}
+      case "$release_name" in release-*.json) ;; *) continue;; esac
+      release_id=${release_name#release-}
+      release_id=${release_id%.json}
+      safe_release_id "$release_id" || continue
+      validate_release_record "$release_record" "$release_id" || return 1
+      test "$lifecycle_release_policy" != adopted || return 1
+      safe_directory "$release_root/$release_id" || return 1
+      printf '%s|%s|%s|%s|%s|%s|%s|%s|direct\n' "$release_id" "$lifecycle_release_installed" "$lifecycle_release_activated" "$lifecycle_release_previous" "$lifecycle_release_backup" "$lifecycle_release_policy" "$lifecycle_release_artifact" "$release_root/$release_id" >> "$temporary_authority_releases" || return 1
+    done
+  fi
+
+  adoption_directory="$deployment_root/adoptions"
+  if test -d "$adoption_directory"; then
+    for adoption_marker in "$adoption_directory"/* "$adoption_directory"/.[!.]* "$adoption_directory"/..?*; do
+      test -e "$adoption_marker" || test -L "$adoption_marker" || continue
+      adoption_name=${adoption_marker##*/}
+      case "$adoption_name" in adoption-*.json) ;; *) continue;; esac
+      adoption_id=${adoption_name#adoption-}
+      adoption_id=${adoption_id%.json}
+      safe_release_id "$adoption_id" || continue
+      validate_adoption_marker "$adoption_marker" "$adoption_id" || return 1
+      adoption_timestamp=$lifecycle_adoption_at
+      adoption_path=$lifecycle_adoption_path
+      adoption_content=$lifecycle_adoption_content
+      case "$adoption_path" in "$release_root"/*) ;; *) return 1;; esac
+      safe_directory "$adoption_path" || return 1
+      adoption_bundle="$deployment_root/adoption-transactions/adoption-$adoption_id"
+      safe_directory "$adoption_bundle" || return 1
+      test "$(stat -c %a -- "$adoption_bundle")" = 750 || return 1
+      test ! -e "$deployment_root/releases/release-$adoption_id.json" && test ! -L "$deployment_root/releases/release-$adoption_id.json" || return 1
+      validate_release_record "$adoption_bundle/release.json" "$adoption_id" || return 1
+      test "$lifecycle_release_policy" = adopted && test "$lifecycle_release_artifact" = null && test "$lifecycle_release_installed" = "$adoption_timestamp" && test "$lifecycle_release_activated" = "$adoption_timestamp" && test -z "$lifecycle_release_previous" && test -z "$lifecycle_release_backup" || return 1
+      printf '%s|%s|%s|%s|%s|%s|%s|%s|adopted\n' "$adoption_id" "$lifecycle_release_installed" "$lifecycle_release_activated" "$lifecycle_release_previous" "$lifecycle_release_backup" "$lifecycle_release_policy" "$lifecycle_release_artifact" "$adoption_path" >> "$temporary_authority_releases" || return 1
+      expected_adoption_activation="activation-$(printf '%s' "$adoption_content" | cut -c1-32)"
+      validate_activation_record "$adoption_bundle/activation.json" "$expected_adoption_activation" || return 1
+      test "$lifecycle_activation_candidate" = "$adoption_id" && test "$lifecycle_activation_at" = "$adoption_timestamp" && test -z "$lifecycle_activation_previous" && test -z "$lifecycle_activation_backup" && test "$lifecycle_activation_policy" = adopted || return 1
+      printf '%s|%s|%s|%s|%s|%s|adopted\n' "$lifecycle_activation_at" "$lifecycle_activation_id" "$lifecycle_activation_previous" "$lifecycle_activation_candidate" "$lifecycle_activation_backup" "$lifecycle_activation_policy" >> "$temporary_authority_activations" || return 1
+    done
+  fi
+
+  activation_directory="$deployment_root/activations"
+  if test -d "$activation_directory"; then
+    for activation_record in "$activation_directory"/* "$activation_directory"/.[!.]* "$activation_directory"/..?*; do
+      test -e "$activation_record" || test -L "$activation_record" || continue
+      activation_name=${activation_record##*/}
+      activation_id=${activation_name%.json}
+      test "$activation_name" = "$activation_id.json" || continue
+      printf '%s\n' "$activation_id" | grep -Eq "^$activation_id_pattern$" || continue
+      validate_activation_record "$activation_record" "$activation_id" || return 1
+      test "$lifecycle_activation_policy" != adopted || return 1
+      printf '%s|%s|%s|%s|%s|%s|direct\n' "$lifecycle_activation_at" "$lifecycle_activation_id" "$lifecycle_activation_previous" "$lifecycle_activation_candidate" "$lifecycle_activation_backup" "$lifecycle_activation_policy" >> "$temporary_authority_activations" || return 1
+    done
+  fi
+
+  sort -t '|' -k1,1 -k2,2 -- "$temporary_authority_activations" > "$temporary_authority_sorted" || return 1
+  authoritative_latest=$(awk -F '|' '
+    FILENAME == ARGV[1] {
+      if (NF != 9 || releases[$1]++) exit 1
+      release_activated[$1] = $3
+      release_previous[$1] = $4
+      release_backup[$1] = $5
+      release_policy[$1] = $6
+      release_path[$1] = $8
+      next
+    }
+    {
+      if (NF != 7 || activation_ids[$2]++) exit 1
+      if (!($4 in releases)) exit 1
+      if (last_time != "" && !($1 > last_time)) exit 1
+      if ($3 == "") {
+        if (activation_count != 0) exit 1
+        genesis += 1
+      } else if ($3 != previous) exit 1
+      if ($3 == $4) exit 1
+      if (!($4 in first_activation)) {
+        first_activation[$4] = 1
+        first_time[$4] = $1
+        first_previous[$4] = $3
+        first_backup[$4] = $5
+        first_policy[$4] = $6
+      }
+      previous = $4
+      last_time = $1
+      activation_count += 1
+    }
+    END {
+      if (activation_count > 0 && genesis != 1) exit 1
+      for (release in releases) {
+        if (release in first_activation) {
+          if (release_activated[release] != first_time[release] || release_previous[release] != first_previous[release] || release_backup[release] != first_backup[release] || release_policy[release] != first_policy[release]) exit 1
+        } else if (release_activated[release] != "" || release_previous[release] != "" || release_backup[release] != "") exit 1
+      }
+      if (activation_count > 0) print previous
+    }
+  ' "$temporary_authority_releases" "$temporary_authority_sorted") || return 1
+
+  if test -n "$authoritative_latest"; then
+    test -n "$selected_release_path" || return 1
+    authoritative_path=$(awk -F '|' -v wanted="$authoritative_latest" '$1 == wanted { print $8 }' "$temporary_authority_releases") || return 1
+    test "$authoritative_path" = "$selected_release_path" || return 1
+    authoritative_current_release=$authoritative_latest
+  else
+    test -z "$selected_release_path" || return 1
+    authoritative_current_release=
+  fi
+}
+
+validate_rollback_confirmation() {
+  test "$reason" = pre-rollback || return 1
+  test -n "$rollback_confirmation" && test -n "$rollback_target_path" || return 1
+  test "$authoritative_current_release" = "$requested_current_release" || return 1
+
+  rollback_authoritative_target=$(awk -F '|' -v wanted="$candidate_release" '
+    $1 == wanted { matches += 1; path = $8 }
+    END { if (matches != 1 || path == "") exit 1; print path }
+  ' "$temporary_authority_releases") || return 1
+  rollback_target_kind=$(awk -F '|' -v wanted="$candidate_release" '
+    $1 == wanted { matches += 1; kind = $9 }
+    END { if (matches != 1 || kind == "") exit 1; print kind }
+  ' "$temporary_authority_releases") || return 1
+  test "$rollback_target_kind" = "$rollback_target_authority" || return 1
+  test "$rollback_authoritative_target" = "$rollback_target_path" || return 1
+  case "$rollback_authoritative_target" in "$release_root"/*) ;; *) return 1;; esac
+  safe_directory "$rollback_authoritative_target" || return 1
+  if test "$rollback_target_kind" = direct; then
+    safe_private_file "$deployment_root/manifests/release-$candidate_release.json" || return 1
+  fi
+
+  rollback_activation_rows=$(sort -r -t '|' -k1,1 -k2,2 -- "$temporary_authority_sorted") || return 1
+  rollback_cursor=$requested_current_release
+  rollback_actual=
+  rollback_found=0
+  while IFS='|' read -r rollback_at rollback_id rollback_previous rollback_candidate rollback_backup rollback_policy rollback_kind rollback_extra || test -n "${rollback_at}${rollback_id}${rollback_previous}${rollback_candidate}${rollback_backup}${rollback_policy}${rollback_kind}${rollback_extra}"; do
+    test -z "$rollback_extra" || return 1
+    test "$rollback_candidate" = "$rollback_cursor" || return 1
+    test "$rollback_policy" != restore-required || return 1
+    rollback_edge="$rollback_id:$rollback_policy"
+    rollback_actual="${rollback_actual}${rollback_actual:+,}$rollback_edge"
+    if test "$rollback_previous" = "$candidate_release"; then
+      rollback_found=1
+      break
+    fi
+    test -n "$rollback_previous" || return 1
+    rollback_cursor=$rollback_previous
+  done <<EOF
+$rollback_activation_rows
+EOF
+  test "$rollback_found" = 1 && test "$rollback_actual" = "$rollback_confirmation"
+}
+
+selected_path=
+if test -L "$managed_root/current"; then
+  selected_path=$(readlink -f -- "$managed_root/current" 2>/dev/null) || safety_failure
+  case "$selected_path" in "$release_root"/*) ;; *) safety_failure;; esac
+  safe_path "$selected_path" || safety_failure
+  safe_directory "$selected_path" || safety_failure
+elif test -e "$managed_root/current"; then
+  safety_failure
+fi
+authoritative_current_release=
+validate_authoritative_history "$selected_path" || safety_failure
+current_release=$authoritative_current_release
+if test -n "$requested_current_release"; then
+  if test -z "$current_release" || test "$requested_current_release" != "$current_release"; then
+    safety_failure
+  fi
+fi
+if test -n "$rollback_confirmation"; then
+  validate_rollback_confirmation || safety_failure
+fi
+
+ensure_directory "$backup_root"
+records_directory="$deployment_root/backups"
+ensure_directory "$deployment_root"
+ensure_directory "$records_directory"
+available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
+case "$available_bytes" in ''|*[!0-9]*) backup_failure;; esac
+test "$available_bytes" -gt 0 && test "$available_bytes" -le 900000000000000000 || backup_failure
+if ! psql --no-psqlrc --host "$database_host" --port "$database_port" --username "$database_role" --dbname "$database_name" --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>/dev/null; then
+  backup_failure
+fi
+database_bytes=$(psql --no-psqlrc --host "$database_host" --port "$database_port" --username "$database_role" --dbname "$database_name" --tuples-only --no-align --command 'SELECT pg_database_size(current_database())' 2>/dev/null) || backup_failure
+case "$database_bytes" in ''|*[!0-9]*) backup_failure;; esac
+# Keep arithmetic bounded on the POSIX shell's signed integer range.  A value
+# outside this deliberate operating envelope is refused rather than allowing
+# overflow to understate the required free capacity.
+test "$database_bytes" -gt 0 && test "$database_bytes" -le 900000000000000000 || backup_failure
+capacity_margin=$(( (database_bytes + 9) / 10 ))
+test "$capacity_margin" -ge 67108864 || capacity_margin=67108864
+capacity_required=$(( database_bytes + capacity_margin ))
+test "$available_bytes" -ge "$capacity_required" || backup_failure
+
+backup_id="backup-$(random_hex)" || backup_failure
+final_dump="$backup_root/$backup_id.dump"
+final_record="$records_directory/$backup_id.json"
+test ! -e "$final_dump" && test ! -L "$final_dump" || backup_failure
+test ! -e "$final_record" && test ! -L "$final_record" || backup_failure
+temporary_dump=$(mktemp "$backup_root/.taskman-backup-dump.XXXXXXXX") || backup_failure
+chmod 600 -- "$temporary_dump" || backup_failure
+if ! pg_dump --format=custom --file "$temporary_dump" --host "$database_host" --port "$database_port" --username "$database_role" --dbname "$database_name" >/dev/null 2>/dev/null; then
+  backup_failure
+fi
+safe_private_file "$temporary_dump" || backup_failure
+if ! pg_restore --list "$temporary_dump" >/dev/null 2>/dev/null; then
+  backup_failure
+fi
+size_bytes=$(stat -c %s -- "$temporary_dump") || backup_failure
+case "$size_bytes" in ''|*[!0-9]*) backup_failure;; esac
+test "$size_bytes" -gt 0 || backup_failure
+sync -f "$temporary_dump" || backup_failure
+ln -- "$temporary_dump" "$final_dump" || backup_failure
+dump_published=1
+sync -f "$final_dump" || backup_failure
+sync -f "$backup_root" || backup_failure
+rm -f -- "$temporary_dump"
+temporary_dump=
+
+created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+current_json=null
+candidate_json=null
+if test -n "$current_release"; then current_json="\"$current_release\""; fi
+if test -n "$candidate_release"; then candidate_json="\"$candidate_release\""; fi
+temporary_record=$(mktemp "$records_directory/.taskman-backup-record.XXXXXXXX") || backup_failure
+printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}" > "$temporary_record" || backup_failure
+chmod 600 -- "$temporary_record" || backup_failure
+sync -f "$temporary_record" || backup_failure
+ln -- "$temporary_record" "$final_record" || backup_failure
+sync -f "$records_directory" || backup_failure
+rm -f -- "$temporary_record"
+temporary_record=
+
+record_pattern='^\{"backup_id":"backup-[0-9a-f]{32}","candidate_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"created_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","current_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"database":"[a-z_][a-z0-9_]{0,62}","dump_path":"/[A-Za-z0-9_./+-]+","reason":"(scheduled|pre-deploy|pre-rollback|pre-restore)","schema_version":1,"size_bytes":[0-9]+,"source_database_size_bytes":[1-9][0-9]*,"validated":true\}$'
+
+recognize_pair() {
+  recognized_record=$1
+  recognized_id=$2
+  safe_private_file "$recognized_record" || return 1
+  record_json=$(cat -- "$recognized_record") || return 1
+  printf '%s\n' "$record_json" | grep -Eq "$record_pattern" || return 1
+  record_id=$(printf '%s\n' "$record_json" | sed -n 's/^.*"backup_id":"\([0-9a-z-]*\)".*$/\1/p')
+  test "$record_id" = "$recognized_id" || return 1
+  record_dump=$(printf '%s\n' "$record_json" | sed -n 's/^.*"dump_path":"\([^"]*\)","reason".*$/\1/p')
+  safe_path "$record_dump" || return 1
+  case "$record_dump" in "$backup_root"/*) ;; *) return 1;; esac
+  safe_private_file "$record_dump" || return 1
+  record_size=$(printf '%s\n' "$record_json" | sed -n 's/^.*"size_bytes":\([0-9][0-9]*\),"source_database_size_bytes".*$/\1/p')
+  test "$record_size" = "$(stat -c %s -- "$record_dump")" || return 1
+  record_created=$(printf '%s\n' "$record_json" | sed -n 's/^.*"created_at":"\([^"]*\)".*$/\1/p')
+  strict_utc "$record_created" || return 1
+  record_reason=$(printf '%s\n' "$record_json" | sed -n 's/^.*"reason":"\([^"]*\)".*$/\1/p')
+  record_current=$(printf '%s\n' "$record_json" | sed -n 's/^.*"current_release_id":\("[^"]*"\|null\),"database".*$/\1/p')
+  record_candidate=$(printf '%s\n' "$record_json" | sed -n 's/^.*"candidate_release_id":\("[^"]*"\|null\),"created_at".*$/\1/p')
+  record_current=${record_current#\"}; record_current=${record_current%\"}
+  record_candidate=${record_candidate#\"}; record_candidate=${record_candidate%\"}
+  test "$record_current" = null && record_current=
+  test "$record_candidate" = null && record_candidate=
+  printf '%s|%s|%s|%s|%s|%s|%s\n' "$record_created" "$recognized_id" "$recognized_record" "$record_dump" "$record_reason" "$record_current" "$record_candidate"
+}
+
+temporary_inventory=$(mktemp "$records_directory/.taskman-backup-inventory.XXXXXXXX") || backup_failure
+temporary_safe_inventory=$(mktemp "$records_directory/.taskman-backup-safe-inventory.XXXXXXXX") || backup_failure
+temporary_sorted_inventory=$(mktemp "$records_directory/.taskman-backup-sorted.XXXXXXXX") || backup_failure
+for record_path in "$records_directory"/* "$records_directory"/.[!.]* "$records_directory"/..?*; do
+  test -e "$record_path" || test -L "$record_path" || continue
+  record_name=${record_path##*/}
+  case "$record_name" in backup-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json) ;;
+    *) warning; continue;;
+  esac
+  record_id=${record_name%.json}
+  recognized=$(recognize_pair "$record_path" "$record_id") || { warning; continue; }
+  printf '%s\n' "$recognized" >> "$temporary_inventory"
+done
+
+# A dump named in two individually valid records is contradictory lifecycle
+# state.  It is not safe to prune either side, because deleting the shared
+# file would make the other record stale.
+while IFS= read -r recognized_line; do
+  recognized_dump=$(printf '%s\n' "$recognized_line" | awk -F '|' '{print $4}')
+  recognized_count=$(awk -F '|' -v path="$recognized_dump" '$4 == path { count += 1 } END { print count + 0 }' "$temporary_inventory")
+  if test "$recognized_count" = 1; then
+    printf '%s\n' "$recognized_line" >> "$temporary_safe_inventory"
+  else
+    warning
+  fi
+done < "$temporary_inventory"
+
+while IFS= read -r recognized_line; do
+  recognized_dump=$(printf '%s\n' "$recognized_line" | awk -F '|' '{print $4}')
+  case "$recognized_dump" in "$backup_root"/*) ;; *) warning;; esac
+done < "$temporary_inventory"
+for dump_path in "$backup_root"/* "$backup_root"/.[!.]* "$backup_root"/..?*; do
+  test -e "$dump_path" || test -L "$dump_path" || continue
+  case "$dump_path" in "$backup_root"/.taskman-backup-*) continue;; esac
+  if ! awk -F '|' -v path="$dump_path" '$4 == path { found=1 } END { exit found ? 0 : 1 }' "$temporary_inventory"; then
+    warning
+  fi
+done
+
+sort -r "$temporary_safe_inventory" > "$temporary_sorted_inventory" || backup_failure
+retained_count=0
+preserved_predeploy=0
+while IFS='|' read -r record_created record_id record_path record_dump record_reason record_current record_candidate; do
+  keep=0
+  matching_predeploy=0
+  if test "$record_reason" = pre-deploy && test "$record_current" = "$current_release" && test "$record_candidate" = "$candidate_release"; then
+    matching_predeploy=1
+  fi
+  if test "$retained_count" -lt "$retention"; then
+    keep=1
+    retained_count=$((retained_count + 1))
+    if test "$matching_predeploy" = 1 && test "$preserved_predeploy" = 0; then
+      preserved_predeploy=1
+    fi
+  elif test "$preserved_predeploy" = 0 && test "$matching_predeploy" = 1; then
+    keep=1
+    preserved_predeploy=1
+  fi
+  if test "$keep" = 0; then
+    rechecked=$(recognize_pair "$record_path" "$record_id") || { warning; continue; }
+    test "$rechecked" = "$record_created|$record_id|$record_path|$record_dump|$record_reason|$record_current|$record_candidate" || { warning; continue; }
+    rm -f -- "$record_dump" "$record_path" || warning
+    sync -f "$backup_root" || warning
+    sync -f "$records_directory" || warning
+  fi
+done < "$temporary_sorted_inventory"
+
+record_published=1
+printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}"

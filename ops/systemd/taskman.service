@@ -1,7 +1,8 @@
 [Unit]
 Description=Taskman Phoenix release
 Wants=network-online.target
-After=network-online.target
+After=network-online.target postgresql.service
+ConditionPathExists={{TASKMAN_MANAGED_ROOT}}/current/bin/server
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
@@ -9,11 +10,11 @@ StartLimitBurst=3
 Type=exec
 User=taskman
 Group=taskman
-WorkingDirectory=/opt/taskman/current
+WorkingDirectory={{TASKMAN_MANAGED_ROOT}}/current
 EnvironmentFile=/etc/taskman/taskman.env
 Environment=RELEASE_TMP=/var/lib/taskman
-ExecStartPre=/opt/taskman/current/bin/migrate
-ExecStart=/opt/taskman/current/bin/server
+ExecStartPre={{TASKMAN_MANAGED_ROOT}}/current/bin/migrate
+ExecStart={{TASKMAN_MANAGED_ROOT}}/current/bin/server
 Restart=on-failure
 RestartSec=5s
 KillSignal=SIGTERM
@@ -34,7 +35,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=full
-ReadOnlyPaths=/opt/taskman
+ReadOnlyPaths={{TASKMAN_MANAGED_ROOT}}
 ReadWritePaths=/var/lib/taskman /run/taskman
 ProtectControlGroups=true
 ProtectKernelLogs=true

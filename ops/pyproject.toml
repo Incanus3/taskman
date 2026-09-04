@@ -1,0 +1,26 @@
+[project]
+name = "taskman-ops"
+version = "0.1.0"
+description = "Taskman dedicated-host deployment controller"
+requires-python = ">=3.12"
+dependencies = [
+  "pyinfra>=3,<4",
+  "pydantic>=2,<3",
+  "PyYAML>=6,<7",
+]
+
+[build-system]
+requires = ["setuptools>=69,<81"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[dependency-groups]
+dev = [
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

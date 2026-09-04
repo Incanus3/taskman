@@ -15,7 +15,7 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
   setup :set_swoosh_global
 
-  test "hosted operation examples keep the release private behind Caddy" do
+  test "hosted operation assets keep the release private behind Caddy" do
     root = File.cwd!()
     service_path = Path.join(root, "ops/systemd/taskman.service")
     caddyfile_path = Path.join(root, "ops/caddy/Caddyfile")
@@ -42,13 +42,13 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     assert service =~ "Group=taskman"
     assert service =~ "EnvironmentFile=/etc/taskman/taskman.env"
     assert service =~ "Environment=RELEASE_TMP=/var/lib/taskman"
-    assert service =~ "ExecStartPre=/opt/taskman/current/bin/migrate"
-    assert service =~ "ExecStart=/opt/taskman/current/bin/server"
+    assert service =~ "ExecStartPre={{TASKMAN_MANAGED_ROOT}}/current/bin/migrate"
+    assert service =~ "ExecStart={{TASKMAN_MANAGED_ROOT}}/current/bin/server"
     assert service =~ "KillSignal=SIGTERM"
     assert service =~ "Restart=on-failure"
 
     assert caddyfile =~ "taskman.example.com {"
-    assert caddyfile =~ "reverse_proxy 127.0.0.1:4000"
+    assert caddyfile =~ "reverse_proxy 127.0.0.1:{{TASKMAN_APPLICATION_PORT}}"
 
     assert release_env =~ "RELEASE_DISTRIBUTION=name"
     assert release_env =~ "RELEASE_NODE=taskman@127.0.0.1"
@@ -56,21 +56,26 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     assert vm_args =~ "-start_epmd false -erl_epmd_port 6789"
     assert remote_vm_args =~ "-start_epmd false -erl_epmd_port 6789 -dist_listen false"
 
-    assert deployment =~ "printf 'Public Taskman hostname: '"
-    assert deployment =~ "IFS= read -r TASKMAN_HOST </dev/tty"
-    assert deployment =~ "ops/caddy/render-caddyfile"
+    assert deployment =~ "repository-owned controller under `ops/` is the primary path"
+    assert deployment =~ "./ops/taskman provision production --dry-run"
+    assert deployment =~ "./ops/taskman provision production"
+    assert deployment =~ "./ops/taskman verify production"
+    assert deployment =~ "./ops/taskman create-admin production"
+
+    assert deployment =~
+             "sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+
+    assert deployment =~
+             "`bin/taskman eval` evaluates arbitrary Elixir in a new VM"
 
     refute deployment =~
              "install -o root -g root -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile"
 
     ordered_steps = [
-      "IFS= read -r TASKMAN_HOST </dev/tty",
-      ~s(sh /tmp/render-caddyfile "$TASKMAN_HOST" /tmp/Caddyfile),
-      ~s(caddy validate --config "$rendered_caddyfile" --adapter caddyfile),
-      "install -o root -g root -m 0644 /tmp/taskman.service",
-      ~s(install -o root -g root -m 0644 "$rendered_caddyfile" /etc/caddy/Caddyfile),
-      "caddy validate --config /etc/caddy/Caddyfile",
-      "systemctl enable --now caddy.service"
+      "## Preview before changing a host",
+      "## Provision a clean host",
+      "## Deploy an existing host",
+      "## Create the first administrator"
     ]
 
     positions =
@@ -81,8 +86,8 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
     assert positions == Enum.sort(positions)
 
-    assert deployment =~
-             ~r/On later\s+Caddyfile changes, validate first and then `systemctl reload caddy\.service`\./
+    assert deployment =~ "public verification must also retain HSTS"
+    assert deployment =~ ~r/Keep Caddy\s+running during a Taskman maintenance window/
   end
 
   test "an invited user accesses shared work through LiveView and CLI until disabled", %{

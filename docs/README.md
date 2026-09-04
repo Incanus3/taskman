@@ -39,15 +39,17 @@
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
+- [Dedicated-host deployment automation](specs/2026-09-04-dedicated-host-deployment-automation-design.md)
 
 ## Active implementation plans
 
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
+- [Dedicated-host deployment automation](plans/2026-09-04-dedicated-host-deployment-automation.md)
 
 ## Development
 
 - [Development guide](development.md)
-- [Dedicated-host deployment runbook](deployment.md)
+- [Dedicated-host deployment automation runbook](deployment.md)
 
 ## Research
 
