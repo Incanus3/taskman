@@ -68,7 +68,33 @@ defmodule TaskmanWeb.AuthenticationTest do
     assert has_element?(view, "#authenticated-navigation")
     assert has_element?(view, "#account-menu")
     assert has_element?(view, "#account-identity")
+    refute has_element?(view, "#account-administration-link")
     assert has_element?(view, "#account-sign-out-link")
+  end
+
+  test "administrators see the administration link between their identity and account settings",
+       %{
+         conn: conn
+       } do
+    administrator = admin_fixture()
+    conn = log_in_user(conn, administrator)
+    {:ok, view, _html} = live(conn, "/")
+
+    assert has_element?(
+             view,
+             "#account-identity + #account-administration-link[href='/admin'] + #account-settings-link"
+           )
+  end
+
+  test "the shared top bar links back to the main page from account settings", %{conn: conn} do
+    user = user_fixture()
+    conn = log_in_user(conn, user)
+    {:ok, view, _html} = live(conn, "/account/settings")
+
+    assert has_element?(
+             view,
+             "#authenticated-navigation > #application-home-link[href='/'] + #account-menu"
+           )
   end
 
   test "pending and disabled users are rejected by the authenticated session", %{conn: conn} do

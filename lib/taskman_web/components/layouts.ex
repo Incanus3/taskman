@@ -45,8 +45,15 @@ defmodule TaskmanWeb.Layouts do
       <header
         :if={@current_user}
         id="authenticated-navigation"
-        class="shrink-0 flex items-center justify-end border-b border-slate-800 bg-slate-950 px-6 py-3"
+        class="flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-950 px-6 py-3"
       >
+        <.link
+          id="application-home-link"
+          navigate="/"
+          class="rounded-lg px-2.5 py-1.5 text-base font-semibold text-slate-200 transition hover:bg-white/10 hover:text-white"
+        >
+          Taskman
+        </.link>
         <.account_menu current_user={@current_user} />
       </header>
 

@@ -18,6 +18,14 @@ defmodule TaskmanWeb.AccountComponents do
         {to_string(@current_user.email)}
       </span>
       <.link
+        :if={@current_user.admin?}
+        id="account-administration-link"
+        navigate="/admin"
+        class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+      >
+        Administration
+      </.link>
+      <.link
         id="account-settings-link"
         navigate="/account/settings"
         class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
