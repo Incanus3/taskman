@@ -669,6 +669,8 @@ The example unit runs as a dedicated unprivileged `taskman` user and group. It:
 
 - loads the protected environment file;
 - uses a versioned release directory selected through a controlled `current` symlink;
+- keeps Erlang distribution available only on a fixed loopback port without EPMD for break-glass
+  local `remote` or `rpc` inspection;
 - runs `bin/migrate` as `ExecStartPre`;
 - runs `bin/server` in the foreground as `ExecStart`;
 - sends logs to journald;
@@ -681,6 +683,15 @@ A migration failure prevents the new release from starting. Database migrations 
 backward compatible with the immediately previous release when rollback is expected; otherwise the
 deployment runbook must state that application rollback requires a database restore or explicit
 migration rollback.
+
+The release launcher is an operating-system trust boundary, not an application authorization
+boundary. `eval`, `rpc`, and `remote` permit arbitrary code execution under the release identity or
+inside the running VM. Root, the dedicated service account, and any principal able to read the
+release cookie and execute the launcher are therefore fully trusted. Human operators are not added
+to the service group or granted generic sudo access to the launcher. Release archives and cookies
+are handled as deployment credentials. Distribution remains available for production diagnosis
+because `iex -S mix` would start a separate instance and is not supported on the release host; its
+node name, listener, and fixed EPMD-less port are constrained to IPv4 loopback.
 
 ### Caddy
 

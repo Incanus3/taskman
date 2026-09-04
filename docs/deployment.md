@@ -99,6 +99,42 @@ Give the PostgreSQL role only the access it needs for Taskman's database. Keep P
 localhost or a private network, restrict its host firewall and `pg_hba.conf`, and never open port
 5432 to the Internet.
 
+## Release command trust boundary
+
+The OTP release launcher is a privileged local operations interface, not an application-authorized
+CLI. Its `eval` command evaluates an arbitrary Elixir expression in a new VM under the invoking
+operating-system identity. Its `rpc` command evaluates an arbitrary expression inside the running
+Taskman VM, and `remote` opens an interactive IEx shell on that VM. The fixed `bin/migrate` and
+`bin/create-admin` wrappers do not accept arbitrary expressions, but they do not restrict someone
+who can invoke `bin/taskman` directly.
+
+Treat all of the following as having arbitrary Taskman code-execution authority:
+
+- `root`;
+- the dedicated `taskman` service account; and
+- every account in the `taskman` group or otherwise able to read the release cookie and execute the
+  release.
+
+Keep the `taskman` group limited to the service account. Do not grant operators generic sudo access
+to `bin/taskman`, membership in the `taskman` group, or permission to run unrestricted
+`systemd-run` commands. The service account's `nologin` shell prevents ordinary interactive login;
+it is not a security boundary after that account or the application process has been compromised.
+The systemd sandbox applies to processes launched by the service unit, not to a release command
+invoked independently.
+
+The release archive and installed `releases/COOKIE` contain the Erlang distribution cookie. Protect
+release archives like deployment credentials while they exist, restrict their ownership and mode,
+and remove transferred copies after the installed release has been verified. Do not place an
+archive or cookie in a ticket, log, shared artifact store, or user-readable directory.
+
+Taskman retains Erlang distribution for break-glass inspection, but does not expose it to the host
+network. The release uses long node name `taskman@127.0.0.1`, binds its distribution listener to
+`127.0.0.1:6789`, and uses OTP's fixed-port EPMD-less mode. Port 6789 must remain blocked by the host
+firewall; Taskman does not require the ordinary EPMD listener on port 4369. This local distribution
+channel uses cookie authentication rather than TLS, so it must never be bound or forwarded beyond
+loopback. See the [Mix release command documentation](https://hexdocs.pm/mix/Mix.Tasks.Release.html)
+and [Erlang distribution warning](https://www.erlang.org/doc/system/distributed.html#security).
+
 ## Configure Resend and DNS
 
 In Resend, add the sending domain and publish the DNS verification records shown by Resend. Wait for
@@ -137,6 +173,7 @@ systemctl status caddy.service --no-pager
 systemctl status taskman.service --no-pager
 journalctl -u caddy.service -b --no-pager
 journalctl -u taskman.service -b --no-pager
+ss -ltnp
 ```
 
 The atomic rename of `current.next` makes `/opt/taskman/current` select exactly one versioned
@@ -144,6 +181,11 @@ release. The service executes `current/bin/migrate` before it starts `current/bi
 migration prevents the new server from starting. Never edit a directory selected by `current`.
 The service also sets `RELEASE_TMP=/var/lib/taskman`, its dedicated writable state directory, so the
 root-managed immutable release remains read-only at runtime.
+
+Inspect the `ss` output and confirm that the Taskman distribution listener is
+`127.0.0.1:6789`, never `0.0.0.0:6789`, `[::]:6789`, or a non-loopback address. Taskman uses
+fixed-port EPMD-less distribution, so it does not need a listener on port 4369. Investigate any
+unexpected EPMD listener before treating the host as ready.
 
 The Caddy validation must succeed before its first `systemctl enable --now caddy.service`. On later
 Caddyfile changes, validate first and then `systemctl reload caddy.service`. Never enable or reload
@@ -169,6 +211,28 @@ systemd-run --wait --pipe --collect \
 
 The command prompts for the email and password; never pass a password in an argument, environment
 variable, transcript, or ticket. It is also the break-glass recovery path for an administrator.
+
+## Inspect the running release
+
+The deployed artifact does not include project source code or Mix, so `iex -S mix` is neither
+available nor a way to attach to the running production VM. It would start a separate Mix-managed
+instance if a development checkout and toolchain were installed, which this runbook does not
+support.
+
+When logs and other non-interactive diagnostics are insufficient, `root` may open a local remote
+IEx session as the service account:
+
+```sh
+sudo -u taskman -- /opt/taskman/current/bin/taskman remote
+```
+
+This connects through the loopback-only distribution channel and executes inside the live Taskman
+VM. It has the same authority as application code: inspection expressions can expose secrets, and
+state-changing expressions can alter production data or stop the service. Use it only as a
+break-glass diagnostic tool, do not paste its output into tickets or transcripts without reviewing
+it for secrets, and disconnect as soon as the investigation is complete. Continue to use
+`systemctl start`, `stop`, and `restart` for normal lifecycle management rather than the release
+launcher's remote lifecycle commands.
 
 ## Reverse proxy, HTTPS, and LiveView
 

@@ -20,14 +20,23 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     service_path = Path.join(root, "ops/systemd/taskman.service")
     caddyfile_path = Path.join(root, "ops/caddy/Caddyfile")
     deployment_path = Path.join(root, "docs/deployment.md")
+    release_env_path = Path.join(root, "rel/env.sh.eex")
+    vm_args_path = Path.join(root, "rel/vm.args.eex")
+    remote_vm_args_path = Path.join(root, "rel/remote.vm.args.eex")
 
     assert File.exists?(service_path), "expected the versioned-release systemd example"
     assert File.exists?(caddyfile_path), "expected the loopback Caddy example"
     assert File.exists?(deployment_path), "expected the hosted deployment runbook"
+    assert File.exists?(release_env_path), "expected the release environment hardening"
+    assert File.exists?(vm_args_path), "expected the release VM hardening"
+    assert File.exists?(remote_vm_args_path), "expected the remote release VM hardening"
 
     service = File.read!(service_path)
     caddyfile = File.read!(caddyfile_path)
     deployment = File.read!(deployment_path)
+    release_env = EEx.eval_file(release_env_path, assigns: [release: %{name: :taskman}])
+    vm_args = File.read!(vm_args_path)
+    remote_vm_args = File.read!(remote_vm_args_path)
 
     assert service =~ "User=taskman"
     assert service =~ "Group=taskman"
@@ -40,6 +49,12 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
     assert caddyfile =~ "taskman.example.com {"
     assert caddyfile =~ "reverse_proxy 127.0.0.1:4000"
+
+    assert release_env =~ "RELEASE_DISTRIBUTION=name"
+    assert release_env =~ "RELEASE_NODE=taskman@127.0.0.1"
+    assert vm_args =~ "inet_dist_use_interface {127,0,0,1}"
+    assert vm_args =~ "-start_epmd false -erl_epmd_port 6789"
+    assert remote_vm_args =~ "-start_epmd false -erl_epmd_port 6789 -dist_listen false"
 
     assert deployment =~
              "caddy validate --config /etc/caddy/Caddyfile\nsystemctl enable --now caddy.service"
