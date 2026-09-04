@@ -2,12 +2,72 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Ecto.Query
+  import ExUnit.CaptureLog
   import Phoenix.LiveViewTest
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
   alias Taskman.Accounts.{Token, User}
   alias Taskman.Repo
+
+  test "browser password reset revokes every existing browser session" do
+    user = password_user()
+    first_conn = log_in_user(build_conn(), user)
+    second_conn = log_in_user(build_conn(), user)
+    first_token = Plug.Conn.get_session(first_conn, :user_token)
+    second_token = Plug.Conn.get_session(second_conn, :user_token)
+    first_socket = Plug.Conn.get_session(first_conn, :live_socket_id)
+    second_socket = Plug.Conn.get_session(second_conn, :live_socket_id)
+    TaskmanWeb.Endpoint.subscribe(first_socket)
+    TaskmanWeb.Endpoint.subscribe(second_socket)
+
+    assert {:ok, reset_token, _claims} =
+             Jwt.token_for_user(
+               user,
+               %{"act" => "reset_password"},
+               token_lifetime: {1, :hours},
+               purpose: :password_reset
+             )
+
+    response =
+      post(first_conn, "/auth/user/password/reset", %{
+        "user" => %{
+          "reset_token" => reset_token,
+          "password" => "replacement-password",
+          "password_confirmation" => "replacement-password"
+        }
+      })
+
+    assert redirected_to(response) == "/sign-in"
+    assert Plug.Conn.get_session(response, :user_token) == nil
+    assert Plug.Conn.get_session(response, :live_socket_id) == nil
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(first_token, "user")
+    assert {:error, :invalid_token} = Token.valid_for_purpose?(second_token, "user")
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
+    assert_receive %Phoenix.Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
+  end
+
+  test "malformed browser password reset is audited without logging submitted secrets", %{
+    conn: conn
+  } do
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+    submitted_secret = "malformed-reset-secret"
+
+    output =
+      capture_log([level: :info], fn ->
+        response =
+          post(conn, "/auth/user/password/reset", %{
+            "user" => %{"password" => submitted_secret}
+          })
+
+        assert redirected_to(response) == "/reset-password"
+      end)
+
+    assert output =~ "security_event=password_reset_rejected"
+    refute output =~ submitted_secret
+  end
 
   test "password change replaces the acting session, disconnects peers, and leaves API keys valid",
        %{

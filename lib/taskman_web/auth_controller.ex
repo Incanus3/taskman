@@ -106,6 +106,35 @@ defmodule TaskmanWeb.AuthController do
   end
 
   @doc false
+  def reset_password(conn, %{"user" => params}) when is_map(params) do
+    token = Map.get(params, "reset_token")
+
+    case Accounts.reset_password(token, Map.delete(params, "reset_token")) do
+      {:ok, _user} ->
+        conn
+        |> clear_session(:taskman)
+        |> put_flash(:info, "Password reset. Sign in with your new password.")
+        |> redirect(to: ~p"/sign-in")
+
+      {:error, _reason} ->
+        reset_password_failure(conn, token)
+    end
+  end
+
+  def reset_password(conn, _params) do
+    _ = Accounts.reset_password(nil, %{})
+    reset_password_failure(conn, nil)
+  end
+
+  defp reset_password_failure(conn, token) do
+    path = if is_binary(token), do: ~p"/reset-password/#{token}", else: ~p"/reset-password"
+
+    conn
+    |> put_flash(:error, "Unable to reset the password.")
+    |> redirect(to: path)
+  end
+
+  @doc false
   def delete_account(conn, %{"delete_account" => params}) when is_map(params) do
     user = conn.assigns[:current_user]
 

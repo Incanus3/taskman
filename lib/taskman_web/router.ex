@@ -34,6 +34,7 @@ defmodule TaskmanWeb.Router do
     delete "/sign-out", AuthController, :sign_out
     post "/account/settings/password", AuthController, :update_password
     post "/account/settings/delete", AuthController, :delete_account
+    post "/auth/user/password/reset", AuthController, :reset_password
     post "/auth/user/password/reset_request", AuthController, :request_password_reset
 
     auth_routes AuthController, Taskman.Accounts.User
