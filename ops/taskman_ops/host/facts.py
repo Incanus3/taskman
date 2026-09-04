@@ -40,9 +40,11 @@ class HostFacts:
     architecture: str
     pid1: str
     sudo_available: bool
+    postgres_sudo_available: bool
     active_ssh_port: int | None
     memory_bytes: int
     available_disk_bytes: int
+    backup_available_disk_bytes: int
     dns_addresses: tuple[str, ...]
     listeners: tuple[Listener, ...]
     existing_paths: tuple[PurePosixPath, ...]
@@ -73,8 +75,12 @@ def collect_host_facts(
     architecture = remote.run(("uname", "-m"))
     pid1 = remote.run(("cat", "/proc/1/comm"))
     sudo = remote.run(("sudo", "-n", "true"))
-    memory = remote.run(("sh", "-c", "awk '/MemTotal:/{print $2 * 1024}' /proc/meminfo"))
+    postgres_sudo = remote.run(("sudo", "-n", "-u", "postgres", "true"))
+    memory = remote.run(
+        ("sh", "-c", "awk '/MemTotal:/{printf \"%.0f\\n\", $2 * 1024; exit}' /proc/meminfo")
+    )
     disk = remote.run(("df", "-B1", "--output=avail", str(config.managed_root.parent)))
+    backup_disk = remote.run(("df", "-B1", "--output=avail", str(config.backup_root.parent)))
     active_ssh = remote.run(("sh", "-c", "printf '%s\\n' \"${SSH_CONNECTION##* }\""))
     listeners = remote.run(("ss", "-H", "-ltn"))
     existing_paths = remote.run(
@@ -102,10 +108,17 @@ def collect_host_facts(
         ("operating-system", os_release),
         ("architecture", architecture),
         ("PID 1", pid1),
+        ("administrator sudo", sudo),
+        ("postgres sudo", postgres_sudo),
         ("memory", memory),
-        ("disk", disk),
+        ("managed-root disk", disk),
+        ("backup-root disk", backup_disk),
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
+        ("managed paths", existing_paths),
+        ("managed units", units),
+        ("managed accounts", accounts),
+        ("managed databases", databases),
     )
 
     os_id, ubuntu_release = _os_release(os_release)
@@ -123,9 +136,11 @@ def collect_host_facts(
         architecture=_normalise_architecture(_stdout(architecture)),
         pid1=_stdout(pid1).strip().lower(),
         sudo_available=sudo.succeeded,
+        postgres_sudo_available=postgres_sudo.succeeded,
         active_ssh_port=_port(_stdout(active_ssh)),
         memory_bytes=_byte_count(_stdout(memory)),
         available_disk_bytes=_disk_bytes(_stdout(disk)),
+        backup_available_disk_bytes=_disk_bytes(_stdout(backup_disk)),
         dns_addresses=dns_addresses,
         listeners=_listeners(_stdout(listeners)),
         existing_paths=_existing_paths(_stdout(existing_paths), paths),
@@ -156,12 +171,17 @@ def validate_supported_host(
         raise _unsupported("host PID 1 must be systemd")
     if facts.memory_bytes < MINIMUM_MEMORY_BYTES:
         raise _unsupported("host does not meet the minimum memory requirement")
-    if facts.available_disk_bytes < MINIMUM_DISK_BYTES:
+    if (
+        facts.available_disk_bytes < MINIMUM_DISK_BYTES
+        or facts.backup_available_disk_bytes < MINIMUM_DISK_BYTES
+    ):
         raise _unsupported("host does not meet the minimum disk requirement")
     if facts.dns_addresses != _expected_addresses(config):
         raise _unsupported("public DNS does not resolve directly to the configured VPS address")
     if not facts.sudo_available:
         raise _preflight("configured administrator cannot use passwordless sudo")
+    if not facts.postgres_sudo_available:
+        raise _preflight("configured administrator cannot inspect PostgreSQL as postgres")
     if facts.active_ssh_port != config.ssh_port:
         raise _preflight("active SSH connection port does not match configuration")
     if _managed_conflicts(facts, config):

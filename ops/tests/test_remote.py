@@ -80,6 +80,44 @@ def test_put_refuses_modes_that_would_expose_private_upload_content(tmp_path: Pa
         remote.put(source, PurePosixPath("/opt/taskman/release.tar.gz"), mode=0o666)
 
 
+def test_put_uses_sudo_only_for_the_final_install_and_removes_only_its_private_staging_paths(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "runtime.env"
+    source.write_bytes(b"private")
+    host = RecordingPyinfraHost()
+    remote = PyinfraRemote(host, config())
+
+    remote.put(source, PurePosixPath("/etc/taskman/taskman.env"), mode=0o600, sensitive=True)
+
+    commands = [
+        (tuple(bit.obj for bit in command.bits[4:]), kwargs)
+        for command, _print_output, _print_input, kwargs in host.commands
+    ]
+    staging_directory = commands[0][0][-1]
+    staging_file = commands[1][0][-1]
+    assert commands[0] == (
+        ("install", "-d", "-m", "700", "--", staging_directory),
+        {"_sudo": False, "_stdin": None, "_timeout": 17},
+    )
+    assert commands[1] == (
+        ("chmod", "600", "--", staging_file),
+        {"_sudo": False, "_stdin": None, "_timeout": 17},
+    )
+    assert commands[2] == (
+        ("install", "-m", "600", "--", staging_file, "/etc/taskman/taskman.env"),
+        {"_sudo": True, "_stdin": None, "_timeout": 17},
+    )
+    assert commands[3] == (
+        ("rm", "-f", "--", staging_file),
+        {"_sudo": False, "_stdin": None, "_timeout": 17},
+    )
+    assert commands[4] == (
+        ("rmdir", "--", staging_directory),
+        {"_sudo": False, "_stdin": None, "_timeout": 17},
+    )
+
+
 def test_put_applies_the_requested_timeout_to_pyinfra_sftp_before_transfer(tmp_path: Path) -> None:
     source = tmp_path / "artifact.tar.gz"
     source.write_bytes(b"release")
