@@ -37,7 +37,8 @@ from .releases.identifiers import build_release_id, validate_application_version
 
 
 BUILDER_PLATFORM = "linux/amd64"
-_MIX_VERSION_RE = re.compile(r'^\s*version:\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)"\s*,?', re.MULTILINE)
+_PROJECT_FUNCTION_RE = re.compile(r"(?m)^[ \t]*def[ \t]+project[ \t]+do\b")
+_PROJECT_VERSION_RE = re.compile(r'version\s*:\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)"')
 _TOOLCHAIN_FIELDS = frozenset(
     {"source_revision", "target_os", "architecture", "otp_version", "elixir_version", "node_version"}
 )
@@ -111,18 +112,102 @@ def read_repository_state(repo: Path) -> SourceState:
     return SourceState(revision=resolved, clean=status.stdout == "")
 
 
+def _skip_whitespace_and_comments(source: str, index: int) -> int:
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+        elif source[index] == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline == -1 else newline + 1
+        else:
+            return index
+    return index
+
+
+def _project_keyword_list(source: str) -> str | None:
+    matches = tuple(_PROJECT_FUNCTION_RE.finditer(source))
+    if len(matches) != 1:
+        return None
+    start = _skip_whitespace_and_comments(source, matches[0].end())
+    if start == len(source) or source[start] != "[":
+        return None
+    index = start + 1
+    depth = 1
+    in_string = False
+    while index < len(source):
+        character = source[index]
+        if in_string:
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline == -1 else newline
+            continue
+        elif character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index]
+        index += 1
+    return None
+
+
+def _project_version_values(keywords: str) -> tuple[str, ...]:
+    values: list[str] = []
+    index = 0
+    depth = 0
+    in_string = False
+    while index < len(keywords):
+        character = keywords[index]
+        if in_string:
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "#":
+            newline = keywords.find("\n", index)
+            index = len(keywords) if newline == -1 else newline
+            continue
+        elif character in "[{(":
+            depth += 1
+        elif character in "]})":
+            if depth == 0:
+                return ()
+            depth -= 1
+        elif depth == 0 and (index == 0 or not (keywords[index - 1].isalnum() or keywords[index - 1] == "_")):
+            match = _PROJECT_VERSION_RE.match(keywords, index)
+            if match is not None:
+                values.append(match.group("version"))
+                index = match.end()
+                continue
+        index += 1
+    return tuple(values)
+
+
 def read_application_version(mix_file: Path) -> str:
-    """Read the literal project version without evaluating ``mix.exs``."""
+    """Read one literal version from the ``project`` keyword list without evaluation."""
 
     try:
         source = mix_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         raise _build_error("unable to read the application version") from None
-    match = _MIX_VERSION_RE.search(source)
-    if match is None:
+    keywords = _project_keyword_list(source)
+    values = _project_version_values(keywords) if keywords is not None else ()
+    if len(values) != 1:
         raise _build_error("mix.exs does not declare a literal release-safe version")
     try:
-        return validate_application_version(match.group("version"))
+        return validate_application_version(values[0])
     except ValueError:
         raise _build_error("mix.exs does not declare a release-safe version") from None
 
@@ -220,6 +305,16 @@ def _private_artifact_root(output_dir: Path, release_id: str) -> Path:
     return artifact_dir
 
 
+def _name_artifact_root(artifact_dir: Path, release_id: str) -> Path:
+    token = artifact_dir.name.removeprefix("snapshot-")
+    named = artifact_dir.with_name(f"{release_id}-{token}")
+    try:
+        artifact_dir.rename(named)
+    except OSError:
+        raise _build_error("unable to name the private artifact directory") from None
+    return named
+
+
 def _build_command(source_dir: Path, output_dir: Path, revision: str) -> tuple[str, ...]:
     return (
         "docker",
@@ -258,13 +353,17 @@ def build_release(
         revision = validate_source_revision(state.revision)
     except ValueError:
         raise _build_error("source checkout must be clean and identified") from None
-    application_version = read_application_version(repo / "mix.exs")
-    release_id = build_release_id(application_version, revision)
-    artifact_dir = _private_artifact_root(Path(output_dir), release_id)
+    artifact_dir = _private_artifact_root(Path(output_dir), "snapshot")
     source_dir = artifact_dir / "source"
     build_output = artifact_dir / "build-output"
     try:
         source_exporter(repo, revision, source_dir)
+        application_version = read_application_version(source_dir / "mix.exs")
+        migration_fingerprints = fingerprint_migrations(source_dir / "priv" / "repo" / "migrations")
+        release_id = build_release_id(application_version, revision)
+        artifact_dir = _name_artifact_root(artifact_dir, release_id)
+        source_dir = artifact_dir / "source"
+        build_output = artifact_dir / "build-output"
         result = command_runner(_build_command(source_dir, build_output, revision), repo)
         if result.returncode != 0:
             raise _build_error("release builder failed", artifact_dir=artifact_dir)
@@ -288,7 +387,7 @@ def build_release(
                 "otp_version": toolchain["otp_version"],
                 "elixir_version": toolchain["elixir_version"],
                 "node_version": toolchain["node_version"],
-                "migrations": [fingerprint.to_mapping() for fingerprint in fingerprint_migrations(repo / "priv" / "repo" / "migrations")],
+                "migrations": [fingerprint.to_mapping() for fingerprint in migration_fingerprints],
                 "top_level": TOP_LEVEL,
             }
         )

@@ -11,6 +11,7 @@ import pytest
 from taskman_ops.build import CommandResult, SourceState, build_release, read_application_version
 from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.manifests import MigrationFingerprint
 
 
 REVISION = "c" * 40
@@ -49,10 +50,17 @@ def write_repository(repo: Path) -> None:
     )
 
 
-def export_source(_repo: Path, _revision: str, destination: Path) -> None:
+def export_source(repo: Path, _revision: str, destination: Path) -> None:
     destination.mkdir(parents=True)
     (destination / "ops" / "builder").mkdir(parents=True)
     (destination / "ops" / "builder" / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (destination / "mix.exs").write_bytes((repo / "mix.exs").read_bytes())
+    source_migrations = repo / "priv" / "repo" / "migrations"
+    destination_migrations = destination / "priv" / "repo" / "migrations"
+    destination_migrations.mkdir(parents=True)
+    for source in source_migrations.iterdir():
+        if source.is_file():
+            (destination_migrations / source.name).write_bytes(source.read_bytes())
 
 
 def test_build_refuses_dirty_or_unidentified_source_before_creating_an_artifact(tmp_path: Path) -> None:
@@ -151,14 +159,82 @@ def test_build_refuses_builder_metadata_for_a_different_source_revision(tmp_path
     assert raised.value.next_action is not None
 
 
+def test_build_manifest_uses_only_the_exported_revision_snapshot(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+    migration = repo / "priv" / "repo" / "migrations" / "20260904065131_example.exs"
+    migration.write_text("checkout mutation\n", encoding="utf-8")
+    (repo / "mix.exs").write_text(
+        'def project do\n  [\n    app: :taskman,\n    version: "0.2.1"\n  ]\nend\n', encoding="utf-8"
+    )
+
+    def export_snapshot(_repo: Path, _revision: str, destination: Path) -> None:
+        (destination / "ops" / "builder").mkdir(parents=True)
+        (destination / "ops" / "builder" / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+        (destination / "priv" / "repo" / "migrations").mkdir(parents=True)
+        (destination / "priv" / "repo" / "migrations" / "20260904065131_example.exs").write_text(
+            "snapshot migration\n", encoding="utf-8"
+        )
+        (destination / "mix.exs").write_text(
+            'def project do\n  [\n    app: :taskman,\n    version: "0.2.0"\n  ]\nend\n', encoding="utf-8"
+        )
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    artifact = build_release(
+        repo,
+        tmp_path / "artifacts",
+        source_reader=lambda _repo: SourceState(revision=REVISION, clean=True),
+        source_exporter=export_snapshot,
+        command_runner=runner,
+    )
+
+    assert artifact.manifest.application_version == "0.2.0"
+    assert artifact.manifest.release_id == RELEASE_ID
+    assert artifact.manifest.migrations == (
+        MigrationFingerprint(
+            filename="20260904065131_example.exs",
+            sha256="358bad621702445615ae95547bb3d2304c109495ea043174222f1886b4d384bb",
+        ),
+    )
+
+
 def test_application_version_is_read_as_a_literal_without_evaluating_mix_code(tmp_path: Path) -> None:
     mix = tmp_path / "mix.exs"
     mix.write_text(
-        'version = System.cmd("touch", ["must-not-run"])\nversion: "0.2.0"\n', encoding="utf-8"
+        'version = System.cmd("touch", ["must-not-run"])\ndef project do\n  [version: "0.2.0"]\nend\n',
+        encoding="utf-8",
     )
 
     assert read_application_version(mix) == "0.2.0"
     assert not (tmp_path / "must-not-run").exists()
+
+
+def test_application_version_uses_the_project_keyword_list_not_another_function(tmp_path: Path) -> None:
+    mix = tmp_path / "mix.exs"
+    mix.write_text(
+        'def generated_metadata do\n  [\n    version: "9.9.9"\n  ]\nend\n\ndef project do\n  [\n    app: :taskman,\n    version: "0.2.0"\n  ]\nend\n',
+        encoding="utf-8",
+    )
+
+    assert read_application_version(mix) == "0.2.0"
+
+
+def test_application_version_refuses_multiple_project_version_keywords(tmp_path: Path) -> None:
+    mix = tmp_path / "mix.exs"
+    mix.write_text(
+        'def project do\n  [\n    app: :taskman,\n    version: "0.2.0",\n    version: "0.2.1"\n  ]\nend\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OpsError) as raised:
+        read_application_version(mix)
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
 
 
 def test_build_command_reports_the_verified_artifact_paths(

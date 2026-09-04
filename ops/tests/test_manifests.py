@@ -213,6 +213,28 @@ def test_migration_fingerprints_ignore_migration_directory_formatting_configurat
     )
 
 
+@pytest.mark.parametrize("entry_kind", ["file", "directory", "link", "formatter_link"])
+def test_migration_fingerprints_reject_unrecognized_directory_entries(tmp_path: Path, entry_kind: str) -> None:
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "20260904065131_create_records.exs").write_bytes(b"migration")
+
+    if entry_kind == "file":
+        (migrations / "notes.txt").write_text("not a migration\n", encoding="utf-8")
+    elif entry_kind == "directory":
+        (migrations / "nested").mkdir()
+    else:
+        target = migrations / "20260904065132_other.exs"
+        target.write_bytes(b"other")
+        name = ".formatter.exs" if entry_kind == "formatter_link" else "linked.txt"
+        (migrations / name).symlink_to(target.name)
+
+    with pytest.raises(OpsError) as raised:
+        fingerprint_migrations(migrations)
+
+    assert raised.value.status is ExitStatus.INVALID
+
+
 def test_verify_artifact_returns_the_detached_checksum_for_a_safe_release_layout(tmp_path: Path) -> None:
     archive = write_release_archive(tmp_path)
     manifest, checksum = write_manifest_bundle(tmp_path, archive)
@@ -260,6 +282,26 @@ def test_verify_artifact_refuses_malformed_or_mismatched_detached_checksums(
     ],
 )
 def test_verify_artifact_rejects_unsafe_members_before_any_extraction(
+    tmp_path: Path, extra: tuple[str, bytes, bytes | None]
+) -> None:
+    archive = write_release_archive(tmp_path, extra=extra)
+    manifest, checksum = write_manifest_bundle(tmp_path, archive)
+
+    with pytest.raises(OpsError) as raised:
+        verify_artifact(archive, manifest, checksum)
+
+    assert raised.value.status is ExitStatus.INVALID
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("taskman/README", tarfile.REGTYPE, None),
+        ("taskman/unrecognized/nested", tarfile.REGTYPE, None),
+        ("taskman/erts-17.0", tarfile.DIRTYPE, None),
+    ],
+)
+def test_verify_artifact_rejects_extra_runtime_root_children(
     tmp_path: Path, extra: tuple[str, bytes, bytes | None]
 ) -> None:
     archive = write_release_archive(tmp_path, extra=extra)

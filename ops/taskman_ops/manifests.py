@@ -60,6 +60,8 @@ _REQUIRED_LAUNCHERS = frozenset(
         "taskman/bin/create-admin",
     }
 )
+_RUNTIME_ROOT_CHILDREN = frozenset({"bin", "lib", "releases"})
+_ERTS_ROOT_CHILD_RE = re.compile(r"erts-[0-9][A-Za-z0-9._-]*\Z")
 
 
 def _artifact_error(message: str) -> OpsError:
@@ -237,11 +239,11 @@ def fingerprint_migrations(directory: Path) -> tuple[MigrationFingerprint, ...]:
         raise _artifact_error("unable to read migrations") from None
     fingerprints: list[MigrationFingerprint] = []
     for path in entries:
+        if path.is_symlink() or not path.is_file():
+            raise _artifact_error("invalid migration source")
         if path.name == ".formatter.exs":
             continue
-        if path.suffix != ".exs":
-            continue
-        if path.is_symlink() or not path.is_file() or MIGRATION_FILENAME_RE.fullmatch(path.name) is None:
+        if MIGRATION_FILENAME_RE.fullmatch(path.name) is None:
             raise _artifact_error("invalid migration source")
         try:
             digest = sha256_file(path)
@@ -333,6 +335,7 @@ def _inspect_archive(path: Path) -> None:
         directories: set[str] = set()
         files: dict[str, tarfile.TarInfo] = {}
         erts_directories: set[str] = set()
+        erts_root_children: set[str] = set()
         for member in members:
             parts = _member_parts(member.name)
             if member.name in names:
@@ -342,6 +345,12 @@ def _inspect_archive(path: Path) -> None:
                 raise _artifact_error("unsupported archive member")
             if member.mode & 0o022:
                 raise _artifact_error("archive member is group or world writable")
+            if len(parts) >= 2:
+                root_child = parts[1]
+                if root_child not in _RUNTIME_ROOT_CHILDREN and _ERTS_ROOT_CHILD_RE.fullmatch(root_child) is None:
+                    raise _artifact_error("release archive has an unrecognized runtime root child")
+                if _ERTS_ROOT_CHILD_RE.fullmatch(root_child) is not None:
+                    erts_root_children.add(root_child)
             if member.issym():
                 _symlink_target(parts, member.linkname)
             elif member.islnk():
@@ -352,7 +361,7 @@ def _inspect_archive(path: Path) -> None:
                     erts_directories.add(member.name)
             elif member.isreg():
                 files[member.name] = member
-        if not _REQUIRED_DIRECTORIES <= directories or not erts_directories:
+        if not _REQUIRED_DIRECTORIES <= directories or len(erts_directories) != 1 or len(erts_root_children) != 1:
             raise _artifact_error("release archive has an incomplete runtime layout")
         if not _REQUIRED_LAUNCHERS <= files.keys():
             raise _artifact_error("release archive is missing a launcher")
