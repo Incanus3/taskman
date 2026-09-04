@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+ops_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec uv run --frozen --project "$ops_dir" python -m taskman_ops.cli "$@"
