@@ -3,10 +3,7 @@ defmodule Taskman.Accounts.User.Changes.RequireActiveAdministrator do
 
   use Ash.Resource.Change
 
-  import Ecto.Query, only: [from: 2]
-
-  alias Taskman.Accounts.User
-  alias Taskman.Repo
+  alias Taskman.Accounts.Administration
 
   @impl true
   def change(changeset, _opts, context) do
@@ -17,14 +14,14 @@ defmodule Taskman.Accounts.User.Changes.RequireActiveAdministrator do
         %{accounts_bootstrap?: true} ->
           changeset
 
-        %User{id: actor_id} ->
-          case Repo.one(from user in User, where: user.id == ^actor_id, lock: "FOR UPDATE") do
-            %User{status: :active, admin?: true} -> changeset
-            _ -> Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
-          end
+        actor ->
+          case Administration.lock_active_administrator(actor) do
+            {:ok, _persisted_actor} ->
+              changeset
 
-        _ ->
-          Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
+            :error ->
+              Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
+          end
       end
     end)
   end

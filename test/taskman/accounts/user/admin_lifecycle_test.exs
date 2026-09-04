@@ -7,7 +7,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
-  alias Taskman.Accounts.{ApiKey, Token, User}
+  alias Taskman.Accounts.{Administration, ApiKey, Token, User}
   alias Taskman.Repo
 
   test "only active administrators can administer accounts" do
@@ -118,6 +118,59 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
     assert {:error, _reason} =
              direct_lifecycle_update(pending, :revoke_invitation, stale_administrator)
+  end
+
+  test "administrator authority waits for a concurrent promotion before evaluating persisted state" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      user =
+        user_fixture(
+          email: "concurrent-promotion-#{System.unique_integer([:positive])}@example.com"
+        )
+
+      test_pid = self()
+
+      promoter =
+        start_independent_task(:promote_authority, fn ->
+          Repo.transaction(fn ->
+            promoted =
+              Repo.one!(
+                from locked_user in User,
+                  where: locked_user.id == ^user.id,
+                  lock: "FOR UPDATE"
+              )
+              |> Ecto.Changeset.change(admin?: true)
+              |> Repo.update!()
+
+            send(test_pid, :authority_promoted_uncommitted)
+
+            receive do
+              :commit_authority_promotion -> promoted
+            end
+          end)
+        end)
+
+      try do
+        assert_receive :authority_promoted_uncommitted
+
+        checker =
+          start_independent_task(:check_promoted_authority, fn ->
+            Repo.transaction(fn -> Administration.lock_active_administrator(user) end)
+          end)
+
+        assert :ok =
+                 await_backend_blocked_by_peer([promoter.backend_pid, checker.backend_pid])
+
+        send(promoter.task.pid, :commit_authority_promotion)
+
+        assert {:ok, %User{admin?: true}} = Task.await(promoter.task, :infinity)
+
+        assert {:ok, {:ok, %User{admin?: true}}} =
+                 Task.await(checker.task, :infinity)
+      after
+        send(promoter.task.pid, :commit_authority_promotion)
+        Repo.delete_all(from persisted_user in User, where: persisted_user.id == ^user.id)
+      end
+    end)
   end
 
   test "two active administrators contending to remove each other preserve exactly one active administrator" do

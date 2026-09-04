@@ -3,10 +3,9 @@ defmodule Taskman.Accounts.User.Changes.ProtectLastAdmin do
 
   use Ash.Resource.Change
 
-  import Ecto.Query, only: [from: 2]
-
   alias Taskman.Accounts.{Administration, ApiKey, Token, User}
-  alias Taskman.Repo
+  alias Taskman.Accounts.ApiKey.Persistence, as: ApiKeyPersistence
+  alias Taskman.Accounts.Token.Persistence, as: TokenPersistence
 
   @impl true
   def change(changeset, opts, context) do
@@ -105,38 +104,32 @@ defmodule Taskman.Accounts.User.Changes.ProtectLastAdmin do
   defp revoke_credentials(_target, _mode), do: {:ok, []}
 
   defp delete_tokens(user, purposes) do
-    query = from token in Token, where: token.subject == ^AshAuthentication.user_to_subject(user)
-    query = if purposes, do: from(token in query, where: token.purpose in ^purposes), else: query
+    case TokenPersistence.delete_for_subject(user, purposes) do
+      {:ok, deleted_tokens} ->
+        revoked_session_jtis =
+          for {jti, purpose} <- deleted_tokens,
+              purpose in Token.browser_session_purposes(),
+              do: jti
 
-    {_count, revoked_tokens} =
-      Repo.delete_all(from token in query, select: {token.jti, token.purpose})
+        {:ok, revoked_session_jtis}
 
-    revoked_session_jtis =
-      for {jti, purpose} <- revoked_tokens,
-          purpose in Token.browser_session_purposes(),
-          do: jti
-
-    {:ok, revoked_session_jtis}
-  rescue
-    _exception -> {:error, :credential_revocation_failed}
+      {:error, _reason} ->
+        {:error, :credential_revocation_failed}
+    end
   end
 
   defp revoke_api_keys(user) do
-    Repo.update_all(
-      from(api_key in ApiKey, where: api_key.user_id == ^user.id and is_nil(api_key.revoked_at)),
-      set: [revoked_at: DateTime.utc_now()]
-    )
-
-    :ok
-  rescue
-    _exception -> {:error, :credential_revocation_failed}
+    case ApiKey.revoke_all_for_user(user) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :credential_revocation_failed}
+    end
   end
 
   defp delete_api_keys(user) do
-    Repo.delete_all(from api_key in ApiKey, where: api_key.user_id == ^user.id)
-    :ok
-  rescue
-    _exception -> {:error, :credential_revocation_failed}
+    case ApiKeyPersistence.delete_all_for_user(user) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :credential_revocation_failed}
+    end
   end
 
   defp broadcast_revoked_sessions(changeset, {:ok, _result} = result) do

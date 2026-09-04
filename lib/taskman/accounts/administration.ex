@@ -34,6 +34,17 @@ defmodule Taskman.Accounts.Administration do
   def lock_actor_target_and_active_administrators(_actor, _target_id), do: :error
 
   @doc false
+  @spec lock_active_administrator(User.t() | term()) :: {:ok, User.t()} | :error
+  def lock_active_administrator(%User{id: actor_id}) do
+    case Repo.one(from user in User, where: user.id == ^actor_id, lock: "FOR UPDATE") do
+      %User{status: :active, admin?: true} = actor -> {:ok, actor}
+      _actor -> :error
+    end
+  end
+
+  def lock_active_administrator(_actor), do: :error
+
+  @doc false
   @spec active_administrator?(User.t()) :: boolean()
   def active_administrator?(%User{status: :active, admin?: true}), do: true
   def active_administrator?(_user), do: false

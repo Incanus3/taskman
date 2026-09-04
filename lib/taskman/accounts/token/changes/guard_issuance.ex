@@ -3,18 +3,15 @@ defmodule Taskman.Accounts.Token.Changes.GuardIssuance do
 
   use Ash.Resource.Change
 
-  import Ecto.Query, only: [from: 2]
-
   alias Taskman.Accounts.User
-  alias Taskman.Repo
+  alias Taskman.Accounts.User.Persistence
 
   @impl true
   def change(changeset, _opts, _context) do
     case get_in(changeset.context, [:ash_authentication, :user]) do
       %User{id: user_id} ->
         Ash.Changeset.before_action(changeset, fn changeset ->
-          with %User{} = user <-
-                 Repo.one(from user in User, where: user.id == ^user_id, lock: "FOR UPDATE"),
+          with {:ok, %User{} = user} <- Persistence.lock(user_id),
                true <- eligible_for_token?(user, changeset) do
             if password_credential_current?(changeset, user) do
               changeset

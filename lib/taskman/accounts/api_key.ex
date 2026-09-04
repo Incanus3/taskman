@@ -5,6 +5,7 @@ defmodule Taskman.Accounts.ApiKey do
     domain: Taskman.Accounts
 
   alias Taskman.Accounts.ApiKey.Changes.{Generate, GuardIssuance}
+  alias Taskman.Accounts.ApiKey.Persistence
   alias Taskman.Accounts.User
 
   postgres do
@@ -133,5 +134,11 @@ defmodule Taskman.Accounts.ApiKey do
     policy always() do
       forbid_if always()
     end
+  end
+
+  @doc false
+  @spec revoke_all_for_user(User.t()) :: :ok | {:error, :api_key_revocation_failed}
+  def revoke_all_for_user(%User{} = user) do
+    Persistence.mark_all_revoked_for_user(user, DateTime.utc_now())
   end
 end

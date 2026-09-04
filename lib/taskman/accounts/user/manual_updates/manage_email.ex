@@ -3,11 +3,10 @@ defmodule Taskman.Accounts.User.ManualUpdates.ManageEmail do
 
   use Ash.Resource.ManualUpdate
 
-  import Ecto.Query, only: [from: 2]
-
   alias AshAuthentication.{AddOn.Confirmation, Info}
-  alias Taskman.Accounts.{Administration, Token, User}
-  alias Taskman.Repo
+  alias Taskman.Accounts.{Administration, User}
+  alias Taskman.Accounts.Token.Persistence, as: TokenPersistence
+  alias Taskman.Accounts.User.Persistence
 
   @impl true
   def update(changeset, _opts, context) do
@@ -73,10 +72,7 @@ defmodule Taskman.Accounts.User.ManualUpdates.ManageEmail do
   defp manage_email(_target, _email, _confirmed?), do: {:error, :invalid_lifecycle_state}
 
   defp update_user(user, attributes) do
-    user
-    |> Ecto.Changeset.cast(attributes, [:email, :confirmed_at])
-    |> Ecto.Changeset.unique_constraint(:email)
-    |> Repo.update()
+    Persistence.update_email(user, attributes)
   end
 
   defp pending_email_attributes(email, true),
@@ -117,15 +113,10 @@ defmodule Taskman.Accounts.User.ManualUpdates.ManageEmail do
   end
 
   defp delete_tokens(user, purposes) do
-    Repo.delete_all(
-      from token in Token,
-        where:
-          token.subject == ^AshAuthentication.user_to_subject(user) and token.purpose in ^purposes
-    )
-
-    :ok
-  rescue
-    _exception -> {:error, :token_revocation_failed}
+    case TokenPersistence.delete_for_subject(user, purposes) do
+      {:ok, _deleted_tokens} -> :ok
+      {:error, _reason} -> {:error, :token_revocation_failed}
+    end
   end
 
   defp with_delivery(user, :setup, token) do

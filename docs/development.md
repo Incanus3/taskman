@@ -33,6 +33,37 @@ Modules in `TaskmanWeb` interact with persistence through public context APIs. T
 `Taskman.Repo` directly or construct Ecto queries. Context and core-library modules own persistence
 coordination and keep schemas, changesets, queries, and Repo calls out of the web layer.
 
+Use three levels of ownership inside an application context:
+
+- The main context module exposes application use cases to web, CLI, and other contexts. It owns
+  application-boundary validation, authorization entry points, multi-resource orchestration,
+  auditing, externally meaningful side effects, and stable application-level results and errors.
+  It should delegate raw queries and mutations.
+- Resource and dedicated capability modules expose reusable domain behavior intrinsic to a
+  resource or invariant. Prefer Ash actions for resource behavior. A capability module may own
+  persistence coordination when the exact query or lock set is inseparable from maintaining its
+  invariant, as with administrator authority.
+- A resource-specific `Persistence` module owns storage-shaped primitives and deliberate Ash
+  bypasses: direct Repo calls, Ecto queries and changesets, row locks, and bulk updates or deletes.
+  These functions do not own authorization, auditing, broadcasts, application workflows, or
+  user-facing error translation, and they should not start a transaction that must encompass a
+  larger workflow.
+
+Keep a semantic resource-level wrapper when it expresses meaningful domain behavior beyond its
+storage implementation. Call a persistence function directly from an internal workflow when a
+wrapper would merely repeat a storage-shaped operation.
+
+Framework lifecycle adapters such as Ash changes, checks, preparations, and manual actions may own
+the action-specific policy, workflow, or saga they exist to implement, including input extraction,
+sequencing, hooks, context metadata, and final result or error translation. Do not extract
+single-consumer policy merely to make an adapter artificially thin.
+
+These adapters must delegate direct persistence mechanics—queries, row locking, updates, and
+deletes—to focused context or core-library modules that own the affected records. Keep the
+workflow in the adapter when it is action-specific. Delegate storage-shaped operations directly
+to resource-specific persistence modules, and use domain wrappers only when they add meaningful
+behavior.
+
 ## Current technology direction
 
 - The implementation is greenfield in `Incanus3/taskman`.
