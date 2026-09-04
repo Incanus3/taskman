@@ -237,6 +237,19 @@ def test_application_version_refuses_multiple_project_version_keywords(tmp_path:
     assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
 
 
+def test_application_version_refuses_a_dynamic_keyword_before_a_literal_duplicate(tmp_path: Path) -> None:
+    mix = tmp_path / "mix.exs"
+    mix.write_text(
+        'def project do\n  [\n    app: :taskman,\n    version: System.get_env("VERSION"),\n    version: "0.2.0"\n  ]\nend\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OpsError) as raised:
+        read_application_version(mix)
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
+
+
 def test_build_command_reports_the_verified_artifact_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -268,16 +281,18 @@ def test_build_command_reports_the_verified_artifact_paths(
 
 
 @pytest.mark.parametrize(
-    "source",
+    "version_value",
     [
-        'version: System.get_env("VERSION")\n',
-        'version: "0.2.0/unsafe"\n',
-        'version: "0.2"\n',
+        'System.get_env("VERSION")',
+        '"0.2.0/unsafe"',
+        '"0.2"',
     ],
 )
-def test_application_version_refuses_nonliteral_or_unsafe_values(tmp_path: Path, source: str) -> None:
+def test_application_version_refuses_nonliteral_or_unsafe_values(tmp_path: Path, version_value: str) -> None:
     mix = tmp_path / "mix.exs"
-    mix.write_text(source, encoding="utf-8")
+    mix.write_text(
+        f"def project do\n  [app: :taskman, version: {version_value}]\nend\n", encoding="utf-8"
+    )
 
     with pytest.raises(OpsError) as raised:
         read_application_version(mix)

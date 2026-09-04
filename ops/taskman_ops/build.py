@@ -38,7 +38,8 @@ from .releases.identifiers import build_release_id, validate_application_version
 
 BUILDER_PLATFORM = "linux/amd64"
 _PROJECT_FUNCTION_RE = re.compile(r"(?m)^[ \t]*def[ \t]+project[ \t]+do\b")
-_PROJECT_VERSION_RE = re.compile(r'version\s*:\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)"')
+_PROJECT_VERSION_KEY_RE = re.compile(r"version\s*:")
+_PROJECT_VERSION_LITERAL_RE = re.compile(r'\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)"')
 _TOOLCHAIN_FIELDS = frozenset(
     {"source_revision", "target_os", "architecture", "otp_version", "elixir_version", "node_version"}
 )
@@ -158,8 +159,13 @@ def _project_keyword_list(source: str) -> str | None:
     return None
 
 
-def _project_version_values(keywords: str) -> tuple[str, ...]:
-    values: list[str] = []
+def _literal_value_ends_at_keyword_boundary(source: str, index: int) -> bool:
+    index = _skip_whitespace_and_comments(source, index)
+    return index == len(source) or source[index] == ","
+
+
+def _project_version_values(keywords: str) -> tuple[str | None, ...]:
+    values: list[str | None] = []
     index = 0
     depth = 0
     in_string = False
@@ -186,10 +192,15 @@ def _project_version_values(keywords: str) -> tuple[str, ...]:
                 return ()
             depth -= 1
         elif depth == 0 and (index == 0 or not (keywords[index - 1].isalnum() or keywords[index - 1] == "_")):
-            match = _PROJECT_VERSION_RE.match(keywords, index)
-            if match is not None:
-                values.append(match.group("version"))
-                index = match.end()
+            key = _PROJECT_VERSION_KEY_RE.match(keywords, index)
+            if key is not None:
+                literal = _PROJECT_VERSION_LITERAL_RE.match(keywords, key.end())
+                if literal is not None and _literal_value_ends_at_keyword_boundary(keywords, literal.end()):
+                    values.append(literal.group("version"))
+                    index = literal.end()
+                else:
+                    values.append(None)
+                    index = key.end()
                 continue
         index += 1
     return tuple(values)
@@ -204,10 +215,11 @@ def read_application_version(mix_file: Path) -> str:
         raise _build_error("unable to read the application version") from None
     keywords = _project_keyword_list(source)
     values = _project_version_values(keywords) if keywords is not None else ()
-    if len(values) != 1:
+    version = values[0] if len(values) == 1 else None
+    if version is None:
         raise _build_error("mix.exs does not declare a literal release-safe version")
     try:
-        return validate_application_version(values[0])
+        return validate_application_version(version)
     except ValueError:
         raise _build_error("mix.exs does not declare a release-safe version") from None
 
