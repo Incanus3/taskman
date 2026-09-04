@@ -55,6 +55,8 @@ defmodule TaskmanWeb.Router do
       as: :email_change,
       overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
 
+    get "/healthz", HealthController, :show
+
     ash_authentication_live_session :authenticated,
       on_mount: [{TaskmanWeb.LiveUserAuth, :require_authenticated}],
       session: {TaskmanWeb.LiveUserAuth, :generate_session, []} do
