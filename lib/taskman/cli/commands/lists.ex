@@ -1,7 +1,9 @@
 defmodule Taskman.CLI.Commands.Lists do
   @moduledoc "HTTP-backed handlers for List CLI commands."
 
-  alias Taskman.CLI.{Client, Invocation, Output, Result}
+  alias Taskman.CLI.Client
+  alias Taskman.CLI.Execution.{Invocation, Result}
+  alias Taskman.CLI.Presentation.Output
 
   @doc "Execute a List command against the configured Taskman API."
   @spec execute(atom(), Invocation.t(), keyword() | map()) :: Result.t()

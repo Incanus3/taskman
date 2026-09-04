@@ -266,7 +266,7 @@ uses `:wide`.
 
 A project-owned `TaskmanWeb.TaskDetail` function component composes the hierarchy, existing
 `TaskForm`, Activity, Sessions, and autosave status. It receives the cohesive
-`%TaskmanWeb.TaskAutosave{}` interaction state rather than separate form, state, and message
+`%TaskmanWeb.ProjectLive.Tasks.Autosave{}` interaction state rather than separate form, state, and message
 values. It does not own state or persistence.
 
 Stable IDs include:
@@ -297,8 +297,8 @@ Expected implementation files are:
 - `lib/taskman_web/live/project_live.html.heex` for composition and the stable colocated hook;
 - `assets/css/app.css` only for focused stateful or responsive rules that are not clear as HEEx
   utility composition;
-- `test/taskman_web/live/project_live_test.exs` for application behavior and structure;
-- `test/taskman_web/live/project_live_autosave_test.exs` only for regression coverage affected by
+- `test/taskman_web/live/project_live/project_live_test.exs` for application behavior and structure;
+- `test/taskman_web/live/project_live/autosave_test.exs` only for regression coverage affected by
   composition; and
 - a focused component test when a low-level modal or accessibility contract cannot be exercised
   through LiveView.
@@ -371,8 +371,8 @@ Verify representative desktop, tablet, and phone widths.
 During implementation, run focused tests first:
 
 ```bash
-mix test test/taskman_web/live/project_live_test.exs
-mix test test/taskman_web/live/project_live_autosave_test.exs
+mix test test/taskman_web/live/project_live/project_live_test.exs
+mix test test/taskman_web/live/project_live/autosave_test.exs
 mix assets.build
 ```
 

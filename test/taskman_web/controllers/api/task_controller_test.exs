@@ -1,9 +1,31 @@
 defmodule TaskmanWeb.API.TaskControllerTest do
   use TaskmanWeb.ConnCase, async: true
 
+  import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
+
+  alias Taskman.Accounts
+
+  @api_key_lifetime_seconds 365 * 86_400
+
+  setup %{conn: conn} do
+    user = user_fixture()
+    now = DateTime.utc_now()
+
+    assert {:ok, %{plaintext: plaintext}} =
+             Accounts.create_api_key(
+               user,
+               %{
+                 name: "Task tests",
+                 expires_at: DateTime.add(now, @api_key_lifetime_seconds, :second)
+               },
+               now: now
+             )
+
+    {:ok, conn: put_api_key(conn, plaintext)}
+  end
 
   alias Taskman.Repo
   alias Taskman.Tasks.Conflict
@@ -520,17 +542,17 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     project = project_fixture(%{})
 
     assert %{"error" => %{"code" => "invalid_request"}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/tasks?list_id=not-an-id")
              |> json_response(400)
 
     assert %{"error" => %{"code" => "invalid_request"}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/tasks/not-an-id")
              |> json_response(400)
 
     assert %{"error" => %{"code" => "invalid_request"}} =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/tasks/0", %{
                "task" => %{"title" => "Nope"}
              })
@@ -590,7 +612,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert Enum.find(representations, &(&1["id"] == parent.id))["parent_task_id"] == nil
 
     assert %{"data" => %{"parent_task_id" => parent_id}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/tasks/#{child.id}")
              |> json_response(200)
 
@@ -624,7 +646,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              |> json_response(201)
 
     assert %{"data" => %{"parent_task_id" => nil}} =
-             build_conn()
+             recycle(conn)
              |> post("/api/v1/projects/#{project.id}/tasks", %{
                "task" => %{"title" => "Null parent", "parent_task_id" => nil}
              })
@@ -644,7 +666,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              |> json_response(400)
 
     assert %{"error" => %{"code" => "not_found"}} =
-             build_conn()
+             recycle(conn)
              |> post("/api/v1/projects/#{project.id}/tasks", %{
                "task" => %{"title" => "Foreign", "parent_task_id" => foreign_parent.id}
              })
@@ -667,7 +689,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert first_parent_id == first_parent.id
 
     assert %{"data" => %{"parent_task_id" => second_parent_id}} =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
                "task" => %{"parent_task_id" => second_parent.id}
              })
@@ -676,7 +698,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert second_parent_id == second_parent.id
 
     assert %{"data" => %{"parent_task_id" => nil}} =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
                "task" => %{"parent_task_id" => nil}
              })
@@ -697,7 +719,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              |> json_response(400)
 
     assert %{"error" => %{"code" => "not_found"}} =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/tasks/#{task.id}", %{
                "task" => %{"parent_task_id" => foreign_parent.id}
              })
@@ -727,7 +749,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                "fields" => %{"parent_task_id" => [_message]}
              }
            } =
-             build_conn()
+             recycle(conn)
              |> patch("/api/v1/projects/#{project.id}/tasks/#{parent.id}", %{
                "task" => %{"parent_task_id" => child.id}
              })
@@ -816,12 +838,12 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              |> json_response(400)
 
     assert %{"error" => %{"code" => "not_found"}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/tasks/#{foreign_task.id}/hierarchy")
              |> json_response(404)
 
     assert %{"error" => %{"code" => "not_found"}} =
-             build_conn()
+             recycle(conn)
              |> get("/api/v1/projects/#{project.id}/tasks/#{stale_task.id}/hierarchy")
              |> json_response(404)
   end

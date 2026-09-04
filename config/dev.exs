@@ -55,6 +55,10 @@ config :taskman, TaskmanWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :taskman, dev_routes: true
 
+config :taskman,
+       :token_signing_secret,
+       "taskman-development-token-signing-secret-not-for-production-use-2026"
+
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 

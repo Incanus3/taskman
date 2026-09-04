@@ -35,4 +35,23 @@ defmodule TaskmanWeb.ConnCase do
     Taskman.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
+
+  @doc "Creates an explicit stored browser session for a web test."
+  def log_in_user(conn, user) do
+    conn = Map.replace!(conn, :secret_key_base, TaskmanWeb.Endpoint.config(:secret_key_base))
+
+    conn =
+      if Map.has_key?(conn.private, :plug_session) do
+        conn
+      else
+        Phoenix.ConnTest.init_test_session(conn, %{})
+      end
+
+    TaskmanWeb.AuthController.log_in_user(conn, user)
+  end
+
+  @doc "Adds an explicit API-key bearer credential to a connection."
+  def put_api_key(conn, plaintext) when is_binary(plaintext) do
+    Plug.Conn.put_req_header(conn, "authorization", "Bearer " <> plaintext)
+  end
 end

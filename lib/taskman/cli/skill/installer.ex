@@ -39,6 +39,8 @@ defmodule Taskman.CLI.Skill.Installer do
 
     with {:ok, skills_root} <- validate_skills_root(skills_root),
          :ok <- mkdir_p(file_system, skills_root),
+         :ok <- validate_skills_root_directory(file_system, skills_root),
+         {:ok, _siblings} <- owned_sibling_groups(file_system, skills_root),
          {:ok, state} <- target_state(file_system, Path.join(skills_root, @skill_name)) do
       target = Path.join(skills_root, @skill_name)
       install_target_state(file_system, skills_root, target, state, force?)
@@ -58,32 +60,77 @@ defmodule Taskman.CLI.Skill.Installer do
     Path.join(System.user_home!(), ".agents/skills")
   end
 
-  defp validate_skills_root(root) when is_binary(root) and byte_size(root) > 0, do: {:ok, root}
+  defp validate_skills_root(root) when is_binary(root) and byte_size(root) > 0,
+    do: {:ok, Path.expand(root)}
+
   defp validate_skills_root(_root), do: {:error, "Skill root must be a non-empty path"}
 
+  defp validate_skills_root_directory(file_system, skills_root) do
+    case fs_lstat(file_system, skills_root) do
+      {:ok, %File.Stat{type: :directory}} ->
+        :ok
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "Refusing unsafe symlink skill root #{skills_root}"}
+
+      {:ok, _stat} ->
+        {:error, "Skill root is not a directory: #{skills_root}"}
+
+      {:error, reason} ->
+        {:error, "Could not inspect skill root #{skills_root}: #{inspect(reason)}"}
+    end
+  end
+
   defp target_state(file_system, target) do
-    if fs_exists?(file_system, target) do
-      case read_marker(file_system, target) do
-        {:ok, marker} -> {:ok, {:recognized, marker}}
-        :unrecognized -> {:ok, :unrecognized}
-      end
-    else
-      {:ok, :missing}
+    case fs_lstat(file_system, target) do
+      {:error, :enoent} ->
+        {:ok, :missing}
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "Refusing unsafe symlink skill target at #{target}"}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        case read_marker(file_system, target) do
+          {:ok, marker} -> {:ok, {:recognized, marker}}
+          :unrecognized -> {:ok, :unrecognized}
+          {:error, _message} = error -> error
+        end
+
+      {:ok, _stat} ->
+        {:error, "Skill target is not a directory: #{target}"}
+
+      {:error, reason} ->
+        {:error, "Could not inspect skill target #{target}: #{inspect(reason)}"}
     end
   end
 
   defp read_marker(file_system, target) do
     marker_path = Path.join(target, @marker_name)
 
-    case fs_read(file_system, marker_path) do
-      {:ok, contents} ->
-        case Jason.decode(contents) do
-          {:ok, marker} when is_map(marker) ->
-            if recognized_marker?(marker), do: {:ok, marker}, else: :unrecognized
+    case fs_lstat(file_system, marker_path) do
+      {:error, :enoent} ->
+        :unrecognized
 
-          _other ->
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "Refusing unsafe symlink ownership marker at #{marker_path}"}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        case fs_read(file_system, marker_path) do
+          {:ok, contents} ->
+            case Jason.decode(contents) do
+              {:ok, marker} when is_map(marker) ->
+                if recognized_marker?(marker), do: {:ok, marker}, else: :unrecognized
+
+              _other ->
+                :unrecognized
+            end
+
+          {:error, _reason} ->
             :unrecognized
         end
+
+      {:ok, _stat} ->
+        :unrecognized
 
       {:error, _reason} ->
         :unrecognized
@@ -101,18 +148,42 @@ defmodule Taskman.CLI.Skill.Installer do
   defp recognized_marker?(_marker), do: false
 
   defp target_current?(file_system, target, marker) do
-    marker == marker() and bundle_matches?(file_system, target)
+    if marker == marker(), do: bundle_matches?(file_system, target), else: {:ok, false}
   end
 
   defp bundle_matches?(file_system, target) do
-    Enum.all?(Bundle.files(), fn {relative_path, contents} ->
-      fs_read(file_system, Path.join(target, relative_path)) == {:ok, contents}
+    Enum.reduce_while(Bundle.files(), {:ok, true}, fn {relative_path, contents}, {:ok, _match?} ->
+      path = Path.join(target, relative_path)
+
+      case fs_lstat(file_system, path) do
+        {:ok, %File.Stat{type: :regular}} ->
+          case fs_read(file_system, path) do
+            {:ok, ^contents} -> {:cont, {:ok, true}}
+            {:ok, _other} -> {:halt, {:ok, false}}
+            {:error, _reason} -> {:halt, {:ok, false}}
+          end
+
+        {:ok, %File.Stat{type: :symlink}} ->
+          {:halt, {:error, "Refusing unsafe symlink bundled file at #{path}"}}
+
+        {:ok, _stat} ->
+          {:halt, {:ok, false}}
+
+        {:error, :enoent} ->
+          {:halt, {:ok, false}}
+
+        {:error, reason} ->
+          {:halt, {:error, "Could not inspect bundled file #{path}: #{inspect(reason)}"}}
+      end
     end)
   end
 
   defp complete_skill?(file_system, target) do
     Enum.all?(Bundle.files(), fn {relative_path, _contents} ->
-      match?({:ok, _contents}, fs_read(file_system, Path.join(target, relative_path)))
+      path = Path.join(target, relative_path)
+
+      match?({:ok, %File.Stat{type: :regular}}, fs_lstat(file_system, path)) and
+        match?({:ok, _contents}, fs_read(file_system, path))
     end)
   end
 
@@ -125,10 +196,10 @@ defmodule Taskman.CLI.Skill.Installer do
   end
 
   defp install_target_state(file_system, skills_root, target, {:recognized, marker}, _force?) do
-    if target_current?(file_system, target, marker) do
-      finalize_success(file_system, skills_root, :current, target)
-    else
-      replace(file_system, skills_root, target, :updated, true)
+    case target_current?(file_system, target, marker) do
+      {:ok, true} -> finalize_success(file_system, skills_root, :current, target)
+      {:ok, false} -> update_owned_target(file_system, skills_root, target)
+      {:error, message} -> failure(message)
     end
   end
 
@@ -207,8 +278,118 @@ defmodule Taskman.CLI.Skill.Installer do
     end
   end
 
+  # An installer-owned target remains in place during an update. Each staged file is
+  # created exclusively inside that target and atomically renamed over its prior
+  # version, so readers see the old complete file or the new complete file, never a
+  # missing target directory or a partially written SKILL.md.
+  defp update_owned_target(file_system, skills_root, target) do
+    with :ok <- replace_bundle_files_in_place(file_system, target, Bundle.files()),
+         :ok <- replace_marker_in_place(file_system, target) do
+      finalize_success(file_system, skills_root, :updated, target)
+    else
+      {:error, message} -> failure(message)
+    end
+  end
+
+  defp replace_bundle_files_in_place(file_system, target, files) do
+    Enum.reduce_while(files, :ok, fn {relative_path, contents}, :ok ->
+      final_path = Path.join(target, relative_path)
+
+      case stage_and_replace_file(file_system, final_path, contents) do
+        :ok -> {:cont, :ok}
+        {:error, message} -> {:halt, {:error, message}}
+      end
+    end)
+  end
+
+  defp replace_marker_in_place(file_system, target) do
+    stage_and_replace_file(
+      file_system,
+      Path.join(target, @marker_name),
+      Jason.encode!(marker()) <> "\n"
+    )
+  end
+
+  defp stage_and_replace_file(file_system, final_path, contents) do
+    stage_path = unique_file_stage(file_system, final_path)
+
+    case fs_write_exclusive(file_system, stage_path, contents) do
+      :ok ->
+        case fs_lstat(file_system, stage_path) do
+          {:ok, %File.Stat{type: :regular}} ->
+            case fs_rename(file_system, stage_path, final_path) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                cleanup_staged_file(
+                  file_system,
+                  stage_path,
+                  "Could not atomically replace #{Path.basename(final_path)}: #{inspect(reason)}"
+                )
+            end
+
+          {:ok, %File.Stat{type: :symlink}} ->
+            cleanup_staged_file(
+              file_system,
+              stage_path,
+              "Refusing unsafe symlink staging file at #{stage_path}"
+            )
+
+          {:ok, _stat} ->
+            cleanup_staged_file(
+              file_system,
+              stage_path,
+              "Could not safely stage #{Path.basename(final_path)}"
+            )
+
+          {:error, reason} ->
+            cleanup_staged_file(
+              file_system,
+              stage_path,
+              "Could not inspect staged #{Path.basename(final_path)}: #{inspect(reason)}"
+            )
+        end
+
+      {:error, reason} ->
+        {:error, "Could not stage #{Path.basename(final_path)}: #{inspect(reason)}"}
+    end
+  end
+
+  defp cleanup_staged_file(file_system, stage_path, message) do
+    case fs_lstat(file_system, stage_path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "#{message}; refusing unsafe symlink staging file at #{stage_path}"}
+
+      {:ok, _stat} ->
+        case fs_rm_rf(file_system, stage_path) do
+          :ok -> {:error, message}
+          {:error, reason} -> {:error, "#{message}; staging cleanup failed: #{inspect(reason)}"}
+        end
+
+      {:error, :enoent} ->
+        {:error, message}
+
+      {:error, reason} ->
+        {:error, "#{message}; staging cleanup failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp unique_file_stage(file_system, final_path) do
+    stage_path =
+      Path.join(
+        Path.dirname(final_path),
+        ".#{Path.basename(final_path)}.stage-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    case fs_lstat(file_system, stage_path) do
+      {:error, :enoent} -> stage_path
+      _other -> unique_file_stage(file_system, final_path)
+    end
+  end
+
   defp stage_skill(file_system, stage) do
-    with :ok <- mkdir_p(file_system, stage),
+    with :ok <- mkdir_exclusive(file_system, stage),
          :ok <- write_files(file_system, stage, Bundle.files()),
          :ok <- write_marker(file_system, stage) do
       :ok
@@ -363,11 +544,12 @@ defmodule Taskman.CLI.Skill.Installer do
             end
           end)
 
-        {:ok,
-         %{
-           stages: Enum.reverse(groups.stages),
-           backups: Enum.reverse(groups.backups)
-         }}
+        groups = %{stages: Enum.reverse(groups.stages), backups: Enum.reverse(groups.backups)}
+
+        with :ok <- validate_owned_sibling_paths(file_system, groups.stages, "staging"),
+             :ok <- validate_owned_sibling_paths(file_system, groups.backups, "backup") do
+          {:ok, groups}
+        end
 
       {:ok, other} ->
         {:error, "Could not inspect temporary paths under #{skills_root}: #{inspect(other)}"}
@@ -375,6 +557,24 @@ defmodule Taskman.CLI.Skill.Installer do
       {:error, reason} ->
         {:error, "Could not inspect temporary paths under #{skills_root}: #{inspect(reason)}"}
     end
+  end
+
+  defp validate_owned_sibling_paths(file_system, paths, label) do
+    Enum.reduce_while(paths, :ok, fn path, :ok ->
+      case fs_lstat(file_system, path) do
+        {:ok, %File.Stat{type: :symlink}} ->
+          {:halt, {:error, "Refusing unsafe #{label} symlink at #{path}"}}
+
+        {:ok, _stat} ->
+          {:cont, :ok}
+
+        {:error, :enoent} ->
+          {:halt, {:error, "Could not inspect #{label} path #{path}"}}
+
+        {:error, reason} ->
+          {:halt, {:error, "Could not inspect #{label} path #{path}: #{inspect(reason)}"}}
+      end
+    end)
   end
 
   defp remove_owned_siblings(file_system, paths) do
@@ -412,20 +612,27 @@ defmodule Taskman.CLI.Skill.Installer do
   end
 
   defp ensure_removed(file_system, path) do
-    if fs_exists?(file_system, path) do
-      case fs_rm_rf(file_system, path) do
-        :ok ->
-          if fs_exists?(file_system, path) do
-            {:error, "temporary path remains at #{path}"}
-          else
-            :ok
-          end
+    case fs_lstat(file_system, path) do
+      {:error, :enoent} ->
+        :ok
 
-        {:error, reason} ->
-          {:error, "Could not remove temporary path #{path}: #{inspect(reason)}"}
-      end
-    else
-      :ok
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "Refusing unsafe symlink temporary path at #{path}"}
+
+      {:ok, _stat} ->
+        case fs_rm_rf(file_system, path) do
+          :ok ->
+            case fs_lstat(file_system, path) do
+              {:error, :enoent} -> :ok
+              _other -> {:error, "temporary path remains at #{path}"}
+            end
+
+          {:error, reason} ->
+            {:error, "Could not remove temporary path #{path}: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, "Could not inspect temporary path #{path}: #{inspect(reason)}"}
     end
   end
 
@@ -436,10 +643,9 @@ defmodule Taskman.CLI.Skill.Installer do
         ".taskman-cli.#{kind}-#{System.unique_integer([:positive, :monotonic])}"
       )
 
-    if fs_exists?(file_system, candidate) do
-      unique_sibling(file_system, skills_root, kind)
-    else
-      candidate
+    case fs_lstat(file_system, candidate) do
+      {:error, :enoent} -> candidate
+      _other -> unique_sibling(file_system, skills_root, kind)
     end
   end
 
@@ -465,9 +671,21 @@ defmodule Taskman.CLI.Skill.Installer do
     end
   end
 
+  defp mkdir_exclusive(file_system, path) do
+    case fs_call(file_system, :mkdir_exclusive, [path]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "Could not create staging path #{path}: #{inspect(reason)}"}
+      other -> {:error, "Could not create staging path #{path}: #{inspect(other)}"}
+    end
+  end
+
   defp fs_read(file_system, path), do: fs_call(file_system, :read, [path])
   defp fs_write(file_system, path, contents), do: fs_call(file_system, :write, [path, contents])
-  defp fs_exists?(file_system, path), do: fs_call(file_system, :exists?, [path]) == true
+
+  defp fs_write_exclusive(file_system, path, contents),
+    do: fs_call(file_system, :write_exclusive, [path, contents])
+
+  defp fs_lstat(file_system, path), do: fs_call(file_system, :lstat, [path])
   defp fs_list(file_system, path), do: fs_call(file_system, :list, [path])
   defp fs_rename(file_system, from, to), do: fs_call(file_system, :rename, [from, to])
 

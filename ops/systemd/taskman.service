@@ -1,0 +1,51 @@
+[Unit]
+Description=Taskman Phoenix release
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=taskman
+Group=taskman
+WorkingDirectory=/opt/taskman/current
+EnvironmentFile=/etc/taskman/taskman.env
+Environment=RELEASE_TMP=/var/lib/taskman
+ExecStartPre=/opt/taskman/current/bin/migrate
+ExecStart=/opt/taskman/current/bin/server
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=taskman
+UMask=0077
+RuntimeDirectory=taskman
+RuntimeDirectoryMode=0750
+StateDirectory=taskman
+StateDirectoryMode=0750
+
+# The release is immutable at runtime. State and short-lived runtime files have
+# dedicated writable directories; database and loopback network access remain available.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/taskman
+ReadWritePaths=/var/lib/taskman /run/taskman
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

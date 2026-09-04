@@ -1,10 +1,14 @@
-<Layouts.app flash={@flash} current_scope={nil}>
+<Layouts.app
+  flash={@flash}
+  current_scope={@current_scope}
+  current_user={@current_user}
+>
   <div
     id="taskman-workspace"
     phx-hook=".TaskDetailLayout"
-    class="min-h-screen bg-slate-950 text-slate-100"
+    class="h-full bg-slate-950 text-slate-100"
   >
-    <div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
+    <div class="grid min-h-full grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
       <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
         <div class="flex h-full flex-col p-6">
           <div class="mb-5 flex items-center gap-3">
@@ -67,7 +71,7 @@
       >
         <div
           :if={!@selected_project && !@project_not_found?}
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-arrow-left" class="mx-auto mb-5 size-8 text-indigo-500 lg:hidden" />
@@ -81,7 +85,7 @@
         <section
           :if={@project_not_found?}
           id="project-not-found"
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-folder-minus" class="mx-auto mb-5 size-10 text-slate-600" />
@@ -97,7 +101,7 @@
         <section
           :if={@location_not_found? && @selected_project}
           id="location-not-found"
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />
@@ -184,7 +188,7 @@
                   />
                 </span>
               </.link>
-              <TaskComponents.status_filter
+              <Table.status_filter
                 form={@status_filter_form}
                 visible_statuses={@visible_task_statuses}
                 open?={@task_status_filter_open?}
@@ -211,20 +215,20 @@
               id="task-table-header"
               class="hidden gap-3 border-b border-slate-700 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
             >
-              <TaskComponents.sort_header
+              <Table.sort_header
                 id="task-number-header"
                 label="#"
                 field={:id}
                 task_sort={@task_sort}
                 class="sm:pl-1"
               />
-              <TaskComponents.sort_header
+              <Table.sort_header
                 id="task-title-header"
                 label="Task"
                 field={:title}
                 task_sort={@task_sort}
               />
-              <TaskComponents.sort_header
+              <Table.sort_header
                 :if={@include_children?}
                 id="task-location-header"
                 label="Location"
@@ -232,14 +236,14 @@
                 task_sort={@task_sort}
                 class="justify-center"
               />
-              <TaskComponents.sort_header
+              <Table.sort_header
                 id="task-status-header"
                 label="Status"
                 field={:status}
                 task_sort={@task_sort}
                 class="justify-center"
               />
-              <TaskComponents.sort_header
+              <Table.sort_header
                 id="task-priority-header"
                 label="Priority"
                 field={:priority}
@@ -269,7 +273,7 @@
                   <% end %>
                 </p>
               </div>
-              <TaskComponents.row
+              <Table.row
                 :for={{dom_id, task_with_location} <- @streams.tasks}
                 id={dom_id}
                 task_with_location={task_with_location}
@@ -311,7 +315,7 @@
       <p id="task-create-location" class="mt-2 text-sm leading-6 text-slate-400">
         {task_create_location_copy(@selected_project, @task_create_location)}
       </p>
-      <TaskForm.form
+      <Form.form
         form={@task_create_form}
         mode={:new}
         change="validate_task"
@@ -331,9 +335,9 @@
       size={:wide}
       initial_focus="#task-title"
       on_cancel={JS.patch(browse_path(@selected_project, @selected_list, @include_children?))}
-      on_escape={if(TaskMove.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
+      on_escape={if(Move.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
     >
-      <TaskmanWeb.TaskDetail.detail
+      <Detail.detail
         task={@selected_task}
         task_autosave={@task_autosave}
         parent_picker={@task_parent_picker}

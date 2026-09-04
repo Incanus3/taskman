@@ -1,7 +1,8 @@
 defmodule Taskman.CLI.Skill.BundleTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.{Parser, Registry}
+  alias Taskman.CLI.Execution.Parser
+  alias Taskman.CLI.Registry
   alias Taskman.CLI.Skill.Bundle
 
   test "bundles a valid, registry-covered skill at compile time" do
@@ -19,12 +20,19 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "--json"
     assert skill =~ "stdout only on status 0"
     assert skill =~ "TASKMAN_API_URL"
+    assert skill =~ "TASKMAN_API_KEY"
+    assert skill =~ "config.json"
+    assert skill =~ "taskman config set-url https://taskman.example.com"
+    assert skill =~ "taskman config set-key"
+    assert skill =~ "taskman config show"
+    assert skill =~ "one-time"
     assert skill =~ "connection_failed"
     assert skill =~ "status 2"
     assert skill =~ "status 3"
     assert skill =~ "status 4"
     assert skill =~ "status 5"
     assert skill =~ "status 6"
+    assert skill =~ "status 7"
     assert skill =~ "read stderr on failure"
     assert skill =~ "exact ID operands"
     assert skill =~ "never guess by name"

@@ -267,7 +267,7 @@ The implementation is expected to change:
 - `lib/taskman_web/live/project_live.html.heex`
 - `lib/taskman_web/components/task_form.ex`
 - `test/taskman/tasks_test.exs`
-- `test/taskman_web/live/project_live_test.exs`
+- `test/taskman_web/live/project_live/project_live_test.exs`
 
 Changes to `lib/taskman/tasks/task.ex`, routes, migrations, or assets are not expected unless
 implementation uncovers a concrete mismatch with this specification.

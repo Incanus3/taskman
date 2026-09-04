@@ -21,6 +21,81 @@ defmodule Taskman.CLI.ClientTest do
              )
   end
 
+  test "adds a bearer credential without putting it in the URL or result" do
+    credential = "tm_test_token_signature"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> credential]
+      assert conn.query_string == ""
+      refute conn.request_path =~ credential
+
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "sealed resolved credentials win over caller auth, headers, steps, and the old api_key seam" do
+    resolved = "tm_ResolvedPayload_123456"
+    injected = "tm_InjectedPayload_654321"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> resolved]
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [],
+               api_key: injected,
+               resolved_api_key: resolved,
+               req_options: [
+                 plug: {Req.Test, TaskmanCLIClient},
+                 auth: {:bearer, injected},
+                 headers: [{"AUTHORIZATION", "Bearer " <> injected}],
+                 request_steps: [
+                   rewrite_actor: fn request ->
+                     Req.Request.put_header(request, "authorization", "Bearer " <> injected)
+                   end
+                 ]
+               ]
+             )
+  end
+
+  test "does not take credentials from public request options" do
+    credential = "tm_request_option_must_not_authenticate"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [api_key: credential],
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "does not take credentials from string-keyed request maps" do
+    credential = "tm_string_request_option_must_not_authenticate"
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(
+               :get,
+               "/api/v1/projects",
+               %{"api_key" => credential},
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
   test "maps public API client errors to exit status 3" do
     for {status, code} <- [
           {400, "invalid_request"},
@@ -39,6 +114,102 @@ defmodule Taskman.CLI.ClientTest do
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
+  end
+
+  test "maps rejected and forbidden bearer authentication to exit status 7" do
+    for {status, code} <- [{401, "unauthorized"}, {403, "forbidden"}] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        conn
+        |> Plug.Conn.put_status(status)
+        |> Req.Test.json(%{error: %{code: code, message: "Authentication failed"}})
+      end)
+
+      assert {:error, 7, %{"error" => %{"code" => ^code, "message" => "Authentication failed"}}} =
+               Client.request(:get, "/api/v1/projects", [],
+                 api_key: "tm_client_mapping_credential",
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               )
+    end
+  end
+
+  test "maps rate-limited authentication to exit status 7 with retry guidance" do
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_header("retry-after", "37")
+      |> Plug.Conn.put_status(429)
+      |> Req.Test.json(%{
+        error: %{
+          code: "rate_limited",
+          message: "Too many requests. Please try again later."
+        }
+      })
+    end)
+
+    assert {:error, 7,
+            %{
+              "error" => %{
+                "code" => "rate_limited",
+                "message" => "Too many requests. Please try again later."
+              }
+            }} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: "tm_client_mapping_credential",
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "rejects mismatched or malformed rate-limit errors" do
+    for response <- [
+          %{error: %{code: "unauthorized", message: "Authentication failed"}},
+          %{error: %{code: "rate_limited", message: ""}},
+          %{data: []}
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "37")
+        |> Plug.Conn.put_status(429)
+        |> Req.Test.json(response)
+      end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(:get, "/api/v1/projects", [],
+                 resolved_api_key: "tm_client_mapping_credential",
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               )
+    end
+  end
+
+  test "redacts a bearer credential if an unexpected transport exception includes it" do
+    credential = "tm_exception_redaction_credential"
+
+    Req.Test.expect(TaskmanCLIClient, fn _conn ->
+      raise "unexpected request detail #{credential}"
+    end)
+
+    assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    refute message =~ credential
+  end
+
+  test "redacts escaped inspected credential representations" do
+    credential = "tm_escaped_secret\ncontrol"
+
+    Req.Test.expect(TaskmanCLIClient, fn _conn ->
+      raise inspect(%{authorization: "Bearer " <> credential})
+    end)
+
+    assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: credential,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    refute message =~ "tm_escaped_secret"
+    assert message =~ "[REDACTED]"
   end
 
   test "maps concurrent Task updates to exit status 3 and preserves fields" do

@@ -41,12 +41,21 @@ if config_env() == :dev do
 end
 
 if config_env() == :prod do
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
+  require_environment = fn name ->
+    case System.get_env(name) do
+      nil ->
+        raise "environment variable #{name} is missing."
+
+      value ->
+        if String.trim(value) == "" do
+          raise "environment variable #{name} must not be blank."
+        end
+
+        value
+    end
+  end
+
+  database_url = require_environment.("DATABASE_URL")
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
@@ -63,16 +72,55 @@ if config_env() == :prod do
   # want to use a different value for prod and you most likely don't want
   # to check this value into version control, so we use an environment
   # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+  require_signing_secret = fn name ->
+    case System.get_env(name) do
+      nil ->
+        raise "environment variable #{name} is missing."
 
-  host = System.get_env("PHX_HOST") || "example.com"
+      secret ->
+        cond do
+          String.trim(secret) == "" ->
+            raise "environment variable #{name} must not be blank."
+
+          byte_size(secret) < 64 ->
+            raise "environment variable #{name} must be at least 64 bytes."
+
+          true ->
+            secret
+        end
+    end
+  end
+
+  secret_key_base = require_signing_secret.("SECRET_KEY_BASE")
+  token_signing_secret = require_signing_secret.("ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET")
+
+  if token_signing_secret == secret_key_base do
+    raise "SECRET_KEY_BASE and ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET must be distinct."
+  end
+
+  host = require_environment.("PHX_HOST")
+  resend_api_key = require_environment.("RESEND_API_KEY")
+
+  mail_from_pattern =
+    ~r/\A[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~-]+)*@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\z/
+
+  mail_from = require_environment.("MAIL_FROM")
+
+  mail_from =
+    if Regex.match?(mail_from_pattern, mail_from) do
+      String.downcase(mail_from)
+    else
+      raise "environment variable MAIL_FROM must be a single email address in local-part@domain form."
+    end
 
   config :taskman, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :taskman, :token_signing_secret, token_signing_secret
+  config :taskman, :mail_from, {"Taskman", mail_from}
+  config :taskman, :public_url, "https://" <> host
+
+  config :taskman, Taskman.Mailer,
+    adapter: Swoosh.Adapters.Resend,
+    api_key: resend_api_key
 
   config :taskman, TaskmanWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

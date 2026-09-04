@@ -11,7 +11,15 @@ config :taskman,
   ecto_repos: [Taskman.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :taskman, ash_domains: [Taskman.Accounts]
+
+config :ash_admin, actor_plug: TaskmanWeb.AshAdminActorPlug
+
 config :taskman, :task_autosave_delay_ms, 300
+
+config :taskman, :ash_rate_limiter, hammer: Taskman.Accounts.RateLimit
+config :taskman, :secure_cookies, false
+config :taskman, :force_ssl?, false
 
 # Configure the endpoint
 config :taskman, TaskmanWeb.Endpoint,
@@ -37,6 +45,11 @@ config :phoenix_live_view,
 # For production it's recommended to configure a different adapter
 # at the `config/runtime.exs`.
 config :taskman, Taskman.Mailer, adapter: Swoosh.Adapters.Local
+
+config :taskman,
+  mail_from: {"Taskman", "no-reply@taskman.example.com"},
+  mailer_delivery: Taskman.Mailer,
+  public_url: "https://taskman.example.com"
 
 # Configure esbuild (the version is required)
 config :esbuild,

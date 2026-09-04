@@ -6,10 +6,13 @@ defmodule Taskman.CLI.Client do
   @default_api_url "http://localhost:4000"
   @connection_guidance "Start the backend from the Taskman repository with `mix phx.server`, or run `taskman agent onboarding` for setup guidance."
   @error_contract %{
+    401 => {"unauthorized", 7},
+    403 => {"forbidden", 7},
     400 => {"invalid_request", 3},
     404 => {"not_found", 3},
     409 => {["unchanged_location", "concurrent_update"], 3},
     422 => {"validation_failed", 3},
+    429 => {"rate_limited", 7},
     500 => {"internal_error", 5}
   }
 
@@ -29,23 +32,31 @@ defmodule Taskman.CLI.Client do
     api_url =
       option(runtime_options, :api_url) || option(request_options, :api_url) || @default_api_url
 
-    req_options = runtime_options |> option(:req_options, []) |> normalize_options()
-    request_options = Keyword.delete(request_options, :api_url)
+    # Credentials are supplied only by the runner's resolved runtime channel.
+    # Neither the old :api_key seam nor request payload/options can select an actor.
+    api_key = option(runtime_options, :resolved_api_key)
+    req_options = safe_req_options(runtime_options)
+
+    request_options =
+      request_options
+      |> Keyword.delete(:api_url)
+      |> Keyword.delete(:api_key)
 
     try do
       with :ok <- ensure_req_started(),
-           {:ok, response} <- perform_request(method, path, request_options, api_url, req_options) do
+           {:ok, response} <-
+             perform_request(method, path, request_options, api_url, req_options, api_key) do
         classify_response(response, api_url, success_shape)
       else
-        {:error, reason} -> classify_transport_error(reason, api_url)
-        other -> classify_transport_error(other, api_url)
+        {:error, reason} -> classify_transport_error(reason, api_url, api_key)
+        other -> classify_transport_error(other, api_url, api_key)
       end
     rescue
-      exception -> classify_exception(exception, api_url)
+      exception -> classify_exception(exception, api_url, api_key)
     end
   end
 
-  defp perform_request(method, path, request_options, api_url, req_options) do
+  defp perform_request(method, path, request_options, api_url, req_options, api_key) do
     req =
       Req.new([base_url: api_url, receive_timeout: 15_000, retry: false] ++ req_options)
 
@@ -53,9 +64,17 @@ defmodule Taskman.CLI.Client do
       [method: method, url: path]
       |> maybe_put(request_options, :json, [:json, :json_body])
       |> maybe_put(request_options, :params, [:params, :query])
+      |> maybe_put_bearer_header(api_key)
 
     Req.request(req, options)
   end
+
+  defp maybe_put_bearer_header(options, api_key) when is_binary(api_key) and api_key != "" do
+    headers = Keyword.get(options, :headers, [])
+    Keyword.put(options, :headers, [{"authorization", "Bearer " <> api_key} | headers])
+  end
+
+  defp maybe_put_bearer_header(options, _api_key), do: options
 
   defp maybe_put(options, request_options, key, aliases) do
     case Enum.find(aliases, &Keyword.has_key?(request_options, &1)) do
@@ -252,15 +271,15 @@ defmodule Taskman.CLI.Client do
     end
   end
 
-  defp classify_transport_error(%Req.TransportError{} = exception, api_url) do
-    {:error, 4, error("connection_failed", connection_message(exception, api_url))}
+  defp classify_transport_error(%Req.TransportError{} = exception, api_url, api_key) do
+    {:error, 4, error("connection_failed", connection_message(exception, api_url, api_key))}
   end
 
-  defp classify_transport_error(%Mint.TransportError{} = exception, api_url) do
-    {:error, 4, error("connection_failed", connection_message(exception, api_url))}
+  defp classify_transport_error(%Mint.TransportError{} = exception, api_url, api_key) do
+    {:error, 4, error("connection_failed", connection_message(exception, api_url, api_key))}
   end
 
-  defp classify_transport_error(reason, api_url)
+  defp classify_transport_error(reason, api_url, api_key)
        when reason in [
               :closed,
               :econnrefused,
@@ -274,54 +293,87 @@ defmodule Taskman.CLI.Client do
     {:error, 4,
      error(
        "connection_failed",
-       connection_message(reason, api_url)
+       connection_message(reason, api_url, api_key)
      )}
   end
 
-  defp classify_transport_error({:failed_connect, _details} = reason, api_url) do
+  defp classify_transport_error({:failed_connect, _details} = reason, api_url, api_key) do
     {:error, 4,
      error(
        "connection_failed",
-       connection_message(reason, api_url)
+       connection_message(reason, api_url, api_key)
      )}
   end
 
-  defp classify_transport_error({:error, reason}, api_url),
-    do: classify_transport_error(reason, api_url)
+  defp classify_transport_error({:error, reason}, api_url, api_key),
+    do: classify_transport_error(reason, api_url, api_key)
 
-  defp classify_transport_error(reason, api_url) do
-    {:error, 5, error("invalid_response", contract_message(reason, api_url))}
+  defp classify_transport_error(reason, api_url, api_key) do
+    {:error, 5, error("invalid_response", contract_message(reason, api_url, api_key))}
   end
 
-  defp classify_exception(%Req.TransportError{} = exception, api_url),
-    do: classify_transport_error(exception, api_url)
+  defp classify_exception(%Req.TransportError{} = exception, api_url, api_key),
+    do: classify_transport_error(exception, api_url, api_key)
 
-  defp classify_exception(%Mint.TransportError{} = exception, api_url),
-    do: classify_transport_error(exception, api_url)
+  defp classify_exception(%Mint.TransportError{} = exception, api_url, api_key),
+    do: classify_transport_error(exception, api_url, api_key)
 
-  defp classify_exception(exception, api_url) do
-    {:error, 5, error("invalid_response", contract_message(exception, api_url))}
+  defp classify_exception(exception, api_url, api_key) do
+    {:error, 5, error("invalid_response", contract_message(exception, api_url, api_key))}
   end
 
   defp invalid_response(api_url) do
     {:error, 5, error("invalid_response", "Taskman API response from #{api_url} was invalid")}
   end
 
-  defp connection_message(%{__exception__: true} = exception, api_url),
-    do: connection_message(Exception.message(exception), api_url)
+  defp connection_message(%{__exception__: true} = exception, api_url, api_key),
+    do: connection_message(Exception.message(exception), api_url, api_key)
 
-  defp connection_message(detail, api_url) when is_binary(detail),
-    do: "Could not connect to Taskman API at #{api_url}: #{detail}. #{@connection_guidance}"
+  defp connection_message(detail, api_url, api_key) when is_binary(detail),
+    do:
+      "Could not connect to Taskman API at #{api_url}: #{redact_secret(detail, api_key)}. #{@connection_guidance}"
 
-  defp connection_message(reason, api_url),
-    do: connection_message(inspect(reason), api_url)
+  defp connection_message(reason, api_url, api_key),
+    do: connection_message(inspect(reason), api_url, api_key)
 
-  defp contract_message(%{__exception__: true} = exception, api_url) do
-    "Taskman API response from #{api_url} was invalid: #{Exception.message(exception)}"
+  defp contract_message(%{__exception__: true} = exception, api_url, api_key) do
+    "Taskman API response from #{api_url} was invalid: #{redact_secret(Exception.message(exception), api_key)}"
   end
 
-  defp contract_message(reason, api_url) do
-    "Taskman API response from #{api_url} was invalid: #{inspect(reason)}"
+  defp contract_message(reason, api_url, api_key) do
+    "Taskman API response from #{api_url} was invalid: #{redact_secret(inspect(reason), api_key)}"
+  end
+
+  defp redact_secret(value, api_key) when is_binary(api_key) and api_key != "" do
+    api_key
+    |> secret_representations()
+    |> Enum.reduce(value, fn representation, redacted ->
+      String.replace(redacted, representation, "[REDACTED]")
+    end)
+  end
+
+  defp redact_secret(value, _api_key), do: value
+
+  defp secret_representations(api_key) do
+    inspected = inspect(api_key)
+
+    [api_key, String.trim(inspected, "\"")]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  # The CLI has no public transport customization contract. The single exception is Req.Test's
+  # in-process adapter, which lets tests observe the completed request without participating in
+  # request preparation. In particular, never pass caller-provided auth, headers, plugins, or
+  # request steps to Req.new/1 because those can replace Authorization after the runner resolves it.
+  defp safe_req_options(runtime_options) do
+    case runtime_options
+         |> option(:req_options, [])
+         |> normalize_options()
+         |> Keyword.get(:plug) do
+      {Req.Test, name} when is_atom(name) -> [plug: {Req.Test, name}]
+      _other -> []
+    end
   end
 
   defp error(code, message), do: %{"error" => %{"code" => code, "message" => message}}

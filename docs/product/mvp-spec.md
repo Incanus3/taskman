@@ -4,10 +4,10 @@
 
 ## 1. Product role
 
-Agent-Aware Project Manager is a single-user, locally started web application for planning work in
-local Projects and coordinating that work with local Auggie agent sessions. It is the system of
-record for Projects, Lists, Tasks, Task relationships, and linked Agent Sessions—not an embedded
-agent runtime.
+Agent-Aware Project Manager is an authenticated, hostable web application for planning work in
+Projects and coordinating that work with local Auggie agent sessions. It is the system of record
+for Projects, Lists, Tasks, Task relationships, and linked Agent Sessions—not an embedded agent
+runtime.
 
 The core journey is: create a Project for a local directory; organize and perform Tasks; launch or
 attach an Auggie Session for a Task when useful; return to the Task and Session context; review the
@@ -15,12 +15,14 @@ result; then explicitly mark the Task Done.
 
 ## 2. Users, delivery, and persistence
 
-- One person uses the locally started application through its browser UI or accompanying CLI.
-- All product data persists on that machine.
+- Explicitly provisioned users access one shared Taskman workspace through its browser UI or
+  accompanying CLI.
+- Product data persists in the Taskman server's PostgreSQL database.
 - A Project has exactly one required primary local directory. Any local directory is valid;
   repository metadata is detected when present.
-- The application is neither hosted nor multi-user in the MVP. Its model should not preclude a later
-  team-capable evolution.
+- Authentication is an application-wide access gate. Projects, Lists, and Tasks are not owned or
+  filtered by user, and the MVP has no collaboration permissions or attribution.
+- Taskman can run as an OTP release behind an HTTPS reverse proxy on a dedicated server.
 
 ## 3. Core domain model
 
@@ -58,7 +60,7 @@ nor an Agent Session automatically changes Task state.
 
 ## 5. Programmatic access and CLI
 
-Taskman provides a versioned local JSON API and an accompanying `taskman` CLI. Meaningful Project,
+Taskman provides a versioned JSON API and an accompanying `taskman` CLI. Meaningful Project,
 List, and Task operations available in the browser are also available through the CLI where
 terminal use makes sense. Browser-only presentation state is not part of this parity contract.
 
@@ -73,13 +75,36 @@ The CLI:
 - installs its version-matched agent skill to `~/.agents/skills/taskman-cli/`.
 
 Later slices add API, CLI, help, Bash/Fish completion, and skill support alongside every new
-meaningful UI operation. The MVP remains local-only and unauthenticated; this interface does not
-permit remote exposure or multi-user access.
+meaningful UI operation. Every API request requires an expiring, revocable API key belonging to an
+active user. The CLI supports a protected XDG configuration file and environment overrides for the
+server URL and key.
 
 Starting the backend through a future `taskman serve` command is a planned extension point, not an
 MVP requirement of the initial CLI slice.
 
-## 6. Task relationships
+## 6. Authentication and hosted access
+
+- Public self-registration is unavailable. A server-local command bootstraps an administrator, and
+  administrators invite later users through an authenticated admin surface.
+- An invitation verifies the email address and lets the user choose a password. Users may recover
+  or change their password and confirm a new email address.
+- Browser users authenticate through stored, revocable sessions. API clients authenticate with
+  named API keys that are stored only as hashes and expire no later than one year.
+- Users can manage their own sessions and API keys and permanently delete their own account after
+  password confirmation. Administrators can invite, enable, disable, delete, promote, and demote
+  users while the last active administrator remains protected.
+- Administrators can change another user's email and explicitly confirm either the existing or new
+  address. Changing a pending user's email immediately sends a fresh setup invitation.
+- Disabling a user removes browser and API access immediately. All authenticated users otherwise
+  see the same Project, List, and Task data.
+- Account deletion permanently removes authentication data but leaves the shared Project, List,
+  and Task workspace unchanged because those records are not user-owned.
+- Password is the initial browser strategy. The Accounts boundary permits later magic-link and
+  OAuth/OIDC strategies without changing domain ownership.
+- Production uses an OTP release under systemd, a loopback Phoenix endpoint behind an HTTPS reverse
+  proxy, private PostgreSQL, and transactional email for setup, confirmation, and recovery.
+
+## 7. Task relationships
 
 | Type | Scope and rules |
 | --- | --- |
@@ -92,7 +117,7 @@ never block its child. Relationships do not automatically transition Tasks. Movi
 unresolved direct blocker to Done requires an explicit warning confirmation; a blocker is resolved
 for that warning when it is Done or Will Not Do.
 
-## 7. Agent Session integration
+## 8. Agent Session integration
 
 ### Auggie ACP adapter
 
@@ -130,7 +155,7 @@ validated attachment, or explicit Resume; it is not live execution status.
 Agent Session actions never change Task lifecycle state. They support human work; they do not finish
 it.
 
-## 8. Deletion and human safeguards
+## 9. Deletion and human safeguards
 
 Projects, Lists, and Tasks may be deleted permanently. Before any recursive deletion, the product
 shows a detailed impact warning and requires a second explicit confirmation.
@@ -142,11 +167,13 @@ shows a detailed impact warning and requires a second explicit confirmation.
   chooses either recursive child-subtree deletion or reparenting direct children to its former parent,
   or to the Project-level hierarchy. Reparented children retain descendants and List ownership.
 
-## 9. Explicit MVP exclusions
+## 10. Explicit MVP exclusions
 
 - Product implementation and deployment; this document specifies the product only.
-- Authentication, public hosting, remote access, synchronization, collaboration, permissions, and
-  other multi-user workflows.
+- Per-user domain ownership, synchronization, collaboration permissions, activity attribution, and
+  other multi-user workflows beyond authenticated access to the shared workspace.
+- Public self-registration and authentication strategies beyond the initial password flow.
+- Managed hosting, automated deployment, and container orchestration.
 - Desktop packaging and managed Workspace creation, selection, reuse, or lifecycle.
 - External Cosmos Session and Emdash task integrations; browser/deep links; arbitrary external links;
   and providers beyond Auggie ACP.
@@ -155,7 +182,7 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - Configurable workflows, global dashboards, advanced search, saved views, analytics, import, and
   export.
 
-## 10. Related documents
+## 11. Related documents
 
 - [Domain model and glossary](domain.md)
 - [Task relationship semantics](relationships.md)
@@ -164,3 +191,4 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - [Cosmos capability research](../research/cosmos-capabilities.md)
 - [Emdash and Auggie capability research](../research/emdash-auggie-capabilities.md)
 - [Navigation and MVP visual guidance](../prototypes/navigation.html)
+- [Authenticated hosted access and release deployment](../specs/2026-09-02-authenticated-hosted-access-design.md)

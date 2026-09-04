@@ -1,5 +1,11 @@
 import Config
 
+default_database_pool_size = min(System.schedulers_online() * 2, 16)
+
+database_pool_size =
+  System.get_env("TEST_DATABASE_POOL_SIZE", Integer.to_string(default_database_pool_size))
+  |> String.to_integer()
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -11,7 +17,7 @@ config :taskman, Taskman.Repo,
   hostname: System.get_env("POSTGRES_HOST", "localhost"),
   database: "taskman_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size: database_pool_size
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
@@ -23,7 +29,15 @@ config :taskman, TaskmanWeb.Endpoint,
 # In test we don't send emails
 config :taskman, Taskman.Mailer, adapter: Swoosh.Adapters.Test
 
+config :taskman,
+  mail_from: {"Taskman", "no-reply@taskman.example.test"},
+  mailer_delivery: Taskman.Mailer,
+  public_url: "https://taskman.example.test"
+
 config :taskman, :task_autosave_delay_ms, 0
+config :taskman, :rate_limit_test_isolation, true
+
+config :taskman, :token_signing_secret, "test-token-signing-secret"
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false

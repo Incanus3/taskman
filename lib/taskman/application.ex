@@ -12,6 +12,7 @@ defmodule Taskman.Application do
       Taskman.Repo,
       {DNSCluster, query: Application.get_env(:taskman, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Taskman.PubSub},
+      {Taskman.Accounts.RateLimit, clean_period: :timer.minutes(1)},
       # Start a worker by calling: Taskman.Worker.start_link(arg)
       # {Taskman.Worker, arg},
       # Start to serve requests, typically the last entry

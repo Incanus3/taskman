@@ -1,7 +1,7 @@
 defmodule Taskman.CLI.Registry do
   @moduledoc "The single declarative source of truth for the Taskman CLI."
 
-  alias Taskman.CLI.{Argument, Command, Option}
+  alias Taskman.CLI.Registry.{Argument, Command, Option}
 
   @statuses ~w(icebox pending in_progress in_review done will_not_do)
   @priorities ~w(none low medium high urgent)
@@ -256,6 +256,28 @@ defmodule Taskman.CLI.Registry do
           "taskman tasks move --project 7 42 --to-list 11",
           "taskman tasks move --project 7 42 --to-project-root"
         ]
+      },
+      %Command{
+        path: ~w(config set-url),
+        summary: "Store the Taskman API base URL.",
+        usage: "taskman config set-url URL",
+        handler: {:config, :set_url},
+        arguments: [argument(:api_url, "URL", :string, "HTTP or HTTPS Taskman API base URL.")],
+        examples: ["taskman config set-url https://taskman.example.com"]
+      },
+      %Command{
+        path: ~w(config set-key),
+        summary: "Prompt for and store a Taskman API key.",
+        usage: "taskman config set-key",
+        handler: {:config, :set_key},
+        examples: ["taskman config set-key"]
+      },
+      %Command{
+        path: ~w(config show),
+        summary: "Show the resolved Taskman API configuration without revealing its key.",
+        usage: "taskman config show",
+        handler: {:config, :show},
+        examples: ["taskman config show", "taskman config show --json"]
       },
       %Command{
         path: ~w(completions bash),

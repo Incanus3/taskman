@@ -8,6 +8,8 @@ defmodule TaskmanWeb.Endpoint do
     store: :cookie,
     key: "_taskman_key",
     signing_salt: "bjo8ge2+",
+    secure: Application.compile_env(:taskman, :secure_cookies, false),
+    http_only: true,
     same_site: "Lax"
   ]
 
@@ -42,6 +44,15 @@ defmodule TaskmanWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug TaskmanWeb.Plugs.TrustedProxy
+
+  if Application.compile_env(:taskman, :force_ssl?, false) do
+    plug Plug.SSL, hsts: true
+  end
+
+  # Authenticate API paths before parsers and content negotiation can reject
+  # malformed or unsupported requests with a different response envelope.
+  plug TaskmanWeb.Plugs.ApiAuthentication
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

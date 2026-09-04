@@ -30,6 +30,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "list", "--project", "7", "--list", "11", "--include-descendants"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -71,6 +73,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "--direction",
           "asc"
         ],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -100,6 +104,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     result =
       Taskman.CLI.run(["tasks", "list", "--project", "7"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -134,6 +140,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     result =
       Taskman.CLI.run(["tasks", "list", "--project", "7"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -164,6 +172,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     result =
       Taskman.CLI.run(["tasks", "show", "--project", "7", "42", "--json"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -236,6 +246,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "11",
           "--json"
         ],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -269,6 +281,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "create", "--project", "7", "--title", "Root task"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -295,6 +309,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "create", "--project", "7", "--title", "Child", "--parent", "42", "--json"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -331,6 +347,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "--clear-due-at",
           "--json"
         ],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -351,6 +369,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "update", "--project", "7", "42", "--clear-due-at"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -373,6 +393,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     set_parent =
       Taskman.CLI.run(
         ["tasks", "update", "--project", "7", "42", "--parent", "41"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -392,6 +414,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     clear_parent =
       Taskman.CLI.run(
         ["tasks", "update", "--project", "7", "42", "--no-parent", "--json"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -410,6 +434,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     result =
       Taskman.CLI.run(["tasks", "hierarchy", "--project", "7", "51", "--json"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -432,6 +458,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "move", "--project", "7", "42", "--to-list", "11", "--json"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 
@@ -461,6 +489,8 @@ defmodule Taskman.CLI.Commands.TasksTest do
     result =
       Taskman.CLI.run(
         ["tasks", "move", "--project", "7", "42", "--to-project-root"],
+        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, TaskCommands}]
       )
 

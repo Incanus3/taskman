@@ -38,14 +38,16 @@
 - [API, CLI, and agent skill](specs/2026-08-29-api-cli-agent-skill-design.md)
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
+- [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 
 ## Active implementation plans
 
-No implementation plans are currently active.
+- [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
 
 ## Development
 
 - [Development guide](development.md)
+- [Dedicated-host deployment runbook](deployment.md)
 
 ## Research
 

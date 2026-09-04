@@ -20,19 +20,18 @@ defmodule TaskmanWeb.ProjectLive do
     "priority" => :priority
   }
 
-  alias TaskmanWeb.{
-    ListEdit,
-    TaskAutosave,
-    TaskComponents,
-    TaskForm,
-    TaskHierarchy,
-    TaskMove,
-    TaskParentPicker,
-    WorkspaceNavigation
-  }
+  alias TaskmanWeb.ProjectLive.ListEdit
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Hierarchy, Move, ParentPicker}
+  alias TaskmanWeb.Tasks.{Detail, Form, Table}
+  alias TaskmanWeb.WorkspaceNavigation
 
   @impl true
   def mount(_params, _session, socket) do
+    socket =
+      socket
+      |> assign_new(:current_scope, fn -> nil end)
+      |> assign_new(:current_user, fn -> nil end)
+
     socket =
       stream_configure(socket, :tasks,
         dom_id: fn %TaskWithLocation{task: task} -> "tasks-#{task.id}" end
@@ -60,14 +59,14 @@ defmodule TaskmanWeb.ProjectLive do
       |> assign(:task_create_form, nil)
       |> assign(:task_create_enabled?, false)
       |> assign(:task_create_location, nil)
-      |> assign(:task_parent_picker, TaskParentPicker.empty())
+      |> assign(:task_parent_picker, ParentPicker.empty())
       |> assign(:tasks_empty?, true)
       |> assign(:selected_task, nil)
       |> assign(:task_not_found?, false)
       |> assign(:task_detail_open?, false)
-      |> assign(:task_autosave, TaskAutosave.empty())
-      |> assign(:task_hierarchy, TaskHierarchy.empty())
-      |> assign(:task_move, TaskMove.empty())
+      |> assign(:task_autosave, Autosave.empty())
+      |> assign(:task_hierarchy, Hierarchy.empty())
+      |> assign(:task_move, Move.empty())
       |> assign(:expanded_node_ids, MapSet.new())
       |> assign(:list_edit, ListEdit.empty())
       |> assign(:tasks_filtered_empty?, false)
@@ -196,12 +195,12 @@ defmodule TaskmanWeb.ProjectLive do
         |> assign(:task_detail_open?, true)
         |> assign(
           :task_autosave,
-          TaskAutosave.load(socket.assigns.task_autosave, task, saved?: false)
+          Autosave.load(socket.assigns.task_autosave, task, saved?: false)
         )
         |> assign(
           :task_parent_picker,
-          TaskParentPicker.open_edit(
-            TaskParentPicker.empty(),
+          ParentPicker.open_edit(
+            ParentPicker.empty(),
             socket.assigns.selected_project,
             task
           )
@@ -353,7 +352,7 @@ defmodule TaskmanWeb.ProjectLive do
          assign(
            socket,
            :task_hierarchy,
-           TaskHierarchy.toggle(socket.assigns.task_hierarchy, task_id)
+           Hierarchy.toggle(socket.assigns.task_hierarchy, task_id)
          )}
 
       :error ->
@@ -479,7 +478,7 @@ defmodule TaskmanWeb.ProjectLive do
      update_task_parent_picker(
        socket,
        false,
-       &TaskParentPicker.open_options(&1, socket.assigns.selected_project)
+       &ParentPicker.open_options(&1, socket.assigns.selected_project)
      )}
   end
 
@@ -488,12 +487,12 @@ defmodule TaskmanWeb.ProjectLive do
      update_task_parent_picker(
        socket,
        false,
-       &TaskParentPicker.toggle_options(&1, socket.assigns.selected_project)
+       &ParentPicker.toggle_options(&1, socket.assigns.selected_project)
      )}
   end
 
   def handle_event("close_task_parent_options", _params, socket) do
-    {:noreply, update_task_parent_picker(socket, false, &TaskParentPicker.close_options/1)}
+    {:noreply, update_task_parent_picker(socket, false, &ParentPicker.close_options/1)}
   end
 
   def handle_event("search_task_parents", %{"parent_query" => query}, socket)
@@ -507,7 +506,7 @@ defmodule TaskmanWeb.ProjectLive do
        update_task_parent_picker(
          socket,
          false,
-         &TaskParentPicker.search(&1, socket.assigns.selected_project, query)
+         &ParentPicker.search(&1, socket.assigns.selected_project, query)
        )}
     end
   end
@@ -517,7 +516,7 @@ defmodule TaskmanWeb.ProjectLive do
   def handle_event("task_parent_keydown", %{"key" => key}, socket) when is_binary(key) do
     picker = socket.assigns.task_parent_picker
 
-    case TaskParentPicker.keydown(picker, key) do
+    case ParentPicker.keydown(picker, key) do
       {:move, picker} ->
         {:noreply, assign(socket, :task_parent_picker, picker)}
 
@@ -529,7 +528,7 @@ defmodule TaskmanWeb.ProjectLive do
          update_task_parent_picker(
            socket,
            true,
-           &TaskParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
+           &ParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
          )}
 
       :ignore ->
@@ -542,12 +541,12 @@ defmodule TaskmanWeb.ProjectLive do
      update_task_parent_picker(
        socket,
        true,
-       &TaskParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
+       &ParentPicker.select_draft(&1, socket.assigns.selected_project, parent_id)
      )}
   end
 
   def handle_event("clear_task_parent", _params, socket) do
-    {:noreply, update_task_parent_picker(socket, true, &TaskParentPicker.clear_draft/1)}
+    {:noreply, update_task_parent_picker(socket, true, &ParentPicker.clear_draft/1)}
   end
 
   def handle_event("save_task", %{"task" => task_params}, socket) do
@@ -555,7 +554,7 @@ defmodule TaskmanWeb.ProjectLive do
            socket.assigns.selected_project,
            socket.assigns.task_create_location,
            task_params,
-           parent: TaskParentPicker.selected_parent(socket.assigns.task_parent_picker)
+           parent: ParentPicker.selected_parent(socket.assigns.task_parent_picker)
          ) do
       {:ok, _task} ->
         socket = refresh_task_stream(socket)
@@ -575,7 +574,7 @@ defmodule TaskmanWeb.ProjectLive do
          socket
          |> assign(
            :task_parent_picker,
-           TaskParentPicker.reject_draft(
+           ParentPicker.reject_draft(
              socket.assigns.task_parent_picker,
              "That parent Task is no longer available."
            )
@@ -595,7 +594,7 @@ defmodule TaskmanWeb.ProjectLive do
         socket
       ) do
     result =
-      TaskAutosave.change(
+      Autosave.change(
         socket.assigns.task_autosave,
         socket.assigns.selected_project,
         socket.assigns.selected_task,
@@ -620,7 +619,7 @@ defmodule TaskmanWeb.ProjectLive do
           assigns: %{
             selected_project: %Project{} = project,
             selected_task: %Task{} = task,
-            task_autosave: %TaskAutosave{} = autosave
+            task_autosave: %Autosave{} = autosave
           }
         } = socket
       )
@@ -630,7 +629,7 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, socket}
 
       resolution ->
-        result = TaskAutosave.resolve_conflict(autosave, project, task, field, resolution)
+        result = Autosave.resolve_conflict(autosave, project, task, field, resolution)
         {:noreply, apply_task_autosave_result(socket, result)}
     end
   end
@@ -643,7 +642,7 @@ defmodule TaskmanWeb.ProjectLive do
         %{
           assigns: %{
             selected_project: %Project{} = project,
-            task_parent_picker: %TaskParentPicker{} = picker
+            task_parent_picker: %ParentPicker{} = picker
           }
         } = socket
       )
@@ -653,7 +652,7 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, socket}
 
       resolution ->
-        case TaskParentPicker.resolve_conflict(picker, project, resolution) do
+        case ParentPicker.resolve_conflict(picker, project, resolution) do
           {:ok, picker, task} ->
             {:noreply, sync_task_parent_picker(socket, picker, task)}
 
@@ -674,7 +673,7 @@ defmodule TaskmanWeb.ProjectLive do
         case Tasks.get_task_for_project(project, task_id) do
           %Task{} = task ->
             task_move =
-              TaskMove.open(
+              Move.open(
                 socket.assigns.task_move,
                 project,
                 task,
@@ -687,30 +686,30 @@ defmodule TaskmanWeb.ProjectLive do
              |> refresh_task_stream()}
 
           nil ->
-            {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
+            {:noreply, assign(socket, :task_move, Move.clear(socket.assigns.task_move))}
         end
 
       nil ->
-        {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
+        {:noreply, assign(socket, :task_move, Move.clear(socket.assigns.task_move))}
     end
   end
 
   def handle_event("open_move_task", _params, socket),
-    do: {:noreply, assign(socket, :task_move, TaskMove.clear(socket.assigns.task_move))}
+    do: {:noreply, assign(socket, :task_move, Move.clear(socket.assigns.task_move))}
 
   def handle_event("open_move_destinations", _params, socket) do
     {:noreply,
      socket
-     |> assign(:task_move, TaskMove.open_destinations(socket.assigns.task_move))
+     |> assign(:task_move, Move.open_destinations(socket.assigns.task_move))
      |> refresh_move_surface()}
   end
 
   def handle_event("search_move_destinations", %{"value" => query}, socket)
       when is_binary(query) do
     case {socket.assigns.selected_project, socket.assigns.task_move} do
-      {%Project{} = project, %TaskMove{} = task_move} ->
-        if TaskMove.active?(task_move) do
-          case TaskMove.search(task_move, project, query) do
+      {%Project{} = project, %Move{} = task_move} ->
+        if Move.active?(task_move) do
+          case Move.search(task_move, project, query) do
             {:ok, task_move, _task} ->
               {:noreply,
                socket
@@ -738,25 +737,25 @@ defmodule TaskmanWeb.ProjectLive do
       when is_binary(destination) do
     {:noreply,
      socket
-     |> assign(:task_move, TaskMove.select_destination(socket.assigns.task_move, destination))
+     |> assign(:task_move, Move.select_destination(socket.assigns.task_move, destination))
      |> refresh_move_surface()}
   end
 
   def handle_event("select_move_destination", _params, socket), do: {:noreply, socket}
 
-  def handle_event("cancel_move_task", _params, socket),
-    do:
-      {:noreply,
-       socket
-       |> assign(:task_move, TaskMove.clear(socket.assigns.task_move))
-       |> refresh_task_stream()}
+  def handle_event("cancel_move_task", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:task_move, Move.clear(socket.assigns.task_move))
+     |> refresh_task_stream()}
+  end
 
   def handle_event(
         "submit_move_task",
         _params,
         %{
           assigns: %{
-            task_move: %TaskMove{active_task: %{origin: origin}},
+            task_move: %Move{active_task: %{origin: origin}},
             selected_project: %Project{} = project
           }
         } =
@@ -765,7 +764,7 @@ defmodule TaskmanWeb.ProjectLive do
     case flush_move_task_fields(origin, socket) do
       {:error, socket} ->
         task_move =
-          TaskMove.put_error(
+          Move.put_error(
             socket.assigns.task_move,
             "Save the Task before moving it."
           )
@@ -776,7 +775,7 @@ defmodule TaskmanWeb.ProjectLive do
          |> reinsert_active_move_row()}
 
       {:ok, socket} ->
-        case TaskMove.submit(socket.assigns.task_move, project) do
+        case Move.submit(socket.assigns.task_move, project) do
           {:ok, task_move, moved_task} ->
             {:noreply,
              socket
@@ -806,7 +805,7 @@ defmodule TaskmanWeb.ProjectLive do
         } = socket
       ) do
     result =
-      TaskAutosave.handle_scheduled_save(
+      Autosave.handle_scheduled_save(
         socket.assigns.task_autosave,
         project,
         task,
@@ -902,8 +901,8 @@ defmodule TaskmanWeb.ProjectLive do
         socket.assigns.selected_project,
         socket.assigns.task_parent_picker
       } do
-        {:show_task, %Project{} = project, %TaskParentPicker{} = picker} ->
-          assign(socket, :task_parent_picker, TaskParentPicker.reconcile(picker, project, task))
+        {:show_task, %Project{} = project, %ParentPicker{} = picker} ->
+          assign(socket, :task_parent_picker, ParentPicker.reconcile(picker, project, task))
 
         _ ->
           socket
@@ -1148,12 +1147,12 @@ defmodule TaskmanWeb.ProjectLive do
   defp refresh_task_parent_picker(
          %{
            assigns: %{
-             task_parent_picker: %TaskParentPicker{options_open?: true} = picker,
+             task_parent_picker: %ParentPicker{options_open?: true} = picker,
              selected_project: %Project{} = project
            }
          } = socket
        ) do
-    assign(socket, :task_parent_picker, TaskParentPicker.search(picker, project, picker.query))
+    assign(socket, :task_parent_picker, ParentPicker.search(picker, project, picker.query))
   end
 
   defp refresh_task_parent_picker(socket), do: socket
@@ -1291,12 +1290,12 @@ defmodule TaskmanWeb.ProjectLive do
          %{
            assigns: %{
              selected_project: %Project{} = project,
-             task_move: %TaskMove{} = task_move
+             task_move: %Move{} = task_move
            }
          } = socket
        ) do
-    if TaskMove.active?(task_move) do
-      case TaskMove.refresh(task_move, project) do
+    if Move.active?(task_move) do
+      case Move.refresh(task_move, project) do
         {:ok, task_move, _task} ->
           socket
           |> assign(:task_move, task_move)
@@ -1318,12 +1317,12 @@ defmodule TaskmanWeb.ProjectLive do
          %{
            assigns: %{
              selected_project: %Project{} = project,
-             task_move: %TaskMove{} = task_move
+             task_move: %Move{} = task_move
            }
          } = socket
        ) do
-    if TaskMove.active?(task_move) do
-      case TaskMove.refresh(task_move, project) do
+    if Move.active?(task_move) do
+      case Move.refresh(task_move, project) do
         {:ok, task_move, _task} -> assign(socket, :task_move, task_move)
         {:error, task_move, :task_not_found} -> assign(socket, :task_move, task_move)
       end
@@ -1354,8 +1353,8 @@ defmodule TaskmanWeb.ProjectLive do
              live_action: :show_task,
              selected_project: %Project{} = project,
              selected_task: %Task{id: task_id} = selected_task,
-             task_autosave: %TaskAutosave{} = autosave,
-             task_parent_picker: %TaskParentPicker{} = picker
+             task_autosave: %Autosave{} = autosave,
+             task_parent_picker: %ParentPicker{} = picker
            }
          } = socket,
          _event
@@ -1364,10 +1363,10 @@ defmodule TaskmanWeb.ProjectLive do
       %Task{} = persisted_task ->
         socket
         |> assign(:selected_task, persisted_task)
-        |> assign(:task_autosave, TaskAutosave.reconcile(autosave, persisted_task))
+        |> assign(:task_autosave, Autosave.reconcile(autosave, persisted_task))
         |> assign(
           :task_parent_picker,
-          TaskParentPicker.reconcile(picker, project, persisted_task)
+          ParentPicker.reconcile(picker, project, persisted_task)
         )
 
       nil ->
@@ -1496,13 +1495,13 @@ defmodule TaskmanWeb.ProjectLive do
     |> assign(:task_create_form, nil)
     |> assign(:task_create_enabled?, false)
     |> assign(:task_create_location, nil)
-    |> assign(:task_parent_picker, TaskParentPicker.empty())
-    |> assign(:task_autosave, TaskAutosave.clear(socket.assigns.task_autosave))
-    |> assign(:task_move, TaskMove.clear(socket.assigns.task_move))
+    |> assign(:task_parent_picker, ParentPicker.empty())
+    |> assign(:task_autosave, Autosave.clear(socket.assigns.task_autosave))
+    |> assign(:task_move, Move.clear(socket.assigns.task_move))
   end
 
   defp clear_task_hierarchy(socket) do
-    assign(socket, :task_hierarchy, TaskHierarchy.clear(socket.assigns.task_hierarchy))
+    assign(socket, :task_hierarchy, Hierarchy.clear(socket.assigns.task_hierarchy))
   end
 
   defp task_not_found_modal_state(socket) do
@@ -1517,7 +1516,7 @@ defmodule TaskmanWeb.ProjectLive do
         assign(
           socket,
           :task_hierarchy,
-          TaskHierarchy.load(socket.assigns.task_hierarchy, hierarchy)
+          Hierarchy.load(socket.assigns.task_hierarchy, hierarchy)
         )
 
       {:error, :not_found} ->
@@ -1556,7 +1555,7 @@ defmodule TaskmanWeb.ProjectLive do
             |> assign(:selected_task, task)
             |> assign(
               :task_autosave,
-              TaskAutosave.load(socket.assigns.task_autosave, task, saved?: true)
+              Autosave.load(socket.assigns.task_autosave, task, saved?: true)
             )
 
           nil ->
@@ -1571,7 +1570,7 @@ defmodule TaskmanWeb.ProjectLive do
   defp reinsert_active_move_row(
          %{
            assigns: %{
-             task_move: %TaskMove{
+             task_move: %Move{
                active_task: %{origin: :row, task_with_location: %TaskWithLocation{} = task}
              }
            }
@@ -1590,7 +1589,7 @@ defmodule TaskmanWeb.ProjectLive do
            }
          } = socket
        ) do
-    case TaskAutosave.flush(socket.assigns.task_autosave, project, task) do
+    case Autosave.flush(socket.assigns.task_autosave, project, task) do
       {:ok, autosave, task} ->
         {:ok, sync_task_autosave(socket, autosave, task)}
 
@@ -1664,18 +1663,18 @@ defmodule TaskmanWeb.ProjectLive do
   defp task_create_state(project, selected_list, params) do
     case Map.fetch(params, "parent_task_id") do
       :error ->
-        {selected_list, TaskParentPicker.open_create(TaskParentPicker.empty(), project, nil)}
+        {selected_list, ParentPicker.open_create(ParentPicker.empty(), project, nil)}
 
       {:ok, parent_task_id} ->
         case task_create_parent(project, parent_task_id) do
           {:ok, parent, location} ->
-            {location, TaskParentPicker.open_create(TaskParentPicker.empty(), project, parent)}
+            {location, ParentPicker.open_create(ParentPicker.empty(), project, parent)}
 
           :error ->
             {selected_list,
-             TaskParentPicker.empty()
-             |> TaskParentPicker.open_create(project, nil)
-             |> TaskParentPicker.reject_draft("That parent Task is no longer available.")}
+             ParentPicker.empty()
+             |> ParentPicker.open_create(project, nil)
+             |> ParentPicker.reject_draft("That parent Task is no longer available.")}
         end
     end
   end
@@ -1699,7 +1698,7 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp update_task_parent_picker(
-         %{assigns: %{live_action: :new_task, task_parent_picker: %TaskParentPicker{}}} = socket,
+         %{assigns: %{live_action: :new_task, task_parent_picker: %ParentPicker{}}} = socket,
          _save?,
          transition
        ) do
@@ -1712,7 +1711,7 @@ defmodule TaskmanWeb.ProjectLive do
              live_action: :show_task,
              selected_project: %Project{} = project,
              selected_task: %Task{} = task,
-             task_parent_picker: %TaskParentPicker{} = picker
+             task_parent_picker: %ParentPicker{} = picker
            }
          } = socket,
          save?,
@@ -1730,7 +1729,7 @@ defmodule TaskmanWeb.ProjectLive do
   defp update_task_parent_picker(socket, _save?, _transition), do: socket
 
   defp save_task_parent_picker(socket, project, task, picker) do
-    case TaskParentPicker.save_edit(picker, project, task) do
+    case ParentPicker.save_edit(picker, project, task) do
       {:ok, picker, updated_task} ->
         socket
         |> sync_task_parent_picker(picker, updated_task)
@@ -1748,8 +1747,8 @@ defmodule TaskmanWeb.ProjectLive do
     end
   end
 
-  defp sync_task_parent_picker(socket, %TaskParentPicker{} = picker, %Task{} = task) do
-    autosave = TaskAutosave.reconcile(socket.assigns.task_autosave, task)
+  defp sync_task_parent_picker(socket, %ParentPicker{} = picker, %Task{} = task) do
+    autosave = Autosave.reconcile(socket.assigns.task_autosave, task)
 
     socket
     |> sync_task_autosave(autosave, task)

@@ -1,0 +1,3 @@
+## Keep Erlang distribution on one fixed loopback port without EPMD.
+-kernel inet_dist_use_interface {127,0,0,1}
+-start_epmd false -erl_epmd_port 6789

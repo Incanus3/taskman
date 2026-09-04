@@ -2,7 +2,7 @@ defmodule Taskman.CLI.Onboarding do
   @moduledoc "Versioned, offline onboarding guidance for people and agents."
 
   @text """
-  Taskman is a local, single-user system of record for Projects, Lists, and Tasks. It keeps project directories, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, and create Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
+  Taskman is an authenticated shared system of record for Projects, Lists, and Tasks. Explicitly provisioned users work in the same workspace; Tasks do not have per-user ownership or collaboration permissions. Taskman keeps project directories, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, and create Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
 
   Installation
 
@@ -25,7 +25,13 @@ defmodule Taskman.CLI.Onboarding do
 
   API configuration
 
-  The default API URL is http://localhost:4000. Set TASKMAN_API_URL to use another local server, or pass --api-url URL. An explicit --api-url takes precedence over TASKMAN_API_URL, which takes precedence over the default.
+  The CLI reads ${XDG_CONFIG_HOME:-$HOME/.config}/taskman/config.json. Its URL defaults to http://localhost:4000. Set a hosted HTTPS URL and then enter an API key without echo:
+  taskman config set-url https://taskman.example.com
+  taskman config set-key
+
+  Create an API key in the browser from Account settings. Copy it when it is shown: its plaintext value is one-time only. Do not put the key in a command, URL, log, or report. `taskman config show` confirms configuration without revealing it.
+
+  TASKMAN_API_URL and TASKMAN_API_KEY are temporary overrides for CI, containers, or secret injection. An explicit --api-url takes precedence over TASKMAN_API_URL; environment values take precedence over config.json. Ordinary API commands require a key and return status 7 when authentication is missing, rejected, or forbidden.
 
   Representative workflows
 

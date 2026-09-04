@@ -1,0 +1,125 @@
+<Layouts.app flash={@flash} current_scope={@current_scope} current_user={@current_user}>
+  <main
+    id="admin-user-inspection"
+    class="min-h-full bg-slate-950 px-4 py-10 text-slate-100 sm:px-6"
+  >
+    <div class="mx-auto max-w-3xl space-y-6">
+      <header class="space-y-2">
+        <p class="text-sm font-semibold uppercase tracking-[0.18em] text-indigo-300">
+          Administration
+        </p>
+        <h1 class="text-3xl font-semibold tracking-tight">User inspection</h1>
+      </header>
+
+      <dl
+        :if={@user}
+        id="admin-user-fields"
+        class="grid gap-4 rounded-xl border border-slate-700 p-5 sm:grid-cols-2"
+      >
+        <div>
+          <dt class="text-sm text-slate-400">Email</dt>
+          <dd class="mt-1 text-sm text-slate-100">{to_string(@user.email)}</dd>
+        </div>
+        <div>
+          <dt class="text-sm text-slate-400">Status</dt>
+          <dd class="mt-1 text-sm text-slate-100">{@user.status}</dd>
+        </div>
+        <div>
+          <dt class="text-sm text-slate-400">Administrator</dt>
+          <dd class="mt-1 text-sm text-slate-100">{@user.admin?}</dd>
+        </div>
+        <div>
+          <dt class="text-sm text-slate-400">Confirmed at</dt>
+          <dd class="mt-1 text-sm text-slate-100">{@user.confirmed_at}</dd>
+        </div>
+      </dl>
+
+      <section :if={@user} id="admin-user-actions" class="space-y-6">
+        <div class="space-y-2">
+          <h2 class="text-xl font-semibold">Account lifecycle</h2>
+          <div class="flex flex-wrap gap-3">
+            <.form
+              for={@lifecycle_form}
+              id="admin-user-resend-invitation"
+              phx-submit="resend_invitation"
+            >
+              <button type="submit">Resend setup invitation</button>
+            </.form>
+            <p
+              :if={@resend_invitation_retry_after}
+              id="admin-user-resend-invitation-rate-limited"
+              role="status"
+            >
+              Too many requests. Please try again in {@resend_invitation_retry_after} seconds.
+            </p>
+            <.form
+              for={@lifecycle_form}
+              id="admin-user-revoke-invitation"
+              phx-submit="revoke_invitation"
+            >
+              <button type="submit">Revoke setup invitation</button>
+            </.form>
+            <.form for={@lifecycle_form} id="admin-user-enable" phx-submit="enable">
+              <button type="submit">Enable account</button>
+            </.form>
+            <.form for={@lifecycle_form} id="admin-user-disable" phx-submit="disable">
+              <button type="submit">Disable account</button>
+            </.form>
+            <.form for={@lifecycle_form} id="admin-user-promote" phx-submit="promote">
+              <button type="submit">Grant administrator access</button>
+            </.form>
+            <.form for={@lifecycle_form} id="admin-user-demote" phx-submit="demote">
+              <button type="submit">Remove administrator access</button>
+            </.form>
+          </div>
+        </div>
+
+        <.form
+          for={@email_form}
+          id="admin-user-manage-email"
+          phx-submit="manage_email"
+          class="space-y-3"
+        >
+          <h2 class="text-xl font-semibold">Email management</h2>
+          <.input field={@email_form[:email]} type="email" label="Email" />
+          <.input field={@email_form[:confirmed?]} type="checkbox" label="Mark email confirmed" />
+          <button type="submit">Update email</button>
+        </.form>
+
+        <div class="space-y-2">
+          <h2 class="text-xl font-semibold">Credential revocation</h2>
+          <div class="flex flex-wrap gap-3">
+            <.form
+              for={@lifecycle_form}
+              id="admin-user-revoke-sessions"
+              phx-submit="revoke_sessions"
+            >
+              <button type="submit">Revoke browser sessions</button>
+            </.form>
+            <.form
+              for={@lifecycle_form}
+              id="admin-user-revoke-api-keys"
+              phx-submit="revoke_api_keys"
+            >
+              <button type="submit">Revoke API key credentials</button>
+            </.form>
+          </div>
+        </div>
+
+        <.form for={@delete_form} id="admin-user-delete" phx-submit="delete" class="space-y-3">
+          <h2 class="text-xl font-semibold">Delete account</h2>
+          <.input
+            field={@delete_form[:confirmation]}
+            type="text"
+            label="Type DELETE to permanently remove this account"
+          />
+          <button type="submit">Delete account</button>
+        </.form>
+      </section>
+
+      <.link id="back-to-admin-users" navigate={~p"/admin?domain=Accounts&resource=User"}>
+        Back to users
+      </.link>
+    </div>
+  </main>
+</Layouts.app>
