@@ -60,9 +60,7 @@ defmodule TaskmanWeb.AuthController do
           |> Kernel.||(conn.params["return_to"])
           |> LiveUserAuth.safe_return_path()
 
-        conn
-        |> put_flash(:error, "The email or password is incorrect.")
-        |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+        authentication_failure_response(conn, activity, return_to)
     end
   end
 
@@ -132,6 +130,45 @@ defmodule TaskmanWeb.AuthController do
     conn
     |> put_flash(:error, "Unable to reset the password.")
     |> redirect(to: path)
+  end
+
+  defp authentication_failure_response(conn, {:setup, :confirm}, _return_to) do
+    conn
+    |> put_flash(
+      :error,
+      "This setup link is invalid or expired. Ask an administrator to resend the invitation."
+    )
+    |> redirect(to: ~p"/sign-in")
+  end
+
+  defp authentication_failure_response(conn, {:email_change, :confirm}, return_to) do
+    if conn.assigns[:current_user] do
+      conn
+      |> put_flash(
+        :error,
+        "This email confirmation link is invalid or expired. Request a new email change from account settings."
+      )
+      |> redirect(to: ~p"/account/settings")
+    else
+      conn
+      |> put_flash(
+        :error,
+        "This email confirmation link is invalid or expired. Sign in and request a new email change from account settings."
+      )
+      |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+    end
+  end
+
+  defp authentication_failure_response(conn, {:password, _phase}, return_to) do
+    conn
+    |> put_flash(:error, "The email or password is incorrect.")
+    |> redirect(to: LiveUserAuth.sign_in_path(return_to))
+  end
+
+  defp authentication_failure_response(conn, _activity, return_to) do
+    conn
+    |> put_flash(:error, "Unable to complete authentication. Please try again.")
+    |> redirect(to: LiveUserAuth.sign_in_path(return_to))
   end
 
   @doc false

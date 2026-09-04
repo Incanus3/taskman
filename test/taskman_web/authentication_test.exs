@@ -184,6 +184,63 @@ defmodule TaskmanWeb.AuthenticationTest do
     assert is_binary(get_session(conn, :user_token))
   end
 
+  test "a rejected password sign-in retains the generic credential response", %{conn: conn} do
+    conn =
+      post(conn, "/auth/user/password/sign_in", %{
+        "user" => %{"email" => "unknown@example.com", "password" => "wrong-password"}
+      })
+
+    assert redirected_to(conn) == "/sign-in"
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) == "The email or password is incorrect."
+  end
+
+  test "a rejected setup link directs the invitee to administrator resend recovery", %{conn: conn} do
+    conn =
+      conn
+      |> fetch_query_params()
+      |> init_test_session(%{})
+      |> Phoenix.Controller.fetch_flash([])
+      |> AuthController.failure({:setup, :confirm}, :invalid_token)
+
+    assert redirected_to(conn) == "/sign-in"
+
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
+             "This setup link is invalid or expired. Ask an administrator to resend the invitation."
+  end
+
+  test "a rejected email-change link returns an authenticated user to account settings", %{
+    conn: conn
+  } do
+    user = user_fixture()
+
+    conn =
+      conn
+      |> fetch_query_params()
+      |> log_in_user(user)
+      |> assign(:current_user, user)
+      |> Phoenix.Controller.fetch_flash([])
+      |> AuthController.failure({:email_change, :confirm}, :invalid_token)
+
+    assert redirected_to(conn) == "/account/settings"
+
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
+             "This email confirmation link is invalid or expired. Request a new email change from account settings."
+  end
+
+  test "a rejected email-change link tells a signed-out user how to recover", %{conn: conn} do
+    conn =
+      conn
+      |> fetch_query_params()
+      |> init_test_session(%{})
+      |> Phoenix.Controller.fetch_flash([])
+      |> AuthController.failure({:email_change, :confirm}, :invalid_token)
+
+    assert redirected_to(conn) == "/sign-in"
+
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
+             "This email confirmation link is invalid or expired. Sign in and request a new email change from account settings."
+  end
+
   test "sign-in attempts receive enumeration-safe 429 retry guidance after the email limit", %{
     conn: conn
   } do

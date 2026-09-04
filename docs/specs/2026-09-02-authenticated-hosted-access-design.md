@@ -718,9 +718,11 @@ external actions require separate operator authorization.
 
 ## Error handling
 
-- Public browser auth failures show generic, accessible form errors.
-- Expired, invalid, used, or revoked links offer an appropriate safe retry path without exposing
-  account existence.
+- Public credential-authentication and recovery-request failures show generic, accessible errors
+  within their visible flow and do not expose account existence.
+- Rejected setup and email-change links may identify the visible flow and its appropriate recovery
+  action. They do not distinguish whether a token is expired, invalid, used, revoked, conflicting,
+  or associated with a nonexistent account.
 - Authenticated policy failures render a safe forbidden state or redirect; they do not disclose
   policy internals in production.
 - A wrong self-deletion password, stale target, or last-active-administrator conflict leaves the
@@ -810,8 +812,9 @@ Focused tests cover:
 LiveView tests use stable DOM IDs to verify:
 
 - unauthenticated redirects and safe return paths;
-- sign-in/out and generic failures;
-- invitation, confirmation, and password-reset states;
+- sign-in/out and generic credential failures;
+- invitation, confirmation, and password-reset states, including flow-specific rejected-link
+  recovery guidance that does not disclose the rejection reason or account existence;
 - account settings outcomes;
 - administrator email management for pending, active, and disabled accounts;
 - API-key one-time display and subsequent redaction;
