@@ -4,8 +4,6 @@ defmodule TaskmanWeb.AdminUserLive do
   alias Taskman.Accounts
   alias Taskman.Accounts.User
 
-  require Ash.Query
-
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -21,16 +19,7 @@ defmodule TaskmanWeb.AdminUserLive do
 
   @impl true
   def handle_params(%{"id" => id}, _uri, socket) do
-    user =
-      User
-      |> Ash.Query.for_read(:admin_read, %{},
-        actor: socket.assigns.current_user,
-        domain: Accounts
-      )
-      |> Ash.Query.filter(id == ^id)
-      |> Ash.read_one(actor: socket.assigns.current_user, authorize?: true, domain: Accounts)
-
-    case user do
+    case Accounts.get_admin_user(socket.assigns.current_user, id) do
       {:ok, %User{} = user} ->
         {:noreply, assign_user(socket, user)}
 
@@ -120,7 +109,7 @@ defmodule TaskmanWeb.AdminUserLive do
   end
 
   defp refresh_user(socket, success_message) do
-    case read_user(socket, socket.assigns.user.id) do
+    case Accounts.get_admin_user(socket.assigns.current_user, socket.assigns.user.id) do
       {:ok, %User{} = user} ->
         {:noreply,
          socket
@@ -131,16 +120,6 @@ defmodule TaskmanWeb.AdminUserLive do
       _ ->
         {:noreply, push_navigate(socket, to: "/admin?domain=Accounts&resource=User")}
     end
-  end
-
-  defp read_user(socket, id) do
-    User
-    |> Ash.Query.for_read(:admin_read, %{},
-      actor: socket.assigns.current_user,
-      domain: Accounts
-    )
-    |> Ash.Query.filter(id == ^id)
-    |> Ash.read_one(actor: socket.assigns.current_user, authorize?: true, domain: Accounts)
   end
 
   defp assign_user(socket, user) do

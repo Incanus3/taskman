@@ -134,6 +134,10 @@ defmodule Taskman.Accounts do
   def reset_password(token, params, opts \\ []),
     do: Taskman.Accounts.Passwords.reset_password(token, params, opts)
 
+  @spec get_admin_user(User.t(), Ecto.UUID.t()) :: {:ok, User.t()} | {:error, term()}
+  def get_admin_user(actor, id),
+    do: Taskman.Accounts.Administration.get_user(actor, id)
+
   @spec enable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
   def enable_user(actor, user),
     do: Taskman.Accounts.Administration.enable_user(actor, user)

@@ -54,6 +54,13 @@ defmodule TaskmanWeb.AshAdminActionsTest do
 
     assert to_string(read_user!(administrator, pending_user).email) == replacement_email
 
+    assert has_element?(
+             view,
+             "#admin-user-manage-email input[name='email[email]'][value='#{replacement_email}']"
+           )
+
+    assert has_element?(view, "#flash-info", "Email updated.")
+
     assert_receive {:email, email}
     assert email.to == [{"", replacement_email}]
     assert email.text_body =~ "/setup/"
@@ -194,6 +201,8 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     |> render_submit()
 
     assert :disabled == read_user!(administrator, target).status
+    assert has_element?(view, "#admin-user-fields dd", "disabled")
+    assert has_element?(view, "#flash-info", "Account disabled.")
   end
 
   test "the inspection resend control issues a fresh pending setup invitation", %{conn: conn} do

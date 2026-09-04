@@ -6,6 +6,8 @@ defmodule Taskman.Accounts.Administration do
   alias Taskman.Accounts.{SecurityLog, User}
   alias Taskman.Repo
 
+  require Ash.Query
+
   @bootstrap_actor %{accounts_bootstrap?: true}
 
   @spec bootstrap_admin(String.t(), String.t()) ::
@@ -32,6 +34,23 @@ defmodule Taskman.Accounts.Administration do
   end
 
   def active_administrator(_actor), do: {:error, :forbidden}
+
+  @spec get_user(User.t(), Ecto.UUID.t()) :: {:ok, User.t()} | {:error, term()}
+  def get_user(actor, id) when is_struct(actor, User) and is_binary(id) do
+    result =
+      User
+      |> Ash.Query.for_read(:admin_read, %{}, actor: actor, domain: Taskman.Accounts)
+      |> Ash.Query.filter(id == ^id)
+      |> Ash.read_one(actor: actor, authorize?: true, domain: Taskman.Accounts)
+
+    case result do
+      {:ok, %User{} = user} -> {:ok, user}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def get_user(_actor, _id), do: {:error, :invalid_input}
 
   @spec enable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
   def enable_user(actor, user) do
