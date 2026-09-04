@@ -1,0 +1,6 @@
+# Public recipient configuration only.  Replace the example recipient with
+# an age public recipient controlled by the operator before encrypting data.
+# Private age identities must remain outside the repository.
+creation_rules:
+  - path_regex: 'ops/environments/.*\.secrets\.sops\.yaml$'
+    age: age1example000000000000000000000000000000000000000000000000000
