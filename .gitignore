@@ -43,3 +43,11 @@ npm-debug.log
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Python controller bytecode and local plaintext deployment material.
+__pycache__/
+*.py[cod]
+/ops/taskman_ops.egg-info/
+/ops/environments/*.secrets.yaml
+/ops/environments/*.decrypted.yaml
+*.agekey
