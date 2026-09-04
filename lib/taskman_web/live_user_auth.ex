@@ -13,7 +13,7 @@ defmodule TaskmanWeb.LiveUserAuth do
 
   alias Phoenix.LiveView.Socket
   alias Plug.Conn
-  alias Taskman.Accounts.Administration
+  alias Taskman.Accounts
   alias Taskman.Accounts.Token
 
   @public_paths [
@@ -166,7 +166,7 @@ defmodule TaskmanWeb.LiveUserAuth do
   defp secure_admin_event(_event, _params, socket), do: {:cont, socket}
 
   defp secure_admin_route(params, _url, socket) do
-    if Administration.persisted_active_administrator?(socket.assigns[:current_user]) do
+    if Accounts.persisted_active_administrator?(socket.assigns[:current_user]) do
       case admin_user_destination(params) do
         {:inspection, user_id} ->
           {:halt,

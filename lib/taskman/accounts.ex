@@ -1,21 +1,7 @@
 defmodule Taskman.Accounts do
   use Ash.Domain, extensions: [AshAdmin.Domain]
 
-  import Ecto.Query, only: [from: 2]
-
-  require Ash.Query
-
-  require Logger
-
-  alias AshAuthentication.{AddOn.Confirmation, Errors.AuthenticationFailed, Info, Jwt, Strategy}
-  alias Taskman.Accounts.{ApiKey, Emails, RateLimit, SecurityLog, Token, User}
-  alias Taskman.Repo
-
-  @api_key_lifetime_days 365
-  @api_key_minimum_lifetime_seconds 86_400
-  @api_key_lifetime_seconds @api_key_lifetime_days * 86_400
-  @api_key_digest_bytes 32
-  @dummy_api_key_digest :crypto.hash(:sha256, "taskman-api-key-dummy")
+  alias Taskman.Accounts.{ApiKey, User}
 
   authorization do
     authorize :always
@@ -48,1053 +34,159 @@ defmodule Taskman.Accounts do
     resource Taskman.Accounts.Token
   end
 
-  @bootstrap_actor %{accounts_bootstrap?: true}
-  @delivery_result_key {__MODULE__, :delivery_result}
-
   @spec bootstrap_admin(String.t(), String.t()) ::
           {:ok, Taskman.Accounts.User.t()} | {:error, term()}
-  def bootstrap_admin(email, password) when is_binary(email) and is_binary(password) do
-    create_bootstrap_admin(
-      %{email: email, password: password, password_confirmation: password},
-      actor: @bootstrap_actor
-    )
-  end
-
-  def bootstrap_admin(_email, _password), do: {:error, :invalid_input}
+  def bootstrap_admin(email, password),
+    do: Taskman.Accounts.Administration.bootstrap_admin(email, password)
 
   @spec sign_in_with_password(map()) :: {:ok, Taskman.Accounts.User.t()} | {:error, term()}
-  def sign_in_with_password(params) when is_map(params) do
-    result =
-      Taskman.Accounts.User
-      |> AshAuthentication.Info.strategy!(:password)
-      |> AshAuthentication.Strategy.action(:sign_in, params, domain: __MODULE__)
-
-    audit(result, :sign_in_succeeded, :sign_in_rejected, nil, result_user(result))
-  end
-
-  def sign_in_with_password(_params) do
-    result = {:error, :invalid_credentials}
-    audit(result, :sign_in_succeeded, :sign_in_rejected)
-  end
+  def sign_in_with_password(params),
+    do: Taskman.Accounts.Authentication.sign_in_with_password(params)
 
   @spec sign_in_with_api_key(map()) :: {:ok, User.t()} | {:error, term()}
-  def sign_in_with_api_key(params) when is_map(params), do: sign_in_with_api_key(params, [])
+  def sign_in_with_api_key(params) when is_map(params),
+    do: Taskman.Accounts.Authentication.sign_in_with_api_key(params)
 
   @spec sign_in_with_api_key(map(), keyword()) :: {:ok, User.t()} | {:error, term()}
-  def sign_in_with_api_key(params, opts) when is_map(params) and is_list(opts) do
-    with {:ok, api_key} <- api_key_param(params),
-         {:ok, user} <- authenticate_api_key(api_key),
-         true <- eligible?(user) do
-      {:ok, user}
-    else
-      {:error, _reason} -> {:error, authentication_failed()}
-      false -> {:error, authentication_failed()}
-    end
-  end
-
-  def sign_in_with_api_key(_params, _opts) do
-    _ = compare_dummy_api_key("")
-    {:error, authentication_failed()}
-  end
+  def sign_in_with_api_key(params, opts),
+    do: Taskman.Accounts.Authentication.sign_in_with_api_key(params, opts)
 
   @spec create_api_key(User.t(), map()) ::
           {:ok, %{api_key: ApiKey.t(), plaintext: String.t()}} | {:error, term()}
-  def create_api_key(actor, attrs) when is_map(attrs), do: create_api_key(actor, attrs, [])
+  def create_api_key(actor, attrs) when is_map(attrs),
+    do: Taskman.Accounts.ApiKeys.create_api_key(actor, attrs)
 
   @spec create_api_key(User.t(), map(), keyword()) ::
           {:ok, %{api_key: ApiKey.t(), plaintext: String.t()}} | {:error, term()}
-  def create_api_key(actor, attrs, opts) when is_map(attrs) and is_list(opts) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor),
-           {:ok, name} <- api_key_name(attrs),
-           {:ok, expires_at} <- api_key_expiration(attrs, opts),
-           {:ok, api_key} <-
-             ApiKey
-             |> Ash.Changeset.for_create(:create_for_user, %{
-               name: name,
-               expires_at: expires_at,
-               user_id: actor.id
-             })
-             |> Ash.create(actor: actor, domain: __MODULE__),
-           plaintext when is_binary(plaintext) <-
-             Ash.Resource.get_metadata(api_key, :plaintext_api_key) do
-        {:ok, %{api_key: api_key, plaintext: plaintext}}
-      else
-        nil -> {:error, :api_key_generation_failed}
-        {:error, _reason} = error -> error
-        _ -> {:error, :invalid_input}
-      end
-
-    audit(result, :api_key_created, :api_key_creation_rejected, actor, actor)
-  end
-
-  def create_api_key(actor, _attrs, _opts) do
-    result = {:error, :invalid_input}
-    audit(result, :api_key_created, :api_key_creation_rejected, actor, actor)
-  end
+  def create_api_key(actor, attrs, opts),
+    do: Taskman.Accounts.ApiKeys.create_api_key(actor, attrs, opts)
 
   @spec list_api_keys(User.t()) :: {:ok, [ApiKey.t()]} | {:error, term()}
-  def list_api_keys(actor) do
-    with {:ok, actor} <- current_api_key_actor(actor),
-         {:ok, keys} <- list_owned_api_keys(actor) do
-      {:ok, keys}
-    end
-  end
+  def list_api_keys(actor),
+    do: Taskman.Accounts.ApiKeys.list_api_keys(actor)
 
   @spec revoke_api_key(User.t(), Ecto.UUID.t()) :: :ok | {:error, term()}
-  def revoke_api_key(actor, id) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor),
-           {:ok, uuid} <- Ecto.UUID.cast(id),
-           {:ok, api_key} <- fetch_owned_api_key(actor, uuid),
-           {:ok, _revoked} <-
-             api_key
-             |> Ash.Changeset.for_update(:revoke, %{})
-             |> Ash.update(actor: actor, domain: __MODULE__) do
-        :ok
-      else
-        :error -> {:error, :not_found}
-        {:error, _reason} = error -> error
-      end
-
-    audit(result, :api_key_revoked, :api_key_revocation_rejected, actor, actor)
-  end
+  def revoke_api_key(actor, id),
+    do: Taskman.Accounts.ApiKeys.revoke_api_key(actor, id)
 
   @spec account_settings_state(User.t()) ::
           {:ok, %{user: User.t(), pending_email: String.t() | nil}} | {:error, term()}
-  def account_settings_state(actor) do
-    with {:ok, actor} <- current_api_key_actor(actor) do
-      {:ok, %{user: actor, pending_email: pending_email_change(actor)}}
-    end
-  end
+  def account_settings_state(actor),
+    do: Taskman.Accounts.Sessions.account_settings_state(actor)
 
   @spec list_sessions(User.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def list_sessions(actor, opts \\ [])
-
-  def list_sessions(actor, opts) when is_list(opts) do
-    with {:ok, actor} <- current_api_key_actor(actor) do
-      subject = AshAuthentication.user_to_subject(actor)
-      now = Keyword.get(opts, :now, DateTime.utc_now())
-
-      sessions =
-        Repo.all(
-          from token in Token,
-            where:
-              token.subject == ^subject and token.purpose == "user" and token.expires_at > ^now,
-            order_by: [desc: token.created_at, desc: token.jti]
-        )
-        |> Enum.map(fn token ->
-          %{jti: token.jti, created_at: token.created_at, expires_at: token.expires_at}
-        end)
-
-      {:ok, sessions}
-    end
-  end
-
-  def list_sessions(_actor, _opts), do: {:error, :invalid_input}
+  def list_sessions(actor, opts \\ []),
+    do: Taskman.Accounts.Sessions.list_sessions(actor, opts)
 
   @spec revoke_session(User.t(), String.t()) :: :ok | {:error, term()}
-  def revoke_session(actor, jti) when is_binary(jti) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor),
-           true <- stored_browser_session?(actor, jti),
-           :ok <-
-             Token.revoke_jti(jti, AshAuthentication.user_to_subject(actor), disconnect?: true) do
-        :ok
-      else
-        false -> {:error, :not_found}
-        {:error, _reason} = error -> error
-      end
-
-    audit(result, :session_revoked, :session_revocation_rejected, actor, actor)
-  end
-
-  def revoke_session(actor, _jti) do
-    result = {:error, :invalid_input}
-    audit(result, :session_revoked, :session_revocation_rejected, actor, actor)
-  end
+  def revoke_session(actor, jti),
+    do: Taskman.Accounts.Sessions.revoke_session(actor, jti)
 
   @spec revoke_other_sessions(User.t(), String.t()) :: :ok | {:error, term()}
-  def revoke_other_sessions(actor, acting_token) when is_binary(acting_token) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor),
-           {:ok, _stored_token, %{"jti" => acting_jti, "sub" => subject}} <-
-             Token.claim_browser_session(acting_token),
-           true <- subject == AshAuthentication.user_to_subject(actor),
-           :ok <- Token.revoke_for_subject_except(actor, "user", acting_jti) do
-        :ok
-      else
-        false -> {:error, :invalid_session}
-        {:error, _reason} = error -> error
-        _ -> {:error, :invalid_session}
-      end
-
-    audit(result, :other_sessions_revoked, :other_sessions_revocation_rejected, actor, actor)
-  end
-
-  def revoke_other_sessions(actor, _acting_token) do
-    result = {:error, :invalid_input}
-    audit(result, :other_sessions_revoked, :other_sessions_revocation_rejected, actor, actor)
-  end
+  def revoke_other_sessions(actor, acting_token),
+    do: Taskman.Accounts.Sessions.revoke_other_sessions(actor, acting_token)
 
   @spec change_password(User.t(), map()) :: {:ok, User.t()} | {:error, term()}
-  def change_password(actor, params) when is_map(params) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor) do
-        update_user(actor, :change_password, params, actor: actor)
-      end
-
-    audit(result, :password_changed, :password_change_rejected, actor, result_user(result, actor))
-  end
-
-  def change_password(actor, _params) do
-    result = {:error, :invalid_input}
-    audit(result, :password_changed, :password_change_rejected, actor, actor)
-  end
+  def change_password(actor, params),
+    do: Taskman.Accounts.Passwords.change_password(actor, params)
 
   @spec change_password(User.t(), String.t(), map()) ::
           {:ok, %{user: User.t(), replacement_session: String.t()}} | {:error, term()}
-  def change_password(actor, acting_token, params)
-      when is_binary(acting_token) and is_map(params) do
-    result =
-      with {:ok, actor} <- current_api_key_actor(actor) do
-        case transaction(fn ->
-               with {:ok, locked_actor} <- lock_user(actor.id),
-                    {:ok, updated_user} <-
-                      update_user(locked_actor, :change_password, params, actor: actor),
-                    {:ok, replacement_session, peer_jtis} <-
-                      replace_acting_browser_session(updated_user, acting_token) do
-                 {:ok,
-                  %{
-                    user: updated_user,
-                    replacement_session: replacement_session,
-                    peer_jtis: peer_jtis
-                  }}
-               end
-             end) do
-          {:ok, %{peer_jtis: peer_jtis} = result} ->
-            with :ok <- Token.broadcast_session_jtis(peer_jtis) do
-              {:ok, Map.delete(result, :peer_jtis)}
-            end
-
-          {:error, _reason} = error ->
-            error
-        end
-      end
-
-    audit(result, :password_changed, :password_change_rejected, actor, result_user(result, actor))
-  end
-
-  def change_password(actor, _acting_token, _params) do
-    result = {:error, :invalid_input}
-    audit(result, :password_changed, :password_change_rejected, actor, actor)
-  end
-
-  defp api_key_param(params) do
-    case Map.get(params, :api_key, Map.get(params, "api_key")) do
-      api_key when is_binary(api_key) ->
-        {:ok, api_key}
-
-      _ ->
-        _ = compare_dummy_api_key("")
-        {:error, :invalid_credentials}
-    end
-  end
-
-  defp authenticate_api_key(api_key) when is_binary(api_key) do
-    case canonical_api_key_id(api_key) do
-      {:ok, id} ->
-        query =
-          ApiKey
-          |> Ash.Query.for_read(:for_authentication, %{},
-            domain: __MODULE__,
-            context: authentication_context()
-          )
-          |> Ash.Query.filter(id: id)
-          |> Ash.Query.load(user: Ash.Query.set_context(User, authentication_context()))
-
-        case Ash.read_one(query, domain: __MODULE__) do
-          {:ok, %ApiKey{user: %User{} = user} = api_key_record} ->
-            if api_key_matches?(api_key, api_key_record.api_key_hash) do
-              {:ok, user}
-            else
-              {:error, :invalid_credentials}
-            end
-
-          {:ok, nil} ->
-            _ = compare_dummy_api_key(api_key)
-            {:error, :invalid_credentials}
-
-          {:error, _reason} ->
-            _ = compare_dummy_api_key(api_key)
-            {:error, :invalid_credentials}
-        end
-
-      :error ->
-        _ = compare_dummy_api_key(api_key)
-        {:error, :invalid_credentials}
-    end
-  end
-
-  defp canonical_api_key_id(api_key) do
-    with ["tm", middle, checksum] <- String.split(api_key, "_", parts: 3),
-         {:ok, payload} <- AshAuthentication.Base.bindecode62(middle),
-         true <- payload != <<>> and :binary.first(payload) != 0,
-         true <- AshAuthentication.Base.encode62(payload) == middle,
-         <<_random_bytes::binary-size(32), id::binary-size(16)>> <- payload,
-         {:ok, checksum_value} <- AshAuthentication.Base.decode62(checksum),
-         true <- AshAuthentication.Base.encode62(checksum_value) == checksum,
-         true <- checksum_value == :erlang.crc32(payload) do
-      {:ok, id}
-    else
-      _ -> :error
-    end
-  end
-
-  defp api_key_matches?(api_key, stored_hash) when is_binary(api_key) do
-    digest = :crypto.hash(:sha256, api_key)
-
-    candidate =
-      if is_binary(stored_hash) and byte_size(stored_hash) == @api_key_digest_bytes,
-        do: stored_hash,
-        else: @dummy_api_key_digest
-
-    Plug.Crypto.secure_compare(digest, candidate)
-  end
-
-  defp compare_dummy_api_key(api_key) when is_binary(api_key) do
-    Plug.Crypto.secure_compare(:crypto.hash(:sha256, api_key), @dummy_api_key_digest)
-  end
-
-  defp authentication_context, do: %{private: %{ash_authentication?: true}}
-
-  defp current_api_key_actor(%User{} = actor) do
-    query =
-      User
-      |> Ash.Query.for_read(:api_key_actor, %{},
-        actor: actor,
-        domain: __MODULE__
-      )
-
-    case Ash.read_one(query, actor: actor, domain: __MODULE__) do
-      {:ok, %User{} = current_actor} -> {:ok, current_actor}
-      {:ok, nil} -> {:error, :authentication_required}
-      {:error, _reason} -> {:error, :authentication_required}
-    end
-  end
-
-  defp current_api_key_actor(_actor), do: {:error, :authentication_required}
-
-  defp api_key_name(attrs) do
-    case Map.get(attrs, :name, Map.get(attrs, "name")) do
-      name when is_binary(name) ->
-        name = String.trim(name)
-        if name == "", do: {:error, :invalid_name}, else: {:ok, name}
-
-      _ ->
-        {:error, :invalid_name}
-    end
-  end
-
-  defp api_key_expiration(attrs, opts) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
-
-    case Map.fetch(attrs, :expires_at) do
-      :error ->
-        case Map.fetch(attrs, "expires_at") do
-          :error -> {:error, :invalid_expiration}
-          {:ok, value} -> validate_api_key_expiration(value, now)
-        end
-
-      {:ok, value} ->
-        validate_api_key_expiration(value, now)
-    end
-  end
-
-  defp validate_api_key_expiration(%DateTime{} = expires_at, %DateTime{} = now) do
-    minimum_expiry = DateTime.add(now, @api_key_minimum_lifetime_seconds, :second)
-    max_expiry = DateTime.add(now, @api_key_lifetime_seconds, :second)
-
-    if DateTime.compare(expires_at, minimum_expiry) != :lt and
-         DateTime.compare(expires_at, max_expiry) != :gt do
-      {:ok, expires_at}
-    else
-      {:error, :invalid_expiration}
-    end
-  end
-
-  defp validate_api_key_expiration(_expires_at, _now), do: {:error, :invalid_expiration}
-
-  defp fetch_owned_api_key(actor, id) do
-    query =
-      ApiKey
-      |> Ash.Query.for_read(:get_for_user, %{}, actor: actor, domain: __MODULE__)
-      |> Ash.Query.filter(id: id)
-
-    case Ash.read_one(query, actor: actor, domain: __MODULE__) do
-      {:ok, %ApiKey{} = api_key} -> {:ok, api_key}
-      {:ok, nil} -> {:error, :not_found}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp list_owned_api_keys(actor) do
-    query =
-      ApiKey
-      |> Ash.Query.for_read(:list_for_user, %{}, actor: actor, domain: __MODULE__)
-      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
-
-    Ash.read(query, actor: actor, domain: __MODULE__)
-  end
-
-  defp stored_browser_session?(actor, jti) do
-    subject = AshAuthentication.user_to_subject(actor)
-
-    Repo.exists?(
-      from token in Token,
-        where: token.subject == ^subject and token.purpose == "user" and token.jti == ^jti
-    )
-  end
-
-  defp pending_email_change(actor) do
-    subject = AshAuthentication.user_to_subject(actor)
-    now = DateTime.utc_now()
-
-    Repo.one(
-      from token in Token,
-        where:
-          token.subject == ^subject and token.purpose == "email_change" and
-            token.expires_at > ^now,
-        order_by: [desc: token.created_at],
-        limit: 1,
-        select: token.extra_data
-    )
-    |> case do
-      %{"email" => email} when is_binary(email) -> email
-      _ -> nil
-    end
-  end
-
-  defp replace_acting_browser_session(user, acting_token) do
-    subject = AshAuthentication.user_to_subject(user)
-
-    with {:ok, acting_record, %{"jti" => acting_jti, "sub" => ^subject}} <-
-           Token.claim_browser_session(acting_token),
-         true <- acting_record.subject == subject,
-         {:ok, peer_jtis} <-
-           Token.revoke_for_subject_except_with_jtis(
-             user,
-             "user",
-             acting_jti,
-             disconnect?: false
-           ),
-         {:ok, replacement_session, _claims} <-
-           Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user),
-         :ok <- Token.revoke_jti(acting_jti, subject, disconnect?: false) do
-      {:ok, replacement_session, peer_jtis}
-    else
-      false -> {:error, :invalid_session}
-      {:error, _reason} = error -> error
-      _ -> {:error, :invalid_session}
-    end
-  end
-
-  defp authentication_failed do
-    AuthenticationFailed.exception(caused_by: %{module: __MODULE__, action: :sign_in})
-  end
+  def change_password(actor, acting_token, params),
+    do: Taskman.Accounts.Passwords.change_password(actor, acting_token, params)
 
   @spec invite_user(User.t(), map()) :: {:ok, User.t()} | {:error, term()}
-  def invite_user(actor, params) when is_map(params) do
-    with {:ok, actor} <- active_administrator(actor) do
-      with_delivery_result(:setup, fn -> create_pending_user(params, actor: actor) end, fn
-        {:ok, user}, :ok, _token ->
-          {:ok, user}
-
-        {:ok, user}, {:error, _reason} = delivery_error, _token ->
-          log_delivery_failure(delivery_error)
-          {:error, {:delivery_failed, user}}
-
-        {:ok, user}, nil, _token ->
-          {:error, {:delivery_failed, user}}
-
-        error, _result, _token ->
-          error
-      end)
-    end
-  end
-
-  def invite_user(_actor, _params), do: {:error, :invalid_input}
+  def invite_user(actor, params),
+    do: Taskman.Accounts.Invitations.invite_user(actor, params)
 
   @spec resend_invitation(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def resend_invitation(actor, user) do
-    result =
-      with {:ok, actor} <- active_administrator(actor),
-           :ok <-
-             RateLimit.check(:invitation_resend,
-               email: to_string(user.email),
-               actor_id: actor.id
-             ) do
-        case transaction(fn ->
-               with {:ok, updated_user} <-
-                      update_user(user, :resend_invitation, %{}, actor: actor),
-                    :ok <- Token.revoke_for_subject(updated_user, "setup"),
-                    {:ok, token} <- setup_token(updated_user) do
-                 {:ok, {updated_user, token}}
-               end
-             end) do
-          {:ok, {updated_user, token}} ->
-            case Emails.deliver_invitation(to_string(updated_user.email), token) do
-              :ok ->
-                {:ok, updated_user}
-
-              {:error, _reason} = delivery_error ->
-                log_delivery_failure(delivery_error)
-                {:error, {:delivery_failed, updated_user}}
-            end
-
-          {:error, _reason} = error ->
-            error
-        end
-      end
-
-    audit(result, :invitation_resent, :invitation_resend_rejected, actor, user)
-  end
+  def resend_invitation(actor, user),
+    do: Taskman.Accounts.Invitations.resend_invitation(actor, user)
 
   @spec revoke_invitation(User.t(), User.t()) :: :ok | {:error, term()}
-  def revoke_invitation(actor, user) do
-    with {:ok, actor} <- active_administrator(actor) do
-      case transaction(fn ->
-             with {:ok, updated_user} <-
-                    update_user(user, :revoke_invitation, %{}, actor: actor),
-                  :ok <- Token.revoke_for_subject(updated_user, "setup") do
-               {:ok, :ok}
-             end
-           end) do
-        {:ok, :ok} -> :ok
-        {:error, _reason} = error -> error
-      end
-    end
-  end
+  def revoke_invitation(actor, user),
+    do: Taskman.Accounts.Invitations.revoke_invitation(actor, user)
 
   @spec complete_setup(String.t(), map(), keyword()) :: {:ok, User.t()} | {:error, term()}
-  def complete_setup(token, params, opts \\ [])
-
-  def complete_setup(token, params, opts) when is_binary(token) and is_map(params) do
-    {result, target} =
-      case token_user(token) do
-        {:ok, user} ->
-          result =
-            transaction(fn ->
-              with {:ok, _locked_user} <- lock_user(user.id),
-                   {:ok, _stored_token} <- Token.claim_for_redemption(token, "setup", now(opts)),
-                   {:ok, completed_user} <-
-                     Strategy.action(
-                       Info.strategy!(User, :setup),
-                       :confirm,
-                       Map.put(params, "confirm", token),
-                       domain: __MODULE__
-                     ) do
-                {:ok, completed_user}
-              end
-            end)
-
-          {result, user}
-
-        error ->
-          {error, nil}
-      end
-
-    audit(result, :setup_completed, :setup_completion_rejected, nil, result_user(result, target))
-  end
-
-  def complete_setup(_token, _params, _opts) do
-    result = {:error, :invalid_input}
-    audit(result, :setup_completed, :setup_completion_rejected)
-  end
+  def complete_setup(token, params, opts \\ []),
+    do: Taskman.Accounts.Invitations.complete_setup(token, params, opts)
 
   @spec request_email_change(User.t(), String.t(), String.t()) ::
           {:ok, User.t()} | {:error, term()}
   def request_email_change(actor, email, current_password),
-    do: request_email_change(actor, email, current_password, [])
+    do: Taskman.Accounts.EmailChanges.request_email_change(actor, email, current_password)
 
   @spec request_email_change(User.t(), String.t(), String.t(), keyword()) ::
           {:ok, User.t()} | {:error, term()}
-  def request_email_change(actor, email, current_password, _opts)
-      when is_binary(email) and is_binary(current_password) do
-    result =
-      with :ok <- RateLimit.check(:email_change_resend, email: email, actor_id: actor.id) do
-        case transaction(fn ->
-               with {:ok, locked_user} <- lock_user(actor.id) do
-                 with_delivery_result(
-                   :email_change,
-                   fn ->
-                     update_user(
-                       locked_user,
-                       :request_email_change,
-                       %{email: email, current_password: current_password},
-                       actor: actor
-                     )
-                   end,
-                   fn
-                     {:ok, user}, delivery_result, token when is_binary(token) ->
-                       with :ok <- revoke_older_tokens(user, "email_change", token) do
-                         {:ok, {user, delivery_result}}
-                       end
-
-                     {:ok, _user}, nil, _token ->
-                       {:error, :delivery_failed}
-
-                     error, _delivery_result, _token ->
-                       error
-                   end
-                 )
-               end
-             end) do
-          {:ok, {user, :ok}} ->
-            {:ok, user}
-
-          {:ok, {_user, {:error, _reason} = delivery_error}} ->
-            log_delivery_failure(delivery_error)
-            {:error, :delivery_failed}
-
-          {:error, _reason} = error ->
-            error
-        end
-      end
-
-    audit(
-      result,
-      :email_change_requested,
-      :email_change_request_rejected,
-      actor,
-      result_user(result, actor)
-    )
-  end
-
-  def request_email_change(actor, _email, _current_password, _opts) do
-    result = {:error, :invalid_input}
-    audit(result, :email_change_requested, :email_change_request_rejected, actor, actor)
-  end
+  def request_email_change(actor, email, current_password, opts),
+    do: Taskman.Accounts.EmailChanges.request_email_change(actor, email, current_password, opts)
 
   @spec confirm_email_change(String.t(), keyword()) :: {:ok, User.t()} | {:error, term()}
-  def confirm_email_change(token, opts \\ [])
-
-  def confirm_email_change(token, opts) when is_binary(token) do
-    {result, target} =
-      case token_user(token) do
-        {:ok, user} ->
-          result =
-            transaction(fn ->
-              with {:ok, _locked_user} <- lock_user(user.id),
-                   {:ok, _stored_token} <-
-                     Token.claim_for_redemption(token, "email_change", now(opts)),
-                   {:ok, changed_user} <-
-                     Strategy.action(
-                       Info.strategy!(User, :email_change),
-                       :confirm,
-                       %{"confirm" => token},
-                       domain: __MODULE__
-                     ) do
-                {:ok, changed_user}
-              end
-            end)
-
-          {result, user}
-
-        error ->
-          {error, nil}
-      end
-
-    audit(
-      result,
-      :email_change_confirmed,
-      :email_change_confirmation_rejected,
-      nil,
-      result_user(result, target)
-    )
-  end
-
-  def confirm_email_change(_token, _opts) do
-    result = {:error, :invalid_input}
-    audit(result, :email_change_confirmed, :email_change_confirmation_rejected)
-  end
+  def confirm_email_change(token, opts \\ []),
+    do: Taskman.Accounts.EmailChanges.confirm_email_change(token, opts)
 
   @spec request_password_reset(String.t(), keyword()) ::
           :ok | {:error, retry_after: pos_integer()}
-  def request_password_reset(email, opts \\ [])
-
-  def request_password_reset(email, opts) when is_binary(email) and is_list(opts) do
-    normalized_email = RateLimit.normalized_email(email)
-
-    remote_ip =
-      opts |> Keyword.get(:remote_ip, RateLimit.request_remote_ip()) |> RateLimit.normalized_ip()
-
-    with :ok <- RateLimit.check(:password_reset, email: normalized_email, remote_ip: remote_ip) do
-      case transaction(fn ->
-             with {:ok, user} <- lock_eligible_user_by_email(normalized_email),
-                  :ok <- Token.revoke_for_subject(user, "password_reset"),
-                  {:ok, token, _claims} <-
-                    Jwt.token_for_user(user, %{"act" => "reset_password"},
-                      token_lifetime: {1, :hours},
-                      purpose: :password_reset
-                    ) do
-               {:ok, {user, token}}
-             end
-           end) do
-        {:ok, {user, token}} ->
-          case Emails.deliver_password_reset(to_string(user.email), token) do
-            :ok ->
-              :ok
-
-            {:error, _reason} = delivery_error ->
-              log_delivery_failure(delivery_error)
-              :ok
-          end
-
-        {:error, _reason} ->
-          :ok
-      end
-    end
-  end
-
-  def request_password_reset(_email, _opts), do: :ok
+  def request_password_reset(email, opts \\ []),
+    do: Taskman.Accounts.Passwords.request_password_reset(email, opts)
 
   @spec reset_password(String.t(), map(), keyword()) :: {:ok, User.t()} | {:error, term()}
-  def reset_password(token, params, opts \\ [])
-
-  def reset_password(token, params, opts) when is_binary(token) and is_map(params) do
-    {result, target} =
-      case token_user(token) do
-        {:ok, user} ->
-          result =
-            transaction(fn ->
-              with {:ok, locked_user} <- lock_user(user.id),
-                   true <- eligible?(locked_user),
-                   {:ok, _stored_token} <-
-                     Token.claim_for_redemption(token, "password_reset", now(opts)),
-                   {:ok, updated_user} <-
-                     Strategy.action(
-                       Info.strategy!(User, :password),
-                       :reset,
-                       Map.put(params, "reset_token", token),
-                       domain: __MODULE__
-                     ),
-                   {:ok, revoked_jtis} <-
-                     Token.revoke_browser_sessions_with_jtis(updated_user, opts) do
-                {:ok, {updated_user, revoked_jtis}}
-              else
-                false -> {:error, :invalid_token}
-                {:error, _reason} = error -> error
-                _ -> {:error, :invalid_token}
-              end
-            end)
-            |> case do
-              {:ok, {updated_user, revoked_jtis}} ->
-                case Token.broadcast_session_jtis(revoked_jtis) do
-                  :ok -> {:ok, updated_user}
-                  {:error, _reason} = error -> error
-                end
-
-              {:error, _reason} = error ->
-                error
-            end
-
-          {result, user}
-
-        error ->
-          {error, nil}
-      end
-
-    audit(result, :password_reset, :password_reset_rejected, nil, result_user(result, target))
-  end
-
-  def reset_password(_token, _params, _opts) do
-    result = {:error, :invalid_input}
-    audit(result, :password_reset, :password_reset_rejected)
-  end
+  def reset_password(token, params, opts \\ []),
+    do: Taskman.Accounts.Passwords.reset_password(token, params, opts)
 
   @spec enable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def enable_user(actor, user) do
-    audit(
-      update_administrative_user(actor, user, :enable),
-      :account_enabled,
-      :account_enable_rejected,
-      actor,
-      user
-    )
-  end
+  def enable_user(actor, user),
+    do: Taskman.Accounts.Administration.enable_user(actor, user)
 
   @spec disable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def disable_user(actor, user) do
-    audit(
-      update_administrative_user(actor, user, :disable),
-      :account_disabled,
-      :account_disable_rejected,
-      actor,
-      user
-    )
-  end
+  def disable_user(actor, user),
+    do: Taskman.Accounts.Administration.disable_user(actor, user)
 
   @spec promote_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def promote_user(actor, user) do
-    audit(
-      update_administrative_user(actor, user, :promote),
-      :administrator_granted,
-      :administrator_grant_rejected,
-      actor,
-      user
-    )
-  end
+  def promote_user(actor, user),
+    do: Taskman.Accounts.Administration.promote_user(actor, user)
 
   @spec demote_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def demote_user(actor, user) do
-    audit(
-      update_administrative_user(actor, user, :demote),
-      :administrator_revoked,
-      :administrator_revocation_rejected,
-      actor,
-      user
-    )
-  end
+  def demote_user(actor, user),
+    do: Taskman.Accounts.Administration.demote_user(actor, user)
 
   @spec revoke_user_sessions(User.t(), User.t()) :: :ok | {:error, term()}
-  def revoke_user_sessions(actor, user) do
-    result =
-      case update_administrative_user(actor, user, :revoke_sessions) do
-        {:ok, _user} -> :ok
-        {:error, _reason} = error -> error
-      end
-
-    audit(result, :sessions_revoked, :sessions_revocation_rejected, actor, user)
-  end
+  def revoke_user_sessions(actor, user),
+    do: Taskman.Accounts.Administration.revoke_user_sessions(actor, user)
 
   @spec revoke_user_api_keys(User.t(), User.t()) :: :ok | {:error, term()}
-  def revoke_user_api_keys(actor, user) do
-    result =
-      case update_administrative_user(actor, user, :revoke_api_keys) do
-        {:ok, _user} -> :ok
-        {:error, _reason} = error -> error
-      end
+  def revoke_user_api_keys(actor, user),
+    do: Taskman.Accounts.Administration.revoke_user_api_keys(actor, user)
 
-    audit(result, :api_keys_revoked, :api_keys_revocation_rejected, actor, user)
-  end
+  @doc false
+  @spec persisted_active_administrator?(User.t() | term()) :: boolean()
+  def persisted_active_administrator?(actor),
+    do: Taskman.Accounts.Administration.persisted_active_administrator?(actor)
 
   @spec manage_email(User.t(), User.t(), String.t(), boolean()) ::
           {:ok, User.t()} | {:error, term()}
-  def manage_email(actor, user, email, confirmed?)
-      when is_struct(actor, User) and is_struct(user, User) and is_binary(email) and
-             is_boolean(confirmed?) do
-    result =
-      user
-      |> Ash.Changeset.for_update(:manage_email, %{email: email, confirmed?: confirmed?})
-      |> Ash.update(actor: actor, authorize?: true, domain: __MODULE__)
-
-    result
-    |> normalize_managed_email_result()
-    |> audit(:email_managed, :email_management_rejected, actor, user)
-  end
-
-  def manage_email(_actor, _user, _email, _confirmed?), do: {:error, :invalid_input}
+  def manage_email(actor, user, email, confirmed?),
+    do: Taskman.Accounts.Administration.manage_email(actor, user, email, confirmed?)
 
   @spec delete_user(User.t(), User.t(), String.t()) :: :ok | {:error, term()}
-  def delete_user(actor, user, confirmation)
-      when is_struct(actor, User) and is_struct(user, User) and is_binary(confirmation) do
-    SecurityLog.record(:account_deletion_attempted,
-      actor_id: record_id(actor),
-      target_id: record_id(user)
-    )
-
-    result =
-      user
-      |> Ash.Changeset.for_destroy(:admin_delete, %{confirmation: confirmation})
-      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
-
-    result =
-      case result do
-        :ok -> :ok
-        {:ok, _user} -> :ok
-        {:error, _reason} = error -> error
-      end
-
-    audit(result, :account_deleted, :account_deletion_rejected, actor, user)
-  end
-
-  def delete_user(_actor, _user, _confirmation), do: {:error, :invalid_input}
+  def delete_user(actor, user, confirmation),
+    do: Taskman.Accounts.AccountClosure.delete_user(actor, user, confirmation)
 
   @spec delete_user(User.t(), User.t()) :: :ok | {:error, term()}
-  def delete_user(actor, user), do: delete_user(actor, user, "DELETE")
+  def delete_user(actor, user),
+    do: Taskman.Accounts.AccountClosure.delete_user(actor, user)
 
   @spec delete_own_account(User.t(), String.t()) :: :ok | {:error, term()}
-  def delete_own_account(actor, current_password)
-      when is_struct(actor, User) and is_binary(current_password) do
-    SecurityLog.record(:account_deletion_attempted,
-      actor_id: record_id(actor),
-      target_id: record_id(actor)
-    )
-
-    result =
-      actor
-      |> Ash.Changeset.for_destroy(:self_delete, %{current_password: current_password})
-      |> Ash.destroy(actor: actor, authorize?: true, domain: __MODULE__)
-
-    result =
-      case result do
-        :ok -> :ok
-        {:ok, _user} -> :ok
-        {:error, _reason} = error -> error
-      end
-
-    audit(result, :account_deleted, :account_deletion_rejected, actor, actor)
-  end
-
-  def delete_own_account(_actor, _current_password), do: {:error, :invalid_input}
+  def delete_own_account(actor, current_password),
+    do: Taskman.Accounts.AccountClosure.delete_own_account(actor, current_password)
 
   @doc false
   @spec record_delivery_result(atom(), String.t(), :ok | {:error, term()}) :: :ok
-  def record_delivery_result(purpose, token, result) do
-    Process.put(@delivery_result_key, {purpose, result, token})
-    :ok
-  end
+  def record_delivery_result(purpose, token, result),
+    do: Taskman.Accounts.Delivery.record_result(purpose, token, result)
 
   @doc false
   @spec log_delivery_failure(:ok | {:error, term()}) :: :ok
-  def log_delivery_failure({:error, {:delivery_failed, delivery_class}})
-      when is_atom(delivery_class) do
-    Logger.warning("Transactional email delivery failed (class=#{delivery_class})")
-    :ok
-  end
-
-  def log_delivery_failure({:error, _reason}) do
-    Logger.warning("Transactional email delivery failed (class=unknown)")
-    :ok
-  end
-
-  def log_delivery_failure(:ok), do: :ok
-
-  defp with_delivery_result(purpose, operation, handle) do
-    Process.delete(@delivery_result_key)
-    result = operation.()
-
-    case Process.delete(@delivery_result_key) do
-      {^purpose, delivery_result, token} -> handle.(result, delivery_result, token)
-      nil -> handle.(result, nil, nil)
-    end
-  end
-
-  defp transaction(operation) do
-    case Ash.transact([User, Token, ApiKey], operation) do
-      {:ok, {:ok, value}} -> {:ok, value}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp update_administrative_user(actor, user, action)
-       when is_struct(actor, User) and is_struct(user, User) do
-    update_user(user, action, %{}, actor: actor)
-  end
-
-  defp update_administrative_user(_actor, _user, _action), do: {:error, :invalid_input}
-
-  defp audit(result, success_event, rejection_event, actor \\ nil, target \\ nil) do
-    event = if successful?(result), do: success_event, else: rejection_event
-
-    SecurityLog.record(event,
-      actor_id: record_id(actor),
-      target_id: record_id(target)
-    )
-
-    result
-  end
-
-  defp successful?(:ok), do: true
-  defp successful?({:ok, _value}), do: true
-  defp successful?(_result), do: false
-
-  defp result_user(result, fallback \\ nil)
-  defp result_user({:ok, %User{} = user}, _fallback), do: user
-  defp result_user({:ok, %{user: %User{} = user}}, _fallback), do: user
-  defp result_user(_result, fallback), do: fallback
-
-  defp record_id(%User{id: id}) when is_binary(id), do: id
-  defp record_id(%{id: id}) when is_binary(id), do: id
-  defp record_id(_record), do: nil
-
-  defp normalize_managed_email_result(
-         {:error, %{errors: [%{value: [delivery_failed: %User{} = user]} | _]}}
-       ) do
-    {:error, {:delivery_failed, user}}
-  end
-
-  defp normalize_managed_email_result(result), do: result
-
-  defp update_user(user, action, params, opts) do
-    user
-    |> Ash.Changeset.for_update(action, params)
-    |> Ash.update(opts |> Keyword.put(:domain, __MODULE__) |> Keyword.put_new(:authorize?, true))
-  end
-
-  defp active_administrator(%User{id: id}) do
-    case Repo.one(
-           from user in User,
-             where: user.id == ^id and user.status == :active and user.admin? == true
-         ) do
-      %User{} = actor -> {:ok, actor}
-      nil -> {:error, :forbidden}
-    end
-  end
-
-  defp active_administrator(_actor), do: {:error, :forbidden}
-
-  defp setup_token(user) do
-    Confirmation.confirmation_token(
-      Info.strategy!(User, :setup),
-      Ash.Changeset.new(user),
-      user,
-      domain: __MODULE__
-    )
-    |> case do
-      {:ok, token} -> {:ok, token}
-      _ -> {:error, :token_generation_failed}
-    end
-  end
-
-  defp revoke_older_tokens(user, purpose, current_token) do
-    with {:ok, %{"jti" => current_jti}} <- Jwt.peek(current_token),
-         :ok <- Token.revoke_for_subject_except(user, purpose, current_jti) do
-      :ok
-    else
-      _ -> {:error, :token_revocation_failed}
-    end
-  end
-
-  defp lock_user(id) do
-    case Repo.one(from user in User, where: user.id == ^id, lock: "FOR UPDATE") do
-      %User{} = user -> {:ok, user}
-      nil -> {:error, :invalid_token}
-    end
-  end
-
-  defp lock_eligible_user_by_email(email) do
-    case Repo.one(
-           from user in User,
-             where:
-               user.email == ^email and user.status == :active and not is_nil(user.confirmed_at),
-             lock: "FOR UPDATE"
-         ) do
-      %User{} = user -> {:ok, user}
-      nil -> {:error, :ineligible_account}
-    end
-  end
-
-  defp token_user(token) do
-    with {:ok, %{"sub" => subject}, _resource} <- Jwt.verify(token, User),
-         {:ok, user} <- AshAuthentication.subject_to_user(subject, User, domain: __MODULE__) do
-      {:ok, user}
-    else
-      _ -> {:error, :invalid_token}
-    end
-  end
-
-  defp eligible?(user), do: user.status == :active and not is_nil(user.confirmed_at)
-  defp now(opts), do: Keyword.get(opts, :now, DateTime.utc_now())
+  def log_delivery_failure(result),
+    do: Taskman.Accounts.Delivery.log_failure(result)
 end

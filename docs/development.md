@@ -38,7 +38,9 @@ Use three levels of ownership inside an application context:
 - The main context module exposes application use cases to web, CLI, and other contexts. It owns
   application-boundary validation, authorization entry points, multi-resource orchestration,
   auditing, externally meaningful side effects, and stable application-level results and errors.
-  It should delegate raw queries and mutations.
+  The context namespace owns these use cases, while the main context module may remain a stable
+  facade that delegates their implementation to focused workflow and capability modules. It should
+  delegate raw queries and mutations.
 - Resource and dedicated capability modules expose reusable domain behavior intrinsic to a
   resource or invariant. Prefer Ash actions for resource behavior. A capability module may own
   persistence coordination when the exact query or lock set is inseparable from maintaining its
