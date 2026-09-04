@@ -14,6 +14,7 @@ defmodule Taskman.Accounts.User do
   alias Taskman.Accounts.User.Changes.{
     DeliverManagedEmail,
     ProtectLastAdmin,
+    ReportInvitationDelivery,
     RequireActiveAdministrator
   }
 
@@ -62,6 +63,7 @@ defmodule Taskman.Accounts.User do
       primary? true
       accept [:admin?, :email]
       change RequireActiveAdministrator
+      change ReportInvitationDelivery
     end
 
     create :bootstrap_user do

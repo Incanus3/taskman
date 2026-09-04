@@ -3,6 +3,7 @@ defmodule Taskman.Accounts.Delivery do
 
   require Logger
 
+  @delivery_capture_key {Taskman.Accounts, :delivery_capture}
   @delivery_result_key {Taskman.Accounts, :delivery_result}
 
   @doc false
@@ -16,12 +17,37 @@ defmodule Taskman.Accounts.Delivery do
   @spec with_result(atom(), (-> term()), (term(), term(), term() -> term())) :: term()
   def with_result(purpose, operation, handle)
       when is_atom(purpose) and is_function(operation, 0) do
+    previous_capture = Process.get(@delivery_capture_key)
     Process.delete(@delivery_result_key)
-    result = operation.()
+    Process.put(@delivery_capture_key, purpose)
 
-    case Process.delete(@delivery_result_key) do
-      {^purpose, delivery_result, token} -> handle.(result, delivery_result, token)
-      nil -> handle.(result, nil, nil)
+    try do
+      result = operation.()
+
+      case Process.delete(@delivery_result_key) do
+        {^purpose, delivery_result, token} -> handle.(result, delivery_result, token)
+        nil -> handle.(result, nil, nil)
+      end
+    after
+      Process.delete(@delivery_result_key)
+      restore_capture(previous_capture)
+    end
+  end
+
+  @doc false
+  @spec take_unmanaged_result(atom()) ::
+          :managed | {:recorded, :ok | {:error, term()}, String.t()} | :missing
+  def take_unmanaged_result(purpose) do
+    case {Process.get(@delivery_capture_key), Process.get(@delivery_result_key)} do
+      {^purpose, _result} ->
+        :managed
+
+      {_capture, {^purpose, delivery_result, token}} ->
+        Process.delete(@delivery_result_key)
+        {:recorded, delivery_result, token}
+
+      {_capture, _result} ->
+        :missing
     end
   end
 
@@ -38,4 +64,7 @@ defmodule Taskman.Accounts.Delivery do
   end
 
   def log_failure(:ok), do: :ok
+
+  defp restore_capture(nil), do: Process.delete(@delivery_capture_key)
+  defp restore_capture(previous_capture), do: Process.put(@delivery_capture_key, previous_capture)
 end

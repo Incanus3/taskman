@@ -14,7 +14,7 @@ defmodule TaskmanWeb.AccountComponents do
       aria-label="Account navigation"
       class="flex items-center gap-3"
     >
-      <span id="account-identity" class="max-w-56 truncate text-sm text-slate-300">
+      <span id="account-identity" class="max-w-56 truncate pr-2.5 text-sm text-slate-300">
         {to_string(@current_user.email)}
       </span>
       <.link

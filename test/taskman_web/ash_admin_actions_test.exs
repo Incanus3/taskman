@@ -172,6 +172,36 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     assert_safe_admin_surface(view)
   end
 
+  test "the AshAdmin invitation form reports delivery failure and preserves the pending user", %{
+    conn: conn
+  } do
+    administrator = admin_fixture()
+    mailer_delivery = Application.fetch_env!(:taskman, :mailer_delivery)
+    Application.put_env(:taskman, :mailer_delivery, FailingMailer)
+
+    on_exit(fn -> Application.put_env(:taskman, :mailer_delivery, mailer_delivery) end)
+
+    assert {:ok, view, _html} =
+             live(
+               log_in_user(conn, administrator),
+               "/admin?domain=Accounts&resource=User&action_type=create&action=create_pending_user"
+             )
+
+    email = "ash-admin-delivery-failure@example.com"
+
+    view
+    |> form("#form", %{"form" => %{"email" => email, "admin?" => "false"}})
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "li",
+             "Invitation delivery failed. The account remains pending; open the user details to resend the invitation."
+           )
+
+    assert %User{status: :pending} = Repo.get_by!(User, email: email)
+  end
+
   test "direct generic update and destroy routes redirect before their forms can mount", %{
     conn: conn
   } do
@@ -355,5 +385,9 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     end
 
     refute has_element?(view, "button[phx-click='load']")
+  end
+
+  defmodule FailingMailer do
+    def deliver(_email), do: {:error, :unavailable}
   end
 end
