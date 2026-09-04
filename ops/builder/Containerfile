@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+FROM ubuntu@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SOURCE_REVISION
+
+ENV LANG=C.UTF-8 \
+    MIX_ENV=prod
+
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      ca-certificates \
+      build-essential \
+      git \
+      erlang-base=1:27.3.4.6+dfsg-1 \
+      erlang-dev=1:27.3.4.6+dfsg-1 \
+      erlang-xmerl=1:27.3.4.6+dfsg-1 \
+      elixir=1.18.3.dfsg-1build1 \
+      nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 \
+      npm=9.2.0~ds3-1 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+RUN test -n "$SOURCE_REVISION" \
+ && mix local.hex --force \
+ && mix local.rebar --force \
+ && mix deps.get --only prod \
+ && mix compile --warnings-as-errors \
+ && mix assets.deploy \
+ && mix release --overwrite
+
+RUN mkdir -p /artifact \
+ && cp -a /app/_build/prod/rel/taskman /artifact/taskman \
+ && printf '{"source_revision":"%s","target_os":"ubuntu26.04","architecture":"amd64","otp_version":"27.3.4.6","elixir_version":"1.18.3","node_version":"22.22.1"}\n' "$SOURCE_REVISION" \
+      > /artifact/toolchain.json
+
+FROM scratch AS artifact
+COPY --from=build /artifact/ /

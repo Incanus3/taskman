@@ -11,8 +11,10 @@ import argparse
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from io import StringIO
+import os
 from pathlib import Path
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TextIO
 
@@ -162,6 +164,26 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
     its signature.
     """
 
+    if invocation.command == "build":
+        from .build import build_release
+
+        repo = Path(__file__).resolve().parents[2]
+        artifact_root = Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
+        artifact = build_release(repo, artifact_root)
+        return WorkflowResult(
+            command="build",
+            environment="",
+            changed=True,
+            stage="built",
+            facts={
+                "release_id": artifact.manifest.release_id,
+                "source_revision": artifact.manifest.source_revision,
+                "artifact_sha256": artifact.sha256,
+                "archive": str(artifact.archive),
+                "manifest": str(artifact.manifest_path),
+                "checksum": str(artifact.checksum),
+            },
+        )
     return WorkflowResult(
         command=invocation.command,
         environment=invocation.environment or "",
