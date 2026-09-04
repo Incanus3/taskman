@@ -1,7 +1,7 @@
 # Dedicated-host deployment automation handoff
 
 **Status:** active  
-**Updated:** 2026-09-04  
+**Updated:** 2026-09-05  
 **Resume:** `$resume dedicated-host-deployment-automation`
 
 ## Objective
@@ -21,10 +21,10 @@ Delivery feature: `tas-dedicated-host-deployment-automation-moq`
 
 ## Current checkpoint
 
-The complete specification and 14-task implementation plan are approved. Tasks 1–3 are implemented
-and independently verified through commit `03e4742`. Task 4,
-`tas-dedicated-host-deployment-automation-moq.4` (verified release artifacts), is the next delivery
-gate.
+The complete specification and 14-task implementation plan are approved. Tasks 1–4 are implemented
+and independently verified through commit `12ceeaf`. Task 5,
+`tas-dedicated-host-deployment-automation-moq.5` (strict remote execution and host preflight), is
+the next delivery gate.
 
 The selected stack is pyinfra 3.x, SOPS with age, a pinned Ubuntu 26.04 amd64 build container, local
 PostgreSQL, Caddy, systemd, explicit migration compatibility, local backup retention, explicit
@@ -32,9 +32,9 @@ rollback/restore, and brief deployment downtime.
 
 ## Next actions
 
-1. Continue subagent-driven development with Task 4
-   (`tas-dedicated-host-deployment-automation-moq.4`).
-2. Independently verify Task 4 before closing it and proceeding through the dependency graph.
+1. Continue subagent-driven development with Task 5
+   (`tas-dedicated-host-deployment-automation-moq.5`).
+2. Independently verify Task 5 before closing it and proceeding through the dependency graph.
 
 ## Constraints and unresolved evidence
 
@@ -52,3 +52,8 @@ rollback/restore, and brief deployment downtime.
   28 Python tests and `uv lock --check`.
 - Task 3 passed two security fix rounds and scoped re-review; fresh locked checks passed:
   89 configuration/secrets/output tests and `uv lock --check`.
+- Task 4 passed two artifact-hardening rounds and scoped re-review; fresh checks passed:
+  56 build/manifest tests and `uv lock --check`.
+- Clean-clone BuildKit proof produced and revalidated
+  `0.2.0-59bc20ec625b-ubuntu26.04-amd64-otp27.3.4.6` for Ubuntu 26.04 amd64,
+  OTP 27.3.4.6. The artifact checksum is recorded in the Task 4 implementation report.
