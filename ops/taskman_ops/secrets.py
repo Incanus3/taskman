@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import subprocess
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 from urllib.parse import quote
 
 import yaml
@@ -69,19 +69,42 @@ class SecretConfig(BaseModel):
         validation_alias=AliasChoices("resend_api_key", "resend_key", "RESEND_API_KEY")
     )
 
+    _secret_fields: ClassVar[tuple[str, ...]] = (
+        "database_password",
+        "secret_key_base",
+        "ash_authentication_token_signing_secret",
+        "resend_api_key",
+    )
+
     def __init__(self, **data: Any) -> None:
-        super().__init__(**data)
+        validation_failed = False
+        try:
+            super().__init__(**data)
+        except ValidationError:
+            # Do not let Pydantic retain the input mapping in a structured
+            # ValidationError.  Clear the local kwargs mapping and raise the
+            # controller's fixed, secret-free boundary error after leaving
+            # the ``except`` block so no exception context is attached.
+            data.clear()
+            validation_failed = True
+        if validation_failed:
+            raise _secret_error("invalid deployment secrets")
+
         # Directly constructed configs are just as sensitive as SOPS output.
         # Register them before handing the object to any report/exception
         # boundary; ``decrypt_secrets`` also registers parsed values earlier
         # so validation failures are covered.
-        for field_name in (
-            "database_password",
-            "secret_key_base",
-            "ash_authentication_token_signing_secret",
-            "resend_api_key",
-        ):
+        for field_name in self._secret_fields:
             register_secret(getattr(self, field_name))
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "__dict__":
+            # BaseModel stores validated fields in its instance dictionary.
+            # Expose only shape-preserving redaction markers to generic
+            # introspection (``vars(config)`` and ``config.__dict__``), while
+            # normal named field access continues to use Pydantic's storage.
+            return {field_name: "[REDACTED]" for field_name in self._secret_fields}
+        return super().__getattribute__(name)
 
     @field_validator(
         "database_password",
@@ -250,7 +273,7 @@ def decrypt_secrets(
             if not isinstance(payload, Mapping):
                 raise ValueError("SOPS output must be a mapping")
             return SecretConfig.model_validate(payload)
-        except (UnicodeError, TypeError, ValueError, yaml.YAMLError, ValidationError):
+        except (UnicodeError, TypeError, ValueError, yaml.YAMLError, ValidationError, OpsError):
             # Never include parser details: malformed SOPS data is untrusted
             # and may contain a credential canary.
             raise _secret_error() from None
@@ -342,12 +365,9 @@ def _pgpass_escape(value: str) -> str:
 def render_pgpass(config: EnvironmentConfig, secrets: SecretConfig) -> bytes:
     """Render one PostgreSQL ``.pgpass`` line without touching disk."""
 
-    host = config.database_host
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
     line = ":".join(
         (
-            _pgpass_escape(host),
+            _pgpass_escape(config.database_host),
             str(config.database_port),
             _pgpass_escape(config.database_name),
             _pgpass_escape(config.database_role),

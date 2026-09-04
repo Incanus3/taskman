@@ -76,6 +76,12 @@ def test_unsupported_target_is_refused(field: str, value: str) -> None:
         EnvironmentConfig.model_validate(valid_environment(**{field: value}))
 
 
+@pytest.mark.parametrize("target_os", ["ubuntu-26.04", "Ubuntu 26.04", "ubuntu26.04lts", "ubuntu2604"])
+def test_target_os_requires_the_exact_supported_value(target_os: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(target_os=target_os))
+
+
 @pytest.mark.parametrize("field", ["ssh_port", "application_port", "distribution_port"])
 @pytest.mark.parametrize("port", [0, -1, 65536, "4000", True])
 def test_invalid_ports_are_refused(field: str, port: object) -> None:

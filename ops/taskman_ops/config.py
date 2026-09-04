@@ -311,12 +311,9 @@ class EnvironmentConfig(BaseModel):
     @field_validator("target_os")
     @classmethod
     def validate_target_os(cls, value: str) -> str:
-        if not isinstance(value, str):
-            raise ValueError("target OS must be ubuntu26.04")
-        normalised = value.strip().lower().replace(" ", "").replace("-", "").replace("_", "")
-        if normalised not in {"ubuntu26.04", "ubuntu2604", "ubuntu26.04lts", "ubuntu2604lts"}:
+        if value != "ubuntu26.04":
             raise ValueError("unsupported target OS")
-        return "ubuntu26.04"
+        return value
 
     @field_validator("architecture")
     @classmethod

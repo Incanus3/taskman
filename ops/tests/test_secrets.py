@@ -49,6 +49,8 @@ def test_secret_config_requires_all_values_and_hides_them_from_repr_and_mappings
     assert len(secrets.ash_authentication_token_signing_secret.encode()) >= 64
     rendered = repr(secrets) + str(secrets)
     assert all(value not in rendered for value in values.values())
+    assert all(value not in repr(vars(secrets)) for value in values.values())
+    assert all(value not in repr(secrets.__dict__) for value in values.values())
     with pytest.raises(TypeError):
         iter(secrets)
     with pytest.raises(TypeError):
@@ -66,8 +68,12 @@ def test_secret_config_requires_all_values_and_hides_them_from_repr_and_mappings
     ],
 )
 def test_secret_validation_rejects_missing_short_duplicate_or_unknown_values(overrides: dict[str, str]) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(OpsError) as raised:
         SecretConfig.model_validate({**valid_secrets(), **overrides})
+
+    assert raised.value.status is ExitStatus.SECRET
+    assert all(value not in repr(raised.value) for value in valid_secrets().values())
+    assert all(value not in repr(raised.value.as_dict()) for value in valid_secrets().values())
 
 
 @dataclass
@@ -152,3 +158,13 @@ def test_runtime_and_pgpass_rendering_is_quoted_in_memory_only() -> None:
     assert b"127.0.0.1:5432:taskman_prod:taskman:db password\\: canary \\\\ with quote\n" == pgpass
     assert redact(runtime) == b"[REDACTED]"
     assert redact(pgpass) == b"[REDACTED]"
+
+
+def test_pgpass_escapes_ipv6_host_without_uri_brackets() -> None:
+    config = environment_for_secrets().model_copy(update={"database_host": "::1"})
+    secrets = SecretConfig.model_validate(valid_secrets())
+
+    pgpass = render_pgpass(config, secrets)
+
+    assert pgpass.startswith(b"\\:\\:1:5432:taskman_prod:taskman:")
+    assert b"[" not in pgpass
