@@ -18,6 +18,14 @@ defmodule Taskman.Repo.CompatibilityTest do
   end
 
   test "Repo declares required PostgreSQL extensions" do
-    assert Taskman.Repo.installed_extensions() == ["uuid-ossp", "citext"]
+    assert Taskman.Repo.installed_extensions() == ["ash-functions", "uuid-ossp", "citext"]
+  end
+
+  test "AshPostgres helper functions are installed" do
+    assert %{rows: [[true, ["kept"]]]} =
+             Ecto.Adapters.SQL.query!(
+               Taskman.Repo,
+               "SELECT ash_elixir_and(TRUE, TRUE), ash_trim_whitespace(ARRAY['', 'kept', ''])"
+             )
   end
 end
