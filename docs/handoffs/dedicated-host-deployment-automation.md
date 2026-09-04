@@ -21,10 +21,10 @@ Delivery feature: `tas-dedicated-host-deployment-automation-moq`
 
 ## Current checkpoint
 
-The complete specification and 14-task implementation plan are approved. Tasks 1–4 are implemented
-and independently verified through commit `12ceeaf`. Task 5,
-`tas-dedicated-host-deployment-automation-moq.5` (strict remote execution and host preflight), is
-the next delivery gate.
+The complete specification and 14-task implementation plan are approved. Tasks 1–5 are implemented
+and independently verified through commit `7146aec`. Task 6,
+`tas-dedicated-host-deployment-automation-moq.6` (lifecycle records, locking, adoption, and
+discovery), is the next delivery gate.
 
 The selected stack is pyinfra 3.x, SOPS with age, a pinned Ubuntu 26.04 amd64 build container, local
 PostgreSQL, Caddy, systemd, explicit migration compatibility, local backup retention, explicit
@@ -32,9 +32,9 @@ rollback/restore, and brief deployment downtime.
 
 ## Next actions
 
-1. Continue subagent-driven development with Task 5
-   (`tas-dedicated-host-deployment-automation-moq.5`).
-2. Independently verify Task 5 before closing it and proceeding through the dependency graph.
+1. Continue subagent-driven development with Task 6
+   (`tas-dedicated-host-deployment-automation-moq.6`).
+2. Independently verify Task 6 before closing it and proceeding through the dependency graph.
 
 ## Constraints and unresolved evidence
 
@@ -57,3 +57,5 @@ rollback/restore, and brief deployment downtime.
 - Clean-clone BuildKit proof produced and revalidated
   `0.2.0-59bc20ec625b-ubuntu26.04-amd64-otp27.3.4.6` for Ubuntu 26.04 amd64,
   OTP 27.3.4.6. The artifact checksum is recorded in the Task 4 implementation report.
+- Task 5 passed two preflight-hardening rounds and scoped re-review; fresh checks passed:
+  37 transport/host-fact tests and `uv lock --check`.
