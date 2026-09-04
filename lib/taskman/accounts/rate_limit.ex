@@ -164,8 +164,8 @@ defmodule Taskman.Accounts.RateLimit do
 
   defp keys(:password_reset, opts) do
     [
-      {email_key(:password_reset, Keyword.get(opts, :email)), :timer.hours(1), 5},
-      {ip_key(:password_reset, Keyword.get(opts, :remote_ip)), :timer.hours(1), 20}
+      {ip_key(:password_reset, Keyword.get(opts, :remote_ip)), :timer.hours(1), 20},
+      {email_key(:password_reset, Keyword.get(opts, :email)), :timer.hours(1), 5}
     ]
   end
 

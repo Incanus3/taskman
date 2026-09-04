@@ -92,6 +92,42 @@ defmodule Taskman.Accounts.RateLimitTest do
     assert is_integer(retry_after) and retry_after >= 1
   end
 
+  test "an exhausted password-reset IP cannot consume another email's allowance", %{
+    backend: backend
+  } do
+    blocked_ip = {203, 0, 113, 14}
+    fresh_ip = {203, 0, 113, 15}
+
+    for number <- 1..20 do
+      assert :ok =
+               RateLimit.check(:password_reset,
+                 email: "ip-budget-#{number}@example.com",
+                 remote_ip: blocked_ip,
+                 backend: backend
+               )
+    end
+
+    for _ <- 1..5 do
+      assert {:error, retry_after: retry_after} =
+               RateLimit.check(:password_reset,
+                 email: "target@example.com",
+                 remote_ip: blocked_ip,
+                 backend: backend
+               )
+
+      assert is_integer(retry_after) and retry_after >= 1
+    end
+
+    for _ <- 1..5 do
+      assert :ok =
+               RateLimit.check(:password_reset,
+                 email: "target@example.com",
+                 remote_ip: fresh_ip,
+                 backend: backend
+               )
+    end
+  end
+
   test "invitation and email-change resends are limited by target address and actor", %{
     backend: backend
   } do
