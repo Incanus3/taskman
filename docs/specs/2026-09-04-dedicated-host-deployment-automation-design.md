@@ -1,6 +1,6 @@
 # Dedicated-host deployment automation
 
-**Status:** Approved in conversation; awaiting written-specification review  
+**Status:** Approved  
 **Date:** 2026-09-04
 
 ## Summary
@@ -1061,12 +1061,8 @@ Current primary documentation informing the design:
 
 ## Next-session checklist
 
-1. Review this written specification and resolve any requested changes.
-2. After approval, create the implementation plan under `docs/plans/` using the writing-plans
-   workflow.
-3. Create the repository-local Beads delivery graph from the approved plan.
-4. Update the deployment-automation handoff with the plan and active Beads identifiers.
-5. Start implementation in a fresh session with `$resume dedicated-host-deployment-automation`,
+1. Read the approved implementation plan under `docs/plans/` and its Beads delivery graph.
+2. Start implementation in a fresh session with `$resume dedicated-host-deployment-automation`,
    defaulting to delegated execution unless the operator explicitly chooses another approach.
-6. Do not touch a real VPS, DNS, Resend account, or production secret without separate explicit
+3. Do not touch a real VPS, DNS, Resend account, or production secret without separate explicit
    authorization.

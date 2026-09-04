@@ -12,19 +12,20 @@ Phoenix, local PostgreSQL, and Caddy topology.
 
 ## Durable references
 
-- [Approved design awaiting written review](../specs/2026-09-04-dedicated-host-deployment-automation-design.md)
+- [Approved design](../specs/2026-09-04-dedicated-host-deployment-automation-design.md)
+- [Approved implementation plan](../plans/2026-09-04-dedicated-host-deployment-automation.md)
 - [Existing deployment runbook](../deployment.md)
 - [Hosted-access foundation](../specs/2026-09-02-authenticated-hosted-access-design.md)
 
-No Beads delivery issue exists yet; create it from the approved implementation plan rather than
-from the design alone.
+Delivery feature: `tas-dedicated-host-deployment-automation-moq`
 
 ## Current checkpoint
 
-The in-chat architecture, provisioning flow, deployment transaction, operator interface, safety
-model, and verification boundaries are approved. The target was corrected to Ubuntu 26.04 LTS on
-amd64, including Intel 64. The self-contained specification is written and now needs operator
-review.
+The complete specification and 14-task implementation plan are approved. The Beads dependency
+graph exists and is ready for implementation. Tasks
+`tas-dedicated-host-deployment-automation-moq.1` (health endpoint) and
+`tas-dedicated-host-deployment-automation-moq.2` (controller shell) are the initial unblocked
+delivery gates.
 
 The selected stack is pyinfra 3.x, SOPS with age, a pinned Ubuntu 26.04 amd64 build container, local
 PostgreSQL, Caddy, systemd, explicit migration compatibility, local backup retention, explicit
@@ -32,11 +33,10 @@ rollback/restore, and brief deployment downtime.
 
 ## Next actions
 
-1. Receive operator review of the written specification and make any requested corrections.
-2. After explicit approval, create the implementation plan under `docs/plans/`.
-3. Create and verify the repository-local Beads issue graph.
-4. Refresh this handoff with the plan, issue IDs, and first implementation action.
-5. End the design/planning session and resume implementation in a clean session.
+1. Read the complete approved specification and plan.
+2. Use subagent-driven development by default, beginning with Task 1
+   (`tas-dedicated-host-deployment-automation-moq.1`).
+3. Independently verify Task 1 before closing it and proceeding through the dependency graph.
 
 ## Constraints and unresolved evidence
 

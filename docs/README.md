@@ -44,6 +44,7 @@
 ## Active implementation plans
 
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
+- [Dedicated-host deployment automation](plans/2026-09-04-dedicated-host-deployment-automation.md)
 
 ## Development
 
