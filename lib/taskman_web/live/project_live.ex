@@ -743,12 +743,12 @@ defmodule TaskmanWeb.ProjectLive do
 
   def handle_event("select_move_destination", _params, socket), do: {:noreply, socket}
 
-  def handle_event("cancel_move_task", _params, socket),
-    do:
-      {:noreply,
-       socket
-       |> assign(:task_move, Move.clear(socket.assigns.task_move))
-       |> refresh_task_stream()}
+  def handle_event("cancel_move_task", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:task_move, Move.clear(socket.assigns.task_move))
+     |> refresh_task_stream()}
+  end
 
   def handle_event(
         "submit_move_task",

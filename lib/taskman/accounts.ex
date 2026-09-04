@@ -814,48 +814,48 @@ defmodule Taskman.Accounts do
   end
 
   @spec enable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def enable_user(actor, user),
-    do:
-      audit(
-        update_administrative_user(actor, user, :enable),
-        :account_enabled,
-        :account_enable_rejected,
-        actor,
-        user
-      )
+  def enable_user(actor, user) do
+    audit(
+      update_administrative_user(actor, user, :enable),
+      :account_enabled,
+      :account_enable_rejected,
+      actor,
+      user
+    )
+  end
 
   @spec disable_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def disable_user(actor, user),
-    do:
-      audit(
-        update_administrative_user(actor, user, :disable),
-        :account_disabled,
-        :account_disable_rejected,
-        actor,
-        user
-      )
+  def disable_user(actor, user) do
+    audit(
+      update_administrative_user(actor, user, :disable),
+      :account_disabled,
+      :account_disable_rejected,
+      actor,
+      user
+    )
+  end
 
   @spec promote_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def promote_user(actor, user),
-    do:
-      audit(
-        update_administrative_user(actor, user, :promote),
-        :administrator_granted,
-        :administrator_grant_rejected,
-        actor,
-        user
-      )
+  def promote_user(actor, user) do
+    audit(
+      update_administrative_user(actor, user, :promote),
+      :administrator_granted,
+      :administrator_grant_rejected,
+      actor,
+      user
+    )
+  end
 
   @spec demote_user(User.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
-  def demote_user(actor, user),
-    do:
-      audit(
-        update_administrative_user(actor, user, :demote),
-        :administrator_revoked,
-        :administrator_revocation_rejected,
-        actor,
-        user
-      )
+  def demote_user(actor, user) do
+    audit(
+      update_administrative_user(actor, user, :demote),
+      :administrator_revoked,
+      :administrator_revocation_rejected,
+      actor,
+      user
+    )
+  end
 
   @spec revoke_user_sessions(User.t(), User.t()) :: :ok | {:error, term()}
   def revoke_user_sessions(actor, user) do

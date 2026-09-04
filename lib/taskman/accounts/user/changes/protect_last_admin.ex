@@ -154,19 +154,19 @@ defmodule Taskman.Accounts.User.Changes.ProtectLastAdmin do
   defp forbidden(changeset),
     do: Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
 
-  defp invalid_transition(changeset),
-    do:
-      Ash.Changeset.add_error(changeset,
-        field: :id,
-        message: "does not allow that lifecycle transition"
-      )
+  defp invalid_transition(changeset) do
+    Ash.Changeset.add_error(changeset,
+      field: :id,
+      message: "does not allow that lifecycle transition"
+    )
+  end
 
-  defp final_administrator(changeset),
-    do:
-      Ash.Changeset.add_error(changeset,
-        field: :admin?,
-        message: "cannot remove the final active administrator"
-      )
+  defp final_administrator(changeset) do
+    Ash.Changeset.add_error(changeset,
+      field: :admin?,
+      message: "cannot remove the final active administrator"
+    )
+  end
 
   defp credential_revocation_failed(changeset),
     do:

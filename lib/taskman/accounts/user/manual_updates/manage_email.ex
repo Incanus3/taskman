@@ -128,13 +128,13 @@ defmodule Taskman.Accounts.User.ManualUpdates.ManageEmail do
     _exception -> {:error, :token_revocation_failed}
   end
 
-  defp with_delivery(user, :setup, token),
-    do:
-      Ash.Resource.put_metadata(
-        user,
-        :managed_email_delivery,
-        {:setup, to_string(user.email), token}
-      )
+  defp with_delivery(user, :setup, token) do
+    Ash.Resource.put_metadata(
+      user,
+      :managed_email_delivery,
+      {:setup, to_string(user.email), token}
+    )
+  end
 
   defp with_delivery(user, :email_change, token, email),
     do: Ash.Resource.put_metadata(user, :managed_email_delivery, {:email_change, email, token})
