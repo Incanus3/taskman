@@ -41,9 +41,10 @@ defmodule TaskmanWeb.WorkspaceNavigation do
       >
         <div
           class={[
-            "flex items-center gap-1 rounded-xl px-2 py-1.5 transition",
+            "relative flex items-center gap-1 rounded-xl px-2 py-1.5 transition",
             node.selected? && "bg-white/12 text-white",
-            !node.selected? && "text-slate-300 hover:bg-white/7 hover:text-white"
+            !node.selected? &&
+              "text-slate-300 hover:bg-white/7 hover:text-white focus-within:bg-white/7"
           ]}
           style={"padding-inline-start: #{(node.depth - 1) * 1.25}rem"}
         >
@@ -82,7 +83,13 @@ defmodule TaskmanWeb.WorkspaceNavigation do
               node.kind == :project && node.project.primary_directory &&
                 "project-directory-#{node.project.id}"
             }
-            class="group/project-link relative flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            class={[
+              "group/project-link relative flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1",
+              node.kind == :project &&
+                "pr-10 pointer-fine:group-hover:pr-10 pointer-fine:group-focus-within:pr-10",
+              node.kind == :list &&
+                "pr-18 pointer-fine:group-hover:pr-18 pointer-fine:group-focus-within:pr-18"
+            ]}
           >
             <.icon
               name={if(node.kind == :project, do: "hero-folder", else: "hero-list-bullet")}
@@ -99,45 +106,55 @@ defmodule TaskmanWeb.WorkspaceNavigation do
               {node.project.primary_directory}
             </span>
           </.link>
-          <button
-            :if={node.kind == :project}
-            id={"add-list-project-#{node.project.id}"}
-            type="button"
-            phx-click="open_list_form"
-            phx-value-kind="new"
-            phx-value-parent-id=""
-            phx-value-project-id={node.project.id}
-            aria-label={"Add List to #{node.project.name}"}
-            class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 opacity-100 transition hover:bg-white/10 hover:text-white focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 group-hover:opacity-100 pointer-fine:opacity-0"
+          <div
+            id={
+              if(node.kind == :project,
+                do: "project-actions-#{node.project.id}",
+                else: "list-actions-#{node.task_list.id}"
+              )
+            }
+            class="absolute right-0 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 rounded-r-xl bg-transparent py-1 pl-1 pr-2 opacity-100 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-fine:opacity-0"
           >
-            <.icon name="hero-plus" class="size-4" />
-          </button>
-          <button
-            :if={node.kind == :list}
-            id={"add-child-list-#{node.task_list.id}"}
-            type="button"
-            phx-click="open_list_form"
-            phx-value-kind="new"
-            phx-value-parent-id={node.task_list.id}
-            phx-value-project-id={node.project.id}
-            aria-label={"Add child List to #{node.task_list.name}"}
-            class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 opacity-100 transition hover:bg-white/10 hover:text-white focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 group-hover:opacity-100 pointer-fine:opacity-0"
-          >
-            <.icon name="hero-plus" class="size-4" />
-          </button>
-          <button
-            :if={node.kind == :list}
-            id={"rename-list-#{node.task_list.id}"}
-            type="button"
-            phx-click="open_list_form"
-            phx-value-kind="rename"
-            phx-value-list-id={node.task_list.id}
-            phx-value-project-id={node.project.id}
-            aria-label={"Rename #{node.task_list.name}"}
-            class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 opacity-100 transition hover:bg-white/10 hover:text-white focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 group-hover:opacity-100 pointer-fine:opacity-0"
-          >
-            <.icon name="hero-pencil-square" class="size-4" />
-          </button>
+            <button
+              :if={node.kind == :project}
+              id={"add-list-project-#{node.project.id}"}
+              type="button"
+              phx-click="open_list_form"
+              phx-value-kind="new"
+              phx-value-parent-id=""
+              phx-value-project-id={node.project.id}
+              aria-label={"Add List to #{node.project.name}"}
+              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
+            <button
+              :if={node.kind == :list}
+              id={"add-child-list-#{node.task_list.id}"}
+              type="button"
+              phx-click="open_list_form"
+              phx-value-kind="new"
+              phx-value-parent-id={node.task_list.id}
+              phx-value-project-id={node.project.id}
+              aria-label={"Add child List to #{node.task_list.name}"}
+              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
+            <button
+              :if={node.kind == :list}
+              id={"rename-list-#{node.task_list.id}"}
+              type="button"
+              phx-click="open_list_form"
+              phx-value-kind="rename"
+              phx-value-list-id={node.task_list.id}
+              phx-value-project-id={node.project.id}
+              aria-label={"Rename #{node.task_list.name}"}
+              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            >
+              <.icon name="hero-pencil-square" class="size-4" />
+            </button>
+          </div>
         </div>
         <.list_form
           :if={ListEdit.active_for?(@list_edit, node)}

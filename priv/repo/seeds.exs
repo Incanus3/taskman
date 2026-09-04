@@ -1,3 +1,6 @@
+alias AshAuthentication.Argon2Provider
+alias Taskman.Accounts
+alias Taskman.Accounts.User
 alias Taskman.Lists
 alias Taskman.Lists.TaskList
 alias Taskman.Projects
@@ -5,6 +8,29 @@ alias Taskman.Projects.Project
 alias Taskman.Repo
 alias Taskman.Tasks
 alias Taskman.Tasks.Task
+
+if Application.get_env(:taskman, :seed_development_users, Mix.env() == :dev) do
+  seed_user = fn email, admin? ->
+    if Repo.get_by(User, email: email) == nil do
+      {:ok, hashed_password} = Argon2Provider.hash("taskman-dev")
+
+      {:ok, _user} =
+        Accounts.bootstrap_user(
+          %{
+            admin?: admin?,
+            confirmed_at: DateTime.utc_now(),
+            email: email,
+            hashed_password: hashed_password,
+            status: :active
+          },
+          actor: %{accounts_bootstrap?: true}
+        )
+    end
+  end
+
+  seed_user.("admin@taskman.dev", true)
+  seed_user.("user@taskman.dev", false)
+end
 
 {:ok, %{lists: list_count, tasks: task_count}} =
   Repo.transaction(fn ->

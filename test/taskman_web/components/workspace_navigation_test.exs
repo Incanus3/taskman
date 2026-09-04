@@ -129,7 +129,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
            )
   end
 
-  test "keeps List actions visible until a fine pointer can reveal them" do
+  test "overlays actions on fine pointers and masks the name beneath them" do
     project = %Project{id: 7, name: "Taskman"}
     task_list = %TaskList{id: 11, project_id: project.id, name: "Planning"}
 
@@ -155,24 +155,46 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
       })
       |> LazyHTML.from_fragment()
 
-    for selector <- [
-          "#add-list-project-7",
-          "#add-child-list-11",
-          "#rename-list-11"
+    for {actions_selector, link_selector, reserved_padding} <- [
+          {"#project-actions-7", "#select-project-7", "pr-10"},
+          {"#list-actions-11", "#select-list-11", "pr-18"}
         ] do
       [class_attribute] =
         document
-        |> LazyHTML.query(selector)
+        |> LazyHTML.query(actions_selector)
         |> LazyHTML.attribute("class")
 
       classes = String.split(class_attribute)
 
+      assert "absolute" in classes
+      assert "bg-transparent" in classes
       assert "opacity-100" in classes
       assert "pointer-fine:opacity-0" in classes
       assert "group-hover:opacity-100" in classes
-      assert "focus:opacity-100" in classes
+      assert "group-focus-within:opacity-100" in classes
       refute "opacity-0" in classes
+
+      [link_class_attribute] =
+        document
+        |> LazyHTML.query(link_selector)
+        |> LazyHTML.attribute("class")
+
+      link_classes = String.split(link_class_attribute)
+
+      assert reserved_padding in link_classes
+      assert "pointer-fine:pr-1" in link_classes
+      assert "pointer-fine:group-hover:#{reserved_padding}" in link_classes
+      assert "pointer-fine:group-focus-within:#{reserved_padding}" in link_classes
     end
+
+    refute Enum.empty?(LazyHTML.query(document, "#project-actions-7 > #add-list-project-7"))
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#list-actions-11 > #add-child-list-11 + #rename-list-11"
+             )
+           )
   end
 
   test "renders the active root and nested List forms with stable IDs" do

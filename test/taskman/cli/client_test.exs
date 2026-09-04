@@ -132,6 +132,53 @@ defmodule Taskman.CLI.ClientTest do
     end
   end
 
+  test "maps rate-limited authentication to exit status 7 with retry guidance" do
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_header("retry-after", "37")
+      |> Plug.Conn.put_status(429)
+      |> Req.Test.json(%{
+        error: %{
+          code: "rate_limited",
+          message: "Too many requests. Please try again later."
+        }
+      })
+    end)
+
+    assert {:error, 7,
+            %{
+              "error" => %{
+                "code" => "rate_limited",
+                "message" => "Too many requests. Please try again later."
+              }
+            }} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_api_key: "tm_client_mapping_credential",
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "rejects mismatched or malformed rate-limit errors" do
+    for response <- [
+          %{error: %{code: "unauthorized", message: "Authentication failed"}},
+          %{error: %{code: "rate_limited", message: ""}},
+          %{data: []}
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "37")
+        |> Plug.Conn.put_status(429)
+        |> Req.Test.json(response)
+      end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(:get, "/api/v1/projects", [],
+                 resolved_api_key: "tm_client_mapping_credential",
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               )
+    end
+  end
+
   test "redacts a bearer credential if an unexpected transport exception includes it" do
     credential = "tm_exception_redaction_credential"
 

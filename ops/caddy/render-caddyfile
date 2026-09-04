@@ -1,0 +1,77 @@
+#!/bin/sh
+
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: render-caddyfile HOSTNAME CADDYFILE_TEMPLATE" >&2
+  exit 64
+fi
+
+hostname=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+template=$2
+
+invalid_hostname() {
+  echo "render-caddyfile: enter a valid public DNS hostname, not a reserved example name" >&2
+  exit 64
+}
+
+if [ "${#hostname}" -gt 253 ]; then
+  invalid_hostname
+fi
+
+case "$hostname" in
+  ""|.*|*.|*..*|*[!a-z0-9.-]*)
+    invalid_hostname
+    ;;
+  localhost|*.localhost|test|*.test|invalid|*.invalid|example|*.example)
+    invalid_hostname
+    ;;
+  example.com|*.example.com|example.net|*.example.net|example.org|*.example.org)
+    invalid_hostname
+    ;;
+  local|*.local|home.arpa|*.home.arpa|onion|*.onion)
+    invalid_hostname
+    ;;
+  *.*)
+    ;;
+  *)
+    invalid_hostname
+    ;;
+esac
+
+previous_ifs=$IFS
+IFS=.
+set -f
+set -- $hostname
+IFS=$previous_ifs
+
+for label do
+  if [ "${#label}" -gt 63 ]; then
+    invalid_hostname
+  fi
+
+  case "$label" in
+    ""|-*|*-)
+      invalid_hostname
+      ;;
+  esac
+
+  last_label=$label
+done
+
+case "$last_label" in
+  *[a-z]*)
+    ;;
+  *)
+    invalid_hostname
+    ;;
+esac
+
+marker_count=$(grep -Fxc 'taskman.example.com {' "$template" || true)
+
+if [ "$marker_count" -ne 1 ]; then
+  echo "render-caddyfile: expected exactly one taskman.example.com site" >&2
+  exit 65
+fi
+
+sed "s/^taskman\\.example\\.com {/${hostname} {/" "$template"

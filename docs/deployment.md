@@ -16,9 +16,10 @@ compatible libc and system libraries. The target host needs neither source code,
 development toolchain. Build a new artifact for an OS-family, architecture, or system-library
 change; do not copy one built on macOS or an incompatible Linux distribution.
 
-Choose a DNS name such as `taskman.example.com`, arrange a private PostgreSQL instance, and install
-Caddy and systemd on the host. PostgreSQL may be local or on a private network, but it must never
-be Internet-accessible.
+Choose a public DNS name, arrange a private PostgreSQL instance, and install Caddy and systemd on
+the host. Commands below use the reserved `taskman.example.com` name only as a placeholder; replace
+it with the real hostname. PostgreSQL may be local or on a private network, but it must never be
+Internet-accessible.
 
 ## Build and transfer a release
 
@@ -40,7 +41,8 @@ Use an artifact name appropriate to the actual target architecture. Transfer bot
 authenticated channel, then verify the checksum on the target before extracting:
 
 ```sh
-scp taskman-RELEASE-linux-amd64.tar.gz* ops/systemd/taskman.service ops/caddy/Caddyfile \
+scp taskman-RELEASE-linux-amd64.tar.gz* ops/systemd/taskman.service \
+  ops/caddy/Caddyfile ops/caddy/render-caddyfile \
   deployer@taskman.example.com:/tmp/
 ssh deployer@taskman.example.com
 cd /tmp
@@ -151,7 +153,9 @@ is not a public service.
 ## Install the release and services
 
 Install each verified artifact under a new immutable versioned directory. Replace `RELEASE` with the
-release identifier used during packaging.
+release identifier used during packaging. The checked-in Caddyfile is a template: enter the same
+public hostname used for `PHX_HOST` when prompted. The installation rejects the reserved example
+hostname and invalid characters before it replaces the template hostname.
 
 ```sh
 install -d -o root -g root -m 0755 /opt/taskman/releases/RELEASE
@@ -163,8 +167,20 @@ chmod -R g+rX,o-rwx /opt/taskman/releases/RELEASE
 ln -s releases/RELEASE /opt/taskman/current.next
 mv -Tf /opt/taskman/current.next /opt/taskman/current
 
+printf 'Public Taskman hostname: '
+IFS= read -r TASKMAN_HOST </dev/tty
+
+TASKMAN_HOST=$TASKMAN_HOST sh -eu <<'SH'
+rendered_caddyfile="$(mktemp)"
+trap 'rm -f "$rendered_caddyfile"' EXIT
+
+sh /tmp/render-caddyfile "$TASKMAN_HOST" /tmp/Caddyfile \
+  > "$rendered_caddyfile"
+caddy validate --config "$rendered_caddyfile" --adapter caddyfile
+
 install -o root -g root -m 0644 /tmp/taskman.service /etc/systemd/system/taskman.service
-install -o root -g root -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile
+install -o root -g root -m 0644 "$rendered_caddyfile" /etc/caddy/Caddyfile
+
 systemctl daemon-reload
 caddy validate --config /etc/caddy/Caddyfile
 systemctl enable --now caddy.service
@@ -174,6 +190,7 @@ systemctl status taskman.service --no-pager
 journalctl -u caddy.service -b --no-pager
 journalctl -u taskman.service -b --no-pager
 ss -ltnp
+SH
 ```
 
 The atomic rename of `current.next` makes `/opt/taskman/current` select exactly one versioned
@@ -236,7 +253,8 @@ launcher's remote lifecycle commands.
 
 ## Reverse proxy, HTTPS, and LiveView
 
-The supplied [`ops/caddy/Caddyfile`](../ops/caddy/Caddyfile) intentionally contains only:
+The supplied [`ops/caddy/Caddyfile`](../ops/caddy/Caddyfile) is a template whose example hostname is
+replaced during installation. It intentionally contains only:
 
 ```caddyfile
 taskman.example.com {

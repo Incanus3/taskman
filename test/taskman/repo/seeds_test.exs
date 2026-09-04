@@ -1,6 +1,8 @@
 defmodule Taskman.Repo.SeedsTest do
   use Taskman.DataCase, async: false
 
+  alias Taskman.Accounts
+  alias Taskman.Accounts.User
   alias Taskman.Lists.TaskList
   alias Taskman.Projects
   alias Taskman.Projects.Project
@@ -9,6 +11,56 @@ defmodule Taskman.Repo.SeedsTest do
 
   @statuses [:icebox, :pending, :in_progress, :in_review, :done, :will_not_do]
   @priorities [:none, :low, :medium, :high, :urgent]
+
+  test "development seeds create usable administrator and standard accounts" do
+    Application.put_env(:taskman, :seed_development_users, true)
+    on_exit(fn -> Application.delete_env(:taskman, :seed_development_users) end)
+
+    run_seeds()
+
+    assert {:ok, admin} =
+             Accounts.sign_in_with_password(%{
+               email: "admin@taskman.dev",
+               password: "taskman-dev"
+             })
+
+    assert admin.admin?
+    assert admin.status == :active
+    assert %DateTime{} = admin.confirmed_at
+
+    assert {:ok, user} =
+             Accounts.sign_in_with_password(%{
+               email: "user@taskman.dev",
+               password: "taskman-dev"
+             })
+
+    refute user.admin?
+    assert user.status == :active
+    assert %DateTime{} = user.confirmed_at
+  end
+
+  test "development seed accounts are preserved when seeds run again" do
+    Application.put_env(:taskman, :seed_development_users, true)
+    on_exit(fn -> Application.delete_env(:taskman, :seed_development_users) end)
+
+    run_seeds()
+
+    original_accounts =
+      for email <- ["admin@taskman.dev", "user@taskman.dev"], into: %{} do
+        user = Repo.get_by!(User, email: email)
+        {email, {user.id, user.hashed_password, user.admin?}}
+      end
+
+    run_seeds()
+
+    preserved_accounts =
+      for email <- ["admin@taskman.dev", "user@taskman.dev"], into: %{} do
+        user = Repo.get_by!(User, email: email)
+        {email, {user.id, user.hashed_password, user.admin?}}
+      end
+
+    assert preserved_accounts == original_accounts
+  end
 
   test "seeds replace existing data with a rerunnable nested sample dataset" do
     {:ok, existing_project} =

@@ -41,17 +41,19 @@ defmodule TaskmanWeb.Layouts do
     assigns = assign(assigns, :current_user, assigns.current_user || assigns.current_scope)
 
     ~H"""
-    <header
-      :if={@current_user}
-      id="authenticated-navigation"
-      class="flex items-center justify-end border-b border-slate-800 bg-slate-950 px-6 py-3"
-    >
-      <.account_menu current_user={@current_user} />
-    </header>
+    <div id="application-shell" class="flex h-dvh flex-col overflow-hidden">
+      <header
+        :if={@current_user}
+        id="authenticated-navigation"
+        class="shrink-0 flex items-center justify-end border-b border-slate-800 bg-slate-950 px-6 py-3"
+      >
+        <.account_menu current_user={@current_user} />
+      </header>
 
-    <main>
-      {render_slot(@inner_block)}
-    </main>
+      <div id="application-content" class="min-h-0 flex-1 overflow-y-auto">
+        {render_slot(@inner_block)}
+      </div>
+    </div>
 
     <.flash_group flash={@flash} />
     """

@@ -32,12 +32,15 @@ supported as described below.
    mix phx.server
    ```
 
-4. Create the first local administrator in another terminal, then sign in at
-   [`localhost:4000`](http://localhost:4000):
+4. Sign in at [`localhost:4000`](http://localhost:4000) with either development account:
 
-   ```sh
-   mix taskman.accounts.create-admin
-   ```
+   - Administrator: `admin@taskman.dev`
+   - Standard user: `user@taskman.dev`
+   - Password for both: `taskman-dev`
+
+   The seed script creates missing development accounts without overwriting existing accounts.
+   To create another local administrator, run `mix taskman.accounts.create-admin` in another
+   terminal.
 
 ## Local CLI
 

@@ -56,8 +56,30 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     assert vm_args =~ "-start_epmd false -erl_epmd_port 6789"
     assert remote_vm_args =~ "-start_epmd false -erl_epmd_port 6789 -dist_listen false"
 
-    assert deployment =~
-             "caddy validate --config /etc/caddy/Caddyfile\nsystemctl enable --now caddy.service"
+    assert deployment =~ "printf 'Public Taskman hostname: '"
+    assert deployment =~ "IFS= read -r TASKMAN_HOST </dev/tty"
+    assert deployment =~ "ops/caddy/render-caddyfile"
+
+    refute deployment =~
+             "install -o root -g root -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile"
+
+    ordered_steps = [
+      "IFS= read -r TASKMAN_HOST </dev/tty",
+      ~s(sh /tmp/render-caddyfile "$TASKMAN_HOST" /tmp/Caddyfile),
+      ~s(caddy validate --config "$rendered_caddyfile" --adapter caddyfile),
+      "install -o root -g root -m 0644 /tmp/taskman.service",
+      ~s(install -o root -g root -m 0644 "$rendered_caddyfile" /etc/caddy/Caddyfile),
+      "caddy validate --config /etc/caddy/Caddyfile",
+      "systemctl enable --now caddy.service"
+    ]
+
+    positions =
+      Enum.map(ordered_steps, fn step ->
+        {position, _length} = :binary.match(deployment, step)
+        position
+      end)
+
+    assert positions == Enum.sort(positions)
 
     assert deployment =~
              ~r/On later\s+Caddyfile changes, validate first and then `systemctl reload caddy\.service`\./

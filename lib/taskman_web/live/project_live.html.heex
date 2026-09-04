@@ -6,9 +6,9 @@
   <div
     id="taskman-workspace"
     phx-hook=".TaskDetailLayout"
-    class="min-h-screen bg-slate-950 text-slate-100"
+    class="h-full bg-slate-950 text-slate-100"
   >
-    <div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
+    <div class="grid min-h-full grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
       <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
         <div class="flex h-full flex-col p-6">
           <div class="mb-5 flex items-center gap-3">
@@ -71,7 +71,7 @@
       >
         <div
           :if={!@selected_project && !@project_not_found?}
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-arrow-left" class="mx-auto mb-5 size-8 text-indigo-500 lg:hidden" />
@@ -85,7 +85,7 @@
         <section
           :if={@project_not_found?}
           id="project-not-found"
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-folder-minus" class="mx-auto mb-5 size-10 text-slate-600" />
@@ -101,7 +101,7 @@
         <section
           :if={@location_not_found? && @selected_project}
           id="location-not-found"
-          class="grid min-h-screen place-items-center px-6 py-16 text-center"
+          class="grid min-h-full place-items-center px-6 py-16 text-center"
         >
           <div class="max-w-md">
             <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />

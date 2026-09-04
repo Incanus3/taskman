@@ -12,6 +12,7 @@ defmodule Taskman.CLI.Client do
     404 => {"not_found", 3},
     409 => {["unchanged_location", "concurrent_update"], 3},
     422 => {"validation_failed", 3},
+    429 => {"rate_limited", 7},
     500 => {"internal_error", 5}
   }
 
