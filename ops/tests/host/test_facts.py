@@ -26,12 +26,11 @@ def direct_dns(_hostname: str) -> tuple[str, ...]:
     return ("203.0.113.10",)
 
 
-def fact_responses() -> list[CommandResult]:
-    return [
+def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
+    responses = [
         CommandResult(0, 'ID=ubuntu\nVERSION_ID="26.04"\n'),
         CommandResult(0, "x86_64\n"),
         CommandResult(0, "systemd\n"),
-        CommandResult(0),
         CommandResult(0),
         CommandResult(0, f"{MINIMUM_MEMORY_BYTES}\n"),
         CommandResult(0, f"Avail\n{MINIMUM_DISK_BYTES}\n"),
@@ -40,9 +39,16 @@ def fact_responses() -> list[CommandResult]:
         CommandResult(0, "LISTEN 0 4096 *:2202 0.0.0.0:*\n"),
         CommandResult(0),
         CommandResult(0),
-        CommandResult(0),
-        CommandResult(0),
+        CommandResult(2),
+        CommandResult(2),
+        CommandResult(2),
+        CommandResult(1),
     ]
+    if postgres:
+        responses[13] = CommandResult(0, "postgres:x:111:117:PostgreSQL administrator:/var/lib/postgresql:/bin/bash\n")
+        responses[14] = CommandResult(0, "/usr/bin/psql\n")
+        responses.extend((CommandResult(0), CommandResult(0)))
+    return responses
 
 
 def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
@@ -56,7 +62,8 @@ def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
     assert facts.architecture == "amd64"
     assert facts.pid1 == "systemd"
     assert facts.sudo_available is True
-    assert facts.postgres_sudo_available is True
+    assert facts.postgres_available is False
+    assert facts.postgres_sudo_available is None
     assert facts.active_ssh_port == 2202
     assert facts.memory_bytes == MINIMUM_MEMORY_BYTES
     assert facts.available_disk_bytes == MINIMUM_DISK_BYTES
@@ -86,9 +93,9 @@ def test_unsupported_platform_is_refused_only_after_all_facts_are_collected() ->
         (0, CommandResult(0, 'ID=ubuntu\nVERSION_ID="24.04"\n')),
         (1, CommandResult(0, "aarch64\n")),
         (2, CommandResult(0, "init\n")),
-        (5, CommandResult(0, f"{MINIMUM_MEMORY_BYTES - 1}\n")),
+        (4, CommandResult(0, f"{MINIMUM_MEMORY_BYTES - 1}\n")),
+        (5, CommandResult(0, f"Avail\n{MINIMUM_DISK_BYTES - 1}\n")),
         (6, CommandResult(0, f"Avail\n{MINIMUM_DISK_BYTES - 1}\n")),
-        (7, CommandResult(0, f"Avail\n{MINIMUM_DISK_BYTES - 1}\n")),
     ],
 )
 def test_unsupported_host_facts_map_to_status_two(index: int, result: CommandResult) -> None:
@@ -106,8 +113,7 @@ def test_unsupported_host_facts_map_to_status_two(index: int, result: CommandRes
     ("index", "result"),
     [
         (3, CommandResult(1, stderr="sudo unavailable")),
-        (4, CommandResult(1, stderr="postgres sudo unavailable")),
-        (8, CommandResult(0, "22\n")),
+        (7, CommandResult(0, "22\n")),
     ],
 )
 def test_privilege_or_active_connection_port_failures_map_to_status_five(
@@ -135,35 +141,119 @@ def test_failed_required_fact_command_maps_to_status_five_after_the_snapshot() -
     assert not remote.responses
 
 
-@pytest.mark.parametrize("index", [10, 11, 12, 13])
-def test_failed_managed_conflict_probes_are_never_interpreted_as_clean(index: int) -> None:
+@pytest.mark.parametrize(
+    ("index", "result"),
+    [
+        (9, CommandResult(1, stderr="path inspection unavailable")),
+        (10, CommandResult(1, stderr="unit inspection unavailable")),
+        (11, CommandResult(1, stderr="passwd inspection unavailable")),
+        (12, CommandResult(1, stderr="group inspection unavailable")),
+    ],
+)
+def test_inability_to_inspect_non_database_managed_state_refuses_preflight(
+    index: int, result: CommandResult
+) -> None:
     responses = fact_responses()
-    responses[index] = CommandResult(1, stdout="", stderr="probe failure canary")
+    responses[index] = result
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
         validate_supported_host(remote, config(), resolver=direct_dns)
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
-    assert "probe failure canary" not in str(raised.value)
     assert not remote.responses
 
 
-def test_preflight_requests_integer_memory_and_separate_managed_and_backup_capacity() -> None:
+def test_pristine_host_skips_postgresql_sudo_and_database_discovery() -> None:
     remote = ScriptedRemote.from_responses(fact_responses())
 
-    validate_supported_host(remote, config(), resolver=direct_dns)
+    facts = validate_supported_host(remote, config(), resolver=direct_dns)
 
-    memory_command, _kwargs = remote.calls[5]
-    managed_disk_command, _kwargs = remote.calls[6]
-    backup_disk_command, _kwargs = remote.calls[7]
+    assert facts.postgres_available is False
+    assert facts.postgres_sudo_available is None
+    assert ("sudo", "-n", "-u", "postgres", "true") not in [argv for argv, _kwargs in remote.calls]
+    assert not any("psql -Atq" in " ".join(argv) for argv, _kwargs in remote.calls)
+
+
+def test_present_postgresql_requires_sudo_and_detects_a_managed_database() -> None:
+    responses = fact_responses(postgres=True)
+    responses[16] = CommandResult(0, "taskman_prod\n")
+    remote = ScriptedRemote.from_responses(responses)
+
+    with pytest.raises(OpsError) as raised:
+        validate_supported_host(remote, config(), resolver=direct_dns)
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_partial_postgresql_installation_refuses_without_running_privileged_inspection() -> None:
+    responses = fact_responses()
+    responses[13] = CommandResult(0, "postgres:x:111:117:PostgreSQL administrator:/var/lib/postgresql:/bin/bash\n")
+    remote = ScriptedRemote.from_responses(responses)
+
+    with pytest.raises(OpsError) as raised:
+        validate_supported_host(remote, config(), resolver=direct_dns)
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert ("sudo", "-n", "-u", "postgres", "true") not in [argv for argv, _kwargs in remote.calls]
+    assert not any("psql -Atq" in " ".join(argv) for argv, _kwargs in remote.calls)
+
+
+@pytest.mark.parametrize(
+    ("index", "result"),
+    [
+        (15, CommandResult(1, stderr="postgres sudo unavailable")),
+        (16, CommandResult(2, stderr="psql connection unavailable")),
+    ],
+)
+def test_inability_to_inspect_present_postgresql_refuses_preflight(
+    index: int, result: CommandResult
+) -> None:
+    responses = fact_responses(postgres=True)
+    responses[index] = result
+    remote = ScriptedRemote.from_responses(responses)
+
+    with pytest.raises(OpsError) as raised:
+        validate_supported_host(remote, config(), resolver=direct_dns)
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+
+
+def test_preflight_requests_integer_memory_and_nearest_existing_ancestor_capacity() -> None:
+    nested_config = EnvironmentConfig.model_validate(
+        valid_environment(
+            managed_root="/srv/taskman/absent/managed",
+            release_root="/srv/taskman/absent/managed/releases",
+            deployment_root="/srv/taskman/absent/managed/deployments",
+            backup_root="/var/backups/taskman/absent/backups",
+        )
+    )
+    remote = ScriptedRemote.from_responses(fact_responses())
+
+    validate_supported_host(remote, nested_config, resolver=direct_dns)
+
+    memory_command, _kwargs = remote.calls[4]
+    managed_disk_command, _kwargs = remote.calls[5]
+    backup_disk_command, _kwargs = remote.calls[6]
     assert memory_command == (
         "sh",
         "-c",
         "awk '/MemTotal:/{printf \"%.0f\\n\", $2 * 1024; exit}' /proc/meminfo",
     )
-    assert managed_disk_command == ("df", "-B1", "--output=avail", "/opt")
-    assert backup_disk_command == ("df", "-B1", "--output=avail", "/var/backups")
+    assert managed_disk_command == (
+        "sh",
+        "-c",
+        'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; [ "$parent" != "$path" ] || exit 1; path=$parent; done; df -B1 --output=avail "$path"',
+        "taskman-capacity",
+        "/srv/taskman/absent/managed",
+    )
+    assert backup_disk_command == (
+        "sh",
+        "-c",
+        'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; [ "$parent" != "$path" ] || exit 1; path=$parent; done; df -B1 --output=avail "$path"',
+        "taskman-capacity",
+        "/var/backups/taskman/absent/backups",
+    )
 
 
 def test_direct_public_dns_must_include_only_the_configured_vps_address() -> None:
@@ -178,11 +268,11 @@ def test_direct_public_dns_must_include_only_the_configured_vps_address() -> Non
 @pytest.mark.parametrize(
     ("index", "result"),
     [
-        (9, CommandResult(0, "LISTEN 0 4096 *:4000 0.0.0.0:*\n")),
-        (10, CommandResult(0, "/opt/taskman\n")),
-        (11, CommandResult(0, "taskman.service enabled\n")),
+        (8, CommandResult(0, "LISTEN 0 4096 *:4000 0.0.0.0:*\n")),
+        (9, CommandResult(0, "/opt/taskman\n")),
+        (10, CommandResult(0, "taskman.service enabled\n")),
+        (11, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
         (12, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
-        (13, CommandResult(0, "taskman_prod\n")),
     ],
 )
 def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_refusal(

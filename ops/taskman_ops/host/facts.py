@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import ipaddress
 import socket
 from pathlib import PurePosixPath
@@ -21,6 +22,19 @@ MINIMUM_DISK_BYTES = 10 * 1024**3
 
 _SYSTEMD_UNITS = ("taskman.service", "taskman-backup.service", "taskman-backup.timer")
 _ACCOUNT_NAME = "taskman"
+_CAPACITY_SCRIPT = (
+    'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
+    '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
+    'df -B1 --output=avail "$path"'
+)
+
+
+class DiscoveryState(str, Enum):
+    """Whether a conflict probe is clean, detects state, or cannot inspect."""
+
+    CLEAN = "clean"
+    DETECTED = "detected"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -40,7 +54,8 @@ class HostFacts:
     architecture: str
     pid1: str
     sudo_available: bool
-    postgres_sudo_available: bool
+    postgres_available: bool
+    postgres_sudo_available: bool | None
     active_ssh_port: int | None
     memory_bytes: int
     available_disk_bytes: int
@@ -75,12 +90,11 @@ def collect_host_facts(
     architecture = remote.run(("uname", "-m"))
     pid1 = remote.run(("cat", "/proc/1/comm"))
     sudo = remote.run(("sudo", "-n", "true"))
-    postgres_sudo = remote.run(("sudo", "-n", "-u", "postgres", "true"))
     memory = remote.run(
         ("sh", "-c", "awk '/MemTotal:/{printf \"%.0f\\n\", $2 * 1024; exit}' /proc/meminfo")
     )
-    disk = remote.run(("df", "-B1", "--output=avail", str(config.managed_root.parent)))
-    backup_disk = remote.run(("df", "-B1", "--output=avail", str(config.backup_root.parent)))
+    disk = _capacity(remote, config.managed_root)
+    backup_disk = _capacity(remote, config.backup_root)
     active_ssh = remote.run(("sh", "-c", "printf '%s\\n' \"${SSH_CONNECTION##* }\""))
     listeners = remote.run(("ss", "-H", "-ltn"))
     existing_paths = remote.run(
@@ -93,33 +107,81 @@ def collect_host_facts(
         )
     )
     units = remote.run(("systemctl", "list-unit-files", "--no-legend", "--no-pager", *_SYSTEMD_UNITS))
-    accounts = remote.run(
-        ("sh", "-c", "getent passwd taskman; getent group taskman", "taskman-host-facts")
+    account = remote.run(("getent", "passwd", _ACCOUNT_NAME))
+    account_group = remote.run(("getent", "group", _ACCOUNT_NAME))
+    postgres_account = remote.run(("getent", "passwd", "postgres"))
+    postgres_client = remote.run(("sh", "-c", "command -v psql"))
+
+    account_states = (
+        _getent_state(account),
+        _getent_state(account_group),
     )
-    databases = remote.run(
-        (
-            "sh",
-            "-c",
-            "sudo -n -u postgres psql -Atq -c 'SELECT datname FROM pg_database'",
-            "taskman-host-facts",
+    postgres_account_state = _getent_state(postgres_account)
+    postgres_client_state = _command_state(postgres_client)
+    postgres_available = (
+        postgres_account_state is DiscoveryState.DETECTED
+        and postgres_client_state is DiscoveryState.DETECTED
+    )
+    postgres_partially_present = (
+        postgres_account_state is DiscoveryState.DETECTED
+        or postgres_client_state is DiscoveryState.DETECTED
+    ) and not postgres_available
+
+    postgres_sudo: CommandResult | None = None
+    databases: CommandResult | None = None
+    if postgres_available:
+        postgres_sudo = remote.run(("sudo", "-n", "-u", "postgres", "true"))
+        databases = remote.run(
+            (
+                "sh",
+                "-c",
+                "sudo -n -u postgres psql -Atq -c 'SELECT datname FROM pg_database'",
+                "taskman-host-facts",
+            )
         )
+
+    found_paths = _existing_paths(_stdout(existing_paths), paths)
+    found_units = _existing_units(_stdout(units))
+    found_accounts = (_ACCOUNT_NAME,) if DiscoveryState.DETECTED in account_states else ()
+    found_databases = _existing_databases(
+        _stdout(databases) if databases is not None else "", config.database_name
+    )
+    conflict_states = (
+        _output_state(existing_paths, detected=bool(found_paths)),
+        _output_state(units, detected=bool(found_units)),
+        _combine_states(account_states),
+        _output_state(databases, detected=bool(found_databases))
+        if databases is not None
+        else DiscoveryState.CLEAN,
     )
     required_results = (
         ("operating-system", os_release),
         ("architecture", architecture),
         ("PID 1", pid1),
         ("administrator sudo", sudo),
-        ("postgres sudo", postgres_sudo),
         ("memory", memory),
         ("managed-root disk", disk),
         ("backup-root disk", backup_disk),
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
-        ("managed paths", existing_paths),
-        ("managed units", units),
-        ("managed accounts", accounts),
-        ("managed databases", databases),
     )
+    failed_checks = [name for name, result in required_results if not result.succeeded]
+    failed_checks.extend(
+        name
+        for name, state in (
+            ("managed paths", conflict_states[0]),
+            ("managed units", conflict_states[1]),
+            ("managed accounts", conflict_states[2]),
+            ("PostgreSQL account", postgres_account_state),
+            ("PostgreSQL client", postgres_client_state),
+            ("managed databases", conflict_states[3]),
+        )
+        if state is DiscoveryState.UNAVAILABLE
+    )
+    if postgres_partially_present:
+        failed_checks.append("incomplete PostgreSQL discovery")
+    if postgres_sudo is not None and not postgres_sudo.succeeded:
+        failed_checks.append("postgres sudo")
 
     os_id, ubuntu_release = _os_release(os_release)
     resolve = resolver or _resolve_public_dns
@@ -136,18 +198,19 @@ def collect_host_facts(
         architecture=_normalise_architecture(_stdout(architecture)),
         pid1=_stdout(pid1).strip().lower(),
         sudo_available=sudo.succeeded,
-        postgres_sudo_available=postgres_sudo.succeeded,
+        postgres_available=postgres_available,
+        postgres_sudo_available=postgres_sudo.succeeded if postgres_sudo is not None else None,
         active_ssh_port=_port(_stdout(active_ssh)),
         memory_bytes=_byte_count(_stdout(memory)),
         available_disk_bytes=_disk_bytes(_stdout(disk)),
         backup_available_disk_bytes=_disk_bytes(_stdout(backup_disk)),
         dns_addresses=dns_addresses,
         listeners=_listeners(_stdout(listeners)),
-        existing_paths=_existing_paths(_stdout(existing_paths), paths),
-        existing_units=_existing_units(_stdout(units)),
-        existing_accounts=_existing_accounts(_stdout(accounts)),
-        existing_databases=_existing_databases(_stdout(databases), config.database_name),
-        failed_checks=tuple(name for name, result in required_results if not result.succeeded),
+        existing_paths=found_paths,
+        existing_units=found_units,
+        existing_accounts=found_accounts,
+        existing_databases=found_databases,
+        failed_checks=tuple(failed_checks),
     )
 
 
@@ -180,7 +243,7 @@ def validate_supported_host(
         raise _unsupported("public DNS does not resolve directly to the configured VPS address")
     if not facts.sudo_available:
         raise _preflight("configured administrator cannot use passwordless sudo")
-    if not facts.postgres_sudo_available:
+    if facts.postgres_sudo_available is False:
         raise _preflight("configured administrator cannot inspect PostgreSQL as postgres")
     if facts.active_ssh_port != config.ssh_port:
         raise _preflight("active SSH connection port does not match configuration")
@@ -200,6 +263,12 @@ def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
         PurePosixPath("/etc/systemd/system/taskman.service"),
         PurePosixPath("/etc/caddy/Caddyfile"),
     )
+
+
+def _capacity(remote: Remote, root: PurePosixPath) -> CommandResult:
+    """Read available bytes from the nearest existing ancestor without mutation."""
+
+    return remote.run(("sh", "-c", _CAPACITY_SCRIPT, "taskman-capacity", str(root)))
 
 
 def _os_release(result: CommandResult) -> tuple[str, str]:
@@ -269,8 +338,36 @@ def _existing_units(value: str) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def _existing_accounts(value: str) -> tuple[str, ...]:
-    return (_ACCOUNT_NAME,) if any(line.startswith(f"{_ACCOUNT_NAME}:") for line in value.splitlines()) else ()
+def _getent_state(result: CommandResult) -> DiscoveryState:
+    return _presence_state(result, absence_returncode=2)
+
+
+def _command_state(result: CommandResult) -> DiscoveryState:
+    return _presence_state(result, absence_returncode=1)
+
+
+def _presence_state(result: CommandResult, *, absence_returncode: int) -> DiscoveryState:
+    if result.succeeded:
+        return DiscoveryState.DETECTED
+    if result.returncode == absence_returncode:
+        return DiscoveryState.CLEAN
+    return DiscoveryState.UNAVAILABLE
+
+
+def _output_state(result: CommandResult | None, *, detected: bool) -> DiscoveryState:
+    if result is None:
+        return DiscoveryState.CLEAN
+    if not result.succeeded:
+        return DiscoveryState.UNAVAILABLE
+    return DiscoveryState.DETECTED if detected else DiscoveryState.CLEAN
+
+
+def _combine_states(states: tuple[DiscoveryState, ...]) -> DiscoveryState:
+    if DiscoveryState.UNAVAILABLE in states:
+        return DiscoveryState.UNAVAILABLE
+    if DiscoveryState.DETECTED in states:
+        return DiscoveryState.DETECTED
+    return DiscoveryState.CLEAN
 
 
 def _existing_databases(value: str, database_name: str) -> tuple[str, ...]:
