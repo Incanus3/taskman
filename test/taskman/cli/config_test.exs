@@ -6,6 +6,7 @@ defmodule Taskman.CLI.ConfigTest do
   alias Taskman.CLI.Config
 
   @api_key "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
+  @coordination_timeout 5_000
 
   @tag :tmp_dir
   test "resolves each setting independently with flag, environment, file, and default precedence",
@@ -150,13 +151,13 @@ defmodule Taskman.CLI.ConfigTest do
           config_root: root,
           before_write: fn _path ->
             send(parent, :writer_holds_lock)
-            assert_receive :finish_held_writer
+            assert_receive :finish_held_writer, @coordination_timeout
             :ok
           end
         )
       end)
 
-    assert_receive :writer_holds_lock
+    assert_receive :writer_holds_lock, @coordination_timeout
 
     # A writer can remain live while its lock looks arbitrarily old (for example
     # after a clock adjustment).  Age is never evidence that it is safe to take.
@@ -268,19 +269,19 @@ defmodule Taskman.CLI.ConfigTest do
                        config_root: root,
                        before_write: fn _path ->
                          send(parent, :replacement_writer_holds_lock)
-                         assert_receive :finish_replacement_writer
+                         assert_receive :finish_replacement_writer, @coordination_timeout
                          :ok
                        end
                      )
                    end)
 
                  send(parent, {:replacement_writer, replacement_task})
-                 assert_receive :replacement_writer_holds_lock
+                 assert_receive :replacement_writer_holds_lock, @coordination_timeout
                  :ok
                end
              )
 
-    assert_receive {:replacement_writer, replacement_task}
+    assert_receive {:replacement_writer, replacement_task}, @coordination_timeout
 
     assert {:error, :invalid_configuration, message} =
              Config.set_url("https://third-writer.example",
@@ -329,13 +330,13 @@ defmodule Taskman.CLI.ConfigTest do
           config_root: root,
           before_write: fn _path ->
             send(parent, :url_write_has_read_config)
-            assert_receive :finish_url_write
+            assert_receive :finish_url_write, @coordination_timeout
             :ok
           end
         )
       end)
 
-    assert_receive :url_write_has_read_config
+    assert_receive :url_write_has_read_config, @coordination_timeout
 
     key_task = Task.async(fn -> Config.set_key(@api_key, config_root: root) end)
     send(url_task.pid, :finish_url_write)

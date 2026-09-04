@@ -10,6 +10,21 @@ defmodule Taskman.RuntimeConfigTest do
     MAIL_FROM
   )
 
+  test "test database pool is bounded and independently configurable" do
+    with_environment(%{"TEST_DATABASE_POOL_SIZE" => nil}, fn ->
+      test_config = Config.Reader.read!("config/test.exs", env: :test, imports: :disabled)
+
+      assert get_in(test_config, [:taskman, Taskman.Repo])[:pool_size] ==
+               min(System.schedulers_online() * 2, 16)
+    end)
+
+    with_environment(%{"TEST_DATABASE_POOL_SIZE" => "7"}, fn ->
+      test_config = Config.Reader.read!("config/test.exs", env: :test, imports: :disabled)
+
+      assert get_in(test_config, [:taskman, Taskman.Repo])[:pool_size] == 7
+    end)
+  end
+
   test "production names every missing required environment variable without its value" do
     for name <- @required_environment do
       values = production_environment(%{name => nil})
