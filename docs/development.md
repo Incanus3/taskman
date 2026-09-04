@@ -29,6 +29,12 @@ useful seam before adding the feature that needs it.
 
 ## Application boundaries
 
+Repository code has no external code consumers, including the operations
+package. Server-side executables built and deployed by operations remain
+in-scope consumers and must be verified when shared code changes. Unused
+internal Python names do not require compatibility shims; this does not waive
+documented CLI, protocol, persisted-data, or deployment contracts.
+
 Modules in `TaskmanWeb` interact with persistence through public context APIs. They must not call
 `Taskman.Repo` directly or construct Ecto queries. Context and core-library modules own persistence
 coordination and keep schemas, changesets, queries, and Repo calls out of the web layer.
@@ -120,3 +126,35 @@ For hosted operation, preserve the public boundary: Caddy owns public HTTPS and 
 loopback. Forwarded client details are trusted only from that immediate loopback proxy. Keep
 runtime secrets outside version control, use versioned immutable releases selected by a `current`
 symlink, and treat migration compatibility and backup/restore evidence as release requirements.
+
+### Operations verification
+
+Run operations-package checks from the repository root:
+
+```sh
+uv sync --locked --project ops
+uv run --project ops python -m compileall -q ops/taskman_ops ops/tests
+uv run --project ops pytest ops/tests
+bash -n ops/taskman ops/caddy/render-caddyfile
+mix precommit
+```
+
+For changed command or documentation surfaces, also exercise the relevant
+`./ops/taskman COMMAND --help` output, check local Markdown links and whitespace, and check that
+current product surfaces contain no leaked planning identifiers. Native systemd asset tests must inspect both
+exit status and diagnostics: a successful exit alone does not prove every directive was accepted.
+
+For build or packaging changes, run `./ops/taskman build` from a clean, identified checkout and
+verify the resulting archive, manifest, checksum, pinned builder identity, and exact-input cache
+reuse without connecting to a host. The [runbook](deployment.md) owns artifact handling and the
+separately authorized disposable-host acceptance gates. Container and local test results do not
+establish real systemd, firewall, ACME, email, reboot, or complete restore acceptance.
+
+Architecture checks run within the operations pytest suite. Cross-suite test support lives in
+focused modules under `ops/tests/support/`; domain-specific support stays beside its consumers.
+Execute generated Python zipapps with `-I -S` in isolation tests: `-I` alone still loads site
+packages and can mask missing archive members through an editable workstation installation.
+Import shared fixtures explicitly to preserve their intended scope rather than enabling them
+globally. Treat code-size counts as diagnostic evidence, not a size target;
+the [deployment design](specs/2026-09-09-dedicated-host-deployment-design.md#simplicity-and-maintenance)
+explains why quality, safety, and coherent responsibility take precedence over size.

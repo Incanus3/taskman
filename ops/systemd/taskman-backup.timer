@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Taskman validated local PostgreSQL backups
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+AccuracySec=1min
+Unit=taskman-backup.service
+
+[Install]
+WantedBy=timers.target
