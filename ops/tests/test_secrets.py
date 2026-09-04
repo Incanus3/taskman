@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 from pathlib import Path
 import subprocess
 
@@ -55,6 +56,22 @@ def test_secret_config_requires_all_values_and_hides_them_from_repr_and_mappings
         iter(secrets)
     with pytest.raises(TypeError):
         secrets.model_dump()
+
+
+def test_secret_equality_is_meaningful_and_copy_surfaces_are_disabled() -> None:
+    values = valid_secrets()
+    secrets = SecretConfig.model_validate(values)
+    equivalent = SecretConfig.model_validate(values)
+    distinct = SecretConfig.model_validate({**values, "resend_api_key": "other-resend-key"})
+
+    assert secrets == equivalent
+    assert secrets != distinct
+    with pytest.raises(TypeError):
+        secrets.model_copy()
+    with pytest.raises(TypeError):
+        copy.copy(secrets)
+    with pytest.raises(TypeError):
+        copy.deepcopy(secrets)
 
 
 @pytest.mark.parametrize(

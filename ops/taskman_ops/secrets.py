@@ -149,6 +149,28 @@ class SecretConfig(BaseModel):
     def __str__(self) -> str:
         return "SecretConfig(<protected values>)"
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SecretConfig):
+            return NotImplemented
+        return all(getattr(self, field_name) == getattr(other, field_name) for field_name in self._secret_fields)
+
+    def model_copy(self, *args: Any, **kwargs: Any) -> SecretConfig:
+        """Reject Pydantic's value-copy operation at the secret boundary.
+
+        ``__dict__`` is intentionally redacted for generic introspection, so
+        inheriting ``BaseModel.model_copy`` would either copy markers or need
+        a second plaintext representation.  Secret values are therefore
+        intentionally non-copyable.
+        """
+
+        raise TypeError("SecretConfig copying is disabled")
+
+    def __copy__(self) -> SecretConfig:
+        raise TypeError("SecretConfig copying is disabled")
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> SecretConfig:
+        raise TypeError("SecretConfig copying is disabled")
+
     def __iter__(self):
         # BaseModel's normal iterator is a mapping-like value exposure.  A
         # caller must use the named attributes explicitly when installing a
