@@ -359,7 +359,7 @@ def render_human(result: WorkflowResult | Mapping[str, Any]) -> str:
     return "\n".join(redactor_text(line) for line in lines)
 
 
-def render_table(rows: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> str:
+def render_table(rows: Mapping[str, Any] | Sequence[Any]) -> str:
     """Render arbitrary report rows through the same redaction boundary.
 
     This intentionally stays a plain, dependency-free table: later discovery
@@ -371,7 +371,17 @@ def render_table(rows: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> str:
         rows = [rows]
     # Redact each row before collecting headers so a secret used as a key is
     # handled consistently with a secret used as a value.
-    rows_list = [dict(redact(row)) for row in rows]
+    rows_list = []
+    for row in rows:
+        safe_row = redact(row)
+        if isinstance(safe_row, Mapping):
+            rows_list.append(dict(safe_row))
+        elif is_dataclass(safe_row) and not isinstance(safe_row, type):
+            rows_list.append({field.name: getattr(safe_row, field.name) for field in fields(safe_row)})
+        elif isinstance(safe_row, BaseException):
+            rows_list.append({"error": str(safe_row)})
+        else:
+            rows_list.append({"value": safe_row})
     if not rows_list:
         return ""
     headers: list[str] = []

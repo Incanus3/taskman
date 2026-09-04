@@ -207,6 +207,11 @@ def main(
     runner = dispatch_fn or dispatch
     try:
         result = _coerce_result(invocation, runner(invocation))
+        # Result shape validation happens while rendering (including mapping
+        # required-field checks). Keep both operations in this protected
+        # boundary so malformed reports and renderer failures map to the same
+        # secret-free stable error instead of escaping as tracebacks.
+        text = render_json(result) if invocation.json else render_human(result)
     except OpsError as error:
         text = render_error(
             error,
@@ -236,7 +241,6 @@ def main(
         print(text, file=error_stream)
         return int(error.status)
 
-    text = render_json(result) if invocation.json else render_human(result)
     print(text, file=output_stream)
     return int(ExitStatus.OK)
 

@@ -14,6 +14,7 @@ from taskman_ops.output import (
     render_error,
     render_human,
     render_json,
+    render_table,
 )
 
 
@@ -113,3 +114,12 @@ def test_human_result_and_error_are_redacted() -> None:
     assert canary not in rendered_error
     assert "[REDACTED]" in human
     assert "[REDACTED]" in rendered_error
+
+
+def test_human_table_redacts_dataclass_rows() -> None:
+    canary = "taskman-table-canary-4f12a8"
+    register_secret(canary)
+    table = render_table([NestedFacts(token=canary, labels=(f"label-{canary}",))])
+
+    assert canary not in table
+    assert "[REDACTED]" in table
