@@ -123,7 +123,11 @@ custom classes must fully style the input
           assign(socket, :val, val)
         end
 
-- **Never** nest multiple modules in the same file as it can cause cyclic dependencies and compilation errors
+- Keep one module per file by default to preserve predictable compilation, navigation, and source
+  ownership. A workflow module may contain a nested `State` module when that state is private to
+  the containing workflow, remains small, and is limited to data plus pure transformations. Extract
+  it to its own file if it gains independent consumers, persistence or external coordination, or
+  substantial behavior.
 - **Never** use map access syntax (`changeset[:field]`) on structs as they do not implement the Access behaviour by default. For regular structs, you **must** access the fields directly, such as `my_struct.field` or use higher level APIs that are available on the struct if they exist, `Ecto.Changeset.get_field/2` for changesets
 - Elixir's standard library has everything necessary for date and time manipulation. Familiarize yourself with the common `Time`, `Date`, `DateTime`, and `Calendar` interfaces by accessing their documentation as necessary. **Never** install additional dependencies unless asked or for date/time parsing (which you can use the `date_time_parser` package)
 - Don't use `String.to_atom/1` on user input (memory leak risk)
