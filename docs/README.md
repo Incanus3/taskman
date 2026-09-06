@@ -40,11 +40,13 @@
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [Dedicated-host deployment automation](specs/2026-09-04-dedicated-host-deployment-automation-design.md)
+- [Deployment controller simplification](specs/2026-09-06-deployment-controller-simplification-design.md)
 
 ## Active implementation plans
 
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
 - [Dedicated-host deployment automation](plans/2026-09-04-dedicated-host-deployment-automation.md)
+- [Deployment controller simplification](plans/2026-09-06-deployment-controller-simplification.md)
 
 ## Development
 

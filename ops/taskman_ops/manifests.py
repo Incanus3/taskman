@@ -21,7 +21,7 @@ from .releases.identifiers import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION = "taskman"
 TARGET_OS = "ubuntu26.04"
 ARCHITECTURE = "amd64"
@@ -30,6 +30,8 @@ ELIXIR_VERSION = "1.18.3"
 NODE_VERSION = "22.22.1"
 HEX_VERSION = "2.5.1"
 REBAR3_VERSION = "3.24.0"
+BUILDER_BASE_TAG = "ubuntu:resolute-20260811.1"
+BUILDER_BASE_DIGEST = "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b"
 TOP_LEVEL = "taskman"
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
@@ -50,6 +52,8 @@ _MANIFEST_FIELDS = frozenset(
         "node_version",
         "hex_version",
         "rebar3_version",
+        "builder_base_tag",
+        "builder_base_digest",
         "migrations",
         "top_level",
     }
@@ -145,6 +149,8 @@ class ArtifactManifest:
     otp_version: str
     elixir_version: str
     node_version: str
+    builder_base_tag: str
+    builder_base_digest: str
     migrations: tuple[MigrationFingerprint, ...]
     top_level: str
     hex_version: str = HEX_VERSION
@@ -171,8 +177,10 @@ class ArtifactManifest:
             or mapping["node_version"] != NODE_VERSION
             or mapping["hex_version"] != HEX_VERSION
             or mapping["rebar3_version"] != REBAR3_VERSION
+            or mapping["builder_base_tag"] != BUILDER_BASE_TAG
+            or mapping["builder_base_digest"] != BUILDER_BASE_DIGEST
         ):
-            raise ValueError("unsupported artifact toolchain")
+            raise ValueError("unsupported artifact toolchain or builder base")
         if mapping["top_level"] != TOP_LEVEL:
             raise ValueError("unexpected artifact top-level")
         migrations_value = mapping["migrations"]
@@ -195,6 +203,8 @@ class ArtifactManifest:
             otp_version=OTP_VERSION,
             elixir_version=ELIXIR_VERSION,
             node_version=NODE_VERSION,
+            builder_base_tag=BUILDER_BASE_TAG,
+            builder_base_digest=BUILDER_BASE_DIGEST,
             migrations=migrations,
             top_level=TOP_LEVEL,
             hex_version=HEX_VERSION,
@@ -214,6 +224,8 @@ class ArtifactManifest:
             "otp_version": self.otp_version,
             "elixir_version": self.elixir_version,
             "node_version": self.node_version,
+            "builder_base_tag": self.builder_base_tag,
+            "builder_base_digest": self.builder_base_digest,
             "hex_version": self.hex_version,
             "rebar3_version": self.rebar3_version,
             "migrations": [fingerprint.to_mapping() for fingerprint in self.migrations],
@@ -411,6 +423,8 @@ __all__ = [
     "APPLICATION",
     "ARCHITECTURE",
     "ArtifactManifest",
+    "BUILDER_BASE_DIGEST",
+    "BUILDER_BASE_TAG",
     "ELIXIR_VERSION",
     "HEX_VERSION",
     "MigrationFingerprint",

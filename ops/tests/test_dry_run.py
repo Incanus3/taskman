@@ -2,21 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from taskman_ops.cli import Invocation, dispatch, parse_invocation
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.manifests import ArtifactManifest, VerifiedArtifact
+from taskman_ops.manifests import ArtifactManifest, BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, VerifiedArtifact
 from taskman_ops.output import WorkflowResult
-from taskman_ops.remote import CommandResult
-from taskman_ops.releases.records import (
-    ActivationRecord,
-    BackupRecord,
-    LifecycleRecords,
-    ReleaseRecord,
-)
 from taskman_ops.workflows import DiscoveryResult
 from taskman_ops.workflows.cleanup import cleanup
 from taskman_ops.workflows.provision import ProvisionCapabilities, provision
@@ -49,6 +43,7 @@ def _valid_operational_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             f"taskman_ops.workflows.{module}.validate_operational_preflight",
             lambda *_args: object(),
+            raising=False,
         )
 READ_ONLY_COMMANDS = ("verify", "releases", "backups")
 
@@ -62,7 +57,7 @@ def _artifact(tmp_path: Path, *, release_id: str = CANDIDATE) -> VerifiedArtifac
     archive.write_bytes(b"release")
     revision = ("b" if release_id == CANDIDATE else "a") * 40
     manifest = ArtifactManifest(
-        1,
+        2,
         "taskman",
         "0.2.0",
         revision,
@@ -73,6 +68,8 @@ def _artifact(tmp_path: Path, *, release_id: str = CANDIDATE) -> VerifiedArtifac
         "27.3.4.6",
         "1.18.3",
         "22.22.1",
+        BUILDER_BASE_TAG,
+        BUILDER_BASE_DIGEST,
         (),
         "taskman",
     )
@@ -88,7 +85,7 @@ def _artifact(tmp_path: Path, *, release_id: str = CANDIDATE) -> VerifiedArtifac
 def _manifest(release_id: str) -> dict[str, object]:
     revision = ("b" if release_id == CANDIDATE else "a") * 40
     return ArtifactManifest(
-        1,
+        2,
         "taskman",
         "0.2.0",
         revision,
@@ -99,6 +96,8 @@ def _manifest(release_id: str) -> dict[str, object]:
         "27.3.4.6",
         "1.18.3",
         "22.22.1",
+        BUILDER_BASE_TAG,
+        BUILDER_BASE_DIGEST,
         (),
         "taskman",
     ).to_mapping()
@@ -166,8 +165,7 @@ def test_explicit_backup_receives_dry_run_after_environment_and_ssh_setup(
 
     assert result is expected
     assert seen[0][0] is remote
-    assert seen[0][1].config is config
-    assert seen[0][1].store.remote is remote
+    assert seen[0][1] is config
     assert seen[0][2] is True
 
 
@@ -178,7 +176,7 @@ def test_read_only_commands_remain_the_same_with_dry_run(
 ) -> None:
     config = _config()
     remote = object()
-    calls: list[tuple[str, object]] = []
+    calls: list[tuple[str, tuple[object, EnvironmentConfig]]] = []
     monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: config)
     monkeypatch.setattr("taskman_ops.remote.connect", lambda _config: remote)
 
@@ -194,7 +192,9 @@ def test_read_only_commands_remain_the_same_with_dry_run(
         result = DiscoveryResult(({"identifier": "one"},), ("read-only warning",))
         monkeypatch.setattr(
             f"taskman_ops.workflows.{command}.list_{command}",
-            lambda store: calls.append((command, store)) or result,
+            lambda actual_remote, actual_config: (
+                calls.append((command, (actual_remote, actual_config))) or result
+            ),
         )
 
     normal = dispatch(Invocation(command, environment="production"))
@@ -206,7 +206,7 @@ def test_read_only_commands_remain_the_same_with_dry_run(
     assert dry.changed is False
     assert normal.stage == dry.stage
     assert normal.facts == dry.facts
-    assert len(calls) == 2
+    assert calls == [(command, (remote, config)), (command, (remote, config))]
 
 
 def test_build_dry_run_may_create_the_same_local_artifact(
@@ -249,29 +249,21 @@ def test_provision_dry_run_performs_local_checks_and_remote_discovery_without_co
 
     capabilities = ProvisionCapabilities(
         load_environment=lambda _name: events.append("config") or _config(),
-        decrypt_secrets=lambda _name: events.append("secrets") or object(),
+        decrypt_secrets=lambda _name: events.append("secrets") or SimpleNamespace(database_password="database-password"),
         resolve_artifact=lambda _invocation: events.append("artifact") or _artifact(tmp_path),
         render_runtime_environment=lambda *_args: events.append("runtime") or b"runtime",
         render_pgpass=lambda *_args: events.append("pgpass") or b"pgpass",
+        render_role_password_input=lambda *_args: events.append("role-password") or b"role-password",
         render_plan=lambda *_args: events.append("plan") or {"environment": "production"},
         present_plan=lambda _plan: events.append("present"),
         confirm=lambda _plan: pytest.fail("provision dry run requested confirmation"),
         connect=lambda _config: events.append("ssh") or remote,
         discover=lambda *_args, **_kwargs: events.append("facts") or object(),
-        baseline=mutation("baseline"),
-        firewall=mutation("firewall"),
-        postgresql_plan=lambda _config: events.append("postgresql-plan") or object(),
-        postgresql_native=mutation("postgresql"),
-        database=mutation("database"),
-        install_runtime_environment=mutation("runtime environment"),
-        systemd_plan=lambda _config: events.append("systemd-plan") or object(),
-        systemd=mutation("systemd"),
-        caddy_plan=lambda _config: events.append("caddy-plan")
-        or Caddy("taskman.acme.tld {\n  reverse_proxy 127.0.0.1:4000\n}\n"),
-        caddy=mutation("caddy"),
-        release_transaction=mutation("release"),
-        verify=mutation("verification"),
-    )
+        provisioning=mutation("programmatic pyinfra provisioning"),
+            caddy_plan=lambda _config: events.append("caddy-plan")
+            or Caddy("taskman.acme.tld {\n  reverse_proxy 127.0.0.1:4000\n}\n"),
+            release_transaction=mutation("release"),
+        )
 
     result = provision(
         Invocation("provision", environment="production", dry_run=True),
@@ -286,8 +278,7 @@ def test_provision_dry_run_performs_local_checks_and_remote_discovery_without_co
         "artifact",
         "runtime",
         "pgpass",
-        "postgresql-plan",
-        "systemd-plan",
+        "role-password",
         "caddy-plan",
         "plan",
         "present",
@@ -300,209 +291,93 @@ def test_provision_dry_run_performs_local_checks_and_remote_discovery_without_co
 def test_restore_dry_run_resolves_exact_remote_authority_without_confirmation_or_database_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from taskman_ops.workflows.operational_preflight import (
-        validate_operational_preflight as validate_real_preflight,
-    )
+    from taskman_ops.host_protocol import HostResult
 
-    events: list[str] = []
-    records = LifecycleRecords(
-        releases=(
-            ReleaseRecord(1, CURRENT, "a" * 64, FIRST, FIRST, None, None, "no-change"),
-            ReleaseRecord(
-                1,
-                CANDIDATE,
-                "b" * 64,
-                SECOND,
-                SECOND,
-                CURRENT,
-                None,
-                "no-change",
-            ),
-        ),
-        activations=(
-            ActivationRecord(
-                1,
-                "activation-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                None,
-                CURRENT,
-                FIRST,
-                None,
-                "no-change",
-            ),
-            ActivationRecord(
-                1,
-                "activation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                CURRENT,
-                CANDIDATE,
-                SECOND,
-                None,
-                "no-change",
-            ),
-        ),
-        backups=(
-            BackupRecord(
-                1,
-                BACKUP,
-                FIRST,
-                2048,
-                1_048_576,
-                "taskman_prod",
-                CURRENT,
-                CANDIDATE,
-                "pre-deploy",
-                True,
-                PurePosixPath("/var/backups/taskman/backup-a.dump"),
-            ),
-        ),
-        adoptions=(),
-        warnings=(),
-    )
-    snapshot = {
-        "manifests": {
-            CURRENT: _manifest(CURRENT),
-            CANDIDATE: _manifest(CANDIDATE),
+    lifecycle = {
+        "records": {
+            "releases": (), "adoptions": (),
+            "activations": ({"candidate_release_id": CANDIDATE},),
+            "backups": ({
+                "backup_id": BACKUP,
+                "current_release_id": CURRENT,
+            },),
         },
-        "dump_states": {"/var/backups/taskman/backup-a.dump": "present"},
+        "manifests": {
+            CURRENT: {"migrations": ()},
+        },
     }
-
-    class Remote:
-        def run(self, argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
-            events.append(argv[3])
-            return CommandResult(0)
-
-    remote = Remote()
-
-    class Store:
-        def __init__(self) -> None:
-            self.remote = remote
-            self.release_root = PurePosixPath("/opt/taskman/releases")
-            self.backup_root = PurePosixPath("/var/backups/taskman")
-
-        def read(self, **_kwargs: object) -> tuple[LifecycleRecords, dict[str, object]]:
-            events.append("snapshot")
-            return records, snapshot
-
+    requests: list[object] = []
     monkeypatch.setattr(
-        "taskman_ops.workflows.restore.run_locked_restore",
-        lambda *_args, **_kwargs: pytest.fail("restore dry run changed the database"),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.restore.validate_operational_preflight",
-        lambda actual_remote, actual_config: validate_real_preflight(
-            actual_remote,
-            actual_config,
-            host_validator=lambda *_args: object(),
-        ),
+        "taskman_ops.workflows.restore.discover_lifecycle",
+        lambda *_args: (lifecycle, ()),
     )
 
+    def inspect(_remote: object, request: object) -> HostResult:
+        requests.append(request)
+        return HostResult(
+            1, "restore", request.operation_id, "succeeded",
+            "restore-inspected", (),
+            {
+                "backup_id": BACKUP,
+                "dump_path": f"/var/backups/taskman/{BACKUP}.dump",
+                "dump_size_bytes": 2048,
+                "source_database_size_bytes": 1_048_576,
+                "current_release_id": CANDIDATE,
+                "intended_release_id": CURRENT,
+                "dump_validated": True,
+            },
+            {}, {"format": "custom", "validated": True}, (), (), (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", inspect)
     result = restore(
-        remote,
+        object(),
         _config(),
         BACKUP,
-        lifecycle_store=Store(),  # type: ignore[arg-type]
         confirm=lambda _plan: pytest.fail("restore dry run requested confirmation"),
         dry_run=True,
     )
-
     assert result.stage == "planned"
     assert result.changed is False
     assert result.facts["backup_id"] == BACKUP
-    assert events == [
-        "taskman-runtime-preflight",
-        "taskman-database-preflight",
-        "snapshot",
-        "taskman-validate-restore-dump",
-    ]
+    assert len(requests) == 1
 
 
 def test_cleanup_dry_run_discovers_exact_remote_targets_without_confirmation_or_deletion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from taskman_ops.workflows.operational_preflight import (
-        validate_operational_preflight as validate_real_preflight,
-    )
+    from taskman_ops.host_protocol import HostResult
 
-    events: list[str] = []
-
-    class Remote:
-        def run(self, argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
-            if argv[3] in {
-                "taskman-runtime-preflight",
-                "taskman-database-preflight",
-            }:
-                events.append(argv[3])
-                return CommandResult(0)
-            events.append("recovery-inventory")
-            return CommandResult(
-                0,
-                '{"schema_version":1,"retained_databases":[],"completed_staging":[]}',
-            )
-
-    remote = Remote()
-    records = LifecycleRecords(
-        releases=(
-            ReleaseRecord(
-                1,
-                CURRENT,
-                "a" * 64,
-                FIRST,
-                FIRST,
-                None,
-                None,
-                "no-change",
-            ),
-        ),
-        activations=(
-            ActivationRecord(
-                1,
-                "activation-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                None,
-                CURRENT,
-                FIRST,
-                None,
-                "no-change",
-            ),
-        ),
-        backups=(),
-        adoptions=(),
-        warnings=(),
-    )
-
-    class Store:
-        def __init__(self) -> None:
-            self.remote = remote
-
-        def read(self, **_kwargs: object) -> tuple[LifecycleRecords, dict[str, object]]:
-            events.append("snapshot")
-            return records, {"records": "validated"}
-
+    lifecycle = {
+        "records": {
+            "releases": ({"release_id": CURRENT},),
+            "activations": ({"activation_id": "activation-" + "a" * 32},),
+            "backups": (), "adoptions": (),
+        }
+    }
+    requests: list[object] = []
     monkeypatch.setattr(
-        "taskman_ops.workflows.cleanup.run_locked_cleanup",
-        lambda *_args, **_kwargs: pytest.fail("cleanup dry run deleted an artifact"),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.cleanup.validate_operational_preflight",
-        lambda actual_remote, actual_config: validate_real_preflight(
-            actual_remote,
-            actual_config,
-            host_validator=lambda *_args: object(),
-        ),
+        "taskman_ops.workflows.cleanup.discover_lifecycle",
+        lambda *_args: (lifecycle, ()),
     )
 
+    def inspect(_remote: object, request: object) -> HostResult:
+        requests.append(request)
+        return HostResult(
+            1, "cleanup", request.operation_id, "succeeded",
+            "cleanup-inspected", (),
+            {"lifecycle": request.expected_state["lifecycle"], "targets": ()},
+            {}, {}, (), (), (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.cleanup.run_request", inspect)
     result = cleanup(
-        remote,
+        object(),
         _config(),
-        lifecycle_store=Store(),  # type: ignore[arg-type]
         confirm=lambda _plan: pytest.fail("cleanup dry run requested confirmation"),
         dry_run=True,
     )
-
     assert result.stage == "planned"
     assert result.changed is False
     assert result.facts["targets"] == ()
-    assert events == [
-        "taskman-runtime-preflight",
-        "taskman-database-preflight",
-        "snapshot",
-        "recovery-inventory",
-    ]
+    assert len(requests) == 1

@@ -20,6 +20,8 @@ from .errors import ExitStatus, OpsError
 from .manifests import (
     APPLICATION,
     ARCHITECTURE,
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
     ELIXIR_VERSION,
     HEX_VERSION,
     NODE_VERSION,
@@ -412,6 +414,8 @@ def build_release(
                 "otp_version": toolchain["otp_version"],
                 "elixir_version": toolchain["elixir_version"],
                 "node_version": toolchain["node_version"],
+                "builder_base_tag": BUILDER_BASE_TAG,
+                "builder_base_digest": BUILDER_BASE_DIGEST,
                 "hex_version": toolchain["hex_version"],
                 "rebar3_version": toolchain["rebar3_version"],
                 "migrations": [fingerprint.to_mapping() for fingerprint in migration_fingerprints],

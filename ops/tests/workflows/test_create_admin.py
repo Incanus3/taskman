@@ -163,7 +163,7 @@ def test_create_admin_session_allocates_a_strict_ssh_tty_without_credential_argu
     assert list(tmp_path.iterdir()) == []
 
 
-def test_create_admin_derives_the_still_fixed_command_from_the_validated_managed_root(
+def test_create_admin_derives_the_still_fixed_command_from_the_validated_install_root(
     tmp_path: Path,
 ) -> None:
     """Configurable roots must not silently launch the default installation."""
@@ -171,9 +171,7 @@ def test_create_admin_derives_the_still_fixed_command_from_the_validated_managed
     config = EnvironmentConfig.model_validate(
         valid_environment(
             name="production",
-            managed_root="/srv/taskman",
-            release_root="/srv/taskman/artifacts",
-            deployment_root="/srv/taskman/control",
+            install_root="/srv/taskman",
             backup_root="/srv/taskman-backups",
         )
     )

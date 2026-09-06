@@ -84,6 +84,7 @@ _RESERVED_STATE_ROOTS = (
     PurePosixPath("/var/lib/taskman"),
     PurePosixPath("/var/lock/taskman"),
     PurePosixPath("/usr/local/lib/taskman"),
+    PurePosixPath("/run/taskman-ops"),
 )
 
 
@@ -281,9 +282,7 @@ class EnvironmentConfig(BaseModel):
         default=5432,
         validation_alias=AliasChoices("database_port", "postgres_port", "db_port"),
     )
-    managed_root: PurePosixPath = PurePosixPath("/opt/taskman")
-    release_root: PurePosixPath = PurePosixPath("/opt/taskman/releases")
-    deployment_root: PurePosixPath = PurePosixPath("/opt/taskman/deployments")
+    install_root: PurePosixPath = PurePosixPath("/opt/taskman")
     backup_root: PurePosixPath = PurePosixPath("/var/backups/taskman")
     backup_schedule: str = "*-*-* 02:15:00"
     backup_retention: StrictInt = 14
@@ -295,9 +294,7 @@ class EnvironmentConfig(BaseModel):
     dns_cluster_query: str | None = None
 
     _path_fields: ClassVar[tuple[str, ...]] = (
-        "managed_root",
-        "release_root",
-        "deployment_root",
+        "install_root",
         "backup_root",
     )
 
@@ -427,6 +424,16 @@ class EnvironmentConfig(BaseModel):
             raise ValueError("value must be positive")
         return value
 
+    @field_validator("readiness_timeout")
+    @classmethod
+    def validate_readiness_budget(cls, value: int) -> int:
+        # The helper has a 45-second total deadline inside the runner's
+        # 60-second transport allowance.  Reserve time for public DNS/HTTPS
+        # verification and conservative cleanup after local readiness.
+        if value > 30:
+            raise ValueError("readiness timeout must leave budget for public verification")
+        return value
+
     @model_validator(mode="after")
     def validate_cross_field_invariants(self) -> EnvironmentConfig:
         ports = {
@@ -440,25 +447,18 @@ class EnvironmentConfig(BaseModel):
         if any(port in {80, 443} for port in ports.values()):
             raise ValueError("public proxy ports are reserved")
 
-        if not self.release_root.is_relative_to(self.managed_root) or self.release_root == self.managed_root:
-            raise ValueError("release root must be below managed root")
-        if not self.deployment_root.is_relative_to(self.managed_root) or self.deployment_root == self.managed_root:
-            raise ValueError("deployment root must be below managed root")
+        release_root = self.release_root
+        deployment_root = self.deployment_root
+        current_path = self.current_link
+        if _paths_overlap(self.install_root, self.backup_root):
+            raise ValueError("install and backup roots must not overlap")
 
-        current_path = self.managed_root / "current"
-        exclusive_roots = (
-            self.release_root,
-            self.deployment_root,
-            self.backup_root,
-            current_path,
-        )
-        for index, left in enumerate(exclusive_roots):
-            if any(_paths_overlap(left, right) for right in exclusive_roots[index + 1 :]):
-                raise ValueError("release, deployment, backup, and current paths must not overlap")
-        if _paths_overlap(self.managed_root, self.backup_root):
-            raise ValueError("backup root must be outside the managed root")
+        derived_paths = (release_root, deployment_root, current_path)
+        for index, left in enumerate(derived_paths):
+            if any(_paths_overlap(left, right) for right in derived_paths[index + 1 :]):
+                raise ValueError("derived installation paths must not overlap")
 
-        configurable_paths = (self.managed_root, *exclusive_roots)
+        configurable_paths = (self.install_root, self.backup_root, *derived_paths)
         if any(
             _paths_overlap(path, reserved)
             for path in configurable_paths
@@ -524,16 +524,16 @@ class EnvironmentConfig(BaseModel):
         return self.target_os
 
     @property
-    def managed_release_root(self) -> PurePosixPath:
-        return self.release_root
+    def release_root(self) -> PurePosixPath:
+        return self.install_root / "releases"
 
     @property
-    def managed_backup_root(self) -> PurePosixPath:
-        return self.backup_root
+    def deployment_root(self) -> PurePosixPath:
+        return self.install_root / "deployments"
 
     @property
-    def managed_deployment_root(self) -> PurePosixPath:
-        return self.deployment_root
+    def current_link(self) -> PurePosixPath:
+        return self.install_root / "current"
 
 
 def load_environment(name: str) -> EnvironmentConfig:

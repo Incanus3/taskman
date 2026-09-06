@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -8,6 +8,12 @@ from pydantic import ValidationError
 
 from taskman_ops.config import EnvironmentConfig, load_environment
 from taskman_ops.errors import ExitStatus, OpsError
+
+
+def two_root_environment(**overrides: object) -> dict[str, object]:
+    value = valid_environment()
+    value.update(overrides)
+    return value
 
 
 def valid_environment(**overrides: object) -> dict[str, object]:
@@ -29,9 +35,7 @@ def valid_environment(**overrides: object) -> dict[str, object]:
         "postgres_package_track": None,
         "database_host": "127.0.0.1",
         "database_port": 5432,
-        "managed_root": "/opt/taskman",
-        "release_root": "/opt/taskman/releases",
-        "deployment_root": "/opt/taskman/deployments",
+        "install_root": "/opt/taskman",
         "backup_root": "/var/backups/taskman",
         "backup_schedule": "*-*-* 02:15:00",
         "backup_retention": 14,
@@ -53,6 +57,49 @@ def test_complete_environment_is_frozen_and_normalizes_architecture_alias() -> N
     assert config.public_ipv4 == "203.0.113.10"
     with pytest.raises(ValidationError):
         config.application_port = 4001  # type: ignore[misc]
+
+
+def test_two_root_defaults_derive_installation_subordinates_and_current_link() -> None:
+    payload = valid_environment()
+    payload.pop("install_root")
+    payload.pop("backup_root")
+    config = EnvironmentConfig.model_validate(payload)
+
+    assert config.install_root == PurePosixPath("/opt/taskman")
+    assert config.backup_root == PurePosixPath("/var/backups/taskman")
+    assert config.release_root == PurePosixPath("/opt/taskman/releases")
+    assert config.deployment_root == PurePosixPath("/opt/taskman/deployments")
+    assert config.current_link == PurePosixPath("/opt/taskman/current")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("install_root", "/"),
+        ("install_root", "/tmp/taskman"),
+        ("backup_root", "/tmp/backups"),
+        ("install_root", "relative/taskman"),
+        ("backup_root", "/opt/taskman/../outside"),
+        ("backup_root", "/opt/taskman"),
+        ("backup_root", "/opt/taskman/backups"),
+        ("backup_root", "/etc/taskman/backups"),
+        ("install_root", "/run/taskman-ops/helpers"),
+    ],
+)
+def test_two_root_paths_must_be_absolute_normalized_disjoint_and_reserved_free(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(two_root_environment(**{field: value}))
+
+
+def test_two_root_custom_installation_derives_all_subordinate_paths() -> None:
+    config = EnvironmentConfig.model_validate(
+        two_root_environment(install_root="/srv/taskman", backup_root="/srv/taskman-backups")
+    )
+
+    assert config.install_root == PurePosixPath("/srv/taskman")
+    assert config.release_root == PurePosixPath("/srv/taskman/releases")
+    assert config.deployment_root == PurePosixPath("/srv/taskman/deployments")
+    assert config.current_link == PurePosixPath("/srv/taskman/current")
 
 
 @pytest.mark.parametrize("name", ["../production", "/tmp", "production/name", "Production", ""])
@@ -111,44 +158,17 @@ def test_database_identifiers_use_the_postgresql_allowlist(field: str, identifie
 
 
 @pytest.mark.parametrize(
-    "field,value",
-    [
-        ("managed_root", "/"),
-        ("managed_root", "/tmp/taskman"),
-        ("backup_root", "/tmp/backups"),
-        ("managed_root", "relative/taskman"),
-        ("release_root", "/srv/releases"),
-        ("backup_root", "/opt/taskman/../outside"),
-        ("deployment_root", "/opt/taskman"),
-    ],
-)
-def test_managed_roots_must_be_absolute_and_contained(field: str, value: str) -> None:
-    with pytest.raises(ValidationError):
-        EnvironmentConfig.model_validate(valid_environment(**{field: value}))
-
-
-@pytest.mark.parametrize(
     "overrides",
     [
-        {"release_root": "/opt/taskman/deployments"},
-        {"release_root": "/opt/taskman/deployments/releases"},
-        {"deployment_root": "/opt/taskman/releases/deployments"},
-        {"release_root": "/opt/taskman/current"},
-        {"release_root": "/opt/taskman/current/releases"},
-        {"deployment_root": "/opt/taskman/current/deployments"},
         {"backup_root": "/opt/taskman"},
         {"backup_root": "/opt/taskman/backups"},
         {"backup_root": "/opt/taskman/current"},
         {"backup_root": "/opt/taskman/releases/backups"},
-        {
-            "managed_root": "/var/lib/taskman",
-            "release_root": "/var/lib/taskman/releases",
-            "deployment_root": "/var/lib/taskman/deployments",
-        },
+        {"install_root": "/var/lib/taskman"},
         {"backup_root": "/var/lock/taskman/backups"},
     ],
 )
-def test_managed_root_topology_rejects_overlap_and_reserved_path_collisions(
+def test_install_root_topology_rejects_overlap_and_reserved_path_collisions(
     overrides: dict[str, str],
 ) -> None:
     """Conflicting roots would apply incompatible owners/modes or delete authority."""
@@ -162,21 +182,19 @@ def test_non_default_disjoint_roots_remain_supported() -> None:
 
     config = EnvironmentConfig.model_validate(
         valid_environment(
-            managed_root="/srv/taskman",
-            release_root="/srv/taskman/artifacts",
-            deployment_root="/srv/taskman/control",
+            install_root="/srv/taskman",
             backup_root="/srv/taskman-backups",
         )
     )
 
-    assert config.managed_root.as_posix() == "/srv/taskman"
-    assert config.release_root.as_posix() == "/srv/taskman/artifacts"
-    assert config.deployment_root.as_posix() == "/srv/taskman/control"
+    assert config.install_root.as_posix() == "/srv/taskman"
+    assert config.release_root.as_posix() == "/srv/taskman/releases"
+    assert config.deployment_root.as_posix() == "/srv/taskman/deployments"
     assert config.backup_root.as_posix() == "/srv/taskman-backups"
 
 
 @pytest.mark.parametrize(
-    "managed_root",
+    "install_root",
     [
         "/srv/taskman\nExecStart=/bin/attacker",
         "/srv/taskman%N",
@@ -184,15 +202,13 @@ def test_non_default_disjoint_roots_remain_supported() -> None:
         "/srv/task\tman",
     ],
 )
-def test_systemd_rendered_roots_reject_control_specifier_and_whitespace_injection(managed_root: str) -> None:
+def test_systemd_rendered_roots_reject_control_specifier_and_whitespace_injection(install_root: str) -> None:
     """A root interpolated into a unit cannot introduce directives or specifiers."""
 
     with pytest.raises(ValidationError):
         EnvironmentConfig.model_validate(
             valid_environment(
-                managed_root=managed_root,
-                release_root=f"{managed_root}/releases",
-                deployment_root=f"{managed_root}/deployments",
+                install_root=install_root,
             )
         )
 
@@ -201,6 +217,13 @@ def test_systemd_rendered_roots_reject_control_specifier_and_whitespace_injectio
 def test_retention_timeouts_and_pool_size_must_be_positive(field: str) -> None:
     with pytest.raises(ValidationError):
         EnvironmentConfig.model_validate(valid_environment(**{field: 0}))
+
+
+def test_readiness_timeout_leaves_the_helper_end_to_end_budget_for_public_checks() -> None:
+    """Readiness cannot consume the runner's complete invocation allowance."""
+
+    with pytest.raises(ValidationError, match="readiness timeout"):
+        EnvironmentConfig.model_validate(valid_environment(readiness_timeout=31))
 
 
 @pytest.mark.parametrize("fingerprint", ["", "SHA256:short", "MD5:aa:bb", "SHA256:abc def", "not-a-fingerprint"])

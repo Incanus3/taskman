@@ -9,7 +9,11 @@ from taskman_ops.cli import Invocation, dispatch, main
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus
 from taskman_ops.output import WorkflowResult, clear_secrets, register_secret
-from taskman_ops.verification import CheckStatus, VerificationCheck, VerificationReport
+from taskman_ops.workflows.verification_results import (
+    CheckStatus,
+    VerificationCheck,
+    VerificationReport,
+)
 
 
 RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"

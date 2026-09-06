@@ -2,7 +2,7 @@
 
 This workflow intentionally owns sequencing and reporting only.  Host state,
 credentials, release activation, and readiness stay owned by the focused
-capabilities introduced by the earlier deployment tasks.
+capabilities provided by the established deployment workflow.
 """
 
 from __future__ import annotations
@@ -18,22 +18,18 @@ from typing import Protocol
 from ..build import build_release
 from ..config import EnvironmentConfig, load_environment
 from ..errors import ExitStatus, OpsError
-from ..host.baseline import converge_baseline_host
-from ..host.facts import validate_provisionable_host
-from ..host.firewall import apply_firewall
+from ..host.acceptance import validate_provisionable_host
 from ..manifests import VerifiedArtifact, verify_artifact
 from ..output import WorkflowResult, redact, render_human
+from ..provisioning import ProvisioningInputs, converge_provisioning
 from ..remote import ChangeSet, connect
 from ..secrets import SecretConfig, decrypt_secrets, render_pgpass, render_runtime_environment
-from ..services.caddy import CaddyPlan, apply_caddy_install, build_caddy_plan
+from ..services.caddy import CaddyPlan, build_caddy_plan
 from ..services.postgresql import (
-    apply_postgresql_native_configuration,
     build_postgresql_plan,
-    converge_database,
+    render_role_password_input,
 )
-from ..services.systemd import apply_systemd_assets, build_systemd_plan, install_runtime_environment
 from .deploy import deploy_first_release
-from .verify import run_verify
 
 
 AcceptanceSteps = tuple[str, ...]
@@ -45,19 +41,6 @@ _ACCEPTANCE_STEPS: AcceptanceSteps = (
     "verify a LiveView route remains connected",
     "copy a verified local backup off-host",
 )
-
-
-class DatabaseConvergence(Protocol):
-    """The public database capability's keyword-only secret boundary."""
-
-    def __call__(
-        self,
-        remote: object,
-        plan: object,
-        *,
-        password: str,
-        pgpass: bytes,
-    ) -> object: ...
 
 
 class ProvisionDiscovery(Protocol):
@@ -91,18 +74,10 @@ class ProvisionCapabilities:
     confirm: Callable[[Mapping[str, object]], bool]
     connect: Callable[[EnvironmentConfig], object]
     discover: ProvisionDiscovery
-    baseline: Callable[[object, EnvironmentConfig], object]
-    firewall: Callable[[object, EnvironmentConfig], object]
-    postgresql_plan: Callable[[EnvironmentConfig], object]
-    postgresql_native: Callable[[object, object], object]
-    database: DatabaseConvergence
-    install_runtime_environment: Callable[[object, bytes], object]
-    systemd_plan: Callable[[EnvironmentConfig], object]
-    systemd: Callable[[object, object], object]
+    render_role_password_input: Callable[[object, str], bytes]
+    provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
-    caddy: Callable[[object, CaddyPlan], object]
     release_transaction: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
-    verify: Callable[[object, EnvironmentConfig, str], WorkflowResult]
 
 
 def provision(
@@ -129,11 +104,11 @@ def provision(
     _validate_artifact_target(config, artifact)
     runtime_environment = cap.render_runtime_environment(config, secrets)
     pgpass = cap.render_pgpass(config, secrets)
-    # These pure capability constructors perform local template and native
-    # validator checks.  Build them before the plan/confirmation boundary so
-    # no controller prerequisite can fail after host convergence begins.
-    database_plan = cap.postgresql_plan(config)
-    systemd_plan = cap.systemd_plan(config)
+    # Build locally before confirmation. The role-password exchange is already
+    # rendered bytes when it reaches the custom PostgreSQL boundary, so raw
+    # credential text never enters pyinfra command construction or reporting.
+    database_plan = build_postgresql_plan(config)
+    role_password_input = cap.render_role_password_input(database_plan.role, secrets.database_password)
     caddy_plan = cap.caddy_plan(config)
     expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
     plan = _redacted_plan(cap.render_plan(config, artifact))
@@ -166,40 +141,20 @@ def provision(
                 next_action="review the redacted plan and rerun without --dry-run only after confirmation",
             ))
 
-        _record_convergence(completed, "baseline", lambda: cap.baseline(remote, config))
-        # apply_firewall owns the mandatory new strict SSH connection itself.
-        _record_convergence(completed, "firewall", lambda: cap.firewall(remote, config))
-
         _record_convergence(
             completed,
-            "postgresql",
-            lambda: cap.postgresql_native(remote, database_plan),
-        )
-        _record_convergence(
-            completed,
-            "database",
-            lambda: cap.database(
+            "provisioning",
+            lambda: cap.provisioning(
                 remote,
-                database_plan,
-                password=secrets.database_password,
-                pgpass=pgpass,
+                ProvisioningInputs(
+                    config=config,
+                    caddy_plan=caddy_plan,
+                    runtime_environment=runtime_environment,
+                    pgpass=pgpass,
+                    role_password_input=role_password_input,
+                ),
             ),
         )
-        _record_convergence(
-            completed,
-            "runtime-environment",
-            lambda: cap.install_runtime_environment(remote, runtime_environment),
-        )
-
-        # The systemd capability installs and enables the validated local
-        # backup timer as well as Taskman's unit, so it remains before Caddy
-        # and before the first release transaction.
-        _record_convergence(
-            completed,
-            "backups-and-systemd",
-            lambda: cap.systemd(remote, systemd_plan),
-        )
-        _record_convergence(completed, "caddy", lambda: cap.caddy(remote, caddy_plan))
     except OpsError as error:
         return _close_result(remote, _pre_release_failure(environment_name, completed, error))
     except BaseException:
@@ -216,27 +171,6 @@ def provision(
         return _close_result(remote, release)
     _record_change(completed, "release", release)
 
-    try:
-        verification = cap.verify(remote, config, artifact.manifest.release_id)
-    except BaseException:
-        _close_remote(remote)
-        raise
-    if verification.exit_status is not ExitStatus.OK:
-        return _close_result(remote, WorkflowResult(
-            command="provision",
-            environment=environment_name,
-            changed=bool(completed),
-            stage="verification-failed",
-            facts={
-                "converged_stages": tuple(completed),
-                "release": _safe_result_facts(release),
-                "verification": _safe_result_facts(verification),
-            },
-            next_action=verification.next_action
-            or "inspect the selected release and verification evidence before retrying",
-            exit_status=verification.exit_status,
-        ))
-
     return _close_result(remote, WorkflowResult(
         command="provision",
         environment=environment_name,
@@ -246,7 +180,7 @@ def provision(
             "candidate_release_id": artifact.manifest.release_id,
             "converged_stages": tuple(completed),
             "release": _safe_result_facts(release),
-            "verification": _safe_result_facts(verification),
+            "verification": release.facts.get("verification", {}),
             "acceptance_steps": _ACCEPTANCE_STEPS,
         },
         next_action="complete the listed interactive acceptance steps; they are not automated",
@@ -301,18 +235,10 @@ def _default_capabilities() -> ProvisionCapabilities:
         confirm=_confirm,
         connect=connect,
         discover=validate_provisionable_host,
-        baseline=converge_baseline_host,
-        firewall=apply_firewall,
-        postgresql_plan=build_postgresql_plan,
-        postgresql_native=apply_postgresql_native_configuration,
-        database=converge_database,
-        install_runtime_environment=install_runtime_environment,
-        systemd_plan=build_systemd_plan,
-        systemd=apply_systemd_assets,
+        render_role_password_input=render_role_password_input,
+        provisioning=converge_provisioning,
         caddy_plan=build_caddy_plan,
-        caddy=apply_caddy_install,
         release_transaction=deploy_first_release,
-        verify=lambda remote, config, release_id: run_verify(remote, config, release_id),
     )
 
 

@@ -15,8 +15,8 @@ from ..remote import run_interactive
 from .operational_preflight import validate_operational_preflight
 
 
-def _command_for_managed_root(managed_root: str) -> tuple[str, ...]:
-    current = f"{managed_root}/current"
+def _command_for_install_root(install_root: str) -> tuple[str, ...]:
+    current = f"{install_root}/current"
     return (
         "sudo",
         "--",
@@ -33,7 +33,7 @@ def _command_for_managed_root(managed_root: str) -> tuple[str, ...]:
     )
 
 
-CREATE_ADMIN_COMMAND: tuple[str, ...] = _command_for_managed_root("/opt/taskman")
+CREATE_ADMIN_COMMAND: tuple[str, ...] = _command_for_install_root("/opt/taskman")
 
 
 def create_admin_command(config: EnvironmentConfig) -> tuple[str, ...]:
@@ -41,7 +41,7 @@ def create_admin_command(config: EnvironmentConfig) -> tuple[str, ...]:
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("create-admin command requires a validated environment configuration")
-    return _command_for_managed_root(config.managed_root.as_posix())
+    return _command_for_install_root(config.install_root.as_posix())
 
 
 def run_create_admin(

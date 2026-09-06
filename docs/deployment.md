@@ -58,14 +58,24 @@ The launcher always uses the checked-in lock:
 
 The target must boot Ubuntu 26.04 LTS `amd64` with systemd as PID 1. The configured SSH
 administrator must already be able to use the required `sudo` operations. The supported host
-baseline includes Ubuntu's `python3-minimal` package: fixed, repository-owned remote validation
-programs use that interpreter, but install no controller Python packages on the host. Provisioning
+baseline includes Ubuntu's `python3-minimal` package. The controller uses it only to run a
+deterministic, standard-library-only transient helper for one invocation; it never installs the
+controller package, a resident agent, a listener, or a background process on the host. Provisioning
 rejects unsupported platforms, ambiguous existing users/files/services/databases, mismatched host
 keys, indirect public DNS, and conflicting listeners rather than overwriting them.
 
-The build runs in the image pinned by digest in `ops/builder/Containerfile`. The host receives only
-the built OTP release, managed runtime assets, and the explicit Ubuntu runtime prerequisites—not
-source, Mix, Node, controller Python packages, pyinfra, SOPS, age, Docker, or the build toolchain.
+The build runs in the reviewed tag-and-digest pair in `ops/builder/Containerfile`:
+
+```text
+ubuntu:resolute-20260811.1
+sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
+```
+
+The readable dated tag identifies the selected Ubuntu image release, while the digest fixes its
+content if a registry tag is reassigned. The artifact manifest records both values and rejects a
+different builder base. The host receives only the built OTP release, managed runtime assets, and
+the explicit Ubuntu runtime prerequisites—not source, Mix, Node, controller Python packages,
+pyinfra, SOPS, age, Docker, or the build toolchain.
 
 ## Configure SOPS and age
 
@@ -113,19 +123,44 @@ Review at least:
 - Phoenix, distribution, and PostgreSQL loopback ports;
 - PostgreSQL role and database identifiers;
 - `MAIL_FROM` at the verified Resend domain;
-- managed release, deployment, and backup roots;
+- installation and backup roots (release, deployment, and current paths are derived);
 - backup schedule and backup/release retention;
 - readiness and connection timeouts; and
 - an explicitly selected PostgreSQL package track only when required.
 
 The configuration is validated before mutation. A real environment file is non-secret but still
-environment-sensitive; add it to version control only as a deliberate operator decision.
-`release_root` and `deployment_root` must be distinct descendants of `managed_root`;
-`managed_root/current`, those roots, and `backup_root` must have no equality, ancestor, or
-descendant collision. Managed paths also cannot overlap Taskman's reserved configuration, state,
-lock, or installed-program roots. Cleanup staging authority is exactly
-`deployment_root/uploads`, and the administrator command is derived from the validated
-`managed_root/current`; changing a root does not fall back to `/opt/taskman`.
+environment-sensitive; add it to version control only as a deliberate operator decision. The only
+configurable filesystem roots are:
+
+```yaml
+install_root: /opt/taskman
+backup_root: /var/backups/taskman
+```
+
+`install_root/releases`, `install_root/deployments`, `install_root/current`, and
+`install_root/deployments/uploads` are derived from the validated `install_root`; they are not
+configuration keys and have no legacy aliases. `install_root` and `backup_root` must have no
+equality, ancestor, or descendant collision. Managed paths also cannot overlap Taskman's reserved
+configuration, state, lock, or installed-program roots. The administrator command is derived from
+the validated `install_root/current`; changing a root does not fall back to `/opt/taskman`.
+
+## Transient helper execution and residue
+
+For host-local discovery and lifecycle operations, the controller builds the deterministic
+`taskman-host.pyz` helper from the checked controller revision. For each operation it creates a
+unique, administrator-owned transfer directory, verifies the uploaded SHA-256, installs the same
+bytes as `root:root` mode `0500` in a unique `root:root` mode-`0700`
+`/run/taskman-ops/<operation-id>` directory, verifies the installed SHA-256 again, and invokes its
+absolute path with one bounded JSON request. The controller accepts only a bounded, redacted result
+whose protocol version, operation, and operation ID match that request. It then removes only its
+verified transfer file and exact invocation directory.
+
+This is transient execution infrastructure, not an installed host agent. A normal correlated
+completion removes the helper. If a report names transient-helper residue or says that completion
+is uncertain, do not recursively clean `/tmp/taskman-ops` or `/run/taskman-ops`, and do not assume
+the helper stopped. Inspect only each exact reported path, first proving its owner, mode, and type;
+then follow the report's recovery action before retrying. An uncertain invocation deliberately
+retains its root-owned helper artifact because a remote process may still be reading it.
 
 ## Preview before changing a host
 
@@ -193,11 +228,16 @@ After reviewing a dry run:
 ./ops/taskman provision production
 ```
 
-Provisioning presents a redacted plan and requires ordinary interactive confirmation. It then
-converges only the supported host baseline: required packages, unattended security updates without
-automatic reboot, UFW rules that preserve the active SSH port, PostgreSQL and its Taskman
-role/database, validated local backups and timer, Caddy, the `taskman` account, systemd units,
-root-owned runtime configuration, and the first immutable release.
+Provisioning presents a redacted plan and requires ordinary interactive confirmation. One real
+programmatic pyinfra deployment converges the stable desired state: required packages, unattended
+security updates without automatic reboot, the `taskman` account and managed directories,
+non-secret configuration and units, Caddy, systemd enablement, and the root-owned scheduled backup
+unit. Material-risk boundaries remain explicit: UFW preserves the active SSH path, protected
+runtime files avoid secret-bearing pyinfra logging, and PostgreSQL and Caddy validate immediately
+before their consequential changes. After pyinfra converges PostgreSQL packages and native
+configuration, the controller's protected PostgreSQL boundary validates and adopts or creates the
+Taskman role/database. The transient helper begins with the first immutable genesis release
+transaction, including its validated backup, migration, and lifecycle work.
 
 The first release uses a dedicated genesis form of the canonical locked release transaction. It
 accepts only an empty lifecycle, creates and validates a pre-activation database backup, applies
@@ -281,9 +321,9 @@ Do not infer rollback or restore identifiers from filenames or directory listing
 
 Both commands take a shared lifecycle lock and read validated root-owned metadata. `releases`
 reports current/previous/inactive state, provenance, migration policy, and rollback eligibility.
-`backups` reports the exact restore ID, reason, database, size, recorded validation, and whether the
-dump is still present. Contradictory metadata returns a safety refusal; unrecognized storage is
-reported as a warning.
+`backups` reports the exact restore ID, reason, database, size, checksum, recorded validation, and
+whether the dump is still present. Contradictory metadata returns a safety refusal; unrecognized
+storage is reported as a warning.
 
 Create an extra validated local dump without changing Taskman:
 
@@ -293,6 +333,15 @@ Create an extra validated local dump without changing Taskman:
 
 Copy every backup required by the recovery policy to independently managed off-host storage and
 test restoration there.
+
+Provisioning installs `/usr/local/lib/taskman/taskman-backup` as the root-owned systemd timer
+target. It is a scheduled host capability managed declaratively by pyinfra, not a second workstation
+controller. New backup records contain `dump_sha256`. Before its retention policy unlinks either a
+dump or record, the timer requires the canonical path under `backup_root`, the exact recorded size,
+a matching SHA-256, a fresh `pg_restore --list` validation, and non-ambiguous references across all
+backup records. A legacy checksum-less record, a malformed or conflicting record, a redirected
+path, a digest mismatch, or an invalid dump is retained; pruning fails closed rather than deleting
+an unproved recovery artifact.
 
 ## Roll back, restore, and clean up
 
@@ -315,13 +364,15 @@ Restore replaces database state and requires the exact ID from `backups`:
 ```
 
 Before either a dry-run result or a typed prompt, restore checks that the exact recorded path is a
-regular non-link file with the recorded size, freshly runs `pg_restore --list`, and checks database
-storage capacity. After confirmation, it revalidates the same facts under the lifecycle lock
-before mutation. It then makes a pre-restore backup, restores into a temporary database, validates
-schema state, retains the old canonical database under a unique recovery name, starts the intended
-release, and verifies it. A corrupt or replaced dump is refused before confirmation; a failed swap
-retains the databases and reports only the exact recovery commands appropriate to the observed
-boundary.
+root-owned regular non-link file with the recorded size and database, freshly runs
+`pg_restore --list`, and checks database storage capacity. When the record carries `dump_sha256`,
+it also compares the current dump bytes to that digest. After confirmation, it repeats the same
+checks under the lifecycle lock before mutation. Legacy records without `dump_sha256` retain the
+path/owner/mode/size/database/custom-format checks but have no digest identity to compare. It then
+makes a pre-restore backup, restores into a temporary database, validates schema state, retains the
+old canonical database under a unique recovery name, starts the intended release, and verifies it.
+A corrupt or replaced dump is refused before confirmation; a failed swap retains the databases and
+reports only the exact recovery commands appropriate to the observed boundary.
 
 Cleanup computes exact eligible targets from validated records:
 
@@ -344,7 +395,7 @@ Run this only from a real local terminal:
 ```
 
 The controller allocates a strict SSH TTY and invokes only the `bin/create-admin` wrapper below
-the validated `managed_root/current`. For the default managed root, the constrained boundary is:
+the validated `install_root/current`. For the default installation root, the constrained boundary is:
 
 ```sh
 sudo -- systemd-run --wait --pipe --collect \
@@ -358,7 +409,7 @@ sudo -- systemd-run --wait --pipe --collect \
 The email and password travel only through the terminal prompts; they are not arguments,
 environment variables, decrypted deployment data, or structured results. The controller refuses
 when stdin, stdout, or stderr is not a TTY and returns the interactive remote command's status.
-Both the working directory and executable path are generated from the same validated managed
+Both the working directory and executable path are generated from the same validated installation
 root; the interface does not accept an arbitrary remote command.
 
 Afterward:

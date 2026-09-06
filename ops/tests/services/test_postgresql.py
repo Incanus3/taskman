@@ -11,7 +11,6 @@ from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.services.postgresql import (
     ExistingDatabase,
     ExistingRole,
-    apply_postgresql_native_configuration,
     build_postgresql_plan,
     converge_database,
     install_pgpass,
@@ -106,15 +105,6 @@ def test_native_configuration_places_the_final_hba_file_in_a_postgres_traversabl
 
     assert "/etc/postgresql/taskman/pg_hba.conf" in script
     assert "install -d -o root -g postgres -m 0750 /etc/postgresql/taskman" in script
-
-
-def test_native_configuration_failure_is_reported_without_continuing_to_restart() -> None:
-    remote = ScriptedRemote.from_responses([CommandResult(1, stderr="config validation failed")])
-
-    with pytest.raises(OpsError) as raised:
-        apply_postgresql_native_configuration(remote, build_postgresql_plan(config()))
-
-    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
 
 
 def test_native_configuration_script_stops_before_restart_when_pg_conftool_fails(tmp_path: Path) -> None:
@@ -995,7 +985,7 @@ def test_database_convergence_uses_peer_socket_administration_but_loopback_tcp_f
     converge_database(
         remote,
         plan,
-        password="database-sensitive-canary",
+        role_password_input=render_role_password_input(plan.role, "database-sensitive-canary"),
         pgpass=b"pgpass-sensitive-canary\n",
     )
 
@@ -1072,7 +1062,12 @@ def test_database_convergence_creates_a_missing_least_authority_role_and_databas
     plan = build_postgresql_plan(config())
     canary = "database-sensitive-canary"
 
-    converge_database(remote, plan, password=canary, pgpass=b"pgpass-sensitive-canary\n")
+    converge_database(
+        remote,
+        plan,
+        role_password_input=render_role_password_input(plan.role, canary),
+        pgpass=b"pgpass-sensitive-canary\n",
+    )
 
     commands = [argv for argv, _kwargs in remote.calls]
     assert commands[3][-len(plan.role_setup_argv) :] == plan.role_setup_argv
@@ -1111,10 +1106,11 @@ def test_database_safety_refusal_happens_before_pgpass_or_role_mutation() -> Non
     )
 
     with pytest.raises(OpsError) as raised:
+        plan = build_postgresql_plan(config())
         converge_database(
             remote,
-            build_postgresql_plan(config()),
-            password="database-sensitive-canary",
+            plan,
+            role_password_input=render_role_password_input(plan.role, "database-sensitive-canary"),
             pgpass=b"pgpass-sensitive-canary\n",
         )
 
@@ -1135,10 +1131,11 @@ def test_existing_compatible_database_rerun_only_repairs_pgpass_and_verifies_the
         ]
     )
 
+    plan = build_postgresql_plan(config())
     result = converge_database(
         remote,
-        build_postgresql_plan(config()),
-        password="database-sensitive-canary",
+        plan,
+        role_password_input=render_role_password_input(plan.role, "database-sensitive-canary"),
         pgpass=b"pgpass-sensitive-canary\n",
     )
 

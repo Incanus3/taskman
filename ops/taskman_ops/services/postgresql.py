@@ -13,7 +13,7 @@ import hashlib
 from io import StringIO
 from pathlib import PurePosixPath
 import shlex
-from typing import Mapping, Protocol
+from typing import Mapping
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -97,16 +97,6 @@ class PostgreSQLCluster:
     configured_port: str
 
 
-class PostgreSQLOperations(Protocol):
-    """Stable desired-state operations implemented by the pyinfra adapter."""
-
-    def packages(self, packages: tuple[str, ...]) -> None: ...
-
-    def hba_file(self, content: str) -> None: ...
-
-    def configure(self, plan: PostgreSQLPlan) -> None: ...
-
-
 def build_postgresql_plan(config: EnvironmentConfig) -> PostgreSQLPlan:
     """Return a complete PostgreSQL target without reading a mutable host fact."""
 
@@ -168,9 +158,7 @@ def build_postgresql_plan(config: EnvironmentConfig) -> PostgreSQLPlan:
     )
 
 
-def converge_postgresql(
-    config: EnvironmentConfig, *, operations: PostgreSQLOperations | None = None
-) -> PostgreSQLPlan:
+def declare_postgresql(config: EnvironmentConfig) -> PostgreSQLPlan:
     """Declare package and native configuration convergence through pyinfra.
 
     Role/database discovery and creation are intentionally not hidden in this
@@ -179,11 +167,25 @@ def converge_postgresql(
     provision workflow.
     """
 
+    from pyinfra.operations import apt, files
+
     plan = build_postgresql_plan(config)
-    backend = operations or _PyinfraPostgreSQLOperations()
-    backend.packages(plan.packages)
-    backend.hba_file(plan.hba)
-    backend.configure(plan)
+    apt.packages(packages=list(plan.packages), name="Install PostgreSQL")
+    files.put(
+        StringIO(plan.hba),
+        "/etc/taskman/pg_hba.conf.staged",
+        user="root",
+        group="postgres",
+        mode=0o640,
+        add_deploy_dir=False,
+        name="Stage PostgreSQL HBA configuration",
+    )
+    conditional_convergence(
+        name="Validate and configure PostgreSQL",
+        probe=render_postgresql_native_configuration_probe(plan),
+        script=render_postgresql_native_configuration_script(plan),
+        failure=_cluster_refusal(),
+    )
     return plan
 
 
@@ -259,19 +261,27 @@ def install_pgpass(remote: Remote, content: bytes) -> ChangeSet:
     return ChangeSet(changed=changed, operations=("pgpass",) if changed else ())
 
 
-def converge_database(remote: Remote, plan: PostgreSQLPlan, *, password: str, pgpass: bytes) -> ChangeSet:
+def converge_database(
+    remote: Remote,
+    plan: PostgreSQLPlan,
+    *,
+    role_password_input: bytes,
+    pgpass: bytes,
+) -> ChangeSet:
     """Safely adopt or create database state after package convergence has run.
 
     This execution-time capability is deliberately separate from
-    :func:`converge_postgresql`: pyinfra prepares package/configuration
+    :func:`declare_postgresql`: pyinfra prepares package/configuration
     operations first, while role and database decisions may only read facts
     after that work has executed.  Existing incompatible authority is refused,
-    and a password is consumed by psql's prompt over sensitive stdin only for
-    a newly created role.
+    and an already-rendered password exchange is consumed over sensitive stdin
+    only for a newly created role.
     """
 
     if not isinstance(plan, PostgreSQLPlan):
         raise TypeError("database convergence requires a PostgreSQL plan")
+    if not isinstance(role_password_input, bytes) or not role_password_input:
+        raise ValueError("database role password input must be non-empty bytes")
     role = _read_existing_role(remote, plan)
     if role is not None:
         role = ExistingRole(
@@ -295,7 +305,7 @@ def converge_database(remote: Remote, plan: PostgreSQLPlan, *, password: str, pg
             remote.run(
                 ("runuser", "-u", "postgres", "--", *plan.role_setup_argv),
                 sudo=True,
-                stdin=render_role_password_input(plan.role, password),
+                stdin=role_password_input,
                 sensitive=True,
             ),
             "unable to create and initialize PostgreSQL role",
@@ -537,29 +547,6 @@ def select_postgresql_cluster(output: str, plan: PostgreSQLPlan) -> tuple[str, s
         cluster = candidates[0]
         return cluster.version, cluster.name, cluster.configured_port
     raise _cluster_refusal()
-
-
-def apply_postgresql_native_configuration(remote: Remote, plan: PostgreSQLPlan) -> bool:
-    """Run checked native configuration and parse its truthful change marker."""
-
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("native PostgreSQL configuration requires a plan")
-    result = remote.run(("sh", "-c", render_postgresql_native_configuration_script(plan)), sudo=True)
-    if result.returncode == int(ExitStatus.SAFETY):
-        raise _cluster_refusal()
-    _require_success(result, "unable to converge native PostgreSQL configuration")
-    values = [line.removeprefix("changed=") for line in result.stdout.splitlines() if line.startswith("changed=")]
-    if values == ["0"]:
-        return False
-    if values == ["1"]:
-        return True
-    raise OpsError(
-        ExitStatus.REMOTE_PREFLIGHT,
-        "postgresql",
-        "native PostgreSQL convergence returned an invalid change result",
-        changed=False,
-        next_action="inspect PostgreSQL native configuration output before retrying",
-    )
 
 
 def render_postgresql_native_configuration_script(
@@ -853,33 +840,6 @@ def _cluster_refusal() -> OpsError:
     )
 
 
-class _PyinfraPostgreSQLOperations:
-    """Native Ubuntu cluster configuration without prepare-time fact branching."""
-
-    def packages(self, packages: tuple[str, ...]) -> None:
-        from pyinfra.operations import apt
-
-        apt.packages(packages=list(packages))
-
-    def hba_file(self, content: str) -> None:
-        from pyinfra.operations import files
-
-        files.put(
-            StringIO(content),
-            "/etc/taskman/pg_hba.conf.staged",
-            user="root",
-            group="postgres",
-            mode=0o640,
-            add_deploy_dir=False,
-        )
-
-    def configure(self, plan: PostgreSQLPlan) -> None:
-        conditional_convergence(
-            probe=render_postgresql_native_configuration_probe(plan),
-            script=render_postgresql_native_configuration_script(plan),
-        )
-
-
 __all__ = [
     "Database",
     "DatabaseRole",
@@ -888,10 +848,9 @@ __all__ = [
     "ManagedFile",
     "PostgreSQLCluster",
     "PostgreSQLPlan",
-    "apply_postgresql_native_configuration",
     "build_postgresql_plan",
     "converge_database",
-    "converge_postgresql",
+    "declare_postgresql",
     "install_pgpass",
     "render_postgresql_native_configuration_script",
     "render_postgresql_native_configuration_probe",

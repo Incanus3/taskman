@@ -13,6 +13,8 @@ import pytest
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.manifests import (
     ArtifactManifest,
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
     MigrationFingerprint,
     fingerprint_migrations,
     manifest_from_json,
@@ -30,7 +32,7 @@ CHECKSUM = "b" * 64
 
 def manifest_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "application": "taskman",
         "application_version": "0.2.0",
         "source_revision": REVISION,
@@ -41,6 +43,8 @@ def manifest_payload(**overrides: object) -> dict[str, object]:
         "otp_version": "27.3.4.6",
         "elixir_version": "1.18.3",
         "node_version": "22.22.1",
+        "builder_base_tag": BUILDER_BASE_TAG,
+        "builder_base_digest": BUILDER_BASE_DIGEST,
         "hex_version": "2.5.1",
         "rebar3_version": "3.24.0",
         "migrations": [
@@ -116,7 +120,7 @@ def write_release_archive(
     return archive_path
 
 
-def test_release_identity_is_exact_and_managed_paths_accept_only_validated_ids() -> None:
+def test_release_identity_is_exact_and_release_paths_accept_only_validated_ids() -> None:
     release_id = build_release_id("0.2.0", REVISION)
 
     assert release_id == RELEASE_ID
@@ -157,11 +161,46 @@ def test_manifest_round_trip_has_the_exact_schema_and_utc_provenance() -> None:
         manifest.release_id = "different"  # type: ignore[misc]
 
 
+def test_manifest_records_the_readable_and_immutable_builder_base_identity() -> None:
+    payload = manifest_payload(
+        schema_version=2,
+        builder_base_tag=BUILDER_BASE_TAG,
+        builder_base_digest=BUILDER_BASE_DIGEST,
+    )
+
+    manifest = ArtifactManifest.from_mapping(payload)
+
+    assert manifest.schema_version == 2
+    assert manifest.builder_base_tag == BUILDER_BASE_TAG
+    assert manifest.builder_base_digest == BUILDER_BASE_DIGEST
+    assert manifest_from_json(manifest_to_json(manifest)) == manifest
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"builder_base_tag": "ubuntu:latest"},
+        {"builder_base_digest": "sha256:" + "0" * 64},
+        {"builder_base_digest": BUILDER_BASE_DIGEST.removesuffix("9") + "0"},
+    ],
+)
+def test_manifest_requires_the_exact_builder_base_identity(overrides: dict[str, object]) -> None:
+    payload = manifest_payload(
+        schema_version=2,
+        builder_base_tag=BUILDER_BASE_TAG,
+        builder_base_digest=BUILDER_BASE_DIGEST,
+    )
+    payload.update(overrides)
+
+    with pytest.raises(ValueError):
+        ArtifactManifest.from_mapping(payload)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"unexpected": "value"},
-        {"schema_version": 2},
+        {"schema_version": 1},
         {"application": "other"},
         {"source_revision": "a" * 12},
         {"source_revision": "A" * 40},

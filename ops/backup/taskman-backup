@@ -17,7 +17,7 @@ export PGPASSFILE
 backup_root=
 deployment_root=
 lock_root=/var/lock/taskman
-managed_root=/opt/taskman
+install_root=/opt/taskman
 release_root=/opt/taskman/releases
 database_host=
 database_port=
@@ -37,6 +37,7 @@ temporary_record=
 temporary_inventory=
 temporary_safe_inventory=
 temporary_sorted_inventory=
+temporary_referenced_dumps=
 temporary_authority_releases=
 temporary_authority_activations=
 temporary_authority_sorted=
@@ -222,6 +223,7 @@ cleanup() {
   test -z "$temporary_inventory" || rm -f -- "$temporary_inventory" 2>/dev/null || :
   test -z "$temporary_safe_inventory" || rm -f -- "$temporary_safe_inventory" 2>/dev/null || :
   test -z "$temporary_sorted_inventory" || rm -f -- "$temporary_sorted_inventory" 2>/dev/null || :
+  test -z "$temporary_referenced_dumps" || rm -f -- "$temporary_referenced_dumps" 2>/dev/null || :
   test -z "$temporary_authority_releases" || rm -f -- "$temporary_authority_releases" 2>/dev/null || :
   test -z "$temporary_authority_activations" || rm -f -- "$temporary_authority_activations" 2>/dev/null || :
   test -z "$temporary_authority_sorted" || rm -f -- "$temporary_authority_sorted" 2>/dev/null || :
@@ -246,7 +248,7 @@ while test "$#" -gt 0; do
     --backup-root) backup_root=${2-}; shift 2 ;;
     --deployment-root) deployment_root=${2-}; shift 2 ;;
     --lock-root) lock_root=${2-}; shift 2 ;;
-    --managed-root) managed_root=${2-}; shift 2 ;;
+    --install-root) install_root=${2-}; shift 2 ;;
     --release-root) release_root=${2-}; shift 2 ;;
     --retention) retention=${2-}; shift 2 ;;
     --reason) reason=${2-}; shift 2 ;;
@@ -269,7 +271,7 @@ safe_identifier "$database_name" || invalid
 safe_path "$backup_root" || invalid
 safe_path "$deployment_root" || invalid
 safe_path "$lock_root" || invalid
-safe_path "$managed_root" || invalid
+safe_path "$install_root" || invalid
 safe_path "$release_root" || invalid
 case "$retention" in ''|*[!0-9]*) invalid;; esac
 test "$retention" -gt 0 || invalid
@@ -637,12 +639,12 @@ EOF
 }
 
 selected_path=
-if test -L "$managed_root/current"; then
-  selected_path=$(readlink -f -- "$managed_root/current" 2>/dev/null) || safety_failure
+if test -L "$install_root/current"; then
+  selected_path=$(readlink -f -- "$install_root/current" 2>/dev/null) || safety_failure
   case "$selected_path" in "$release_root"/*) ;; *) safety_failure;; esac
   safe_path "$selected_path" || safety_failure
   safe_directory "$selected_path" || safety_failure
-elif test -e "$managed_root/current"; then
+elif test -e "$install_root/current"; then
   safety_failure
 fi
 authoritative_current_release=
@@ -695,6 +697,9 @@ fi
 size_bytes=$(stat -c %s -- "$temporary_dump") || backup_failure
 case "$size_bytes" in ''|*[!0-9]*) backup_failure;; esac
 test "$size_bytes" -gt 0 || backup_failure
+dump_sha256=$(sha256sum -- "$temporary_dump" | awk '{print $1}') || backup_failure
+case "$dump_sha256" in ''|*[!0-9a-f]*) backup_failure;; esac
+test "${#dump_sha256}" -eq 64 || backup_failure
 sync -f "$temporary_dump" || backup_failure
 ln -- "$temporary_dump" "$final_dump" || backup_failure
 dump_published=1
@@ -709,7 +714,7 @@ candidate_json=null
 if test -n "$current_release"; then current_json="\"$current_release\""; fi
 if test -n "$candidate_release"; then candidate_json="\"$candidate_release\""; fi
 temporary_record=$(mktemp "$records_directory/.taskman-backup-record.XXXXXXXX") || backup_failure
-printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}" > "$temporary_record" || backup_failure
+printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"dump_sha256\":\"$dump_sha256\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}" > "$temporary_record" || backup_failure
 chmod 600 -- "$temporary_record" || backup_failure
 sync -f "$temporary_record" || backup_failure
 ln -- "$temporary_record" "$final_record" || backup_failure
@@ -717,7 +722,7 @@ sync -f "$records_directory" || backup_failure
 rm -f -- "$temporary_record"
 temporary_record=
 
-record_pattern='^\{"backup_id":"backup-[0-9a-f]{32}","candidate_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"created_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","current_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"database":"[a-z_][a-z0-9_]{0,62}","dump_path":"/[A-Za-z0-9_./+-]+","reason":"(scheduled|pre-deploy|pre-rollback|pre-restore)","schema_version":1,"size_bytes":[0-9]+,"source_database_size_bytes":[1-9][0-9]*,"validated":true\}$'
+record_pattern='^\{"backup_id":"backup-[0-9a-f]{32}","candidate_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"created_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","current_release_id":(null|"[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6"),"database":"[a-z_][a-z0-9_]{0,62}","dump_path":"/[A-Za-z0-9_./+-]+",("dump_sha256":"[0-9a-f]{64}",)?"reason":"(scheduled|pre-deploy|pre-rollback|pre-restore)","schema_version":1,"size_bytes":[0-9]+,"source_database_size_bytes":[1-9][0-9]*,"validated":true\}$'
 
 recognize_pair() {
   recognized_record=$1
@@ -727,12 +732,16 @@ recognize_pair() {
   printf '%s\n' "$record_json" | grep -Eq "$record_pattern" || return 1
   record_id=$(printf '%s\n' "$record_json" | sed -n 's/^.*"backup_id":"\([0-9a-z-]*\)".*$/\1/p')
   test "$record_id" = "$recognized_id" || return 1
-  record_dump=$(printf '%s\n' "$record_json" | sed -n 's/^.*"dump_path":"\([^"]*\)","reason".*$/\1/p')
+  record_dump=$(printf '%s\n' "$record_json" | sed -n 's/^.*"dump_path":"\([^"]*\)",\("dump_sha256":"[0-9a-f]\{64\}",\)\{0,1\}"reason".*$/\1/p')
   safe_path "$record_dump" || return 1
-  case "$record_dump" in "$backup_root"/*) ;; *) return 1;; esac
+  test "$record_dump" = "$backup_root/$recognized_id.dump" || return 1
   safe_private_file "$record_dump" || return 1
   record_size=$(printf '%s\n' "$record_json" | sed -n 's/^.*"size_bytes":\([0-9][0-9]*\),"source_database_size_bytes".*$/\1/p')
   test "$record_size" = "$(stat -c %s -- "$record_dump")" || return 1
+  record_sha256=$(printf '%s\n' "$record_json" | sed -n 's/^.*"dump_sha256":"\([0-9a-f]\{64\}\)","reason".*$/\1/p')
+  test -n "$record_sha256" || return 1
+  test "$record_sha256" = "$(sha256sum -- "$record_dump" | awk '{print $1}')" || return 1
+  pg_restore --list "$record_dump" >/dev/null 2>/dev/null || return 1
   record_created=$(printf '%s\n' "$record_json" | sed -n 's/^.*"created_at":"\([^"]*\)".*$/\1/p')
   strict_utc "$record_created" || return 1
   record_reason=$(printf '%s\n' "$record_json" | sed -n 's/^.*"reason":"\([^"]*\)".*$/\1/p')
@@ -745,9 +754,26 @@ recognize_pair() {
   printf '%s|%s|%s|%s|%s|%s|%s\n' "$record_created" "$recognized_id" "$recognized_record" "$record_dump" "$record_reason" "$record_current" "$record_candidate"
 }
 
+recorded_dump_reference() {
+  reference_record=$1
+  reference_id=$2
+  safe_private_file "$reference_record" || return 1
+  reference_json=$(cat -- "$reference_record") || return 1
+  printf '%s\n' "$reference_json" | grep -Eq "$record_pattern" || return 1
+  embedded_id=$(printf '%s\n' "$reference_json" | sed -n 's/^.*"backup_id":"\([0-9a-z-]*\)".*$/\1/p')
+  test "$embedded_id" = "$reference_id" || return 1
+  reference_dump=$(printf '%s\n' "$reference_json" | sed -n 's/^.*"dump_path":"\([^"]*\)",\("dump_sha256":"[0-9a-f]\{64\}",\)\{0,1\}"reason".*$/\1/p')
+  safe_path "$reference_dump" || return 1
+  case "$reference_dump" in "$backup_root"/*) ;; *) return 1;; esac
+  reference_name=${reference_dump##*/}
+  printf '%s\n' "$reference_name" | grep -Eq '^backup-[0-9a-f]{32}\.dump$' || return 1
+  printf '%s\n' "$reference_dump"
+}
+
 temporary_inventory=$(mktemp "$records_directory/.taskman-backup-inventory.XXXXXXXX") || backup_failure
 temporary_safe_inventory=$(mktemp "$records_directory/.taskman-backup-safe-inventory.XXXXXXXX") || backup_failure
 temporary_sorted_inventory=$(mktemp "$records_directory/.taskman-backup-sorted.XXXXXXXX") || backup_failure
+temporary_referenced_dumps=$(mktemp "$records_directory/.taskman-backup-references.XXXXXXXX") || backup_failure
 for record_path in "$records_directory"/* "$records_directory"/.[!.]* "$records_directory"/..?*; do
   test -e "$record_path" || test -L "$record_path" || continue
   record_name=${record_path##*/}
@@ -755,16 +781,17 @@ for record_path in "$records_directory"/* "$records_directory"/.[!.]* "$records_
     *) warning; continue;;
   esac
   record_id=${record_name%.json}
+  recorded_dump_reference "$record_path" "$record_id" >> "$temporary_referenced_dumps" || { warning; continue; }
   recognized=$(recognize_pair "$record_path" "$record_id") || { warning; continue; }
   printf '%s\n' "$recognized" >> "$temporary_inventory"
 done
 
-# A dump named in two individually valid records is contradictory lifecycle
-# state.  It is not safe to prune either side, because deleting the shared
-# file would make the other record stale.
+# A dump named by more than one syntactically recognized backup record is
+# contradictory lifecycle state.  A record that fails the stricter deletion
+# proof still blocks pruning: deleting the shared file would make it stale.
 while IFS= read -r recognized_line; do
   recognized_dump=$(printf '%s\n' "$recognized_line" | awk -F '|' '{print $4}')
-  recognized_count=$(awk -F '|' -v path="$recognized_dump" '$4 == path { count += 1 } END { print count + 0 }' "$temporary_inventory")
+  recognized_count=$(awk -v path="$recognized_dump" '$0 == path { count += 1 } END { print count + 0 }' "$temporary_referenced_dumps")
   if test "$recognized_count" = 1; then
     printf '%s\n' "$recognized_line" >> "$temporary_safe_inventory"
   else
@@ -779,7 +806,7 @@ done < "$temporary_inventory"
 for dump_path in "$backup_root"/* "$backup_root"/.[!.]* "$backup_root"/..?*; do
   test -e "$dump_path" || test -L "$dump_path" || continue
   case "$dump_path" in "$backup_root"/.taskman-backup-*) continue;; esac
-  if ! awk -F '|' -v path="$dump_path" '$4 == path { found=1 } END { exit found ? 0 : 1 }' "$temporary_inventory"; then
+  if ! awk -v path="$dump_path" '$0 == path { found=1 } END { exit found ? 0 : 1 }' "$temporary_referenced_dumps"; then
     warning
   fi
 done
@@ -813,4 +840,4 @@ while IFS='|' read -r record_created record_id record_path record_dump record_re
 done < "$temporary_sorted_inventory"
 
 record_published=1
-printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}"
+printf '%s\n' "{\"backup_id\":\"$backup_id\",\"candidate_release_id\":$candidate_json,\"created_at\":\"$created_at\",\"current_release_id\":$current_json,\"database\":\"$database_name\",\"dump_path\":\"$final_dump\",\"dump_sha256\":\"$dump_sha256\",\"reason\":\"$reason\",\"schema_version\":1,\"size_bytes\":$size_bytes,\"source_database_size_bytes\":$database_bytes,\"validated\":true}"

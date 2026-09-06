@@ -42,8 +42,8 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     assert service =~ "Group=taskman"
     assert service =~ "EnvironmentFile=/etc/taskman/taskman.env"
     assert service =~ "Environment=RELEASE_TMP=/var/lib/taskman"
-    assert service =~ "ExecStartPre={{TASKMAN_MANAGED_ROOT}}/current/bin/migrate"
-    assert service =~ "ExecStart={{TASKMAN_MANAGED_ROOT}}/current/bin/server"
+    assert service =~ "ExecStartPre={{TASKMAN_INSTALL_ROOT}}/current/bin/migrate"
+    assert service =~ "ExecStart={{TASKMAN_INSTALL_ROOT}}/current/bin/server"
     assert service =~ "KillSignal=SIGTERM"
     assert service =~ "Restart=on-failure"
 

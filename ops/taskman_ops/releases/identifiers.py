@@ -1,8 +1,8 @@
-"""Strict release identities and managed release paths.
+"""Strict release identities and validated release paths.
 
 Release IDs are accepted from operator input in later workflows, so this
 module deliberately accepts only the one target that Taskman currently
-supports.  Callers validate an ID before combining it with a managed root.
+supports.  Callers validate an ID before combining it with a release root.
 """
 
 from __future__ import annotations
@@ -52,10 +52,10 @@ def validate_release_id(value: str) -> str:
 
 
 def managed_release_path(root: PurePosixPath, release_id: str) -> PurePosixPath:
-    """Join a strict release ID below a prevalidated managed POSIX root."""
+    """Join a strict release ID below a prevalidated POSIX release root."""
 
     if not isinstance(root, PurePosixPath) or not root.is_absolute():
-        raise ValueError("managed release root must be an absolute POSIX path")
+        raise ValueError("release root must be an absolute POSIX path")
     return root / validate_release_id(release_id)
 
 

@@ -3,6 +3,12 @@
 **Status:** Approved
 **Date:** 2026-09-04
 
+> **Architecture superseded:** The controller-to-host execution model, independently configurable
+> managed paths, and affected repository boundaries in this design are superseded by
+> [Deployment controller simplification](2026-09-06-deployment-controller-simplification-design.md).
+> The behavioral, safety, recovery, and operator-control requirements remain authoritative unless
+> that specification explicitly replaces them.
+
 ## Summary
 
 Taskman already supports production operation as an immutable OTP release under systemd, with

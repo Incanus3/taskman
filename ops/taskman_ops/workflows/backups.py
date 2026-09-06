@@ -1,59 +1,114 @@
-"""Read-only backup discovery without revalidating dump contents."""
+"""Controller translation for helper-owned read-only backup discovery."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
+from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..releases.records import RemoteLifecycleStore
+from ..helper_package import HelperPackage, temporary_helper_package
+from ..helper_runner import HelperInvocation, invoke_helper, new_operation_id
+from ..host_protocol import HostRequest
+from ..host_helper.lifecycle import BackupRecord
+from ..remote import Remote
 from . import DiscoveryResult
+from .helper_results import lifecycle_lock_error, lifecycle_records_refusal
 
 
-def list_backups(store: RemoteLifecycleStore, *, lock_timeout_seconds: float = 5) -> DiscoveryResult:
-    """Return retained backup metadata and whether each dump is still regular.
-
-    The function intentionally does not call ``pg_restore --list``: validation
-    recorded when the dump was created remains evidence for listing, while the
-    destructive restore workflow will always perform a fresh validation.
-    """
-
-    if not isinstance(store, RemoteLifecycleStore):
-        raise TypeError("backup discovery requires a remote lifecycle store")
-    records, snapshot = store.read(operation="backups", lock_timeout_seconds=lock_timeout_seconds)
-    dump_states = snapshot["dump_states"]
-    if not isinstance(dump_states, Mapping):
-        raise _safety("remote lifecycle dump states are invalid")
-    warnings = list(records.warnings)
-    rows: list[dict[str, object]] = []
-    for backup in sorted(records.backups, key=lambda item: (item.created_at, item.backup_id), reverse=True):
-        dump_state = dump_states.get(backup.dump_path.as_posix())
-        if dump_state not in {"present", "stale"}:
-            raise _safety("remote lifecycle dump state is invalid")
-        if dump_state != "present":
-            warnings.append(f"backup metadata is stale: {backup.backup_id}")
-        rows.append(
-            {
-                "backup_id": backup.backup_id,
-                "created_at": backup.created_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
-                "size_bytes": backup.size_bytes,
-                "source_database_size_bytes": backup.source_database_size_bytes,
-                "database": backup.database,
-                "current_release_id": backup.current_release_id,
-                "candidate_release_id": backup.candidate_release_id,
-                "reason": backup.reason,
-                "validated": backup.validated,
-                "dump_path": backup.dump_path.as_posix(),
-                "dump_state": dump_state,
-            }
-        )
-    return DiscoveryResult(tuple(rows), tuple(sorted(warnings)))
+HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HelperInvocation]
 
 
-def _safety(message: str) -> OpsError:
+def list_backups(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    package: HelperPackage | None = None,
+    invoker: HelperInvoker = invoke_helper,
+) -> DiscoveryResult:
+    """Ask the helper for backup rows without locally inspecting dump paths."""
+
+    request = HostRequest(
+        protocol_version=1,
+        operation="list_backups",
+        operation_id=new_operation_id(),
+        expected_state={},
+        paths={"install_root": config.install_root.as_posix(), "backup_root": config.backup_root.as_posix()},
+        parameters={},
+    )
+    if package is None:
+        with temporary_helper_package() as temporary:
+            invocation = invoker(remote, temporary, request)
+    else:
+        invocation = invoker(remote, package, request)
+    result = invocation.result
+    if result.stage == "lifecycle-lock":
+        try:
+            raise lifecycle_lock_error(result)
+        except ValueError:
+            raise _invalid_result() from None
+    if result.outcome == "refused":
+        if not lifecycle_records_refusal(result):
+            raise _invalid_result()
+        raise _refused()
+    if result.outcome != "succeeded" or result.stage != "discovered":
+        raise _invalid_result()
+    if result.changed_stages or result.runtime_state or result.verification or result.residue_paths or result.recovery_actions:
+        raise _invalid_result()
+    if not isinstance(result.lifecycle, Mapping) or set(result.lifecycle) != {"state", "records", "warnings"}:
+        raise _invalid_result()
+    if type(result.lifecycle["state"]) is not str or result.lifecycle["state"] not in {"empty", "manual", "managed", "staged"}:
+        raise _invalid_result()
+    records = result.lifecycle["records"]
+    lifecycle_warnings = result.lifecycle["warnings"]
+    if not isinstance(records, (list, tuple)) or not isinstance(lifecycle_warnings, (list, tuple)) or not all(type(warning) is str for warning in lifecycle_warnings):
+        raise _invalid_result()
+    if tuple(lifecycle_warnings) != tuple(result.warnings):
+        raise _invalid_result()
+    parsed = tuple(_backup_row(row) for row in records)
+    if len({row["backup_id"] for row in parsed}) != len(parsed):
+        raise _invalid_result()
+    warnings = tuple(result.warnings)
+    if invocation.cleanup_warning is not None:
+        if type(invocation.cleanup_warning) is not str or not invocation.cleanup_warning:
+            raise _invalid_result()
+        if invocation.cleanup_warning not in warnings:
+            warnings = (*warnings, invocation.cleanup_warning)
+    return DiscoveryResult(parsed, warnings)
+
+
+def _backup_row(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or "dump_state" not in value:
+        raise _invalid_result()
+    record_fields = set(value) - {"dump_state"}
+    dump_state = value["dump_state"]
+    if (
+        record_fields not in {BackupRecord._FIELDS, BackupRecord._LEGACY_FIELDS}
+        or type(dump_state) is not str
+        or dump_state not in {"present", "stale"}
+    ):
+        raise _invalid_result()
+    try:
+        BackupRecord.from_mapping({key: value[key] for key in record_fields})
+    except (TypeError, ValueError):
+        raise _invalid_result() from None
+    return dict(value)
+
+
+def _refused() -> OpsError:
+    return OpsError(
+        ExitStatus.SAFETY,
+        "lifecycle-records",
+        "managed lifecycle state was refused",
+        changed=False,
+        next_action="inspect the managed lifecycle state and resolve the contradiction",
+    )
+
+
+def _invalid_result() -> OpsError:
     return OpsError(
         ExitStatus.SAFETY,
         "backup-discovery",
-        message,
+        "backup discovery returned invalid evidence",
         changed=False,
         next_action="resolve the managed lifecycle metadata before selecting a backup",
     )

@@ -231,7 +231,6 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
         return run_verify(remote, environment)
     if invocation.command in {"releases", "backups"}:
         from .config import load_environment
-        from .releases.records import RemoteLifecycleStore
         from .remote import connect
         from .workflows.backups import list_backups
         from .workflows.releases import list_releases
@@ -240,17 +239,7 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             raise ValueError(f"{invocation.command} requires an environment")
         environment = load_environment(invocation.environment)
         remote = connect(environment)
-        store = RemoteLifecycleStore(
-            remote,
-            environment.deployment_root,
-            environment.managed_root,
-            environment.release_root,
-            environment.backup_root,
-            application_port=environment.application_port,
-            distribution_port=environment.distribution_port,
-            database_port=environment.database_port,
-        )
-        discovery = list_releases(store) if invocation.command == "releases" else list_backups(store)
+        discovery = list_releases(remote, environment) if invocation.command == "releases" else list_backups(remote, environment)
         return WorkflowResult(
             command=invocation.command,
             environment=environment.name or invocation.environment,
@@ -261,28 +250,16 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
         )
     if invocation.command == "backup":
         from .config import load_environment
-        from .releases.records import RemoteLifecycleStore
         from .remote import connect
-        from .services.backups import BackupContext
         from .workflows.backup import run_backup
 
         if invocation.environment is None:
             raise ValueError("backup requires an environment")
         environment = load_environment(invocation.environment)
         remote = connect(environment)
-        store = RemoteLifecycleStore(
-            remote,
-            environment.deployment_root,
-            environment.managed_root,
-            environment.release_root,
-            environment.backup_root,
-            application_port=environment.application_port,
-            distribution_port=environment.distribution_port,
-            database_port=environment.database_port,
-        )
         return run_backup(
             remote,
-            BackupContext(environment, store),
+            environment,
             dry_run=invocation.dry_run,
         )
     if invocation.command == "deploy":

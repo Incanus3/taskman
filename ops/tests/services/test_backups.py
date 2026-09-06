@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
@@ -16,7 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.releases.records import ActivationRecord, ReleaseRecord
+from taskman_ops.host_helper.lifecycle import ActivationRecord, BackupRecord, ReleaseRecord
 from taskman_ops.services.backups import backup_service_contract, render_backup_timer, validate_systemd_calendar
 
 
@@ -92,6 +93,9 @@ if [ "${FAIL_PG_RESTORE:-}" = 1 ]; then
   printf '%s\\n' "$FAKE_SECRET" >&2
   exit 1
 fi
+if [ "${FAIL_PG_RESTORE_PATH:-}" = "$2" ]; then
+  exit 1
+fi
 exit 0
 """,
     )
@@ -108,13 +112,13 @@ _AUTOMATIC_CURRENT = object()
 
 
 def _prepare_direct_current(tmp_path: Path, release_id: str) -> None:
-    managed_root = tmp_path / "managed"
-    release_root = managed_root / "releases"
+    install_root = tmp_path / "managed"
+    release_root = install_root / "releases"
     deployment_root = tmp_path / "deployments"
     selected = release_root / release_id
     selected.mkdir(parents=True, exist_ok=True)
-    managed_root.mkdir(exist_ok=True)
-    current = managed_root / "current"
+    install_root.mkdir(exist_ok=True)
+    current = install_root / "current"
     current.unlink(missing_ok=True)
     current.symlink_to(selected)
     releases = deployment_root / "releases"
@@ -146,12 +150,12 @@ def _write_private_text(path: Path, contents: str) -> None:
 
 
 def _prepare_adopted_current(tmp_path: Path, release_id: str, *, migrations: str = "[]") -> Path:
-    managed_root = tmp_path / "managed"
-    release_root = managed_root / "releases"
+    install_root = tmp_path / "managed"
+    release_root = install_root / "releases"
     adopted = release_root / "historical" / "taskman"
     adopted.mkdir(parents=True)
-    managed_root.mkdir(exist_ok=True)
-    (managed_root / "current").symlink_to(adopted)
+    install_root.mkdir(exist_ok=True)
+    (install_root / "current").symlink_to(adopted)
     deployment_root = tmp_path / "deployments"
     bundle = deployment_root / "adoption-transactions" / f"adoption-{release_id}"
     bundle.mkdir(parents=True)
@@ -190,8 +194,8 @@ def _append_direct_activation(
 ) -> Path:
     """Append one later direct activation after an adopted genesis edge."""
 
-    managed_root = tmp_path / "managed"
-    release_root = managed_root / "releases"
+    install_root = tmp_path / "managed"
+    release_root = install_root / "releases"
     selected = release_root / release_id
     selected.mkdir(parents=True, exist_ok=True)
     _write_lifecycle_record(
@@ -218,10 +222,111 @@ def _append_direct_activation(
             ActivationRecord(1, activation_id, previous_release_id, release_id, activated_at, None, "no-change"),
         )
     if select:
-        current = managed_root / "current"
+        current = install_root / "current"
         current.unlink(missing_ok=True)
         current.symlink_to(selected)
     return selected
+
+
+def test_scheduled_backup_reads_a_finalized_helper_checksum_record(
+    tmp_path: Path,
+) -> None:
+    """The timer must not refuse a prior backup published by the host helper."""
+
+    _prepare_direct_current(tmp_path, RELEASE_A)
+    backup_id = "backup-" + "e" * 32
+    dump = tmp_path / "backups" / f"{backup_id}.dump"
+    dump.parent.mkdir(exist_ok=True)
+    dump.write_bytes(b"custom-format-dump\n")
+    dump.chmod(0o600)
+    record = BackupRecord(
+        1,
+        backup_id,
+        FIRST,
+        dump.stat().st_size,
+        1_048_576,
+        "taskman_prod",
+        RELEASE_A,
+        None,
+        "scheduled",
+        True,
+        PurePosixPath(dump.as_posix()),
+        hashlib.sha256(dump.read_bytes()).hexdigest(),
+    )
+    record_path = tmp_path / "deployments" / "backups" / f"{backup_id}.json"
+    _write_lifecycle_record(record_path, record)
+
+    completed = _run_backup(tmp_path, "--retention", "1", selected_release=None)
+
+    assert completed.returncode == 0, completed.stderr
+    assert not record_path.exists()
+    assert not dump.exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("legacy", "wrong-digest", "noncanonical-path", "invalid-format"),
+)
+def test_scheduled_backup_pruning_retains_unproved_helper_backup(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Timer pruning needs the same proof as the helper before either unlink."""
+
+    _prepare_direct_current(tmp_path, RELEASE_A)
+    backup_id = "backup-" + "e" * 32
+    dump = tmp_path / "backups" / f"{backup_id}.dump"
+    dump.parent.mkdir(exist_ok=True)
+    dump.write_bytes(b"custom-format-dump\n")
+    dump.chmod(0o600)
+    record = BackupRecord(
+        1,
+        backup_id,
+        FIRST,
+        dump.stat().st_size,
+        1_048_576,
+        "taskman_prod",
+        RELEASE_A,
+        None,
+        "scheduled",
+        True,
+        PurePosixPath(dump.as_posix()),
+        hashlib.sha256(dump.read_bytes()).hexdigest(),
+    )
+    record_path = tmp_path / "deployments" / "backups" / f"{backup_id}.json"
+    _write_lifecycle_record(record_path, record)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    environment: dict[str, str] = {}
+
+    if mutation == "legacy":
+        payload.pop("dump_sha256")
+    elif mutation == "wrong-digest":
+        payload["dump_sha256"] = "f" * 64
+    elif mutation == "noncanonical-path":
+        redirected = dump.with_name("backup-" + "f" * 32 + ".dump")
+        redirected.write_bytes(dump.read_bytes())
+        redirected.chmod(0o600)
+        payload["dump_path"] = redirected.as_posix()
+    else:
+        environment["FAIL_PG_RESTORE_PATH"] = dump.as_posix()
+
+    record_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    record_path.chmod(0o600)
+
+    completed = _run_backup(
+        tmp_path,
+        "--retention",
+        "1",
+        selected_release=None,
+        environment=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert record_path.exists()
+    assert dump.exists()
 
 
 def _run_backup(
@@ -235,8 +340,8 @@ def _run_backup(
     backup_root = tmp_path / "backups"
     deployment_root = tmp_path / "deployments"
     lock_root = tmp_path / "locks"
-    managed_root = tmp_path / "managed"
-    release_root = managed_root / "releases"
+    install_root = tmp_path / "managed"
+    release_root = install_root / "releases"
     requested_current = next(
         (extra[index + 1] for index, value in enumerate(extra[:-1]) if value == "--current-release"),
         None,
@@ -268,8 +373,8 @@ def _run_backup(
             str(backup_root),
             "--deployment-root",
             str(deployment_root),
-            "--managed-root",
-            str(managed_root),
+            "--install-root",
+            str(install_root),
             "--release-root",
             str(release_root),
             "--lock-root",
@@ -447,7 +552,7 @@ def test_backup_service_contract_declares_only_root_assets_and_nonsecret_timer_e
         "TASKMAN_BACKUP_DATABASE_NAME": "taskman_prod",
         "TASKMAN_BACKUP_ROOT": "/var/backups/taskman",
         "TASKMAN_DEPLOYMENT_ROOT": "/opt/taskman/deployments",
-        "TASKMAN_MANAGED_ROOT": "/opt/taskman",
+        "TASKMAN_INSTALL_ROOT": "/opt/taskman",
         "TASKMAN_RELEASE_ROOT": "/opt/taskman/releases",
         "TASKMAN_BACKUP_RETENTION": "14",
     }
@@ -1055,7 +1160,7 @@ def test_backup_asset_cleans_operation_owned_state_before_releasing_the_lifecycl
             [
                 "sh", str(ASSET), "--database-host", "127.0.0.1", "--database-port", "5432",
                 "--database-role", "taskman", "--database-name", "taskman_prod", "--backup-root", str(tmp_path / "backups"),
-                "--deployment-root", str(tmp_path / "deployments"), "--managed-root", str(tmp_path / "managed"),
+                "--deployment-root", str(tmp_path / "deployments"), "--install-root", str(tmp_path / "managed"),
                 "--release-root", str(tmp_path / "managed" / "releases"), "--lock-root", str(tmp_path / "locks"),
                 "--retention", "2", "--reason", "scheduled",
             ],

@@ -7,6 +7,7 @@ from collections import deque
 import pytest
 
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host.acceptance import validate_operational_host
 from taskman_ops.host.facts import (
     CaddyState,
     HostFacts,

@@ -4,15 +4,16 @@ import os
 from pathlib import Path
 import subprocess
 
-import pytest
-
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.errors import ExitStatus
 import taskman_ops.host.firewall as firewall
-from taskman_ops.host.firewall import apply_firewall, build_firewall_plan, render_firewall_convergence_script
+from taskman_ops.host.firewall import (
+    build_firewall_plan,
+    render_firewall_convergence_script,
+    verify_fresh_ssh_connection,
+)
 from taskman_ops.remote import CommandResult
-from tests.fakes import ScriptedRemote
 
 
 def config() -> EnvironmentConfig:
@@ -35,15 +36,6 @@ def test_firewall_allows_the_active_ssh_port_before_any_enablement_and_only_expo
         ("ufw", "deny", "4369/tcp"),
         ("ufw", "default", "deny", "incoming"),
     )
-    assert plan.enablement == ("ufw", "--force", "enable")
-
-
-def test_firewall_plan_requires_a_fresh_ssh_check_after_convergence() -> None:
-    """Dropping the post-firewall connection verification must fail this."""
-
-    plan = build_firewall_plan(config())
-
-    assert plan.post_convergence_checks == (("ssh", "fresh-connection", "2202"),)
 
 
 def test_firewall_does_not_export_an_ungated_mutating_pyinfra_capability() -> None:
@@ -190,10 +182,9 @@ esac""",
     assert completed.stdout == "changed=0\n"
 
 
-def test_firewall_execution_requires_a_fresh_connection_after_the_remote_transaction() -> None:
-    """A metadata-only SSH check must not let a firewall transaction succeed."""
+def test_firewall_boundary_requires_a_fresh_strict_connection() -> None:
+    """A metadata-only SSH check must not let firewall activation succeed."""
 
-    remote = ScriptedRemote.from_responses([CommandResult(0, "changed=0\n")])
     fresh = _FreshRemote()
     calls = 0
 
@@ -202,21 +193,11 @@ def test_firewall_execution_requires_a_fresh_connection_after_the_remote_transac
         calls += 1
         return fresh
 
-    changed = apply_firewall(remote, config(), connector=connector)
+    verify_fresh_ssh_connection(config(), connector=connector)
 
-    assert changed is False
     assert calls == 1
     assert fresh.calls == [("true",)]
     assert fresh.closed is True
-
-
-def test_firewall_refusal_prevents_the_post_execution_connection_check() -> None:
-    remote = ScriptedRemote.from_responses([CommandResult(int(ExitStatus.SAFETY), stderr="unsafe firewall")])
-
-    with pytest.raises(OpsError) as raised:
-        apply_firewall(remote, config(), connector=lambda _config: pytest.fail("must not reconnect"))
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
 class _FreshRemote:

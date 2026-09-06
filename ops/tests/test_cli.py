@@ -217,6 +217,30 @@ def test_json_and_dry_run_reach_dispatch_invocation(capsys: pytest.CaptureFixtur
     assert captured.err == ""
 
 
+def test_public_verify_dispatch_uses_optional_current_release_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public verify command must not synthesize a deploy-only release assertion."""
+
+    environment = object()
+    remote = object()
+    seen: list[tuple[object, object, object]] = []
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.verify.run_verify",
+        lambda actual_remote, actual_environment, expected_release_id=None: seen.append(
+            (actual_remote, actual_environment, expected_release_id)
+        )
+        or WorkflowResult(command="verify", environment="production", changed=False, stage="verified", facts={}),
+    )
+
+    result = dispatch(Invocation(command="verify", environment="production"))
+
+    assert result.stage == "verified"
+    assert seen == [(remote, environment, None)]
+
+
 def test_malformed_dispatch_result_maps_to_stable_secret_free_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

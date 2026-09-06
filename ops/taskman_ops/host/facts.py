@@ -12,7 +12,6 @@ from pathlib import PurePosixPath
 from typing import Callable, Iterable
 
 from ..config import EnvironmentConfig
-from ..errors import ExitStatus, OpsError
 from ..remote import CommandResult, Remote
 from ..services.caddy import render_caddyfile
 
@@ -135,6 +134,47 @@ _CAPACITY_SCRIPT = (
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
     'df -B1 --output=avail "$path"'
 )
+_RUNTIME_ENVIRONMENT = "/etc/taskman/taskman.env"
+_PGPASS = "/etc/taskman/pgpass"
+_REQUIRED_RUNTIME_KEYS = (
+    "DATABASE_URL",
+    "SECRET_KEY_BASE",
+    "ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET",
+    "PHX_HOST",
+    "RESEND_API_KEY",
+    "MAIL_FROM",
+    "PORT",
+    "POOL_SIZE",
+    "PHX_SERVER",
+)
+_RUNTIME_PREFLIGHT = r'''set -eu
+path=$1
+shift
+test -f "$path" && test ! -L "$path"
+test "$(stat -c '%U:%G:%a' -- "$path")" = root:root:600
+for required do
+  awk -F= -v required="$required" '
+    $1 == required { count += 1; if (length($0) <= length(required) + 1) empty = 1 }
+    END { exit count == 1 && !empty ? 0 : 1 }
+  ' "$path"
+done
+command -v python3 >/dev/null 2>&1
+'''
+_DATABASE_PREFLIGHT = r'''set -eu
+database_host=$1; database_port=$2; database_role=$3; database_name=$4; backup_root=$5; pgpass=$6
+test -f "$pgpass" && test ! -L "$pgpass"
+test "$(stat -c '%U:%G:%a' -- "$pgpass")" = root:root:600
+export PGPASSFILE=$pgpass
+psql --no-psqlrc --host "$database_host" --port "$database_port" --username "$database_role" --dbname "$database_name" --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>&1
+database_bytes=$(psql --no-psqlrc --host "$database_host" --port "$database_port" --username "$database_role" --dbname "$database_name" --tuples-only --no-align --command 'SELECT pg_database_size(current_database())' 2>/dev/null)
+available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
+case "$database_bytes:$available_bytes" in *[!0-9:]*|*::*|:*) exit 1;; esac
+test "$database_bytes" -gt 0 && test "$database_bytes" -le 900000000000000000
+margin=$(( (database_bytes + 9) / 10 ))
+test "$margin" -ge 67108864 || margin=67108864
+required=$(( database_bytes + margin ))
+test "$available_bytes" -ge "$required"
+'''
 
 
 class DiscoveryState(str, Enum):
@@ -151,14 +191,6 @@ class ProvisioningMarkerState(str, Enum):
     ABSENT = "absent"
     MANAGED = "managed"
     UNKNOWN = "unknown"
-
-
-class ProvisioningState(str, Enum):
-    """The only host states the clean-host provisioning workflow may continue."""
-
-    PRISTINE = "pristine"
-    PARTIAL = "partial"
-    MANAGED = "managed"
 
 
 class CaddyState(str, Enum):
@@ -229,7 +261,7 @@ def collect_host_facts(
 
     paths = _managed_paths(config)
 
-    # Keep this collection phase unconditional.  An unsupported fact must not
+    # Keep this collection step unconditional. An unsupported fact must not
     # short-circuit later reads: refusal happens only after the snapshot is
     # complete, and this function never invokes a mutating remote operation.
     os_release = remote.run(("cat", "/etc/os-release"))
@@ -239,7 +271,7 @@ def collect_host_facts(
     memory = remote.run(
         ("sh", "-c", "awk '/MemTotal:/{printf \"%.0f\\n\", $2 * 1024; exit}' /proc/meminfo")
     )
-    disk = _capacity(remote, config.managed_root)
+    disk = _capacity(remote, config.install_root)
     backup_disk = _capacity(remote, config.backup_root)
     active_ssh = remote.run(("sh", "-c", "printf '%s\\n' \"${SSH_CONNECTION##* }\""))
     listeners = remote.run(("ss", "-H", "-ltn"))
@@ -336,7 +368,7 @@ def collect_host_facts(
         ("PID 1", pid1),
         ("administrator sudo", sudo),
         ("memory", memory),
-        ("managed-root disk", disk),
+        ("install-root disk", disk),
         ("backup-root disk", backup_disk),
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
@@ -395,107 +427,9 @@ def collect_host_facts(
     )
 
 
-def validate_supported_host(
-    remote: Remote,
-    config: EnvironmentConfig,
-    *,
-    resolver: Callable[[str], Iterable[str]] | None = None,
-) -> HostFacts:
-    """Return validated host facts or refuse before any managed-state adoption."""
-
-    facts = collect_host_facts(remote, config, resolver=resolver)
-
-    _validate_host_platform(facts, config)
-    if _managed_conflicts(facts, config) or facts.caddy_state is not CaddyState.ABSENT:
-        raise _safety("existing managed state is ambiguous and will not be adopted")
-
-    return facts
-
-
-def validate_operational_host(
-    remote: Remote,
-    config: EnvironmentConfig,
-    *,
-    resolver: Callable[[str], Iterable[str]] | None = None,
-) -> HostFacts:
-    """Validate platform and managed PostgreSQL prerequisites without pristine-state rules."""
-
-    cached_facts = getattr(remote, "facts", None)
-    facts = (
-        cached_facts()
-        if callable(cached_facts) and resolver is None
-        else collect_host_facts(remote, config, resolver=resolver)
-    )
-    if not isinstance(facts, HostFacts):
-        raise TypeError("operational host discovery returned invalid facts")
-    _validate_host_platform(facts, config)
-    if not facts.postgres_available or facts.postgres_sudo_available is not True:
-        raise _preflight("managed PostgreSQL prerequisites are unavailable")
-    return facts
-
-
-def validate_provisionable_host(
-    remote: Remote,
-    config: EnvironmentConfig,
-    *,
-    resolver: Callable[[str], Iterable[str]] | None = None,
-    expected_caddyfile_sha256: str,
-) -> ProvisioningDiscovery:
-    """Classify only a pristine host or state anchored by Taskman's own marker.
-
-    This is deliberately separate from :func:`validate_supported_host`: other
-    callers retain the pristine-host refusal. Provisioning supplies the
-    SHA-256 of its already rendered Caddy plan, so discovery cannot re-render
-    local Caddy configuration after confirmation or connection. The marker is
-    written as part of the baseline's first durable convergence, so a later
-    retry can distinguish Taskman's own partial state from an untrusted
-    lookalike. Release records and live service evidence stay authoritative at
-    the shared release transaction and verification boundaries that consume them.
-    """
-
-    facts = collect_host_facts(
-        remote,
-        config,
-        resolver=resolver,
-        expected_caddyfile_sha256=expected_caddyfile_sha256,
-    )
-    _validate_host_platform(facts, config)
-    return ProvisioningDiscovery(
-        facts=facts,
-        state=_provisioning_state(facts, config),
-        caddy_state=facts.caddy_state,
-    )
-
-
-def _validate_host_platform(facts: HostFacts, config: EnvironmentConfig) -> None:
-    if facts.failed_checks:
-        raise _preflight("required host fact collection failed")
-    if facts.os_id != "ubuntu" or facts.ubuntu_release != "26.04":
-        raise _unsupported("host must run Ubuntu 26.04")
-    if facts.architecture != "amd64":
-        raise _unsupported("host must use amd64 or x86_64 architecture")
-    if not facts.systemd:
-        raise _unsupported("host PID 1 must be systemd")
-    if facts.memory_bytes < MINIMUM_MEMORY_BYTES:
-        raise _unsupported("host does not meet the minimum memory requirement")
-    if (
-        facts.available_disk_bytes < MINIMUM_DISK_BYTES
-        or facts.backup_available_disk_bytes < MINIMUM_DISK_BYTES
-    ):
-        raise _unsupported("host does not meet the minimum disk requirement")
-    if facts.dns_addresses != _expected_addresses(config):
-        raise _unsupported("public DNS does not resolve directly to the configured VPS address")
-    if not facts.sudo_available:
-        raise _preflight("configured administrator cannot use passwordless sudo")
-    if facts.postgres_sudo_available is False:
-        raise _preflight("configured administrator cannot inspect PostgreSQL as postgres")
-    if facts.active_ssh_port != config.ssh_port:
-        raise _preflight("active SSH connection port does not match configuration")
-
-
 def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
     return (
-        config.managed_root,
+        config.install_root,
         config.release_root,
         config.deployment_root,
         config.backup_root,
@@ -516,92 +450,42 @@ def _expected_caddyfile_hash(config: EnvironmentConfig, supplied_hash: str | Non
     return hashlib.sha256(render_caddyfile(config).encode("utf-8")).hexdigest()
 
 
-def _provisioning_state(facts: HostFacts, config: EnvironmentConfig) -> ProvisioningState:
-    """Refuse every unanchored or contradictory managed-state shape."""
+def collect_operational_preflight(
+    remote: Remote, config: EnvironmentConfig
+) -> tuple[CommandResult, CommandResult]:
+    """Collect non-secret runtime and database prerequisite evidence."""
 
-    managed_evidence = bool(
-        facts.existing_paths
-        or facts.existing_units
-        or facts.existing_accounts
-        or facts.existing_databases
-        or facts.postgres_available
-        or _reserved_listeners(facts, config)
-        or facts.caddy_state is not CaddyState.ABSENT
+    runtime = remote.run(
+        (
+            "sh",
+            "-ceu",
+            _RUNTIME_PREFLIGHT,
+            "taskman-runtime-preflight",
+            _RUNTIME_ENVIRONMENT,
+            *_REQUIRED_RUNTIME_KEYS,
+        ),
+        sudo=True,
+        stdin=None,
+        sensitive=True,
     )
-    if facts.provisioning_marker is ProvisioningMarkerState.ABSENT:
-        if managed_evidence:
-            raise _safety("existing managed state has no Taskman provisioning marker and will not be adopted")
-        return ProvisioningState.PRISTINE
-    if facts.provisioning_marker is not ProvisioningMarkerState.MANAGED:
-        raise _safety("Taskman provisioning marker is invalid and will not be adopted")
-
-    _validate_managed_service_boundaries(facts, config)
-    return ProvisioningState.MANAGED if _fully_managed(facts, config) else ProvisioningState.PARTIAL
-
-
-def _reserved_listeners(facts: HostFacts, config: EnvironmentConfig) -> tuple[Listener, ...]:
-    ports = {80, 443, config.application_port, config.distribution_port, config.database_port}
-    return tuple(listener for listener in facts.listeners if listener.port in ports)
-
-
-def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentConfig) -> None:
-    """Connect recognized managed files, units, databases, and socket topology."""
-
-    paths = set(facts.existing_paths)
-    units = set(facts.existing_units)
-    service_path = PurePosixPath("/etc/systemd/system/taskman.service")
-    caddy_path = _CADDYFILE
-    taskman_units = {"taskman.service", "taskman-backup.service", "taskman-backup.timer"}
-
-    if facts.existing_databases and (not facts.postgres_available or not facts.existing_accounts):
-        raise _safety("Taskman database evidence is missing its managed service boundaries")
-    if units.intersection(taskman_units) and service_path not in paths:
-        raise _safety("Taskman service units are missing their managed unit boundary")
-    if facts.caddy_state is CaddyState.INVALID:
-        raise _safety("Caddy ownership evidence is unrecognized or contradictory")
-    if facts.caddy_state is CaddyState.ABSENT and (
-        "caddy.service" in units or caddy_path in paths
-    ):
-        raise _safety("Caddy artifacts are missing validated ownership evidence")
-    if facts.caddy_state is CaddyState.PREPARED and caddy_path in paths:
-        raise _safety("Caddy configuration is missing validated ownership evidence")
-    if facts.caddy_state in {CaddyState.STAGED, CaddyState.ACTIVE} and (
-        "caddy.service" not in units or caddy_path not in paths
-    ):
-        raise _safety("Caddy service evidence is missing its managed configuration boundary")
-
-    for listener in _reserved_listeners(facts, config):
-        if listener.port in {80, 443}:
-            valid = facts.caddy_state is CaddyState.ACTIVE
-        elif listener.port == config.database_port:
-            valid = facts.postgres_available and _loopback(listener.address)
-        else:
-            valid = "taskman.service" in units and _loopback(listener.address)
-        if not valid:
-            raise _safety("managed listener topology is unrecognized or contradictory")
-
-
-def _fully_managed(facts: HostFacts, config: EnvironmentConfig) -> bool:
-    required_paths = set(_managed_paths(config))
-    required_units = set(_SYSTEMD_UNITS)
-    listener_ports = {listener.port for listener in _reserved_listeners(facts, config)}
-    required_ports = {80, 443, config.application_port, config.distribution_port, config.database_port}
-    return (
-        required_paths.issubset(facts.existing_paths)
-        and required_units.issubset(facts.existing_units)
-        and facts.existing_accounts == (_ACCOUNT_NAME,)
-        and facts.existing_databases == (config.database_name,)
-        and facts.postgres_available
-        and facts.caddy_state is CaddyState.ACTIVE
-        and required_ports.issubset(listener_ports)
+    database = remote.run(
+        (
+            "sh",
+            "-ceu",
+            _DATABASE_PREFLIGHT,
+            "taskman-database-preflight",
+            config.database_host,
+            str(config.database_port),
+            config.database_role,
+            config.database_name,
+            config.backup_root.as_posix(),
+            _PGPASS,
+        ),
+        sudo=True,
+        stdin=None,
+        sensitive=True,
     )
-
-
-def _loopback(address: str) -> bool:
-    try:
-        return ipaddress.ip_address(address).is_loopback
-    except ValueError:
-        return False
+    return runtime, database
 
 
 def _capacity(remote: Remote, root: PurePosixPath) -> CommandResult:
@@ -914,47 +798,12 @@ def _stdout(result: CommandResult) -> str:
     return result.stdout if isinstance(result.stdout, str) else ""
 
 
-def _unsupported(message: str) -> OpsError:
-    return OpsError(
-        status=ExitStatus.INVALID,
-        stage="host-preflight",
-        message=message,
-        changed=False,
-        next_action="use a supported clean Ubuntu 26.04 amd64 host and correct the environment configuration",
-    )
-
-
-def _preflight(message: str) -> OpsError:
-    return OpsError(
-        status=ExitStatus.REMOTE_PREFLIGHT,
-        stage="host-preflight",
-        message=message,
-        changed=False,
-        next_action="restore SSH administrator connectivity and required sudo access before retrying",
-    )
-
-
-def _safety(message: str) -> OpsError:
-    return OpsError(
-        status=ExitStatus.SAFETY,
-        stage="host-preflight",
-        message=message,
-        changed=False,
-        next_action="inspect the existing state and use an explicit later adoption workflow if authorized",
-    )
-
-
 __all__ = [
     "CaddyState",
     "HostFacts",
     "Listener",
     "MINIMUM_DISK_BYTES",
     "MINIMUM_MEMORY_BYTES",
-    "ProvisioningDiscovery",
     "ProvisioningMarkerState",
-    "ProvisioningState",
     "collect_host_facts",
-    "validate_provisionable_host",
-    "validate_operational_host",
-    "validate_supported_host",
 ]

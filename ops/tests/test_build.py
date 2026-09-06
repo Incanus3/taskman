@@ -11,7 +11,7 @@ import pytest
 from taskman_ops.build import CommandResult, SourceState, build_release, read_application_version
 from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
-from taskman_ops.manifests import MigrationFingerprint
+from taskman_ops.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, MigrationFingerprint
 
 
 REVISION = "c" * 40
@@ -107,6 +107,8 @@ def test_build_passes_the_exact_clean_revision_to_an_amd64_buildkit_invocation(t
     assert artifact.manifest.release_id == RELEASE_ID
     assert artifact.manifest.hex_version == "2.5.1"
     assert artifact.manifest.rebar3_version == "3.24.0"
+    assert artifact.manifest.builder_base_tag == BUILDER_BASE_TAG
+    assert artifact.manifest.builder_base_digest == BUILDER_BASE_DIGEST
     assert artifact.archive.name == f"taskman-{RELEASE_ID}.tar.gz"
     assert stat.S_IMODE(artifact.archive.stat().st_mode) == 0o600
     assert stat.S_IMODE(artifact.manifest_path.stat().st_mode) == 0o600
@@ -132,6 +134,17 @@ def test_builder_containerfile_pins_hex_and_rebar_without_live_latest_resolution
     assert '--sha512 "$REBAR3_SHA512"' in source
     assert "mix local.hex --force" not in source
     assert "mix local.rebar --force" not in source
+
+
+def test_builder_containerfile_pins_the_readable_ubuntu_base_tag_and_digest() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "builder" / "Containerfile"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "FROM ubuntu:resolute-20260811.1@sha256:"
+        "2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS build"
+    ) in source
 
 
 def test_failed_build_retains_one_private_artifact_directory_for_an_exact_retry(tmp_path: Path) -> None:

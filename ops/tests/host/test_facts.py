@@ -12,16 +12,18 @@ import pytest
 from tests.fakes import ScriptedRemote
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host.acceptance import (
+    ProvisioningState,
+    validate_provisionable_host,
+    validate_supported_host,
+)
 from taskman_ops.host.facts import (
     MINIMUM_DISK_BYTES,
     MINIMUM_MEMORY_BYTES,
     HostFacts,
     ProvisioningMarkerState,
-    ProvisioningState,
     _CADDY_EVIDENCE_SCRIPT,
     _caddy_evidence,
-    validate_provisionable_host,
-    validate_supported_host,
 )
 from taskman_ops.remote import CommandResult
 
@@ -657,9 +659,7 @@ def test_inability_to_inspect_present_postgresql_refuses_preflight(
 def test_preflight_requests_integer_memory_and_nearest_existing_ancestor_capacity() -> None:
     nested_config = EnvironmentConfig.model_validate(
         valid_environment(
-            managed_root="/srv/taskman/absent/managed",
-            release_root="/srv/taskman/absent/managed/releases",
-            deployment_root="/srv/taskman/absent/managed/deployments",
+            install_root="/srv/taskman/absent/managed",
             backup_root="/var/backups/taskman/absent/backups",
         )
     )
