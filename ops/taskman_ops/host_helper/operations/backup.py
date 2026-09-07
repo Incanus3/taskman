@@ -38,6 +38,7 @@ def backup(request: HostRequest) -> HostResult:
     try:
         credentials, database, purpose = _inputs(request)
         paths = ManagedPaths.from_mapping(request.paths)
+        _validate_authoritative_paths(paths)
         with lifecycle_lock(paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             _prepare_backup_root(paths)
             _normalize_incomplete_backups(paths)
@@ -52,6 +53,16 @@ def backup(request: HostRequest) -> HostResult:
                 purpose=purpose,
             )
             final_state = observe_host_state(paths)
+            dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
+            facts = {
+                "backup_id": record.backup_id,
+                "dump_path": dump.as_posix(),
+                "size_bytes": dump.stat().st_size,
+                "source_database_size_bytes": record.source_database_size_bytes,
+                "selected_release_id": final_state.selected_release_id,
+                "service_state": final_state.service_state,
+                "database_state": final_state.database_state,
+            }
     except LifecycleLockContention:
         return _result(request, "retryable", "lifecycle lock is unavailable", {"locked": True})
     except (StateAmbiguityError, BackupAuthorityError):
@@ -71,20 +82,11 @@ def backup(request: HostRequest) -> HostResult:
             _state_projection(state),
         )
 
-    dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
     return _result(
         request,
         "succeeded",
         "validated backup completed",
-        {
-            "backup_id": record.backup_id,
-            "dump_path": dump.as_posix(),
-            "size_bytes": dump.stat().st_size,
-            "source_database_size_bytes": record.source_database_size_bytes,
-            "selected_release_id": final_state.selected_release_id,
-            "service_state": final_state.service_state,
-            "database_state": final_state.database_state,
-        },
+        facts,
         final_state.warnings,
     )
 
@@ -200,6 +202,15 @@ def _prepare_backup_root(paths: ManagedPaths) -> None:
         or details.st_mode & 0o7022
     ):
         raise BackupAuthorityError("backup root is unsafe")
+
+
+def _validate_authoritative_paths(paths: ManagedPaths) -> None:
+    """Classify unsafe managed roots as ambiguous before lock acquisition."""
+
+    try:
+        paths.validate_existing(owner_uid=os.geteuid())
+    except PathAuthorityError as error:
+        raise StateAmbiguityError("managed backup authority is unsafe") from error
 
 
 def _safe_credentials(path: Path) -> None:

@@ -32,6 +32,7 @@ def cleanup(request: HostRequest) -> HostResult:
     try:
         action, requested, release_retention, backup_retention, expected_selected = _inputs(request)
         paths = ManagedPaths.from_mapping(request.paths)
+        _validate_authoritative_paths(paths)
         with lifecycle_lock(paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             _normalize_incomplete_backups(paths)
             state = observe_host_state(paths)
@@ -155,7 +156,7 @@ def _plan(
     protected_releases.update(
         record.previous_release_id for record in recent_selections if record.previous_release_id
     )
-    protected_backups = {record.backup_id for record in recent_selections if record.backup_id}
+    protected_backups = {record.backup_id for record in state.selections if record.backup_id}
     protected_backups.update(record.backup_id for record in sorted(state.backups, key=lambda item: item.backup_id, reverse=True)[:backup_retention])
     protected_releases.update(
         record.source_release_id for record in state.backups if record.backup_id in protected_backups
@@ -231,6 +232,15 @@ def _normalize_incomplete_backups(paths: ManagedPaths) -> None:
         _safe_file(entry)
         entry.unlink()
         _fsync_directory(root)
+
+
+def _validate_authoritative_paths(paths: ManagedPaths) -> None:
+    """Classify unsafe managed roots as ambiguity before lock acquisition."""
+
+    try:
+        paths.validate_existing(owner_uid=os.geteuid())
+    except PathAuthorityError as error:
+        raise StateAmbiguityError("managed cleanup authority is unsafe") from error
 
 
 def _delete_target(target: Mapping[str, object], state: HostState, paths: ManagedPaths) -> bool:

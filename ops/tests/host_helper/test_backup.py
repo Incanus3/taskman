@@ -220,3 +220,80 @@ def test_backup_keeps_a_dump_when_its_manifest_path_is_an_ambiguous_symlink(
 
     assert result.outcome == "manual"
     assert dump.exists()
+
+
+def test_backup_reports_an_unsafe_authoritative_root_as_manual_before_locking(tmp_path: Path) -> None:
+    """Treating a root symlink as contention would tell the operator to retry unsafe authority."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    install = tmp_path / "install"
+    install.symlink_to(outside, target_is_directory=True)
+    paths = ManagedPaths.from_mapping(
+        {"install_root": install.as_posix(), "backup_root": (tmp_path / "backups").as_posix()}
+    )
+
+    result = backup_module.backup(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "manual"
+    assert result.state == {}
+    assert outside.is_dir()
+
+
+def test_backup_keeps_actual_lock_contention_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an acquired-path lock deadline warrants a retryable lock outcome."""
+
+    paths = _paths(tmp_path)
+
+    def locked(*_args: object, **_kwargs: object):
+        class Lock:
+            def __enter__(self) -> None:
+                raise backup_module.LifecycleLockContention("held")
+
+            def __exit__(self, *_exception: object) -> None:
+                return None
+
+        return Lock()
+
+    monkeypatch.setattr(backup_module, "lifecycle_lock", locked)
+
+    result = backup_module.backup(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "retryable"
+    assert result.state == {"locked": True}
+
+
+def test_backup_keeps_a_raced_dump_inside_a_coarse_retryable_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dump disappearing while success facts are built must not escape the final protocol."""
+
+    paths = _paths(tmp_path)
+    _publish_selected_release(paths)
+    credentials = _credentials(tmp_path)
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    monkeypatch.setattr(backup_module, "run_command", _command_double(calls))
+    original_stat = Path.stat
+    original_create = backup_module.create_validated_backup
+    raced_path: Path | None = None
+
+    def raced_stat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == raced_path and kwargs.get("follow_symlinks", True):
+            raise FileNotFoundError(path)
+        return original_stat(path, *args, **kwargs)
+
+    def create(*args: object, **kwargs: object) -> BackupRecord:
+        nonlocal raced_path
+        record = original_create(*args, **kwargs)
+        raced_path = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
+        return record
+
+    monkeypatch.setattr(backup_module, "create_validated_backup", create)
+    monkeypatch.setattr(Path, "stat", raced_stat)
+
+    result = backup_module.backup(_request(paths, credentials))
+
+    assert result.outcome == "retryable"
+    assert result.message == "backup did not complete; rerun to converge"

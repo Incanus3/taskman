@@ -34,7 +34,7 @@ def _paths(tmp_path: Path) -> ManagedPaths:
 
 
 def _release(release_id: str) -> ReleaseRecord:
-    source = "a" * 40 if release_id == RELEASE else "b" * 40
+    source = release_id.split("-")[1] + ("0" * 28)
     return ReleaseRecord(release_id, source, "c" * 64, ())
 
 
@@ -195,6 +195,7 @@ def test_cleanup_requires_a_replan_when_the_dangerous_target_set_grows(tmp_path:
 
     assert result.outcome == "refused"
     assert path.exists()
+    assert Path(paths.local(paths.backup_root / f"{STALE_BACKUP}.dump")).is_file()
 
 
 def test_cleanup_returns_manual_for_an_ambiguous_authoritative_target(tmp_path: Path) -> None:
@@ -212,3 +213,77 @@ def test_cleanup_returns_manual_for_an_ambiguous_authoritative_target(tmp_path: 
 
     assert result.outcome == "manual"
     assert outside.exists()
+
+
+def test_cleanup_preserves_backups_referenced_by_older_selection_history(tmp_path: Path) -> None:
+    """Dropping an old selection backup would make the final observed history contradictory."""
+
+    paths = _paths(tmp_path)
+    first_release = "0.1.0-cccccccccccc-ubuntu26.04-amd64-otp27.3.4.6"
+    old_backup = "backup-11111111111111111111111111111111"
+    _publish_release(paths, first_release)
+    _publish_release(paths, RELEASE)
+    _publish_release(paths, STALE_RELEASE)
+    _publish_backup(paths, old_backup)
+    _publish_backup(paths, STALE_BACKUP)
+    _publish_backup(paths, RETAINED_BACKUP)
+    append_selection(
+        paths,
+        SelectionRecord(first_release, None, old_backup, datetime(2026, 9, 7, 10, 0, tzinfo=UTC)),
+    )
+    append_selection(
+        paths,
+        SelectionRecord(RELEASE, first_release, None, datetime(2026, 9, 7, 11, 0, tzinfo=UTC)),
+    )
+    Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    targets = _inspect(paths)
+    result = cleanup_module.cleanup(_request(paths, action="execute", targets=targets))
+
+    assert old_backup not in {target["identifier"] for target in targets}
+    assert result.outcome == "succeeded"
+    assert Path(paths.local(paths.backup_root / f"{old_backup}.dump")).is_file()
+    assert Path(paths.local(paths.backup_manifest(old_backup))).is_file()
+
+
+def test_cleanup_reports_an_unsafe_authoritative_root_as_manual_before_locking(tmp_path: Path) -> None:
+    """An unsafe root is ambiguous authority, not a lock held by another helper."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    install = tmp_path / "install"
+    install.symlink_to(outside, target_is_directory=True)
+    paths = ManagedPaths.from_mapping(
+        {"install_root": install.as_posix(), "backup_root": (tmp_path / "backups").as_posix()}
+    )
+
+    result = cleanup_module.cleanup(_request(paths, action="inspect"))
+
+    assert result.outcome == "manual"
+    assert result.state == {}
+    assert outside.is_dir()
+
+
+def test_cleanup_keeps_actual_lock_contention_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an acquired-path lock deadline warrants a retryable lock outcome."""
+
+    paths = _paths(tmp_path)
+
+    def locked(*_args: object, **_kwargs: object):
+        class Lock:
+            def __enter__(self) -> None:
+                raise cleanup_module.LifecycleLockContention("held")
+
+            def __exit__(self, *_exception: object) -> None:
+                return None
+
+        return Lock()
+
+    monkeypatch.setattr(cleanup_module, "lifecycle_lock", locked)
+
+    result = cleanup_module.cleanup(_request(paths, action="inspect"))
+
+    assert result.outcome == "retryable"
+    assert result.state == {"locked": True}

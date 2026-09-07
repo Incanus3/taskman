@@ -44,6 +44,14 @@ def test_run_command_stops_one_subprocess_at_its_timeout() -> None:
         )
 
 
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), float("-inf")])
+def test_run_command_rejects_non_finite_timeouts(timeout: float) -> None:
+    """A non-finite deadline cannot provide a bounded external-call contract."""
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        run_command((sys.executable, "-c", "print('never run')"), timeout_seconds=timeout)
+
+
 def test_run_command_refuses_unbounded_captured_output() -> None:
     """Dropping the output cap would allow one command to exhaust helper memory."""
 

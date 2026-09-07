@@ -39,10 +39,12 @@ def run_backup(
         raise TypeError("backup requires a validated environment configuration")
     if not isinstance(dry_run, bool):
         raise TypeError("backup dry-run flag must be boolean")
+    warnings: tuple[str, ...] = ()
     try:
         discovery = run_request(remote, helper_request("discover", config))
         if discovery.outcome != "succeeded":
             raise result_error(discovery)
+        warnings = discovery.warnings
         selected = _selected_release(discovery.state)
         plan = {"selected_release_id": selected, "planned_backup": True}
         if dry_run:
@@ -52,7 +54,7 @@ def run_backup(
                 False,
                 "planned",
                 plan,
-                tuple(discovery.warnings),
+                warnings,
                 "review the backup plan and rerun without --dry-run",
             )
         result = run_request(
@@ -76,7 +78,7 @@ def run_backup(
             True,
             "backed-up",
             facts,
-            tuple(dict.fromkeys((*discovery.warnings, *result.warnings))),
+            tuple(dict.fromkeys((*warnings, *result.warnings))),
             "copy the validated backup off-host according to the recovery policy",
         )
     except OpsError as error:
@@ -86,7 +88,7 @@ def run_backup(
             error.changed,
             "lock-contended" if error.status is ExitStatus.LOCKED else "backup-failed",
             {"backup_id": None},
-            tuple(getattr(error, "warnings", ())),
+            tuple(dict.fromkeys((*warnings, *getattr(error, "warnings", ())))),
             error.next_action,
             error.status,
         )

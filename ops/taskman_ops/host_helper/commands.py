@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 import subprocess
 from threading import Event, Thread
 
@@ -121,7 +122,11 @@ def _validate_inputs(
         or any(type(key) is not str or type(value) is not str for key, value in env.items())
     ):
         raise TypeError("env must map strings to strings")
-    if type(timeout_seconds) not in {int, float} or timeout_seconds <= 0:
+    if (
+        type(timeout_seconds) not in {int, float}
+        or timeout_seconds <= 0
+        or type(timeout_seconds) is float and not math.isfinite(timeout_seconds)
+    ):
         raise ValueError("timeout_seconds must be positive")
 
 
