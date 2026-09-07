@@ -1,22 +1,20 @@
-"""Controller plan, confirmation, and translation for guarded restore."""
+"""Controller planning and final-result translation for restore."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from pathlib import PurePosixPath
 import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..output import WorkflowResult
-from ..releases.identifiers import validate_release_id
 from ..remote import Remote
+from ..releases.identifiers import validate_release_id
 from .helper import (
     database_settings,
     mutable,
-    result_error,
     request as helper_request,
+    result_error,
     run_request,
     successful_verification,
     verification_settings,
@@ -25,8 +23,9 @@ from .helper import (
 
 _PGPASS = "/etc/taskman/pgpass"
 _BACKUP_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
-_RESULT_KEYS = frozenset(
+_SUCCESS_FACTS = frozenset(
     {
+        "changed",
         "backup_id",
         "pre_restore_backup_id",
         "current_release_id",
@@ -34,32 +33,9 @@ _RESULT_KEYS = frozenset(
         "selected_release_id",
         "service_state",
         "database_state",
-        "restore_recorded",
-        "changed",
         "report",
     }
 )
-_SUCCESS_STAGES = (
-    "backup",
-    "stop",
-    "restore",
-    "validation",
-    "swap",
-    "selection",
-    "start",
-    "verification",
-    "records",
-)
-
-
-@dataclass(frozen=True)
-class RestorePlan:
-    backup_id: str
-    dump_path: PurePosixPath
-    dump_size_bytes: int
-    source_database_size_bytes: int
-    current_release_id: str
-    intended_release_id: str
 
 
 def restore(
@@ -70,7 +46,7 @@ def restore(
     confirm: Callable[[Mapping[str, object]], bool] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
-    """Validate before confirmation, then repeat and mutate under the lock."""
+    """Confirm an exact validated backup before invoking the direct procedure."""
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("restore requires a validated environment configuration")
@@ -82,55 +58,23 @@ def restore(
     intended: str | None = None
     warnings: tuple[str, ...] = ()
     try:
-        discovery = run_request(remote, helper_request("discover", config))
-        if discovery.outcome != "succeeded":
-            raise result_error(discovery)
-        records = mutable(discovery.state)
-        warnings = discovery.warnings
-        if not isinstance(records, Mapping):
-            raise _safety("restore planning helper returned invalid lifecycle evidence")
-        backups = records.get("backups")
-        if (
-            not isinstance(backups, list)
-        ):
-            raise _safety("restore requires managed lifecycle and backup authority")
-        current = _release_field(records, "selected_release_id")
-        backup = next(
-            (
-                item
-                for item in backups
-                if isinstance(item, Mapping)
-                and item.get("backup_id") == backup_id
-            ),
-            None,
-        )
-        if not isinstance(backup, Mapping):
-            raise _safety("selected backup is not recorded")
-        intended = _release_field(backup, "source_release_id")
-        migrations = _migration_versions(records, intended)
-        inspect_request = _request(
-            config,
-            backup_id,
-            current,
-            migrations,
-            action="inspect",
-        )
-        inspected = run_request(remote, inspect_request)
-        if inspected.outcome != "succeeded":
-            raise result_error(inspected)
-        plan = _inspection(inspected, inspect_request, intended)
-        warnings = _merge_warnings(warnings, inspected.warnings)
-        plan_mapping = {
-            "backup_id": plan.backup_id,
-            "dump_path": plan.dump_path.as_posix(),
-            "dump_size_bytes": plan.dump_size_bytes,
-            "source_database_size_bytes": plan.source_database_size_bytes,
-            "current_release_id": plan.current_release_id,
-            "intended_release_id": plan.intended_release_id,
+        discovered = run_request(remote, helper_request("discover", config))
+        if discovered.outcome != "succeeded":
+            raise result_error(discovered)
+        current = _selected_release(discovered.state)
+        source = _source_backup(discovered.state, backup_id)
+        intended = source["source_release_id"]
+        size = source["source_database_size_bytes"]
+        warnings = discovered.warnings
+        plan = {
+            "backup_id": backup_id,
+            "dump_path": (config.backup_root / f"{backup_id}.dump").as_posix(),
+            "source_database_size_bytes": size,
+            "current_release_id": current,
+            "intended_release_id": intended,
             "planned_pre_restore_backup": True,
             "services_affected": ("taskman.service",),
-            "typed_confirmation":
-                f"restore {config.name or ''} {plan.backup_id}",
+            "typed_confirmation": f"restore {config.name or ''} {backup_id}",
         }
         if dry_run:
             return WorkflowResult(
@@ -138,47 +82,48 @@ def restore(
                 config.name or "",
                 False,
                 "planned",
-                plan_mapping,
+                plan,
                 warnings,
-                "review the restore plan and run without --dry-run only after explicit confirmation",
+                "review the exact restore plan and rerun without --dry-run to confirm it",
             )
-        if not (confirm or _confirm)(plan_mapping):
+        if not (confirm or _confirm)(plan):
             return WorkflowResult(
                 "restore",
                 config.name or "",
                 False,
                 "confirmation-cancelled",
                 {
-                    **plan_mapping,
+                    **plan,
+                    "pre_restore_backup_id": None,
                     "selected_release_id": current,
                     "service_state": "unknown",
                     "database_state": "unchanged",
-                    "restore_recorded": False,
                 },
                 warnings,
                 "review the exact restore plan and confirm a later run when ready",
             )
-        execute_request = _request(
+        request = helper_request(
+            "restore",
             config,
-            backup_id,
-            current,
-            migrations,
-            action="execute",
+            expected_state={"selected_release_id": current, "backup_id": backup_id},
+            parameters={
+                "backup_id": backup_id,
+                "credentials_path": _PGPASS,
+                "database": database_settings(config),
+                "verification": verification_settings(config),
+            },
         )
-        result = run_request(remote, execute_request)
+        result = run_request(remote, request)
         if result.outcome != "succeeded":
             raise result_error(result)
-        facts = _success(result, execute_request, intended)
-        warnings = _merge_warnings(warnings, result.warnings)
+        facts = _success(result, request, intended)
         return WorkflowResult(
             "restore",
             config.name or "",
             facts["changed"],
-            "restored"
-            if facts["changed"]
-            else "already-restored",
+            "restored" if facts["changed"] else "already-restored",
             facts,
-            warnings,
+            _merge_warnings(warnings, result.warnings),
             "inspect restored behavior before any later cleanup",
         )
     except OpsError as error:
@@ -194,131 +139,68 @@ def restore(
             else f"{error.stage}-failed",
             {
                 "backup_id": state.get("backup_id", backup_id),
-                "pre_restore_backup_id": state.get(
-                    "pre_restore_backup_id"
-                ),
-                "current_release_id": state.get(
-                    "current_release_id", current
-                ),
-                "intended_release_id": state.get(
-                    "intended_release_id", intended
-                ),
-                "selected_release_id": state.get(
-                    "selected_release_id", current
-                ),
-                "service_state": state.get(
-                    "service_state", "unknown"
-                ),
-                "database_state": state.get(
-                    "database_state", "unknown"
-                ),
-                "restore_recorded": state.get(
-                    "restore_recorded", False
-                ),
+                "pre_restore_backup_id": state.get("pre_restore_backup_id"),
+                "current_release_id": state.get("current_release_id", current),
+                "intended_release_id": state.get("intended_release_id", intended),
+                "selected_release_id": state.get("selected_release_id", current),
+                "service_state": state.get("service_state", "unknown"),
+                "database_state": state.get("database_state", "unknown"),
                 "verification": state.get("report", {}),
             },
-            _merge_warnings(
-                warnings,
-                tuple(getattr(error, "warnings", ())),
-            ),
+            _merge_warnings(warnings, tuple(getattr(error, "warnings", ()))),
             error.next_action,
             error.status,
         )
 
 
-def _request(
-    config: EnvironmentConfig,
-    backup_id: str,
-    current: str,
-    migrations: tuple[str, ...],
-    *,
-    action: str,
-) -> object:
-    return helper_request(
-        "restore",
-        config,
-        expected_state={"backup_id": backup_id, "current_release_id": current},
-        parameters={
-            "action": action,
-            "backup_id": backup_id,
-            "credentials_path": _PGPASS,
-            "database": database_settings(config),
-            "expected_migration_versions": migrations,
-            "verification": verification_settings(config),
-        },
-    )
+def _selected_release(value: object) -> str:
+    if not isinstance(value, Mapping) or type(value.get("selected_release_id")) is not str:
+        raise _safety("restore planning helper returned invalid host state")
+    try:
+        return validate_release_id(value["selected_release_id"])
+    except ValueError:
+        raise _safety("restore planning helper returned invalid host state") from None
 
 
-def _inspection(
-    result: object,
-    request: object,
-    intended: str,
-) -> RestorePlan:
-    state = result.state
-    keys = {
-        "backup_id",
-        "dump_path",
-        "dump_size_bytes",
-        "source_database_size_bytes",
-        "current_release_id",
-        "intended_release_id",
-        "dump_validated",
-    }
+def _source_backup(value: object, backup_id: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise _safety("restore planning helper returned invalid host state")
+    rows = mutable(value.get("backups"))
+    if not isinstance(rows, list):
+        raise _safety("restore planning helper returned invalid backup state")
+    source = next((item for item in rows if isinstance(item, Mapping) and item.get("backup_id") == backup_id), None)
+    if not isinstance(source, Mapping):
+        raise _safety("selected backup is not a completed validated backup")
+    release = source.get("source_release_id")
+    size = source.get("source_database_size_bytes")
+    if type(release) is not str or type(size) is not int or size <= 0:
+        raise _safety("selected backup has invalid restore authority")
+    try:
+        release = validate_release_id(release)
+    except ValueError:
+        raise _safety("selected backup has invalid restore authority") from None
+    return {"source_release_id": release, "source_database_size_bytes": size}
+
+
+def _success(result: object, request: object, intended: str) -> dict[str, object]:
+    state = getattr(result, "state", None)
     if (
         not isinstance(state, Mapping)
-        or not keys <= set(state)
+        or not _SUCCESS_FACTS <= set(state)
         or state["backup_id"] != request.parameters["backup_id"]
-        or state["current_release_id"]
-        != request.expected_state["current_release_id"]
-        or state["intended_release_id"] != intended
-        or state["dump_validated"] is not True
-        or type(state["dump_path"]) is not str
-        or state["dump_path"]
-        != (
-            f"{request.paths['backup_root']}/"
-            f"{request.parameters['backup_id']}.dump"
-        )
-        or type(state["dump_size_bytes"]) is not int
-        or state["dump_size_bytes"] <= 0
-        or type(state["source_database_size_bytes"]) is not int
-        or state["source_database_size_bytes"] <= 0
-    ):
-        raise _safety("restore helper returned invalid inspection evidence")
-    return RestorePlan(
-        str(state["backup_id"]),
-        PurePosixPath(str(state["dump_path"])),
-        int(state["dump_size_bytes"]),
-        int(state["source_database_size_bytes"]),
-        str(state["current_release_id"]),
-        str(state["intended_release_id"]),
-    )
-
-
-def _success(
-    result: object,
-    request: object,
-    intended: str,
-) -> dict[str, object]:
-    state = result.state
-    if (
-        not isinstance(state, Mapping)
-        or not _RESULT_KEYS <= set(state)
-        or state["backup_id"] != request.parameters["backup_id"]
-        or state["current_release_id"]
-        != request.expected_state["current_release_id"]
+        or state["current_release_id"] != request.expected_state["selected_release_id"]
         or state["intended_release_id"] != intended
         or state["selected_release_id"] != intended
         or _BACKUP_RE.fullmatch(str(state["pre_restore_backup_id"])) is None
-        or state["service_state"] != "active"
-        or state["database_state"] != "restored-promoted"
-        or state["restore_recorded"] is not True
+        or state["service_state"] != "running"
+        or state["database_state"] != "restored"
         or type(state["changed"]) is not bool
     ):
-        raise _safety("restore helper returned invalid success evidence")
+        raise _safety("restore helper returned invalid final state")
     try:
         verification = successful_verification(state["report"], intended)
     except ValueError:
-        raise _safety("restore helper returned invalid success evidence") from None
+        raise _safety("restore helper returned invalid final state") from None
     return {
         "changed": state["changed"],
         "backup_id": state["backup_id"],
@@ -328,55 +210,8 @@ def _success(
         "selected_release_id": state["selected_release_id"],
         "service_state": state["service_state"],
         "database_state": state["database_state"],
-        "restore_recorded": state["restore_recorded"],
         "verification": verification,
     }
-
-
-def _migration_versions(
-    observed: Mapping[str, object],
-    intended: str,
-) -> tuple[str, ...]:
-    rows = mutable(observed.get("release_migrations"))
-    if not isinstance(rows, list):
-        raise _safety("restore lifecycle migration authority is unavailable")
-    row = next(
-        (
-            item
-            for item in rows
-            if isinstance(item, Mapping) and item.get("release_id") == intended
-        ),
-        None,
-    )
-    if not isinstance(row, Mapping):
-        raise _safety("restore intended release migration authority is unavailable")
-    migrations = row.get("migrations")
-    if not isinstance(migrations, list):
-        raise _safety("restore intended migration authority is invalid")
-    versions: list[str] = []
-    for migration in migrations:
-        if not isinstance(migration, Mapping):
-            raise _safety("restore intended migration authority is invalid")
-        filename = migration.get("filename")
-        if type(filename) is not str or "_" not in filename:
-            raise _safety("restore intended migration authority is invalid")
-        version = filename.split("_", 1)[0]
-        if not version.isdecimal():
-            raise _safety("restore intended migration authority is invalid")
-        versions.append(version)
-    result = tuple(sorted(set(versions), key=int))
-    if len(result) != len(versions):
-        raise _safety("restore intended migration authority is invalid")
-    return result
-
-
-def _release_field(value: object, name: str) -> str:
-    if not isinstance(value, Mapping) or type(value.get(name)) is not str:
-        raise _safety("restore planning helper returned invalid lifecycle evidence")
-    try:
-        return validate_release_id(value[name])
-    except (TypeError, ValueError):
-        raise _safety("restore planning helper returned invalid lifecycle evidence") from None
 
 
 def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -391,8 +226,8 @@ def _error_state(error: OpsError) -> Mapping[str, object]:
 def _confirm(plan: Mapping[str, object]) -> bool:
     expected = str(plan["typed_confirmation"])
     return input(
-        f"Restore {plan['backup_id']} and select "
-        f"{plan['intended_release_id']}? Type '{expected}' to continue: "
+        f"Restore {plan['backup_id']} and select {plan['intended_release_id']}? "
+        f"Type '{expected}' to continue: "
     ).strip() == expected
 
 
@@ -402,8 +237,8 @@ def _safety(message: str) -> OpsError:
         "restore",
         message,
         False,
-        "inspect the selected backup and managed lifecycle before retrying",
+        "inspect the selected backup and observed host state before retrying",
     )
 
 
-__all__ = ["RestorePlan", "restore"]
+__all__ = ["restore"]

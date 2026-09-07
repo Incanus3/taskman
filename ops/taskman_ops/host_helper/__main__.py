@@ -32,7 +32,9 @@ from taskman_ops.host_helper.verification import verify
 _FALLBACK_OPERATION = "discover"
 _FALLBACK_CORRELATION_ID = "op-00000000000000000000000000000000"
 _READ_ONLY_OPERATIONS = frozenset({"discover", "list_releases", "list_backups", "verify"})
-_FINAL_MUTATING_OPERATIONS = frozenset({"backup", "cleanup", "deploy", "genesis"})
+_FINAL_MUTATING_OPERATIONS = frozenset(
+    {"backup", "cleanup", "deploy", "genesis", "rollback", "restore"}
+)
 _READ_ONLY_HANDLERS = {
     "discover": discover,
     "list_releases": list_releases,

@@ -1,550 +1,449 @@
-"""Host-local code-only rollback policy and recovery evidence."""
+"""Replayable rollback from completed selection history."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
-import subprocess
+import re
+import stat
 
-from taskman_ops.host_protocol import PROTOCOL_VERSION
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.releases.identifiers import validate_release_id
 
-from ..lifecycle import (
-    ActivationRecord,
-    LifecycleError,
-    LifecycleLockContention,
-    LifecycleStore,
-    LifecycleWriteFailure,
-    rollback_eligibility,
-)
-from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
+from ..commands import CommandError, run_command
+from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
+from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..state import HostState, StateAmbiguityError, observe_host_state
 from ..verification import verify
-from .legacy_backup import (
-    BackupOperationFailure,
-    create_validated_backup,
-    prepare_backup_root,
-    safe_secret,
-)
+from .backup import create_validated_backup
 
 
-_DATABASE_KEYS = frozenset({"host", "name", "port", "role"})
-_FULL_PARAMETER_KEYS = frozenset(
-    {"target_release_id", "credentials_path", "database", "verification"}
-)
+_EXPECTED_STATE_KEYS = frozenset({"selected_release_id"})
+_PARAMETER_KEYS = frozenset({"target_release_id", "credentials_path", "database", "verification"})
+_DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
+_LOCK_TIMEOUT_SECONDS = 5.0
+_COMMAND_TIMEOUT_SECONDS = 60.0
+_RUNTIME_ENVIRONMENT = Path("/etc/taskman/taskman.env")
+_MIGRATION_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
 
 
-class _Failure(Exception):
-    def __init__(
-        self,
-        stage: str,
-        *,
-        selected: str | None,
-        service: str,
-        backup_id: str | None = None,
-        activation_id: str | None = None,
-        changed: tuple[str, ...] = (),
-        residue: tuple[str, ...] = (),
-        recovery: tuple[str, ...] = (),
-        verification: Mapping[str, object] | None = None,
-    ) -> None:
-        self.stage = stage
-        self.selected = selected
-        self.service = service
-        self.backup_id = backup_id
-        self.activation_id = activation_id
-        self.changed = changed
-        self.residue = residue
-        self.recovery = recovery
-        self.verification = {} if verification is None else verification
+class RollbackRefused(ValueError):
+    """The confirmed target is not safe to select."""
 
 
+class RollbackManual(RuntimeError):
+    """Completed facts cannot identify one safe replay transition."""
+
+
+class _Retryable(RuntimeError):
+    def __init__(self, boundary: str) -> None:
+        super().__init__(boundary)
+        self.boundary = boundary
+
+
+@dataclass(frozen=True)
 class _Inputs:
-    def __init__(
-        self,
-        credentials: Path,
-        database: dict[str, object],
-        verification: dict[str, object],
-    ) -> None:
-        self.credentials = credentials
-        self.database = database
-        self.verification = verification
+    paths: ManagedPaths
+    current_release_id: str
+    target_release_id: str
+    credentials: Path
+    database: Mapping[str, object]
+    verification: Mapping[str, object]
 
 
 def rollback(request: HostRequest) -> HostResult:
-    """Revalidate every crossed activation edge, then select and verify."""
+    """Converge one history-proven compatible release selection.
 
-    target = request.parameters.get("target_release_id")
-    if type(target) is not str:
-        return _refused(request)
+    Rollback never runs reverse migrations.  The selected target must have the
+    same observed schema and be the immediately preceding completed selection.
+    A retry may find the target link already replaced but its selection record
+    not yet published; it then repeats only start, verification, and record
+    publication.
+    """
+
+    state: HostState | None = None
+    backup: BackupRecord | None = None
+    report: object = {}
+    changed = False
+    inputs: _Inputs | None = None
     try:
         inputs = _inputs(request)
-        paths = ManagedPaths.from_mapping(request.paths)
-        store = LifecycleStore(paths)
-        paths.validate_existing(owner_uid=store.owner_uid)
-        store.require_release_directory(store.release_path(target))
-        with store.exclusive_lifecycle_lock(operation="rollback"):
-            records = store.read()
-            store.require_release_directory(store.release_path(target))
-            rerun = _completed_rerun(
-                request,
-                store,
-                records,
-                target,
-                inputs,
-            )
-            if rerun is not None:
-                return rerun
-            current = records.current_release_id
-            if request.expected_state["current_release_id"] != current or current is None:
-                return _refused(request, target=target)
-            eligible, _reason = rollback_eligibility(records, current, target)
-            if not eligible:
-                return _refused(request, target=target)
-            return _execute(request, store, records, current, target, inputs)
-    except LifecycleLockContention as error:
-        return _locked(request, error)
-    except _Failure as error:
-        return _failed(request, target, error)
-    except (LifecycleError, PathAuthorityError, OSError, ValueError):
-        return _refused(request, target=target)
+        _safe_credentials(inputs.credentials)
+        with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
+            state = _observe(inputs, allow_selection_transition=True)
+            selection_status = _selection_status(state, inputs)
+
+            if selection_status == "pending":
+                try:
+                    backup = create_validated_backup(
+                        state,
+                        inputs.paths,
+                        inputs.database,
+                        inputs.credentials,
+                        purpose="pre-rollback",
+                    )
+                except (CommandError, RecordError, OSError, ValueError) as error:
+                    raise _Retryable("backup") from error
+                changed = True
+                state = _observe(inputs, allow_selection_transition=True)
+                _require_pending_selection(state, inputs)
+                _service("stop")
+                changed = True
+                try:
+                    _atomically_select(inputs.paths, inputs.target_release_id)
+                except (OSError, ValueError) as error:
+                    raise _Retryable("selection") from error
+                changed = True
+                state = _observe(inputs, allow_selection_transition=True)
+                selection_status = _selection_status(state, inputs)
+
+            if selection_status == "selected":
+                backup = _selection_backup(state, inputs, backup)
+                changed = True
+            elif selection_status == "completed":
+                backup = _recorded_backup(state, inputs)
+            else:  # pragma: no cover - _selection_status has a closed return vocabulary
+                raise RollbackManual("rollback selection status is unknown")
+
+            _service("start")
+            verification = _verify(request, inputs)
+            if verification.outcome != "succeeded":
+                raise _Retryable("verification")
+            report = verification.state.get("report", {})
+
+            if selection_status != "completed":
+                state = _record_selection(state, inputs, backup)
+                changed = True
+            else:
+                state = _observe(inputs, allow_selection_transition=False)
+    except LifecycleLockContention:
+        return _result(request, "retryable", "lifecycle lock is unavailable", state, inputs, locked=True)
+    except RollbackRefused:
+        return _result(request, "refused", "rollback target is not compatible with successful history", state, inputs)
+    except RollbackManual:
+        return _result(request, "manual", "rollback state is contradictory", state, inputs)
+    except _Retryable as error:
+        return _result(
+            request,
+            "retryable",
+            "rollback did not complete; rerun to converge",
+            state,
+            inputs,
+            boundary=error.boundary,
+        )
+    except StateAmbiguityError:
+        return _result(request, "manual", "rollback authority is contradictory", state, inputs)
+    except CommandError:
+        return _result(
+            request,
+            "retryable",
+            "rollback observation did not complete; rerun to converge",
+            state,
+            inputs,
+            boundary="observation",
+        )
+    except (PathAuthorityError, RecordError, TypeError, ValueError):
+        return _result(request, "refused", "rollback request is unsafe", state, inputs)
+    except OSError:
+        return _result(request, "manual", "rollback authority is contradictory", state, inputs)
+
+    return _result(
+        request,
+        "succeeded",
+        "rollback converged",
+        state,
+        inputs,
+        changed=changed,
+        backup_id=None if backup is None else backup.backup_id,
+        report=report,
+    )
 
 
 def _inputs(request: HostRequest) -> _Inputs:
-    if (
-        set(request.expected_state) != {"current_release_id"}
-        or set(request.parameters) != _FULL_PARAMETER_KEYS
-    ):
+    if not isinstance(request, HostRequest) or request.operation != "rollback":
+        raise ValueError("rollback needs a final host request")
+    if set(request.expected_state) != _EXPECTED_STATE_KEYS or set(request.parameters) != _PARAMETER_KEYS:
         raise ValueError("rollback request is incomplete")
+    current = request.expected_state["selected_release_id"]
+    target = request.parameters["target_release_id"]
+    if type(current) is not str or type(target) is not str:
+        raise ValueError("rollback release identifier is invalid")
+    current = validate_release_id(current)
+    target = validate_release_id(target)
+    if current == target:
+        raise RollbackRefused("rollback target is already current")
     credentials = request.parameters["credentials_path"]
-    database = request.parameters["database"]
-    verification = request.parameters["verification"]
-    if (
-        type(credentials) is not str
-        or not isinstance(database, Mapping)
-        or set(database) != _DATABASE_KEYS
-        or not isinstance(verification, Mapping)
-    ):
-        raise ValueError("rollback inputs are invalid")
-    values = dict(database)
-    if (
-        not all(
-            type(values[key]) is str and values[key]
-            for key in ("host", "name", "role")
-        )
-        or type(values["port"]) is not int
-        or not 0 < values["port"] < 65536
-    ):
-        raise ValueError("rollback database inputs are invalid")
-    return _Inputs(Path(credentials), values, dict(verification))
-
-
-def _execute(
-    request: HostRequest,
-    store: LifecycleStore,
-    records: object,
-    current: str,
-    target: str,
-    inputs: _Inputs,
-) -> HostResult:
-    changed: list[str] = []
-    backup_id: str | None = None
-    activation_id = f"activation-{request.operation_id.removeprefix('op-')}"
-    selected: str | None = current
-    service = "active"
-    verification: Mapping[str, object] = {}
-    selection_temporary = (
-        store.paths.local(store.paths.install_root)
-        / f".current-{request.operation_id}"
+    if type(credentials) is not str or not Path(credentials).is_absolute():
+        raise ValueError("rollback credentials path is invalid")
+    return _Inputs(
+        ManagedPaths.from_mapping(request.paths),
+        current,
+        target,
+        Path(credentials),
+        _database(request.parameters["database"]),
+        _verification(request.parameters["verification"]),
     )
+
+
+def _database(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _DATABASE_KEYS:
+        raise ValueError("rollback database settings are invalid")
+    if (
+        type(value["host"]) is not str
+        or not value["host"]
+        or type(value["role"]) is not str
+        or not value["role"]
+        or type(value["name"]) is not str
+        or not value["name"]
+        or type(value["port"]) is not int
+        or not 0 < value["port"] < 65_536
+    ):
+        raise ValueError("rollback database settings are invalid")
+    return value
+
+
+def _verification(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("rollback verification settings are invalid")
+    return value
+
+
+def _safe_credentials(path: Path) -> None:
     try:
-        safe_secret(inputs.credentials, store.owner_uid)
-        prepare_backup_root(store)
-        backup, backup_changed = create_validated_backup(
-            store,
-            records,
-            operation_id=request.operation_id,
-            database=inputs.database,
-            credentials=inputs.credentials,
-            reason="pre-rollback",
-            current_release_id=current,
-            candidate_release_id=target,
-        )
-        backup_id = backup.backup_id
-        if backup_changed:
-            changed.append("backup")
-        try:
-            _service("stop")
-            service = "stopped"
-            changed.append("stop")
-        except (OSError, subprocess.SubprocessError) as error:
-            raise _Failure(
-                "stop",
-                selected=selected,
-                service=_service_state(),
-                backup_id=backup_id,
-                changed=tuple(changed),
-                recovery=_recovery(store),
-            ) from error
-        try:
-            if selection_temporary.exists() or selection_temporary.is_symlink():
-                raise OSError
-            selection_temporary.symlink_to(store.release_path(target))
-            os.replace(selection_temporary, store.current_link)
-            selected = target
-            changed.append("selection")
-            _fsync_directory(store.paths.local(store.paths.install_root))
-        except OSError as error:
-            residue = _cleanup_selection(selection_temporary)
-            raise _Failure(
-                "selection",
-                selected=_selected(store),
-                service=service,
-                backup_id=backup_id,
-                changed=tuple(changed),
-                residue=residue,
-                recovery=_recovery(store),
-            ) from error
-        try:
-            _service("start")
-            service = "active"
-            changed.append("start")
-        except (OSError, subprocess.SubprocessError) as error:
-            raise _Failure(
-                "start",
-                selected=selected,
-                service=_service_state(),
-                backup_id=backup_id,
-                changed=tuple(changed),
-                recovery=_recovery(store),
-            ) from error
-        try:
-            verification = _verify_locked(request, target, inputs.verification)
-        except _Failure as error:
-            raise _Failure(
-                error.stage,
-                selected=error.selected,
-                service=error.service,
-                backup_id=backup_id,
-                changed=tuple(changed),
-                recovery=error.recovery,
-                verification=error.verification,
-            ) from error
-        changed.append("verification")
-        try:
-            store.write_activation(
-                ActivationRecord(
-                    1,
-                    activation_id,
-                    current,
-                    target,
-                    datetime.now(UTC).replace(microsecond=0),
-                    backup_id,
-                    "no-change",
-                )
-            )
-            changed.append("records")
-        except LifecycleWriteFailure as error:
-            residue = tuple(path.as_posix() for path in error.residue_paths)
-            if error.effect.published:
-                changed.append("records")
-            raise _Failure(
-                "records",
-                selected=selected,
-                service=service,
-                backup_id=backup_id,
-                activation_id=activation_id if error.effect.published else None,
-                changed=tuple(changed),
-                residue=residue,
-                recovery=_recovery(store),
-                verification=verification,
-            ) from error
-        except LifecycleError as error:
-            raise _Failure(
-                "records",
-                selected=selected,
-                service=service,
-                backup_id=backup_id,
-                changed=tuple(changed),
-                recovery=_recovery(store),
-                verification=verification,
-            ) from error
-    except BackupOperationFailure as error:
-        nested_changed = tuple(
-            dict.fromkeys((*changed, *error.changed_stages))
-        )
-        raise _Failure(
-            error.stage,
-            selected=selected,
-            service=service,
-            backup_id=(
-                backup_id
-                or (
-                    f"backup-{request.operation_id.removeprefix('op-')}"
-                    if error.changed_stages
-                    else None
-                )
-            ),
-            changed=nested_changed,
-            residue=tuple(path.as_posix() for path in error.residue_paths),
-            recovery=_recovery(store),
-        ) from error
-
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "succeeded",
-        "records",
-        tuple(changed),
-        {
-            "previous_release_id": current,
-            "target_release_id": target,
-            "selected_release_id": target,
-            "backup_id": backup_id,
-            "activation_id": activation_id,
-            "service_state": "active",
-            "database_state": "unchanged",
-            "activation_recorded": True,
-        },
-        {},
-        verification,
-        (),
-        (),
-        (),
-    )
-
-
-def _verify_locked(
-    request: HostRequest,
-    target: str,
-    settings: Mapping[str, object],
-) -> Mapping[str, object]:
-    result = verify(
-        HostRequest(
-            1,
-            "verify",
-            request.operation_id,
-            {"expected_release_id": target},
-            request.paths,
-            settings,
-        ),
-        lifecycle_locked=True,
-    )
-    if result.outcome != "succeeded" or result.stage != "verified":
-        raise _Failure(
-            "verification",
-            selected=target,
-            service=_service_state(),
-            verification=result.verification,
-            recovery=(
-                "inspect selected release and service verification before retrying",
-            ),
-        )
-    return result.verification
-
-
-def _completed_rerun(
-    request: HostRequest,
-    store: LifecycleStore,
-    records: object,
-    target: str,
-    inputs: _Inputs,
-) -> HostResult | None:
-    activation_id = f"activation-{request.operation_id.removeprefix('op-')}"
-    activation = next(
-        (item for item in records.activations if item.activation_id == activation_id),
-        None,
-    )
-    if activation is None:
-        return None
+        details = path.lstat()
+    except OSError as error:
+        raise ValueError("rollback credentials are unavailable") from error
     if (
-        records.current_release_id != target
-        or activation.previous_release_id
-        != request.expected_state.get("current_release_id")
-        or activation.candidate_release_id != target
-        or activation.backup_id
-        != f"backup-{request.operation_id.removeprefix('op-')}"
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
     ):
-        return _refused(request, target=target)
-    if _selected(store) != target:
-        return _refused(request, target=target)
-    verification = _verify_locked(request, target, inputs.verification)
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "no_change",
-        "already-current",
-        (),
-        {
-            "previous_release_id": activation.previous_release_id,
-            "target_release_id": target,
-            "selected_release_id": target,
-            "backup_id": activation.backup_id,
-            "activation_id": activation.activation_id,
-            "service_state": "active",
-            "database_state": "unchanged",
-            "activation_recorded": True,
-        },
-        {},
-        verification,
-        (),
-        (),
-        (),
+        raise ValueError("rollback credentials are unsafe")
+
+
+def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
+    return observe_host_state(
+        inputs.paths,
+        database=_observe_database(inputs.database, inputs.credentials),
+        allow_selection_transition=allow_selection_transition,
     )
+
+
+def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
+    environment = {"PGPASSFILE": credentials.as_posix()}
+    common = (
+        "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--host", str(database["host"]),
+        "--port", str(database["port"]), "--username", str(database["role"]),
+        "--dbname", str(database["name"]), "--no-password",
+    )
+    table = run_command(
+        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    if table != b"1":
+        raise RollbackManual("current database migration authority is unavailable")
+    output = run_command(
+        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.decode("utf-8", "strict")
+    try:
+        versions = tuple(int(item) for item in output.splitlines() if item)
+    except ValueError as error:
+        raise RollbackManual("current database migration authority is invalid") from error
+    if versions != tuple(sorted(set(versions))):
+        raise RollbackManual("current database migration authority is invalid")
+    return {"state": "ready", "applied_migrations": versions}
+
+
+def _selection_status(state: HostState, inputs: _Inputs) -> str:
+    _require_target_schema(state, inputs)
+    if not state.selections:
+        raise RollbackRefused("selection history is absent")
+    latest = state.selections[-1]
+    if state.selected_release_id == inputs.current_release_id:
+        if latest.release_id != inputs.current_release_id or latest.previous_release_id != inputs.target_release_id:
+            raise RollbackRefused("selection history does not prove the target")
+        return "pending"
+    if state.selected_release_id != inputs.target_release_id:
+        raise RollbackManual("selected release is unrelated to the confirmed rollback")
+    if latest.release_id == inputs.target_release_id:
+        if latest.previous_release_id != inputs.current_release_id:
+            raise RollbackManual("recorded selection is unrelated to the confirmed rollback")
+        return "completed"
+    if latest.release_id == inputs.current_release_id and latest.previous_release_id == inputs.target_release_id:
+        return "selected"
+    raise RollbackManual("selected release lacks a recognizable rollback transition")
+
+
+def _require_target_schema(state: HostState, inputs: _Inputs) -> None:
+    record = next((item for item in state.releases if item.release_id == inputs.target_release_id), None)
+    if record is None:
+        raise RollbackRefused("target release is not installed")
+    if _migration_versions(record) != state.applied_migrations:
+        raise RollbackRefused("target release is not compatible with the current database")
+
+
+def _require_pending_selection(state: HostState, inputs: _Inputs) -> None:
+    if _selection_status(state, inputs) != "pending":
+        raise RollbackManual("selection changed before rollback stop")
+
+
+def _migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
+    versions: list[int] = []
+    for migration in record.migrations:
+        name = migration.get("filename")
+        match = _MIGRATION_RE.fullmatch(name) if type(name) is str else None
+        if match is None:
+            raise RollbackManual("release migration record is invalid")
+        versions.append(int(match.group(1)))
+    result = tuple(versions)
+    if result != tuple(sorted(set(result))):
+        raise RollbackManual("release migration record is invalid")
+    return result
+
+
+def _selection_backup(state: HostState, inputs: _Inputs, local: BackupRecord | None) -> BackupRecord:
+    candidates = tuple(
+        item
+        for item in state.backups
+        if item.source_release_id == inputs.current_release_id
+        and item.migration_versions == state.applied_migrations
+    )
+    if local is not None:
+        if any(item.backup_id == local.backup_id for item in candidates):
+            return local
+        raise RollbackManual("fresh rollback backup was not published")
+    if len(candidates) != 1:
+        raise RollbackManual("rollback safety backup cannot be recovered unambiguously")
+    return candidates[0]
+
+
+def _recorded_backup(state: HostState, inputs: _Inputs) -> BackupRecord | None:
+    latest = state.selections[-1]
+    if latest.backup_id is None:
+        raise RollbackManual("completed rollback lacks its safety backup")
+    backup = next((item for item in state.backups if item.backup_id == latest.backup_id), None)
+    if backup is None:
+        raise RollbackManual("completed rollback backup is unavailable")
+    if backup.source_release_id != inputs.current_release_id:
+        raise RollbackManual("completed rollback backup has the wrong source release")
+    return backup
 
 
 def _service(action: str) -> None:
-    subprocess.run(
-        ("systemctl", action, "taskman.service"),
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=60,
+    try:
+        run_command(("systemctl", action, "taskman.service"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
+    except CommandError as error:
+        raise _Retryable("start" if action == "start" else "stop") from error
+
+
+def _atomically_select(paths: ManagedPaths, release_id: str) -> None:
+    root = Path(paths.local(paths.install_root))
+    target = Path(paths.local(paths.release_root / release_id))
+    temporary = root / f".current-{release_id}.tmp"
+    if temporary.exists() or temporary.is_symlink():
+        details = temporary.lstat()
+        if not stat.S_ISLNK(details.st_mode) or temporary.resolve(strict=False) != target:
+            raise RollbackManual("selection temporary is unsafe")
+        temporary.unlink()
+    temporary.symlink_to(target)
+    os.replace(temporary, Path(paths.local(paths.current_link)))
+    _fsync_directory(root)
+
+
+def _record_selection(state: HostState, inputs: _Inputs, backup: BackupRecord | None) -> HostState:
+    if backup is None:
+        raise RollbackManual("rollback selection needs its safety backup")
+    if state.selected_release_id != inputs.target_release_id:
+        raise RollbackManual("rollback verification did not retain the target")
+    latest = state.selections[-1] if state.selections else None
+    if latest is not None and latest.release_id == inputs.target_release_id:
+        return _observe(inputs, allow_selection_transition=False)
+    if latest is None or latest.release_id != inputs.current_release_id or latest.previous_release_id != inputs.target_release_id:
+        raise RollbackManual("rollback history changed before record publication")
+    selected_at = max(datetime.now(UTC).replace(microsecond=0), latest.selected_at + timedelta(seconds=1))
+    try:
+        append_selection(
+            inputs.paths,
+            SelectionRecord(inputs.target_release_id, inputs.current_release_id, backup.backup_id, selected_at),
+        )
+    except (OSError, RecordError, ValueError) as error:
+        raise _Retryable("selection") from error
+    return _observe(inputs, allow_selection_transition=False)
+
+
+def _verify(request: HostRequest, inputs: _Inputs) -> HostResult:
+    return verify(
+        HostRequest(
+            PROTOCOL_VERSION,
+            "verify",
+            request.correlation_id,
+            {"expected_release_id": inputs.target_release_id},
+            request.paths,
+            inputs.verification,
+        ),
+        lifecycle_locked=True,
     )
 
 
-def _service_state() -> str:
-    try:
-        completed = subprocess.run(
-            (
-                "systemctl",
-                "show",
-                "taskman.service",
-                "--property=ActiveState",
-                "--value",
-            ),
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=15,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-    value = completed.stdout.strip()
-    if completed.returncode == 0 and value == "active":
-        return "active"
-    if value in {"inactive", "failed"}:
-        return "stopped"
-    return "unknown"
-
-
-def _selected(store: LifecycleStore) -> str | None:
-    try:
-        target = store.current_link.resolve(strict=True)
-        return (
-            target.name
-            if target.parent == store.release_root.resolve(strict=True)
-            else None
-        )
-    except OSError:
-        return None
-
-
-def _cleanup_selection(path: Path) -> tuple[str, ...]:
-    if not path.exists() and not path.is_symlink():
-        return ()
-    try:
-        if not path.is_symlink():
-            return (path.as_posix(),)
-        path.unlink()
-        _fsync_directory(path.parent)
-        return ()
-    except OSError:
-        return (path.as_posix(),)
-
-
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
-def _recovery(store: LifecycleStore) -> tuple[str, ...]:
-    return (
-        "systemctl status taskman.service",
-        f"readlink -f {store.paths.install_root}/current",
-        "journalctl --no-pager --unit taskman.service --lines=100",
-    )
-
-
-def _refused(
+def _result(
     request: HostRequest,
+    outcome: str,
+    message: str,
+    state: HostState | None,
+    inputs: _Inputs | None,
     *,
-    target: str | None = None,
+    boundary: str | None = None,
+    locked: bool = False,
+    changed: bool | None = None,
+    backup_id: str | None = None,
+    report: object | None = None,
 ) -> HostResult:
-    lifecycle = (
-        {}
-        if target is None
-        else {"rollback_eligible": False, "target_release_id": target}
-    )
+    target = None if inputs is None else inputs.target_release_id
+    current = None if inputs is None else inputs.current_release_id
+    facts: dict[str, object] = {
+        "previous_release_id": current,
+        "target_release_id": target,
+        "selected_release_id": None if state is None else state.selected_release_id,
+        "database_state": "unchanged",
+        "service_state": "unknown" if state is None else state.service_state,
+    }
+    if boundary is not None:
+        facts["failed_boundary"] = boundary
+    if locked:
+        facts["locked"] = True
+    if changed is not None:
+        facts.update(
+            {
+                "changed": changed,
+                "backup_id": backup_id,
+                "report": {} if report is None else report,
+                "service_state": "running",
+            }
+        )
     return HostResult(
         PROTOCOL_VERSION,
         request.operation,
-        request.operation_id,
-        "refused",
-        "rollback-preflight",
-        (),
-        lifecycle,
-        {},
-        {},
-        (),
-        ("inspect the activation history before retrying",),
-        (),
-    )
-
-
-def _failed(request: HostRequest, target: str, error: _Failure) -> HostResult:
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "failed",
-        error.stage,
-        error.changed,
-        {
-            "previous_release_id": request.expected_state.get("current_release_id"),
-            "target_release_id": target,
-            "selected_release_id": error.selected,
-            "backup_id": error.backup_id,
-            "activation_id": error.activation_id,
-            "service_state": error.service,
-            "database_state": "unchanged",
-            "activation_recorded": error.activation_id is not None,
-        },
-        {},
-        error.verification,
-        error.residue,
-        error.recovery or ("inspect rollback state before retrying",),
-        ("rollback operation did not complete",),
-    )
-
-
-def _locked(
-    request: HostRequest,
-    error: LifecycleLockContention,
-) -> HostResult:
-    runtime_state = (
-        {} if error.holder is None else {"lock_holder": error.holder.to_mapping()}
-    )
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "refused",
-        "lifecycle-lock",
-        (),
-        {},
-        runtime_state,
-        {},
-        (),
-        ("wait for the recorded lifecycle operation to finish and retry",),
-        (),
+        request.correlation_id,
+        outcome,
+        message,
+        facts,
+        () if state is None else state.warnings,
     )
 
 

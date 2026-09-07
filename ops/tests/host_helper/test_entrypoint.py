@@ -136,42 +136,24 @@ def test_entrypoint_dispatches_backup_on_the_final_protocol_without_a_legacy_bri
     assert received[0].operation == "backup"
 
 
-def test_private_restore_projection_does_not_expose_recovery_artifacts() -> None:
-    request = HostRequest(
-        protocol_version=2,
-        operation="restore",
-        correlation_id=CORRELATION,
-        expected_state={},
-        paths={"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-        parameters={},
-    )
-    private = OperationResult(
-        2,
-        "restore",
-        "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "succeeded",
-        "records",
-        ("restore",),
-        {
-            "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "recovery_id": "recovery-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "recovery_database": "taskman_recovery_aaaaaaaa",
-            "restore_recorded": True,
-        },
-        {},
-        {},
-        (),
-        (),
-        (),
-    )
+@pytest.mark.parametrize("operation", ["rollback", "restore"])
+def test_entrypoint_dispatches_final_rollback_and_restore_without_a_legacy_bridge(
+    operation: str,
+) -> None:
+    """A final host request must never be converted back to an operation ID record."""
 
-    result = project_result(request, private)
+    received: list[HostRequest] = []
 
-    assert result.state == {
-        "changed": True,
-        "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "restore_recorded": True,
-    }
+    def final_result(request: object) -> HostResult:
+        assert isinstance(request, HostRequest)
+        received.append(request)
+        return HostResult(2, operation, request.correlation_id, "refused", "unsafe", {}, ())
+
+    with invoke_entrypoint(request_bytes(operation=operation), final_result, operation=operation) as stdout:
+        assert entrypoint.main() == 0
+
+    assert decode_result(stdout.buffer.getvalue()).outcome == "refused"
+    assert received[0].operation == operation
 
 
 def test_entrypoint_replaces_projection_failure_with_small_final_result() -> None:

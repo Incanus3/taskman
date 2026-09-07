@@ -1,1217 +1,706 @@
-"""Host-local guarded PostgreSQL restore and safe database swap."""
+"""Replayable restore through a small set of observable database arrangements."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import UTC, datetime
-import json
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+import hashlib
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
-import subprocess
 
-from taskman_ops.host_protocol import PROTOCOL_VERSION
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.releases.identifiers import validate_release_id
 
-from ..lifecycle import (
-    ActivationRecord,
-    BackupRecord,
-    LifecycleError,
-    LifecycleLockContention,
-    LifecycleStore,
-    LifecycleWriteFailure,
-)
-from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
+from ..commands import CommandError, run_command
+from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
-from ..verification import verify
-from .legacy_backup import (
-    BackupOperationFailure,
-    bounded_capture,
-    create_validated_backup,
-    dump_digest,
-    prepare_backup_root,
-    safe_secret,
-    validate_dump,
-)
+from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..state import HostState, StateAmbiguityError, observe_host_state
+from ..verification import available_bytes, verify
+from .backup import create_validated_backup
 
 
-_DATABASE_KEYS = frozenset({"host", "name", "port", "role"})
-_PARAMETER_KEYS = frozenset(
-    {
-        "action",
-        "backup_id",
-        "credentials_path",
-        "database",
-        "expected_migration_versions",
-        "verification",
-    }
-)
-_DATABASE_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
-_MIGRATION_RE = re.compile(r"[0-9]+\Z")
+_EXPECTED_STATE_KEYS = frozenset({"selected_release_id", "backup_id"})
+_PARAMETER_KEYS = frozenset({"backup_id", "credentials_path", "database", "verification"})
+_DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
+_DATABASE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,49}\Z")
+_MIGRATION_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
+_LOCK_TIMEOUT_SECONDS = 5.0
+_COMMAND_TIMEOUT_SECONDS = 60.0
+_POSTGRES_DATA = Path("/var/lib/postgresql")
 
 
-class _Inputs:
-    def __init__(
-        self,
-        action: str,
-        backup_id: str,
-        credentials: Path,
-        database: dict[str, object],
-        migrations: tuple[str, ...],
-        verification: dict[str, object],
-    ) -> None:
-        self.action = action
-        self.backup_id = backup_id
-        self.credentials = credentials
-        self.database = database
-        self.migrations = migrations
-        self.verification = verification
+class RestoreRefused(ValueError):
+    """The selected source cannot safely be restored."""
 
 
-class _Failure(Exception):
-    def __init__(
-        self,
-        stage: str,
-        *,
-        selected: str | None,
-        service: str,
-        database_state: str,
-        source_backup_id: str,
-        pre_restore_backup_id: str | None,
-        recovery_id: str,
-        intended_release_id: str,
-        changed: tuple[str, ...],
-        residue: tuple[str, ...] = (),
-        verification: Mapping[str, object] | None = None,
-        restore_recorded: bool = False,
-    ) -> None:
-        self.stage = stage
-        self.selected = selected
-        self.service = service
-        self.database_state = database_state
-        self.source_backup_id = source_backup_id
-        self.pre_restore_backup_id = pre_restore_backup_id
-        self.recovery_id = recovery_id
-        self.intended_release_id = intended_release_id
-        self.changed = changed
-        self.residue = residue
-        self.verification = {} if verification is None else verification
-        self.restore_recorded = restore_recorded
+class RestoreManual(RuntimeError):
+    """Observed database or selection state does not identify a safe replay."""
 
 
-class _SelectionFailure(LifecycleError):
-    def __init__(self, *, published: bool) -> None:
-        super().__init__("restore release selection failed")
-        self.published = published
+class _Retryable(RuntimeError):
+    def __init__(self, boundary: str) -> None:
+        super().__init__(boundary)
+        self.boundary = boundary
 
 
 @dataclass(frozen=True)
-class _RestoreRecordEffect:
-    published: bool
-    durable: bool
+class _Inputs:
+    paths: ManagedPaths
+    current_release_id: str
+    backup_id: str
+    credentials: Path
+    database: Mapping[str, object]
+    verification: Mapping[str, object]
 
+    @property
+    def temporary_database(self) -> str:
+        return f"{self.database['name']}__restore_tmp"
 
-class _RestoreRecordFailure(LifecycleError):
-    def __init__(
-        self,
-        effect: _RestoreRecordEffect,
-        residue: tuple[Path, ...],
-    ) -> None:
-        super().__init__("restore record publication failed")
-        self.effect = effect
-        self.residue = residue
-
-
-class _VerificationFailure(LifecycleError):
-    def __init__(self, verification: Mapping[str, object]) -> None:
-        super().__init__("restored host verification failed")
-        self.verification = verification
+    @property
+    def retired_database(self) -> str:
+        return f"{self.database['name']}__restore_old"
 
 
 def restore(request: HostRequest) -> HostResult:
-    """Validate the selected dump and execute one recoverable database swap."""
+    """Converge a restore without a journal or an operation-derived name.
 
-    backup_id = request.parameters.get("backup_id")
-    if type(backup_id) is not str:
-        return _refused(request)
+    The only database arrangements this procedure recognizes are the normal
+    initial database, its deterministic restore temporary, and the old
+    database retained between rename and completed selection publication.  A
+    different arrangement is manual rather than a guess.
+    """
+
+    state: HostState | None = None
+    inputs: _Inputs | None = None
+    source: BackupRecord | None = None
+    safety_backup: BackupRecord | None = None
+    report: object = {}
+    changed = False
     try:
         inputs = _inputs(request)
-        paths = ManagedPaths.from_mapping(request.paths)
-        store = LifecycleStore(paths)
-        paths.validate_existing(owner_uid=store.owner_uid)
-        with store.shared_snapshot_lock(operation="restore-preflight"):
-            preflight_records = store.read()
-            preflight_source = _selected_backup(
-                preflight_records,
-                store,
-                inputs,
-            )
-            preflight_intended = preflight_source.current_release_id
-            if preflight_intended is None or not any(
-                release.release_id == preflight_intended
-                for release in preflight_records.releases
-            ):
-                return _refused(request, backup_id=backup_id)
-            store.require_release_directory(
-                store.release_path(preflight_intended)
-            )
-        with store.exclusive_lifecycle_lock(operation="restore"):
-            records = store.read()
-            source = _selected_backup(records, store, inputs)
-            current = records.current_release_id
-            intended = source.current_release_id
-            if intended is None or not any(
-                release.release_id == intended for release in records.releases
-            ):
-                return _refused(request, backup_id=backup_id)
-            store.require_release_directory(store.release_path(intended))
-            safe_secret(inputs.credentials, store.owner_uid)
-            if inputs.action == "execute":
-                rerun = _completed_rerun(
-                    request,
-                    store,
-                    records,
-                    source,
-                    current,
-                    intended,
-                    inputs,
-                )
-                if rerun is not None:
-                    return rerun
-            if request.expected_state["current_release_id"] != current or current is None:
-                return _refused(request, backup_id=backup_id)
-            validate_dump(inputs.credentials, Path(source.dump_path.as_posix()))
-            _validate_capacity(source.source_database_size_bytes)
-            if inputs.action == "inspect":
-                return _inspection(request, source, current, intended)
-            return _execute(
-                request,
-                store,
-                records,
-                source,
-                current,
-                intended,
-                inputs,
-            )
-    except LifecycleLockContention as error:
-        return _locked(request, error)
-    except _Failure as error:
-        return _failed(request, error)
-    except (LifecycleError, PathAuthorityError, OSError, ValueError, subprocess.SubprocessError):
-        return _refused(request, backup_id=backup_id)
+        _safe_credentials(inputs.credentials)
+        with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
+            state = _observe(inputs, allow_selection_transition=True)
+            source = _source_record(state, inputs)
+            _validate_source_dump(source, inputs)
+            selection_status = _selection_status(state, inputs, source)
+            arrangement = _database_arrangement(inputs)
+            _validate_arrangement(arrangement, inputs, selection_status)
+
+            if selection_status == "completed":
+                _service("start")
+                verification = _verify(request, inputs, source.source_release_id)
+                if verification.outcome != "succeeded":
+                    raise _Retryable("verification")
+                report = verification.state.get("report", {})
+                if arrangement == frozenset({str(inputs.database["name"]), inputs.retired_database}):
+                    _drop_database(inputs, inputs.retired_database)
+                    changed = True
+                state = _observe(inputs, allow_selection_transition=False)
+            else:
+                swapped = frozenset({str(inputs.database["name"]), inputs.retired_database})
+                if arrangement == swapped:
+                    # A replay after the second rename has no remaining
+                    # database consequence.  The only safe evidence is the
+                    # unique completed backup of the original selected
+                    # database; never create a second backup of the restored
+                    # database and attach it to the old transition.
+                    safety_backup = _selection_backup(state, inputs, source, None)
+                else:
+                    safety_database = _safety_database(arrangement, inputs)
+                    safety_state = _state_for_database(state, inputs, safety_database)
+                    try:
+                        safety_backup = create_validated_backup(
+                            safety_state,
+                            inputs.paths,
+                            _database_with_name(inputs.database, safety_database),
+                            inputs.credentials,
+                            purpose="pre-restore",
+                        )
+                    except (CommandError, RecordError, OSError, ValueError) as error:
+                        raise _Retryable("backup") from error
+                    changed = True
+                    _service("stop")
+                    arrangement, restored = _converge_database(arrangement, inputs, source)
+                    changed = changed or restored
+                state = _observe(inputs, allow_selection_transition=True)
+                _require_selection_transition(state, inputs, source)
+
+                if state.selected_release_id != source.source_release_id:
+                    try:
+                        _atomically_select(inputs.paths, source.source_release_id)
+                    except (OSError, ValueError) as error:
+                        raise _Retryable("selection") from error
+                    changed = True
+                    state = _observe(inputs, allow_selection_transition=True)
+                _require_selected_target(state, inputs, source)
+
+                _service("start")
+                verification = _verify(request, inputs, source.source_release_id)
+                if verification.outcome != "succeeded":
+                    raise _Retryable("verification")
+                report = verification.state.get("report", {})
+
+                safety_backup = _selection_backup(state, inputs, source, safety_backup)
+                state = _record_selection(state, inputs, source, safety_backup)
+                changed = True
+                _drop_database(inputs, inputs.retired_database)
+                state = _observe(inputs, allow_selection_transition=False)
+    except LifecycleLockContention:
+        return _result(request, "retryable", "lifecycle lock is unavailable", state, inputs, source, locked=True)
+    except RestoreRefused:
+        return _result(request, "refused", "restore source is not safe", state, inputs, source)
+    except RestoreManual:
+        return _result(request, "manual", "restore state is contradictory", state, inputs, source)
+    except _Retryable as error:
+        return _result(
+            request,
+            "retryable",
+            "restore did not complete; rerun to converge",
+            state,
+            inputs,
+            source,
+            boundary=error.boundary,
+        )
+    except StateAmbiguityError:
+        return _result(request, "manual", "restore authority is contradictory", state, inputs, source)
+    except CommandError:
+        return _result(
+            request,
+            "retryable",
+            "restore observation did not complete; rerun to converge",
+            state,
+            inputs,
+            source,
+            boundary="observation",
+        )
+    except (PathAuthorityError, RecordError, TypeError, ValueError):
+        return _result(request, "refused", "restore request is unsafe", state, inputs, source)
+    except OSError:
+        return _result(request, "manual", "restore authority is contradictory", state, inputs, source)
+
+    return _result(
+        request,
+        "succeeded",
+        "restore converged",
+        state,
+        inputs,
+        source,
+        changed=changed,
+        safety_backup=safety_backup,
+        report=report,
+    )
 
 
 def _inputs(request: HostRequest) -> _Inputs:
-    if (
-        set(request.expected_state) != {"backup_id", "current_release_id"}
-        or set(request.parameters) != _PARAMETER_KEYS
-    ):
+    if not isinstance(request, HostRequest) or request.operation != "restore":
+        raise ValueError("restore needs a final host request")
+    if set(request.expected_state) != _EXPECTED_STATE_KEYS or set(request.parameters) != _PARAMETER_KEYS:
         raise ValueError("restore request is incomplete")
-    action = request.parameters["action"]
-    backup_id = request.parameters["backup_id"]
+    current = request.expected_state["selected_release_id"]
+    expected_backup = request.expected_state["backup_id"]
+    backup = request.parameters["backup_id"]
+    if type(current) is not str or type(expected_backup) is not str or expected_backup != backup:
+        raise ValueError("restore confirmation state is invalid")
+    current = validate_release_id(current)
+    backup = _backup_id(backup)
     credentials = request.parameters["credentials_path"]
-    database = request.parameters["database"]
-    migrations = request.parameters["expected_migration_versions"]
-    verification = request.parameters["verification"]
-    if (
-        action not in {"inspect", "execute"}
-        or type(backup_id) is not str
-        or request.expected_state["backup_id"] != backup_id
-        or type(credentials) is not str
-        or not isinstance(database, Mapping)
-        or set(database) != _DATABASE_KEYS
-        or not isinstance(migrations, tuple)
-        or not isinstance(verification, Mapping)
-    ):
-        raise ValueError("restore request is invalid")
-    values = dict(database)
-    if (
-        not all(
-            type(values[key]) is str and values[key]
-            for key in ("host", "name", "role")
-        )
-        or _DATABASE_RE.fullmatch(str(values["name"])) is None
-        or _DATABASE_RE.fullmatch(str(values["role"])) is None
-        or type(values["port"]) is not int
-        or not 0 < values["port"] < 65536
-        or any(type(item) is not str or _MIGRATION_RE.fullmatch(item) is None for item in migrations)
-        or tuple(sorted(set(migrations), key=int)) != migrations
-    ):
-        raise ValueError("restore database inputs are invalid")
+    if type(credentials) is not str or not Path(credentials).is_absolute():
+        raise ValueError("restore credentials path is invalid")
     return _Inputs(
-        action,
-        backup_id,
+        ManagedPaths.from_mapping(request.paths),
+        current,
+        backup,
         Path(credentials),
-        values,
-        migrations,
-        dict(verification),
+        _database(request.parameters["database"]),
+        _verification(request.parameters["verification"]),
     )
 
 
-def _selected_backup(
-    records: object,
-    store: LifecycleStore,
-    inputs: _Inputs,
-) -> BackupRecord:
-    selected = next(
-        (record for record in records.backups if record.backup_id == inputs.backup_id),
-        None,
-    )
-    if selected is None or not selected.validated:
-        raise LifecycleError("selected backup is unavailable")
-    dump = Path(selected.dump_path.as_posix())
-    details = dump.lstat()
-    if (
-        dump.parent != store.backup_root
-        or not stat.S_ISREG(details.st_mode)
-        or stat.S_ISLNK(details.st_mode)
-        or details.st_uid != store.owner_uid
-        or stat.S_IMODE(details.st_mode) != 0o600
-        or details.st_size <= 0
-        or details.st_size != selected.size_bytes
-        or selected.database != inputs.database["name"]
-        or (
-            selected.dump_sha256 is not None
-            and dump_digest(dump) != selected.dump_sha256
-        )
-    ):
-        raise LifecycleError("selected backup authority is unsafe")
-    return selected
-
-
-def _inspection(
-    request: HostRequest,
-    source: BackupRecord,
-    current: str,
-    intended: str,
-) -> HostResult:
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "succeeded",
-        "restore-inspected",
-        (),
-        {
-            "backup_id": source.backup_id,
-            "dump_path": source.dump_path.as_posix(),
-            "dump_size_bytes": source.size_bytes,
-            "source_database_size_bytes": source.source_database_size_bytes,
-            "current_release_id": current,
-            "intended_release_id": intended,
-            "dump_validated": True,
-        },
-        {},
-        {"format": "custom", "validated": True},
-        (),
-        (),
-        (),
-    )
-
-
-def _execute(
-    request: HostRequest,
-    store: LifecycleStore,
-    records: object,
-    source: BackupRecord,
-    current: str,
-    intended: str,
-    inputs: _Inputs,
-) -> HostResult:
-    token = request.operation_id.removeprefix("op-")
-    recovery_id = f"recovery-{token}"
-    temporary_database = f"taskman_restore_{token}"
-    recovery_database = f"taskman_recovery_{token}"
-    pre_restore_backup_id: str | None = None
-    selected: str | None = current
-    service = "active"
-    database_state = "unchanged"
-    changed: list[str] = []
-    verification: Mapping[str, object] = {}
-    temp_exists = False
-    recovery_exists = False
-    restore_recorded = False
-    stage = "backup"
-
-    try:
-        prepare_backup_root(store)
-        backup, backup_changed = create_validated_backup(
-            store,
-            records,
-            operation_id=request.operation_id,
-            database=inputs.database,
-            credentials=inputs.credentials,
-            reason="pre-restore",
-            current_release_id=current,
-            candidate_release_id=intended,
-        )
-        pre_restore_backup_id = backup.backup_id
-        if backup_changed:
-            changed.append("backup")
-
-        stage = "stop"
-        _service("stop")
-        service = "stopped"
-        changed.append("stop")
-
-        stage = "restore"
-        _admin(
-            inputs,
-            f'CREATE DATABASE "{temporary_database}" OWNER "{inputs.database["role"]}"',
-        )
-        temp_exists = True
-        changed.append("restore")
-        _restore_dump(inputs, source, temporary_database)
-        stage = "validation"
-        _validate_restored_database(inputs, temporary_database)
-        changed.append("validation")
-
-        stage = "swap"
-        _admin(
-            inputs,
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            f"WHERE datname IN ('{inputs.database['name']}', '{temporary_database}') "
-            "AND pid <> pg_backend_pid()",
-        )
-        _admin(
-            inputs,
-            f'ALTER DATABASE "{inputs.database["name"]}" RENAME TO "{recovery_database}"',
-        )
-        recovery_exists = True
-        database_state = "canonical-moved"
-        changed.append("swap")
-        try:
-            _admin(
-                inputs,
-                f'ALTER DATABASE "{temporary_database}" RENAME TO "{inputs.database["name"]}"',
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            try:
-                _admin(
-                    inputs,
-                    f'ALTER DATABASE "{recovery_database}" RENAME TO "{inputs.database["name"]}"',
-                )
-                recovery_exists = False
-                database_state = "canonical-restored"
-            except (OSError, subprocess.SubprocessError):
-                database_state = "unknown"
-            raise error
-        temp_exists = False
-        database_state = "restored-promoted"
-
-        stage = "selection"
-        try:
-            _select_release(store, request.operation_id, intended)
-        except _SelectionFailure as error:
-            if error.published:
-                selected = intended
-                changed.append("selection")
-            raise
-        selected = intended
-        changed.append("selection")
-        stage = "start"
-        _service("start")
-        service = "active"
-        changed.append("start")
-        stage = "verification"
-        verification = _verify_locked(request, intended, inputs.verification)
-        changed.append("verification")
-        stage = "records"
-        activation_id = f"activation-{token}"
-        try:
-            store.write_activation(
-                ActivationRecord(
-                    1,
-                    activation_id,
-                    current,
-                    intended,
-                    datetime.now(UTC).replace(microsecond=0),
-                    pre_restore_backup_id,
-                    "no-change",
-                )
-            )
-        except LifecycleWriteFailure as error:
-            if error.effect.published:
-                changed.append("records")
-            raise
-        changed.append("records")
-        record_effect = _write_restore_record(
-            store,
-            recovery_id=recovery_id,
-            database=str(inputs.database["name"]),
-            recovery_database=recovery_database,
-            source_backup_id=source.backup_id,
-            pre_restore_backup_id=pre_restore_backup_id,
-            intended_release_id=intended,
-        )
-        restore_recorded = record_effect.published
-    except Exception as error:
-        if isinstance(error, _Failure):
-            raise
-        if isinstance(error, BackupOperationFailure):
-            changed = list(
-                dict.fromkeys((*changed, *error.changed_stages))
-            )
-            if error.changed_stages and pre_restore_backup_id is None:
-                pre_restore_backup_id = (
-                    f"backup-{request.operation_id.removeprefix('op-')}"
-                )
-        if isinstance(error, _VerificationFailure):
-            verification = error.verification
-        if isinstance(error, _RestoreRecordFailure):
-            restore_recorded = error.effect.published
-        if temp_exists and database_state == "unchanged":
-            try:
-                _admin(
-                    inputs,
-                    f'DROP DATABASE "{temporary_database}" WITH (FORCE)',
-                )
-                temp_exists = False
-            except (OSError, subprocess.SubprocessError):
-                pass
-        if service == "stopped" and database_state in {"unchanged", "canonical-restored"}:
-            try:
-                _service("start")
-                service = "active"
-            except (OSError, subprocess.SubprocessError):
-                service = "unknown"
-        residue: list[str] = (
-            [
-                path.as_posix()
-                for path in error.residue_paths
-            ]
-            if isinstance(error, BackupOperationFailure)
-            else []
-        )
-        if temp_exists:
-            residue.append(f"/database/{temporary_database}")
-        if recovery_exists:
-            residue.append(f"/database/{recovery_database}")
-        if isinstance(error, _RestoreRecordFailure):
-            residue.extend(path.as_posix() for path in error.residue)
-        raise _Failure(
-            error.stage if isinstance(error, BackupOperationFailure) else stage,
-            selected=selected,
-            service=service,
-            database_state=database_state,
-            source_backup_id=source.backup_id,
-            pre_restore_backup_id=pre_restore_backup_id,
-            recovery_id=recovery_id,
-            intended_release_id=intended,
-            changed=tuple(changed),
-            residue=tuple(residue),
-            verification=verification,
-            restore_recorded=restore_recorded,
-        ) from error
-
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "succeeded",
-        "records",
-        tuple(changed),
-        {
-            "backup_id": source.backup_id,
-            "pre_restore_backup_id": pre_restore_backup_id,
-            "current_release_id": current,
-            "intended_release_id": intended,
-            "selected_release_id": intended,
-            "recovery_id": recovery_id,
-            "recovery_database": recovery_database,
-            "service_state": "active",
-            "database_state": "restored-promoted",
-            "restore_recorded": True,
-        },
-        {},
-        verification,
-        (),
-        (
-            f"retain {recovery_database} until the restored database is accepted",
-        ),
-        (),
-    )
-
-
-def _validate_capacity(source_database_size_bytes: int) -> None:
-    """Reserve room for both the temporary restore and retained database."""
-
-    if (
-        type(source_database_size_bytes) is not int
-        or source_database_size_bytes <= 0
-        or shutil.disk_usage("/var/lib/postgresql").free
-        < source_database_size_bytes * 2
-    ):
-        raise LifecycleError("restore capacity is insufficient")
-
-
-def _admin(inputs: _Inputs, sql: str) -> str:
-    return _run(
-        (
-            "sudo",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--host",
-            "/var/run/postgresql",
-            "--port",
-            str(inputs.database["port"]),
-            "--username",
-            "postgres",
-            "--dbname=postgres",
-            "--tuples-only",
-            "--no-align",
-            "--set",
-            "ON_ERROR_STOP=1",
-            "--command",
-            sql,
-        ),
-        inputs.credentials,
-        capture=True,
-    )
-
-
-def _restore_dump(
-    inputs: _Inputs,
-    source: BackupRecord,
-    database: str,
-) -> None:
-    _run(
-        (
-            "pg_restore",
-            "--exit-on-error",
-            "--no-owner",
-            "--no-privileges",
-            "--host",
-            str(inputs.database["host"]),
-            "--port",
-            str(inputs.database["port"]),
-            "--username",
-            str(inputs.database["role"]),
-            "--dbname",
-            database,
-            "--",
-            source.dump_path.as_posix(),
-        ),
-        inputs.credentials,
-    )
-
-
-def _validate_restored_database(inputs: _Inputs, database: str) -> None:
-    table = _run(
-        (
-            "psql",
-            "--no-psqlrc",
-            "--host",
-            str(inputs.database["host"]),
-            "--port",
-            str(inputs.database["port"]),
-            "--username",
-            str(inputs.database["role"]),
-            "--dbname",
-            database,
-            "--tuples-only",
-            "--no-align",
-            "--command",
-            "SELECT 1 FROM information_schema.tables WHERE "
-            "table_schema = 'public' AND table_name = 'schema_migrations'",
-        ),
-        inputs.credentials,
-        capture=True,
-    ).strip()
-    versions = _run(
-        (
-            "psql",
-            "--no-psqlrc",
-            "--host",
-            str(inputs.database["host"]),
-            "--port",
-            str(inputs.database["port"]),
-            "--username",
-            str(inputs.database["role"]),
-            "--dbname",
-            database,
-            "--tuples-only",
-            "--no-align",
-            "--command",
-            "SELECT version FROM schema_migrations ORDER BY version",
-        ),
-        inputs.credentials,
-        capture=True,
-    )
-    observed = tuple(line for line in versions.splitlines() if line)
-    if table != "1" or observed != inputs.migrations:
-        raise LifecycleError("restored database validation failed")
-
-
-def _run(
-    argv: tuple[str, ...],
-    credentials: Path,
-    *,
-    capture: bool = False,
-) -> str:
-    if capture:
-        return bounded_capture(
-            argv,
-            credentials,
-            timeout=60,
-        ).decode("utf-8", "replace")
-    completed = subprocess.run(
-        argv,
-        check=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env={**os.environ, "PGPASSFILE": credentials.as_posix()},
-        timeout=60,
-    )
-    return ""
-
-
-def _service(action: str) -> None:
-    subprocess.run(
-        ("systemctl", action, "taskman.service"),
-        check=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=60,
-    )
-
-
-def _select_release(
-    store: LifecycleStore,
-    operation_id: str,
-    intended: str,
-) -> None:
-    temporary = (
-        store.paths.local(store.paths.install_root) / f".current-{operation_id}"
-    )
-    if temporary.exists() or temporary.is_symlink():
-        raise LifecycleError("restore selection temporary exists")
-    temporary.symlink_to(store.release_path(intended))
-    published = False
-    try:
-        os.replace(temporary, store.current_link)
-        published = True
-        _fsync_directory(store.paths.local(store.paths.install_root))
-    except OSError as error:
-        raise _SelectionFailure(published=published) from error
-    finally:
-        if temporary.exists() or temporary.is_symlink():
-            try:
-                temporary.unlink()
-            except OSError:
-                pass
-
-
-def _verify_locked(
-    request: HostRequest,
-    intended: str,
-    settings: Mapping[str, object],
-) -> Mapping[str, object]:
-    result = verify(
-        HostRequest(
-            1,
-            "verify",
-            request.operation_id,
-            {"expected_release_id": intended},
-            request.paths,
-            settings,
-        ),
-        lifecycle_locked=True,
-    )
-    if result.outcome != "succeeded" or result.stage != "verified":
-        raise _VerificationFailure(result.verification)
-    return result.verification
-
-
-def _write_restore_record(
-    store: LifecycleStore,
-    *,
-    recovery_id: str,
-    database: str,
-    recovery_database: str,
-    source_backup_id: str,
-    pre_restore_backup_id: str,
-    intended_release_id: str,
-) -> _RestoreRecordEffect:
-    directory = store.deployment_root / "restores"
-    path = directory / f"{recovery_id}.json"
-    pending = directory / f".{recovery_id}.pending"
-    authority = {
-        "schema_version": 1,
-        "recovery_id": recovery_id,
-        "database": database,
-        "recovery_database": recovery_database,
-        "source_backup_id": source_backup_id,
-        "pre_restore_backup_id": pre_restore_backup_id,
-        "intended_release_id": intended_release_id,
-        "state": "retained",
-    }
-    effect = _RestoreRecordEffect(published=False, durable=False)
-    parent_durable = False
-    try:
-        if directory.exists() or directory.is_symlink():
-            details = directory.lstat()
-            if (
-                not stat.S_ISDIR(details.st_mode)
-                or stat.S_ISLNK(details.st_mode)
-                or details.st_uid != store.owner_uid
-                or stat.S_IMODE(details.st_mode) != 0o750
-            ):
-                raise LifecycleError("restore record directory is unsafe")
-        else:
-            directory.mkdir(mode=0o750, parents=True)
-            os.chown(directory, store.owner_uid, -1)
-            os.chmod(directory, 0o750)
-        _fsync_directory(store.deployment_root)
-        parent_durable = True
-        if pending.exists() or pending.is_symlink():
-            _read_restore_record(pending, store.owner_uid, authority)
-        else:
-            if path.exists() or path.is_symlink():
-                raise LifecycleError("restore record already exists")
-            payload = {
-                **authority,
-                "created_at": datetime.now(UTC)
-                .replace(microsecond=0)
-                .strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            encoded = (
-                json.dumps(payload, sort_keys=True, separators=(",", ":"))
-                + "\n"
-            ).encode()
-            descriptor = os.open(
-                pending,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-            try:
-                os.fchmod(descriptor, 0o600)
-                os.fchown(descriptor, store.owner_uid, -1)
-                _write_all(descriptor, encoded)
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            _fsync_directory(directory)
-        if path.exists() or path.is_symlink():
-            _read_restore_record(path, store.owner_uid, authority)
-            if not os.path.samefile(pending, path):
-                raise LifecycleError("restore record prefix is contradictory")
-        else:
-            os.link(pending, path, follow_symlinks=False)
-        effect = _RestoreRecordEffect(published=True, durable=False)
-        _fsync_directory(directory)
-        effect = _RestoreRecordEffect(published=True, durable=True)
-        pending.unlink()
-        _fsync_directory(directory)
-    except LifecycleError:
-        raise
-    except OSError as error:
-        residue = (
-            (pending,)
-            if pending.exists() or pending.is_symlink()
-            else (directory,)
-            if not parent_durable
-            else ()
-        )
-        raise _RestoreRecordFailure(
-            effect,
-            residue,
-        ) from error
-    return effect
-
-
-def _read_restore_record(
-    path: Path,
-    owner_uid: int,
-    authority: Mapping[str, object],
-) -> Mapping[str, object]:
-    try:
-        details = path.lstat()
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise LifecycleError("restore record prefix is invalid") from error
-    created_at = value.get("created_at") if isinstance(value, Mapping) else None
-    if (
-        not stat.S_ISREG(details.st_mode)
-        or stat.S_ISLNK(details.st_mode)
-        or details.st_uid != owner_uid
-        or stat.S_IMODE(details.st_mode) != 0o600
-        or details.st_size > 64 * 1024
-        or not isinstance(value, Mapping)
-        or set(value) != {*authority, "created_at"}
-        or any(value.get(key) != expected for key, expected in authority.items())
-        or type(created_at) is not str
-    ):
-        raise LifecycleError("restore record prefix is invalid")
-    try:
-        datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
-    except ValueError as error:
-        raise LifecycleError("restore record prefix is invalid") from error
+def _backup_id(value: object) -> str:
+    if type(value) is not str or re.fullmatch(r"backup-[0-9a-f]{32}", value) is None:
+        raise ValueError("restore backup identifier is invalid")
     return value
 
 
-def _write_all(descriptor: int, payload: bytes) -> None:
-    offset = 0
-    while offset < len(payload):
-        written = os.write(descriptor, payload[offset:])
-        if written <= 0:
-            raise OSError("short restore record write")
-        offset += written
+def _database(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _DATABASE_KEYS:
+        raise ValueError("restore database settings are invalid")
+    if (
+        type(value["host"]) is not str
+        or not value["host"]
+        or type(value["role"]) is not str
+        or not _DATABASE_NAME_RE.fullmatch(value["role"])
+        or type(value["name"]) is not str
+        or _DATABASE_NAME_RE.fullmatch(value["name"]) is None
+        or type(value["port"]) is not int
+        or not 0 < value["port"] < 65_536
+    ):
+        raise ValueError("restore database settings are invalid")
+    return value
+
+
+def _verification(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("restore verification settings are invalid")
+    return value
+
+
+def _safe_credentials(path: Path) -> None:
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise ValueError("restore credentials are unavailable") from error
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
+    ):
+        raise ValueError("restore credentials are unsafe")
+
+
+def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
+    # A post-rename replay has no canonical database name temporarily.  The
+    # physical selection and completed records remain observable without
+    # asking PostgreSQL for the canonical schema first.
+    return observe_host_state(inputs.paths, allow_selection_transition=allow_selection_transition)
+
+
+def _state_for_database(state: HostState, inputs: _Inputs, name: str) -> HostState:
+    observed = _observe_database(_database_with_name(inputs.database, name), inputs.credentials)
+    versions = observed["applied_migrations"]
+    database_state = observed["state"]
+    if not isinstance(versions, tuple) or database_state != "ready":
+        raise RestoreManual("safety backup database observation is invalid")
+    return replace(state, applied_migrations=versions, database_state=database_state)
+
+
+def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
+    environment = {"PGPASSFILE": credentials.as_posix()}
+    common = (
+        "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--host", str(database["host"]),
+        "--port", str(database["port"]), "--username", str(database["role"]),
+        "--dbname", str(database["name"]), "--no-password",
+    )
+    table = run_command(
+        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    if table != b"1":
+        raise RestoreManual("database migration authority is unavailable")
+    output = run_command(
+        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.decode("utf-8", "strict")
+    try:
+        versions = tuple(int(item) for item in output.splitlines() if item)
+    except ValueError as error:
+        raise RestoreManual("database migration authority is invalid") from error
+    if versions != tuple(sorted(set(versions))):
+        raise RestoreManual("database migration authority is invalid")
+    return {"state": "ready", "applied_migrations": versions}
+
+
+def _source_record(state: HostState, inputs: _Inputs) -> BackupRecord:
+    source = next((item for item in state.backups if item.backup_id == inputs.backup_id), None)
+    if source is None:
+        raise RestoreRefused("selected backup is unavailable")
+    release = next((item for item in state.releases if item.release_id == source.source_release_id), None)
+    if release is None:
+        raise RestoreManual("source backup release is unavailable")
+    if _migration_versions(release) != source.migration_versions:
+        raise RestoreManual("source backup and release migrations conflict")
+    if not any(item.release_id == source.source_release_id for item in state.selections):
+        raise RestoreManual("source release is not proven by successful selection history")
+    return source
+
+
+def _validate_source_dump(source: BackupRecord, inputs: _Inputs) -> None:
+    dump = Path(inputs.paths.local(inputs.paths.backup_root / f"{source.backup_id}.dump"))
+    try:
+        details = dump.lstat()
+    except OSError as error:
+        raise RestoreManual("source dump is unavailable") from error
+    if (
+        dump.parent != Path(inputs.paths.local(inputs.paths.backup_root))
+        or stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or details.st_size <= 0
+        or details.st_mode & 0o7022
+        or _sha256(dump) != source.dump_sha256
+    ):
+        raise RestoreManual("source dump identity is contradictory")
+    try:
+        run_command(
+            ("pg_restore", "--list", dump.as_posix()),
+            env={"PGPASSFILE": inputs.credentials.as_posix()},
+            timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+        )
+    except CommandError as error:
+        raise RestoreRefused("source dump cannot be validated") from error
+
+
+def _selection_status(state: HostState, inputs: _Inputs, source: BackupRecord) -> str:
+    target = source.source_release_id
+    if not state.selections:
+        raise RestoreManual("selection history is absent")
+    latest = state.selections[-1]
+    if state.selected_release_id == inputs.current_release_id:
+        if latest.release_id != inputs.current_release_id:
+            raise RestoreManual("selection history contradicts the confirmed current release")
+        return "pending"
+    if state.selected_release_id != target:
+        raise RestoreManual("selected release is unrelated to the restore source")
+    if latest.release_id == target:
+        if latest.previous_release_id != inputs.current_release_id:
+            raise RestoreManual("completed restore selection is unrelated to the request")
+        return "completed"
+    if latest.release_id == inputs.current_release_id:
+        return "selected"
+    raise RestoreManual("restore selection transition is not recognizable")
+
+
+def _database_arrangement(inputs: _Inputs) -> frozenset[str]:
+    names = _admin(
+        inputs,
+        "SELECT datname FROM pg_database WHERE datname IN "
+        f"('{inputs.database['name']}', '{inputs.temporary_database}', '{inputs.retired_database}') "
+        "ORDER BY datname",
+    )
+    return frozenset(item for item in names.splitlines() if item)
+
+
+def _validate_arrangement(arrangement: frozenset[str], inputs: _Inputs, selection_status: str) -> None:
+    live = str(inputs.database["name"])
+    recognized = {
+        frozenset({live}),
+        frozenset({live, inputs.temporary_database}),
+        frozenset({inputs.temporary_database, inputs.retired_database}),
+        frozenset({live, inputs.retired_database}),
+    }
+    if arrangement not in recognized:
+        raise RestoreManual("database identities are not a recognized restore arrangement")
+    if selection_status == "completed" and arrangement not in {frozenset({live}), frozenset({live, inputs.retired_database})}:
+        raise RestoreManual("completed restore has an unfinished database arrangement")
+    if selection_status != "completed" and arrangement == frozenset({live, inputs.retired_database}):
+        # The database swap completed but selection publication did not.  It
+        # is safe to resume through selection and verification.
+        return
+
+
+def _safety_database(arrangement: frozenset[str], inputs: _Inputs) -> str:
+    live = str(inputs.database["name"])
+    if live in arrangement:
+        return live
+    if inputs.retired_database in arrangement and inputs.temporary_database in arrangement:
+        return inputs.retired_database
+    raise RestoreManual("no original database is available for a fresh safety backup")
+
+
+def _converge_database(
+    arrangement: frozenset[str], inputs: _Inputs, source: BackupRecord
+) -> tuple[frozenset[str], bool]:
+    live = str(inputs.database["name"])
+    temporary = inputs.temporary_database
+    retired = inputs.retired_database
+    changed = False
+    if arrangement == frozenset({live}):
+        _validate_capacity(source.source_database_size_bytes)
+        _admin(inputs, f'CREATE DATABASE "{temporary}" OWNER "{inputs.database["role"]}"')
+        _restore_dump(inputs, source, temporary)
+        _validate_restored_database(inputs, temporary, source.migration_versions)
+        arrangement = frozenset({live, temporary})
+        changed = True
+    elif arrangement == frozenset({live, temporary}):
+        _validate_restored_database(inputs, temporary, source.migration_versions)
+    elif arrangement == frozenset({temporary, retired}):
+        _validate_restored_database(inputs, temporary, source.migration_versions)
+        _rename_database(inputs, temporary, live)
+        arrangement = frozenset({live, retired})
+        changed = True
+    elif arrangement == frozenset({live, retired}):
+        return arrangement, changed
+    else:  # pragma: no cover - caller validates the finite set
+        raise RestoreManual("database arrangement is unknown")
+
+    if arrangement == frozenset({live, temporary}):
+        _terminate_connections(inputs, live, temporary)
+        _rename_database(inputs, live, retired)
+        _rename_database(inputs, temporary, live)
+        arrangement = frozenset({live, retired})
+        changed = True
+    return arrangement, changed
+
+
+def _validate_capacity(size: int) -> None:
+    if type(size) is not int or size <= 0 or available_bytes(_POSTGRES_DATA) < size * 2:
+        raise RestoreRefused("restore capacity is insufficient")
+
+
+def _admin(inputs: _Inputs, sql: str) -> str:
+    completed = run_command(
+        (
+            "sudo", "-u", "postgres", "--", "psql", "--no-psqlrc", "--host", "/var/run/postgresql",
+            "--port", str(inputs.database["port"]), "--username", "postgres", "--dbname=postgres",
+            "--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1", "--command", sql,
+        ),
+        env={"PGPASSFILE": inputs.credentials.as_posix()},
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    )
+    return completed.stdout.decode("utf-8", "strict")
+
+
+def _restore_dump(inputs: _Inputs, source: BackupRecord, database: str) -> None:
+    dump = Path(inputs.paths.local(inputs.paths.backup_root / f"{source.backup_id}.dump"))
+    run_command(
+        (
+            "pg_restore", "--exit-on-error", "--no-owner", "--no-privileges", "--host",
+            str(inputs.database["host"]), "--port", str(inputs.database["port"]), "--username",
+            str(inputs.database["role"]), "--dbname", database, "--no-password", dump.as_posix(),
+        ),
+        env={"PGPASSFILE": inputs.credentials.as_posix()},
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    )
+
+
+def _validate_restored_database(inputs: _Inputs, database: str, expected: tuple[int, ...]) -> None:
+    environment = {"PGPASSFILE": inputs.credentials.as_posix()}
+    common = (
+        "psql", "--no-psqlrc", "--host", str(inputs.database["host"]), "--port",
+        str(inputs.database["port"]), "--username", str(inputs.database["role"]), "--dbname", database,
+        "--no-password", "--tuples-only", "--no-align",
+    )
+    table = run_command(
+        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    if table != b"1":
+        raise RestoreManual("restored database migration table is unavailable")
+    output = run_command(
+        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
+        env=environment,
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.decode("utf-8", "strict")
+    try:
+        actual = tuple(int(item) for item in output.splitlines() if item)
+    except ValueError as error:
+        raise RestoreManual("restored database migrations are invalid") from error
+    if actual != expected:
+        raise RestoreManual("restored database migrations do not match the source backup")
+
+
+def _terminate_connections(inputs: _Inputs, *names: str) -> None:
+    literals = ", ".join(f"'{name}'" for name in names)
+    _admin(
+        inputs,
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        f"WHERE datname IN ({literals}) AND pid <> pg_backend_pid()",
+    )
+
+
+def _rename_database(inputs: _Inputs, source: str, destination: str) -> None:
+    _admin(inputs, f'ALTER DATABASE "{source}" RENAME TO "{destination}"')
+
+
+def _drop_database(inputs: _Inputs, name: str) -> None:
+    _admin(inputs, f'DROP DATABASE "{name}" WITH (FORCE)')
+
+
+def _require_selection_transition(state: HostState, inputs: _Inputs, source: BackupRecord) -> None:
+    selection_status = _selection_status(state, inputs, source)
+    if selection_status not in {"pending", "selected"}:
+        raise RestoreManual("database restore lacks a pending selection transition")
+
+
+def _require_selected_target(state: HostState, inputs: _Inputs, source: BackupRecord) -> None:
+    if state.selected_release_id != source.source_release_id:
+        raise RestoreManual("restore selection did not retain the source release")
+    selection_status = _selection_status(state, inputs, source)
+    if selection_status not in {"selected", "completed"}:
+        raise RestoreManual("restore target selection is not recognizable")
+
+
+def _selection_backup(
+    state: HostState,
+    inputs: _Inputs,
+    source: BackupRecord,
+    local: BackupRecord | None,
+) -> BackupRecord:
+    if local is not None:
+        if local.source_release_id != inputs.current_release_id:
+            raise RestoreManual("fresh restore backup has the wrong source release")
+        if any(item.backup_id == local.backup_id for item in state.backups):
+            return local
+        raise RestoreManual("fresh restore backup was not published")
+
+    previous = _observe_database(
+        _database_with_name(inputs.database, inputs.retired_database), inputs.credentials
+    )
+    migrations = previous.get("applied_migrations")
+    if not isinstance(migrations, tuple):
+        raise RestoreManual("retired database migration authority is invalid")
+    candidates = tuple(
+        item
+        for item in state.backups
+        if item.source_release_id == inputs.current_release_id
+        and item.migration_versions == migrations
+    )
+    if len(candidates) != 1:
+        raise RestoreManual("restore safety backup cannot be recovered unambiguously")
+    return candidates[0]
+
+
+def _record_selection(
+    state: HostState,
+    inputs: _Inputs,
+    source: BackupRecord,
+    safety_backup: BackupRecord,
+) -> HostState:
+    target = source.source_release_id
+    latest = state.selections[-1] if state.selections else None
+    if latest is not None and latest.release_id == target:
+        return _observe(inputs, allow_selection_transition=False)
+    if latest is None or latest.release_id != inputs.current_release_id:
+        raise RestoreManual("restore history changed before record publication")
+    selected_at = max(datetime.now(UTC).replace(microsecond=0), latest.selected_at + timedelta(seconds=1))
+    try:
+        append_selection(
+            inputs.paths,
+            SelectionRecord(target, inputs.current_release_id, safety_backup.backup_id, selected_at),
+        )
+    except (OSError, RecordError, ValueError) as error:
+        raise _Retryable("selection") from error
+    return _observe(inputs, allow_selection_transition=False)
+
+
+def _service(action: str) -> None:
+    try:
+        run_command(("systemctl", action, "taskman.service"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
+    except CommandError as error:
+        raise _Retryable("start" if action == "start" else "stop") from error
+
+
+def _atomically_select(paths: ManagedPaths, release_id: str) -> None:
+    root = Path(paths.local(paths.install_root))
+    target = Path(paths.local(paths.release_root / release_id))
+    temporary = root / f".current-{release_id}.tmp"
+    if temporary.exists() or temporary.is_symlink():
+        details = temporary.lstat()
+        if not stat.S_ISLNK(details.st_mode) or temporary.resolve(strict=False) != target:
+            raise RestoreManual("selection temporary is unsafe")
+        temporary.unlink()
+    temporary.symlink_to(target)
+    os.replace(temporary, Path(paths.local(paths.current_link)))
+    _fsync_directory(root)
+
+
+def _verify(request: HostRequest, inputs: _Inputs, target: str) -> HostResult:
+    return verify(
+        HostRequest(
+            PROTOCOL_VERSION,
+            "verify",
+            request.correlation_id,
+            {"expected_release_id": target},
+            request.paths,
+            inputs.verification,
+        ),
+        lifecycle_locked=True,
+    )
+
+
+def _migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
+    versions: list[int] = []
+    for migration in record.migrations:
+        name = migration.get("filename")
+        match = _MIGRATION_RE.fullmatch(name) if type(name) is str else None
+        if match is None:
+            raise RestoreManual("release migration record is invalid")
+        versions.append(int(match.group(1)))
+    result = tuple(versions)
+    if result != tuple(sorted(set(result))):
+        raise RestoreManual("release migration record is invalid")
+    return result
+
+
+def _database_with_name(database: Mapping[str, object], name: str) -> Mapping[str, object]:
+    return {**database, "name": name}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as error:
+        raise RestoreManual("source dump cannot be read") from error
+    return digest.hexdigest()
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
-def _completed_rerun(
+def _result(
     request: HostRequest,
-    store: LifecycleStore,
-    records: object,
-    source: BackupRecord,
-    current: str | None,
-    intended: str,
-    inputs: _Inputs,
-) -> HostResult | None:
-    recovery_id = f"recovery-{request.operation_id.removeprefix('op-')}"
-    record = store.deployment_root / "restores" / f"{recovery_id}.json"
-    activation_id = f"activation-{request.operation_id.removeprefix('op-')}"
-    activation = next(
-        (
-            item
-            for item in records.activations
-            if item.activation_id == activation_id
-        ),
-        None,
-    )
-    if activation is None:
-        return None
-    if (
-        current != intended
-        or activation.previous_release_id
-        != request.expected_state.get("current_release_id")
-        or activation.candidate_release_id != intended
-        or activation.backup_id
-        != f"backup-{request.operation_id.removeprefix('op-')}"
-    ):
-        return _refused(request, backup_id=source.backup_id)
-    pre_restore_backup = next(
-        (
-            item
-            for item in records.backups
-            if item.backup_id == activation.backup_id
-        ),
-        None,
-    )
-    canonical = str(inputs.database["name"])
-    recovery_database = (
-        f"taskman_recovery_{request.operation_id.removeprefix('op-')}"
-    )
-    if (
-        pre_restore_backup is None
-        or pre_restore_backup.reason != "pre-restore"
-        or pre_restore_backup.current_release_id
-        != request.expected_state.get("current_release_id")
-        or pre_restore_backup.candidate_release_id != intended
-        or pre_restore_backup.database != canonical
-        or not _restore_databases_present(
-            inputs,
-            canonical,
-            recovery_database,
-        )
-    ):
-        return _refused(request, backup_id=source.backup_id)
-    pending = record.parent / f".{recovery_id}.pending"
-    authority = {
-        "schema_version": 1,
-        "recovery_id": recovery_id,
-        "database": canonical,
-        "recovery_database": recovery_database,
-        "source_backup_id": source.backup_id,
-        "pre_restore_backup_id": pre_restore_backup.backup_id,
-        "intended_release_id": intended,
-        "state": "retained",
-    }
-    record_present = record.exists() or record.is_symlink()
-    pending_present = pending.exists() or pending.is_symlink()
-    if record_present:
-        _read_restore_record(record, store.owner_uid, authority)
-    if pending_present:
-        _read_restore_record(pending, store.owner_uid, authority)
-        if record_present and not os.path.samefile(pending, record):
-            raise LifecycleError("restore record prefix is contradictory")
-    try:
-        verification = _verify_locked(request, intended, inputs.verification)
-    except _VerificationFailure as error:
-        raise _Failure(
-            "verification",
-            selected=intended,
-            service=_service_state_from_verification(error.verification),
-            database_state="restored-promoted",
-            source_backup_id=source.backup_id,
-            pre_restore_backup_id=pre_restore_backup.backup_id,
-            recovery_id=recovery_id,
-            intended_release_id=intended,
-            changed=(),
-            residue=(
-                (f"/database/{recovery_database}", pending.as_posix())
-                if pending_present
-                else (f"/database/{recovery_database}",)
-            ),
-            verification=error.verification,
-            restore_recorded=record_present,
-        ) from error
-    if pending_present or not record_present:
-        try:
-            effect = _write_restore_record(
-                store,
-                recovery_id=recovery_id,
-                database=canonical,
-                recovery_database=recovery_database,
-                source_backup_id=source.backup_id,
-                pre_restore_backup_id=pre_restore_backup.backup_id,
-                intended_release_id=intended,
-            )
-        except _RestoreRecordFailure as error:
-            raise _Failure(
-                "records",
-                selected=intended,
-                service="active",
-                database_state="restored-promoted",
-                source_backup_id=source.backup_id,
-                pre_restore_backup_id=pre_restore_backup.backup_id,
-                recovery_id=recovery_id,
-                intended_release_id=intended,
-                changed=("records",) if error.effect.published else (),
-                residue=(
-                    f"/database/{recovery_database}",
-                    *(path.as_posix() for path in error.residue),
-                ),
-                verification=verification,
-                restore_recorded=error.effect.published,
-            ) from error
-        if not effect.published or not effect.durable:
-            raise LifecycleError("restore record finalization is incomplete")
-        return _rerun_result(
-            request,
-            source,
-            intended,
-            pre_restore_backup.backup_id,
-            recovery_id,
-            recovery_database,
-            verification,
-            outcome="succeeded",
-            stage="records-finalized",
-            changed=("records",),
-        )
-    return _rerun_result(
-        request,
-        source,
-        intended,
-        pre_restore_backup.backup_id,
-        recovery_id,
-        recovery_database,
-        verification,
-        outcome="no_change",
-        stage="already-restored",
-        changed=(),
-    )
-
-
-def _restore_databases_present(
-    inputs: _Inputs,
-    canonical: str,
-    recovery: str,
-) -> bool:
-    observed = _admin(
-        inputs,
-        "SELECT datname FROM pg_database "
-        f"WHERE datname IN ('{canonical}', '{recovery}') ORDER BY datname",
-    )
-    return tuple(line for line in observed.splitlines() if line) == tuple(
-        sorted((canonical, recovery))
-    )
-
-
-def _service_state_from_verification(
-    verification: Mapping[str, object],
-) -> str:
-    checks = verification.get("checks")
-    if not isinstance(checks, tuple):
-        return "unknown"
-    service_checks = tuple(
-        check
-        for check in checks
-        if isinstance(check, Mapping)
-        and check.get("name") == "taskman-service"
-    )
-    if (
-        len(service_checks) == 1
-        and service_checks[0].get("schema_version") == 1
-        and service_checks[0].get("status") == "passed"
-    ):
-        return "active"
-    return "unknown"
-
-
-def _rerun_result(
-    request: HostRequest,
-    source: BackupRecord,
-    intended: str,
-    pre_restore_backup_id: str,
-    recovery_id: str,
-    recovery_database: str,
-    verification: Mapping[str, object],
-    *,
     outcome: str,
-    stage: str,
-    changed: tuple[str, ...],
-) -> HostResult:
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        outcome,
-        stage,
-        changed,
-        {
-            "backup_id": source.backup_id,
-            "pre_restore_backup_id": pre_restore_backup_id,
-            "current_release_id": request.expected_state["current_release_id"],
-            "intended_release_id": intended,
-            "selected_release_id": intended,
-            "recovery_id": recovery_id,
-            "recovery_database": recovery_database,
-            "service_state": "active",
-            "database_state": "restored-promoted",
-            "restore_recorded": True,
-        },
-        {},
-        verification,
-        (),
-        (f"retain {recovery_database} until the restored database is accepted",),
-        (),
-    )
-
-
-def _refused(
-    request: HostRequest,
+    message: str,
+    state: HostState | None,
+    inputs: _Inputs | None,
+    source: BackupRecord | None,
     *,
-    backup_id: str | None = None,
+    boundary: str | None = None,
+    locked: bool = False,
+    changed: bool | None = None,
+    safety_backup: BackupRecord | None = None,
+    report: object | None = None,
 ) -> HostResult:
-    lifecycle = (
-        {}
-        if backup_id is None
-        else {"backup_id": backup_id, "dump_validated": False}
-    )
+    current = None if inputs is None else inputs.current_release_id
+    backup_id = None if source is None else source.backup_id
+    intended = None if source is None else source.source_release_id
+    facts: dict[str, object] = {
+        "backup_id": backup_id,
+        "pre_restore_backup_id": None if safety_backup is None else safety_backup.backup_id,
+        "current_release_id": current,
+        "intended_release_id": intended,
+        "selected_release_id": None if state is None else state.selected_release_id,
+        "service_state": "unknown" if state is None else state.service_state,
+        "database_state": "unknown" if state is None else state.database_state,
+    }
+    if boundary is not None:
+        facts["failed_boundary"] = boundary
+    if locked:
+        facts["locked"] = True
+    if changed is not None:
+        facts.update(
+            {
+                "changed": changed,
+                "database_state": "restored",
+                "service_state": "running",
+                "report": {} if report is None else report,
+            }
+        )
     return HostResult(
         PROTOCOL_VERSION,
         request.operation,
-        request.operation_id,
-        "refused",
-        "restore-preflight",
-        (),
-        lifecycle,
-        {},
-        {},
-        (),
-        ("inspect the selected backup before retrying",),
-        (),
-    )
-
-
-def _failed(request: HostRequest, error: _Failure) -> HostResult:
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "failed",
-        error.stage,
-        error.changed,
-        {
-            "backup_id": error.source_backup_id,
-            "pre_restore_backup_id": error.pre_restore_backup_id,
-            "current_release_id": request.expected_state.get("current_release_id"),
-            "intended_release_id": error.intended_release_id,
-            "selected_release_id": error.selected,
-            "recovery_id": error.recovery_id,
-            "recovery_database":
-                f"taskman_recovery_{request.operation_id.removeprefix('op-')}",
-            "service_state": error.service,
-            "database_state": error.database_state,
-            "restore_recorded": error.restore_recorded,
-        },
-        {},
-        error.verification,
-        error.residue,
-        _recovery_actions(request, error),
-        ("restore operation did not complete",),
-    )
-
-
-def _recovery_actions(
-    request: HostRequest,
-    error: _Failure,
-) -> tuple[str, ...]:
-    database = request.parameters.get("database")
-    canonical = database.get("name") if isinstance(database, Mapping) else "taskman_prod"
-    token = request.operation_id.removeprefix("op-")
-    recovery = f"taskman_recovery_{token}"
-    temporary = f"taskman_restore_{token}"
-    actions = [
-        "systemctl status taskman.service",
-        f"readlink -f {request.paths['install_root']}/current",
-    ]
-    if error.database_state == "unknown":
-        actions.extend(
-            (
-                f"sudo -u postgres psql --dbname=postgres --command=\"SELECT datname FROM pg_database WHERE datname IN ('{canonical}','{recovery}','{temporary}') ORDER BY datname\"",
-                "leave taskman.service stopped until the canonical database name is proven",
-            )
-        )
-    elif error.database_state == "canonical-moved":
-        actions.append(
-            f"sudo -u postgres psql --dbname=postgres --command='ALTER DATABASE \"{recovery}\" RENAME TO \"{canonical}\"'"
-        )
-    elif error.database_state == "restored-promoted":
-        actions.append(
-            f"retain {recovery} and inspect the restored canonical database before retrying"
-        )
-    else:
-        actions.append("inspect the unchanged canonical database before retrying")
-    return tuple(actions)
-
-
-def _locked(
-    request: HostRequest,
-    error: LifecycleLockContention,
-) -> HostResult:
-    runtime_state = (
-        {} if error.holder is None else {"lock_holder": error.holder.to_mapping()}
-    )
-    return HostResult(
-        PROTOCOL_VERSION,
-        request.operation,
-        request.operation_id,
-        "refused",
-        "lifecycle-lock",
-        (),
-        {},
-        runtime_state,
-        {},
-        (),
-        ("wait for the recorded lifecycle operation to finish and retry",),
-        (),
+        request.correlation_id,
+        outcome,
+        message,
+        facts,
+        () if state is None else state.warnings,
     )
 
 

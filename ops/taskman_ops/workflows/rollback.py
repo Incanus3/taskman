@@ -1,30 +1,20 @@
-"""Controller plan, confirmation, and translation for helper rollback."""
+"""Controller planning and final-result translation for rollback."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..host_helper.lifecycle import (
-    ActivationRecord,
-    AdoptionRecord,
-    BackupRecord,
-    LifecycleError,
-    LifecycleRecords,
-    ReleaseRecord,
-    rollback_eligibility,
-)
 from ..output import WorkflowResult
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
 from .helper import (
     database_settings,
     mutable,
-    result_error,
     request as helper_request,
+    result_error,
     run_request,
     successful_verification,
     verification_settings,
@@ -32,74 +22,19 @@ from .helper import (
 
 
 _PGPASS = "/etc/taskman/pgpass"
-_ID = re.compile(r"(?:backup|activation)-[0-9a-f]{32}\Z")
-_RESULT_KEYS = frozenset(
+_BACKUP_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_SUCCESS_FACTS = frozenset(
     {
+        "changed",
         "previous_release_id",
         "target_release_id",
         "selected_release_id",
         "backup_id",
-        "activation_id",
         "service_state",
         "database_state",
-        "activation_recorded",
-        "changed",
         "report",
     }
 )
-_SUCCESS_STAGES = (
-    "backup",
-    "stop",
-    "selection",
-    "start",
-    "verification",
-    "records",
-)
-
-
-@dataclass(frozen=True)
-class RollbackPlan:
-    current_release_id: str
-    target_release_id: str
-    activation_ids: tuple[str, ...]
-    confirmation_fingerprint: str
-
-
-def assess_rollback(
-    records: LifecycleRecords,
-    current_release_id: str,
-    target_release_id: str,
-) -> RollbackPlan:
-    """Describe the exact compatible reverse activation segment."""
-
-    if not isinstance(records, LifecycleRecords):
-        raise TypeError("rollback assessment requires lifecycle records")
-    try:
-        current = validate_release_id(current_release_id)
-        target = validate_release_id(target_release_id)
-    except ValueError:
-        raise _safety("release identifier is invalid") from None
-    eligible, reason = rollback_eligibility(records, current, target)
-    if not eligible:
-        raise _safety(
-            reason or "target release is not connected to activation history"
-        )
-    ids: list[str] = []
-    edges: list[str] = []
-    cursor = current
-    for activation in reversed(records.activations):
-        if activation.candidate_release_id != cursor:
-            raise _safety("activation chain is incomplete")
-        ids.append(activation.activation_id)
-        edges.append(
-            f"{activation.activation_id}:{activation.migration_policy}"
-        )
-        if activation.previous_release_id == target:
-            return RollbackPlan(current, target, tuple(ids), ",".join(edges))
-        if activation.previous_release_id is None:
-            break
-        cursor = activation.previous_release_id
-    raise _safety("target release is not connected to activation history")
 
 
 def rollback(
@@ -110,7 +45,7 @@ def rollback(
     confirm: Callable[[Mapping[str, object]], bool] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
-    """Confirm helper-derived authority, then make one mutation request."""
+    """Confirm an exact release target, then replay one helper procedure."""
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("rollback requires a validated environment configuration")
@@ -118,26 +53,23 @@ def rollback(
         raise TypeError("rollback dry-run flag must be boolean")
     target = validate_release_id(release_id)
     current: str | None = None
+    warnings: tuple[str, ...] = ()
     try:
-        discovery = run_request(remote, helper_request("discover", config))
-        if discovery.outcome != "succeeded":
-            raise result_error(discovery)
-        records = _records(discovery.state)
-        warnings = discovery.warnings
-        current = records.current_release_id
-        if current is None:
-            raise _safety("no current release is recorded")
-        assessed = assess_rollback(records, current, target)
+        discovered = run_request(remote, helper_request("discover", config))
+        if discovered.outcome != "succeeded":
+            raise result_error(discovered)
+        current = _selected_release(discovered.state)
+        warnings = discovered.warnings
+        _target_is_installed(discovered.state, target)
+        if current == target:
+            raise _safety("rollback target is already selected")
         plan = {
-            "current_release_id": assessed.current_release_id,
-            "target_release_id": assessed.target_release_id,
-            "activation_ids": assessed.activation_ids,
-            "confirmation_fingerprint": assessed.confirmation_fingerprint,
-            "target_release_path": (
-                config.release_root / target
-            ).as_posix(),
+            "current_release_id": current,
+            "target_release_id": target,
+            "target_release_path": (config.release_root / target).as_posix(),
             "planned_backup": True,
             "services_affected": ("taskman.service",),
+            "typed_confirmation": f"rollback {config.name or ''} {target}",
         }
         if dry_run:
             return WorkflowResult(
@@ -145,13 +77,9 @@ def rollback(
                 config.name or "",
                 False,
                 "planned",
-                {
-                    **plan,
-                    "backup_id": None,
-                    "selected_release_id": current,
-                },
+                {**plan, "backup_id": None, "selected_release_id": current},
                 warnings,
-                "review the exact rollback plan and run without --dry-run only after explicit confirmation",
+                "review the exact rollback plan and rerun without --dry-run to confirm it",
             )
         if not (confirm or _confirm)(plan):
             return WorkflowResult(
@@ -165,7 +93,6 @@ def rollback(
                     "selected_release_id": current,
                     "service_state": "unknown",
                     "database_state": "unchanged",
-                    "activation_recorded": False,
                 },
                 warnings,
                 "review the exact rollback plan and confirm a later run when ready",
@@ -173,7 +100,7 @@ def rollback(
         request = helper_request(
             "rollback",
             config,
-            expected_state={"current_release_id": current},
+            expected_state={"selected_release_id": current},
             parameters={
                 "target_release_id": target,
                 "credentials_path": _PGPASS,
@@ -184,18 +111,14 @@ def rollback(
         result = run_request(remote, request)
         if result.outcome != "succeeded":
             raise result_error(result)
-        facts = _validate_success(result, request)
-        changed = facts["changed"]
-        assert isinstance(changed, bool)
+        facts = _success(result, request)
         return WorkflowResult(
             "rollback",
             config.name or "",
-            changed,
-            "rolled-back"
-            if changed
-            else "already-current",
+            facts["changed"],
+            "rolled-back" if facts["changed"] else "already-current",
             facts,
-            tuple(result.warnings),
+            _merge_warnings(warnings, result.warnings),
             "perform the remaining browser, email, and API acceptance checks",
         )
     except OpsError as error:
@@ -210,104 +133,73 @@ def rollback(
             if error.status is ExitStatus.SAFETY
             else f"{error.stage}-failed",
             {
-                "previous_release_id": state.get(
-                    "previous_release_id", current
-                ),
-                "target_release_id": state.get(
-                    "target_release_id", target
-                ),
-                "selected_release_id": state.get(
-                    "selected_release_id", current
-                ),
+                "previous_release_id": state.get("previous_release_id", current),
+                "target_release_id": state.get("target_release_id", target),
+                "selected_release_id": state.get("selected_release_id", current),
                 "backup_id": state.get("backup_id"),
-                "activation_id": state.get("activation_id"),
                 "service_state": state.get("service_state", "unknown"),
-                "database_state": state.get(
-                    "database_state", "unknown"
-                ),
-                "activation_recorded": state.get(
-                    "activation_recorded", False
-                ),
+                "database_state": state.get("database_state", "unknown"),
                 "verification": state.get("report", {}),
             },
-            tuple(getattr(error, "warnings", ())),
+            _merge_warnings(warnings, tuple(getattr(error, "warnings", ()))),
             error.next_action,
             error.status,
         )
 
 
-def _validate_success(result: object, request: object) -> dict[str, object]:
-    state = result.state
+def _selected_release(value: object) -> str:
+    if not isinstance(value, Mapping) or type(value.get("selected_release_id")) is not str:
+        raise _safety("rollback planning helper returned invalid host state")
+    try:
+        return validate_release_id(value["selected_release_id"])
+    except ValueError:
+        raise _safety("rollback planning helper returned invalid host state") from None
+
+
+def _target_is_installed(value: object, target: str) -> None:
+    if not isinstance(value, Mapping):
+        raise _safety("rollback planning helper returned invalid host state")
+    rows = mutable(value.get("releases"))
+    if not isinstance(rows, list):
+        raise _safety("rollback planning helper returned invalid host state")
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("release_id") == target:
+            return
+    raise _safety("rollback target is not an installed completed release")
+
+
+def _success(result: object, request: object) -> dict[str, object]:
+    state = getattr(result, "state", None)
     if (
         not isinstance(state, Mapping)
-        or not _RESULT_KEYS <= set(state)
-        or state["previous_release_id"]
-        != request.expected_state["current_release_id"]
-        or state["target_release_id"]
-        != request.parameters["target_release_id"]
-        or state["selected_release_id"]
-        != request.parameters["target_release_id"]
-        or _ID.fullmatch(str(state["backup_id"])) is None
-        or _ID.fullmatch(str(state["activation_id"])) is None
-        or state["service_state"] != "active"
+        or not _SUCCESS_FACTS <= set(state)
+        or state["previous_release_id"] != request.expected_state["selected_release_id"]
+        or state["target_release_id"] != request.parameters["target_release_id"]
+        or state["selected_release_id"] != request.parameters["target_release_id"]
+        or _BACKUP_RE.fullmatch(str(state["backup_id"])) is None
+        or state["service_state"] != "running"
         or state["database_state"] != "unchanged"
-        or state["activation_recorded"] is not True
         or type(state["changed"]) is not bool
     ):
-        raise _safety("rollback helper returned invalid success evidence")
+        raise _safety("rollback helper returned invalid final state")
     try:
-        verification = successful_verification(
-            state["report"], request.parameters["target_release_id"]
-        )
+        verification = successful_verification(state["report"], request.parameters["target_release_id"])
     except ValueError:
-        raise _safety("rollback helper returned invalid success evidence") from None
+        raise _safety("rollback helper returned invalid final state") from None
     return {
         "changed": state["changed"],
         "previous_release_id": state["previous_release_id"],
         "target_release_id": state["target_release_id"],
         "selected_release_id": state["selected_release_id"],
         "backup_id": state["backup_id"],
-        "activation_id": state["activation_id"],
         "service_state": state["service_state"],
         "database_state": state["database_state"],
-        "activation_recorded": state["activation_recorded"],
         "verification": verification,
     }
 
 
-def _records(observed: Mapping[str, object]) -> LifecycleRecords:
-    value = mutable(observed)
-    if not isinstance(value, Mapping):
-        raise _safety("rollback planning helper returned invalid lifecycle evidence")
-    try:
-        releases = tuple(
-            ReleaseRecord.from_mapping(item)
-            for item in _list(value, "releases")
-        )
-        activations = tuple(
-            ActivationRecord.from_mapping(item)
-            for item in _list(value, "activations")
-        )
-        backups = tuple(
-            BackupRecord.from_mapping(item)
-            for item in _list(value, "backups")
-        )
-        adoptions = tuple(
-            AdoptionRecord.from_mapping(item)
-            for item in _list(value, "adoptions")
-        )
-    except (LifecycleError, TypeError, ValueError):
-        raise _safety(
-            "rollback planning helper returned invalid lifecycle evidence"
-        ) from None
-    return LifecycleRecords(releases, activations, backups, adoptions, ())
-
-
-def _list(value: Mapping[str, object], key: str) -> list[object]:
-    item = value.get(key)
-    if not isinstance(item, list):
-        raise ValueError(f"invalid lifecycle {key}")
-    return item
+def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(item for group in groups for item in group))
 
 
 def _error_state(error: OpsError) -> Mapping[str, object]:
@@ -316,15 +208,11 @@ def _error_state(error: OpsError) -> Mapping[str, object]:
 
 
 def _confirm(plan: Mapping[str, object]) -> bool:
-    return (
-        input(
-            f"Roll back Taskman from {plan['current_release_id']} to "
-            f"{plan['target_release_id']}? Type yes to continue: "
-        )
-        .strip()
-        .lower()
-        == "yes"
-    )
+    expected = str(plan["typed_confirmation"])
+    return input(
+        f"Roll back Taskman from {plan['current_release_id']} to {plan['target_release_id']}? "
+        f"Type '{expected}' to continue: "
+    ).strip() == expected
 
 
 def _safety(message: str) -> OpsError:
@@ -333,8 +221,8 @@ def _safety(message: str) -> OpsError:
         "rollback",
         message,
         False,
-        "inspect managed activation history and use restore when rollback is unsafe",
+        "inspect the observed selection history and target release before retrying",
     )
 
 
-__all__ = ["RollbackPlan", "assess_rollback", "rollback"]
+__all__ = ["rollback"]

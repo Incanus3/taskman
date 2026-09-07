@@ -1,4 +1,4 @@
-"""Guarded restore contracts over the final helper result."""
+"""Public restore planning over final helper facts."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from taskman_ops.workflows.verification_results import (
     VerificationCheck,
     VerificationReport,
 )
+from tests.test_config import valid_environment
 
 
-INTENDED = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
 CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6"
+TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
 BACKUP = "backup-cccccccccccccccccccccccccccccccc"
+SAFETY_BACKUP = "backup-dddddddddddddddddddddddddddddddd"
 _CHECKS = (
     "taskman-service",
     "release-identity",
@@ -30,86 +32,11 @@ _CHECKS = (
 )
 
 
-def config() -> EnvironmentConfig:
-    return EnvironmentConfig.model_validate(
-        {
-            "name": "production",
-            "ssh_host": "203.0.113.10",
-            "ssh_port": 22,
-            "ssh_user": "deployer",
-            "host_key_fingerprint": "SHA256:" + "A" * 43,
-            "public_hostname": "taskman.acme.tld",
-            "public_ipv4": "203.0.113.10",
-            "target_os": "ubuntu26.04",
-            "architecture": "amd64",
-            "application_port": 4000,
-            "distribution_port": 6789,
-            "database_name": "taskman_prod",
-            "database_role": "taskman",
-            "mail_from": "no-reply@acme.tld",
-        }
-    )
+def _config() -> EnvironmentConfig:
+    return EnvironmentConfig.model_validate(valid_environment(name="production"))
 
 
-def result(request: HostRequest, state: dict[str, object]) -> HostResult:
-    return HostResult(
-        2,
-        request.operation,
-        request.correlation_id,
-        "succeeded",
-        "completed",
-        state,
-        (),
-    )
-
-
-def discovery(request: HostRequest) -> HostResult:
-    return result(
-        request,
-        {
-            "selected_release_id": CURRENT,
-            "releases": (),
-            "backups": (
-                {
-                    "backup_id": BACKUP,
-                    "dump_sha256": "e" * 64,
-                    "source_release_id": INTENDED,
-                    "migration_versions": (20260905120000,),
-                    "source_database_size_bytes": 1,
-                },
-            ),
-            "release_migrations": (
-                {
-                    "release_id": INTENDED,
-                    "migrations": (
-                        {
-                            "filename": "20260905120000_create_tasks.exs",
-                            "sha256": "e" * 64,
-                        },
-                    ),
-                },
-            ),
-        },
-    )
-
-
-def inspection(request: HostRequest) -> HostResult:
-    return result(
-        request,
-        {
-            "changed": False,
-            "backup_id": BACKUP,
-            "dump_path": f"/var/backups/taskman/{BACKUP}.dump",
-            "dump_size_bytes": 1,
-            "source_database_size_bytes": 1,
-            "current_release_id": CURRENT,
-            "intended_release_id": INTENDED,
-            "dump_validated": True,
-        },
-    )
-
-
-def verified(release_id: str) -> dict[str, object]:
+def _report(release_id: str) -> dict[str, object]:
     return VerificationReport(
         ExitStatus.OK,
         release_id,
@@ -119,122 +46,128 @@ def verified(release_id: str) -> dict[str, object]:
     ).to_mapping()
 
 
-def test_restore_dry_run_uses_projected_historical_migrations(
+def _discovery(request: HostRequest) -> HostResult:
+    return HostResult(
+        2,
+        "discover",
+        request.correlation_id,
+        "succeeded",
+        "observed",
+        {
+            "selected_release_id": CURRENT,
+            "backups": (
+                {
+                    "backup_id": BACKUP,
+                    "source_release_id": TARGET,
+                    "source_database_size_bytes": 1024,
+                },
+            ),
+        },
+        ("discovery warning",),
+    )
+
+
+def test_restore_dry_run_confirms_the_exact_backup_without_an_inspection_protocol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Restore planning must reach inspection using discovery's real history projection."""
+    """The final restore procedure has no separate inspect/recovery plane."""
+
+    requests: list[HostRequest] = []
+
+    def invoke(_remote: object, request: HostRequest) -> HostResult:
+        requests.append(request)
+        return _discovery(request)
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
+
+    outcome = restore(object(), _config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.OK
+    assert outcome.stage == "planned"
+    assert outcome.facts["backup_id"] == BACKUP
+    assert outcome.facts["intended_release_id"] == TARGET
+    assert outcome.facts["typed_confirmation"] == "restore production " + BACKUP
+    assert [request.operation for request in requests] == ["discover"]
+
+
+def test_restore_sends_the_confirmed_source_and_returns_final_database_release_and_service_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restore result must bind the selected release to the exact backup confirmation."""
 
     requests: list[HostRequest] = []
 
     def invoke(_remote: object, request: HostRequest) -> HostResult:
         requests.append(request)
         if request.operation == "discover":
-            return discovery(request)
-        return inspection(request)
+            return _discovery(request)
+        return HostResult(
+            2,
+            "restore",
+            request.correlation_id,
+            "succeeded",
+            "restore converged",
+            {
+                "changed": True,
+                "backup_id": BACKUP,
+                "pre_restore_backup_id": SAFETY_BACKUP,
+                "current_release_id": CURRENT,
+                "intended_release_id": TARGET,
+                "selected_release_id": TARGET,
+                "service_state": "running",
+                "database_state": "restored",
+                "report": _report(TARGET),
+            },
+            ("restore warning",),
+        )
 
     monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
 
-    planned = restore(object(), config(), BACKUP, dry_run=True)
+    outcome = restore(object(), _config(), BACKUP, confirm=lambda plan: plan["backup_id"] == BACKUP)
 
-    assert planned.exit_status is ExitStatus.OK
-    assert planned.stage == "planned"
     assert [request.operation for request in requests] == ["discover", "restore"]
-    assert requests[-1].parameters["expected_migration_versions"] == (
-        "20260905120000",
-    )
+    request = requests[-1]
+    assert request.expected_state == {"selected_release_id": CURRENT, "backup_id": BACKUP}
+    assert request.parameters["backup_id"] == BACKUP
+    assert set(request.parameters) == {"backup_id", "credentials_path", "database", "verification"}
+    assert outcome.exit_status is ExitStatus.OK
+    assert outcome.stage == "restored"
+    assert outcome.facts["selected_release_id"] == TARGET
+    assert outcome.facts["database_state"] == "restored"
+    assert outcome.warnings == ("discovery warning", "restore warning")
 
 
-def test_restore_refuses_unavailable_history_without_inspection(
+def test_restore_refuses_success_without_fresh_target_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bounded discovery refusal cannot be mistaken for restore authority."""
-
-    requests: list[HostRequest] = []
+    """Publishing a restore without readiness proof would expose an unverified service."""
 
     def invoke(_remote: object, request: HostRequest) -> HostResult:
-        requests.append(request)
+        if request.operation == "discover":
+            return _discovery(request)
         return HostResult(
             2,
-            request.operation,
+            "restore",
             request.correlation_id,
-            "refused",
-            "helper discovery history exceeds protocol bounds",
-            {"history": "unavailable"},
+            "succeeded",
+            "restore converged",
+            {
+                "changed": True,
+                "backup_id": BACKUP,
+                "pre_restore_backup_id": SAFETY_BACKUP,
+                "current_release_id": CURRENT,
+                "intended_release_id": TARGET,
+                "selected_release_id": TARGET,
+                "service_state": "running",
+                "database_state": "restored",
+                "report": {},
+            },
             (),
         )
 
     monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
 
-    outcome = restore(object(), config(), BACKUP, dry_run=True)
+    outcome = restore(object(), _config(), BACKUP, confirm=lambda _plan: True)
 
     assert outcome.exit_status is ExitStatus.SAFETY
     assert outcome.stage == "safety-refused"
-    assert [request.operation for request in requests] == ["discover"]
-
-
-def test_restore_refuses_success_without_a_verified_report(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restore may not publish restored state without fresh readiness evidence."""
-
-    def invoke(_remote: object, request: HostRequest) -> HostResult:
-        if request.operation == "discover":
-            return discovery(request)
-        if request.parameters["action"] == "inspect":
-            return inspection(request)
-        return result(
-            request,
-            {
-                "changed": True,
-                "backup_id": BACKUP,
-                "pre_restore_backup_id": "backup-dddddddddddddddddddddddddddddddd",
-                "current_release_id": CURRENT,
-                "intended_release_id": INTENDED,
-                "selected_release_id": INTENDED,
-                "service_state": "active",
-                "database_state": "restored-promoted",
-                "restore_recorded": True,
-            },
-        )
-
-    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
-
-    outcome = restore(object(), config(), BACKUP, confirm=lambda _plan: True)
-
-    assert outcome.exit_status is ExitStatus.SAFETY
-    assert outcome.stage == "safety-refused"
-
-
-def test_restore_publishes_restored_only_after_verifying_the_intended_release(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restore success binds its published selection to fresh readiness proof."""
-
-    def invoke(_remote: object, request: HostRequest) -> HostResult:
-        if request.operation == "discover":
-            return discovery(request)
-        if request.parameters["action"] == "inspect":
-            return inspection(request)
-        return result(
-            request,
-            {
-                "changed": True,
-                "backup_id": BACKUP,
-                "pre_restore_backup_id": "backup-dddddddddddddddddddddddddddddddd",
-                "current_release_id": CURRENT,
-                "intended_release_id": INTENDED,
-                "selected_release_id": INTENDED,
-                "service_state": "active",
-                "database_state": "restored-promoted",
-                "restore_recorded": True,
-                "report": verified(INTENDED),
-            },
-        )
-
-    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
-
-    outcome = restore(object(), config(), BACKUP, confirm=lambda _plan: True)
-
-    assert outcome.exit_status is ExitStatus.OK
-    assert outcome.stage == "restored"
-    assert outcome.facts["verification"]["release_id"] == INTENDED
