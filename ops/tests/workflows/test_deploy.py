@@ -14,6 +14,7 @@ from taskman_ops.manifests import (
     ArtifactManifest,
     BUILDER_BASE_DIGEST,
     BUILDER_BASE_TAG,
+    MigrationFingerprint,
     VerifiedArtifact,
 )
 from taskman_ops.workflows.verification_results import (
@@ -53,7 +54,11 @@ def test_deploy_final_result_has_no_private_operation_identifier() -> None:
     assert result.to_mapping()["correlation_id"] == result.correlation_id
 
 
-def artifact(tmp_path: Path) -> VerifiedArtifact:
+def artifact(
+    tmp_path: Path,
+    *,
+    migrations: tuple[MigrationFingerprint, ...] = (),
+) -> VerifiedArtifact:
     archive = tmp_path / "taskman.tar.gz"
     archive.write_bytes(b"release")
     manifest = ArtifactManifest(
@@ -70,7 +75,7 @@ def artifact(tmp_path: Path) -> VerifiedArtifact:
         "22.22.1",
         BUILDER_BASE_TAG,
         BUILDER_BASE_DIGEST,
-        (),
+        migrations,
         "taskman",
     )
     return VerifiedArtifact(
@@ -215,3 +220,47 @@ def test_deploy_failure_keeps_the_observed_selected_release_as_a_public_fact(
     assert result.exit_status is ExitStatus.RELEASE
     assert result.facts["previous_release_id"] == CURRENT
     assert result.facts["selected_release_id"] == CURRENT
+
+
+def test_first_release_with_migrations_preserves_restore_required_without_a_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    migration = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
+    captured: dict[str, object] = {}
+
+    def run_deployment(*_args: object, **kwargs: object) -> HostResult:
+        captured.update(kwargs)
+        return HostResult(
+            2,
+            "genesis",
+            "op-0123456789abcdef0123456789abcdef",
+            "succeeded",
+            "completed",
+            {
+                "changed": True,
+                "selected_release_id": CANDIDATE,
+                "backup_id": None,
+                "database_state": "changed",
+                "service_state": "running",
+                "report": verified(CANDIDATE),
+            },
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", run_deployment)
+
+    result = deploy_first_release(object(), config(), artifact(tmp_path, migrations=(migration,)))
+
+    assert result.exit_status is ExitStatus.OK
+    assert result.stage == "deployed"
+    assert result.facts["migration_policy"] == "restore-required"
+    assert result.facts["backup_id"] is None
+    assert captured == {
+        "migration_policy": "restore-required",
+        "previous_release_id": None,
+        "applied_migrations": (),
+        "genesis": True,
+    }

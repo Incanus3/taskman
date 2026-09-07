@@ -123,7 +123,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
 
             migration_needed = inputs.expected_migrations != inputs.candidate_versions
             migration_done = state.applied_migrations == inputs.candidate_versions
-            if migration_needed and not migration_done:
+            if migration_needed and not migration_done and not first_release:
                 if state.applied_migrations != inputs.expected_migrations:
                     raise DeploymentManualError("applied migrations do not identify a safe candidate transition")
                 try:
@@ -181,7 +181,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 raise _RetryableError("verification")
             report = verification.state.get("report", {})
             state = _observe(inputs)
-            state, recorded_selection = _record_successful_selection(inputs, state, backup)
+            state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
             changed = changed or recorded_selection
     except LifecycleLockContention:
         return _result(request, "retryable", "lifecycle lock is unavailable", state, locked=True)
@@ -333,6 +333,11 @@ def _validate_migration_policy(
     if policy == "backward-compatible" and not first_release and candidate[: len(current)] == current:
         return
     if policy == "restore-required" and current != candidate:
+        if first_release and not current:
+            # A clean host has no predecessor database to restore.  The
+            # controller keeps the declared policy visible, while this one
+            # procedure still applies the initial schema directly.
+            return
         # A deployment never restores a database as an implicit side effect.
         raise ValueError("the confirmed migration policy requires restore")
     raise ValueError("migration policy does not match the candidate")
@@ -391,6 +396,12 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
         raise DeploymentManualError("selection transition is not attributable to this deployment")
     if selected == inputs.candidate.release_id and recorded != inputs.candidate.release_id:
         return state, False
+    if recorded == inputs.candidate.release_id:
+        # Selection records are create-once completed authority.  A current
+        # link moved back to the predecessor cannot be the unfinished atomic
+        # selection transition emitted by this procedure, so never replace it
+        # automatically.
+        raise DeploymentManualError("recorded candidate conflicts with current selection")
     if recorded != inputs.candidate.release_id:
         raise DeploymentManualError("selection transition does not prove a completed candidate")
     if not any(item.release_id == inputs.candidate.release_id for item in state.releases):
@@ -406,7 +417,7 @@ def _record_successful_selection(
     inputs: _Inputs,
     state: HostState,
     backup: BackupRecord | None,
-) -> tuple[HostState, bool]:
+) -> tuple[HostState, bool, BackupRecord | None]:
     """Publish exactly the verified selection the current procedure proves."""
 
     recorded = state.selections[-1].release_id if state.selections else None
@@ -414,14 +425,69 @@ def _record_successful_selection(
     if selected != inputs.candidate.release_id:
         raise DeploymentManualError("verification did not retain the candidate selection")
     if recorded == inputs.candidate.release_id:
-        return _observe(inputs, allow_selection_transition=False), False
+        selection = state.selections[-1]
+        return (
+            _observe(inputs, allow_selection_transition=False),
+            False,
+            _selection_backup(inputs, state, selection.backup_id, backup),
+        )
     if recorded != inputs.previous_release_id:
         raise DeploymentManualError("selection history is not attributable to this deployment")
+    selection_backup = _selection_backup(inputs, state, None, backup)
     try:
-        _append_selection_with_previous(inputs.paths, state, inputs.candidate.release_id, recorded, backup)
+        _append_selection_with_previous(
+            inputs.paths,
+            state,
+            inputs.candidate.release_id,
+            recorded,
+            selection_backup,
+        )
     except (OSError, RecordError, ValueError) as error:
         raise _RetryableError("selection") from error
-    return _observe(inputs, allow_selection_transition=False), True
+    return _observe(inputs, allow_selection_transition=False), True, selection_backup
+
+
+def _selection_backup(
+    inputs: _Inputs,
+    state: HostState,
+    recorded_backup_id: str | None,
+    local_backup: BackupRecord | None,
+) -> BackupRecord | None:
+    """Resolve the completed pre-migration backup without retry metadata.
+
+    A fresh invocation may name the backup it just created.  A replay that
+    lost its migration or record-publication result has no such in-memory
+    handle, so it can recover only one authoritative backup matching the
+    predecessor release and schema.  Completed selection history itself is
+    sufficient to identify its already-recorded backup.
+    """
+
+    migration_needed = inputs.expected_migrations != inputs.candidate_versions
+    if not migration_needed or inputs.previous_release_id is None:
+        if recorded_backup_id is not None:
+            raise DeploymentManualError("selection backup conflicts with the deployment transition")
+        return None
+
+    candidates = tuple(
+        item
+        for item in state.backups
+        if item.source_release_id == inputs.previous_release_id
+        and item.migration_versions == inputs.expected_migrations
+    )
+    by_id = {item.backup_id: item for item in candidates}
+    if recorded_backup_id is not None:
+        try:
+            return by_id[recorded_backup_id]
+        except KeyError as error:
+            raise DeploymentManualError("recorded selection backup is not valid for this migration") from error
+    if local_backup is not None:
+        try:
+            return by_id[local_backup.backup_id]
+        except KeyError as error:
+            raise DeploymentManualError("created backup is not present in completed state") from error
+    if len(candidates) != 1:
+        raise DeploymentManualError("migration backup cannot be recovered unambiguously")
+    return candidates[0]
 
 
 def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:

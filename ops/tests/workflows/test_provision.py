@@ -19,12 +19,13 @@ def config() -> EnvironmentConfig:
     return EnvironmentConfig.model_validate(valid_environment())
 
 
-def artifact() -> object:
+def artifact(*, migrations: tuple[object, ...] = ()) -> object:
     return SimpleNamespace(
         manifest=SimpleNamespace(
             target_os="ubuntu26.04",
             architecture="amd64",
             release_id="0.2.0-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6",
+            migrations=migrations,
         ),
         sha256="a" * 64,
     )
@@ -71,6 +72,37 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
     assert host.events.index("discovery") < host.events.index("provisioning") < host.events.index("release")
     assert "verify" not in host.events
     assert host.closed == 2
+
+
+def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability() -> None:
+    host = Host()
+    migration = SimpleNamespace(filename="20260905120000_create_tasks.exs", sha256="d" * 64)
+    value = artifact(migrations=(migration,))
+
+    def release(_remote: object, _config: EnvironmentConfig, supplied: object) -> WorkflowResult:
+        assert supplied is value
+        assert supplied.manifest.migrations == (migration,)
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="deployed",
+            facts={
+                "selected_release_id": supplied.manifest.release_id,
+                "migration_policy": "restore-required",
+                "backup_id": None,
+                "database_state": "changed",
+            },
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, release=release, artifact_value=value),
+    )
+
+    assert result.stage == "provisioned"
+    assert result.facts["release"]["migration_policy"] == "restore-required"
+    assert result.facts["release"]["backup_id"] is None
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:
@@ -134,8 +166,9 @@ def _capabilities(
     provisioning=None,
     release=None,
     confirm=None,
+    artifact_value=None,
 ) -> ProvisionCapabilities:
-    value = artifact()
+    value = artifact() if artifact_value is None else artifact_value
     return ProvisionCapabilities(
         load_environment=lambda _name: config(),
         decrypt_secrets=lambda _name: SimpleNamespace(database_password="database-password"),

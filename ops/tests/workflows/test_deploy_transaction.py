@@ -106,3 +106,45 @@ def test_uploaded_deploy_request_carries_only_final_protocol_authority(
         "migration_policy", "credentials_path", "database", "verification",
     }
     assert "manual_adoption" not in request.parameters
+
+
+def test_uploaded_genesis_request_keeps_restore_required_migration_authority(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from taskman_ops.manifests import MigrationFingerprint
+    from tests.workflows.test_deploy import artifact
+    from taskman_ops.workflows import helper
+
+    class Remote:
+        def run(self, *_args, **_kwargs):
+            return CommandResult(0)
+
+        def put(self, *_args, **_kwargs):
+            return UploadReceipt()
+
+    captured = []
+
+    def invoke(_remote, request, **_kwargs):
+        captured.append(request)
+        return HostResult(2, request.operation, request.correlation_id, "succeeded", "completed", {}, ())
+
+    monkeypatch.setattr(helper, "run_request", invoke)
+    config = EnvironmentConfig.model_validate(valid_environment())
+    helper.run_deployment_request(
+        Remote(),
+        config,
+        artifact(tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)),
+        previous_release_id=None,
+        applied_migrations=(),
+        migration_policy="restore-required",
+        genesis=True,
+    )
+
+    request = captured[0]
+    assert request.operation == "genesis"
+    assert request.expected_state == {"selected_release_id": None, "applied_migrations": ()}
+    assert request.parameters["migration_policy"] == "restore-required"
+    assert request.parameters["manifest"]["migrations"] == (
+        {"filename": "20260905120000_create_tasks.exs", "sha256": "d" * 64},
+    )

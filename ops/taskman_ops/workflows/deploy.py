@@ -187,7 +187,13 @@ def _facts(
         or state["selected_release_id"] != candidate
         or state["service_state"] != "running"
         or database not in {"changed", "unchanged"}
-        or (changed and database == "changed" and (type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None))
+        or (
+            changed
+            and database == "changed"
+            and not genesis
+            and (type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None)
+        )
+        or (genesis and backup_id is not None)
         or (not changed and backup_id is not None)
     ):
         raise _safety("deployment helper returned invalid success evidence")

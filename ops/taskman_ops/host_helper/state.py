@@ -12,6 +12,7 @@ import stat
 import subprocess
 
 from .paths import ManagedPaths, PathAuthorityError
+from taskman_ops.releases.identifiers import RELEASE_ID_RE
 from .records import (
     MAX_RECORD_BYTES,
     BACKUP_ID_RE,
@@ -27,7 +28,7 @@ MAX_WARNINGS = 64
 MAX_TEMPORARY_PATHS = 64
 MAX_INVENTORY_ENTRIES = 4096
 _RELEASE_TEMP_RE = re.compile(
-    r"\.release-[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6\.tmp\Z"
+    rf"\.release-{RELEASE_ID_RE.pattern.removesuffix(r'\Z')}\.tmp\Z"
 )
 _RELEASE_MANIFEST_TEMP_RE = re.compile(
     r"\.\.taskman-release\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"

@@ -231,6 +231,26 @@ def test_observe_recognizes_only_exact_taskman_temporary_shapes(
     assert any("unknown" in warning or "operator-notes" in warning for warning in state.warnings)
 
 
+@pytest.mark.parametrize("version", ("0.2.0-rc.1", "0.2.0+build.7"))
+def test_observe_recognizes_exact_release_temporary_with_valid_version_metadata(
+    tmp_path: Path,
+    version: str,
+) -> None:
+    paths = _paths(tmp_path)
+    release_id = f"{version}-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+    temporary = Path(paths.local(paths.release_root / f".release-{release_id}.tmp"))
+    temporary.mkdir(parents=True)
+    temporary.chmod(0o750)
+    invalid = temporary.with_name(f"{temporary.name}.extra")
+    invalid.mkdir()
+    invalid.chmod(0o750)
+
+    state = observe_host_state(paths)
+
+    assert state.temporary_paths == (temporary,)
+    assert any(invalid.name in warning for warning in state.warnings)
+
+
 def test_observe_does_not_read_legacy_deployment_record_directories(
     tmp_path: Path,
 ) -> None:
