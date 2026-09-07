@@ -1,4 +1,4 @@
-"""Controller translation for helper-owned read-only verification."""
+"""Controller translation for the final helper verification result."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from collections.abc import Callable, Mapping
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_package import HelperPackage, temporary_helper_package
-from ..helper_runner import HelperInvocation, invoke_helper, new_operation_id
+from ..helper_package import HelperPackage
+from ..helper_runner import HelperInvocation, invoke_helper
 from ..host_protocol import HostRequest
 from ..output import WorkflowResult
 from ..releases.identifiers import validate_release_id
 from ..remote import Remote
-from .helper_results import lifecycle_lock_error
+from .helper import request as helper_request, result_error, run_request
 from .verification_results import VerificationReport
 
 
@@ -27,20 +27,17 @@ def run_verify(
     package: HelperPackage | None = None,
     invoker: HelperInvoker = invoke_helper,
 ) -> WorkflowResult:
-    """Invoke one helper verification and translate its exact report mapping."""
+    """Invoke one helper verification and consume only its public report."""
 
     if expected_release_id is not None:
         try:
             expected_release_id = validate_release_id(expected_release_id)
         except (TypeError, ValueError):
             raise _failure("verification requires a valid expected release") from None
-    expected_state = {"expected_release_id": expected_release_id}
-    request = HostRequest(
-        protocol_version=1,
-        operation="verify",
-        operation_id=new_operation_id(),
-        expected_state=expected_state,
-        paths={"install_root": config.install_root.as_posix(), "backup_root": config.backup_root.as_posix()},
+    request = helper_request(
+        "verify",
+        config,
+        expected_state={"expected_release_id": expected_release_id},
         parameters={
             "application_port": config.application_port,
             "distribution_port": config.distribution_port,
@@ -54,62 +51,54 @@ def run_verify(
             "connection_timeout": config.connection_timeout,
         },
     )
-    if package is None:
-        with temporary_helper_package() as temporary:
-            invocation = invoker(remote, temporary, request)
-    else:
-        invocation = invoker(remote, package, request)
-    result = invocation.result
-    if result.stage == "host-preflight":
+    result = run_request(remote, request, package=package, invoker=invoker)
+    if result.outcome != "succeeded":
         _raise_host_preflight(result)
-    if result.stage == "release-selection":
-        _raise_release_selection(result)
-    if result.stage == "lifecycle-lock":
-        _raise_lock_contention(result)
-    if result.outcome == "refused":
-        raise _failure("verification was refused")
-    if result.outcome not in {"succeeded", "failed"} or result.stage not in {"verified", "verification"}:
-        raise _failure("verification returned invalid evidence")
+        raise result_error(result)
     try:
-        report = VerificationReport.from_mapping(_mutable_mapping(result.verification))
+        report = VerificationReport.from_mapping(_mutable_mapping(result.state.get("report")))
     except (TypeError, ValueError):
-        raise _failure("verification returned invalid evidence") from None
-    if (result.outcome, result.stage) != (("succeeded", "verified") if report.successful else ("failed", "verification")):
-        raise _failure("verification result conflicts with its report")
+        raise _failure("verification returned invalid observed state") from None
+    if not report.successful:
+        raise _failure("verification returned unsuccessful state")
     try:
         actual_release_id = validate_release_id(report.release_id)
     except (TypeError, ValueError):
-        raise _failure("verification returned invalid evidence") from None
-    expected_matches = (
-        report.expected_release_id is None
-        if expected_release_id is None
-        else report.expected_release_id == expected_release_id and actual_release_id == expected_release_id
-    )
-    if (
-        result.changed_stages
-        or result.lifecycle
-        or result.runtime_state
-        or result.residue_paths
-        or result.warnings
-        or result.recovery_actions
-        or not expected_matches
+        raise _failure("verification returned invalid observed state") from None
+    if expected_release_id is not None and (
+        report.expected_release_id != expected_release_id or actual_release_id != expected_release_id
     ):
-        raise _failure("verification returned invalid evidence")
-    warnings: tuple[str, ...] = ()
-    if invocation.cleanup_warning is not None:
-        if type(invocation.cleanup_warning) is not str or not invocation.cleanup_warning:
-            raise _failure("verification returned invalid cleanup evidence")
-        warnings = (invocation.cleanup_warning,)
+        raise _failure("verification returned an unrelated release")
     return WorkflowResult(
         command="verify",
         environment=config.name,
         changed=False,
-        stage="verified" if report.successful else "verification-failed",
+        stage="verified",
         facts={"verification": report.to_mapping()},
-        warnings=warnings,
+        warnings=tuple(result.warnings),
         next_action=report.next_action,
         exit_status=report.exit_status,
     )
+
+
+def _raise_host_preflight(result) -> None:
+    authority = result.state.get("preflight") if isinstance(result.state, Mapping) else None
+    if authority == "preflight":
+        raise OpsError(
+            ExitStatus.REMOTE_PREFLIGHT,
+            "host-preflight",
+            "required host fact collection failed",
+            changed=False,
+            next_action="restore SSH administrator connectivity and required sudo access before retrying",
+        )
+    if authority == "unsupported":
+        raise OpsError(
+            ExitStatus.INVALID,
+            "host-preflight",
+            "host does not meet the supported deployment requirements",
+            changed=False,
+            next_action="use a supported Ubuntu 26.04 amd64 host and correct the environment configuration",
+        )
 
 
 def _failure(message: str) -> OpsError:
@@ -118,79 +107,13 @@ def _failure(message: str) -> OpsError:
         "verification",
         message,
         changed=False,
-        next_action="inspect the managed lifecycle state and retry after resolving the reported conflict",
+        next_action="inspect the observed host state and retry after resolving the reported conflict",
     )
 
 
-def _raise_host_preflight(result) -> None:
-    authority = result.runtime_state.get("host_authority") if isinstance(result.runtime_state, Mapping) else None
-    if (
-        result.outcome != "failed"
-        or result.changed_stages
-        or result.lifecycle
-        or result.verification
-        or result.residue_paths
-        or result.warnings
-        or set(result.runtime_state) != {"host_authority"}
-        or type(authority) is not str
-        or authority not in {"preflight", "unsupported"}
-        or result.recovery_actions
-        != (
-            "restore SSH administrator connectivity and required sudo access before retrying"
-            if authority == "preflight"
-            else "use a supported Ubuntu 26.04 amd64 host and correct the environment configuration",
-        )
-    ):
-        raise _failure("verification returned invalid host preflight evidence")
-    if authority == "preflight":
-        raise OpsError(
-            ExitStatus.REMOTE_PREFLIGHT,
-            "host-preflight",
-            "required host fact collection failed",
-            changed=False,
-            next_action=result.recovery_actions[0],
-        )
-    raise OpsError(
-        ExitStatus.INVALID,
-        "host-preflight",
-        "host does not meet the supported deployment requirements",
-        changed=False,
-        next_action=result.recovery_actions[0],
-    )
-
-
-def _raise_release_selection(result) -> None:
-    if (
-        result.outcome != "refused"
-        or result.changed_stages
-        or result.lifecycle
-        or result.runtime_state
-        or result.verification
-        or result.residue_paths
-        or result.warnings
-        or result.recovery_actions
-        != ("inspect the managed lifecycle metadata and resolve the contradiction before retrying",)
-    ):
-        raise _failure("verification returned invalid release-selection evidence")
-    raise OpsError(
-        ExitStatus.SAFETY,
-        "verification",
-        "managed release selection was refused",
-        changed=False,
-        next_action=result.recovery_actions[0],
-    )
-
-
-def _raise_lock_contention(result) -> None:
-    try:
-        error = lifecycle_lock_error(result)
-    except ValueError:
-        raise _failure("verification returned invalid lifecycle-lock evidence")
-    raise error
-
-
-def _mutable_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    """Restore JSON lists frozen by the shared protocol before report parsing."""
+def _mutable_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("invalid verification report")
 
     def restore(item: object) -> object:
         if isinstance(item, Mapping):

@@ -20,7 +20,7 @@ from taskman_ops.host_protocol import (
     encode_request,
     encode_result,
 )
-from taskman_ops.remote import CommandResult, PyinfraRemote, UploadFailure, _build_pyinfra_host, connect
+from taskman_ops.remote import CommandResult, PyinfraRemote, _build_pyinfra_host, connect
 
 from test_config import valid_environment
 
@@ -411,25 +411,20 @@ def test_bounded_run_preserves_helper_protocol_request_and_result_bytes() -> Non
     """Newlines or Unicode line splitting would make a strict helper frame undecodable."""
 
     request = HostRequest(
-        protocol_version=1,
+        protocol_version=2,
         operation="discover",
-        operation_id="op-0123456789abcdef0123456789abcdef",
+        correlation_id="op-0123456789abcdef0123456789abcdef",
         expected_state={"lifecycle": "unknown"},
         paths={"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
         parameters={"dry_run": False},
     )
     helper_result = HostResult(
-        protocol_version=1,
+        protocol_version=2,
         operation="discover",
-        operation_id="op-0123456789abcdef0123456789abcdef",
+        correlation_id="op-0123456789abcdef0123456789abcdef",
         outcome="succeeded",
-        stage="complete",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=(),
+        message="helper operation completed",
+        state={},
         warnings=("unicode separator \u2028 remains protocol data",),
     )
     request_payload = encode_request(request)
@@ -477,9 +472,7 @@ def test_put_reports_private_staging_residue_when_cleanup_is_uncertain(tmp_path:
         source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True
     )
 
-    stage_directory = remote.calls[0][0][-1]
-    stage_file = remote.calls[1][0][-1]
-    assert getattr(receipt, "residue_paths", ()) == (stage_file, stage_directory)
+    assert receipt.cleanup_warning is True
     assert all(
         kwargs.get("stdout_limit") is not None and kwargs.get("stderr_limit") is not None
         for _command, kwargs in remote.calls
@@ -487,7 +480,7 @@ def test_put_reports_private_staging_residue_when_cleanup_is_uncertain(tmp_path:
 
 
 def test_put_keeps_its_primary_error_when_private_stage_cleanup_is_uncertain(tmp_path: Path) -> None:
-    """An upload failure must retain its cause while also reporting the possible private residue."""
+    """An upload failure remains generic even if private cleanup is uncertain."""
 
     class FailureAndCleanupRemote(PyinfraRemote):
         def __init__(self) -> None:
@@ -512,14 +505,8 @@ def test_put_keeps_its_primary_error_when_private_stage_cleanup_is_uncertain(tmp
     with pytest.raises(OpsError) as raised:
         remote.put(source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True)
 
-    stage_directory = next(
-        command[-1] for command in remote.calls if command[:3] == ("install", "-d", "-m")
-    )
-    stage_file = next(command[-1] for command in remote.calls if command[0] == "chmod")
     assert raised.value.message == "private remote upload failed"
-    assert isinstance(raised.value, UploadFailure)
-    assert raised.value.primary_error.message == "private remote upload failed"
-    assert getattr(raised.value, "residue_paths", ()) == (stage_file, stage_directory)
+    assert not hasattr(raised.value, "residue_paths")
 
 
 class RecordingUploadRemote(PyinfraRemote):

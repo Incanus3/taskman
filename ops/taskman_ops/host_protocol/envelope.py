@@ -13,13 +13,13 @@ from .identifiers import (
     ProtocolError,
     validate_absolute_path,
     validate_identifier,
-    validate_operation_id,
+    validate_correlation_id,
     validate_string,
 )
 from .operations import validate_operation
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_INPUT_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_COLLECTION_ITEMS = 64
@@ -29,7 +29,7 @@ _REQUEST_KEYS = frozenset(
     {
         "protocol_version",
         "operation",
-        "operation_id",
+        "correlation_id",
         "expected_state",
         "paths",
         "parameters",
@@ -39,19 +39,14 @@ _RESULT_KEYS = frozenset(
     {
         "protocol_version",
         "operation",
-        "operation_id",
+        "correlation_id",
         "outcome",
-        "stage",
-        "changed_stages",
-        "lifecycle",
-        "runtime_state",
-        "verification",
-        "residue_paths",
-        "recovery_actions",
+        "message",
+        "state",
         "warnings",
     }
 )
-_OUTCOMES = frozenset({"succeeded", "no_change", "refused", "failed"})
+_OUTCOMES = frozenset({"succeeded", "refused", "retryable", "manual"})
 
 
 def _require_exact_keys(mapping: object, expected: frozenset[str]) -> Mapping[str, object]:
@@ -132,7 +127,7 @@ class HostRequest:
 
     protocol_version: int
     operation: str
-    operation_id: str
+    correlation_id: str
     expected_state: Mapping[str, object]
     paths: Mapping[str, str]
     parameters: Mapping[str, object]
@@ -140,7 +135,7 @@ class HostRequest:
     def __post_init__(self) -> None:
         object.__setattr__(self, "protocol_version", _validate_version(self.protocol_version))
         object.__setattr__(self, "operation", validate_operation(self.operation))
-        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
+        object.__setattr__(self, "correlation_id", validate_correlation_id(self.correlation_id))
         object.__setattr__(self, "expected_state", _freeze_mapping(self.expected_state))
         object.__setattr__(self, "paths", _freeze_paths(self.paths))
         object.__setattr__(self, "parameters", _freeze_mapping(self.parameters))
@@ -149,7 +144,7 @@ class HostRequest:
         return {
             "protocol_version": self.protocol_version,
             "operation": self.operation,
-            "operation_id": self.operation_id,
+            "correlation_id": self.correlation_id,
             "expected_state": _json_value(self.expected_state),
             "paths": _json_value(self.paths),
             "parameters": _json_value(self.parameters),
@@ -161,7 +156,7 @@ class HostRequest:
         return cls(
             protocol_version=value["protocol_version"],
             operation=value["operation"],
-            operation_id=value["operation_id"],
+            correlation_id=value["correlation_id"],
             expected_state=value["expected_state"],
             paths=value["paths"],
             parameters=value["parameters"],
@@ -170,19 +165,14 @@ class HostRequest:
 
 @dataclass(frozen=True)
 class HostResult:
-    """One bounded helper-to-controller result with all common evidence fields present."""
+    """One bounded helper-to-controller result with concise final state."""
 
     protocol_version: int
     operation: str
-    operation_id: str
+    correlation_id: str
     outcome: str
-    stage: str
-    changed_stages: tuple[str, ...]
-    lifecycle: Mapping[str, object]
-    runtime_state: Mapping[str, object]
-    verification: Mapping[str, object]
-    residue_paths: tuple[str, ...]
-    recovery_actions: tuple[str, ...]
+    message: str
+    state: Mapping[str, object]
     warnings: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -190,37 +180,19 @@ class HostResult:
             raise ProtocolError("invalid outcome")
         object.__setattr__(self, "protocol_version", _validate_version(self.protocol_version))
         object.__setattr__(self, "operation", validate_operation(self.operation))
-        object.__setattr__(self, "operation_id", validate_operation_id(self.operation_id))
-        object.__setattr__(self, "stage", validate_identifier(self.stage))
-        object.__setattr__(
-            self,
-            "changed_stages",
-            _freeze_string_sequence(self.changed_stages, validator=validate_identifier),
-        )
-        object.__setattr__(self, "lifecycle", _freeze_mapping(self.lifecycle))
-        object.__setattr__(self, "runtime_state", _freeze_mapping(self.runtime_state))
-        object.__setattr__(self, "verification", _freeze_mapping(self.verification))
-        object.__setattr__(
-            self,
-            "residue_paths",
-            _freeze_string_sequence(self.residue_paths, validator=validate_absolute_path),
-        )
-        object.__setattr__(self, "recovery_actions", _freeze_string_sequence(self.recovery_actions))
+        object.__setattr__(self, "correlation_id", validate_correlation_id(self.correlation_id))
+        object.__setattr__(self, "message", validate_string(self.message))
+        object.__setattr__(self, "state", _freeze_mapping(self.state))
         object.__setattr__(self, "warnings", _freeze_string_sequence(self.warnings))
 
     def to_mapping(self) -> dict[str, object]:
         return {
             "protocol_version": self.protocol_version,
             "operation": self.operation,
-            "operation_id": self.operation_id,
+            "correlation_id": self.correlation_id,
             "outcome": self.outcome,
-            "stage": self.stage,
-            "changed_stages": _json_value(self.changed_stages),
-            "lifecycle": _json_value(self.lifecycle),
-            "runtime_state": _json_value(self.runtime_state),
-            "verification": _json_value(self.verification),
-            "residue_paths": _json_value(self.residue_paths),
-            "recovery_actions": _json_value(self.recovery_actions),
+            "message": self.message,
+            "state": _json_value(self.state),
             "warnings": _json_value(self.warnings),
         }
 
@@ -230,15 +202,10 @@ class HostResult:
         return cls(
             protocol_version=value["protocol_version"],
             operation=value["operation"],
-            operation_id=value["operation_id"],
+            correlation_id=value["correlation_id"],
             outcome=value["outcome"],
-            stage=value["stage"],
-            changed_stages=value["changed_stages"],
-            lifecycle=value["lifecycle"],
-            runtime_state=value["runtime_state"],
-            verification=value["verification"],
-            residue_paths=value["residue_paths"],
-            recovery_actions=value["recovery_actions"],
+            message=value["message"],
+            state=value["state"],
             warnings=value["warnings"],
         )
 

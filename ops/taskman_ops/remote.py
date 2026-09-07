@@ -58,34 +58,13 @@ class CommandResult:
 
 @dataclass(frozen=True)
 class UploadReceipt:
-    """Conservative evidence emitted after one private remote upload."""
+    """A private upload completed, with at most a generic cleanup warning."""
 
-    residue_paths: tuple[str, ...] = ()
+    cleanup_warning: bool = False
 
     def __post_init__(self) -> None:
-        if not isinstance(self.residue_paths, tuple) or any(
-            type(path) is not str or not path.startswith("/tmp/taskman-upload-")
-            for path in self.residue_paths
-        ):
-            raise ValueError("upload receipt contains invalid private-stage residue")
-
-
-class UploadFailure(OpsError):
-    """An upload's primary error plus exact private-stage cleanup evidence."""
-
-    residue_paths: tuple[str, ...]
-    primary_error: OpsError
-
-    def __init__(self, primary_error: OpsError, residue_paths: Sequence[str]) -> None:
-        super().__init__(
-            primary_error.status,
-            primary_error.stage,
-            primary_error.message,
-            changed=primary_error.changed,
-            next_action=primary_error.next_action,
-        )
-        self.primary_error = primary_error
-        self.residue_paths = tuple(residue_paths)
+        if type(self.cleanup_warning) is not bool:
+            raise ValueError("upload receipt cleanup warning must be boolean")
 
 
 @dataclass(frozen=True)
@@ -351,16 +330,14 @@ class PyinfraRemote:
         except Exception:
             primary_error = _remote_error("private remote upload failed")
 
-        residue_paths = (
+        cleanup_warning = (
             self._remove_private_stage(stage_file, stage_directory, timeout=effective_timeout)
             if stage_may_remain
-            else ()
+            else False
         )
         if primary_error is not None:
-            if residue_paths:
-                raise UploadFailure(primary_error, residue_paths)
             raise primary_error
-        return UploadReceipt(residue_paths=residue_paths)
+        return UploadReceipt(cleanup_warning=cleanup_warning)
 
     def run_deploy(self, deploy: Callable[..., object], *args: object, **kwargs: object) -> ChangeSet:
         """Add, execute, and summarize the one connected pyinfra deploy.
@@ -506,8 +483,9 @@ class PyinfraRemote:
         stage_directory: PurePosixPath,
         *,
         timeout: int,
-    ) -> tuple[str, ...]:
-        # These are generated exact paths, never a caller path or wildcard.
+    ) -> bool:
+        """Return whether the generated private stage could not be removed."""
+
         file_cleanup_uncertain = False
         try:
             self._require_upload_success(
@@ -525,11 +503,8 @@ class PyinfraRemote:
                 timeout=timeout,
             )
         except Exception:
-            paths = [stage_directory.as_posix()]
-            if file_cleanup_uncertain:
-                paths.insert(0, stage_file.as_posix())
-            return tuple(paths)
-        return ()
+            return True
+        return file_cleanup_uncertain
 
 
 class _BoundedSSHChannelAdapter:

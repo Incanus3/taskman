@@ -7,16 +7,13 @@ import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_runner import new_operation_id
-from ..host_protocol import HostRequest
 from ..output import WorkflowResult
 from ..remote import Remote
-from .helper_recovery import (
+from .helper import (
     database_settings,
-    discover_lifecycle,
-    helper_paths,
     mutable,
     result_error,
+    request as helper_request,
     run_request,
 )
 
@@ -49,12 +46,15 @@ def run_backup(
         raise TypeError("backup dry-run flag must be boolean")
     backup_ids: tuple[str, ...] = ()
     try:
-        lifecycle, warnings = discover_lifecycle(remote, config)
-        records = mutable(lifecycle.get("records"))
-        if not isinstance(records, Mapping):
-            raise _safety("backup planning helper returned invalid lifecycle evidence")
-        backups = records.get("backups")
-        activations = records.get("activations")
+        discovery = run_request(remote, helper_request("discover", config))
+        if discovery.outcome != "succeeded":
+            raise result_error(discovery)
+        warnings = discovery.warnings
+        observed = mutable(discovery.state)
+        if not isinstance(observed, Mapping):
+            raise _safety("backup planning helper returned invalid observed state")
+        backups = observed.get("backups")
+        activations = observed.get("activations")
         if not isinstance(backups, list) or not isinstance(activations, list):
             raise _safety("backup planning helper returned invalid lifecycle evidence")
         backup_ids = tuple(_identifier(item, "backup_id") for item in backups)
@@ -78,14 +78,11 @@ def run_backup(
                 warnings,
                 "review the backup plan and rerun without --dry-run",
             )
-        operation_id = new_operation_id()
-        request = HostRequest(
-            1,
+        request = helper_request(
             "backup",
-            operation_id,
-            {"backup_ids": backup_ids},
-            helper_paths(config),
-            {
+            config,
+            expected_state={"backup_ids": backup_ids},
+            parameters={
                 "credentials_path": _PGPASS,
                 "database": database_settings(config),
                 "reason": "scheduled",
@@ -93,14 +90,15 @@ def run_backup(
             },
         )
         result = run_request(remote, request)
-        if result.outcome not in {"succeeded", "no_change"}:
-            raise result_error(result, default_status=ExitStatus.BACKUP)
-        facts = _success(result, request)
+        if result.outcome != "succeeded":
+            raise result_error(result)
+        facts = _success(result)
+        changed = result.state.get("changed") is True
         return WorkflowResult(
             "backup",
             config.name or "",
-            result.outcome == "succeeded",
-            "backed-up" if result.outcome == "succeeded" else "already-backed-up",
+            changed,
+            "backed-up" if changed else "already-backed-up",
             facts,
             tuple(result.warnings),
             "copy the validated local backup off-host according to the recovery policy",
@@ -125,11 +123,6 @@ def run_backup(
                 "dump_path": None,
                 "reason": "scheduled",
                 "pruned_backup_ids": pruned_backup_ids or (),
-                "changed_stages": tuple(getattr(error, "changed_stages", ())),
-                "residue_paths": tuple(getattr(error, "residue_paths", ())),
-                "recovery_commands": tuple(
-                    getattr(error, "recovery_commands", ())
-                ),
             },
             tuple(getattr(error, "warnings", ())),
             (
@@ -141,63 +134,37 @@ def run_backup(
         )
 
 
-def _success(result: object, request: HostRequest) -> dict[str, object]:
-    lifecycle = result.lifecycle
-    token = request.operation_id.removeprefix("op-")
-    succeeded = result.outcome == "succeeded"
+def _success(result: object) -> dict[str, object]:
+    state = result.state
     if (
-        not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != _LIFECYCLE_KEYS
-        or lifecycle["backup_id"] != f"backup-{token}"
-        or _BACKUP_RE.fullmatch(str(lifecycle["backup_id"])) is None
-        or lifecycle["dump_path"]
-        != f"{request.paths['backup_root']}/{lifecycle['backup_id']}.dump"
-        or type(lifecycle["size_bytes"]) is not int
-        or lifecycle["size_bytes"] <= 0
-        or type(lifecycle["source_database_size_bytes"]) is not int
-        or lifecycle["source_database_size_bytes"] <= 0
-        or lifecycle["reason"] != "scheduled"
-        or not isinstance(lifecycle["pruned_backup_ids"], tuple)
-        or result.stage != "records"
-        or result.verification != {"format": "custom", "validated": True}
-        or result.recovery_actions
-        or result.residue_paths
+        not isinstance(state, Mapping)
+        or not _LIFECYCLE_KEYS <= set(state)
+        or _BACKUP_RE.fullmatch(str(state["backup_id"])) is None
+        or type(state["size_bytes"]) is not int
+        or state["size_bytes"] <= 0
+        or type(state["source_database_size_bytes"]) is not int
+        or state["source_database_size_bytes"] <= 0
+        or state["reason"] != "scheduled"
+        or not isinstance(state["pruned_backup_ids"], tuple)
     ):
         raise _safety("backup helper returned invalid success evidence")
-    pruned = tuple(lifecycle["pruned_backup_ids"])
-    stages = tuple(result.changed_stages)
-    coherent = (
-        not succeeded
-        and stages == ()
-        and pruned == ()
-        or succeeded
-        and stages == ("backup", "records")
-        and pruned == ()
-        or succeeded
-        and stages in {
-            ("backup", "records", "cleanup"),
-            ("cleanup",),
-        }
-        and bool(pruned)
-    )
-    if not coherent or any(
+    pruned = tuple(state["pruned_backup_ids"])
+    if any(
         type(identifier) is not str
         or _BACKUP_RE.fullmatch(identifier) is None
-        or identifier == lifecycle["backup_id"]
+        or identifier == state["backup_id"]
         for identifier in pruned
     ):
         raise _safety("backup helper returned invalid success evidence")
     return {
-        "backup_id": lifecycle["backup_id"],
-        "dump_path": lifecycle["dump_path"],
-        "size_bytes": lifecycle["size_bytes"],
-        "source_database_size_bytes": lifecycle[
+        "backup_id": state["backup_id"],
+        "dump_path": state["dump_path"],
+        "size_bytes": state["size_bytes"],
+        "source_database_size_bytes": state[
             "source_database_size_bytes"
         ],
-        "reason": lifecycle["reason"],
+        "reason": state["reason"],
         "pruned_backup_ids": pruned,
-        "changed_stages": stages,
-        "residue_paths": (),
     }
 
 
@@ -212,7 +179,7 @@ def _failure_pruned_backup_ids(
     *,
     known_backup_ids: tuple[str, ...],
 ) -> tuple[str, ...] | None:
-    value = getattr(error, "lifecycle", {})
+    value = getattr(error, "state", {})
     if not isinstance(value, Mapping):
         return None
     if not value:
@@ -226,7 +193,6 @@ def _failure_pruned_backup_ids(
         or any(type(identifier) is not str for identifier in identifiers)
     ):
         return None
-    changed_stages = getattr(error, "changed_stages", ())
     if (
         any(
             _BACKUP_RE.fullmatch(identifier) is None
@@ -237,12 +203,6 @@ def _failure_pruned_backup_ids(
         or not error.changed
         or error.status is not ExitStatus.BACKUP
         or error.stage != "cleanup"
-        or type(changed_stages) is not tuple
-        or changed_stages
-        not in {
-            ("cleanup",),
-            ("backup", "records", "cleanup"),
-        }
     ):
         return None
     return identifiers

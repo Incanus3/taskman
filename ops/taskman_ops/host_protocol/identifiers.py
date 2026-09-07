@@ -11,7 +11,7 @@ MAX_PATH_BYTES = 1024
 MAX_STRING_BYTES = 4096
 
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
-_OPERATION_ID_RE = re.compile(r"op-[0-9a-f]{32}\Z")
+_CORRELATION_ID_RE = re.compile(r"op-[0-9a-f]{32}\Z")
 
 
 class ProtocolError(ValueError):
@@ -39,11 +39,11 @@ def validate_identifier(value: object) -> str:
     return value
 
 
-def validate_operation_id(value: object) -> str:
-    """Return the controller-generated operation correlation identifier."""
+def validate_correlation_id(value: object) -> str:
+    """Return the controller-generated transport correlation identifier."""
 
-    if type(value) is not str or _OPERATION_ID_RE.fullmatch(value) is None:
-        raise ProtocolError("invalid operation identifier")
+    if type(value) is not str or _CORRELATION_ID_RE.fullmatch(value) is None:
+        raise ProtocolError("invalid correlation identifier")
     return value
 
 
@@ -78,6 +78,6 @@ __all__ = [
     "ProtocolError",
     "validate_absolute_path",
     "validate_identifier",
-    "validate_operation_id",
+    "validate_correlation_id",
     "validate_string",
 ]

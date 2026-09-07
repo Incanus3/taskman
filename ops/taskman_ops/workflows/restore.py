@@ -9,25 +9,20 @@ import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_runner import new_operation_id
-from ..host_protocol import HostRequest
 from ..output import WorkflowResult
 from ..remote import Remote
-from .helper_recovery import (
+from .helper import (
     database_settings,
-    discover_lifecycle,
-    helper_paths,
     mutable,
     result_error,
+    request as helper_request,
     run_request,
-    successful_verification,
     verification_settings,
 )
 
 
 _PGPASS = "/etc/taskman/pgpass"
 _BACKUP_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
-_RECOVERY_RE = re.compile(r"recovery-[0-9a-f]{32}\Z")
 _RESULT_KEYS = frozenset(
     {
         "backup_id",
@@ -35,8 +30,6 @@ _RESULT_KEYS = frozenset(
         "current_release_id",
         "intended_release_id",
         "selected_release_id",
-        "recovery_id",
-        "recovery_database",
         "service_state",
         "database_state",
         "restore_recorded",
@@ -85,8 +78,11 @@ def restore(
     intended: str | None = None
     warnings: tuple[str, ...] = ()
     try:
-        lifecycle, warnings = discover_lifecycle(remote, config)
-        records = mutable(lifecycle.get("records"))
+        discovery = run_request(remote, helper_request("discover", config))
+        if discovery.outcome != "succeeded":
+            raise result_error(discovery)
+        records = mutable(discovery.state)
+        warnings = discovery.warnings
         if not isinstance(records, Mapping):
             raise _safety("restore planning helper returned invalid lifecycle evidence")
         activations = records.get("activations")
@@ -110,10 +106,9 @@ def restore(
         if not isinstance(backup, Mapping):
             raise _safety("selected backup is not recorded")
         intended = _field(backup, "current_release_id")
-        migrations = _migration_versions(lifecycle, intended)
+        migrations = _migration_versions(records, intended)
         inspect_request = _request(
             config,
-            new_operation_id(),
             backup_id,
             current,
             migrations,
@@ -121,7 +116,7 @@ def restore(
         )
         inspected = run_request(remote, inspect_request)
         if inspected.outcome != "succeeded":
-            raise result_error(inspected, default_status=ExitStatus.RESTORE)
+            raise result_error(inspected)
         plan = _inspection(inspected, inspect_request, intended)
         warnings = _merge_warnings(warnings, inspected.warnings)
         plan_mapping = {
@@ -164,30 +159,29 @@ def restore(
             )
         execute_request = _request(
             config,
-            new_operation_id(),
             backup_id,
             current,
             migrations,
             action="execute",
         )
         result = run_request(remote, execute_request)
-        if result.outcome not in {"succeeded", "no_change"}:
-            raise result_error(result, default_status=ExitStatus.RESTORE)
+        if result.outcome != "succeeded":
+            raise result_error(result)
         facts = _success(result, execute_request, intended)
         warnings = _merge_warnings(warnings, result.warnings)
         return WorkflowResult(
             "restore",
             config.name or "",
-            result.outcome == "succeeded",
+            result.state.get("changed") is True,
             "restored"
-            if result.outcome == "succeeded"
+            if result.state.get("changed") is True
             else "already-restored",
             facts,
             warnings,
-            "retain the recovery database until restored behavior is accepted",
+            "inspect restored behavior before any later cleanup",
         )
     except OpsError as error:
-        lifecycle_error = _error_lifecycle(error)
+        state = _error_state(error)
         return WorkflowResult(
             "restore",
             config.name or "",
@@ -198,42 +192,29 @@ def restore(
             if error.status is ExitStatus.SAFETY
             else f"{error.stage}-failed",
             {
-                "backup_id": lifecycle_error.get("backup_id", backup_id),
-                "pre_restore_backup_id": lifecycle_error.get(
+                "backup_id": state.get("backup_id", backup_id),
+                "pre_restore_backup_id": state.get(
                     "pre_restore_backup_id"
                 ),
-                "current_release_id": lifecycle_error.get(
+                "current_release_id": state.get(
                     "current_release_id", current
                 ),
-                "intended_release_id": lifecycle_error.get(
+                "intended_release_id": state.get(
                     "intended_release_id", intended
                 ),
-                "selected_release_id": lifecycle_error.get(
+                "selected_release_id": state.get(
                     "selected_release_id", current
                 ),
-                "recovery_id": lifecycle_error.get("recovery_id"),
-                "recovery_database": lifecycle_error.get(
-                    "recovery_database"
-                ),
-                "service_state": lifecycle_error.get(
+                "service_state": state.get(
                     "service_state", "unknown"
                 ),
-                "database_state": lifecycle_error.get(
+                "database_state": state.get(
                     "database_state", "unknown"
                 ),
-                "restore_recorded": lifecycle_error.get(
+                "restore_recorded": state.get(
                     "restore_recorded", False
                 ),
-                "changed_stages": tuple(
-                    getattr(error, "changed_stages", ())
-                ),
-                "residue_paths": tuple(
-                    getattr(error, "residue_paths", ())
-                ),
-                "recovery_commands": tuple(
-                    getattr(error, "recovery_commands", ())
-                ),
-                "verification": getattr(error, "verification", {}),
+                "verification": state.get("report", {}),
             },
             _merge_warnings(
                 warnings,
@@ -246,20 +227,17 @@ def restore(
 
 def _request(
     config: EnvironmentConfig,
-    operation_id: str,
     backup_id: str,
     current: str,
     migrations: tuple[str, ...],
     *,
     action: str,
-) -> HostRequest:
-    return HostRequest(
-        1,
+) -> object:
+    return helper_request(
         "restore",
-        operation_id,
-        {"backup_id": backup_id, "current_release_id": current},
-        helper_paths(config),
-        {
+        config,
+        expected_state={"backup_id": backup_id, "current_release_id": current},
+        parameters={
             "action": action,
             "backup_id": backup_id,
             "credentials_path": _PGPASS,
@@ -272,10 +250,10 @@ def _request(
 
 def _inspection(
     result: object,
-    request: HostRequest,
+    request: object,
     intended: str,
 ) -> RestorePlan:
-    lifecycle = result.lifecycle
+    state = result.state
     keys = {
         "backup_id",
         "dump_path",
@@ -286,95 +264,66 @@ def _inspection(
         "dump_validated",
     }
     if (
-        result.stage != "restore-inspected"
-        or result.changed_stages
-        or not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != keys
-        or lifecycle["backup_id"] != request.parameters["backup_id"]
-        or lifecycle["current_release_id"]
+        not isinstance(state, Mapping)
+        or not keys <= set(state)
+        or state["backup_id"] != request.parameters["backup_id"]
+        or state["current_release_id"]
         != request.expected_state["current_release_id"]
-        or lifecycle["intended_release_id"] != intended
-        or lifecycle["dump_validated"] is not True
-        or type(lifecycle["dump_path"]) is not str
-        or lifecycle["dump_path"]
+        or state["intended_release_id"] != intended
+        or state["dump_validated"] is not True
+        or type(state["dump_path"]) is not str
+        or state["dump_path"]
         != (
             f"{request.paths['backup_root']}/"
             f"{request.parameters['backup_id']}.dump"
         )
-        or type(lifecycle["dump_size_bytes"]) is not int
-        or lifecycle["dump_size_bytes"] <= 0
-        or type(lifecycle["source_database_size_bytes"]) is not int
-        or lifecycle["source_database_size_bytes"] <= 0
-        or result.verification != {"format": "custom", "validated": True}
-        or result.recovery_actions
-        or result.residue_paths
+        or type(state["dump_size_bytes"]) is not int
+        or state["dump_size_bytes"] <= 0
+        or type(state["source_database_size_bytes"]) is not int
+        or state["source_database_size_bytes"] <= 0
     ):
         raise _safety("restore helper returned invalid inspection evidence")
     return RestorePlan(
-        str(lifecycle["backup_id"]),
-        PurePosixPath(str(lifecycle["dump_path"])),
-        int(lifecycle["dump_size_bytes"]),
-        int(lifecycle["source_database_size_bytes"]),
-        str(lifecycle["current_release_id"]),
-        str(lifecycle["intended_release_id"]),
+        str(state["backup_id"]),
+        PurePosixPath(str(state["dump_path"])),
+        int(state["dump_size_bytes"]),
+        int(state["source_database_size_bytes"]),
+        str(state["current_release_id"]),
+        str(state["intended_release_id"]),
     )
 
 
 def _success(
     result: object,
-    request: HostRequest,
+    request: object,
     intended: str,
 ) -> dict[str, object]:
-    lifecycle = result.lifecycle
-    token = request.operation_id.removeprefix("op-")
-    succeeded = result.outcome == "succeeded"
-    expected_program = (
-        result.stage == "records"
-        and result.changed_stages == _SUCCESS_STAGES
-        or result.stage == "records-finalized"
-        and result.changed_stages == ("records",)
-        if succeeded
-        else result.stage == "already-restored"
-        and result.changed_stages == ()
-    )
+    state = result.state
     if (
-        not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != _RESULT_KEYS
-        or lifecycle["backup_id"] != request.parameters["backup_id"]
-        or lifecycle["pre_restore_backup_id"] != f"backup-{token}"
-        or lifecycle["current_release_id"]
+        not isinstance(state, Mapping)
+        or not _RESULT_KEYS <= set(state)
+        or state["backup_id"] != request.parameters["backup_id"]
+        or state["current_release_id"]
         != request.expected_state["current_release_id"]
-        or lifecycle["intended_release_id"] != intended
-        or lifecycle["selected_release_id"] != intended
-        or lifecycle["recovery_id"] != f"recovery-{token}"
-        or lifecycle["recovery_database"]
-        != f"taskman_recovery_{token}"
-        or lifecycle["service_state"] != "active"
-        or lifecycle["database_state"] != "restored-promoted"
-        or lifecycle["restore_recorded"] is not True
-        or not expected_program
-        or result.residue_paths
+        or state["intended_release_id"] != intended
+        or state["selected_release_id"] != intended
+        or _BACKUP_RE.fullmatch(str(state["pre_restore_backup_id"])) is None
+        or state["service_state"] != "active"
+        or state["database_state"] != "restored-promoted"
+        or state["restore_recorded"] is not True
     ):
         raise _safety("restore helper returned invalid success evidence")
-    if not successful_verification(
-        result.verification,
-        release_id=intended,
-    ):
-        raise _safety("restore helper returned invalid verification evidence")
     return {
-        **dict(lifecycle),
-        "changed_stages": tuple(result.changed_stages),
-        "residue_paths": tuple(result.residue_paths),
-        "recovery_commands": tuple(result.recovery_actions),
-        "verification": dict(result.verification),
+        **dict(state),
+        "verification": dict(state.get("report", {})),
     }
 
 
 def _migration_versions(
-    lifecycle: Mapping[str, object],
+    observed: Mapping[str, object],
     intended: str,
 ) -> tuple[str, ...]:
-    manifests = mutable(lifecycle.get("manifests"))
+    manifests = mutable(observed.get("manifests"))
     if not isinstance(manifests, Mapping):
         raise _safety("restore lifecycle manifests are unavailable")
     manifest = manifests.get(intended)
@@ -410,8 +359,8 @@ def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for group in groups for item in group))
 
 
-def _error_lifecycle(error: OpsError) -> Mapping[str, object]:
-    value = getattr(error, "lifecycle", {})
+def _error_state(error: OpsError) -> Mapping[str, object]:
+    value = getattr(error, "state", {})
     return value if isinstance(value, Mapping) else {}
 
 

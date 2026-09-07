@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import PROTOCOL_VERSION
 
 from ..facts import backup_rows, classify_lifecycle, collect_lifecycle_facts, lifecycle_mapping, release_rows
+from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 from ..lifecycle import LifecycleError, LifecycleLockContention, LifecycleStore
 from ..paths import ManagedPaths, PathAuthorityError
 

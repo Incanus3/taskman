@@ -14,10 +14,10 @@ import stat
 import subprocess
 import time
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
-from taskman_ops.host_protocol.identifiers import validate_operation_id
+from taskman_ops.host_protocol import PROTOCOL_VERSION
 
 from ..lifecycle import BackupRecord, LifecycleError, LifecycleLockContention, LifecycleStore
+from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult, validate_private_operation_id
 from ..paths import ManagedPaths, PathAuthorityError
 
 
@@ -729,7 +729,7 @@ def _validated_foreign_publication(
     token = pending.name[len(prefix) : -len(suffix)]
     operation_id = f"op-{token}"
     try:
-        validate_operation_id(operation_id)
+        validate_private_operation_id(operation_id)
     except ValueError as error:
         raise LifecycleError("another backup publication is incomplete") from error
     backup_id = f"backup-{token}"

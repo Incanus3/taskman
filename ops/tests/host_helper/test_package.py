@@ -19,8 +19,8 @@ def test_builder_produces_identical_allowlisted_zipapps(tmp_path: Path) -> None:
     assert first_bytes == second_bytes
     assert first.sha256 == hashlib.sha256(first_bytes).hexdigest()
     assert second.sha256 == first.sha256
-    assert first.protocol_version == 1
-    assert first.identity == f"v1-{first.sha256}"
+    assert first.protocol_version == 2
+    assert first.identity == f"v2-{first.sha256}"
     assert stat.S_IMODE(first.path.stat().st_mode) == 0o600
 
 
@@ -36,6 +36,7 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert names == sorted(names)
     assert names == list(ARCHIVE_MEMBERS)
     assert "taskman_ops/host_helper/lifecycle_records.py" in names
+    assert "taskman_ops/host_helper/legacy_result.py" in names
     assert all(member.date_time == (2020, 1, 1, 0, 0, 0) for member in members)
     assert all((member.external_attr >> 16) == (stat.S_IFREG | 0o644) for member in members)
     assert not any(

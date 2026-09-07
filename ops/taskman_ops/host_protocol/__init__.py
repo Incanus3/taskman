@@ -13,7 +13,7 @@ from .envelope import (
     encode_request,
     encode_result,
 )
-from .identifiers import MAX_STRING_BYTES, ProtocolError
+from .identifiers import MAX_STRING_BYTES, ProtocolError, validate_correlation_id
 from .operations import OPERATION_NAMES, OPERATION_SPECS, OperationSpec, operation_spec
 
 
@@ -30,6 +30,7 @@ __all__ = [
     "HostResult",
     "OperationSpec",
     "ProtocolError",
+    "validate_correlation_id",
     "decode_request",
     "decode_result",
     "encode_request",

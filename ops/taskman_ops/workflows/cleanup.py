@@ -7,15 +7,12 @@ from dataclasses import dataclass
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_runner import new_operation_id
-from ..host_protocol import HostRequest
 from ..output import WorkflowResult
 from ..remote import Remote
-from .helper_recovery import (
-    discover_lifecycle,
-    helper_paths,
+from .helper import (
     mutable,
     result_error,
+    request as helper_request,
     run_request,
 )
 
@@ -48,20 +45,17 @@ def cleanup(
         raise TypeError("cleanup dry-run flag must be boolean")
     warnings: tuple[str, ...] = ()
     try:
-        lifecycle, warnings = discover_lifecycle(remote, config)
-        expected = _expected_lifecycle(lifecycle)
+        discovery = run_request(remote, helper_request("discover", config))
+        if discovery.outcome != "succeeded":
+            raise result_error(discovery)
+        expected = _expected_lifecycle(discovery.state)
+        warnings = discovery.warnings
         inspected = run_request(
             remote,
-            _request(
-                config,
-                new_operation_id(),
-                expected,
-                (),
-                action="inspect",
-            ),
+            _request(config, expected, (), action="inspect"),
         )
         if inspected.outcome != "succeeded":
-            raise result_error(inspected, default_status=ExitStatus.SAFETY)
+            raise result_error(inspected)
         plan = _inspection(inspected, expected, config.name or "")
         warnings = _merge_warnings(warnings, inspected.warnings)
         facts = {
@@ -90,29 +84,23 @@ def cleanup(
             )
         result = run_request(
             remote,
-            _request(
-                config,
-                new_operation_id(),
-                expected,
-                plan.targets,
-                action="execute",
-            ),
+            _request(config, expected, plan.targets, action="execute"),
         )
-        if result.outcome not in {"succeeded", "no_change"}:
-            raise result_error(result, default_status=ExitStatus.SAFETY)
+        if result.outcome != "succeeded":
+            raise result_error(result)
         result_facts = _success(result, plan.targets)
         warnings = _merge_warnings(warnings, result.warnings)
         return WorkflowResult(
             "cleanup",
             config.name or "",
-            result.outcome == "succeeded",
-            "cleaned" if result.outcome == "succeeded" else "nothing-to-clean",
+            result.state.get("changed") is True,
+            "cleaned" if result.state.get("changed") is True else "nothing-to-clean",
             result_facts,
             warnings,
             "rerun cleanup later after additional artifacts become eligible",
         )
     except OpsError as error:
-        lifecycle = _error_lifecycle(error)
+        state = _error_state(error)
         return WorkflowResult(
             "cleanup",
             config.name or "",
@@ -123,19 +111,9 @@ def cleanup(
             if error.status is ExitStatus.SAFETY
             else f"{error.stage}-failed",
             {
-                "targets": tuple(lifecycle.get("targets", ())),
-                "removed": tuple(lifecycle.get("removed", ())),
-                "recoverability": tuple(lifecycle.get("recoverability", ())),
-                "database_state": lifecycle.get("database_state"),
-                "changed_stages": tuple(
-                    getattr(error, "changed_stages", ())
-                ),
-                "residue_paths": tuple(
-                    getattr(error, "residue_paths", ())
-                ),
-                "recovery_commands": tuple(
-                    getattr(error, "recovery_commands", ())
-                ),
+                "targets": tuple(state.get("targets", ())),
+                "removed": tuple(state.get("removed", ())),
+                "recoverability": tuple(state.get("recoverability", ())),
             },
             _merge_warnings(
                 warnings,
@@ -148,19 +126,16 @@ def cleanup(
 
 def _request(
     config: EnvironmentConfig,
-    operation_id: str,
-    lifecycle: Mapping[str, object],
+    expected_state: Mapping[str, object],
     targets: tuple[Mapping[str, object], ...],
     *,
     action: str,
-) -> HostRequest:
-    return HostRequest(
-        1,
+) -> object:
+    return helper_request(
         "cleanup",
-        operation_id,
-        {"lifecycle": lifecycle},
-        helper_paths(config),
-        {
+        config,
+        expected_state={"lifecycle": expected_state},
+        parameters={
             "action": action,
             "targets": targets,
             "release_retention": config.release_retention,
@@ -171,11 +146,11 @@ def _request(
 
 
 def _expected_lifecycle(
-    lifecycle: Mapping[str, object],
+    observed: Mapping[str, object],
 ) -> dict[str, tuple[str, ...]]:
-    records = mutable(lifecycle.get("records"))
+    records = mutable(observed)
     if not isinstance(records, Mapping):
-        raise _safety("cleanup lifecycle authority is unavailable")
+        raise _safety("cleanup observed state is unavailable")
     values: dict[str, tuple[str, ...]] = {}
     for plural, identifier in (
         ("releases", "release_id"),
@@ -202,20 +177,14 @@ def _inspection(
     expected: Mapping[str, object],
     environment: str,
 ) -> CleanupPlan:
-    lifecycle = result.lifecycle
+    state = result.state
     if (
-        result.stage != "cleanup-inspected"
-        or result.changed_stages
-        or not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != {"lifecycle", "targets"}
-        or lifecycle["lifecycle"] != expected
-        or not isinstance(lifecycle["targets"], tuple)
-        or result.verification
-        or result.residue_paths
-        or result.recovery_actions
+        not isinstance(state, Mapping)
+        or state.get("changed") is not False
+        or not isinstance(state.get("targets"), tuple)
     ):
         raise _safety("cleanup helper returned invalid inspection evidence")
-    targets = tuple(_target(value) for value in lifecycle["targets"])
+    targets = tuple(_target(value) for value in state["targets"])
     identifiers = ",".join(str(target["identifier"]) for target in targets)
     return CleanupPlan(
         targets,
@@ -227,37 +196,28 @@ def _success(
     result: object,
     targets: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
-    lifecycle = result.lifecycle
+    state = result.state
     if (
-        result.stage != "cleanup"
-        or not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != {"removed", "recoverability", "targets"}
-        or tuple(lifecycle["targets"]) != targets
-        or not isinstance(lifecycle["removed"], tuple)
-        or not isinstance(lifecycle["recoverability"], tuple)
-        or len(lifecycle["removed"]) != len(lifecycle["recoverability"])
-        or result.changed_stages
-        != (("cleanup",) if result.outcome == "succeeded" else ())
-        or result.verification
-        or result.recovery_actions
-        or result.residue_paths
+        not isinstance(state, Mapping)
+        or tuple(state.get("targets", ())) != targets
+        or not isinstance(state.get("removed"), tuple)
+        or not isinstance(state.get("recoverability"), tuple)
+        or len(state["removed"]) != len(state["recoverability"])
     ):
         raise _safety("cleanup helper returned invalid success evidence")
-    removed = tuple(_target(value) for value in lifecycle["removed"])
-    if result.outcome == "succeeded" and removed != targets:
+    removed = tuple(_target(value) for value in state["removed"])
+    if result.state.get("changed") is True and removed != targets:
         raise _safety("cleanup helper returned incomplete success evidence")
-    if result.outcome == "no_change" and removed:
+    if result.state.get("changed") is False and removed:
         raise _safety("cleanup helper returned invalid no-op evidence")
     if tuple(bool(item["recoverable"]) for item in removed) != tuple(
-        lifecycle["recoverability"]
+        state["recoverability"]
     ):
         raise _safety("cleanup helper returned invalid recovery evidence")
     return {
         "targets": targets,
         "removed": removed,
-        "recoverability": tuple(lifecycle["recoverability"]),
-        "changed_stages": tuple(result.changed_stages),
-        "residue_paths": tuple(result.residue_paths),
+        "recoverability": tuple(state["recoverability"]),
     }
 
 
@@ -279,8 +239,8 @@ def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for group in groups for item in group))
 
 
-def _error_lifecycle(error: OpsError) -> Mapping[str, object]:
-    value = getattr(error, "lifecycle", {})
+def _error_state(error: OpsError) -> Mapping[str, object]:
+    value = getattr(error, "state", {})
     return value if isinstance(value, Mapping) else {}
 
 

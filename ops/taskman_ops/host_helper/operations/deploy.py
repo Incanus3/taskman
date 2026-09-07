@@ -17,9 +17,10 @@ import tarfile
 import time
 from uuid import uuid4
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import PROTOCOL_VERSION
 
 from ..facts import LifecycleObservation, _observe_current
+from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 from ..lifecycle import (
     ActivationRecord,
     BackupRecord,

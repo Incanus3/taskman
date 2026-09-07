@@ -8,7 +8,6 @@ import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_runner import new_operation_id
 from ..host_helper.lifecycle import (
     ActivationRecord,
     AdoptionRecord,
@@ -18,18 +17,15 @@ from ..host_helper.lifecycle import (
     ReleaseRecord,
     rollback_eligibility,
 )
-from ..host_protocol import HostRequest
 from ..output import WorkflowResult
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
-from .helper_recovery import (
+from .helper import (
     database_settings,
-    discover_lifecycle,
-    helper_paths,
     mutable,
     result_error,
+    request as helper_request,
     run_request,
-    successful_verification,
     verification_settings,
 )
 
@@ -120,8 +116,11 @@ def rollback(
     target = validate_release_id(release_id)
     current: str | None = None
     try:
-        lifecycle, warnings = discover_lifecycle(remote, config)
-        records = _records(lifecycle)
+        discovery = run_request(remote, helper_request("discover", config))
+        if discovery.outcome != "succeeded":
+            raise result_error(discovery)
+        records = _records(discovery.state)
+        warnings = discovery.warnings
         current = records.current_release_id
         if current is None:
             raise _safety("no current release is recorded")
@@ -168,13 +167,11 @@ def rollback(
                 warnings,
                 "review the exact rollback plan and confirm a later run when ready",
             )
-        request = HostRequest(
-            1,
+        request = helper_request(
             "rollback",
-            new_operation_id(),
-            {"current_release_id": current},
-            helper_paths(config),
-            {
+            config,
+            expected_state={"current_release_id": current},
+            parameters={
                 "target_release_id": target,
                 "credentials_path": _PGPASS,
                 "database": database_settings(config),
@@ -182,22 +179,23 @@ def rollback(
             },
         )
         result = run_request(remote, request)
-        if result.outcome not in {"succeeded", "no_change"}:
-            raise result_error(result, default_status=ExitStatus.RELEASE)
+        if result.outcome != "succeeded":
+            raise result_error(result)
         facts = _validate_success(result, request)
+        changed = result.state.get("changed") is True
         return WorkflowResult(
             "rollback",
             config.name or "",
-            result.outcome == "succeeded",
+            changed,
             "rolled-back"
-            if result.outcome == "succeeded"
+            if changed
             else "already-current",
             facts,
             tuple(result.warnings),
             "perform the remaining browser, email, and API acceptance checks",
         )
     except OpsError as error:
-        lifecycle = _error_lifecycle(error)
+        state = _error_state(error)
         return WorkflowResult(
             "rollback",
             config.name or "",
@@ -208,34 +206,25 @@ def rollback(
             if error.status is ExitStatus.SAFETY
             else f"{error.stage}-failed",
             {
-                "previous_release_id": lifecycle.get(
+                "previous_release_id": state.get(
                     "previous_release_id", current
                 ),
-                "target_release_id": lifecycle.get(
+                "target_release_id": state.get(
                     "target_release_id", target
                 ),
-                "selected_release_id": lifecycle.get(
+                "selected_release_id": state.get(
                     "selected_release_id", current
                 ),
-                "backup_id": lifecycle.get("backup_id"),
-                "activation_id": lifecycle.get("activation_id"),
-                "service_state": lifecycle.get("service_state", "unknown"),
-                "database_state": lifecycle.get(
+                "backup_id": state.get("backup_id"),
+                "activation_id": state.get("activation_id"),
+                "service_state": state.get("service_state", "unknown"),
+                "database_state": state.get(
                     "database_state", "unknown"
                 ),
-                "activation_recorded": lifecycle.get(
+                "activation_recorded": state.get(
                     "activation_recorded", False
                 ),
-                "changed_stages": tuple(
-                    getattr(error, "changed_stages", ())
-                ),
-                "residue_paths": tuple(
-                    getattr(error, "residue_paths", ())
-                ),
-                "recovery_commands": tuple(
-                    getattr(error, "recovery_commands", ())
-                ),
-                "verification": getattr(error, "verification", {}),
+                "verification": state.get("report", {}),
             },
             tuple(getattr(error, "warnings", ())),
             error.next_action,
@@ -243,51 +232,32 @@ def rollback(
         )
 
 
-def _validate_success(result: object, request: HostRequest) -> dict[str, object]:
-    lifecycle = result.lifecycle
-    token = request.operation_id.removeprefix("op-")
-    succeeded = result.outcome == "succeeded"
-    expected_stages = _SUCCESS_STAGES if succeeded else ()
+def _validate_success(result: object, request: object) -> dict[str, object]:
+    state = result.state
     if (
-        not isinstance(lifecycle, Mapping)
-        or set(lifecycle) != _RESULT_KEYS
-        or lifecycle["previous_release_id"]
+        not isinstance(state, Mapping)
+        or not _RESULT_KEYS <= set(state)
+        or state["previous_release_id"]
         != request.expected_state["current_release_id"]
-        or lifecycle["target_release_id"]
+        or state["target_release_id"]
         != request.parameters["target_release_id"]
-        or lifecycle["selected_release_id"]
+        or state["selected_release_id"]
         != request.parameters["target_release_id"]
-        or lifecycle["backup_id"] != f"backup-{token}"
-        or lifecycle["activation_id"] != f"activation-{token}"
-        or _ID.fullmatch(str(lifecycle["backup_id"])) is None
-        or _ID.fullmatch(str(lifecycle["activation_id"])) is None
-        or lifecycle["service_state"] != "active"
-        or lifecycle["database_state"] != "unchanged"
-        or lifecycle["activation_recorded"] is not True
-        or result.changed_stages != expected_stages
-        or result.stage
-        != ("records" if succeeded else "already-current")
-        or result.residue_paths
-        or result.warnings
+        or _ID.fullmatch(str(state["backup_id"])) is None
+        or _ID.fullmatch(str(state["activation_id"])) is None
+        or state["service_state"] != "active"
+        or state["database_state"] != "unchanged"
+        or state["activation_recorded"] is not True
     ):
         raise _safety("rollback helper returned invalid success evidence")
-    if not successful_verification(
-        result.verification,
-        release_id=request.parameters["target_release_id"],
-    ):
-        raise _safety("rollback helper returned invalid verification evidence")
     return {
-        **dict(lifecycle),
-        "changed": succeeded,
-        "changed_stages": tuple(result.changed_stages),
-        "residue_paths": tuple(result.residue_paths),
-        "recovery_commands": tuple(result.recovery_actions),
-        "verification": dict(result.verification),
+        **dict(state),
+        "verification": dict(state.get("report", {})),
     }
 
 
-def _records(lifecycle: Mapping[str, object]) -> LifecycleRecords:
-    value = mutable(lifecycle.get("records"))
+def _records(observed: Mapping[str, object]) -> LifecycleRecords:
+    value = mutable(observed)
     if not isinstance(value, Mapping):
         raise _safety("rollback planning helper returned invalid lifecycle evidence")
     try:
@@ -321,8 +291,8 @@ def _list(value: Mapping[str, object], key: str) -> list[object]:
     return item
 
 
-def _error_lifecycle(error: OpsError) -> Mapping[str, object]:
-    value = getattr(error, "lifecycle", {})
+def _error_state(error: OpsError) -> Mapping[str, object]:
+    value = getattr(error, "state", {})
     return value if isinstance(value, Mapping) else {}
 
 

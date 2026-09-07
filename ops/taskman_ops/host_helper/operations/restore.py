@@ -13,7 +13,7 @@ import shutil
 import stat
 import subprocess
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import PROTOCOL_VERSION
 
 from ..lifecycle import (
     ActivationRecord,
@@ -23,6 +23,7 @@ from ..lifecycle import (
     LifecycleStore,
     LifecycleWriteFailure,
 )
+from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 from ..paths import ManagedPaths, PathAuthorityError
 from ..verification import verify
 from .backup import (

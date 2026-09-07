@@ -12,7 +12,9 @@ import subprocess
 import time
 from typing import Mapping
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import PROTOCOL_VERSION
+
+from .legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 
 from .facts import classify_lifecycle, collect_lifecycle_facts
 from .lifecycle import LifecycleError, LifecycleLockContention

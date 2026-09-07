@@ -6,15 +6,12 @@ from collections.abc import Callable, Mapping
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..helper_package import temporary_helper_package
-from ..helper_runner import invoke_helper, new_operation_id
-from ..host_protocol import HostRequest
 from ..manifests import MigrationFingerprint, VerifiedArtifact
 from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
 from ..host_helper.lifecycle import ManualAdoptionCandidate
-from .helper_deploy import run_helper_deployment
+from .helper import request as helper_request, result_error, run_deployment_request, run_request
 
 
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
@@ -54,12 +51,14 @@ def deploy(
         (present_plan or _present_plan)(plan)
         if not (confirm or _confirm)(plan):
             return WorkflowResult("deploy", config.name or "", False, "confirmation-cancelled", {**plan, "previous_release_id": previous, "selected_release_id": previous, "database_state": "unchanged", "service_state": "unknown"}, next_action="review the exact deployment plan and confirm a later run when ready")
-        payload = run_helper_deployment(
+        result = run_deployment_request(
             remote, config, artifact, migration_policy=policy, previous_release_id=previous,
             current_migrations=current_migrations,
             manual_adoption=None if manual is None else manual.to_mapping(),
         )
-        return _payload_result(config, candidate, policy, payload)
+        if result.outcome != "succeeded":
+            raise result_error(result)
+        return _payload_result(config, candidate, policy, result)
     except OpsError as error:
         return _failure_result(config, error, candidate=candidate)
 
@@ -75,7 +74,7 @@ def deploy_first_release(
         raise TypeError("first release requires validated configuration and artifact")
     policy = "no-change" if not artifact.manifest.migrations else "restore-required"
     try:
-        payload = run_helper_deployment(
+        result = run_deployment_request(
             remote,
             config,
             artifact,
@@ -84,7 +83,9 @@ def deploy_first_release(
             current_migrations=(),
             genesis=True,
         )
-        return _payload_result(config, artifact.manifest.release_id, policy, payload, genesis=True)
+        if result.outcome != "succeeded":
+            raise result_error(result)
+        return _payload_result(config, artifact.manifest.release_id, policy, result, genesis=True)
     except OpsError as error:
         return _failure_result(config, error, candidate=artifact.manifest.release_id, genesis=True)
 
@@ -94,79 +95,78 @@ def _planning_authority(
 ) -> tuple[str, ManualAdoptionCandidate | None, tuple[MigrationFingerprint, ...]]:
     """Read plan authority through the helper, never a controller remote snapshot."""
 
-    request = HostRequest(
-        protocol_version=1, operation="discover", operation_id=new_operation_id(), expected_state={},
-        paths={"install_root": config.install_root.as_posix(), "backup_root": config.backup_root.as_posix()},
-        parameters={"include_manual_adoption": True} if manual_confirmed else {},
+    result = run_request(
+        remote,
+        helper_request(
+            "discover",
+            config,
+            parameters={"include_manual_adoption": True} if manual_confirmed else {},
+        ),
     )
-    with temporary_helper_package() as package:
-        invocation = invoke_helper(remote, package, request)
-    result = invocation.result
-    if (result.protocol_version, result.operation, result.operation_id) != (1, "discover", request.operation_id):
-        raise _safety("deployment planning helper returned unrelated lifecycle evidence")
-    if result.stage == "lifecycle-lock":
-        raise OpsError(ExitStatus.LOCKED, "lifecycle-lock", "deployment planning lifecycle lock is held", changed=False, next_action="wait for the lifecycle operation to finish and retry")
-    if result.outcome != "succeeded" or result.stage != "discovered" or not isinstance(result.lifecycle, Mapping):
+    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused lifecycle authority")
-    lifecycle = _mutable_protocol_value(result.lifecycle)
-    if not isinstance(lifecycle, Mapping):
+    state = _mutable_protocol_value(result.state)
+    if not isinstance(state, Mapping):
         raise _safety("deployment planning helper returned invalid lifecycle evidence")
-    state, records = lifecycle.get("state"), lifecycle.get("records")
-    if state == "manual":
+    host_kind = state.get("host_kind")
+    if host_kind == "manual":
         if not manual_confirmed:
             raise _safety("manual current release requires explicit adoption confirmation before deployment")
         try:
-            authority = ManualAdoptionCandidate.from_mapping(lifecycle.get("manual_adoption"))
+            authority = ManualAdoptionCandidate.from_mapping(state.get("manual_adoption"))
         except (TypeError, ValueError):
             raise _safety("deployment planning helper returned invalid manual-adoption authority") from None
         return authority.release_id, authority, _migration_fingerprints(authority.migrations)
     if manual_confirmed:
         raise _safety("manual-adoption confirmation is only valid for a manual current release")
-    if state != "managed" or not isinstance(records, Mapping) or not isinstance(records.get("activations"), list) or not records["activations"]:
+    activations = state.get("activations")
+    if host_kind != "managed" or not isinstance(activations, list) or not activations:
         raise _safety("no managed current release is recorded")
-    current = records["activations"][-1]
+    current = activations[-1]
     try:
         previous = validate_release_id(current.get("candidate_release_id") if isinstance(current, Mapping) else None)
-        migrations = _migration_fingerprints(lifecycle.get("current_migrations"))
+        migrations = _migration_fingerprints(state.get("applied_migrations"))
         return previous, None, migrations
     except (TypeError, ValueError):
         raise _safety("deployment planning helper returned invalid current release") from None
 
 
-def _payload_result(config: EnvironmentConfig, candidate: str, policy: str, payload: Mapping[str, object], *, genesis: bool = False) -> WorkflowResult:
-    if payload.get("stage") == "already-current":
+def _payload_result(config: EnvironmentConfig, candidate: str, policy: str, result: object, *, genesis: bool = False) -> WorkflowResult:
+    state = result.state
+    changed = state.get("changed") is True
+    if not changed:
         return WorkflowResult(
             "deploy", config.name or "", False, "already-current",
-            _facts(payload, candidate, policy, changed=False, genesis=genesis), tuple(payload.get("warnings", ())),
+            _facts(state, candidate, policy, genesis=genesis), tuple(result.warnings),
             "no deployment action is required",
         )
     return WorkflowResult(
         "deploy", config.name or "", True, "deployed",
-        _facts(payload, candidate, policy, changed=True, genesis=genesis), tuple(payload.get("warnings", ())),
+        _facts(state, candidate, policy, genesis=genesis), tuple(result.warnings),
         "perform the remaining browser, email, and API acceptance checks",
     )
 
 
-def _facts(payload: Mapping[str, object], candidate: str, policy: str, *, changed: bool, genesis: bool) -> dict[str, object]:
-    database = payload.get("database_state", "unknown")
+def _facts(state: Mapping[str, object], candidate: str, policy: str, *, genesis: bool) -> dict[str, object]:
+    database = state.get("database_state", "unknown")
     return {
-        "previous_release_id": None if genesis else payload.get("previous_release_id"),
+        "previous_release_id": None if genesis else state.get("previous_release_id"),
         "candidate_release_id": candidate,
-        "selected_release_id": payload.get("selected_release_id"),
-        "backup_id": payload.get("backup_id"),
+        "selected_release_id": state.get("selected_release_id"),
+        "backup_id": state.get("backup_id"),
         "migration_policy": policy,
         "database_changed": database == "changed",
         "database_state": database,
-        "activation_recorded": payload.get("activation_recorded", False),
-        "service_state": payload.get("service_state", "unknown"),
-        "changed_stages": tuple(payload.get("changed_stages", ())),
-        "recovery_commands": tuple(payload.get("recovery_commands", ())),
-        "residue_paths": tuple(payload.get("residue_paths", ())),
-        "verification": payload.get("verification", {}),
+        "activation_recorded": state.get("activation_recorded", False),
+        "service_state": state.get("service_state", "unknown"),
+        "verification": state.get("report", {}),
     }
 
 
 def _failure_result(config: EnvironmentConfig, error: OpsError, *, candidate: str, genesis: bool = False) -> WorkflowResult:
+    state = getattr(error, "state", {})
+    if not isinstance(state, Mapping):
+        state = {}
     stage = {
         ExitStatus.BACKUP: "backup-failed", ExitStatus.MIGRATION: "migration-failed",
         ExitStatus.RELEASE: "activation-failed", ExitStatus.READINESS: "verification-failed",
@@ -177,17 +177,14 @@ def _failure_result(config: EnvironmentConfig, error: OpsError, *, candidate: st
     return WorkflowResult(
         "deploy", config.name or "", error.changed, stage,
         {
-            "previous_release_id": None if genesis else getattr(error, "previous_release_id", None),
+            "previous_release_id": None if genesis else state.get("previous_release_id"),
             "candidate_release_id": candidate,
-            "selected_release_id": getattr(error, "selected_release_id", None),
-            "backup_id": getattr(error, "backup_id", None),
-            "database_changed": "unknown", "database_state": getattr(error, "database_state", "unknown"),
-            "activation_recorded": getattr(error, "activation_recorded", False),
-            "service_state": getattr(error, "service_state", "unknown"), "failure_stage": error.stage,
-            "changed_stages": tuple(getattr(error, "changed_stages", ())),
-            "recovery_commands": tuple(getattr(error, "recovery_commands", ())),
-            "residue_paths": tuple(getattr(error, "residue_paths", ())),
-            "verification": getattr(error, "verification", None),
+            "selected_release_id": state.get("selected_release_id"),
+            "backup_id": state.get("backup_id"),
+            "database_changed": "unknown", "database_state": state.get("database_state", "unknown"),
+            "activation_recorded": state.get("activation_recorded", False),
+            "service_state": state.get("service_state", "unknown"), "failure_stage": state.get("failed_boundary", error.stage),
+            "verification": state.get("report"),
         }, tuple(getattr(error, "warnings", ())),
         error.next_action or "inspect helper deployment evidence before retrying", error.status,
     )

@@ -23,9 +23,9 @@ from taskman_ops.host_protocol import (
 
 def request_mapping(**overrides: object) -> dict[str, object]:
     mapping: dict[str, object] = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "operation": "discover",
-        "operation_id": "op-0123456789abcdef0123456789abcdef",
+        "correlation_id": "op-0123456789abcdef0123456789abcdef",
         "expected_state": {"lifecycle": "unknown"},
         "paths": {
             "install_root": "/opt/taskman",
@@ -39,17 +39,12 @@ def request_mapping(**overrides: object) -> dict[str, object]:
 
 def result_mapping(**overrides: object) -> dict[str, object]:
     mapping: dict[str, object] = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "operation": "discover",
-        "operation_id": "op-0123456789abcdef0123456789abcdef",
+        "correlation_id": "op-0123456789abcdef0123456789abcdef",
         "outcome": "succeeded",
-        "stage": "complete",
-        "changed_stages": [],
-        "lifecycle": {},
-        "runtime_state": {},
-        "verification": {},
-        "residue_paths": [],
-        "recovery_actions": [],
+        "message": "discovery completed",
+        "state": {},
         "warnings": [],
     }
     mapping.update(overrides)
@@ -64,11 +59,11 @@ def test_request_round_trip_is_canonical_and_immutable() -> None:
     encoded = encode_request(request)
 
     assert encoded == (
-        b'{"expected_state":{"lifecycle":"unknown"},"operation":"discover",'
-        b'"operation_id":"op-0123456789abcdef0123456789abcdef",'
+        b'{"correlation_id":"op-0123456789abcdef0123456789abcdef",'
+        b'"expected_state":{"lifecycle":"unknown"},"operation":"discover",'
         b'"parameters":{"attempt":1,"dry_run":false},'
         b'"paths":{"backup_root":"/var/backups/taskman",'
-        b'"install_root":"/opt/taskman"},"protocol_version":1}'
+        b'"install_root":"/opt/taskman"},"protocol_version":2}'
     )
     assert decode_request(encoded) == request
     with pytest.raises(FrozenInstanceError):
@@ -77,15 +72,15 @@ def test_request_round_trip_is_canonical_and_immutable() -> None:
         request.paths["other"] = "/srv/taskman"  # type: ignore[index]
 
 
-def test_result_round_trip_keeps_all_empty_common_fields() -> None:
-    """Omitting empty evidence fields makes result variants ambiguous."""
+def test_result_round_trip_keeps_the_concise_final_state() -> None:
+    """Omitting final result fields makes outcome variants ambiguous."""
 
     result = HostResult(**result_mapping())
 
     assert decode_result(encode_result(result)) == result
     encoded_mapping = json.loads(encode_result(result))
     assert set(encoded_mapping) == set(result_mapping())
-    assert encoded_mapping["lifecycle"] == {}
+    assert encoded_mapping["state"] == {}
     assert encoded_mapping["warnings"] == []
 
 
@@ -93,9 +88,9 @@ def test_result_round_trip_keeps_all_empty_common_fields() -> None:
     ("payload", "decoder"),
     [
         (b'\xff', decode_request),
-        (b'{"protocol_version":1', decode_request),
+        (b'{"protocol_version":2', decode_request),
         (encode_request(HostRequest(**request_mapping())) + b"\n", decode_request),
-        (b'{"protocol_version":1,"protocol_version":1}', decode_request),
+        (b'{"protocol_version":2,"protocol_version":2}', decode_request),
         (b'{"outcome":"succeeded"', decode_result),
     ],
 )
@@ -110,9 +105,9 @@ def test_decoders_reject_non_single_well_formed_json_value(payload: bytes, decod
     ("field", "value"),
     [
         ("protocol_version", True),
-        ("protocol_version", 2),
+        ("protocol_version", 1),
         ("operation", "shell"),
-        ("operation_id", "op-0123456789abcdef0123456789abcdeg"),
+        ("correlation_id", "op-0123456789abcdef0123456789abcdeg"),
         ("paths", {"install_root": "relative/path"}),
         ("paths", {"install_root": "/opt/../taskman"}),
         ("paths", {"install_root": "/opt//taskman"}),
@@ -131,11 +126,9 @@ def test_request_rejects_invalid_typed_or_path_values(field: str, value: object)
     [
         ("protocol_version", False),
         ("outcome", "partial"),
-        ("stage", "not a stage"),
-        ("changed_stages", ["complete", "complete"]),
-        ("changed_stages", ["not a stage"]),
-        ("changed_stages", ["complete\nnext"]),
-        ("residue_paths", ["relative/path"]),
+        ("message", 1),
+        ("state", {"bad key": "value"}),
+        ("warnings", ["same", "same"]),
     ],
 )
 def test_result_rejects_invalid_typed_or_enum_values(field: str, value: object) -> None:

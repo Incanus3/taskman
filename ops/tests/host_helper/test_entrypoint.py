@@ -12,28 +12,26 @@ from taskman_ops.helper_package import build_helper_package
 from taskman_ops.host_protocol import (
     MAX_INPUT_BYTES,
     MAX_OUTPUT_BYTES,
-    MAX_STRING_BYTES,
     HostRequest,
-    HostResult,
     ProtocolError,
     decode_result,
     encode_request,
 )
 from taskman_ops.host_helper import __main__ as entrypoint
+from taskman_ops.host_helper.legacy_result import OperationRequest, OperationResult, project_result
+
+
+CORRELATION = "op-0123456789abcdef0123456789abcdef"
 
 
 def request_bytes(paths: dict[str, str] | None = None) -> bytes:
     return encode_request(
         HostRequest(
-            protocol_version=1,
+            protocol_version=2,
             operation="discover",
-            operation_id="op-0123456789abcdef0123456789abcdef",
+            correlation_id=CORRELATION,
             expected_state={},
-            paths=paths
-            or {
-                "install_root": "/opt/taskman",
-                "backup_root": "/var/backups/taskman",
-            },
+            paths=paths or {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
             parameters={},
         )
     )
@@ -47,7 +45,7 @@ class Stream:
 @contextmanager
 def invoke_entrypoint(
     payload: bytes,
-    handler: Callable[[HostRequest], HostResult],
+    handler: Callable[[OperationRequest], OperationResult],
 ) -> Iterator[Stream]:
     original_stdin = entrypoint.sys.stdin
     original_stdout = entrypoint.sys.stdout
@@ -64,19 +62,11 @@ def invoke_entrypoint(
         entrypoint._DISPATCH["discover"] = original_handler
 
 
-def test_built_zipapp_discovers_an_isolated_empty_host_with_a_bounded_result(tmp_path: Path) -> None:
-    """The isolated archive reads only the two roots supplied by its request."""
-
+def test_built_zipapp_emits_the_final_discovery_envelope(tmp_path: Path) -> None:
     package = build_helper_package(tmp_path / "taskman-host.pyz")
-
     completed = subprocess.run(
         ["python3", "-I", str(package.path)],
-        input=request_bytes(
-            {
-                "install_root": str(tmp_path / "install"),
-                "backup_root": str(tmp_path / "backups"),
-            }
-        ),
+        input=request_bytes({"install_root": str(tmp_path / "install"), "backup_root": str(tmp_path / "backups")}),
         capture_output=True,
         check=False,
     )
@@ -85,15 +75,15 @@ def test_built_zipapp_discovers_an_isolated_empty_host_with_a_bounded_result(tmp
     assert completed.stderr == b""
     result = decode_result(completed.stdout)
     assert result.operation == "discover"
-    assert result.operation_id == "op-0123456789abcdef0123456789abcdef"
+    assert result.correlation_id == CORRELATION
     assert result.outcome == "succeeded"
-    assert result.stage == "discovered"
-    assert result.lifecycle["state"] == "empty"
+    assert result.state["host_kind"] == "empty"
+    assert set(result.to_mapping()) == {
+        "protocol_version", "operation", "correlation_id", "outcome", "message", "state", "warnings"
+    }
 
 
-def test_built_zipapp_rejects_oversized_input_without_echoing_it(tmp_path: Path) -> None:
-    """Reading unbounded stdin or echoing it could leak controller-supplied secret material."""
-
+def test_entrypoint_rejects_oversized_input_without_echoing_it(tmp_path: Path) -> None:
     package = build_helper_package(tmp_path / "taskman-host.pyz")
     secret = b"canary-secret-value"
     completed = subprocess.run(
@@ -103,63 +93,83 @@ def test_built_zipapp_rejects_oversized_input_without_echoing_it(tmp_path: Path)
         check=False,
     )
 
-    assert completed.returncode == 0
-    assert completed.stderr == b""
     result = decode_result(completed.stdout)
-    assert result.outcome == "failed"
-    assert result.stage == "protocol"
+    assert completed.returncode == 0
+    assert result.outcome == "retryable"
+    assert result.message == "helper protocol failure"
     assert secret not in completed.stdout
 
 
-def test_entrypoint_replaces_an_oversized_dispatch_result_with_small_internal_failure() -> None:
-    """A valid but oversized operation result must not produce a traceback or empty stdout."""
-
-    request = request_bytes()
-
-    def oversized_result(parsed: HostRequest) -> HostResult:
-        return HostResult(
-            protocol_version=1,
-            operation=parsed.operation,
-            operation_id=parsed.operation_id,
-            outcome="failed",
-            stage="complete",
-            changed_stages=(),
-            lifecycle={},
-            runtime_state={},
-            verification={},
-            residue_paths=(),
-            recovery_actions=(),
-            warnings=tuple(
-                f"{index:02d}" + ("x" * (MAX_STRING_BYTES - 2))
-                for index in range(64)
-            ),
+def test_entrypoint_projects_private_result_once_without_old_evidence() -> None:
+    def private_result(request: OperationRequest) -> OperationResult:
+        return OperationResult(
+            2, request.operation, request.operation_id, "succeeded", "discovered", (),
+            {"state": "empty", "records": {"releases": [], "backups": [], "activations": []}, "warnings": []},
+            {}, {}, (), (), (),
         )
 
-    with invoke_entrypoint(request, oversized_result) as stdout:
+    with invoke_entrypoint(request_bytes(), private_result) as stdout:
+        assert entrypoint.main() == 0
+
+    result = decode_result(stdout.buffer.getvalue())
+    assert result.correlation_id == CORRELATION
+    assert result.state == {"host_kind": "empty", "releases": (), "backups": (), "activations": ()}
+    assert "operation_id" not in repr(result.state)
+
+
+def test_private_restore_projection_does_not_expose_recovery_artifacts() -> None:
+    request = HostRequest(
+        protocol_version=2,
+        operation="restore",
+        correlation_id=CORRELATION,
+        expected_state={},
+        paths={"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        parameters={},
+    )
+    private = OperationResult(
+        2,
+        "restore",
+        "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "succeeded",
+        "records",
+        ("restore",),
+        {
+            "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "recovery_id": "recovery-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "recovery_database": "taskman_recovery_aaaaaaaa",
+            "restore_recorded": True,
+        },
+        {},
+        {},
+        (),
+        (),
+        (),
+    )
+
+    result = project_result(request, private)
+
+    assert result.state == {
+        "changed": True,
+        "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "restore_recorded": True,
+    }
+
+
+def test_entrypoint_replaces_projection_failure_with_small_final_result() -> None:
+    def invalid_private_result(request: OperationRequest) -> OperationResult:
+        return OperationResult(
+            2, request.operation, request.operation_id, "unknown", "internal", (), {}, {}, {}, (), (), (),
+        )
+
+    with invoke_entrypoint(request_bytes(), invalid_private_result) as stdout:
         try:
             assert entrypoint.main() == 0
         except ProtocolError as error:
             pytest.fail(f"entrypoint leaked encoding failure: {error}")
 
-    result = decode_result(stdout.buffer.getvalue())
-    assert len(stdout.buffer.getvalue()) <= MAX_OUTPUT_BYTES
-    assert result.outcome == "failed"
-    assert result.stage == "internal"
-    assert result.operation == "discover"
-    assert result.operation_id == "op-0123456789abcdef0123456789abcdef"
-
-
-def test_entrypoint_preserves_trusted_correlation_after_dispatch_failure() -> None:
-    """An internal operation error must remain correlated to the request the controller sent."""
-
-    def fail_dispatch(_parsed: HostRequest) -> HostResult:
-        raise RuntimeError("untrusted detail")
-
-    with invoke_entrypoint(request_bytes(), fail_dispatch) as stdout:
-        assert entrypoint.main() == 0
-
-    result = decode_result(stdout.buffer.getvalue())
-    assert result.outcome == "failed"
-    assert result.stage == "internal"
-    assert result.operation == "discover"
-    assert result.operation_id == "op-0123456789abcdef0123456789abcdef"
+    payload = stdout.buffer.getvalue()
+    result = decode_result(payload)
+    assert len(payload) <= MAX_OUTPUT_BYTES
+    assert result.outcome == "retryable"
+    assert result.message == "helper internal failure"
+    assert result.correlation_id == CORRELATION

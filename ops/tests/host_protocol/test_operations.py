@@ -17,9 +17,9 @@ from taskman_ops.host_protocol import (
 
 def request_for(operation: str) -> HostRequest:
     return HostRequest(
-        protocol_version=1,
+        protocol_version=2,
         operation=operation,
-        operation_id="op-0123456789abcdef0123456789abcdef",
+        correlation_id="op-0123456789abcdef0123456789abcdef",
         expected_state={},
         paths={"install_root": "/opt/taskman"},
         parameters={},
@@ -28,17 +28,12 @@ def request_for(operation: str) -> HostRequest:
 
 def result_for(operation: str) -> HostResult:
     return HostResult(
-        protocol_version=1,
+        protocol_version=2,
         operation=operation,
-        operation_id="op-0123456789abcdef0123456789abcdef",
-        outcome="failed",
-        stage="unavailable",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=(),
+        correlation_id="op-0123456789abcdef0123456789abcdef",
+        outcome="retryable",
+        message="helper unavailable",
+        state={},
         warnings=(),
     )
 
