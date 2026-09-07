@@ -246,6 +246,37 @@ def test_cleanup_preserves_backups_referenced_by_older_selection_history(tmp_pat
     assert Path(paths.local(paths.backup_manifest(old_backup))).is_file()
 
 
+def test_cleanup_does_not_normalize_a_manifestless_backup_referenced_by_older_selection(
+    tmp_path: Path,
+) -> None:
+    """Selection history must be protected before cleanup removes interrupted backup output."""
+
+    paths = _paths(tmp_path)
+    first_release = "0.1.0-cccccccccccc-ubuntu26.04-amd64-otp27.3.4.6"
+    interrupted_backup = "backup-33333333333333333333333333333333"
+    _publish_release(paths, first_release)
+    _publish_release(paths, RELEASE)
+    root = Path(paths.local(paths.backup_root))
+    root.mkdir(parents=True, exist_ok=True)
+    dump = root / f"{interrupted_backup}.dump"
+    dump.write_bytes(b"interrupted")
+    dump.chmod(0o600)
+    append_selection(
+        paths,
+        SelectionRecord(first_release, None, interrupted_backup, datetime(2026, 9, 7, 10, 0, tzinfo=UTC)),
+    )
+    append_selection(
+        paths,
+        SelectionRecord(RELEASE, first_release, None, datetime(2026, 9, 7, 11, 0, tzinfo=UTC)),
+    )
+    Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    result = cleanup_module.cleanup(_request(paths, action="inspect"))
+
+    assert result.outcome == "manual"
+    assert dump.is_file()
+
+
 def test_cleanup_reports_an_unsafe_authoritative_root_as_manual_before_locking(tmp_path: Path) -> None:
     """An unsafe root is ambiguous authority, not a lock held by another helper."""
 

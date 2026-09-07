@@ -249,8 +249,16 @@ def _read_backups(
             continue
         if entry.name.endswith(".dump"):
             identifier = entry.name[:-5]
-            if BACKUP_ID_RE.fullmatch(identifier) is not None and not (root / f"{identifier}.json").exists():
-                raise StateAmbiguityError("validated backup dump has no completed manifest")
+            manifest = root / f"{identifier}.json"
+            if BACKUP_ID_RE.fullmatch(identifier) is not None:
+                try:
+                    manifest.lstat()
+                except FileNotFoundError:
+                    _validate_temporary(entry, owner_uid, "incomplete backup dump")
+                    temporary.append(PurePosixPath(entry.as_posix()))
+                    continue
+                except OSError as error:
+                    raise StateAmbiguityError("unable to inspect backup manifest") from error
             if BACKUP_ID_RE.fullmatch(identifier) is None:
                 warnings.append(f"unknown backup entry: {entry.name}")
             continue

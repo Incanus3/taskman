@@ -34,7 +34,8 @@ def cleanup(request: HostRequest) -> HostResult:
         paths = ManagedPaths.from_mapping(request.paths)
         _validate_authoritative_paths(paths)
         with lifecycle_lock(paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
-            _normalize_incomplete_backups(paths)
+            state = observe_host_state(paths)
+            _normalize_incomplete_backups(paths, state)
             state = observe_host_state(paths)
             if state.selected_release_id != expected_selected:
                 return _result(
@@ -214,17 +215,15 @@ def _target_absent(target: Mapping[str, object], paths: ManagedPaths) -> bool:
     return not (path.exists() or path.is_symlink())
 
 
-def _normalize_incomplete_backups(paths: ManagedPaths) -> None:
-    """Remove only a recognizable manifest-less dump left by interrupted work."""
+def _normalize_incomplete_backups(paths: ManagedPaths, state: HostState) -> None:
+    """Remove only observed, selection-safe manifest-less backup dumps."""
 
-    paths.validate_existing(owner_uid=os.geteuid())
+    if not isinstance(state, HostState):
+        raise TypeError("incomplete backup normalization needs observed host state")
     root = Path(paths.local(paths.backup_root))
-    try:
-        entries = tuple(root.iterdir())
-    except FileNotFoundError:
-        return
-    for entry in entries:
-        if not _INCOMPLETE_DUMP_RE.fullmatch(entry.name):
+    for temporary in state.temporary_paths:
+        entry = Path(paths.local(temporary))
+        if entry.parent != root or not _INCOMPLETE_DUMP_RE.fullmatch(entry.name):
             continue
         manifest = root / f"{entry.stem}.json"
         if manifest.exists() or manifest.is_symlink():
