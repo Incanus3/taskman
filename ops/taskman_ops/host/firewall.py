@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from pyinfra.api import operation
+from pyinfra.api.command import FunctionCommand
+
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..pyinfra import conditional_convergence
 
 
 @dataclass(frozen=True)
@@ -44,33 +46,15 @@ def declare_firewall(config: EnvironmentConfig) -> FirewallPlan:
     into pyinfra.
     """
 
-    from pyinfra.api import operation
-    from pyinfra.api.command import FunctionCommand
     from pyinfra.operations import apt
 
     plan = build_firewall_plan(config)
     apt.packages(packages=list(plan.packages), name="Install UFW")
-    activation = conditional_convergence(
-        name="Activate Taskman firewall",
-        probe=render_firewall_convergence_probe(plan),
-        script=render_firewall_convergence_script(plan),
-        failure=OpsError(
-            ExitStatus.SAFETY,
-            "firewall",
-            "existing UFW policy is conflicting or unrecognized and will not be replaced",
-            changed=False,
-            next_action="inspect the active UFW rules and resolve the contradiction before retrying",
-        ),
-    )
-
-    @operation(is_idempotent=True)
-    def verify_after_activation(value: EnvironmentConfig):
-        yield FunctionCommand(verify_fresh_ssh_connection, (value,), {})
-
-    verify_after_activation(
+    _activate_firewall_with_fresh_ssh(
+        plan,
         config,
-        name="Verify fresh SSH access after firewall activation",
-        _if=lambda: bool(getattr(activation, "did_change")()),
+        name="Activate Taskman firewall",
+        _sudo=True,
     )
     return plan
 
@@ -123,7 +107,6 @@ case "$before" in
     esac
     {before}
     ufw --force enable
-    printf 'changed=1\\n'
     ;;
   'Status: active'*)
     verbose=$(LC_ALL=C ufw status verbose)
@@ -134,32 +117,18 @@ case "$before" in
 TASKMAN_UFW_RULES
 )
     [ "$actual" = "$expected" ] || unsafe
-    printf 'changed=0\\n'
     ;;
   *) unsafe ;;
 esac
 """
 
 
-def render_firewall_convergence_probe(plan: FirewallPlan) -> str:
-    if not isinstance(plan, FirewallPlan):
-        raise TypeError("firewall probe requires a firewall plan")
-    expected_rules = "\n".join(_expected_ufw_rules(plan))
-    return f"""set -eu
-before=$(LC_ALL=C ufw status numbered)
-case "$before" in
-  'Status: active'*)
-    verbose=$(LC_ALL=C ufw status verbose)
-    actual=$(printf '%s\\n' "$before" | sed -n -E '/^[[:space:]]*\\[[[:space:]]*[0-9]+\\][[:space:]]+/ {{ s/^[[:space:]]*\\[[[:space:]]*[0-9]+\\][[:space:]]+//; s/[[:space:]]+\\(v6\\)//g; s/[[:space:]]+/ /g; s/^ //; s/ $//; p; }}' | LC_ALL=C sort -u)
-    expected=$(cat <<'TASKMAN_UFW_RULES' | LC_ALL=C sort -u
-{expected_rules}
-TASKMAN_UFW_RULES
-)
-    if printf '%s\\n' "$verbose" | grep -Fq 'Default: deny (incoming)' && [ "$actual" = "$expected" ]; then printf 'changed=0\\n'; else printf 'changed=1\\n'; fi
-    ;;
-  *) printf 'changed=1\\n' ;;
-esac
-"""
+@operation(is_idempotent=True)
+def _activate_firewall_with_fresh_ssh(plan: FirewallPlan, config: EnvironmentConfig):
+    """Protect the administrator path through ordered UFW activation and a new SSH connection."""
+
+    yield render_firewall_convergence_script(plan)
+    yield FunctionCommand(verify_fresh_ssh_connection, (config,), {})
 
 
 def _expected_ufw_rules(plan: FirewallPlan) -> tuple[str, ...]:
@@ -187,6 +156,5 @@ __all__ = [
     "build_firewall_plan",
     "declare_firewall",
     "render_firewall_convergence_script",
-    "render_firewall_convergence_probe",
     "verify_fresh_ssh_connection",
 ]

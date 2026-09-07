@@ -15,9 +15,10 @@ from pathlib import PurePosixPath
 import shlex
 from typing import Mapping
 
+from pyinfra.api import operation
+
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..pyinfra import conditional_convergence
 from ..remote import ChangeSet, CommandResult, Remote
 
 
@@ -180,13 +181,19 @@ def declare_postgresql(config: EnvironmentConfig) -> PostgreSQLPlan:
         add_deploy_dir=False,
         name="Stage PostgreSQL HBA configuration",
     )
-    conditional_convergence(
+    _configure_postgresql_cluster(
+        plan,
         name="Validate and configure PostgreSQL",
-        probe=render_postgresql_native_configuration_probe(plan),
-        script=render_postgresql_native_configuration_script(plan),
-        failure=_cluster_refusal(),
+        _sudo=True,
     )
     return plan
+
+
+@operation(is_idempotent=True)
+def _configure_postgresql_cluster(plan: PostgreSQLPlan):
+    """Keep native cluster selection and HBA transition in one guarded action."""
+
+    yield render_postgresql_native_configuration_script(plan)
 
 
 def render_role_password_input(role: DatabaseRole, password: str) -> bytes:
@@ -709,124 +716,6 @@ validate_runtime_identity \"$runtime_identity\"
 [ \"$(admin_query \"$runtime_port\" 'SHOW hba_file')\" = {shlex.quote(hba_final)} ] || refuse_runtime
 hba_errors=$(admin_query \"$runtime_port\" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL')
 test -z \"$hba_errors\"
-printf 'changed=%s\\n' \"$changed\"
-"""
-
-
-def render_postgresql_native_configuration_probe(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str = "/etc/taskman/pg_hba.conf.staged",
-    hba_final: str = "/etc/postgresql/taskman/pg_hba.conf",
-) -> str:
-    """Return a read-only native configuration drift probe for pyinfra.
-
-    Cluster selection happens at execution time. Ambiguous state intentionally
-    reports drift so the guarded transaction can issue its stable safety
-    refusal instead of treating it as an untracked no-op.
-    """
-
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("native PostgreSQL probe requires a plan")
-    track = "" if plan.package_track is None else plan.package_track
-    expected_hba_digest = hashlib.sha256(plan.hba.encode("utf-8")).hexdigest()
-    checks = " && ".join(
-        f'[ "$(pg_conftool -s "$version" "$cluster" show {key} 2>/dev/null || true)" = {shlex.quote(value)} ]'
-        for key, value in (
-            ("hba_file", hba_final),
-            ("listen_addresses", plan.settings["listen_addresses"]),
-            ("port", plan.settings["port"]),
-            ("password_encryption", plan.settings["password_encryption"]),
-        )
-    )
-    return f"""set -eu
-clusters=$(pg_lsclusters --no-header)
-if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
-  track == "" || $1 == track {{
-    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
-        $3 !~ /^[0-9]+$/ || ($4 != "online" && $4 != "down") || $5 != "postgres") exit 2
-    print $1, $2, $3, $4
-  }}
-'); then printf 'changed=1\\n'; exit 0; fi
-candidate_count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
-if [ "$candidate_count" -ne 1 ]; then printf 'changed=1\\n'; exit 0; fi
-set -- $candidates
-version=$1
-cluster=$2
-cluster_state=$4
-desired_port={shlex.quote(plan.settings["port"])}
-if ! data_directory=$(pg_conftool -s "$version" "$cluster" show data_directory 2>/dev/null); then
-  printf 'changed=1\\n'; exit 0
-fi
-case "$data_directory" in
-  /*) ;;
-  *) printf 'changed=1\\n'; exit 0 ;;
-esac
-case "$data_directory" in
-  *[!A-Za-z0-9_./-]*) printf 'changed=1\\n'; exit 0 ;;
-esac
-if [ ! -d "$data_directory" ] || [ "$(readlink -f -- "$data_directory")" != "$data_directory" ]; then
-  printf 'changed=1\\n'; exit 0
-fi
-config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
-pid_file="$data_directory/postmaster.pid"
-if [ "$cluster_state" != online ] || [ ! -f "$pid_file" ] || [ -L "$pid_file" ]; then
-  printf 'changed=1\\n'; exit 0
-fi
-if [ "$(wc -l < "$pid_file" | tr -d ' ')" -ne 8 ]; then printf 'changed=1\\n'; exit 0; fi
-runtime_pid=$(sed -n '1p' "$pid_file")
-runtime_data=$(sed -n '2p' "$pid_file")
-runtime_start=$(sed -n '3p' "$pid_file")
-runtime_port=$(sed -n '4p' "$pid_file")
-runtime_socket=$(sed -n '5p' "$pid_file")
-runtime_status=$(sed -n '8p' "$pid_file" | sed 's/[[:space:]]*$//')
-case "$runtime_pid:$runtime_start:$runtime_port" in *[!0-9:]*) printf 'changed=1\\n'; exit 0 ;; esac
-if [ -z "$runtime_pid" ] || [ -z "$runtime_start" ] || [ -z "$runtime_port" ] ||
-   [ "$runtime_pid" -le 1 ] || [ "$runtime_port" -lt 1 ] || [ "$runtime_port" -gt 65535 ] ||
-   [ "$runtime_data" != "$data_directory" ] || [ "$runtime_socket" != {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] ||
-   [ "$runtime_status" != ready ] ||
-   ! pg_ctlcluster "$version" "$cluster" status >/dev/null 2>&1; then
-  printf 'changed=1\\n'; exit 0
-fi
-hba_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_final)} 2>/dev/null || true)
-hba_parent_state=$(stat --format='%U:%G:%a' {shlex.quote(PurePosixPath(hba_final).parent.as_posix())} 2>/dev/null || true)
-stage_digest=$(sha256sum {shlex.quote(hba_stage)} 2>/dev/null | awk '{{print $1}}')
-if ! runtime_identity=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command "SELECT current_setting('port'), current_setting('data_directory'), extract(epoch from pg_postmaster_start_time())::bigint"); then
-  printf 'changed=1\\n'; exit 0
-fi
-old_ifs=$IFS
-IFS='|'
-set -- $runtime_identity
-IFS=$old_ifs
-if [ "$#" -ne 3 ] || [ "$1" != "$runtime_port" ] || [ "$2" != "$data_directory" ] || [ "$3" != "$runtime_start" ]; then
-  printf 'changed=1\\n'; exit 0
-fi
-active_config_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW config_file') || {{
-  printf 'changed=1\\n'; exit 0
-}}
-active_hba_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW hba_file') || {{
-  printf 'changed=1\\n'; exit 0
-}}
-hba_errors=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL') || {{
-  printf 'changed=1\\n'; exit 0
-}}
-if [ "$runtime_port" = "$desired_port" ] &&
-   [ "$active_config_file" = "$config_file" ] &&
-   [ "$active_hba_file" = {shlex.quote(hba_final)} ] &&
-   [ -z "$hba_errors" ] &&
-   [ "$stage_digest" = {shlex.quote(expected_hba_digest)} ] &&
-   cmp -s {shlex.quote(hba_stage)} {shlex.quote(hba_final)} &&
-   [ "$hba_state" = root:postgres:640 ] &&
-   [ "$hba_parent_state" = root:postgres:750 ] &&
-   {checks} &&
-   postgres --config-file="$config_file" -C listen_addresses | grep -Fx {shlex.quote(plan.settings["listen_addresses"])} >/dev/null &&
-   postgres --config-file="$config_file" -C port | grep -Fx "$desired_port" >/dev/null &&
-   postgres --config-file="$config_file" -C password_encryption | grep -Fx {shlex.quote(plan.settings["password_encryption"])} >/dev/null &&
-   postgres --config-file="$config_file" -C hba_file | grep -Fx {shlex.quote(hba_final)} >/dev/null; then
-  printf 'changed=0\\n'
-else
-  printf 'changed=1\\n'
-fi
 """
 
 
@@ -853,7 +742,6 @@ __all__ = [
     "declare_postgresql",
     "install_pgpass",
     "render_postgresql_native_configuration_script",
-    "render_postgresql_native_configuration_probe",
     "render_role_password_input",
     "select_postgresql_cluster",
     "validate_existing_database_state",

@@ -77,3 +77,53 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
     )
 
     assert reload_kwargs["_if"]() is False
+
+
+def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(monkeypatch) -> None:
+    """Replacing a unit, daemon reload, or enablement with a custom shell action must fail this."""
+
+    @dataclass
+    class Result:
+        def did_change(self) -> bool:
+            return False
+
+    puts: list[tuple[str, str, dict[str, object]]] = []
+    reloads: list[dict[str, object]] = []
+    services: list[tuple[str, dict[str, object]]] = []
+    from pyinfra.operations import files, systemd
+
+    monkeypatch.setattr(
+        files,
+        "put",
+        lambda _source, destination, **kwargs: puts.append(("", destination, kwargs)) or Result(),
+    )
+    monkeypatch.setattr(systemd, "daemon_reload", lambda **kwargs: reloads.append(kwargs))
+    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
+    inputs = ProvisioningInputs(
+        config=config(),
+        caddy_plan=CaddyPlan(
+            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+            (),
+            ("caddy",),
+            "taskman.acme.tld {}\n",
+        ),
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"pgpass\n",
+        role_password_input=b"role-password-input\n",
+    )
+
+    plan = taskman_systemd.declare_systemd(inputs)
+
+    assert [(destination, kwargs["mode"]) for _content, destination, kwargs in puts] == [
+        *((asset.destination, asset.mode) for asset in plan.assets),
+        (plan.backup_environment_path, 0o600),
+    ]
+    assert reloads[0]["name"] == "Reload systemd daemon"
+    assert reloads[0]["_if"]() is False
+    assert services == [
+        ("taskman.service", {"running": None, "enabled": True, "name": "Enable taskman.service"}),
+        (
+            "taskman-backup.timer",
+            {"running": True, "enabled": True, "name": "Enable and start taskman-backup.timer"},
+        ),
+    ]

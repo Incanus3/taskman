@@ -28,11 +28,10 @@ _REVIEWED_EXECUTABLE_STRINGS = frozenset(
         ("taskman_ops/host/facts.py", 52),
         ("taskman_ops/host/facts.py", 150),
         ("taskman_ops/host/facts.py", 163),
-        ("taskman_ops/host/firewall.py", 111),
-        ("taskman_ops/services/postgresql.py", 606),
-        ("taskman_ops/services/postgresql.py", 638),
-        ("taskman_ops/services/postgresql.py", 697),
-        ("taskman_ops/services/postgresql.py", 757),
+        ("taskman_ops/host/firewall.py", 95),
+        ("taskman_ops/services/postgresql.py", 613),
+        ("taskman_ops/services/postgresql.py", 645),
+        ("taskman_ops/services/postgresql.py", 704),
     }
 )
 _FORBIDDEN_MODULES = (

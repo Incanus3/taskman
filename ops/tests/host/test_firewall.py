@@ -44,6 +44,34 @@ def test_firewall_does_not_export_an_ungated_mutating_pyinfra_capability() -> No
     assert "converge_firewall" not in firewall.__all__
 
 
+def test_firewall_keeps_builtin_package_convergence_outside_one_lockout_safe_action(monkeypatch) -> None:
+    """Replacing the direct UFW action with a generic adapter would fail this boundary test."""
+
+    package_calls: list[dict[str, object]] = []
+    activated: list[tuple[object, object]] = []
+    from pyinfra.operations import apt
+
+    monkeypatch.setattr(apt, "packages", lambda **kwargs: package_calls.append(kwargs))
+    monkeypatch.setattr(
+        firewall,
+        "_activate_firewall_with_fresh_ssh",
+        lambda plan, value, **_kwargs: activated.append((plan, value)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        firewall,
+        "conditional_convergence",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("UFW must not use generic convergence")),
+        raising=False,
+    )
+
+    expected = build_firewall_plan(config())
+    assert firewall.declare_firewall(config()) == expected
+
+    assert package_calls == [{"packages": ["ufw"], "name": "Install UFW"}]
+    assert activated == [(expected, config())]
+
+
 def test_firewall_execution_refuses_preexisting_conflicting_or_unrecognized_rules() -> None:
     """An existing allow for Taskman's private port must not be masked by a later deny."""
 
@@ -179,7 +207,7 @@ esac""",
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "changed=0\n"
+    assert completed.stdout == ""
 
 
 def test_firewall_boundary_requires_a_fresh_strict_connection() -> None:

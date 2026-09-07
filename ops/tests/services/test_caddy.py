@@ -29,7 +29,11 @@ def test_caddy_validation_precedes_replacement_of_the_live_public_configuration(
 
 
 def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monkeypatch) -> None:
-    """Staging and the guarded replacement consume the exact confirmed bytes."""
+    """Stable repository/file/service state stays built in around the validation boundary.
+
+    Routing validation through the generic conditional-convergence adapter would
+    make this test fail: the direct Caddy action is the only custom step.
+    """
 
     plan = CaddyPlan(
         repository=CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
@@ -38,20 +42,39 @@ def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monk
         caddyfile="taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n",
     )
     staged: list[tuple[str, str]] = []
-    custom: list[dict[str, object]] = []
+    validated: list[tuple[str, str]] = []
+    packages: list[dict[str, object]] = []
+    keys: list[dict[str, object]] = []
+    repositories: list[tuple[str, dict[str, object]]] = []
+    services: list[tuple[str, dict[str, object]]] = []
+
+    class ValidatedConfiguration:
+        def did_change(self) -> bool:
+            return True
 
     from pyinfra.operations import apt, files, systemd
 
-    monkeypatch.setattr(apt, "packages", lambda **_kwargs: None)
-    monkeypatch.setattr(apt, "key", lambda **_kwargs: None)
-    monkeypatch.setattr(apt, "repo", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(apt, "packages", lambda **kwargs: packages.append(kwargs))
+    monkeypatch.setattr(apt, "key", lambda **kwargs: keys.append(kwargs))
+    monkeypatch.setattr(apt, "repo", lambda source, **kwargs: repositories.append((source, kwargs)))
     monkeypatch.setattr(
         files,
         "put",
         lambda source, destination, **_kwargs: staged.append((source.getvalue(), destination)),
     )
-    monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(caddy, "conditional_convergence", lambda **kwargs: custom.append(kwargs) or object())
+    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
+    monkeypatch.setattr(
+        caddy,
+        "_validate_and_install_caddy",
+        lambda staged_path, live_path, **_kwargs: validated.append((staged_path, live_path)) or ValidatedConfiguration(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        caddy,
+        "conditional_convergence",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Caddy must not use generic convergence")),
+        raising=False,
+    )
     monkeypatch.setattr(
         caddy,
         "build_caddy_plan",
@@ -60,7 +83,30 @@ def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monk
 
     caddy.declare_caddy(plan)
 
+    assert packages == [
+        {"packages": ["curl"], "name": "Install Caddy repository prerequisites"},
+        {"packages": ["caddy"], "name": "Install Caddy"},
+    ]
+    assert keys == [
+        {
+            "src": "https://example.test/key",
+            "dest": "/keyring",
+            "name": "Install Caddy signing key",
+        }
+    ]
+    assert repositories == [
+        (
+            "deb https://example.test stable",
+            {"filename": "caddy-stable", "name": "Configure Caddy repository"},
+        )
+    ]
     assert staged == [(plan.caddyfile, "/etc/taskman/Caddyfile.staged")]
-    assert custom[0]["script"] == render_caddy_install_script(
-        "/etc/taskman/Caddyfile.staged", "/etc/caddy/Caddyfile"
+    assert validated == [("/etc/taskman/Caddyfile.staged", "/etc/caddy/Caddyfile")]
+    assert services[0] == (
+        "caddy",
+        {"running": True, "enabled": True, "name": "Enable and start Caddy"},
     )
+    assert services[1][0] == "caddy"
+    assert services[1][1]["reloaded"] is True
+    assert services[1][1]["name"] == "Reload Caddy after validated replacement"
+    assert services[1][1]["_if"]() is True

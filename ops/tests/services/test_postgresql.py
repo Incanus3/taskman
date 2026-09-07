@@ -8,6 +8,7 @@ import subprocess
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
+import taskman_ops.services.postgresql as postgresql
 from taskman_ops.services.postgresql import (
     ExistingDatabase,
     ExistingRole,
@@ -15,7 +16,6 @@ from taskman_ops.services.postgresql import (
     converge_database,
     install_pgpass,
     render_postgresql_native_configuration_script,
-    render_postgresql_native_configuration_probe,
     render_role_password_input,
     select_postgresql_cluster,
     validate_existing_database_state,
@@ -63,6 +63,41 @@ def test_postgresql_plan_uses_the_validated_database_port_for_listener_and_appli
     plan = build_postgresql_plan(config(database_port=5433))
 
     assert plan.settings["port"] == "5433"
+
+
+def test_postgresql_keeps_package_and_staged_hba_convergence_built_in(monkeypatch) -> None:
+    """A generic conditional wrapper must not own ordinary package or staged-file state."""
+
+    package_calls: list[dict[str, object]] = []
+    staged: list[tuple[str, str]] = []
+    configured: list[object] = []
+    from pyinfra.operations import apt, files
+
+    monkeypatch.setattr(apt, "packages", lambda **kwargs: package_calls.append(kwargs))
+    monkeypatch.setattr(
+        files,
+        "put",
+        lambda source, destination, **_kwargs: staged.append((source.getvalue(), destination)),
+    )
+    monkeypatch.setattr(
+        postgresql,
+        "_configure_postgresql_cluster",
+        lambda plan, **_kwargs: configured.append(plan),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        postgresql,
+        "conditional_convergence",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("PostgreSQL must not use generic convergence")),
+        raising=False,
+    )
+
+    expected = build_postgresql_plan(config())
+    assert postgresql.declare_postgresql(config()) == expected
+
+    assert package_calls == [{"packages": list(expected.packages), "name": "Install PostgreSQL"}]
+    assert staged == [(expected.hba, "/etc/taskman/pg_hba.conf.staged")]
+    assert configured == [expected]
 
 
 def test_cluster_selection_allows_one_initial_cluster_for_a_custom_port_and_refuses_ambiguity() -> None:
@@ -448,7 +483,7 @@ esac''',
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.endswith("changed=1\n")
+    assert completed.stdout == ""
     assert admin_log.read_text(encoding="utf-8").splitlines() == [
         f"-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SELECT current_setting('port'), current_setting('data_directory'), extract(epoch from pg_postmaster_start_time())::bigint",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SHOW config_file",
@@ -463,7 +498,7 @@ esac''',
     assert restart_log.read_text(encoding="utf-8").splitlines() == ["16 main reload", "16 main restart"]
 
 
-def test_native_probe_and_script_recover_an_interrupted_custom_port_transition(tmp_path: Path) -> None:
+def test_native_configuration_recovers_an_interrupted_custom_port_transition(tmp_path: Path) -> None:
     """Configured 5433 must not hide a selected process still live on 5432."""
 
     plan = build_postgresql_plan(config(database_port=5433))
@@ -544,13 +579,6 @@ esac''',
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
 
-    probe = subprocess.run(
-        ("sh", "-ceu", render_postgresql_native_configuration_probe(plan, hba_stage=stage.as_posix(), hba_final=destination.as_posix())),
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
     recovered = subprocess.run(
         (
             "sh",
@@ -569,14 +597,12 @@ esac''',
         env=environment,
     )
 
-    assert probe.returncode == 0, probe.stderr
-    assert probe.stdout == "changed=1\n"
     assert recovered.returncode == 0, recovered.stderr
-    assert recovered.stdout.endswith("changed=1\n")
+    assert recovered.stdout == ""
     assert restart_log.read_text(encoding="utf-8").splitlines() == ["16 main reload", "16 main restart"]
 
 
-def test_native_probe_and_script_recover_a_stopped_selected_cluster(tmp_path: Path) -> None:
+def test_native_configuration_recovers_a_stopped_selected_cluster(tmp_path: Path) -> None:
     """A stopped cluster starts only after offline HBA and native validation."""
 
     plan = build_postgresql_plan(config(database_port=5433))
@@ -676,21 +702,6 @@ esac''',
     assert not admin_log.exists()
 
     stage.write_text(plan.hba, encoding="utf-8")
-    probe = subprocess.run(
-        (
-            "sh",
-            "-ceu",
-            render_postgresql_native_configuration_probe(
-                plan,
-                hba_stage=stage.as_posix(),
-                hba_final=destination.as_posix(),
-            ),
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
     recovered = subprocess.run(
         (
             "sh",
@@ -709,15 +720,13 @@ esac''',
         env=environment,
     )
 
-    assert probe.returncode == 0, probe.stderr
-    assert probe.stdout == "changed=1\n"
     assert recovered.returncode == 0, recovered.stderr
-    assert recovered.stdout.endswith("changed=1\n")
+    assert recovered.stdout == ""
     assert restart_log.read_text(encoding="utf-8").splitlines() == ["16 main restart"]
     assert admin_log.read_text(encoding="utf-8").splitlines()
 
 
-def test_native_probe_and_script_are_a_noop_for_a_validated_desired_runtime(tmp_path: Path) -> None:
+def test_native_configuration_is_a_noop_for_a_validated_desired_runtime(tmp_path: Path) -> None:
     """A healthy desired process must not be reloaded or restarted."""
 
     plan = build_postgresql_plan(config(database_port=5433))
@@ -783,21 +792,6 @@ esac''',
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
 
-    probe = subprocess.run(
-        (
-            "sh",
-            "-ceu",
-            render_postgresql_native_configuration_probe(
-                plan,
-                hba_stage=stage.as_posix(),
-                hba_final=destination.as_posix(),
-            ),
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
     converged = subprocess.run(
         (
             "sh",
@@ -816,10 +810,8 @@ esac''',
         env=environment,
     )
 
-    assert probe.returncode == 0, probe.stderr
-    assert probe.stdout == "changed=0\n"
     assert converged.returncode == 0, converged.stderr
-    assert converged.stdout == "changed=0\n"
+    assert converged.stdout == ""
     assert not restart_log.exists()
 
 
@@ -861,21 +853,6 @@ esac''',
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
 
-    probe = subprocess.run(
-        (
-            "sh",
-            "-ceu",
-            render_postgresql_native_configuration_probe(
-                plan,
-                hba_stage=stage.as_posix(),
-                hba_final=destination.as_posix(),
-            ),
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
     refused = subprocess.run(
         (
             "sh",
@@ -894,8 +871,6 @@ esac''',
         env=environment,
     )
 
-    assert probe.returncode == 0, probe.stderr
-    assert probe.stdout == "changed=1\n"
     assert refused.returncode == int(ExitStatus.SAFETY)
     assert "ambiguous PostgreSQL runtime state" in refused.stderr
     assert not restart_log.exists()

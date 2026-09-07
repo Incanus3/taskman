@@ -7,8 +7,9 @@ from io import StringIO
 from pathlib import Path
 import subprocess
 
+from pyinfra.api import operation
+
 from ..config import EnvironmentConfig
-from ..pyinfra import conditional_convergence
 
 
 _OPS_ROOT = Path(__file__).resolve().parents[2]
@@ -84,10 +85,11 @@ def declare_caddy(plan: CaddyPlan) -> CaddyPlan:
         add_deploy_dir=False,
         name="Stage Caddy configuration",
     )
-    installation = conditional_convergence(
+    installation = _validate_and_install_caddy(
+        _STAGED_CADDYFILE,
+        _CADDYFILE,
         name="Validate and install Caddy configuration",
-        probe=render_caddy_install_probe(_STAGED_CADDYFILE, _CADDYFILE),
-        script=render_caddy_install_script(_STAGED_CADDYFILE, _CADDYFILE),
+        _sudo=True,
     )
     systemd.service(
         "caddy",
@@ -125,28 +127,25 @@ def render_caddyfile(config: EnvironmentConfig) -> str:
     return rendered
 
 
-def render_caddy_install_probe(staged: str, destination: str) -> str:
-    return (
-        "set -eu; "
-        f"state=$(stat --format='%U:%G:%a' {destination} 2>/dev/null || true); "
-        f"if cmp -s {staged} {destination} && [ \"$state\" = root:root:644 ]; then "
-        "printf 'changed=0\\n'; else printf 'changed=1\\n'; fi"
-    )
-
-
 def render_caddy_install_script(staged: str, destination: str) -> str:
     """Validate a staged Caddyfile before replacing public-serving bytes."""
 
     if not isinstance(staged, str) or not isinstance(destination, str):
         raise TypeError("Caddy install paths must be strings")
     return (
-        "set -eu; changed=0; "
+        "set -eu; "
         f"state=$(stat --format='%U:%G:%a' {destination} 2>/dev/null || true); "
         f"if ! cmp -s {staged} {destination} || [ \"$state\" != root:root:644 ]; then "
         f"caddy validate --config {staged} --adapter caddyfile; "
-        f"install -o root -g root -m 0644 {staged} {destination}; changed=1; fi; "
-        "printf 'changed=%s\\n' \"$changed\""
+        f"install -o root -g root -m 0644 {staged} {destination}; fi"
     )
+
+
+@operation(is_idempotent=True)
+def _validate_and_install_caddy(staged: str, destination: str):
+    """Keep Caddy's validation immediately before live configuration replacement."""
+
+    yield render_caddy_install_script(staged, destination)
 
 
 __all__ = [
@@ -154,7 +153,6 @@ __all__ = [
     "CaddyRepository",
     "build_caddy_plan",
     "declare_caddy",
-    "render_caddy_install_probe",
     "render_caddy_install_script",
     "render_caddyfile",
 ]

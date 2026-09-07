@@ -64,3 +64,52 @@ def test_baseline_refreshes_apt_metadata_with_a_bounded_cache_before_installing_
     assert package_calls[0]["packages"] == list(BASELINE_PACKAGES)
     assert package_calls[0]["update"] is True
     assert package_calls[0]["cache_time"] == 3600
+
+
+def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to_pyinfra(monkeypatch) -> None:
+    """Replacing any stable baseline state with a custom action must fail this boundary contract."""
+
+    users: list[tuple[str, dict[str, object]]] = []
+    directories: list[tuple[str, dict[str, object]]] = []
+    files_written: list[tuple[str, str, dict[str, object]]] = []
+    services: list[tuple[str, dict[str, object]]] = []
+    from pyinfra.operations import apt, files, server
+
+    monkeypatch.setattr(apt, "packages", lambda **_kwargs: None)
+    monkeypatch.setattr(server, "user", lambda user, **kwargs: users.append((user, kwargs)))
+    monkeypatch.setattr(files, "directory", lambda path, **kwargs: directories.append((path, kwargs)))
+    monkeypatch.setattr(
+        files,
+        "put",
+        lambda source, destination, **kwargs: files_written.append((source.getvalue(), destination, kwargs)),
+    )
+    monkeypatch.setattr(server, "service", lambda service, **kwargs: services.append((service, kwargs)))
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: None)
+
+    plan = baseline.declare_baseline(config())
+
+    assert users == [
+        (
+            "taskman",
+            {
+                "home": "/var/lib/taskman",
+                "shell": "/usr/sbin/nologin",
+                "system": True,
+                "create_home": True,
+                "name": "Create Taskman system account",
+            },
+        )
+    ]
+    assert [(path, kwargs["user"], kwargs["group"], kwargs["mode"]) for path, kwargs in directories] == [
+        (directory.path, directory.owner, directory.group, directory.mode) for directory in plan.directories
+    ]
+    assert [(content, destination, kwargs["user"], kwargs["group"], kwargs["mode"]) for content, destination, kwargs in files_written] == [
+        (plan.unattended_updates, "/etc/apt/apt.conf.d/52taskman-unattended-upgrades", "root", "root", 0o644),
+        (plan.provisioning_marker_content, plan.provisioning_marker_path, "root", "root", 0o600),
+    ]
+    assert services == [
+        (
+            "unattended-upgrades",
+            {"running": True, "enabled": True, "name": "Enable unattended upgrades"},
+        )
+    ]
