@@ -138,6 +138,34 @@ def test_restore_dry_run_uses_projected_historical_migrations(
     )
 
 
+def test_restore_refuses_unavailable_history_without_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded discovery refusal cannot be mistaken for restore authority."""
+
+    requests: list[HostRequest] = []
+
+    def invoke(_remote: object, request: HostRequest) -> HostResult:
+        requests.append(request)
+        return HostResult(
+            2,
+            request.operation,
+            request.correlation_id,
+            "refused",
+            "helper discovery history exceeds protocol bounds",
+            {"history": "unavailable"},
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", invoke)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert outcome.stage == "safety-refused"
+    assert [request.operation for request in requests] == ["discover"]
+
+
 def test_restore_refuses_success_without_a_verified_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

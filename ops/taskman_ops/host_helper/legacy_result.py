@@ -13,12 +13,16 @@ from dataclasses import dataclass
 import secrets
 import re
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import (
+    HostRequest,
+    HostResult,
+    PROTOCOL_VERSION,
+    ProtocolError,
+    encode_result,
+)
 
 
 _PRIVATE_OPERATION_ID_RE = re.compile(r"op-[0-9a-f]{32}\Z")
-_MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def validate_private_operation_id(value: object) -> str:
@@ -85,14 +89,39 @@ def project_result(request: HostRequest, result: OperationResult) -> HostResult:
         raise ValueError("helper operation returned an unrelated private result")
 
     outcome = _outcome(result)
+    try:
+        projected = HostResult(
+            protocol_version=PROTOCOL_VERSION,
+            operation=request.operation,
+            correlation_id=request.correlation_id,
+            outcome=outcome,
+            message=_message(result, outcome),
+            state=_state(result, outcome),
+            warnings=tuple(result.warnings),
+        )
+        if request.operation == "discover":
+            # Construction enforces nested collection limits, while encoding
+            # enforces the final byte cap.  Discovery must refuse safely when
+            # accepted historical authority cannot cross either boundary.
+            encode_result(projected)
+        return projected
+    except ProtocolError:
+        if request.operation == "discover":
+            return _history_unavailable(request)
+        raise
+
+
+def _history_unavailable(request: HostRequest) -> HostResult:
+    """Return a bounded refusal instead of truncating restore authority."""
+
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
         correlation_id=request.correlation_id,
-        outcome=outcome,
-        message=_message(result, outcome),
-        state=_state(result, outcome),
-        warnings=tuple(result.warnings),
+        outcome="refused",
+        message="helper discovery history exceeds protocol bounds",
+        state={"history": "unavailable"},
+        warnings=(),
     )
 
 
@@ -134,8 +163,6 @@ def _state(result: OperationResult, outcome: str) -> dict[str, object]:
         boundary = _failed_boundary(result)
         if boundary is not None:
             state["failed_boundary"] = boundary
-            if boundary == "migration":
-                state["applied_migrations"] = _observed_applied_migrations(result)
         return state
 
     if result.operation in {"discover", "list_releases", "list_backups"}:
@@ -152,8 +179,6 @@ def _state(result: OperationResult, outcome: str) -> dict[str, object]:
 
 
 def _failed_boundary(result: OperationResult) -> str | None:
-    if result.stage == "migration" and _observed_applied_migrations(result) is not None:
-        return "migration"
     if result.stage == "verification":
         return "verification"
     if result.stage == "backup":
@@ -163,33 +188,6 @@ def _failed_boundary(result: OperationResult) -> str | None:
     if result.operation in {"deploy", "genesis", "rollback"}:
         return "release"
     return None
-
-
-def _observed_applied_migrations(
-    result: OperationResult,
-) -> tuple[object, ...] | None:
-    """Return direct migration evidence, never a private stage inference."""
-
-    value = (
-        result.runtime_state.get("applied_migrations")
-        if isinstance(result.runtime_state, Mapping)
-        else None
-    )
-    if not isinstance(value, (list, tuple)) or not value:
-        return None
-    migrations: list[dict[str, object]] = []
-    for item in value:
-        if (
-            not isinstance(item, Mapping)
-            or set(item) != {"filename", "sha256"}
-            or type(item["filename"]) is not str
-            or _MIGRATION_FILENAME_RE.fullmatch(item["filename"]) is None
-            or type(item["sha256"]) is not str
-            or _SHA256_RE.fullmatch(item["sha256"]) is None
-        ):
-            return None
-        migrations.append(dict(item))
-    return tuple(migrations)
 
 
 def _discovery_state(result: OperationResult) -> dict[str, object]:

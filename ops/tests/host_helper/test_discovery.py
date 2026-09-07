@@ -3,9 +3,60 @@ import json
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from taskman_ops.helper_package import build_helper_package
 from taskman_ops.host_helper.legacy_result import OperationResult, project_result
 from taskman_ops.host_protocol import HostRequest, decode_result, encode_request
+
+
+def _release_id(index: int) -> str:
+    return f"0.2.0-{index:012x}-ubuntu26.04-amd64-otp27.3.4.6"
+
+
+def _migration(index: int) -> dict[str, str]:
+    return {
+        "filename": f"20260905{index:06d}_create_tasks.exs",
+        "sha256": f"{index:064x}",
+    }
+
+
+def _discovery_result(release_count: int, migrations_per_release: int) -> OperationResult:
+    return OperationResult(
+        2,
+        "discover",
+        "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "succeeded",
+        "discovered",
+        (),
+        {
+            "state": "managed",
+            "records": {"releases": [], "backups": [], "activations": [], "adoptions": []},
+            "release_migrations": [
+                {
+                    "release_id": _release_id(release),
+                    "migrations": [_migration(migration) for migration in range(migrations_per_release)],
+                }
+                for release in range(release_count)
+            ],
+        },
+        {},
+        {},
+        (),
+        (),
+        (),
+    )
+
+
+def _discovery_request() -> HostRequest:
+    return HostRequest(
+        2,
+        "discover",
+        "op-0123456789abcdef0123456789abcdef",
+        {},
+        {"install_root": "/opt/taskman"},
+        {},
+    )
 
 
 def test_discovery_bridge_flattens_selected_public_facts() -> None:
@@ -69,6 +120,39 @@ def test_discovery_bridge_projects_historical_migration_authority() -> None:
             ),
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("release_count", "migrations_per_release"),
+    ((65, 1), (1, 65)),
+)
+def test_discovery_bridge_refuses_history_that_exceeds_collection_bounds(
+    release_count: int,
+    migrations_per_release: int,
+) -> None:
+    """A complete but unrepresentable history must not crash helper encoding."""
+
+    result = project_result(
+        _discovery_request(),
+        _discovery_result(release_count, migrations_per_release),
+    )
+
+    assert result.outcome == "refused"
+    assert result.message == "helper discovery history exceeds protocol bounds"
+    assert result.state == {"history": "unavailable"}
+
+
+def test_discovery_bridge_refuses_history_that_exceeds_output_bytes() -> None:
+    """Nested valid rows also need a bounded final encoded result."""
+
+    result = project_result(
+        _discovery_request(),
+        _discovery_result(32, 64),
+    )
+
+    assert result.outcome == "refused"
+    assert result.message == "helper discovery history exceeds protocol bounds"
+    assert result.state == {"history": "unavailable"}
 
 
 def test_packaged_discovery_projects_historical_migrations_from_real_manifest(

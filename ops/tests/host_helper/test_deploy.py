@@ -45,8 +45,8 @@ def test_packaged_deploy_refuses_incomplete_request_before_creating_roots(
     assert not (tmp_path / "install").exists()
 
 
-def test_bridge_requires_observed_migrations_before_exposing_that_boundary() -> None:
-    """A private procedure location is not itself migration completion evidence."""
+def test_legacy_migration_stage_maps_to_the_release_boundary() -> None:
+    """The retained procedure cannot create a final migration outcome itself."""
 
     request = HostRequest(
         2,
@@ -56,7 +56,7 @@ def test_bridge_requires_observed_migrations_before_exposing_that_boundary() -> 
         {"install_root": "/opt/taskman"},
         {},
     )
-    without_observation = OperationResult(
+    private = OperationResult(
         2,
         "deploy",
         "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -70,24 +70,4 @@ def test_bridge_requires_observed_migrations_before_exposing_that_boundary() -> 
         (),
         (),
     )
-    with_observation = OperationResult(
-        2,
-        "deploy",
-        "op-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "failed",
-        "migration",
-        (),
-        {},
-        {
-            "applied_migrations": (
-                {"filename": "20260905120000_create_tasks.exs", "sha256": "e" * 64},
-            )
-        },
-        {},
-        (),
-        (),
-        (),
-    )
-
-    assert project_result(request, without_observation).state["failed_boundary"] == "release"
-    assert project_result(request, with_observation).state["failed_boundary"] == "migration"
+    assert project_result(request, private).state["failed_boundary"] == "release"
