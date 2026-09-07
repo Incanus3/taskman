@@ -50,6 +50,22 @@ def test_architecture_scan_rejects_a_direct_pyinfra_operation_outside_the_three_
     )
 
 
+def test_architecture_scan_rejects_an_aliased_direct_operation_in_an_approved_module() -> None:
+    """Aliasing the decorator must not add an action beside the approved owner."""
+
+    tree = ast.parse(
+        "from pyinfra.api import operation\n"
+        "custom_operation = operation\n"
+        "@custom_operation(is_idempotent=True)\n"
+        "def unapproved():\n"
+        "    yield 'true'\n"
+    )
+
+    assert tuple(_import_violations("ops/taskman_ops/host/firewall.py", tree)) == (
+        "ops/taskman_ops/host/firewall.py:3: direct pyinfra operation is outside approved actions",
+    )
+
+
 def test_architecture_scan_rejects_the_removed_generic_pyinfra_module(tmp_path: Path) -> None:
     """Recreating the deleted policy engine must be a structural failure."""
 

@@ -210,6 +210,8 @@ def _direct_pyinfra_operations(tree: ast.AST) -> tuple[tuple[ast.FunctionDef | a
                     module_aliases.add(alias.asname or alias.name)
                     import_lines.append(node.lineno)
 
+    _expand_operation_aliases(tree, names, module_aliases)
+
     operations: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -217,6 +219,29 @@ def _direct_pyinfra_operations(tree: ast.AST) -> tuple[tuple[ast.FunctionDef | a
         if any(_operation_decorator(decorator, names, module_aliases) for decorator in node.decorator_list):
             operations.append(node)
     return tuple(operations), tuple(import_lines)
+
+
+def _expand_operation_aliases(tree: ast.AST, names: set[str], module_aliases: set[str]) -> None:
+    """Follow only direct-name aliases of pyinfra's operation decorator."""
+
+    found_alias = True
+    while found_alias:
+        found_alias = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = tuple(target.id for target in node.targets if isinstance(target, ast.Name))
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = (node.target.id,)
+                value = node.value
+            else:
+                continue
+            if not _operation_decorator(value, names, module_aliases):
+                continue
+            for target in targets:
+                if target not in names:
+                    names.add(target)
+                    found_alias = True
 
 
 def _operation_decorator(node: ast.expr, names: set[str], module_aliases: set[str]) -> bool:
