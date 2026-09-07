@@ -264,3 +264,31 @@ def test_first_release_with_migrations_preserves_restore_required_without_a_back
         "applied_migrations": (),
         "genesis": True,
     }
+
+
+def test_first_release_surfaces_a_manual_unowned_schema_without_claiming_deployment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: HostResult(
+            2,
+            "genesis",
+            "op-0123456789abcdef0123456789abcdef",
+            "manual",
+            "deployment state is contradictory",
+            {"selected_release_id": None, "applied_migrations": (999,)},
+            (),
+        ),
+    )
+
+    result = deploy_first_release(object(), config(), artifact(tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)))
+
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.stage == "deployment-incomplete"
+    assert result.changed is False
+    assert result.facts["previous_release_id"] is None
+    assert result.facts["selected_release_id"] is None

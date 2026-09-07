@@ -346,21 +346,8 @@ def _validate_migration_policy(
 def _validate_starting_state(state: HostState, inputs: _Inputs, *, first_release: bool) -> None:
     candidate = inputs.candidate.release_id
     if first_release:
-        if state.selected_release_id is None and not state.releases and not state.selections:
-            return
-        if (
-            state.selected_release_id == candidate
-            and len(state.releases) == 1
-            and (
-                not state.selections
-                or (
-                    len(state.selections) == 1
-                    and state.selections[0].previous_release_id is None
-                )
-            )
-        ):
-            return
-        raise ValueError("first release host is not empty")
+        _validate_genesis_starting_state(state, inputs)
+        return
     if state.selected_release_id not in {inputs.previous_release_id, candidate}:
         raise ValueError("confirmed current release changed")
     if state.applied_migrations not in {inputs.expected_migrations, inputs.candidate_versions}:
@@ -368,6 +355,44 @@ def _validate_starting_state(state: HostState, inputs: _Inputs, *, first_release
     existing = next((item for item in state.releases if item.release_id == candidate), None)
     if existing is not None and existing != inputs.candidate:
         raise DeploymentManualError("installed candidate identity contradicts the artifact")
+
+
+def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
+    """Accept only the empty host or exact completed facts from this genesis.
+
+    Applied migration versions do not identify who installed them.  A rerun
+    after the candidate migration can continue only when the immutable
+    candidate record proves this procedure owns the matching schema.
+    """
+
+    candidate = inputs.candidate.release_id
+    candidate_staging = PurePosixPath(_staging_path(inputs).as_posix())
+    if state.selected_release_id is None and not state.releases and not state.selections:
+        if state.applied_migrations != inputs.expected_migrations:
+            raise DeploymentManualError("empty genesis records do not prove the observed schema")
+        if any(path != candidate_staging for path in state.temporary_paths):
+            raise DeploymentManualError("genesis staging is not attributable to the candidate")
+        return
+
+    installed = next((item for item in state.releases if item.release_id == candidate), None)
+    if (
+        len(state.releases) != 1
+        or installed != inputs.candidate
+        or state.applied_migrations != inputs.candidate_versions
+        or state.temporary_paths
+    ):
+        raise DeploymentManualError("genesis state is not attributable to the candidate")
+
+    if not state.selections and state.selected_release_id in {None, candidate}:
+        return
+    if (
+        len(state.selections) == 1
+        and state.selections[0].release_id == candidate
+        and state.selections[0].previous_release_id is None
+        and state.selected_release_id == candidate
+    ):
+        return
+    raise DeploymentManualError("genesis selection is not attributable to the candidate")
 
 
 def _observe(inputs: _Inputs, *, allow_selection_transition: bool = True) -> HostState:

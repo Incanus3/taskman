@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from tests.test_config import valid_environment
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
+from taskman_ops.errors import ExitStatus
 from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
@@ -103,6 +104,30 @@ def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability(
     assert result.stage == "provisioned"
     assert result.facts["release"]["migration_policy"] == "restore-required"
     assert result.facts["release"]["backup_id"] is None
+
+
+def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() -> None:
+    host = Host()
+
+    def release(_remote: object, _config: EnvironmentConfig, _artifact: object) -> WorkflowResult:
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=False,
+            stage="safety-refused",
+            facts={"selected_release_id": None, "applied_migrations": (999,)},
+            exit_status=ExitStatus.SAFETY,
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, release=release),
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+    assert result.facts["applied_migrations"] == (999,)
+    assert host.events == ["plan", "discovery", "provisioning"]
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

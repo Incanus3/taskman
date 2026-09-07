@@ -255,6 +255,127 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
     assert runtime.events == ["migration", "start", "verify"]
 
 
+@pytest.mark.parametrize("applied_migrations", ((999,), (20260905120000,)))
+def test_genesis_rejects_unowned_database_migrations_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    applied_migrations: tuple[int, ...],
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime(applied_migrations)
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    state = deploy_module.observe_host_state(paths, database=runtime.observe_database())
+    assert result.outcome == "manual"
+    assert runtime.events == []
+    assert runtime.backup_calls == 0
+    assert state.backups == ()
+    assert not Path(paths.local(paths.release_root / CANDIDATE)).exists()
+    assert not Path(paths.local(paths.release_root / f".release-{CANDIDATE}.tmp")).exists()
+
+
+def test_genesis_recognizes_interrupted_staging_only_with_the_clean_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            deploy_module,
+            "_extract_release",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(tarfile.TarError("interrupted")),
+            raising=False,
+        )
+        first = genesis(request)
+
+    state = deploy_module.observe_host_state(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
+        database=runtime.observe_database(),
+    )
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert state.applied_migrations == ()
+    assert Path(state.temporary_paths[0].as_posix()).name == f".release-{CANDIDATE}.tmp"
+    assert result.outcome == "succeeded"
+    assert runtime.backup_calls == 0
+    assert runtime.events == ["migration", "start", "verify"]
+
+
+def test_genesis_recovers_lost_migration_result_only_from_the_exact_candidate_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    original = runtime.command
+
+    def lose_result(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        result = original(argv, **kwargs)
+        if argv[0] == "systemd-run":
+            raise deploy_module.CommandError("transport result lost after migration")
+        return result
+
+    monkeypatch.setattr(deploy_module, "run_command", lose_result, raising=False)
+    first = genesis(request)
+    monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    state = deploy_module.observe_host_state(paths, database=runtime.observe_database())
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert state.selected_release_id is None
+    assert state.applied_migrations == (20260905120000,)
+    assert len(state.releases) == 1
+    assert state.releases[0].release_id == CANDIDATE
+    assert state.releases[0].source_revision == CANDIDATE_REVISION
+    assert state.releases[0].artifact_sha256 == request.parameters["artifact_sha256"]
+    assert result.outcome == "succeeded"
+    assert runtime.events.count("migration") == 1
+    assert runtime.backup_calls == 0
+
+
+def test_genesis_recovers_lost_selection_record_only_from_the_exact_candidate_current_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            deploy_module,
+            "_append_selection_with_previous",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("lost selection record")),
+            raising=False,
+        )
+        first = genesis(request)
+
+    state = deploy_module.observe_host_state(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
+        database=runtime.observe_database(),
+        allow_selection_transition=True,
+    )
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert state.selected_release_id == CANDIDATE
+    assert state.applied_migrations == (20260905120000,)
+    assert state.selections == ()
+    assert result.outcome == "succeeded"
+    assert runtime.backup_calls == 0
+    assert result.state["backup_id"] is None
+
+
 @pytest.mark.parametrize("boundary", ("staging", "backup", "migration", "selection", "start", "readiness"))
 def test_recognizable_interruption_converges_when_the_same_deploy_is_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str,
