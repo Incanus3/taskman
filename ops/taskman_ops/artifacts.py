@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .build import build_release, default_artifact_root, read_application_version, read_repository_state
+from .build import (
+    build_release,
+    default_artifact_root,
+    ensure_artifact_root,
+    read_application_version,
+    read_repository_state,
+)
 from .errors import ExitStatus, OpsError
 from .manifests import VerifiedArtifact, verify_artifact
 from .releases.identifiers import build_release_id, validate_source_revision
@@ -129,7 +135,7 @@ def resolve_deploy_artifact(
         raise _resolution_error("source checkout must be clean and identified") from None
     application_version = read_application_version(repo / "mix.exs")
     release_id = build_release_id(application_version, revision)
-    root = _artifact_root(artifact_root)
+    root = ensure_artifact_root(_artifact_root(artifact_root))
 
     for candidate in _verified_candidates(root):
         manifest = candidate.manifest

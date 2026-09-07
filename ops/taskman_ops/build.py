@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -324,9 +325,11 @@ def _archive_release(release_root: Path, archive_path: Path) -> None:
 
 def _private_artifact_root(output_dir: Path, release_id: str) -> Path:
     try:
-        output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_artifact_root(output_dir)
         artifact_dir = Path(tempfile.mkdtemp(prefix=f"{release_id}-", dir=output_dir))
         artifact_dir.chmod(0o700)
+    except OpsError:
+        raise
     except OSError:
         raise _build_error("unable to create a private artifact directory") from None
     return artifact_dir
@@ -336,6 +339,30 @@ def default_artifact_root() -> Path:
     """Return the private workstation root shared by build and deploy."""
 
     return Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
+
+
+def ensure_artifact_root(path: Path) -> Path:
+    """Create and validate the private root shared by build and deploy."""
+
+    path = Path(path)
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except FileExistsError:
+        pass
+    except OSError:
+        raise _build_error("unable to create the private artifact root") from None
+
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise _build_error("unable to inspect the private artifact root") from None
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise _build_error("artifact root must be an owned private directory")
+    return path
 
 
 def _name_artifact_root(artifact_dir: Path, release_id: str) -> Path:
@@ -454,6 +481,7 @@ __all__ = [
     "SourceState",
     "build_release",
     "default_artifact_root",
+    "ensure_artifact_root",
     "read_application_version",
     "read_repository_state",
 ]

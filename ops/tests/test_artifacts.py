@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import json
 from pathlib import Path
+import stat
 import tarfile
 
 import pytest
 
 from taskman_ops.artifacts import ArtifactResolution, resolve_deploy_artifact
 from taskman_ops.build import SourceState
+from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.manifests import (
     ArtifactManifest,
@@ -72,6 +75,10 @@ def _write_artifact(
     directory_name: str | None = None,
 ) -> VerifiedArtifact:
     manifest = _manifest(revision=revision, version=version, built_at=built_at)
+    if not root.exists():
+        root.mkdir(mode=0o700, parents=True)
+    else:
+        root.chmod(0o700)
     directory = root / (directory_name or f"{manifest.release_id}-cached")
     directory.mkdir(parents=True)
     archive = directory / f"taskman-{manifest.release_id}.tar.gz"
@@ -84,6 +91,12 @@ def _write_artifact(
         encoding="ascii",
     )
     return VerifiedArtifact(archive, manifest_path, checksum, hashlib.sha256(archive.read_bytes()).hexdigest(), manifest)
+
+
+def _write_manifest_override(path: Path, manifest: ArtifactManifest, **overrides: object) -> None:
+    mapping = manifest.to_mapping()
+    mapping.update(overrides)
+    path.write_text(json.dumps(mapping, sort_keys=True), encoding="utf-8")
 
 
 def _repository(repo: Path) -> None:
@@ -180,8 +193,16 @@ def test_invalid_cache_candidates_are_ignored_without_being_deleted(
     _repository(repo)
     artifact_root = tmp_path / "artifacts"
     invalid = artifact_root / "invalid"
-    invalid.mkdir(parents=True)
-    (invalid / "taskman-broken.tar.gz").write_bytes(b"not-a-tar")
+    invalid.mkdir(mode=0o700, parents=True)
+    archive = invalid / "taskman-broken.tar.gz"
+    archive.write_bytes(b"not-a-tar")
+    (invalid / "taskman-broken.manifest.json").write_text(
+        manifest_to_json(_manifest()), encoding="utf-8"
+    )
+    (invalid / "taskman-broken.tar.gz.sha256").write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
+        encoding="ascii",
+    )
     valid = _write_artifact(artifact_root)
     _identified_checkout(monkeypatch)
 
@@ -265,7 +286,8 @@ def test_nested_artifact_directories_are_not_considered_managed_cache_entries(
     _repository(repo)
     artifact_root = tmp_path / "artifacts"
     nested_root = artifact_root / "nested"
-    nested_root.mkdir(parents=True)
+    nested_root.mkdir(mode=0o700, parents=True)
+    artifact_root.chmod(0o700)
     nested = _write_artifact(nested_root)
     _identified_checkout(monkeypatch)
     built = _write_artifact(tmp_path / "built", directory_name="replacement")
@@ -280,3 +302,157 @@ def test_nested_artifact_directories_are_not_considered_managed_cache_entries(
     assert resolution.source == "built"
     assert resolution.artifact.archive == built.archive
     assert nested.archive.exists()
+
+
+@pytest.mark.parametrize(
+    "field_value",
+    [
+        {"target_os": "ubuntu24.04"},
+        {"otp_version": "27.3.4.5"},
+        {"builder_base_digest": "sha256:" + "0" * 64},
+    ],
+)
+def test_verified_cache_candidates_with_pinned_identity_mismatches_trigger_a_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field_value: dict[str, str],
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    artifact_root = tmp_path / "artifacts"
+    cached = _write_artifact(artifact_root, directory_name="mismatched")
+    _write_manifest_override(cached.manifest_path, cached.manifest, **field_value)
+    _identified_checkout(monkeypatch)
+    built = _write_artifact(tmp_path / "built", directory_name="replacement")
+
+    resolution = resolve_deploy_artifact(
+        repo,
+        None,
+        artifact_root=artifact_root,
+        builder=lambda *_args: built,
+    )
+
+    assert resolution.source == "built"
+    assert resolution.artifact is built
+    assert cached.archive.exists()
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o750])
+def test_implicit_resolution_rejects_a_cache_root_with_nonrestrictive_permissions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    artifact_root = tmp_path / "artifacts"
+    _write_artifact(artifact_root)
+    artifact_root.chmod(mode)
+    _identified_checkout(monkeypatch)
+
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_artifact(
+            repo,
+            None,
+            artifact_root=artifact_root,
+            builder=lambda *_args: pytest.fail("insecure cache root must not build"),
+        )
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
+
+
+def test_implicit_resolution_rejects_a_symlinked_cache_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    target = tmp_path / "target"
+    _write_artifact(target)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.symlink_to(target, target_is_directory=True)
+    _identified_checkout(monkeypatch)
+
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_artifact(
+            repo,
+            None,
+            artifact_root=artifact_root,
+            builder=lambda *_args: pytest.fail("symlinked cache root must not build"),
+        )
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
+
+
+def test_implicit_resolution_rejects_a_cache_root_not_owned_by_the_controller_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    artifact_root = tmp_path / "artifacts"
+    _write_artifact(artifact_root)
+    monkeypatch.setattr("taskman_ops.build.os.getuid", lambda: 2**31)
+    _identified_checkout(monkeypatch)
+
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_artifact(
+            repo,
+            None,
+            artifact_root=artifact_root,
+            builder=lambda *_args: pytest.fail("foreign cache root must not build"),
+        )
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
+
+
+def test_build_rejects_an_existing_insecure_artifact_root_before_exporting_source(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(mode=0o755)
+
+    def unexpected_export(*_args: object) -> None:
+        pytest.fail("source export must wait for secure artifact-root validation")
+
+    with pytest.raises(OpsError) as raised:
+        from taskman_ops.build import build_release
+
+        build_release(
+            repo,
+            artifact_root,
+            source_reader=lambda _repo: SourceState(revision=REVISION, clean=True),
+            source_exporter=unexpected_export,
+        )
+
+    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
+    assert stat.S_IMODE(artifact_root.stat().st_mode) == 0o755
+
+
+def test_build_output_is_discoverable_by_implicit_resolution_at_the_default_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _repository(repo)
+    artifact_root = tmp_path / "shared-artifacts"
+    monkeypatch.setattr("taskman_ops.build.default_artifact_root", lambda: artifact_root)
+    monkeypatch.setattr("taskman_ops.artifacts.default_artifact_root", lambda: artifact_root)
+    _identified_checkout(monkeypatch)
+    built = _write_artifact(tmp_path / "built", directory_name="replacement")
+
+    def build_for_public_command(_repo: Path, output: Path) -> VerifiedArtifact:
+        cached = _write_artifact(output)
+        return cached
+
+    monkeypatch.setattr("taskman_ops.build.build_release", build_for_public_command)
+    build_result = dispatch(Invocation(command="build"))
+
+    resolution = resolve_deploy_artifact(
+        repo,
+        None,
+        builder=lambda *_args: built,
+    )
+
+    assert build_result.stage == "built"
+    assert resolution.source == "cached"
+    assert resolution.artifact.manifest.source_revision == REVISION
