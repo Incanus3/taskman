@@ -68,6 +68,7 @@ def _install_healthy_observation(
     *,
     observed: HostState,
     service_ok: bool = True,
+    patch_local_ready: bool = True,
 ) -> None:
     monkeypatch.setattr(verification_module, "observe_host_state", lambda *_a, **_k: observed, raising=False)
     monkeypatch.setattr(verification_module, "lifecycle_lock", lambda *_a, **_k: nullcontext(), raising=False)
@@ -80,7 +81,8 @@ def _install_healthy_observation(
         lambda argv, _timeout: (True, "" if argv[0] != "journalctl" else "clean startup"),
     )
     monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: (("127.0.0.1", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)))
-    monkeypatch.setattr(verification_module, "_local_ready", lambda *_a, **_k: service_ok)
+    if patch_local_ready:
+        monkeypatch.setattr(verification_module, "_local_ready", lambda *_a, **_k: service_ok)
     monkeypatch.setattr(verification_module, "_curl", lambda *_a, **_k: (200, b"ready", (("cache-control", "no-store"), ("strict-transport-security", "max-age=31536000"))))
 
 
@@ -184,3 +186,146 @@ def test_authoritative_state_ambiguity_is_not_reported_as_a_timeout_stage(
 
     assert result.outcome == "refused"
     assert result.state == {}
+
+
+@pytest.mark.parametrize(
+    "listeners",
+    [None, (("0.0.0.0", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432))],
+)
+def test_malformed_or_public_listener_topology_is_a_release_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    listeners: tuple[tuple[str, int], ...] | None,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
+    monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: listeners)
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 8
+    assert report["checks"][3]["name"] == "listener-topology"
+    assert report["checks"][3]["status"] == "failed"
+
+
+def test_executable_mismatch_is_a_release_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state())
+    monkeypatch.setattr(verification_module, "_main_pid_matches_release", lambda *_a, **_k: False)
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 8
+    assert report["checks"][1]["name"] == "release-identity"
+    assert report["checks"][1]["status"] == "failed"
+
+
+def test_startup_journal_failure_is_a_release_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state())
+
+    def command(argv: tuple[str, ...], _timeout: float) -> tuple[bool, str]:
+        if argv[0] == "journalctl":
+            return True, "application failed to start"
+        return True, ""
+
+    monkeypatch.setattr(verification_module, "_successful", command)
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 8
+    assert report["checks"][4]["name"] == "startup-journal"
+    assert report["checks"][4]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "command,timeout",
+    [
+        (("python3", "-c", "import time; time.sleep(1)"), 0.01),
+        (("python3", "-c", "print('x' * 10000)"), 1.0),
+    ],
+)
+def test_subprocess_timeout_and_output_bounds_are_safe(
+    command: tuple[str, ...],
+    timeout: float,
+) -> None:
+    succeeded, output = verification_module._successful(command, timeout)
+
+    assert succeeded is False
+    assert output == ""
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        (200, b"ready\n", (("cache-control", "no-store"),)),
+        (200, b"ready", (("cache-control", "max-age=60"),)),
+    ],
+)
+def test_local_readiness_requires_exact_body_and_cache_control(
+    monkeypatch: pytest.MonkeyPatch,
+    response: tuple[int, bytes, tuple[tuple[str, str], ...]],
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
+    monkeypatch.setattr(verification_module, "_curl", lambda *_a, **_k: response)
+
+    result = verification_module.verify(
+        _request(expected_release_id=RELEASE_ID)
+    )
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 9
+    assert report["checks"][-1]["name"] == "local-readiness"
+    assert report["checks"][-1]["status"] == "failed"
+
+
+def test_public_readiness_requires_exact_body_and_cache_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state())
+    monkeypatch.setattr(verification_module, "_local_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        verification_module,
+        "_curl",
+        lambda *_a, **_k: (200, b"ready\n", (("cache-control", "no-store"), ("strict-transport-security", "max-age=31536000"))),
+    )
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 9
+    assert report["checks"][-2]["name"] == "public-readiness"
+    assert report["checks"][-2]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "hsts",
+    ["max-age=0", "max-age=abc", "max-age=60; max-age=120"],
+)
+def test_public_hsts_requires_a_single_positive_numeric_max_age(
+    monkeypatch: pytest.MonkeyPatch,
+    hsts: str,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state())
+    monkeypatch.setattr(verification_module, "_local_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        verification_module,
+        "_curl",
+        lambda *_a, **_k: (200, b"ready", (("cache-control", "no-store"), ("strict-transport-security", hsts))),
+    )
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 9
+    assert report["checks"][-1]["name"] == "public-hsts"
+    assert report["checks"][-1]["status"] == "failed"

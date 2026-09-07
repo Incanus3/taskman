@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import (
+    HostRequest,
+    HostResult,
+    PROTOCOL_VERSION,
+    ProtocolError,
+    encode_result,
+)
 
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
@@ -84,14 +90,35 @@ def _success(
     state: Mapping[str, object],
     warnings: tuple[str, ...],
 ) -> HostResult:
+    try:
+        result = HostResult(
+            protocol_version=PROTOCOL_VERSION,
+            operation=request.operation,
+            correlation_id=request.correlation_id,
+            outcome="succeeded",
+            message="host state observed",
+            state=state,
+            warnings=warnings,
+        )
+        # HostResult validates item counts and nesting, while the final wire
+        # envelope also has a byte bound.  Check both before returning so a
+        # valid HostState never falls through the helper's generic exception
+        # path when its authoritative projection is too large.
+        encode_result(result)
+    except ProtocolError:
+        return _projection_refusal(request)
+    return result
+
+
+def _projection_refusal(request: HostRequest) -> HostResult:
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
         correlation_id=request.correlation_id,
-        outcome="succeeded",
-        message="host state observed",
-        state=state,
-        warnings=warnings,
+        outcome="refused",
+        message="host state projection exceeds helper bounds",
+        state={},
+        warnings=(),
     )
 
 

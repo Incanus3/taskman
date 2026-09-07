@@ -138,6 +138,12 @@ def readiness_report() -> VerificationReport:
     return VerificationReport(ExitStatus.READINESS, RELEASE_ID, None, tuple(checks), FAILED_NEXT_ACTION)
 
 
+def release_report() -> VerificationReport:
+    checks = list(successful_checks()[:5])
+    checks[-1] = VerificationCheck("startup-journal", CheckStatus.FAILED, "startup journal failed")
+    return VerificationReport(ExitStatus.RELEASE, RELEASE_ID, None, tuple(checks), FAILED_NEXT_ACTION)
+
+
 def workflow_result(report: VerificationReport) -> WorkflowResult:
     return WorkflowResult(
         command="verify",
@@ -197,3 +203,51 @@ def test_verify_accepts_completed_report_with_observation_projection_and_warning
     assert result.stage == "verified"
     assert result.facts["verification"]["release_id"] == RELEASE_ID
     assert result.warnings == ("unknown non-authoritative entry",)
+
+
+@pytest.mark.parametrize("report_factory", [release_report, readiness_report])
+def test_verify_preserves_failed_reports_and_exit_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    report_factory,
+) -> None:
+    report = report_factory()
+
+    def invoke(_remote: object, request: HostRequest, **_kwargs: object) -> HostResult:
+        return HostResult(
+            2,
+            request.operation,
+            request.correlation_id,
+            "retryable",
+            "verification failed",
+            {
+                "report": report.to_mapping(),
+                "selected_release_id": RELEASE_ID,
+                "service_state": "failed",
+                "database_state": "ready",
+            },
+            ("journal evidence incomplete",),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.verify.run_request", invoke)
+
+    result = run_verify(object(), EnvironmentConfig.model_validate({
+        "name": "production",
+        "ssh_host": "203.0.113.10",
+        "ssh_port": 22,
+        "ssh_user": "deployer",
+        "host_key_fingerprint": "SHA256:" + "A" * 43,
+        "public_hostname": "taskman.acme.tld",
+        "public_ipv4": "203.0.113.10",
+        "target_os": "ubuntu26.04",
+        "architecture": "amd64",
+        "application_port": 4000,
+        "distribution_port": 6789,
+        "database_name": "taskman_prod",
+        "database_role": "taskman",
+        "mail_from": "no-reply@acme.tld",
+    }))
+
+    assert result.stage == "verification-failed"
+    assert result.exit_status is report.exit_status
+    assert result.facts["verification"]["checks"][-1]["status"] == "failed"
+    assert result.warnings == ("journal evidence incomplete",)

@@ -221,7 +221,11 @@ def _final_result(
     state: HostState,
 ) -> HostResult:
     successful = outcome == "succeeded"
-    report = _report(0 if successful else 9, release_id, expected, checks)
+    # Keep release and readiness safety categories distinct in the public
+    # report.  The first five checks are the release identity/topology proof;
+    # readiness checks run only after that prefix passes.
+    exit_status = 0 if successful else 8 if not _passed(checks[:5]) else 9
+    report = _report(exit_status, release_id, expected, checks)
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,

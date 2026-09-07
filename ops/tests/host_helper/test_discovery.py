@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -32,12 +32,37 @@ def _release() -> ReleaseRecord:
     return ReleaseRecord(RELEASE_ID, "a" * 40, "d" * 64, ())
 
 
+def _release_for(index: int, migrations: tuple[dict[str, object], ...] = ()) -> ReleaseRecord:
+    revision = f"{index:040x}"
+    release_id = f"0.2.{index}-{revision[:12]}-ubuntu26.04-amd64-otp27.3.4.6"
+    return ReleaseRecord(release_id, revision, "d" * 64, migrations)
+
+
 def _backup() -> BackupRecord:
     return BackupRecord(BACKUP_ID, "e" * 64, RELEASE_ID, (20260905120000,), 128)
 
 
+def _backup_for(index: int) -> BackupRecord:
+    return BackupRecord(
+        f"backup-{index:032x}",
+        "e" * 64,
+        RELEASE_ID,
+        (20260905120000,),
+        128,
+    )
+
+
 def _selection() -> SelectionRecord:
     return SelectionRecord(RELEASE_ID, None, BACKUP_ID, SELECTED_AT)
+
+
+def _selection_for(index: int) -> SelectionRecord:
+    return SelectionRecord(
+        RELEASE_ID,
+        None,
+        BACKUP_ID,
+        SELECTED_AT + timedelta(seconds=index),
+    )
 
 
 def _state(
@@ -166,3 +191,108 @@ def test_authoritative_state_ambiguity_is_a_bounded_refusal(
     assert result.outcome == "refused"
     assert result.state == {}
     assert result.warnings == ()
+
+
+@pytest.mark.parametrize("kind", ["releases", "backups", "selections"])
+def test_discovery_accepts_protocol_collection_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    values = {
+        "releases": tuple(_release_for(index) for index in range(64)),
+        "backups": tuple(_backup_for(index) for index in range(64)),
+        "selections": tuple(_selection_for(index) for index in range(64)),
+    }
+    observed = HostState(
+        selected_release_id=RELEASE_ID,
+        releases=values["releases"] if kind == "releases" else (_release(),),
+        backups=values["backups"] if kind == "backups" else (_backup(),),
+        selections=values["selections"] if kind == "selections" else (_selection(),),
+        applied_migrations=(20260905120000,),
+        service_state="running",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+    )
+    _install_observer(monkeypatch, observed)
+
+    result = discover_module.discover(_request())
+
+    assert result.outcome == "succeeded"
+    assert len(result.state[kind]) == 64
+
+
+@pytest.mark.parametrize("kind", ["releases", "backups", "selections"])
+def test_discovery_refuses_over_limit_protocol_collections(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    values = {
+        "releases": tuple(_release_for(index) for index in range(65)),
+        "backups": tuple(_backup_for(index) for index in range(65)),
+        "selections": tuple(_selection_for(index) for index in range(65)),
+    }
+    observed = HostState(
+        selected_release_id=RELEASE_ID,
+        releases=values["releases"] if kind == "releases" else (_release(),),
+        backups=values["backups"] if kind == "backups" else (_backup(),),
+        selections=values["selections"] if kind == "selections" else (_selection(),),
+        applied_migrations=(20260905120000,),
+        service_state="running",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+    )
+    _install_observer(monkeypatch, observed)
+
+    result = discover_module.discover(_request())
+
+    assert result.outcome == "refused"
+    assert result.message == "host state projection exceeds helper bounds"
+
+
+@pytest.mark.parametrize("count", [64, 65])
+def test_discovery_bounds_release_migration_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+) -> None:
+    migrations = tuple(
+        {
+            "filename": f"{20260905120000 + index:014d}_migration_{index}.exs",
+            "sha256": "e" * 64,
+        }
+        for index in range(count)
+    )
+    observed = HostState(
+        selected_release_id=RELEASE_ID,
+        releases=(_release_for(1, migrations),),
+        backups=(_backup(),),
+        selections=(_selection(),),
+        applied_migrations=(20260905120000,),
+        service_state="running",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+    )
+    _install_observer(monkeypatch, observed)
+
+    result = discover_module.discover(_request())
+
+    if count == 64:
+        assert result.outcome == "succeeded"
+        assert len(result.state["release_migrations"][0]["migrations"]) == 64
+    else:
+        assert result.outcome == "refused"
+        assert result.message == "host state projection exceeds helper bounds"
+
+
+def test_discovery_refuses_projection_byte_pressure_without_internal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings = tuple(f"warning-{index}-" + "x" * 2_000 for index in range(64))
+    _install_observer(monkeypatch, _state(warnings=warnings))
+
+    result = discover_module.discover(_request())
+
+    assert result.outcome == "refused"
+    assert result.message == "host state projection exceeds helper bounds"
