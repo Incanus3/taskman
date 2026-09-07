@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import stat
+from types import MappingProxyType
 
 from taskman_ops.releases.identifiers import (
     RELEASE_ID_RE,
@@ -110,12 +111,14 @@ def _format_timestamp(value: object, label: str) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _migration(value: object) -> dict[str, str]:
+def _migration(value: object) -> Mapping[str, str]:
     mapping = _exact(value, frozenset({"filename", "sha256"}), "migration fingerprint")
     filename, checksum = mapping["filename"], mapping["sha256"]
     if type(filename) is not str or MIGRATION_FILENAME_RE.fullmatch(filename) is None:
         raise RecordError("invalid migration filename")
-    return {"filename": filename, "sha256": _sha256(checksum, "migration checksum")}
+    return MappingProxyType(
+        {"filename": filename, "sha256": _sha256(checksum, "migration checksum")}
+    )
 
 
 def _migrations(value: object) -> tuple[Mapping[str, object], ...]:
@@ -386,6 +389,19 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _sha256_file(path: Path) -> str:
+    """Hash a validated dump in bounded memory, regardless of its size."""
+
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as error:
+        raise RecordError("unable to hash backup dump") from error
+    return digest.hexdigest()
+
+
 def _paths(paths: ManagedPaths) -> tuple[ManagedPaths, int]:
     if not isinstance(paths, ManagedPaths):
         raise TypeError("completed record writes need managed paths")
@@ -424,7 +440,7 @@ def write_backup_manifest(paths: ManagedPaths, record: BackupRecord) -> None:
     backup_root = Path(paths.local(paths.backup_root))
     dump = backup_root / f"{record.backup_id}.dump"
     _safe_file(dump, owner_uid=owner_uid)
-    digest = hashlib.sha256(dump.read_bytes()).hexdigest()
+    digest = _sha256_file(dump)
     if digest != record.dump_sha256:
         raise RecordError("backup dump checksum does not match completed record")
     target = backup_root / f"{record.backup_id}.json"

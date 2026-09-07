@@ -19,22 +19,27 @@ from .records import (
     RecordError,
     ReleaseRecord,
     SelectionRecord,
+    selection_filename,
 )
 
 
 MAX_WARNINGS = 64
 MAX_TEMPORARY_PATHS = 64
+MAX_INVENTORY_ENTRIES = 4096
 _RELEASE_TEMP_RE = re.compile(
-    r"(?:\.release-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6\.tmp|"
-    r"\.[0-9]+\.[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6\.tmp|"
-    r"\.stage-[0-9a-f]{32}(?:\.tmp)?|\.stage-[^/]+\.tmp|"
-    r"\.taskman-release-[^/]+\.tmp|"
-    r"\.[0-9]+\.[^/]+\.tmp)\Z"
+    r"\.release-[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6\.tmp\Z"
+)
+_RELEASE_MANIFEST_TEMP_RE = re.compile(
+    r"\.\.taskman-release\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"
 )
 _BACKUP_TEMP_RE = re.compile(
-    r"\.backup-[0-9a-f]{32}\.(?:tmp|pending\.json|json\.tmp)\Z"
+    r"(?:\.backup-[0-9a-f]{32}\.dump\.tmp|"
+    r"\.backup-[0-9a-f]{32}\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp)\Z"
 )
 _SELECTION_FILE_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
+_SELECTION_TEMP_RE = re.compile(
+    r"\.selection-[0-9a-f]{64}\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"
+)
 
 
 class StateAmbiguityError(ValueError):
@@ -120,16 +125,15 @@ def observe_host_state(
     install_root = Path(paths.local(paths.install_root))
     release_root = Path(paths.local(paths.release_root))
     backup_root = Path(paths.local(paths.backup_root))
-    deployment_root = Path(paths.local(paths.deployment_root))
     selection_root = Path(paths.local(paths.selection_root))
 
     _check_or_note_directory(install_root, owner_uid, "install root")
+    _note_unknown_deployment_entries(
+        Path(paths.local(paths.deployment_root)), owner_uid, warnings
+    )
     releases = _read_releases(release_root, owner_uid, temporary, warnings)
     backups = _read_backups(backup_root, owner_uid, temporary, warnings)
-    selections = _read_selections(selection_root, owner_uid, warnings)
-    _detect_duplicate_legacy_records(
-        deployment_root, releases, backups, owner_uid, warnings, temporary
-    )
+    selections = _read_selections(selection_root, owner_uid, warnings, temporary)
 
     release_by_id = {item.release_id: item for item in releases}
     backup_by_id = {item.backup_id: item for item in backups}
@@ -177,6 +181,18 @@ def _check_or_note_directory(path: Path, owner_uid: int, label: str) -> None:
         raise StateAmbiguityError(f"{label} is unsafe")
 
 
+def _note_unknown_deployment_entries(
+    root: Path,
+    owner_uid: int,
+    warnings: list[str],
+) -> None:
+    """Bound the non-authoritative deployment area without reading old records."""
+
+    for entry in _entries(root, owner_uid, "deployment root"):
+        if entry.name != "selections":
+            warnings.append(f"unknown deployment entry: {entry.name}")
+
+
 def _read_releases(
     root: Path,
     owner_uid: int,
@@ -188,6 +204,7 @@ def _read_releases(
     seen: set[str] = set()
     for entry in entries:
         if _RELEASE_TEMP_RE.fullmatch(entry.name):
+            _validate_temporary(entry, owner_uid, "release temporary")
             temporary.append(PurePosixPath(entry.as_posix()))
             continue
         if entry.name.startswith(".") and entry.name.endswith(".tmp"):
@@ -209,6 +226,7 @@ def _read_releases(
         if release_id in seen:
             raise StateAmbiguityError("duplicate release identity")
         seen.add(release_id)
+        _read_release_manifest_temporaries(entry, owner_uid, temporary)
         result.append(_read_record(manifest, ReleaseRecord.from_mapping, "release manifest", owner_uid))
         if result[-1].release_id != release_id:
             raise StateAmbiguityError("release manifest identity conflicts with its path")
@@ -226,6 +244,7 @@ def _read_backups(
     seen: set[str] = set()
     for entry in entries:
         if _BACKUP_TEMP_RE.fullmatch(entry.name):
+            _validate_temporary(entry, owner_uid, "backup temporary")
             temporary.append(PurePosixPath(entry.as_posix()))
             continue
         if entry.name.endswith(".dump"):
@@ -247,8 +266,10 @@ def _read_backups(
             raise
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup identity")
+        if record.backup_id != entry.stem:
+            raise StateAmbiguityError("backup manifest identity conflicts with its path")
         seen.add(record.backup_id)
-        dump = root / f"{record.backup_id}.dump"
+        dump = root / f"{entry.stem}.dump"
         details = _lstat(dump, "backup dump")
         if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
             raise StateAmbiguityError("completed backup dump is not a regular file")
@@ -258,15 +279,26 @@ def _read_backups(
     return result
 
 
-def _read_selections(root: Path, owner_uid: int, warnings: list[str]) -> list[SelectionRecord]:
+def _read_selections(
+    root: Path,
+    owner_uid: int,
+    warnings: list[str],
+    temporary: list[PurePosixPath],
+) -> list[SelectionRecord]:
     entries = _entries(root, owner_uid, "selection root")
     result: list[SelectionRecord] = []
     seen: set[tuple[object, ...]] = set()
     for entry in entries:
+        if _SELECTION_TEMP_RE.fullmatch(entry.name):
+            _validate_temporary(entry, owner_uid, "selection temporary")
+            temporary.append(PurePosixPath(entry.as_posix()))
+            continue
         if not _SELECTION_FILE_RE.fullmatch(entry.name):
             warnings.append(f"unknown selection entry: {entry.name}")
             continue
         record = _read_record(entry, SelectionRecord.from_mapping, "selection record", owner_uid)
+        if entry.name != selection_filename(record):
+            raise StateAmbiguityError("selection record identity conflicts with its path")
         identity = (
             record.release_id,
             record.previous_release_id,
@@ -278,6 +310,41 @@ def _read_selections(root: Path, owner_uid: int, warnings: list[str]) -> list[Se
         seen.add(identity)
         result.append(record)
     return sorted(result, key=lambda item: item.selected_at)
+
+
+def _read_release_manifest_temporaries(
+    release_directory: Path,
+    owner_uid: int,
+    temporary: list[PurePosixPath],
+) -> None:
+    """Recognize only the private temporary shape emitted by the manifest writer."""
+
+    try:
+        with os.scandir(release_directory) as entries:
+            for index, entry in enumerate(entries, start=1):
+                if index > MAX_INVENTORY_ENTRIES:
+                    raise StateAmbiguityError(
+                        "release directory inventory exceeds safe bound"
+                    )
+                if _RELEASE_MANIFEST_TEMP_RE.fullmatch(entry.name):
+                    path = Path(entry.path)
+                    _validate_temporary(path, owner_uid, "release manifest temporary")
+                    temporary.append(PurePosixPath(path.as_posix()))
+    except StateAmbiguityError:
+        raise
+    except OSError as error:
+        raise StateAmbiguityError("unable to inspect release directory") from error
+
+
+def _validate_temporary(path: Path, owner_uid: int, label: str) -> None:
+    details = _lstat(path, label)
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_uid != owner_uid
+        or details.st_mode & 0o7022
+    ):
+        raise StateAmbiguityError(f"{label} is unsafe")
 
 
 def _read_record(path: Path, parser: object, label: str, owner_uid: int):
@@ -311,7 +378,17 @@ def _entries(root: Path, owner_uid: int, label: str) -> tuple[Path, ...]:
     if details.st_uid != owner_uid or details.st_mode & 0o7022:
         raise StateAmbiguityError(f"authoritative {label} is unsafe")
     try:
-        return tuple(sorted(root.iterdir(), key=lambda item: item.name))
+        paths: list[Path] = []
+        with os.scandir(root) as entries:
+            for index, entry in enumerate(entries, start=1):
+                if index > MAX_INVENTORY_ENTRIES:
+                    raise StateAmbiguityError(
+                        f"{label} inventory exceeds safe bound"
+                    )
+                paths.append(Path(entry.path))
+        return tuple(sorted(paths, key=lambda item: item.name))
+    except StateAmbiguityError:
+        raise
     except OSError as error:
         raise StateAmbiguityError(f"unable to enumerate {label}") from error
 
@@ -370,56 +447,6 @@ def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -
     return release_id
 
 
-def _detect_duplicate_legacy_records(
-    deployment_root: Path,
-    releases: list[ReleaseRecord],
-    backups: list[BackupRecord],
-    owner_uid: int,
-    warnings: list[str],
-    temporary: list[PurePosixPath],
-) -> None:
-    """Reject duplicate identities in recognizable old record directories.
-
-    These directories are not compatibility readers: only a matching identity
-    is considered evidence that two authorities exist.  Other unknown entries
-    remain warnings in the main observer.
-    """
-
-    entries = _entries(deployment_root, owner_uid, "deployment root")
-    for entry in entries:
-        if _RELEASE_TEMP_RE.fullmatch(entry.name) or _BACKUP_TEMP_RE.fullmatch(entry.name):
-            temporary.append(PurePosixPath(entry.as_posix()))
-            continue
-        if entry.name not in {"releases", "backups", "selections"}:
-            warnings.append(f"unknown deployment entry: {entry.name}")
-
-    for category, known, prefix in (
-        ("releases", {item.release_id for item in releases}, "release-"),
-        ("backups", {item.backup_id for item in backups}, "backup-"),
-    ):
-        directory = deployment_root / category
-        try:
-            details = directory.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
-            raise StateAmbiguityError(f"authoritative duplicate {category} directory is unsafe")
-        if details.st_uid != owner_uid or details.st_mode & 0o7022:
-            raise StateAmbiguityError(f"authoritative duplicate {category} directory is unsafe")
-        for entry in directory.iterdir():
-            if _RELEASE_TEMP_RE.fullmatch(entry.name) or _BACKUP_TEMP_RE.fullmatch(entry.name):
-                temporary.append(PurePosixPath(entry.as_posix()))
-                continue
-            if not entry.name.endswith(".json"):
-                warnings.append(f"unknown deployment {category[:-1]} entry: {entry.name}")
-                continue
-            stem = entry.name[:-5]
-            identity = stem[len(prefix) :] if stem.startswith(prefix) else stem
-            if identity in known:
-                raise StateAmbiguityError(f"duplicate {category[:-1]} identity")
-            warnings.append(f"unknown deployment {category[:-1]} entry: {entry.name}")
-
-
 def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, ...], str]:
     if database is None:
         return (), "unknown"
@@ -468,6 +495,7 @@ __all__ = [
     "HostState",
     "HostStateError",
     "LifecycleStateError",
+    "MAX_INVENTORY_ENTRIES",
     "StateAmbiguityError",
     "observe_host_state",
 ]

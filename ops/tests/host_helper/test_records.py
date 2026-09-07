@@ -125,6 +125,33 @@ def test_completed_record_json_is_bounded() -> None:
         )
 
 
+def test_release_migration_fingerprints_are_transitively_immutable() -> None:
+    record = _release()
+
+    with pytest.raises(TypeError):
+        record.migrations[0]["sha256"] = "d" * 64  # type: ignore[index]
+
+
+def test_backup_manifest_hashes_large_dumps_incrementally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True)
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"incrementally validated dump")
+    dump.chmod(0o600)
+
+    def no_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("backup hashing must not load the dump with read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read_bytes)
+    write_backup_manifest(
+        paths,
+        _backup(dump_sha256=hashlib.sha256(b"incrementally validated dump").hexdigest()),
+    )
+
+
 def test_release_manifest_uses_the_derived_release_location_and_private_mode(
     tmp_path: Path,
 ) -> None:
