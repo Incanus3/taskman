@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from pyinfra.api import operation
-from pyinfra.api.command import FunctionCommand
+from pyinfra.api.command import FunctionCommand, QuoteString, StringCommand
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -127,8 +127,110 @@ esac
 def _activate_firewall_with_fresh_ssh(plan: FirewallPlan, config: EnvironmentConfig):
     """Protect the administrator path through ordered UFW activation and a new SSH connection."""
 
-    yield render_firewall_convergence_script(plan)
+    from pyinfra.context import state
+
+    if state.is_executing and not _firewall_requires_activation(plan):
+        return
+    yield FunctionCommand(_run_firewall_activation, (plan,), {})
     yield FunctionCommand(verify_fresh_ssh_connection, (config,), {})
+
+
+def _firewall_requires_activation(plan: FirewallPlan) -> bool:
+    """Read the live UFW policy immediately before deciding whether to activate it."""
+
+    from pyinfra.context import host
+
+    runner = getattr(host, "run_shell_command", None)
+    if not callable(runner):
+        raise RuntimeError("invalid pyinfra host for firewall activation")
+    succeeded, output = runner(
+        StringCommand(_render_firewall_change_probe(plan)),
+        print_output=False,
+        print_input=False,
+        _sudo=_operation_sudo(host),
+    )
+    if not succeeded:
+        raise RuntimeError("firewall state inspection failed")
+    return _probe_changed(output, "firewall state inspection")
+
+
+def _run_firewall_activation(state: object, host: object, plan: FirewallPlan) -> None:
+    """Preserve a UFW safety refusal while pyinfra runs the guarded action."""
+
+    runner = getattr(host, "run_shell_command", None)
+    if not callable(runner):
+        raise RuntimeError("invalid pyinfra host for firewall activation")
+    script = render_firewall_convergence_script(plan)
+    wrapped = StringCommand(
+        "sh",
+        "-c",
+        QuoteString(
+            f"({script}); taskman_status=$?; "
+            "printf '__taskman_firewall_status=%s\\n' \"$taskman_status\"; exit 0"
+        ),
+    )
+    succeeded, output = runner(
+        wrapped,
+        print_output=False,
+        print_input=False,
+        _sudo=_operation_sudo(host),
+    )
+    if not succeeded:
+        raise RuntimeError("firewall activation transport failed")
+    status = _captured_status(output, "__taskman_firewall_status=")
+    if status == 0:
+        return
+    failure = _firewall_refusal()
+    if status == int(failure.status):
+        setattr(state, "_taskman_categorized_error", failure)
+        raise failure
+    raise RuntimeError("firewall activation failed")
+
+
+def _render_firewall_change_probe(plan: FirewallPlan) -> str:
+    if not isinstance(plan, FirewallPlan):
+        raise TypeError("firewall probe requires a firewall plan")
+    expected_rules = "\n".join(_expected_ufw_rules(plan))
+    return f"""set -eu
+before=$(LC_ALL=C ufw status numbered)
+case "$before" in
+  'Status: active'*)
+    verbose=$(LC_ALL=C ufw status verbose)
+    actual=$(printf '%s\\n' "$before" | sed -n -E '/^[[:space:]]*\\[[[:space:]]*[0-9]+\\][[:space:]]+/ {{ s/^[[:space:]]*\\[[[:space:]]*[0-9]+\\][[:space:]]+//; s/[[:space:]]+\\(v6\\)//g; s/[[:space:]]+/ /g; s/^ //; s/ $//; p; }}' | LC_ALL=C sort -u)
+    expected=$(cat <<'TASKMAN_UFW_RULES' | LC_ALL=C sort -u
+{expected_rules}
+TASKMAN_UFW_RULES
+)
+    if printf '%s\\n' "$verbose" | grep -Fq 'Default: deny (incoming)' && [ "$actual" = "$expected" ]; then printf 'changed=0\\n'; else printf 'changed=1\\n'; fi
+    ;;
+  *) printf 'changed=1\\n' ;;
+esac
+"""
+
+
+def _operation_sudo(host: object) -> bool:
+    arguments = getattr(host, "current_op_global_arguments", None)
+    if not isinstance(arguments, dict):
+        return True
+    return bool(arguments.get("_sudo", True))
+
+
+def _probe_changed(output: object, operation: str) -> bool:
+    lines = getattr(output, "stdout_lines", ())
+    markers = [line.removeprefix("changed=") for line in lines if line.startswith("changed=")]
+    if markers == ["0"]:
+        return False
+    if markers == ["1"]:
+        return True
+    raise RuntimeError(f"{operation} returned an invalid change result")
+
+
+def _captured_status(output: object, prefix: str) -> int:
+    lines = getattr(output, "stdout_lines", ())
+    markers = [line.removeprefix(prefix) for line in lines if line.startswith(prefix)]
+    if len(markers) != 1 or not markers[0].isdecimal():
+        raise RuntimeError("firewall activation returned an invalid status")
+    return int(markers[0])
 
 
 def _expected_ufw_rules(plan: FirewallPlan) -> tuple[str, ...]:
@@ -148,6 +250,16 @@ def _fresh_ssh_error() -> OpsError:
         "fresh strict-host-key SSH verification failed after UFW convergence",
         changed=False,
         next_action="restore administrator SSH reachability and verify the pinned host key before retrying",
+    )
+
+
+def _firewall_refusal() -> OpsError:
+    return OpsError(
+        ExitStatus.SAFETY,
+        "firewall",
+        "existing UFW policy is conflicting or unrecognized and will not be replaced",
+        changed=False,
+        next_action="inspect the active UFW rules and resolve the contradiction before retrying",
     )
 
 

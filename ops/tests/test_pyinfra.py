@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib
 from io import StringIO
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -225,6 +226,76 @@ def test_converge_provisioning_stops_later_mutation_after_a_database_refusal(mon
     assert remote.executions == 1
 
 
+def test_direct_firewall_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Changing a direct UFW refusal into a generic pyinfra error must fail this."""
+
+    firewall = importlib.import_module("taskman_ops.host.firewall")
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    _write_executable(
+        binaries / "ufw",
+        "case \"$1 ${2-}\" in\n"
+        "  'status numbered') printf 'Status: active\\n[ 1] 4000/tcp ALLOW IN Anywhere\\n' ;;\n"
+        "  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac",
+    )
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    target = tmp_path / "must-not-exist"
+    remote = _local_pyinfra_remote()
+
+    @deploy("Direct UFW refusal")
+    def converge() -> None:
+        firewall._activate_firewall_with_fresh_ssh(
+            firewall.build_firewall_plan(EnvironmentConfig.model_validate(valid_environment())),
+            EnvironmentConfig.model_validate(valid_environment()),
+            name="Activate Taskman firewall",
+            _sudo=False,
+        )
+        _later_touch(target)
+
+    with pytest.raises(OpsError) as error:
+        remote.run_deploy(converge)
+
+    assert error.value.status is ExitStatus.SAFETY
+    assert target.exists() is False
+
+
+def test_direct_postgresql_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An ambiguous direct PostgreSQL cluster must not become REMOTE_PREFLIGHT."""
+
+    postgresql = importlib.import_module("taskman_ops.services.postgresql")
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    _write_executable(
+        binaries / "pg_lsclusters",
+        "printf '16 main 5432 online postgres /var/lib/postgresql/16/main /log\\n'\n"
+        "printf '16 secondary 5433 online postgres /var/lib/postgresql/16/secondary /log\\n'",
+    )
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    target = tmp_path / "must-not-exist"
+    remote = _local_pyinfra_remote()
+
+    @deploy("Direct PostgreSQL refusal")
+    def converge() -> None:
+        postgresql._configure_postgresql_cluster(
+            postgresql.build_postgresql_plan(EnvironmentConfig.model_validate(valid_environment())),
+            name="Validate and configure PostgreSQL",
+            _sudo=False,
+        )
+        _later_touch(target)
+
+    with pytest.raises(OpsError) as error:
+        remote.run_deploy(converge)
+
+    assert error.value.status is ExitStatus.SAFETY
+    assert target.exists() is False
+
+
 def test_programmatic_pyinfra_deploy_converges_then_repairs_ordinary_drift(tmp_path: Path) -> None:
     """Change evidence comes from completed pyinfra results, not console text."""
 
@@ -263,3 +334,30 @@ def test_programmatic_pyinfra_deploy_converges_then_repairs_ordinary_drift(tmp_p
     assert repaired.changed is True
     assert target.read_text(encoding="utf-8") == "desired\n"
 
+
+def _local_pyinfra_remote() -> PyinfraRemote:
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host("@local")
+    state.activate_host(host)
+    return PyinfraRemote(
+        host,
+        EnvironmentConfig.model_validate(valid_environment()),
+        inventory=inventory,
+        state=state,
+    )
+
+
+def _later_touch(target: Path) -> None:
+    from pyinfra.api import operation
+
+    @operation(is_idempotent=True)
+    def touch(path: str):
+        yield f"touch {path}"
+
+    touch(target.as_posix(), name="Later mutation")
+
+
+def _write_executable(path: Path, body: str) -> None:
+    path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)

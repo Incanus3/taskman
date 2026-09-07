@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pytest
 import subprocess
+from pyinfra.api import Config, Inventory, State, deploy
 
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
@@ -20,7 +21,7 @@ from taskman_ops.services.postgresql import (
     select_postgresql_cluster,
     validate_existing_database_state,
 )
-from taskman_ops.remote import CommandResult
+from taskman_ops.remote import CommandResult, PyinfraRemote
 from taskman_ops.remote import ChangeSet
 from tests.fakes import ScriptedRemote
 
@@ -813,6 +814,85 @@ esac''',
     assert converged.returncode == 0, converged.stderr
     assert converged.stdout == ""
     assert not restart_log.exists()
+
+
+def test_direct_postgresql_operation_reports_no_change_for_a_validated_desired_runtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Yielding PostgreSQL's direct action after its native state is correct must fail this."""
+
+    plan = build_postgresql_plan(config(database_port=5433))
+    stage = tmp_path / "pg_hba.staged"
+    destination = tmp_path / "pg_hba.conf"
+    stage.write_text(plan.hba, encoding="utf-8")
+    destination.write_text(plan.hba, encoding="utf-8")
+    destination.chmod(0o640)
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    start_time = 1_725_000_300
+    _write_postmaster_pid(data_directory, port=5433, start_time=start_time)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_command(bin_dir / "pg_lsclusters", f"printf '16 main 5433 online postgres {data_directory} /log\\n'")
+    _fake_command(
+        bin_dir / "pg_conftool",
+        f'''case "${{5:-$4}}" in
+  data_directory) printf '%s\\n' {data_directory.as_posix()} ;;
+  hba_file) printf '%s\\n' {destination.as_posix()} ;;
+  listen_addresses) printf '%s\\n' 127.0.0.1 ;;
+  port) printf '%s\\n' 5433 ;;
+  password_encryption) printf '%s\\n' scram-sha-256 ;;
+esac''',
+    )
+    _fake_command(
+        bin_dir / "stat",
+        f'''case "$*" in
+  *'%U:%G:%a'*{destination.as_posix()}) printf '%s\\n' root:postgres:640 ;;
+  *'%U:%G:%a'*{destination.parent.as_posix()}) printf '%s\\n' root:postgres:750 ;;
+  *) exec /usr/bin/stat "$@" ;;
+esac''',
+    )
+    _fake_command(
+        bin_dir / "postgres",
+        f'''case "$*" in
+  *listen_addresses*) printf '%s\\n' 127.0.0.1 ;;
+  *port*) printf '%s\\n' 5433 ;;
+  *password_encryption*) printf '%s\\n' scram-sha-256 ;;
+  *hba_file*) printf '%s\\n' {destination.as_posix()} ;;
+esac''',
+    )
+    _fake_command(
+        bin_dir / "runuser",
+        f'''case "$*" in
+  *'--port 5433'*'current_setting'*) printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
+  *'--port 5433'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
+  *'--port 5433'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
+  *'--port 5433'*'pg_hba_file_rules'*) ;;
+  *) exit 91 ;;
+esac''',
+    )
+    _fake_command(bin_dir / "pg_ctlcluster", "case \"$3\" in status) exit 0 ;; *) exit 91 ;; esac")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host("@local")
+    state.activate_host(host)
+    remote = PyinfraRemote(host, config(database_port=5433), inventory=inventory, state=state)
+
+    @deploy("Converged direct PostgreSQL")
+    def converge() -> None:
+        postgresql._configure_postgresql_cluster(
+            plan,
+            name="Validate and configure PostgreSQL",
+            _sudo=False,
+            hba_stage=stage.as_posix(),
+            hba_final=destination.as_posix(),
+            hba_owner=None,
+            hba_group=None,
+        )
+
+    assert remote.run_deploy(converge) == ChangeSet(changed=False)
 
 
 def test_native_mutation_refuses_a_contradictory_postmaster_identity(tmp_path: Path) -> None:

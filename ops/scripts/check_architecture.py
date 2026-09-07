@@ -19,19 +19,20 @@ _EXECUTABLE_MARKERS = (
     "set -e",
     "ufw ",
 )
-# These are the reviewed controller-side exceptions: read-only host fact
-# collection, one UFW operation, and PostgreSQL's material-risk boundaries.
-# The transient helper is intentionally excluded because it owns stateful host
-# programs rather than controller orchestration.
-_REVIEWED_EXECUTABLE_STRINGS = frozenset(
+# These are the reviewed controller-side executable-program owners. They are
+# matched by stable owner rather than source line so ordinary maintenance cannot
+# accidentally invalidate the architecture scan. The transient helper is
+# intentionally excluded because it owns stateful host programs rather than
+# controller orchestration.
+_REVIEWED_EXECUTABLE_OWNERS = frozenset(
     {
-        ("taskman_ops/host/facts.py", 52),
-        ("taskman_ops/host/facts.py", 150),
-        ("taskman_ops/host/facts.py", 163),
-        ("taskman_ops/host/firewall.py", 95),
-        ("taskman_ops/services/postgresql.py", 613),
-        ("taskman_ops/services/postgresql.py", 645),
-        ("taskman_ops/services/postgresql.py", 704),
+        ("taskman_ops/host/facts.py", "_CADDY_EVIDENCE_SCRIPT"),
+        ("taskman_ops/host/facts.py", "_RUNTIME_PREFLIGHT"),
+        ("taskman_ops/host/facts.py", "_DATABASE_PREFLIGHT"),
+        ("taskman_ops/host/firewall.py", "render_firewall_convergence_script"),
+        ("taskman_ops/host/firewall.py", "_render_firewall_change_probe"),
+        ("taskman_ops/services/postgresql.py", "_render_postgresql_native_configuration_probe"),
+        ("taskman_ops/services/postgresql.py", "render_postgresql_native_configuration_script"),
     }
 )
 _FORBIDDEN_MODULES = (
@@ -58,6 +59,7 @@ _REMOVED_PATHS = (
     "taskman_ops/releases/remote_snapshot.py",
     "taskman_ops/releases/staging.py",
     "taskman_ops/verification.py",
+    "taskman_ops/pyinfra.py",
     "taskman_ops/workflows/deploy_transaction.py",
 )
 _PYINFRA_IMPORT_PATHS = frozenset(
@@ -65,7 +67,6 @@ _PYINFRA_IMPORT_PATHS = frozenset(
         "taskman_ops/host/baseline.py",
         "taskman_ops/host/firewall.py",
         "taskman_ops/provisioning.py",
-        "taskman_ops/pyinfra.py",
         "taskman_ops/remote.py",
         "taskman_ops/services/caddy.py",
         "taskman_ops/services/postgresql.py",
@@ -79,6 +80,11 @@ _CUSTOM_PYINFRA_CONSUMERS = frozenset(
         "taskman_ops/services/postgresql.py",
     }
 )
+_APPROVED_DIRECT_OPERATIONS = {
+    "taskman_ops/services/caddy.py": frozenset({"_validate_and_install_caddy"}),
+    "taskman_ops/host/firewall.py": frozenset({"_activate_firewall_with_fresh_ssh"}),
+    "taskman_ops/services/postgresql.py": frozenset({"_configure_postgresql_cluster"}),
+}
 _PLANNING_TERMS = re.compile(r"\b(?:task|tasks|phase|phases|milestone|milestones)\b", re.IGNORECASE)
 
 # This is deliberately not a controller adapter: it is the root-owned command
@@ -120,6 +126,7 @@ def _executable_string_violations(relative: str, tree: ast.AST) -> Iterable[str]
     source_path = relative.removeprefix("ops/")
     if not source_path.startswith("taskman_ops/") or source_path.startswith("taskman_ops/host_helper/"):
         return ()
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     violations: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
@@ -128,12 +135,27 @@ def _executable_string_violations(relative: str, tree: ast.AST) -> Iterable[str]
         if (
             len(lines) >= 12
             and any(marker in node.value for marker in _EXECUTABLE_MARKERS)
-            and (source_path, node.lineno) not in _REVIEWED_EXECUTABLE_STRINGS
+            and (source_path, _executable_string_owner(node, parents)) not in _REVIEWED_EXECUTABLE_OWNERS
         ):
             violations.append(
                 f"{relative}:{node.lineno}: substantial executable controller string belongs in a helper or declarative operation"
             )
     return violations
+
+
+def _executable_string_owner(node: ast.AST, parents: dict[int, ast.AST]) -> str | None:
+    current = node
+    while parent := parents.get(id(current)):
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return parent.name
+        if isinstance(parent, ast.Assign):
+            for target in parent.targets:
+                if isinstance(target, ast.Name):
+                    return target.id
+        if isinstance(parent, ast.AnnAssign) and isinstance(parent.target, ast.Name):
+            return parent.target.id
+        current = parent
+    return None
 
 
 def _import_violations(relative: str, tree: ast.AST) -> Iterable[str]:
@@ -161,13 +183,77 @@ def _import_violations(relative: str, tree: ast.AST) -> Iterable[str]:
             violations.append(f"{relative}:{node.lineno}: imports a superseded deployment module")
 
     source_path = relative.removeprefix("ops/")
-    if imports_pyinfra and source_path not in _PYINFRA_IMPORT_PATHS:
+    direct_operations, direct_import_lines = _direct_pyinfra_operations(tree)
+    if imports_pyinfra and source_path not in _PYINFRA_IMPORT_PATHS and not direct_import_lines:
         violations.append(f"{relative}: pyinfra import is outside declarative convergence or transport")
     if imports_custom_pyinfra and source_path not in _CUSTOM_PYINFRA_CONSUMERS:
         violations.append(f"{relative}: custom pyinfra operation is outside its justified consumers")
     if "/host_helper/" in relative or relative.endswith("/host_helper/__main__.py"):
         violations.extend(_helper_import_violations(relative, tree))
+    violations.extend(_direct_operation_violations(relative, source_path, direct_operations, direct_import_lines))
     return violations
+
+
+def _direct_pyinfra_operations(tree: ast.AST) -> tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...], tuple[int, ...]]:
+    names: set[str] = set()
+    module_aliases: set[str] = set()
+    import_lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"pyinfra.api", "pyinfra.api.operation"}:
+            for alias in node.names:
+                if alias.name == "operation":
+                    names.add(alias.asname or alias.name)
+                    import_lines.append(node.lineno)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in {"pyinfra.api", "pyinfra.api.operation"}:
+                    module_aliases.add(alias.asname or alias.name)
+                    import_lines.append(node.lineno)
+
+    operations: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(_operation_decorator(decorator, names, module_aliases) for decorator in node.decorator_list):
+            operations.append(node)
+    return tuple(operations), tuple(import_lines)
+
+
+def _operation_decorator(node: ast.expr, names: set[str], module_aliases: set[str]) -> bool:
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Name):
+        return target.id in names
+    if not isinstance(target, ast.Attribute) or target.attr != "operation":
+        return False
+    dotted = _dotted_name(target.value)
+    return dotted == "pyinfra.api" or dotted in module_aliases
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else None
+    return None
+
+
+def _direct_operation_violations(
+    relative: str,
+    source_path: str,
+    operations: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
+    import_lines: tuple[int, ...],
+) -> Iterable[str]:
+    approved = _APPROVED_DIRECT_OPERATIONS.get(source_path, frozenset())
+    if operations:
+        return tuple(
+            f"{relative}:{min(decorator.lineno for decorator in operation.decorator_list)}: direct pyinfra operation is outside approved actions"
+            for operation in operations
+            if operation.name not in approved
+        )
+    if import_lines and source_path not in _APPROVED_DIRECT_OPERATIONS:
+        return (f"{relative}:{import_lines[0]}: direct pyinfra operation is outside approved actions",)
+    return ()
 
 
 def _forbidden_module(candidate: str) -> bool:

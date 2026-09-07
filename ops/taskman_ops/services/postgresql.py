@@ -16,6 +16,7 @@ import shlex
 from typing import Mapping
 
 from pyinfra.api import operation
+from pyinfra.api.command import FunctionCommand, QuoteString, StringCommand
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -190,10 +191,249 @@ def declare_postgresql(config: EnvironmentConfig) -> PostgreSQLPlan:
 
 
 @operation(is_idempotent=True)
-def _configure_postgresql_cluster(plan: PostgreSQLPlan):
+def _configure_postgresql_cluster(
+    plan: PostgreSQLPlan,
+    *,
+    hba_stage: str = "/etc/taskman/pg_hba.conf.staged",
+    hba_final: str = "/etc/postgresql/taskman/pg_hba.conf",
+    hba_owner: str | None = "root",
+    hba_group: str | None = "postgres",
+):
     """Keep native cluster selection and HBA transition in one guarded action."""
 
-    yield render_postgresql_native_configuration_script(plan)
+    from pyinfra.context import state
+
+    if state.is_executing and not _postgresql_configuration_required(
+        plan,
+        hba_stage=hba_stage,
+        hba_final=hba_final,
+        hba_owner=hba_owner,
+        hba_group=hba_group,
+    ):
+        return
+    yield FunctionCommand(
+        _run_postgresql_native_configuration,
+        (plan, hba_stage, hba_final, hba_owner, hba_group),
+        {},
+    )
+
+
+def _postgresql_configuration_required(
+    plan: PostgreSQLPlan,
+    *,
+    hba_stage: str,
+    hba_final: str,
+    hba_owner: str | None,
+    hba_group: str | None,
+) -> bool:
+    """Inspect one guarded cluster at execution time without mutating it."""
+
+    from pyinfra.context import host
+
+    runner = getattr(host, "run_shell_command", None)
+    if not callable(runner):
+        raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
+    succeeded, output = runner(
+        StringCommand(
+            _render_postgresql_native_configuration_probe(
+                plan,
+                hba_stage=hba_stage,
+                hba_final=hba_final,
+                hba_owner=hba_owner,
+                hba_group=hba_group,
+            )
+        ),
+        print_output=False,
+        print_input=False,
+        _sudo=_operation_sudo(host),
+    )
+    if not succeeded:
+        raise RuntimeError("PostgreSQL state inspection failed")
+    return _probe_changed(output, "PostgreSQL state inspection")
+
+
+def _run_postgresql_native_configuration(
+    state: object,
+    host: object,
+    plan: PostgreSQLPlan,
+    hba_stage: str,
+    hba_final: str,
+    hba_owner: str | None,
+    hba_group: str | None,
+) -> None:
+    """Carry a native safety refusal through pyinfra's public deploy boundary."""
+
+    runner = getattr(host, "run_shell_command", None)
+    if not callable(runner):
+        raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
+    script = render_postgresql_native_configuration_script(
+        plan,
+        hba_stage=hba_stage,
+        hba_final=hba_final,
+        hba_owner=hba_owner,
+        hba_group=hba_group,
+    )
+    wrapped = StringCommand(
+        "sh",
+        "-c",
+        QuoteString(
+            f"({script}); taskman_status=$?; "
+            "printf '__taskman_postgresql_status=%s\\n' \"$taskman_status\"; exit 0"
+        ),
+    )
+    succeeded, output = runner(
+        wrapped,
+        print_output=False,
+        print_input=False,
+        _sudo=_operation_sudo(host),
+    )
+    if not succeeded:
+        raise RuntimeError("PostgreSQL configuration transport failed")
+    status = _captured_status(output)
+    if status == 0:
+        return
+    failure = _cluster_refusal()
+    if status == int(failure.status):
+        setattr(state, "_taskman_categorized_error", failure)
+        raise failure
+    raise RuntimeError("PostgreSQL configuration failed")
+
+
+def _render_postgresql_native_configuration_probe(
+    plan: PostgreSQLPlan,
+    *,
+    hba_stage: str,
+    hba_final: str,
+    hba_owner: str | None,
+    hba_group: str | None,
+) -> str:
+    """Return this action's read-only execution-time native-state predicate."""
+
+    if not isinstance(plan, PostgreSQLPlan):
+        raise TypeError("native PostgreSQL probe requires a plan")
+    if (hba_owner is None) != (hba_group is None):
+        raise ValueError("PostgreSQL HBA owner and group must be provided together")
+    track = "" if plan.package_track is None else plan.package_track
+    expected_hba_digest = hashlib.sha256(plan.hba.encode("utf-8")).hexdigest()
+    checks = " && ".join(
+        f'[ "$(pg_conftool -s "$version" "$cluster" show {key} 2>/dev/null || true)" = {shlex.quote(value)} ]'
+        for key, value in (
+            ("hba_file", hba_final),
+            ("listen_addresses", plan.settings["listen_addresses"]),
+            ("port", plan.settings["port"]),
+            ("password_encryption", plan.settings["password_encryption"]),
+        )
+    )
+    if hba_owner is None:
+        hba_metadata = f"""hba_state=$(stat --format='%a' {shlex.quote(hba_final)} 2>/dev/null || true)
+hba_metadata_ok() {{ [ "$hba_state" = 640 ]; }}
+"""
+    else:
+        hba_parent = PurePosixPath(hba_final).parent.as_posix()
+        hba_metadata = f"""hba_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_final)} 2>/dev/null || true)
+hba_parent_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_parent)} 2>/dev/null || true)
+hba_metadata_ok() {{ [ "$hba_state" = {shlex.quote(f'{hba_owner}:{hba_group}:640')} ] && [ "$hba_parent_state" = {shlex.quote(f'{hba_owner}:{hba_group}:750')} ]; }}
+"""
+    return f"""set -eu
+changed() {{ printf 'changed=1\\n'; exit 0; }}
+clusters=$(pg_lsclusters --no-header)
+if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
+  track == "" || $1 == track {{
+    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
+        $3 !~ /^[0-9]+$/ || ($4 != "online" && $4 != "down") || $5 != "postgres") exit 2
+    print $1, $2, $3, $4
+  }}
+'); then changed; fi
+candidate_count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
+[ "$candidate_count" -eq 1 ] || changed
+set -- $candidates
+version=$1
+cluster=$2
+cluster_state=$4
+desired_port={shlex.quote(plan.settings["port"])}
+if ! data_directory=$(pg_conftool -s "$version" "$cluster" show data_directory 2>/dev/null); then changed; fi
+case "$data_directory" in
+  /*) ;;
+  *) changed ;;
+esac
+case "$data_directory" in
+  *[!A-Za-z0-9_./-]*) changed ;;
+esac
+if [ ! -d "$data_directory" ] || [ "$(readlink -f -- "$data_directory")" != "$data_directory" ]; then changed; fi
+config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
+pid_file="$data_directory/postmaster.pid"
+if [ "$cluster_state" != online ] || [ ! -f "$pid_file" ] || [ -L "$pid_file" ]; then changed; fi
+if [ "$(wc -l < "$pid_file" | tr -d ' ')" -ne 8 ]; then changed; fi
+runtime_pid=$(sed -n '1p' "$pid_file")
+runtime_data=$(sed -n '2p' "$pid_file")
+runtime_start=$(sed -n '3p' "$pid_file")
+runtime_port=$(sed -n '4p' "$pid_file")
+runtime_socket=$(sed -n '5p' "$pid_file")
+runtime_status=$(sed -n '8p' "$pid_file" | sed 's/[[:space:]]*$//')
+case "$runtime_pid:$runtime_start:$runtime_port" in *[!0-9:]*) changed ;; esac
+if [ -z "$runtime_pid" ] || [ -z "$runtime_start" ] || [ -z "$runtime_port" ] ||
+   [ "$runtime_pid" -le 1 ] || [ "$runtime_port" -lt 1 ] || [ "$runtime_port" -gt 65535 ] ||
+   [ "$runtime_data" != "$data_directory" ] || [ "$runtime_socket" != {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] ||
+   [ "$runtime_status" != ready ] ||
+   ! pg_ctlcluster "$version" "$cluster" status >/dev/null 2>&1; then
+  changed
+fi
+{hba_metadata}stage_digest=$(sha256sum {shlex.quote(hba_stage)} 2>/dev/null | awk '{{print $1}}')
+if ! runtime_identity=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command "SELECT current_setting('port'), current_setting('data_directory'), extract(epoch from pg_postmaster_start_time())::bigint"); then
+  changed
+fi
+old_ifs=$IFS
+IFS='|'
+set -- $runtime_identity
+IFS=$old_ifs
+if [ "$#" -ne 3 ] || [ "$1" != "$runtime_port" ] || [ "$2" != "$data_directory" ] || [ "$3" != "$runtime_start" ]; then
+  changed
+fi
+active_config_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW config_file') || changed
+active_hba_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW hba_file') || changed
+hba_errors=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL') || changed
+if [ "$runtime_port" = "$desired_port" ] &&
+   [ "$active_config_file" = "$config_file" ] &&
+   [ "$active_hba_file" = {shlex.quote(hba_final)} ] &&
+   [ -z "$hba_errors" ] &&
+   [ "$stage_digest" = {shlex.quote(expected_hba_digest)} ] &&
+   cmp -s {shlex.quote(hba_stage)} {shlex.quote(hba_final)} &&
+   hba_metadata_ok &&
+   {checks} &&
+   postgres --config-file="$config_file" -C listen_addresses | grep -Fx {shlex.quote(plan.settings["listen_addresses"])} >/dev/null &&
+   postgres --config-file="$config_file" -C port | grep -Fx "$desired_port" >/dev/null &&
+   postgres --config-file="$config_file" -C password_encryption | grep -Fx {shlex.quote(plan.settings["password_encryption"])} >/dev/null &&
+   postgres --config-file="$config_file" -C hba_file | grep -Fx {shlex.quote(hba_final)} >/dev/null; then
+  printf 'changed=0\\n'
+else
+  printf 'changed=1\\n'
+fi
+"""
+
+
+def _operation_sudo(host: object) -> bool:
+    arguments = getattr(host, "current_op_global_arguments", None)
+    if not isinstance(arguments, dict):
+        return True
+    return bool(arguments.get("_sudo", True))
+
+
+def _probe_changed(output: object, operation: str) -> bool:
+    lines = getattr(output, "stdout_lines", ())
+    markers = [line.removeprefix("changed=") for line in lines if line.startswith("changed=")]
+    if markers == ["0"]:
+        return False
+    if markers == ["1"]:
+        return True
+    raise RuntimeError(f"{operation} returned an invalid change result")
+
+
+def _captured_status(output: object) -> int:
+    lines = getattr(output, "stdout_lines", ())
+    markers = [line.removeprefix("__taskman_postgresql_status=") for line in lines if line.startswith("__taskman_postgresql_status=")]
+    if len(markers) != 1 or not markers[0].isdecimal():
+        raise RuntimeError("PostgreSQL configuration returned an invalid status")
+    return int(markers[0])
 
 
 def render_role_password_input(role: DatabaseRole, password: str) -> bytes:

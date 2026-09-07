@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 
 from pyinfra.api import operation
+from pyinfra.api.command import QuoteString, StringCommand
 
 from ..config import EnvironmentConfig
 
@@ -75,8 +76,8 @@ def declare_caddy(plan: CaddyPlan) -> CaddyPlan:
     apt.packages(packages=list(plan.repository_packages), name="Install Caddy repository prerequisites")
     apt.key(src=plan.repository.key_url, dest=plan.repository.keyring, name="Install Caddy signing key")
     apt.repo(plan.repository.source, filename="caddy-stable", name="Configure Caddy repository")
-    apt.packages(packages=list(plan.packages), name="Install Caddy")
-    files.put(
+    package = apt.packages(packages=list(plan.packages), name="Install Caddy")
+    staged_configuration = files.put(
         StringIO(plan.caddyfile),
         _STAGED_CADDYFILE,
         user="root",
@@ -88,8 +89,20 @@ def declare_caddy(plan: CaddyPlan) -> CaddyPlan:
     installation = _validate_and_install_caddy(
         _STAGED_CADDYFILE,
         _CADDYFILE,
+        package,
+        staged_configuration,
         name="Validate and install Caddy configuration",
         _sudo=True,
+    )
+    live_configuration = files.put(
+        StringIO(plan.caddyfile),
+        _CADDYFILE,
+        user="root",
+        group="root",
+        mode=0o644,
+        add_deploy_dir=False,
+        _if=lambda: installation.did_change(),
+        name="Install validated Caddy configuration",
     )
     systemd.service(
         "caddy",
@@ -100,7 +113,7 @@ def declare_caddy(plan: CaddyPlan) -> CaddyPlan:
     systemd.service(
         "caddy",
         reloaded=True,
-        _if=lambda: bool(getattr(installation, "did_change")()),
+        _if=lambda: live_configuration.did_change(),
         name="Reload Caddy after validated replacement",
     )
     return plan
@@ -127,25 +140,63 @@ def render_caddyfile(config: EnvironmentConfig) -> str:
     return rendered
 
 
-def render_caddy_install_script(staged: str, destination: str) -> str:
-    """Validate a staged Caddyfile before replacing public-serving bytes."""
+@operation(is_idempotent=True)
+def _validate_and_install_caddy(staged: str, destination: str, package: object, staged_configuration: object):
+    """Validate staged public configuration only when the live built-in may need work."""
 
-    if not isinstance(staged, str) or not isinstance(destination, str):
-        raise TypeError("Caddy install paths must be strings")
-    return (
+    from pyinfra.context import state
+
+    if state.is_executing and not _caddy_validation_required(staged, destination, package, staged_configuration):
+        return
+    yield StringCommand("caddy", "validate", "--config", QuoteString(staged), "--adapter", "caddyfile")
+
+
+def _caddy_validation_required(
+    staged: str,
+    destination: str,
+    package: object,
+    staged_configuration: object,
+) -> bool:
+    if _did_change(package) or _did_change(staged_configuration):
+        return True
+
+    from pyinfra.context import host
+
+    runner = getattr(host, "run_shell_command", None)
+    if not callable(runner):
+        raise RuntimeError("invalid pyinfra host for Caddy validation")
+    script = (
         "set -eu; "
         f"state=$(stat --format='%U:%G:%a' {destination} 2>/dev/null || true); "
-        f"if ! cmp -s {staged} {destination} || [ \"$state\" != root:root:644 ]; then "
-        f"caddy validate --config {staged} --adapter caddyfile; "
-        f"install -o root -g root -m 0644 {staged} {destination}; fi"
+        f"if cmp -s {staged} {destination} && [ \"$state\" = root:root:644 ]; then "
+        "printf 'changed=0\\n'; else printf 'changed=1\\n'; fi"
     )
+    succeeded, output = runner(
+        StringCommand("sh", "-c", QuoteString(script)),
+        print_output=False,
+        print_input=False,
+        _sudo=_operation_sudo(host),
+    )
+    if not succeeded:
+        raise RuntimeError("Caddy live configuration inspection failed")
+    markers = [line.removeprefix("changed=") for line in output.stdout_lines if line.startswith("changed=")]
+    if markers == ["0"]:
+        return False
+    if markers == ["1"]:
+        return True
+    raise RuntimeError("Caddy live configuration inspection returned an invalid change result")
 
 
-@operation(is_idempotent=True)
-def _validate_and_install_caddy(staged: str, destination: str):
-    """Keep Caddy's validation immediately before live configuration replacement."""
+def _did_change(result: object) -> bool:
+    changed = getattr(result, "did_change", None)
+    return bool(changed()) if callable(changed) else False
 
-    yield render_caddy_install_script(staged, destination)
+
+def _operation_sudo(host: object) -> bool:
+    arguments = getattr(host, "current_op_global_arguments", None)
+    if not isinstance(arguments, dict):
+        return True
+    return bool(arguments.get("_sudo", True))
 
 
 __all__ = [
@@ -153,6 +204,5 @@ __all__ = [
     "CaddyRepository",
     "build_caddy_plan",
     "declare_caddy",
-    "render_caddy_install_script",
     "render_caddyfile",
 ]

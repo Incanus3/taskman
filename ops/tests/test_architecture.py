@@ -10,7 +10,7 @@ import sys
 import pytest
 
 sys.path.insert(0, (Path(__file__).resolve().parents[1] / "scripts").as_posix())
-from check_architecture import _executable_string_violations, _import_violations
+from check_architecture import _executable_string_violations, _import_violations, check
 
 
 def test_architecture_scan_accepts_only_the_supported_deployment_boundaries() -> None:
@@ -31,6 +31,34 @@ def test_architecture_scan_rejects_a_custom_pyinfra_utility_outside_reviewed_bou
         "ops/taskman_ops/workflows/unapproved.py: custom pyinfra operation is outside its justified consumers"
         in tuple(_import_violations("ops/taskman_ops/workflows/unapproved.py", tree))
     )
+
+
+def test_architecture_scan_rejects_a_direct_pyinfra_operation_outside_the_three_approved_actions() -> None:
+    """A new custom decorator must not bypass the bounded-operation inventory."""
+
+    tree = ast.parse(
+        "from pyinfra.api import operation\n"
+        "@operation(\n"
+        "    is_idempotent=True,\n"
+        ")\n"
+        "def unapproved():\n"
+        "    yield 'true'\n"
+    )
+
+    assert tuple(_import_violations("ops/taskman_ops/workflows/unapproved.py", tree)) == (
+        "ops/taskman_ops/workflows/unapproved.py:2: direct pyinfra operation is outside approved actions",
+    )
+
+
+def test_architecture_scan_rejects_the_removed_generic_pyinfra_module(tmp_path: Path) -> None:
+    """Recreating the deleted policy engine must be a structural failure."""
+
+    module = tmp_path / "ops" / "taskman_ops" / "pyinfra.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("pass\n", encoding="utf-8")
+    (tmp_path / "ops" / "backup").mkdir()
+
+    assert "taskman_ops/pyinfra.py: superseded production path remains" in check(tmp_path)
 
 
 def test_architecture_scan_rejects_a_substantial_controller_program_outside_reviewed_paths() -> None:

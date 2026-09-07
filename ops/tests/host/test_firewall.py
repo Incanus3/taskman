@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
+from pyinfra.api import Config, Inventory, State, deploy
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus
@@ -13,7 +14,7 @@ from taskman_ops.host.firewall import (
     render_firewall_convergence_script,
     verify_fresh_ssh_connection,
 )
-from taskman_ops.remote import CommandResult
+from taskman_ops.remote import ChangeSet, CommandResult, PyinfraRemote
 
 
 def config() -> EnvironmentConfig:
@@ -208,6 +209,63 @@ esac""",
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == ""
+
+
+def test_direct_firewall_operation_reports_no_change_for_the_known_owned_rule_set(monkeypatch, tmp_path: Path) -> None:
+    """Yielding a direct action for an already-safe policy must fail this."""
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    expected = (
+        (2202, "ALLOW"),
+        (80, "ALLOW"),
+        (443, "ALLOW"),
+        (4000, "DENY"),
+        (5432, "DENY"),
+        (6789, "DENY"),
+        (4369, "DENY"),
+    )
+    rules = "\n".join(
+        [
+            *(f"[ {index}] {port}/tcp {action} IN Anywhere" for index, (port, action) in enumerate(expected, start=1)),
+            *(
+                f"[{index + len(expected):2d}] {port}/tcp (v6) {action} IN Anywhere (v6)"
+                for index, (port, action) in enumerate(expected, start=1)
+            ),
+        ]
+    )
+    _fake_ufw(
+        bin_dir / "ufw",
+        tmp_path / "changes.log",
+        f"""case \"$1 ${{2-}}\" in
+  'status numbered') cat <<'RULES'
+Status: active
+{rules}
+RULES
+  ;;
+  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;
+  *) exit 1 ;;
+esac""",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda _config: None)
+
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host("@local")
+    state.activate_host(host)
+    remote = PyinfraRemote(host, config(), inventory=inventory, state=state)
+
+    @deploy("Converged direct firewall")
+    def converge() -> None:
+        firewall._activate_firewall_with_fresh_ssh(
+            build_firewall_plan(config()),
+            config(),
+            name="Activate Taskman firewall",
+            _sudo=False,
+        )
+
+    assert remote.run_deploy(converge) == ChangeSet(changed=False)
 
 
 def test_firewall_boundary_requires_a_fresh_strict_connection() -> None:
