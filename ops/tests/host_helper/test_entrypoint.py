@@ -13,6 +13,7 @@ from taskman_ops.host_protocol import (
     MAX_INPUT_BYTES,
     MAX_OUTPUT_BYTES,
     HostRequest,
+    HostResult,
     ProtocolError,
     decode_result,
     encode_request,
@@ -49,7 +50,7 @@ class Stream:
 @contextmanager
 def invoke_entrypoint(
     payload: bytes,
-    handler: Callable[[OperationRequest], OperationResult],
+    handler: Callable[[object], object],
     *,
     operation: str = "discover",
 ) -> Iterator[Stream]:
@@ -108,25 +109,31 @@ def test_entrypoint_rejects_oversized_input_without_echoing_it(tmp_path: Path) -
     assert secret not in completed.stdout
 
 
-def test_entrypoint_projects_private_mutation_result_once_without_old_evidence() -> None:
-    def private_result(request: OperationRequest) -> OperationResult:
-        return OperationResult(
-            2, request.operation, request.operation_id, "succeeded", "backup", ("backup",),
-            {"backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size_bytes": 42},
-            {}, {}, (), (), (),
+def test_entrypoint_dispatches_backup_on_the_final_protocol_without_a_legacy_bridge() -> None:
+    """Routing backup through OperationRequest would reintroduce deleted recovery evidence."""
+
+    received: list[HostRequest] = []
+
+    def final_result(request: object) -> HostResult:
+        assert isinstance(request, HostRequest)
+        received.append(request)
+        return HostResult(
+            2,
+            "backup",
+            request.correlation_id,
+            "succeeded",
+            "backup completed",
+            {"backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            (),
         )
 
-    with invoke_entrypoint(request_bytes(operation="backup"), private_result, operation="backup") as stdout:
+    with invoke_entrypoint(request_bytes(operation="backup"), final_result, operation="backup") as stdout:
         assert entrypoint.main() == 0
 
     result = decode_result(stdout.buffer.getvalue())
     assert result.correlation_id == CORRELATION
-    assert result.state == {
-        "changed": True,
-        "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "size_bytes": 42,
-    }
-    assert "operation_id" not in repr(result.state)
+    assert result.state == {"backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    assert received[0].operation == "backup"
 
 
 def test_private_restore_projection_does_not_expose_recovery_artifacts() -> None:

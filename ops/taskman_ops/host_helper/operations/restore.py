@@ -26,14 +26,14 @@ from ..lifecycle import (
 from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 from ..paths import ManagedPaths, PathAuthorityError
 from ..verification import verify
-from .backup import (
+from .legacy_backup import (
     BackupOperationFailure,
-    _bounded_capture,
-    _dump_digest,
-    _prepare_backup_root,
-    _safe_secret,
-    _validate_dump,
+    bounded_capture,
     create_validated_backup,
+    dump_digest,
+    prepare_backup_root,
+    safe_secret,
+    validate_dump,
 )
 
 
@@ -167,7 +167,7 @@ def restore(request: HostRequest) -> HostResult:
             ):
                 return _refused(request, backup_id=backup_id)
             store.require_release_directory(store.release_path(intended))
-            _safe_secret(inputs.credentials, store.owner_uid)
+            safe_secret(inputs.credentials, store.owner_uid)
             if inputs.action == "execute":
                 rerun = _completed_rerun(
                     request,
@@ -182,7 +182,7 @@ def restore(request: HostRequest) -> HostResult:
                     return rerun
             if request.expected_state["current_release_id"] != current or current is None:
                 return _refused(request, backup_id=backup_id)
-            _validate_dump(inputs.credentials, Path(source.dump_path.as_posix()))
+            validate_dump(inputs.credentials, Path(source.dump_path.as_posix()))
             _validate_capacity(source.source_database_size_bytes)
             if inputs.action == "inspect":
                 return _inspection(request, source, current, intended)
@@ -274,7 +274,7 @@ def _selected_backup(
         or selected.database != inputs.database["name"]
         or (
             selected.dump_sha256 is not None
-            and _dump_digest(dump) != selected.dump_sha256
+            and dump_digest(dump) != selected.dump_sha256
         )
     ):
         raise LifecycleError("selected backup authority is unsafe")
@@ -336,7 +336,7 @@ def _execute(
     stage = "backup"
 
     try:
-        _prepare_backup_root(store)
+        prepare_backup_root(store)
         backup, backup_changed = create_validated_backup(
             store,
             records,
@@ -655,7 +655,7 @@ def _run(
     capture: bool = False,
 ) -> str:
     if capture:
-        return _bounded_capture(
+        return bounded_capture(
             argv,
             credentials,
             timeout=60,

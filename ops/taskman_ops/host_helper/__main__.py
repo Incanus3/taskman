@@ -32,6 +32,7 @@ from taskman_ops.host_helper.verification import verify
 _FALLBACK_OPERATION = "discover"
 _FALLBACK_CORRELATION_ID = "op-00000000000000000000000000000000"
 _READ_ONLY_OPERATIONS = frozenset({"discover", "list_releases", "list_backups", "verify"})
+_FINAL_MUTATING_OPERATIONS = frozenset({"backup", "cleanup"})
 _READ_ONLY_HANDLERS = {
     "discover": discover,
     "list_releases": list_releases,
@@ -119,7 +120,7 @@ def _encode_or_internal_failure(
 
 
 def _dispatch(request: HostRequest) -> HostResult:
-    """Invoke read-only handlers on the final request; bridge mutations only."""
+    """Invoke migrated operations directly and bridge only unmigrated mutations."""
 
     if request.operation in _READ_ONLY_OPERATIONS:
         result = _READ_ONLY_HANDLERS[request.operation](request)
@@ -127,6 +128,11 @@ def _dispatch(request: HostRequest) -> HostResult:
             raise TypeError("read-only helper returned an invalid result")
         return result
     handler = _DISPATCH[request.operation]
+    if request.operation in _FINAL_MUTATING_OPERATIONS:
+        result = handler(request)  # type: ignore[arg-type]
+        if not isinstance(result, HostResult):
+            raise TypeError("migrated helper returned an invalid result")
+        return result
     private = handler(OperationRequest.from_request(request))  # type: ignore[arg-type]
     if isinstance(private, HostResult):
         return private

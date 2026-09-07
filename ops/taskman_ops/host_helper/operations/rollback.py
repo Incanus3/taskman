@@ -21,11 +21,11 @@ from ..lifecycle import (
 from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
 from ..paths import ManagedPaths, PathAuthorityError
 from ..verification import verify
-from .backup import (
+from .legacy_backup import (
     BackupOperationFailure,
-    _prepare_backup_root,
-    _safe_secret,
     create_validated_backup,
+    prepare_backup_root,
+    safe_secret,
 )
 
 
@@ -159,8 +159,8 @@ def _execute(
         / f".current-{request.operation_id}"
     )
     try:
-        _safe_secret(inputs.credentials, store.owner_uid)
-        _prepare_backup_root(store)
+        safe_secret(inputs.credentials, store.owner_uid)
+        prepare_backup_root(store)
         backup, backup_changed = create_validated_backup(
             store,
             records,

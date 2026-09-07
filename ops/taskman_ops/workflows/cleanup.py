@@ -1,4 +1,4 @@
-"""Controller planning, confirmation, and translation for exact cleanup."""
+"""Controller confirmation and final-result translation for exact cleanup."""
 
 from __future__ import annotations
 
@@ -9,22 +9,15 @@ from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..output import WorkflowResult
 from ..remote import Remote
-from .helper import (
-    mutable,
-    result_error,
-    request as helper_request,
-    run_request,
-)
+from .helper import request as helper_request, result_error, run_request
 
 
-_TARGET_KEYS = frozenset(
-    {"authority", "identifier", "kind", "path", "recoverable"}
-)
+_TARGET_KEYS = frozenset({"kind", "identifier", "path"})
 
 
 @dataclass(frozen=True)
 class CleanupPlan:
-    """The immutable exact target list validated by the host helper."""
+    """The exact target set whose deletion the operator confirms."""
 
     targets: tuple[Mapping[str, object], ...]
     typed_confirmation: str
@@ -37,7 +30,7 @@ def cleanup(
     confirm: Callable[[Mapping[str, object]], bool] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
-    """Ask the helper to plan, confirm exact targets, then revalidate and delete."""
+    """Inspect exact targets, obtain confirmation, then ask the helper to delete them."""
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("cleanup requires a validated environment configuration")
@@ -48,20 +41,14 @@ def cleanup(
         discovery = run_request(remote, helper_request("discover", config))
         if discovery.outcome != "succeeded":
             raise result_error(discovery)
-        expected = _expected_lifecycle(discovery.state)
+        selected = _selected_release(discovery.state)
         warnings = discovery.warnings
-        inspected = run_request(
-            remote,
-            _request(config, expected, (), action="inspect"),
-        )
+        inspected = run_request(remote, _request(config, selected, (), action="inspect"))
         if inspected.outcome != "succeeded":
             raise result_error(inspected)
-        plan = _inspection(inspected, expected, config.name or "")
+        plan = _inspection(inspected, config.name or "")
         warnings = _merge_warnings(warnings, inspected.warnings)
-        facts = {
-            "targets": plan.targets,
-            "typed_confirmation": plan.typed_confirmation,
-        }
+        facts = {"targets": plan.targets, "typed_confirmation": plan.typed_confirmation}
         if dry_run:
             return WorkflowResult(
                 "cleanup",
@@ -78,29 +65,24 @@ def cleanup(
                 config.name or "",
                 False,
                 "confirmation-cancelled",
-                {**facts, "removed": (), "recoverability": ()},
+                facts,
                 warnings,
                 "confirm the exact target list on a later run",
             )
-        result = run_request(
-            remote,
-            _request(config, expected, plan.targets, action="execute"),
-        )
+        result = run_request(remote, _request(config, selected, plan.targets, action="execute"))
         if result.outcome != "succeeded":
             raise result_error(result)
-        result_facts = _success(result, plan.targets)
-        warnings = _merge_warnings(warnings, result.warnings)
+        final = _final_state(result)
         return WorkflowResult(
             "cleanup",
             config.name or "",
-            result.state.get("changed") is True,
-            "cleaned" if result.state.get("changed") is True else "nothing-to-clean",
-            result_facts,
-            warnings,
+            final["changed"],
+            "cleaned" if final["changed"] else "nothing-to-clean",
+            {"targets": plan.targets, **final},
+            _merge_warnings(warnings, result.warnings),
             "rerun cleanup later after additional artifacts become eligible",
         )
     except OpsError as error:
-        state = _error_state(error)
         return WorkflowResult(
             "cleanup",
             config.name or "",
@@ -109,16 +91,9 @@ def cleanup(
             if error.status is ExitStatus.LOCKED
             else "safety-refused"
             if error.status is ExitStatus.SAFETY
-            else f"{error.stage}-failed",
-            {
-                "targets": tuple(state.get("targets", ())),
-                "removed": tuple(state.get("removed", ())),
-                "recoverability": tuple(state.get("recoverability", ())),
-            },
-            _merge_warnings(
-                warnings,
-                tuple(getattr(error, "warnings", ())),
-            ),
+            else "cleanup-failed",
+            {"targets": ()},
+            _merge_warnings(warnings, tuple(getattr(error, "warnings", ()))),
             error.next_action,
             error.status,
         )
@@ -126,98 +101,57 @@ def cleanup(
 
 def _request(
     config: EnvironmentConfig,
-    expected_state: Mapping[str, object],
+    selected_release_id: str | None,
     targets: tuple[Mapping[str, object], ...],
     *,
     action: str,
-) -> object:
+):
     return helper_request(
         "cleanup",
         config,
-        expected_state={"lifecycle": expected_state},
+        expected_state={"selected_release_id": selected_release_id},
         parameters={
             "action": action,
             "targets": targets,
             "release_retention": config.release_retention,
             "backup_retention": config.backup_retention,
-            "database_port": config.database_port,
         },
     )
 
 
-def _expected_lifecycle(
-    observed: Mapping[str, object],
-) -> dict[str, tuple[str, ...]]:
-    records = mutable(observed)
-    if not isinstance(records, Mapping):
-        raise _safety("cleanup observed state is unavailable")
-    values: dict[str, tuple[str, ...]] = {}
-    for plural, identifier in (
-        ("releases", "release_id"),
-        ("activations", "activation_id"),
-        ("backups", "backup_id"),
-    ):
-        items = records.get(plural)
-        if not isinstance(items, list):
-            raise _safety("cleanup lifecycle authority is invalid")
-        parsed: list[str] = []
-        for item in items:
-            if (
-                not isinstance(item, Mapping)
-                or type(item.get(identifier)) is not str
-            ):
-                raise _safety("cleanup lifecycle authority is invalid")
-            parsed.append(str(item[identifier]))
-        values[plural] = tuple(parsed)
-    return values
+def _selected_release(state: object) -> str | None:
+    if not isinstance(state, Mapping):
+        raise _safety("cleanup planning helper returned invalid host state")
+    selected = state.get("selected_release_id")
+    if selected is not None and type(selected) is not str:
+        raise _safety("cleanup planning helper returned invalid host state")
+    return selected
 
 
-def _inspection(
-    result: object,
-    expected: Mapping[str, object],
-    environment: str,
-) -> CleanupPlan:
-    state = result.state
-    if (
-        not isinstance(state, Mapping)
-        or state.get("changed") is not False
-        or not isinstance(state.get("targets"), tuple)
-    ):
-        raise _safety("cleanup helper returned invalid inspection evidence")
+def _inspection(result: object, environment: str) -> CleanupPlan:
+    state = getattr(result, "state", None)
+    if not isinstance(state, Mapping) or not isinstance(state.get("targets"), tuple):
+        raise _safety("cleanup helper returned invalid inspection state")
     targets = tuple(_target(value) for value in state["targets"])
     identifiers = ",".join(str(target["identifier"]) for target in targets)
-    return CleanupPlan(
-        targets,
-        f"cleanup {environment} {identifiers or 'none'}",
-    )
+    return CleanupPlan(targets, f"cleanup {environment} {identifiers or 'none'}")
 
 
-def _success(
-    result: object,
-    targets: tuple[Mapping[str, object], ...],
-) -> dict[str, object]:
-    state = result.state
+def _final_state(result: object) -> dict[str, object]:
+    state = getattr(result, "state", None)
     if (
         not isinstance(state, Mapping)
-        or tuple(state.get("targets", ())) != targets
-        or not isinstance(state.get("removed"), tuple)
-        or not isinstance(state.get("recoverability"), tuple)
-        or len(state["removed"]) != len(state["recoverability"])
+        or type(state.get("changed")) is not bool
+        or state.get("selected_release_id") is not None and type(state.get("selected_release_id")) is not str
+        or state.get("service_state") not in {"running", "stopped", "failed", "unknown"}
+        or state.get("database_state") not in {"ready", "absent", "unknown"}
     ):
-        raise _safety("cleanup helper returned invalid success evidence")
-    removed = tuple(_target(value) for value in state["removed"])
-    if result.state.get("changed") is True and removed != targets:
-        raise _safety("cleanup helper returned incomplete success evidence")
-    if result.state.get("changed") is False and removed:
-        raise _safety("cleanup helper returned invalid no-op evidence")
-    if tuple(bool(item["recoverable"]) for item in removed) != tuple(
-        state["recoverability"]
-    ):
-        raise _safety("cleanup helper returned invalid recovery evidence")
+        raise _safety("cleanup helper returned invalid final state")
     return {
-        "targets": targets,
-        "removed": removed,
-        "recoverability": tuple(state["recoverability"]),
+        "changed": state["changed"],
+        "selected_release_id": state["selected_release_id"],
+        "service_state": state["service_state"],
+        "database_state": state["database_state"],
     }
 
 
@@ -225,13 +159,12 @@ def _target(value: object) -> Mapping[str, object]:
     if (
         not isinstance(value, Mapping)
         or set(value) != _TARGET_KEYS
-        or type(value["kind"]) is not str
-        or type(value["identifier"]) is not str
-        or type(value["path"]) is not str
+        or value.get("kind") not in {"release", "backup", "temporary"}
+        or type(value.get("identifier")) is not str
+        or type(value.get("path")) is not str
         or not str(value["path"]).startswith("/")
-        or type(value["recoverable"]) is not bool
     ):
-        raise _safety("cleanup helper returned invalid target evidence")
+        raise _safety("cleanup helper returned invalid target")
     return dict(value)
 
 
@@ -239,17 +172,9 @@ def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for group in groups for item in group))
 
 
-def _error_state(error: OpsError) -> Mapping[str, object]:
-    value = getattr(error, "state", {})
-    return value if isinstance(value, Mapping) else {}
-
-
 def _confirm(plan: Mapping[str, object]) -> bool:
     expected = str(plan["typed_confirmation"])
-    return (
-        input(f"Delete exact Taskman artifacts? Type '{expected}': ").strip()
-        == expected
-    )
+    return input(f"Delete exact Taskman artifacts? Type '{expected}': ").strip() == expected
 
 
 def _safety(message: str) -> OpsError:
@@ -258,7 +183,7 @@ def _safety(message: str) -> OpsError:
         "cleanup",
         message,
         False,
-        "inspect managed lifecycle and exact cleanup authority before retrying",
+        "inspect exact cleanup targets before retrying",
     )
 
 
