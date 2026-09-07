@@ -64,9 +64,10 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
     second = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert first.changed is True
-    assert first.facts["converged_stages"] == ("provisioning", "release")
+    assert first.facts["provisioning_changed"] is True
+    assert first.facts["release"]["selected_release_id"] == artifact().manifest.release_id
     assert second.changed is False
-    assert second.facts["converged_stages"] == ()
+    assert second.facts["provisioning_changed"] is False
     assert host.events.index("discovery") < host.events.index("provisioning") < host.events.index("release")
     assert "verify" not in host.events
     assert host.closed == 2
@@ -154,7 +155,7 @@ def _capabilities(
             ("caddy",),
             "taskman.acme.tld {\n}\n",
         ),
-        release_transaction=release
+        release_deployment=release
         or (lambda _remote, _config, _artifact: WorkflowResult(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
         )),

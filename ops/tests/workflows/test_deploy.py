@@ -102,7 +102,7 @@ def test_deploy_refuses_success_without_proven_ready_state(
 
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, None, ()),
+        lambda *_args: (CURRENT, (), ()),
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
@@ -139,7 +139,7 @@ def test_deploy_publishes_only_a_complete_verified_success(
 
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, None, ()),
+        lambda *_args: (CURRENT, (), ()),
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
@@ -154,8 +154,7 @@ def test_deploy_publishes_only_a_complete_verified_success(
                 "selected_release_id": CANDIDATE,
                 "backup_id": "backup-cccccccccccccccccccccccccccccccc",
                 "database_state": "unchanged",
-                "activation_recorded": True,
-                "service_state": "active",
+                "service_state": "running",
                 "report": verified(CANDIDATE),
             },
             (),
@@ -173,3 +172,46 @@ def test_deploy_publishes_only_a_complete_verified_success(
     assert result.exit_status is ExitStatus.OK
     assert result.stage == "deployed"
     assert result.facts["verification"]["expected_release_id"] == CANDIDATE
+    assert "activation_recorded" not in result.facts
+
+
+def test_deploy_failure_keeps_the_observed_selected_release_as_a_public_fact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Coarse retry results retain the final helper's observable authority."""
+
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planning_authority",
+        lambda *_args: (CURRENT, (), ()),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: HostResult(
+            2,
+            "deploy",
+            "op-0123456789abcdef0123456789abcdef",
+            "retryable",
+            "migration result lost",
+            {
+                "failed_boundary": "migration",
+                "selected_release_id": CURRENT,
+                "applied_migrations": (),
+            },
+            (),
+        ),
+    )
+
+    result = deploy(
+        object(),
+        config(),
+        artifact(tmp_path),
+        present_plan=lambda _plan: None,
+        confirm=lambda _plan: True,
+    )
+
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.facts["previous_release_id"] == CURRENT
+    assert result.facts["selected_release_id"] == CURRENT

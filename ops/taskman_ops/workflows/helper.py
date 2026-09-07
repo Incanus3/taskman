@@ -12,7 +12,7 @@ from ..errors import ExitStatus, OpsError
 from ..helper_package import HelperPackage, temporary_helper_package
 from ..helper_runner import HelperInvocation, invoke_helper, new_correlation_id
 from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
-from ..manifests import MigrationFingerprint, VerifiedArtifact
+from ..manifests import VerifiedArtifact
 from ..remote import Remote, UploadReceipt
 from .verification_results import VerificationReport
 
@@ -165,6 +165,8 @@ def _has_observed_migrations(state: Mapping[str, object]) -> bool:
     value = state.get("applied_migrations")
     if not isinstance(value, (list, tuple)) or not value:
         return False
+    if all(type(item) is int and item >= 0 for item in value):
+        return list(value) == sorted(set(value))
     return all(
         isinstance(item, Mapping)
         and set(item) == {"filename", "sha256"}
@@ -192,10 +194,9 @@ def run_deployment_request(
     artifact: VerifiedArtifact,
     *,
     previous_release_id: str | None,
-    current_migrations: tuple[MigrationFingerprint, ...],
+    applied_migrations: tuple[int, ...],
     migration_policy: str,
     genesis: bool = False,
-    manual_adoption: Mapping[str, object] | None = None,
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HelperInvocation] = invoke_helper,
 ) -> HostResult:
@@ -223,8 +224,8 @@ def run_deployment_request(
             operation="genesis" if genesis else "deploy",
             correlation_id=correlation_id,
             expected_state={
-                "previous_release_id": previous_release_id,
-                "current_migrations": [item.to_mapping() for item in current_migrations],
+                "selected_release_id": previous_release_id,
+                "applied_migrations": applied_migrations,
             },
             paths=helper_paths(config),
             parameters={
@@ -233,13 +234,9 @@ def run_deployment_request(
                 "artifact_path": upload.as_posix(),
                 "manifest": artifact.manifest.to_mapping(),
                 "migration_policy": migration_policy,
-                "verification": {
-                    **verification_settings(config),
-                    "database_host": config.database_host,
-                    "database_role": config.database_role,
-                    "database_name": config.database_name,
-                },
-                "manual_adoption": dict(manual_adoption) if manual_adoption is not None else None,
+                "credentials_path": "/etc/taskman/pgpass",
+                "database": database_settings(config),
+                "verification": verification_settings(config),
             },
         )
         result = run_request(remote, request_value, package=package, invoker=invoker)

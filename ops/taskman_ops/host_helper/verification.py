@@ -59,9 +59,9 @@ class _LegacyVerificationResult:
 def verify(request: object, *, lifecycle_locked: bool = False):
     """Run read-only verification from a final request or legacy mutation call."""
 
-    # Mutable procedures still pass the private legacy OperationRequest while
-    # they own the lifecycle lock.  Keep that explicit type boundary until
-    # those procedures migrate; a wire HostRequest always receives HostResult.
+    # Only the rollback/restore slices still pass the private legacy request
+    # while they own the lifecycle lock. Deploy and genesis always use the
+    # final HostRequest/HostResult boundary.
     if isinstance(request, HostRequest):
         return _verify_host_state(request, lifecycle_locked=lifecycle_locked)
     return _verify_legacy(request, lifecycle_locked=lifecycle_locked)
@@ -155,7 +155,10 @@ def _verify_host_state(request: HostRequest, *, lifecycle_locked: bool = False) 
 
     if lifecycle_locked:
         try:
-            state = observe_host_state(paths)
+            # Deploy may have atomically switched ``current`` immediately
+            # before this fresh readiness proof. Its successful selection
+            # record is deliberately published only after verification.
+            state = observe_host_state(paths, allow_selection_transition=True)
         except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
             return _final_refusal(request)
     else:

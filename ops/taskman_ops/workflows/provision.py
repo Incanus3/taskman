@@ -77,7 +77,7 @@ class ProvisionCapabilities:
     render_role_password_input: Callable[[object, str], bytes]
     provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
-    release_transaction: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
+    release_deployment: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
 
 
 def provision(
@@ -126,7 +126,6 @@ def provision(
         )
 
     remote = cap.connect(config)
-    completed: list[str] = []
     try:
         # Discovery is a complete immutable snapshot.  It must precede every
         # convergence call below, including package installation.
@@ -141,10 +140,8 @@ def provision(
                 next_action="review the redacted plan and rerun without --dry-run only after confirmation",
             ))
 
-        _record_convergence(
-            completed,
-            "provisioning",
-            lambda: cap.provisioning(
+        provisioning_changed = _changed(
+            cap.provisioning(
                 remote,
                 ProvisioningInputs(
                     config=config,
@@ -156,29 +153,38 @@ def provision(
             ),
         )
     except OpsError as error:
-        return _close_result(remote, _pre_release_failure(environment_name, completed, error))
+        return _close_result(remote, _pre_release_failure(environment_name, error))
+    except TypeError:
+        return _close_result(remote, _pre_release_failure(
+            environment_name,
+            OpsError(
+                ExitStatus.REMOTE_PREFLIGHT,
+                "provisioning",
+                "provisioning convergence returned invalid capability evidence",
+                changed=False,
+                next_action="inspect the provisioning boundary and retry",
+            ),
+        ))
     except BaseException:
         _close_remote(remote)
         raise
 
     try:
-        release = cap.release_transaction(remote, config, artifact)
+        release = cap.release_deployment(remote, config, artifact)
     except BaseException:
         _close_remote(remote)
         raise
 
     if release.exit_status is not ExitStatus.OK:
         return _close_result(remote, release)
-    _record_change(completed, "release", release)
-
     return _close_result(remote, WorkflowResult(
         command="provision",
         environment=environment_name,
-        changed=bool(completed),
-        stage="provisioned" if completed else "already-provisioned",
+        changed=provisioning_changed or release.changed,
+        stage="provisioned" if provisioning_changed or release.changed else "already-provisioned",
         facts={
             "candidate_release_id": artifact.manifest.release_id,
-            "converged_stages": tuple(completed),
+            "provisioning_changed": provisioning_changed,
             "release": _safe_result_facts(release),
             "verification": release.facts.get("verification", {}),
             "acceptance_steps": _ACCEPTANCE_STEPS,
@@ -238,7 +244,7 @@ def _default_capabilities() -> ProvisionCapabilities:
         render_role_password_input=render_role_password_input,
         provisioning=converge_provisioning,
         caddy_plan=build_caddy_plan,
-        release_transaction=deploy_first_release,
+        release_deployment=deploy_first_release,
     )
 
 
@@ -316,50 +322,28 @@ def _confirm(_plan: Mapping[str, object]) -> bool:
     return input("Apply this redacted provisioning plan? Type yes to continue: ").strip().lower() == "yes"
 
 
-def _record_change(completed: list[str], stage: str, result: object) -> None:
-    changed = result.changed if isinstance(result, ChangeSet) else result.changed if isinstance(result, WorkflowResult) else result
-    if changed is True:
-        completed.append(stage)
-    elif changed is not False:
-        raise TypeError(f"{stage} convergence must return ChangeSet, WorkflowResult, or bool")
-
-
-def _record_convergence(
-    completed: list[str],
-    stage: str,
-    converge: Callable[[], object],
-) -> None:
-    """Turn an invalid pre-release boundary into a safe rerunnable result."""
-
-    try:
-        _record_change(completed, stage, converge())
-    except TypeError as error:
-        raise OpsError(
-            ExitStatus.REMOTE_PREFLIGHT,
-            stage,
-            f"{stage} convergence returned invalid capability evidence",
-            changed=False,
-            next_action="inspect the failed convergent stage and retry after correcting its capability boundary",
-        ) from error
+def _changed(result: object) -> bool:
+    if isinstance(result, (ChangeSet, WorkflowResult)):
+        return result.changed
+    if isinstance(result, bool):
+        return result
+    raise TypeError("provisioning convergence must return ChangeSet, WorkflowResult, or bool")
 
 
 def _pre_release_failure(
     environment: str,
-    completed: list[str],
     error: OpsError,
 ) -> WorkflowResult:
     return WorkflowResult(
         command="provision",
         environment=environment,
-        changed=bool(completed) or error.changed,
-        stage="partial-convergence",
+        changed=error.changed,
+        stage="provisioning-incomplete",
         facts={
-            "converged_stages": tuple(completed),
-            "failed_stage": error.stage,
-            "release_transaction_started": False,
+            "failed_boundary": error.stage,
+            "release_started": False,
         },
-        next_action=error.next_action
-        or "retry provisioning after inspecting the failed convergent stage; completed managed state is retained",
+        next_action=error.next_action or "retry provisioning after correcting the reported boundary",
         exit_status=error.status,
     )
 

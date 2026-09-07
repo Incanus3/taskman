@@ -109,8 +109,15 @@ def observe_host_state(
     *,
     database: Mapping[str, object] | None = None,
     include_runtime: bool = False,
+    allow_selection_transition: bool = False,
 ) -> HostState:
-    """Observe one coherent completed-record state without guessing authority."""
+    """Observe completed host records, optionally exposing one deploy transition.
+
+    Ordinary callers reject any difference between ``current`` and durable
+    selection history.  Deploy uses the narrowly scoped transition view while
+    holding the lifecycle lock so it can finish a record publication lost
+    immediately after its atomic current-link replacement.
+    """
 
     if not isinstance(paths, ManagedPaths):
         raise TypeError("host-state observation needs managed paths")
@@ -143,6 +150,8 @@ def observe_host_state(
     if selected_from_history != selected_from_link:
         if selected_from_history is None and selected_from_link is None:
             selected = None
+        elif allow_selection_transition:
+            selected = selected_from_link
         else:
             raise StateAmbiguityError("current selection contradicts completed selection history")
     else:
@@ -204,7 +213,11 @@ def _read_releases(
     seen: set[str] = set()
     for entry in entries:
         if _RELEASE_TEMP_RE.fullmatch(entry.name):
-            _validate_temporary(entry, owner_uid, "release temporary")
+            # Deployment staging is a deterministic directory containing an
+            # extracted immutable release.  It is recognizable on rerun and
+            # belongs to the convergent deploy procedure, unlike the small
+            # file temporaries written by completed-record publication.
+            _validate_temporary(entry, owner_uid, "release temporary", directory=True)
             temporary.append(PurePosixPath(entry.as_posix()))
             continue
         if entry.name.startswith(".") and entry.name.endswith(".tmp"):
@@ -344,11 +357,17 @@ def _read_release_manifest_temporaries(
         raise StateAmbiguityError("unable to inspect release directory") from error
 
 
-def _validate_temporary(path: Path, owner_uid: int, label: str) -> None:
+def _validate_temporary(
+    path: Path,
+    owner_uid: int,
+    label: str,
+    *,
+    directory: bool = False,
+) -> None:
     details = _lstat(path, label)
     if (
         stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
+        or not (stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode))
         or details.st_uid != owner_uid
         or details.st_mode & 0o7022
     ):

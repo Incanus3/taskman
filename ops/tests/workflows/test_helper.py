@@ -24,6 +24,15 @@ from taskman_ops.workflows.helper import result_error
             },
             ExitStatus.MIGRATION,
         ),
+        (
+            "deploy",
+            "retryable",
+            {
+                "failed_boundary": "migration",
+                "applied_migrations": (20260905120000,),
+            },
+            ExitStatus.MIGRATION,
+        ),
         ("deploy", "retryable", {"failed_boundary": "verification"}, ExitStatus.READINESS),
         ("restore", "retryable", {"failed_boundary": "verification"}, ExitStatus.READINESS),
         ("deploy", "manual", {"failed_boundary": "backup"}, ExitStatus.BACKUP),

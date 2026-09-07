@@ -64,3 +64,44 @@ def test_backup_dry_run_reads_only_discovery_and_never_requests_a_backup(
     assert outcome.stage == "planned"
     assert outcome.changed is False
     assert [request.operation for request in requests] == ["discover"]
+
+
+def test_deploy_dry_run_reads_completed_authority_without_uploading_or_deploying(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deployment preserves plan-only mode at the final helper boundary."""
+
+    from taskman_ops.workflows.deploy import deploy
+    from tests.workflows.test_deploy import CURRENT, artifact
+
+    config = EnvironmentConfig.model_validate(valid_environment(name="production"))
+    requests: list[HostRequest] = []
+
+    def invoke(_remote: object, request: HostRequest) -> HostResult:
+        requests.append(request)
+        return HostResult(
+            2,
+            request.operation,
+            request.correlation_id,
+            "succeeded",
+            "observed",
+            {
+                "selected_release_id": CURRENT,
+                "applied_migrations": (),
+                "releases": ({"release_id": CURRENT, "migrations": ()},),
+            },
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_request", invoke)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not upload or deploy"),
+    )
+
+    outcome = deploy(object(), config, artifact(tmp_path), dry_run=True)
+
+    assert outcome.stage == "planned"
+    assert outcome.changed is False
+    assert [request.operation for request in requests] == ["discover"]
