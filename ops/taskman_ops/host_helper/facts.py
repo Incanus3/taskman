@@ -82,6 +82,7 @@ class LifecycleFacts:
     owner_uid: int
     provenance_by_release: Mapping[str, ReleaseProvenance]
     current_migrations: tuple[Mapping[str, object], ...]
+    release_migrations: Mapping[str, tuple[Mapping[str, object], ...]]
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ def accept_lifecycle_observation(observation: LifecycleObservation) -> Lifecycle
         observation.owner_uid,
         provenance,
         _current_migrations(observation),
+        _release_migrations(observation),
     )
 
 
@@ -223,6 +225,16 @@ def lifecycle_mapping(facts: LifecycleFacts, state: str) -> dict[str, object]:
         # set to determine a policy before it asks for confirmation.  This is
         # still helper-collected read-only authority, not a controller probe.
         "current_migrations": [dict(item) for item in facts.current_migrations],
+        # Restore planning needs the accepted migration set for the release
+        # recorded by a selected backup.  Publish concise rows rather than a
+        # release-id-keyed map because protocol object keys are identifiers.
+        "release_migrations": [
+            {
+                "release_id": release_id,
+                "migrations": [dict(item) for item in migrations],
+            }
+            for release_id, migrations in facts.release_migrations.items()
+        ],
         "records": {
             "releases": [record.to_mapping() for record in facts.records.releases],
             "activations": [record.to_mapping() for record in facts.records.activations],
@@ -405,6 +417,38 @@ def _current_migrations(observation: LifecycleObservation) -> tuple[Mapping[str,
     return tuple(dict(item) for item in migrations if isinstance(item, Mapping))
 
 
+def _release_migrations(
+    observation: LifecycleObservation,
+) -> dict[str, tuple[Mapping[str, object], ...]]:
+    """Return accepted migration fingerprints for every recorded release.
+
+    A restore backup names its intended release in lifecycle history, which
+    can differ from ``current``.  Keep that historical authority inside the
+    helper until it is emitted as bounded discovery rows.
+    """
+
+    adoptions = {
+        record.release_id: record for record in observation.records.adoptions
+    }
+    result: dict[str, tuple[Mapping[str, object], ...]] = {}
+    for record in observation.records.releases:
+        adoption = adoptions.get(record.release_id)
+        if adoption is not None:
+            migrations = adoption.migrations
+        else:
+            manifest = observation.manifests_by_release.get(record.release_id)
+            if not isinstance(manifest, Mapping):
+                raise LifecycleError("installed release manifest is invalid")
+            migrations = manifest.get("migrations")
+            _manifest_migrations(migrations)
+        if not isinstance(migrations, (list, tuple)):
+            raise LifecycleError("installed release manifest is invalid")
+        result[record.release_id] = tuple(
+            dict(item) for item in migrations if isinstance(item, Mapping)
+        )
+    return result
+
+
 def backup_rows(facts: LifecycleFacts) -> tuple[list[dict[str, object]], list[str]]:
     """Build backup rows and stale-artifact warnings from one validated snapshot."""
 
@@ -459,6 +503,7 @@ def _validate_current_observation(observation: LifecycleObservation) -> None:
         observation.owner_uid,
         {},
         (),
+        {},
     )
     _validate_managed_current(facts)
 

@@ -336,6 +336,8 @@ class PyinfraRemote:
             else False
         )
         if primary_error is not None:
+            if cleanup_warning:
+                primary_error.warnings = ("transient upload cleanup was incomplete",)  # type: ignore[attr-defined]
             raise primary_error
         return UploadReceipt(cleanup_warning=cleanup_warning)
 

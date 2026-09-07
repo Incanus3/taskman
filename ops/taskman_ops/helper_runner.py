@@ -111,28 +111,20 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         _validate_correlation(result, package, request)
         completed = True
     except OpsError as error:
-        # An uncertain dispatched root process may still read its archive. Do
-        # not remove it speculatively; return a generic controller-safe error.
-        if not (dispatched and not completed):
-            cleanup_needed = _best_effort_cleanup(
-                remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-                transfer_created, invocation_created,
-            ) or cleanup_needed
-        else:
-            cleanup_needed = True
+        cleanup_needed = _best_effort_cleanup(
+            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
+            transfer_created, invocation_created,
+        ) or cleanup_needed or (dispatched and not completed)
         error.helper_entry_dispatched = dispatched  # type: ignore[attr-defined]
         if cleanup_needed:
             error.warnings = ("transient helper cleanup was incomplete",)
         raise
     except Exception:
         error = _safety_error("transient helper invocation failed")
-        if not (dispatched and not completed):
-            cleanup_needed = _best_effort_cleanup(
-                remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-                transfer_created, invocation_created,
-            ) or cleanup_needed
-        else:
-            cleanup_needed = True
+        cleanup_needed = _best_effort_cleanup(
+            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
+            transfer_created, invocation_created,
+        ) or cleanup_needed or (dispatched and not completed)
         error.helper_entry_dispatched = dispatched  # type: ignore[attr-defined]
         if cleanup_needed:
             error.warnings = ("transient helper cleanup was incomplete",)

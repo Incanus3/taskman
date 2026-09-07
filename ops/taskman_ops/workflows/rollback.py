@@ -26,6 +26,7 @@ from .helper import (
     result_error,
     request as helper_request,
     run_request,
+    successful_verification,
     verification_settings,
 )
 
@@ -42,6 +43,8 @@ _RESULT_KEYS = frozenset(
         "service_state",
         "database_state",
         "activation_recorded",
+        "changed",
+        "report",
     }
 )
 _SUCCESS_STAGES = (
@@ -182,7 +185,8 @@ def rollback(
         if result.outcome != "succeeded":
             raise result_error(result)
         facts = _validate_success(result, request)
-        changed = result.state.get("changed") is True
+        changed = facts["changed"]
+        assert isinstance(changed, bool)
         return WorkflowResult(
             "rollback",
             config.name or "",
@@ -248,11 +252,26 @@ def _validate_success(result: object, request: object) -> dict[str, object]:
         or state["service_state"] != "active"
         or state["database_state"] != "unchanged"
         or state["activation_recorded"] is not True
+        or type(state["changed"]) is not bool
     ):
         raise _safety("rollback helper returned invalid success evidence")
+    try:
+        verification = successful_verification(
+            state["report"], request.parameters["target_release_id"]
+        )
+    except ValueError:
+        raise _safety("rollback helper returned invalid success evidence") from None
     return {
-        **dict(state),
-        "verification": dict(state.get("report", {})),
+        "changed": state["changed"],
+        "previous_release_id": state["previous_release_id"],
+        "target_release_id": state["target_release_id"],
+        "selected_release_id": state["selected_release_id"],
+        "backup_id": state["backup_id"],
+        "activation_id": state["activation_id"],
+        "service_state": state["service_state"],
+        "database_state": state["database_state"],
+        "activation_recorded": state["activation_recorded"],
+        "verification": verification,
     }
 
 

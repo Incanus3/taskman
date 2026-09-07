@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -11,10 +12,17 @@ from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
 from ..host_helper.lifecycle import ManualAdoptionCandidate
-from .helper import request as helper_request, result_error, run_deployment_request, run_request
+from .helper import (
+    request as helper_request,
+    result_error,
+    run_deployment_request,
+    run_request,
+    successful_verification,
+)
 
 
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
+_BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 
 
 def deploy(
@@ -58,7 +66,13 @@ def deploy(
         )
         if result.outcome != "succeeded":
             raise result_error(result)
-        return _payload_result(config, candidate, policy, result)
+        return _payload_result(
+            config,
+            candidate,
+            policy,
+            result,
+            previous_release_id=previous,
+        )
     except OpsError as error:
         return _failure_result(config, error, candidate=candidate)
 
@@ -85,7 +99,14 @@ def deploy_first_release(
         )
         if result.outcome != "succeeded":
             raise result_error(result)
-        return _payload_result(config, artifact.manifest.release_id, policy, result, genesis=True)
+        return _payload_result(
+            config,
+            artifact.manifest.release_id,
+            policy,
+            result,
+            previous_release_id=None,
+            genesis=True,
+        )
     except OpsError as error:
         return _failure_result(config, error, candidate=artifact.manifest.release_id, genesis=True)
 
@@ -131,35 +152,85 @@ def _planning_authority(
         raise _safety("deployment planning helper returned invalid current release") from None
 
 
-def _payload_result(config: EnvironmentConfig, candidate: str, policy: str, result: object, *, genesis: bool = False) -> WorkflowResult:
-    state = result.state
-    changed = state.get("changed") is True
+def _payload_result(
+    config: EnvironmentConfig,
+    candidate: str,
+    policy: str,
+    result: object,
+    *,
+    previous_release_id: str | None,
+    genesis: bool = False,
+) -> WorkflowResult:
+    facts = _facts(
+        result.state,
+        candidate,
+        policy,
+        previous_release_id=previous_release_id,
+        genesis=genesis,
+    )
+    changed = facts["changed"]
+    assert isinstance(changed, bool)
     if not changed:
         return WorkflowResult(
             "deploy", config.name or "", False, "already-current",
-            _facts(state, candidate, policy, genesis=genesis), tuple(result.warnings),
+            facts, tuple(result.warnings),
             "no deployment action is required",
         )
     return WorkflowResult(
         "deploy", config.name or "", True, "deployed",
-        _facts(state, candidate, policy, genesis=genesis), tuple(result.warnings),
+        facts, tuple(result.warnings),
         "perform the remaining browser, email, and API acceptance checks",
     )
 
 
-def _facts(state: Mapping[str, object], candidate: str, policy: str, *, genesis: bool) -> dict[str, object]:
-    database = state.get("database_state", "unknown")
+def _facts(
+    state: Mapping[str, object],
+    candidate: str,
+    policy: str,
+    *,
+    previous_release_id: str | None,
+    genesis: bool,
+) -> dict[str, object]:
+    required = {
+        "changed",
+        "selected_release_id",
+        "backup_id",
+        "database_state",
+        "activation_recorded",
+        "service_state",
+        "report",
+    }
+    if not isinstance(state, Mapping) or not required <= set(state):
+        raise _safety("deployment helper returned incomplete success evidence")
+    changed = state["changed"]
+    backup_id = state["backup_id"]
+    database = state["database_state"]
+    if (
+        type(changed) is not bool
+        or state["selected_release_id"] != candidate
+        or state["activation_recorded"] is not True
+        or state["service_state"] != "active"
+        or database not in {"changed", "unchanged"}
+        or (changed and (type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None))
+        or (not changed and backup_id is not None)
+    ):
+        raise _safety("deployment helper returned invalid success evidence")
+    try:
+        verification = successful_verification(state["report"], candidate)
+    except ValueError:
+        raise _safety("deployment helper returned invalid success evidence") from None
     return {
-        "previous_release_id": None if genesis else state.get("previous_release_id"),
+        "changed": changed,
+        "previous_release_id": None if genesis else previous_release_id,
         "candidate_release_id": candidate,
         "selected_release_id": state.get("selected_release_id"),
-        "backup_id": state.get("backup_id"),
+        "backup_id": backup_id,
         "migration_policy": policy,
         "database_changed": database == "changed",
         "database_state": database,
         "activation_recorded": state.get("activation_recorded", False),
         "service_state": state.get("service_state", "unknown"),
-        "verification": state.get("report", {}),
+        "verification": verification,
     }
 
 

@@ -111,3 +111,34 @@ def test_invoke_helper_refuses_package_checksum_before_transfer(tmp_path: Path) 
 
     assert raised.value.status is ExitStatus.SAFETY
     assert remote.uploads == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        OpsError(ExitStatus.SAFETY, "helper", "command failed", False),
+        RuntimeError("transport failed"),
+    ),
+)
+def test_invoke_helper_attempts_generic_cleanup_after_unconfirmed_dispatch(
+    tmp_path: Path,
+    failure: BaseException,
+) -> None:
+    """A missing correlated result never leaves the root helper archive unexamined."""
+
+    from taskman_ops.helper_runner import invoke_helper
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    remote.helper_result = failure  # type: ignore[assignment]
+
+    with pytest.raises(OpsError) as raised:
+        invoke_helper(remote, helper, value)
+
+    installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
+    invocation_directory = installed.parent
+    assert ("rm", "--", installed.as_posix()) in commands(remote)
+    assert ("rmdir", "--", invocation_directory.as_posix()) in commands(remote)
+    assert raised.value.warnings == ("transient helper cleanup was incomplete",)
+    assert value.correlation_id not in repr(raised.value.warnings)

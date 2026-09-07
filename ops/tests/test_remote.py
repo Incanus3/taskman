@@ -506,6 +506,7 @@ def test_put_keeps_its_primary_error_when_private_stage_cleanup_is_uncertain(tmp
         remote.put(source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True)
 
     assert raised.value.message == "private remote upload failed"
+    assert raised.value.warnings == ("transient upload cleanup was incomplete",)
     assert not hasattr(raised.value, "residue_paths")
 
 

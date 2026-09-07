@@ -17,6 +17,8 @@ from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 
 
 _PRIVATE_OPERATION_ID_RE = re.compile(r"op-[0-9a-f]{32}\Z")
+_MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def validate_private_operation_id(value: object) -> str:
@@ -132,6 +134,8 @@ def _state(result: OperationResult, outcome: str) -> dict[str, object]:
         boundary = _failed_boundary(result)
         if boundary is not None:
             state["failed_boundary"] = boundary
+            if boundary == "migration":
+                state["applied_migrations"] = _observed_applied_migrations(result)
         return state
 
     if result.operation in {"discover", "list_releases", "list_backups"}:
@@ -148,7 +152,7 @@ def _state(result: OperationResult, outcome: str) -> dict[str, object]:
 
 
 def _failed_boundary(result: OperationResult) -> str | None:
-    if result.stage == "migration":
+    if result.stage == "migration" and _observed_applied_migrations(result) is not None:
         return "migration"
     if result.stage == "verification":
         return "verification"
@@ -159,6 +163,33 @@ def _failed_boundary(result: OperationResult) -> str | None:
     if result.operation in {"deploy", "genesis", "rollback"}:
         return "release"
     return None
+
+
+def _observed_applied_migrations(
+    result: OperationResult,
+) -> tuple[object, ...] | None:
+    """Return direct migration evidence, never a private stage inference."""
+
+    value = (
+        result.runtime_state.get("applied_migrations")
+        if isinstance(result.runtime_state, Mapping)
+        else None
+    )
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    migrations: list[dict[str, object]] = []
+    for item in value:
+        if (
+            not isinstance(item, Mapping)
+            or set(item) != {"filename", "sha256"}
+            or type(item["filename"]) is not str
+            or _MIGRATION_FILENAME_RE.fullmatch(item["filename"]) is None
+            or type(item["sha256"]) is not str
+            or _SHA256_RE.fullmatch(item["sha256"]) is None
+        ):
+            return None
+        migrations.append(dict(item))
+    return tuple(migrations)
 
 
 def _discovery_state(result: OperationResult) -> dict[str, object]:
@@ -181,7 +212,6 @@ def _discovery_state(result: OperationResult) -> dict[str, object]:
             ("backups", "backups"),
             ("activations", "activations"),
             ("adoptions", "adoptions"),
-            ("manifests", "manifests"),
         ):
             item = records.get(old_key)
             if isinstance(item, (list, tuple)):
@@ -189,6 +219,9 @@ def _discovery_state(result: OperationResult) -> dict[str, object]:
     migrations = lifecycle.get("current_migrations") if isinstance(lifecycle, Mapping) else None
     if isinstance(migrations, (list, tuple)):
         value["applied_migrations"] = tuple(migrations)
+    release_migrations = lifecycle.get("release_migrations") if isinstance(lifecycle, Mapping) else None
+    if isinstance(release_migrations, (list, tuple)):
+        value["release_migrations"] = tuple(release_migrations)
     manual = lifecycle.get("manual_adoption") if isinstance(lifecycle, Mapping) else None
     if manual is not None:
         value["manual_adoption"] = manual

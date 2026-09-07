@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
+import re
 from typing import Callable
 
 from ..config import EnvironmentConfig
@@ -13,6 +14,11 @@ from ..helper_runner import HelperInvocation, invoke_helper, new_correlation_id
 from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from ..manifests import MigrationFingerprint, VerifiedArtifact
 from ..remote import Remote, UploadReceipt
+from .verification_results import VerificationReport
+
+
+_MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def helper_paths(config: EnvironmentConfig) -> dict[str, str]:
@@ -108,18 +114,21 @@ def result_error(result: HostResult) -> OpsError:
     if not isinstance(result, HostResult) or result.outcome == "succeeded":
         raise ValueError("result_error requires a final unsuccessful result")
     state = result.state
+    boundary = state.get("failed_boundary")
     if state.get("locked") is True:
         status = ExitStatus.LOCKED
     elif result.outcome == "refused" or result.operation == "cleanup":
         status = ExitStatus.SAFETY
+    elif boundary == "backup":
+        status = ExitStatus.BACKUP
     elif result.operation == "backup":
         status = ExitStatus.BACKUP
+    elif result.operation == "verify" or boundary == "verification":
+        status = ExitStatus.READINESS
+    elif boundary == "migration" and _has_observed_migrations(state):
+        status = ExitStatus.MIGRATION
     elif result.operation == "restore":
         status = ExitStatus.RESTORE
-    elif result.operation == "verify" or state.get("failed_boundary") == "verification":
-        status = ExitStatus.READINESS
-    elif state.get("failed_boundary") == "migration":
-        status = ExitStatus.MIGRATION
     elif result.operation in {"deploy", "genesis", "rollback"}:
         status = ExitStatus.RELEASE
     else:
@@ -134,6 +143,37 @@ def result_error(result: HostResult) -> OpsError:
     error.state = dict(state)  # type: ignore[attr-defined]
     error.warnings = tuple(result.warnings)  # type: ignore[attr-defined]
     return error
+
+
+def successful_verification(value: object, expected_release_id: str) -> dict[str, object]:
+    """Validate the complete fresh readiness proof for a mutation success."""
+
+    try:
+        report = VerificationReport.from_mapping(mutable(value))
+    except (TypeError, ValueError):
+        raise ValueError("verification report is invalid") from None
+    if (
+        not report.successful
+        or report.release_id != expected_release_id
+        or report.expected_release_id != expected_release_id
+    ):
+        raise ValueError("verification report does not prove the selected release")
+    return report.to_mapping()
+
+
+def _has_observed_migrations(state: Mapping[str, object]) -> bool:
+    value = state.get("applied_migrations")
+    if not isinstance(value, (list, tuple)) or not value:
+        return False
+    return all(
+        isinstance(item, Mapping)
+        and set(item) == {"filename", "sha256"}
+        and type(item["filename"]) is str
+        and _MIGRATION_FILENAME_RE.fullmatch(item["filename"]) is not None
+        and type(item["sha256"]) is str
+        and _SHA256_RE.fullmatch(item["sha256"]) is not None
+        for item in value
+    )
 
 
 def mutable(value: object) -> object:
@@ -243,6 +283,7 @@ __all__ = [
     "request",
     "result_error",
     "run_request",
+    "successful_verification",
     "run_deployment_request",
     "verification_settings",
 ]

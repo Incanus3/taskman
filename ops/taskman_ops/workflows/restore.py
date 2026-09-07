@@ -17,6 +17,7 @@ from .helper import (
     result_error,
     request as helper_request,
     run_request,
+    successful_verification,
     verification_settings,
 )
 
@@ -33,6 +34,8 @@ _RESULT_KEYS = frozenset(
         "service_state",
         "database_state",
         "restore_recorded",
+        "changed",
+        "report",
     }
 )
 _SUCCESS_STAGES = (
@@ -172,9 +175,9 @@ def restore(
         return WorkflowResult(
             "restore",
             config.name or "",
-            result.state.get("changed") is True,
+            facts["changed"],
             "restored"
-            if result.state.get("changed") is True
+            if facts["changed"]
             else "already-restored",
             facts,
             warnings,
@@ -311,11 +314,24 @@ def _success(
         or state["service_state"] != "active"
         or state["database_state"] != "restored-promoted"
         or state["restore_recorded"] is not True
+        or type(state["changed"]) is not bool
     ):
         raise _safety("restore helper returned invalid success evidence")
+    try:
+        verification = successful_verification(state["report"], intended)
+    except ValueError:
+        raise _safety("restore helper returned invalid success evidence") from None
     return {
-        **dict(state),
-        "verification": dict(state.get("report", {})),
+        "changed": state["changed"],
+        "backup_id": state["backup_id"],
+        "pre_restore_backup_id": state["pre_restore_backup_id"],
+        "current_release_id": state["current_release_id"],
+        "intended_release_id": state["intended_release_id"],
+        "selected_release_id": state["selected_release_id"],
+        "service_state": state["service_state"],
+        "database_state": state["database_state"],
+        "restore_recorded": state["restore_recorded"],
+        "verification": verification,
     }
 
 
@@ -323,13 +339,20 @@ def _migration_versions(
     observed: Mapping[str, object],
     intended: str,
 ) -> tuple[str, ...]:
-    manifests = mutable(observed.get("manifests"))
-    if not isinstance(manifests, Mapping):
-        raise _safety("restore lifecycle manifests are unavailable")
-    manifest = manifests.get(intended)
-    if not isinstance(manifest, Mapping):
-        raise _safety("restore intended release manifest is unavailable")
-    migrations = manifest.get("migrations")
+    rows = mutable(observed.get("release_migrations"))
+    if not isinstance(rows, list):
+        raise _safety("restore lifecycle migration authority is unavailable")
+    row = next(
+        (
+            item
+            for item in rows
+            if isinstance(item, Mapping) and item.get("release_id") == intended
+        ),
+        None,
+    )
+    if not isinstance(row, Mapping):
+        raise _safety("restore intended release migration authority is unavailable")
+    migrations = row.get("migrations")
     if not isinstance(migrations, list):
         raise _safety("restore intended migration authority is invalid")
     versions: list[str] = []
