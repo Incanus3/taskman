@@ -301,10 +301,17 @@ def test_build_command_reports_the_verified_artifact_paths(
         manifest_path=manifest,
         checksum=checksum,
     )
-    monkeypatch.setattr("taskman_ops.build.build_release", lambda _repo, _output: artifact)
+    output = tmp_path / "shared-artifacts"
+    seen: list[Path] = []
+    monkeypatch.setattr("taskman_ops.build.default_artifact_root", lambda: output)
+    monkeypatch.setattr(
+        "taskman_ops.build.build_release",
+        lambda _repo, actual_output: seen.append(actual_output) or artifact,
+    )
 
     result = dispatch(Invocation(command="build"))
 
+    assert seen == [output]
     assert result.command == "build"
     assert result.changed is True
     assert result.stage == "built"

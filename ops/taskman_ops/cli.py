@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stderr
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import StringIO
-import os
 from pathlib import Path
 import sys
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TextIO
 
@@ -196,10 +194,10 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
     """Run one validated invocation through its concrete workflow."""
 
     if invocation.command == "build":
-        from .build import build_release
+        from .build import build_release, default_artifact_root
 
         repo = Path(__file__).resolve().parents[2]
-        artifact_root = Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
+        artifact_root = default_artifact_root()
         artifact = build_release(repo, artifact_root)
         return WorkflowResult(
             command="build",
@@ -263,9 +261,8 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             dry_run=invocation.dry_run,
         )
     if invocation.command == "deploy":
-        from .build import build_release
+        from .artifacts import resolve_deploy_artifact
         from .config import load_environment
-        from .manifests import verify_artifact
         from .remote import connect
         from .workflows.deploy import deploy
 
@@ -273,21 +270,10 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             raise ValueError("deploy requires an environment")
         environment = load_environment(invocation.environment)
         repo = Path(__file__).resolve().parents[2]
-        artifact_root = Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
-        if invocation.artifact is None:
-            artifact = build_release(repo, artifact_root)
-        else:
-            archive = invocation.artifact
-            if not archive.name.endswith(".tar.gz"):
-                raise ValueError("deploy artifact must be a release archive")
-            stem = archive.name[: -len(".tar.gz")]
-            artifact = verify_artifact(
-                archive,
-                archive.with_name(f"{stem}.manifest.json"),
-                archive.with_name(f"{archive.name}.sha256"),
-            )
+        resolution = resolve_deploy_artifact(repo, invocation.artifact)
+        artifact = resolution.artifact
         remote = connect(environment)
-        return deploy(
+        result = deploy(
             remote,
             environment,
             artifact,
@@ -295,6 +281,7 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             manual_adoption_confirmed=invocation.manual_adoption_confirmed,
             dry_run=invocation.dry_run,
         )
+        return replace(result, facts={**result.facts, "artifact_source": resolution.source})
     if invocation.command == "rollback":
         from .config import load_environment
         from .remote import connect

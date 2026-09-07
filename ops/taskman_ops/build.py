@@ -332,6 +332,12 @@ def _private_artifact_root(output_dir: Path, release_id: str) -> Path:
     return artifact_dir
 
 
+def default_artifact_root() -> Path:
+    """Return the private workstation root shared by build and deploy."""
+
+    return Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
+
+
 def _name_artifact_root(artifact_dir: Path, release_id: str) -> Path:
     token = artifact_dir.name.removeprefix("snapshot-")
     named = artifact_dir.with_name(f"{release_id}-{token}")
@@ -447,6 +453,7 @@ __all__ = [
     "CommandResult",
     "SourceState",
     "build_release",
+    "default_artifact_root",
     "read_application_version",
     "read_repository_state",
 ]

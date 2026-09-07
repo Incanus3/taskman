@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from taskman_ops.artifacts import ArtifactResolution
 from taskman_ops.cli import APPROVED_COMMANDS, Invocation, build_parser, dispatch, main, parse_invocation
-from taskman_ops.errors import ExitStatus
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.output import WorkflowResult, clear_secrets, register_secret
 
 
@@ -239,6 +240,62 @@ def test_public_verify_dispatch_uses_optional_current_release_authority(
 
     assert result.stage == "verified"
     assert seen == [(remote, environment, None)]
+
+
+def test_deploy_resolves_the_artifact_before_connecting_and_reports_its_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object()
+    remote = object()
+    artifact = object()
+    events: list[str] = []
+
+    def load(_name: str) -> object:
+        events.append("load")
+        return environment
+
+    def resolve(_repo: Path, supplied: Path | None) -> ArtifactResolution:
+        events.append(f"resolve:{supplied}")
+        return ArtifactResolution(artifact=artifact, source="cached")  # type: ignore[arg-type]
+
+    def connect(_environment: object) -> object:
+        events.append("connect")
+        return remote
+
+    def run_deploy(actual_remote: object, actual_environment: object, actual_artifact: object, **_kwargs: object) -> WorkflowResult:
+        events.append("deploy")
+        assert (actual_remote, actual_environment, actual_artifact) == (remote, environment, artifact)
+        return WorkflowResult("deploy", "production", False, "planned", {"candidate_release_id": "candidate"})
+
+    monkeypatch.setattr("taskman_ops.config.load_environment", load)
+    monkeypatch.setattr("taskman_ops.artifacts.resolve_deploy_artifact", resolve)
+    monkeypatch.setattr("taskman_ops.remote.connect", connect)
+    monkeypatch.setattr("taskman_ops.workflows.deploy.deploy", run_deploy)
+
+    result = dispatch(Invocation(command="deploy", environment="production"))
+
+    assert events == ["load", "resolve:None", "connect", "deploy"]
+    assert result.facts["artifact_source"] == "cached"
+
+
+def test_deploy_does_not_connect_when_artifact_resolution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object()
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    error = OpsError(
+        ExitStatus.LOCAL_PREREQUISITE,
+        "artifact",
+        "artifact resolution failed",
+        changed=False,
+    )
+    monkeypatch.setattr("taskman_ops.artifacts.resolve_deploy_artifact", lambda *_args: (_ for _ in ()).throw(error))
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: pytest.fail("SSH must wait for artifact resolution"))
+
+    with pytest.raises(OpsError) as raised:
+        dispatch(Invocation(command="deploy", environment="production"))
+
+    assert raised.value is error
 
 
 def test_malformed_dispatch_result_maps_to_stable_secret_free_error(
