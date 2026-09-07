@@ -103,27 +103,20 @@ def restore(request: HostRequest) -> HostResult:
                 state = _observe(inputs, allow_selection_transition=False)
             else:
                 swapped = frozenset({str(inputs.database["name"]), inputs.retired_database})
-                if arrangement == swapped:
-                    # A replay after the second rename has no remaining
-                    # database consequence.  The only safe evidence is the
-                    # unique completed backup of the original selected
-                    # database; never create a second backup of the restored
-                    # database and attach it to the old transition.
-                    safety_backup = _selection_backup(state, inputs, source, None)
-                else:
-                    safety_database = _safety_database(arrangement, inputs)
-                    safety_state = _state_for_database(state, inputs, safety_database)
-                    try:
-                        safety_backup = create_validated_backup(
-                            safety_state,
-                            inputs.paths,
-                            _database_with_name(inputs.database, safety_database),
-                            inputs.credentials,
-                            purpose="pre-restore",
-                        )
-                    except (CommandError, RecordError, OSError, ValueError) as error:
-                        raise _Retryable("backup") from error
-                    changed = True
+                safety_database = _safety_database(arrangement, inputs)
+                safety_state = _state_for_database(state, inputs, safety_database)
+                try:
+                    safety_backup = create_validated_backup(
+                        safety_state,
+                        inputs.paths,
+                        _database_with_name(inputs.database, safety_database),
+                        inputs.credentials,
+                        purpose="pre-restore",
+                    )
+                except (CommandError, RecordError, OSError, ValueError) as error:
+                    raise _Retryable("backup") from error
+                changed = True
+                if arrangement != swapped:
                     _service("stop")
                     arrangement, restored = _converge_database(arrangement, inputs, source)
                     changed = changed or restored
@@ -145,9 +138,10 @@ def restore(request: HostRequest) -> HostResult:
                     raise _Retryable("verification")
                 report = verification.state.get("report", {})
 
-                safety_backup = _selection_backup(state, inputs, source, safety_backup)
-                state = _record_selection(state, inputs, source, safety_backup)
-                changed = True
+                safety_backup = _published_safety_backup(state, inputs, safety_backup)
+                if _selection_status(state, inputs, source) != "same":
+                    state = _record_selection(state, inputs, source, safety_backup)
+                    changed = True
                 _drop_database(inputs, inputs.retired_database)
                 state = _observe(inputs, allow_selection_transition=False)
     except LifecycleLockContention:
@@ -277,7 +271,12 @@ def _state_for_database(state: HostState, inputs: _Inputs, name: str) -> HostSta
     database_state = observed["state"]
     if not isinstance(versions, tuple) or database_state != "ready":
         raise RestoreManual("safety backup database observation is invalid")
-    return replace(state, applied_migrations=versions, database_state=database_state)
+    return replace(
+        state,
+        selected_release_id=inputs.current_release_id,
+        applied_migrations=versions,
+        database_state=database_state,
+    )
 
 
 def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
@@ -338,6 +337,19 @@ def _validate_source_dump(source: BackupRecord, inputs: _Inputs) -> None:
         or _sha256(dump) != source.dump_sha256
     ):
         raise RestoreManual("source dump identity is contradictory")
+    if stat.S_IMODE(details.st_mode) != 0o600:
+        try:
+            os.chmod(dump, 0o600)
+            details = dump.lstat()
+        except OSError as error:
+            raise RestoreManual("source dump permissions cannot be repaired") from error
+        if (
+            stat.S_ISLNK(details.st_mode)
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_uid != os.geteuid()
+            or stat.S_IMODE(details.st_mode) != 0o600
+        ):
+            raise RestoreManual("source dump permissions are unsafe")
     try:
         run_command(
             ("pg_restore", "--list", dump.as_posix()),
@@ -353,6 +365,10 @@ def _selection_status(state: HostState, inputs: _Inputs, source: BackupRecord) -
     if not state.selections:
         raise RestoreManual("selection history is absent")
     latest = state.selections[-1]
+    if target == inputs.current_release_id:
+        if state.selected_release_id != target or latest.release_id != target:
+            raise RestoreManual("same-release restore lacks its completed selection")
+        return "same"
     if state.selected_release_id == inputs.current_release_id:
         if latest.release_id != inputs.current_release_id:
             raise RestoreManual("selection history contradicts the confirmed current release")
@@ -398,10 +414,10 @@ def _validate_arrangement(arrangement: frozenset[str], inputs: _Inputs, selectio
 
 def _safety_database(arrangement: frozenset[str], inputs: _Inputs) -> str:
     live = str(inputs.database["name"])
+    if inputs.retired_database in arrangement:
+        return inputs.retired_database
     if live in arrangement:
         return live
-    if inputs.retired_database in arrangement and inputs.temporary_database in arrangement:
-        return inputs.retired_database
     raise RestoreManual("no original database is available for a fresh safety backup")
 
 
@@ -420,7 +436,11 @@ def _converge_database(
         arrangement = frozenset({live, temporary})
         changed = True
     elif arrangement == frozenset({live, temporary}):
-        _validate_restored_database(inputs, temporary, source.migration_versions)
+        try:
+            _validate_restored_database(inputs, temporary, source.migration_versions)
+        except RestoreManual:
+            _drop_database(inputs, temporary)
+            return _converge_database(frozenset({live}), inputs, source)
     elif arrangement == frozenset({temporary, retired}):
         _validate_restored_database(inputs, temporary, source.migration_versions)
         _rename_database(inputs, temporary, live)
@@ -517,7 +537,7 @@ def _drop_database(inputs: _Inputs, name: str) -> None:
 
 def _require_selection_transition(state: HostState, inputs: _Inputs, source: BackupRecord) -> None:
     selection_status = _selection_status(state, inputs, source)
-    if selection_status not in {"pending", "selected"}:
+    if selection_status not in {"pending", "selected", "same"}:
         raise RestoreManual("database restore lacks a pending selection transition")
 
 
@@ -525,38 +545,16 @@ def _require_selected_target(state: HostState, inputs: _Inputs, source: BackupRe
     if state.selected_release_id != source.source_release_id:
         raise RestoreManual("restore selection did not retain the source release")
     selection_status = _selection_status(state, inputs, source)
-    if selection_status not in {"selected", "completed"}:
+    if selection_status not in {"selected", "completed", "same"}:
         raise RestoreManual("restore target selection is not recognizable")
 
 
-def _selection_backup(
-    state: HostState,
-    inputs: _Inputs,
-    source: BackupRecord,
-    local: BackupRecord | None,
-) -> BackupRecord:
-    if local is not None:
-        if local.source_release_id != inputs.current_release_id:
-            raise RestoreManual("fresh restore backup has the wrong source release")
-        if any(item.backup_id == local.backup_id for item in state.backups):
-            return local
-        raise RestoreManual("fresh restore backup was not published")
-
-    previous = _observe_database(
-        _database_with_name(inputs.database, inputs.retired_database), inputs.credentials
-    )
-    migrations = previous.get("applied_migrations")
-    if not isinstance(migrations, tuple):
-        raise RestoreManual("retired database migration authority is invalid")
-    candidates = tuple(
-        item
-        for item in state.backups
-        if item.source_release_id == inputs.current_release_id
-        and item.migration_versions == migrations
-    )
-    if len(candidates) != 1:
-        raise RestoreManual("restore safety backup cannot be recovered unambiguously")
-    return candidates[0]
+def _published_safety_backup(state: HostState, inputs: _Inputs, backup: BackupRecord | None) -> BackupRecord:
+    if backup is None or backup.source_release_id != inputs.current_release_id:
+        raise RestoreManual("fresh restore backup has the wrong source release")
+    if any(item.backup_id == backup.backup_id for item in state.backups):
+        return backup
+    raise RestoreManual("fresh restore backup was not published")
 
 
 def _record_selection(

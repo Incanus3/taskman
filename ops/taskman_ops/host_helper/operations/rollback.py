@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
@@ -102,7 +102,19 @@ def rollback(request: HostRequest) -> HostResult:
                 selection_status = _selection_status(state, inputs)
 
             if selection_status == "selected":
-                backup = _selection_backup(state, inputs, backup)
+                if backup is None:
+                    try:
+                        backup = create_validated_backup(
+                            replace(state, selected_release_id=inputs.current_release_id),
+                            inputs.paths,
+                            inputs.database,
+                            inputs.credentials,
+                            purpose="pre-rollback",
+                        )
+                    except (CommandError, RecordError, OSError, ValueError) as error:
+                        raise _Retryable("backup") from error
+                    state = _observe(inputs, allow_selection_transition=True)
+                backup = _published_safety_backup(state, inputs, backup)
                 changed = True
             elif selection_status == "completed":
                 backup = _recorded_backup(state, inputs)
@@ -309,20 +321,12 @@ def _migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
     return result
 
 
-def _selection_backup(state: HostState, inputs: _Inputs, local: BackupRecord | None) -> BackupRecord:
-    candidates = tuple(
-        item
-        for item in state.backups
-        if item.source_release_id == inputs.current_release_id
-        and item.migration_versions == state.applied_migrations
-    )
-    if local is not None:
-        if any(item.backup_id == local.backup_id for item in candidates):
-            return local
-        raise RollbackManual("fresh rollback backup was not published")
-    if len(candidates) != 1:
-        raise RollbackManual("rollback safety backup cannot be recovered unambiguously")
-    return candidates[0]
+def _published_safety_backup(state: HostState, inputs: _Inputs, backup: BackupRecord | None) -> BackupRecord:
+    if backup is None or backup.source_release_id != inputs.current_release_id:
+        raise RollbackManual("fresh rollback backup has the wrong source release")
+    if any(item.backup_id == backup.backup_id for item in state.backups):
+        return backup
+    raise RollbackManual("fresh rollback backup was not published")
 
 
 def _recorded_backup(state: HostState, inputs: _Inputs) -> BackupRecord | None:

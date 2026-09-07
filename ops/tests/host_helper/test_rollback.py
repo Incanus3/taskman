@@ -182,6 +182,20 @@ def test_rollback_rerun_completes_after_selection_when_start_loses_its_result(
 
     paths = _paths(tmp_path)
     _seed_history(paths)
+    historical_id = "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    historical_dump = Path(paths.local(paths.backup_root / f"{historical_id}.dump"))
+    historical_dump.write_bytes(b"ordinary historical backup")
+    historical_dump.chmod(0o600)
+    write_backup_manifest(
+        paths,
+        BackupRecord(
+            historical_id,
+            hashlib.sha256(historical_dump.read_bytes()).hexdigest(),
+            CURRENT,
+            (MIGRATION_VERSION,),
+            1024,
+        ),
+    )
     runtime = _Runtime(fail_start=True)
     _install_runtime(monkeypatch, runtime)
     request = _request(paths, _credentials(tmp_path))
@@ -195,7 +209,8 @@ def test_rollback_rerun_completes_after_selection_when_start_loses_its_result(
 
     assert completed.outcome == "succeeded"
     assert completed.state["selected_release_id"] == TARGET
-    assert runtime.events.count("backup") == 1
+    assert completed.state["backup_id"] == "backup-00000000000000000000000000000002"
+    assert runtime.events.count("backup") == 2
     assert runtime.events[-2:] == ["start", "verify"]
 
 
