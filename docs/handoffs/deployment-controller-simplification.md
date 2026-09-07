@@ -1,6 +1,6 @@
 # Deployment controller simplification handoff
 
-**Status:** locally complete; awaiting operator-controlled integration and real-host acceptance
+**Status:** active; reduction design approved, implementation plan ready for execution
 **Updated:** 2026-09-07
 **Resume:** `$resume deployment-controller-simplification`
 
@@ -13,10 +13,13 @@ the material safety, recovery, and operator-control guarantees.
 ## Durable references
 
 - [Simplification design](../specs/2026-09-06-deployment-controller-simplification-design.md)
+- [Reduction design](../specs/2026-09-07-deployment-controller-reduction-design.md)
+- [Reduction implementation plan](../plans/2026-09-07-deployment-controller-reduction.md)
 - [Implementation plan](../plans/2026-09-06-deployment-controller-simplification.md)
 - [Current deployment runbook](../deployment.md)
 
-Delivery feature: `tas-deployment-controller-simplification-f00`.
+Delivery feature: `tas-deployment-controller-simplification-f00.11`, under parent
+`tas-deployment-controller-simplification-f00`.
 
 ## Current checkpoint
 
@@ -32,8 +35,38 @@ intentionally as the systemd timer target installed by pyinfra. It is a
 scheduled host capability, not a parallel workstation controller.
 
 Delivery feature `tas-deployment-controller-simplification-f00` remains open
-for operator-controlled integration and real-host acceptance. All ten child
-tasks are closed.
+while a follow-on reduction is assessed before operator-controlled integration
+and real-host acceptance. All ten implementation tasks are closed in Beads.
+
+The follow-on direction has been approved section by section and captured in
+the proposed reduction design. It preserves every public command and its main
+responsibility, but replaces exact crash continuation with replayable
+convergence: after a failure, the operator reruns the command, confirms any
+newly dangerous step, and the tool automatically repairs or repeats work unless
+the observed state is genuinely ambiguous. Compatibility with the never-deployed
+lifecycle, recovery, and backup metadata is not required. The design now also
+uses a built-in-first pyinfra boundary: stable, secret-free, independently
+observable, safely repeatable provisioning should use declarative built-ins;
+small custom actions remain only for material availability, access, secret, or
+transaction boundaries. Wrapping custom shell in pyinfra does not qualify as
+simplification.
+
+Plain `deploy` must resolve its artifact before connecting to the host. An
+explicit `--artifact` remains authoritative after verification. Otherwise it
+reuses a verified artifact only when its source revision, application version,
+target, pinned toolchain, and builder identity exactly match the current clean
+checkout; on no match it invokes the same build capability as `build`. Artifact
+age is irrelevant, and invalid or nonmatching cache entries are ignored.
+
+The retained safety floor covers secret non-disclosure, verified SSH host
+identity, destructive confirmation, privileged mutation confined to
+authoritative Taskman paths, validated backups before migrations or restores,
+atomic release selection, truthful recoverability, and the bounded transient
+helper. Exact operation journals, provisional state, exhaustive residue and
+stage evidence, seamless continuation, and low-value timing/hostile-filesystem
+edge machinery are eligible for deletion. The required result is at least a
+35% reduction from the 21,128-line production-Python baseline; there is no
+absolute line-count target.
 
 ## Latest evidence and constraints
 
@@ -62,6 +95,10 @@ Those actions remain separately authorized.
 
 ## Next action
 
-The operator chooses whether to keep, merge, or publish the branch and
-separately authorizes any real-host acceptance run. Close the parent feature
-only after the operator accepts the intended delivery state.
+Start a clean session and execute the ten ordered child tasks
+`tas-deployment-controller-simplification-f00.11.1` through `.11.10` using the
+selected subagent-driven workflow. Begin with the artifact resolver, then the
+completed-state foundation and coarse protocol before migrating commands. No
+implementation agent has yet been spawned and no production code has changed.
+Keep the parent feature open until the operator accepts the intended delivery
+state; real-host acceptance remains separately authorized.
