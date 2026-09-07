@@ -60,6 +60,67 @@ class ManagedPaths:
     def current_link(self) -> PurePosixPath:
         return self.install_root / "current"
 
+    @property
+    def selection_root(self) -> PurePosixPath:
+        """Directory containing create-once successful selection records."""
+
+        return self.deployment_root / "selections"
+
+    @property
+    def lifecycle_lock_path(self) -> PurePosixPath:
+        """The one exclusive lifecycle lock derived from ``install_root``."""
+
+        return self.install_root / "lifecycle.lock"
+
+    # Keep the names explicit at call sites while offering the path-shaped
+    # aliases used by small helper capabilities and tests.
+    @property
+    def lock_path(self) -> PurePosixPath:
+        return self.lifecycle_lock_path
+
+    @property
+    def lifecycle_lock_file(self) -> PurePosixPath:
+        return self.lifecycle_lock_path
+
+    def release_manifest(self, release_id: str) -> PurePosixPath:
+        """Return the manifest path below a caller-validated release ID."""
+
+        from taskman_ops.releases.identifiers import validate_release_id
+
+        validate_release_id(release_id)
+        return self.release_root / release_id / ".taskman-release.json"
+
+    def release_manifest_path(self, release_id: str) -> PurePosixPath:
+        return self.release_manifest(release_id)
+
+    def backup_manifest(self, backup_id: str) -> PurePosixPath:
+        """Return the sidecar manifest path below a caller-validated backup ID."""
+
+        if (
+            type(backup_id) is not str
+            or not backup_id.startswith("backup-")
+            or len(backup_id) != len("backup-") + 32
+            or any(character not in "0123456789abcdef" for character in backup_id.removeprefix("backup-"))
+        ):
+            raise PathAuthorityError("invalid backup identifier")
+        return self.backup_root / f"{backup_id}.json"
+
+    def backup_manifest_path(self, backup_id: str) -> PurePosixPath:
+        return self.backup_manifest(backup_id)
+
+    def selection_record(self, filename: str) -> PurePosixPath:
+        """Return a selection path below the derived selection directory."""
+
+        if (
+            type(filename) is not str
+            or not filename.startswith("selection-")
+            or not filename.endswith(".json")
+            or len(filename) != len("selection-") + 64 + len(".json")
+            or any(character not in "0123456789abcdef" for character in filename[len("selection-") : -5])
+        ):
+            raise PathAuthorityError("invalid selection record filename")
+        return self.selection_root / filename
+
     def local(self, path: PurePosixPath) -> Path:
         """Materialize an already-derived POSIX path without joining input."""
 
@@ -81,6 +142,7 @@ class ManagedPaths:
             ("backup root", self.backup_root),
             ("release root", self.release_root),
             ("deployment root", self.deployment_root),
+            ("selection root", self.selection_root),
         ):
             path = self.local(authority)
             try:
