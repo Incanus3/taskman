@@ -1,253 +1,168 @@
+from __future__ import annotations
+
+from contextlib import nullcontext
 from datetime import UTC, datetime
-import json
-from pathlib import Path
-import subprocess
 
 import pytest
 
-from taskman_ops.helper_package import build_helper_package
-from taskman_ops.host_helper.legacy_result import OperationResult, project_result
-from taskman_ops.host_protocol import HostRequest, decode_result, encode_request
+from taskman_ops.host_helper.operations import discover as discover_module
+from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, SelectionRecord
+from taskman_ops.host_helper.state import HostState, StateAmbiguityError
+from taskman_ops.host_protocol import HostRequest
 
 
-def _release_id(index: int) -> str:
-    return f"0.2.0-{index:012x}-ubuntu26.04-amd64-otp27.3.4.6"
+CORRELATION = "op-0123456789abcdef0123456789abcdef"
+RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+BACKUP_ID = "backup-cccccccccccccccccccccccccccccccc"
+SELECTED_AT = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
 
 
-def _migration(index: int) -> dict[str, str]:
-    return {
-        "filename": f"20260905{index:06d}_create_tasks.exs",
-        "sha256": f"{index:064x}",
-    }
-
-
-def _discovery_result(release_count: int, migrations_per_release: int) -> OperationResult:
-    return OperationResult(
-        2,
-        "discover",
-        "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "succeeded",
-        "discovered",
-        (),
-        {
-            "state": "managed",
-            "records": {"releases": [], "backups": [], "activations": [], "adoptions": []},
-            "release_migrations": [
-                {
-                    "release_id": _release_id(release),
-                    "migrations": [_migration(migration) for migration in range(migrations_per_release)],
-                }
-                for release in range(release_count)
-            ],
-        },
-        {},
-        {},
-        (),
-        (),
-        (),
-    )
-
-
-def _discovery_request() -> HostRequest:
+def _request(operation: str = "discover") -> HostRequest:
     return HostRequest(
         2,
-        "discover",
-        "op-0123456789abcdef0123456789abcdef",
+        operation,
+        CORRELATION,
         {},
-        {"install_root": "/opt/taskman"},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
         {},
+    )
+
+
+def _release() -> ReleaseRecord:
+    return ReleaseRecord(RELEASE_ID, "a" * 40, "d" * 64, ())
+
+
+def _backup() -> BackupRecord:
+    return BackupRecord(BACKUP_ID, "e" * 64, RELEASE_ID, (20260905120000,), 128)
+
+
+def _selection() -> SelectionRecord:
+    return SelectionRecord(RELEASE_ID, None, BACKUP_ID, SELECTED_AT)
+
+
+def _state(
+    *,
+    selected_release_id: str | None = RELEASE_ID,
+    warnings: tuple[str, ...] = (),
+) -> HostState:
+    return HostState(
+        selected_release_id=selected_release_id,
+        releases=(_release(),),
+        backups=(_backup(),),
+        selections=(_selection(),),
+        applied_migrations=(20260905120000,),
+        service_state="running",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=warnings,
     )
 
 
-def test_discovery_bridge_flattens_selected_public_facts() -> None:
-    request = HostRequest(2, "discover", "op-0123456789abcdef0123456789abcdef", {}, {"install_root": "/opt/taskman"}, {})
-    private = OperationResult(2, "discover", "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "succeeded", "discovered", (), {"state": "empty", "records": {"releases": [], "backups": [], "activations": []}}, {}, {}, (), (), ())
-
-    assert project_result(request, private).state == {"host_kind": "empty", "releases": (), "backups": (), "activations": ()}
-
-
-def test_discovery_bridge_projects_historical_migration_authority() -> None:
-    """Restore consumes only the release/migration rows selected from discovery."""
-
-    release_id = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-    request = HostRequest(
-        2,
-        "discover",
-        "op-0123456789abcdef0123456789abcdef",
-        {},
-        {"install_root": "/opt/taskman"},
-        {},
+def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> None:
+    monkeypatch.setattr(
+        discover_module,
+        "observe_host_state",
+        lambda *_args, **_kwargs: observed,
+        raising=False,
     )
-    private = OperationResult(
-        2,
-        "discover",
-        "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "succeeded",
-        "discovered",
-        (),
-        {
-            "state": "managed",
-            "records": {"releases": [], "backups": [], "activations": [], "adoptions": []},
-            "release_migrations": [
-                {
-                    "release_id": release_id,
-                    "migrations": [
-                        {
-                            "filename": "20260905120000_create_tasks.exs",
-                            "sha256": "e" * 64,
-                        }
-                    ],
-                }
-            ],
-        },
-        {},
-        {},
-        (),
-        (),
-        (),
-    )
-
-    result = project_result(request, private)
-
-    assert result.state["release_migrations"] == (
-        {
-            "release_id": release_id,
-            "migrations": (
-                {
-                    "filename": "20260905120000_create_tasks.exs",
-                    "sha256": "e" * 64,
-                },
-            ),
-        },
+    monkeypatch.setattr(
+        discover_module,
+        "lifecycle_lock",
+        lambda *_args, **_kwargs: nullcontext(),
+        raising=False,
     )
 
 
-@pytest.mark.parametrize(
-    ("release_count", "migrations_per_release"),
-    ((65, 1), (1, 65)),
-)
-def test_discovery_bridge_refuses_history_that_exceeds_collection_bounds(
-    release_count: int,
-    migrations_per_release: int,
-) -> None:
-    """A complete but unrepresentable history must not crash helper encoding."""
+def test_discover_projects_completed_host_state_without_lifecycle_records() -> None:
+    """The old lifecycle-shaped operation cannot satisfy a final request."""
 
-    result = project_result(
-        _discovery_request(),
-        _discovery_result(release_count, migrations_per_release),
-    )
+    result = discover_module.discover(_request())
 
     assert result.outcome == "refused"
-    assert result.message == "helper discovery history exceeds protocol bounds"
-    assert result.state == {"history": "unavailable"}
 
 
-def test_discovery_bridge_refuses_history_that_exceeds_output_bytes() -> None:
-    """Nested valid rows also need a bounded final encoded result."""
-
-    result = project_result(
-        _discovery_request(),
-        _discovery_result(32, 64),
-    )
-
-    assert result.outcome == "refused"
-    assert result.message == "helper discovery history exceeds protocol bounds"
-    assert result.state == {"history": "unavailable"}
-
-
-def test_packaged_discovery_projects_historical_migrations_from_real_manifest(
-    tmp_path: Path,
+def test_discover_projects_selected_release_records_and_migrations(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Restore authority comes from accepted host manifests, not a synthetic map."""
+    observed = _state()
+    _install_observer(monkeypatch, observed)
 
-    release_id = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-    stamp = datetime(2026, 9, 5, 12, 0, tzinfo=UTC).isoformat(
-        timespec="seconds"
-    ).replace("+00:00", "Z")
-    install = tmp_path / "install"
-    release = install / "releases" / release_id
-    release.mkdir(parents=True)
-    release.parent.chmod(0o750)
-    release.chmod(0o750)
-    (install / "current").symlink_to(release)
+    result = discover_module.discover(_request())
 
-    def write_record(path: Path, value: object) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.parent.parent.chmod(0o750)
-        path.parent.chmod(0o750)
-        path.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
-        path.chmod(0o600)
-
-    write_record(
-        install / "deployments" / "releases" / f"release-{release_id}.json",
-        {
-            "schema_version": 1,
-            "release_id": release_id,
-            "artifact_sha256": "a" * 64,
-            "installed_at": stamp,
-            "activated_at": stamp,
-            "previous_release_id": None,
-            "backup_id": None,
-            "migration_policy": "no-change",
-        },
-    )
-    write_record(
-        install / "deployments" / "activations" / "activation-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
-        {
-            "schema_version": 1,
-            "activation_id": "activation-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "previous_release_id": None,
-            "candidate_release_id": release_id,
-            "activated_at": stamp,
-            "backup_id": None,
-            "migration_policy": "no-change",
-        },
-    )
-    migration = {"filename": "20260905120000_create_tasks.exs", "sha256": "e" * 64}
-    write_record(
-        install / "deployments" / "manifests" / f"release-{release_id}.json",
-        {
-            "schema_version": 2,
-            "application": "taskman",
-            "application_version": "0.2.0",
-            "source_revision": "a" * 40,
-            "release_id": release_id,
-            "built_at": stamp,
-            "target_os": "ubuntu26.04",
-            "architecture": "amd64",
-            "otp_version": "27.3.4.6",
-            "elixir_version": "1.18.3",
-            "node_version": "22.22.1",
-            "hex_version": "2.5.1",
-            "rebar3_version": "3.24.0",
-            "builder_base_tag": "ubuntu:resolute-20260811.1",
-            "builder_base_digest": "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b",
-            "migrations": [migration],
-            "top_level": "taskman",
-        },
-    )
-    (tmp_path / "backups").mkdir()
-    package = build_helper_package(tmp_path / "taskman-host.pyz")
-    request = HostRequest(
-        2,
-        "discover",
-        "op-0123456789abcdef0123456789abcdef",
-        {},
-        {"install_root": install.as_posix(), "backup_root": (tmp_path / "backups").as_posix()},
-        {},
-    )
-
-    completed = subprocess.run(
-        ["python3", "-I", str(package.path)],
-        input=encode_request(request),
-        capture_output=True,
-        check=False,
-    )
-
-    result = decode_result(completed.stdout)
-    assert completed.returncode == 0
-    assert completed.stderr == b""
     assert result.outcome == "succeeded"
+    assert result.state["selected_release_id"] == RELEASE_ID
+    assert dict(result.state["releases"][0]) == {**observed.releases[0].to_mapping(), "migrations": ()}
+    assert dict(result.state["backups"][0]) == {**observed.backups[0].to_mapping(), "migration_versions": (20260905120000,)}
+    assert dict(result.state["selections"][0]) == observed.selections[0].to_mapping()
+    assert result.state["applied_migrations"] == (20260905120000,)
     assert result.state["release_migrations"] == (
-        {"release_id": release_id, "migrations": (migration,)},
+        {"release_id": RELEASE_ID, "migrations": ()},
     )
+    assert "activations" not in result.state
+    assert "adoptions" not in result.state
+
+
+def test_list_releases_projects_record_rows_and_bounded_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning = "unknown release entry: operator-notes.txt"
+    _install_observer(monkeypatch, _state(warnings=(warning,)))
+
+    result = discover_module.list_releases(_request("list_releases"))
+
+    assert result.outcome == "succeeded"
+    assert dict(result.state["releases"][0]) == {**_release().to_mapping(), "migrations": ()}
+    assert result.warnings == (warning,)
+
+
+def test_list_backups_projects_record_rows_and_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning = "unknown backup entry: notes.txt"
+    _install_observer(monkeypatch, _state(warnings=(warning,)))
+
+    result = discover_module.list_backups(_request("list_backups"))
+
+    assert result.outcome == "succeeded"
+    assert dict(result.state["backups"][0]) == {**_backup().to_mapping(), "migration_versions": (20260905120000,)}
+    assert result.warnings == (warning,)
+
+
+def test_read_only_discovery_maps_lock_contention_to_retryable_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def locked(*_args: object, **_kwargs: object):
+        class Lock:
+            def __enter__(self):
+                raise discover_module.LifecycleLockContention("held")
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        return Lock()
+
+    monkeypatch.setattr(discover_module, "lifecycle_lock", locked, raising=False)
+
+    result = discover_module.discover(_request())
+
+    assert result.outcome == "retryable"
+    assert result.state == {"locked": True}
+
+
+def test_authoritative_state_ambiguity_is_a_bounded_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_observer(monkeypatch, _state())
+    monkeypatch.setattr(
+        discover_module,
+        "observe_host_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StateAmbiguityError("current selection is ambiguous")
+        ),
+    )
+
+    result = discover_module.discover(_request())
+
+    assert result.outcome == "refused"
+    assert result.state == {}
+    assert result.warnings == ()

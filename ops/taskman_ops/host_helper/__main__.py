@@ -31,6 +31,13 @@ from taskman_ops.host_helper.verification import verify
 
 _FALLBACK_OPERATION = "discover"
 _FALLBACK_CORRELATION_ID = "op-00000000000000000000000000000000"
+_READ_ONLY_OPERATIONS = frozenset({"discover", "list_releases", "list_backups", "verify"})
+_READ_ONLY_HANDLERS = {
+    "discover": discover,
+    "list_releases": list_releases,
+    "list_backups": list_backups,
+    "verify": verify,
+}
 
 
 def _failure_result(
@@ -111,6 +118,21 @@ def _encode_or_internal_failure(
         )
 
 
+def _dispatch(request: HostRequest) -> HostResult:
+    """Invoke read-only handlers on the final request; bridge mutations only."""
+
+    if request.operation in _READ_ONLY_OPERATIONS:
+        result = _READ_ONLY_HANDLERS[request.operation](request)
+        if not isinstance(result, HostResult):
+            raise TypeError("read-only helper returned an invalid result")
+        return result
+    handler = _DISPATCH[request.operation]
+    private = handler(OperationRequest.from_request(request))  # type: ignore[arg-type]
+    if isinstance(private, HostResult):
+        return private
+    return project_result(request, private)
+
+
 def main() -> int:
     """Read one bounded request and emit exactly one bounded redacted result."""
 
@@ -128,10 +150,7 @@ def main() -> int:
             operation = request.operation
             correlation_id = request.correlation_id
             try:
-                result = project_result(
-                    request,
-                    _DISPATCH[request.operation](OperationRequest.from_request(request)),
-                )
+                result = _dispatch(request)
             except Exception:
                 result = _failure_result(
                     operation=operation,

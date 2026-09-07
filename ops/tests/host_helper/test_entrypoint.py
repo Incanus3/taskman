@@ -24,11 +24,15 @@ from taskman_ops.host_helper.legacy_result import OperationRequest, OperationRes
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 
 
-def request_bytes(paths: dict[str, str] | None = None) -> bytes:
+def request_bytes(
+    paths: dict[str, str] | None = None,
+    *,
+    operation: str = "discover",
+) -> bytes:
     return encode_request(
         HostRequest(
             protocol_version=2,
-            operation="discover",
+            operation=operation,
             correlation_id=CORRELATION,
             expected_state={},
             paths=paths or {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
@@ -46,20 +50,22 @@ class Stream:
 def invoke_entrypoint(
     payload: bytes,
     handler: Callable[[OperationRequest], OperationResult],
+    *,
+    operation: str = "discover",
 ) -> Iterator[Stream]:
     original_stdin = entrypoint.sys.stdin
     original_stdout = entrypoint.sys.stdout
-    original_handler = entrypoint._DISPATCH["discover"]
+    original_handler = entrypoint._DISPATCH[operation]
     stdout = Stream()
     entrypoint.sys.stdin = Stream(payload)
     entrypoint.sys.stdout = stdout
-    entrypoint._DISPATCH["discover"] = handler
+    entrypoint._DISPATCH[operation] = handler
     try:
         yield stdout
     finally:
         entrypoint.sys.stdin = original_stdin
         entrypoint.sys.stdout = original_stdout
-        entrypoint._DISPATCH["discover"] = original_handler
+        entrypoint._DISPATCH[operation] = original_handler
 
 
 def test_built_zipapp_emits_the_final_discovery_envelope(tmp_path: Path) -> None:
@@ -77,7 +83,9 @@ def test_built_zipapp_emits_the_final_discovery_envelope(tmp_path: Path) -> None
     assert result.operation == "discover"
     assert result.correlation_id == CORRELATION
     assert result.outcome == "succeeded"
-    assert result.state["host_kind"] == "empty"
+    assert result.state["selected_release_id"] is None
+    assert result.state["releases"] == ()
+    assert result.state["backups"] == ()
     assert set(result.to_mapping()) == {
         "protocol_version", "operation", "correlation_id", "outcome", "message", "state", "warnings"
     }
@@ -100,20 +108,24 @@ def test_entrypoint_rejects_oversized_input_without_echoing_it(tmp_path: Path) -
     assert secret not in completed.stdout
 
 
-def test_entrypoint_projects_private_result_once_without_old_evidence() -> None:
+def test_entrypoint_projects_private_mutation_result_once_without_old_evidence() -> None:
     def private_result(request: OperationRequest) -> OperationResult:
         return OperationResult(
-            2, request.operation, request.operation_id, "succeeded", "discovered", (),
-            {"state": "empty", "records": {"releases": [], "backups": [], "activations": []}, "warnings": []},
+            2, request.operation, request.operation_id, "succeeded", "backup", ("backup",),
+            {"backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size_bytes": 42},
             {}, {}, (), (), (),
         )
 
-    with invoke_entrypoint(request_bytes(), private_result) as stdout:
+    with invoke_entrypoint(request_bytes(operation="backup"), private_result, operation="backup") as stdout:
         assert entrypoint.main() == 0
 
     result = decode_result(stdout.buffer.getvalue())
     assert result.correlation_id == CORRELATION
-    assert result.state == {"host_kind": "empty", "releases": (), "backups": (), "activations": ()}
+    assert result.state == {
+        "changed": True,
+        "backup_id": "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 42,
+    }
     assert "operation_id" not in repr(result.state)
 
 
@@ -161,7 +173,9 @@ def test_entrypoint_replaces_projection_failure_with_small_final_result() -> Non
             2, request.operation, request.operation_id, "unknown", "internal", (), {}, {}, {}, (), (), (),
         )
 
-    with invoke_entrypoint(request_bytes(), invalid_private_result) as stdout:
+    with invoke_entrypoint(
+        request_bytes(operation="backup"), invalid_private_result, operation="backup"
+    ) as stdout:
         try:
             assert entrypoint.main() == 0
         except ProtocolError as error:

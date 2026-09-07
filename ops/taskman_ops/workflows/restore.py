@@ -10,6 +10,7 @@ import re
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..output import WorkflowResult
+from ..releases.identifiers import validate_release_id
 from ..remote import Remote
 from .helper import (
     database_settings,
@@ -88,15 +89,12 @@ def restore(
         warnings = discovery.warnings
         if not isinstance(records, Mapping):
             raise _safety("restore planning helper returned invalid lifecycle evidence")
-        activations = records.get("activations")
         backups = records.get("backups")
         if (
-            not isinstance(activations, list)
-            or not activations
-            or not isinstance(backups, list)
+            not isinstance(backups, list)
         ):
             raise _safety("restore requires managed lifecycle and backup authority")
-        current = _field(activations[-1], "candidate_release_id")
+        current = _release_field(records, "selected_release_id")
         backup = next(
             (
                 item
@@ -108,7 +106,7 @@ def restore(
         )
         if not isinstance(backup, Mapping):
             raise _safety("selected backup is not recorded")
-        intended = _field(backup, "current_release_id")
+        intended = _release_field(backup, "source_release_id")
         migrations = _migration_versions(records, intended)
         inspect_request = _request(
             config,
@@ -372,10 +370,13 @@ def _migration_versions(
     return result
 
 
-def _field(value: object, name: str) -> str:
+def _release_field(value: object, name: str) -> str:
     if not isinstance(value, Mapping) or type(value.get(name)) is not str:
         raise _safety("restore planning helper returned invalid lifecycle evidence")
-    return str(value[name])
+    try:
+        return validate_release_id(value[name])
+    except (TypeError, ValueError):
+        raise _safety("restore planning helper returned invalid lifecycle evidence") from None
 
 
 def _merge_warnings(*groups: tuple[str, ...]) -> tuple[str, ...]:

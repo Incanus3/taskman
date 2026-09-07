@@ -9,6 +9,8 @@ from taskman_ops.cli import Invocation, dispatch, main
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus
 from taskman_ops.output import WorkflowResult, clear_secrets, register_secret
+from taskman_ops.host_protocol import HostRequest, HostResult
+from taskman_ops.workflows.verify import run_verify
 from taskman_ops.workflows.verification_results import (
     CheckStatus,
     VerificationCheck,
@@ -147,3 +149,51 @@ def workflow_result(report: VerificationReport) -> WorkflowResult:
         next_action=report.next_action,
         exit_status=report.exit_status,
     )
+
+
+def test_verify_accepts_completed_report_with_observation_projection_and_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = VerificationReport(ExitStatus.OK, RELEASE_ID, RELEASE_ID, successful_checks(), None)
+
+    def invoke(_remote: object, request: object, **_kwargs: object) -> HostResult:
+        assert isinstance(request, HostRequest)
+        assert request.operation == "verify"
+        return HostResult(
+            2,
+            "verify",
+            request.correlation_id,  # type: ignore[attr-defined]
+            "succeeded",
+            "verification completed",
+            {
+                "report": report.to_mapping(),
+                "selected_release_id": RELEASE_ID,
+                "service_state": "running",
+                "database_state": "ready",
+                "future_fact": "ignored",
+            },
+            ("unknown non-authoritative entry",),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.verify.run_request", invoke)
+
+    result = run_verify(object(), EnvironmentConfig.model_validate({
+        "name": "production",
+        "ssh_host": "203.0.113.10",
+        "ssh_port": 22,
+        "ssh_user": "deployer",
+        "host_key_fingerprint": "SHA256:" + "A" * 43,
+        "public_hostname": "taskman.acme.tld",
+        "public_ipv4": "203.0.113.10",
+        "target_os": "ubuntu26.04",
+        "architecture": "amd64",
+        "application_port": 4000,
+        "distribution_port": 6789,
+        "database_name": "taskman_prod",
+        "database_role": "taskman",
+        "mail_from": "no-reply@acme.tld",
+    }), expected_release_id=RELEASE_ID)
+
+    assert result.stage == "verified"
+    assert result.facts["verification"]["release_id"] == RELEASE_ID
+    assert result.warnings == ("unknown non-authoritative entry",)

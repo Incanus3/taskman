@@ -67,11 +67,17 @@ def discovery(request: HostRequest) -> HostResult:
     return result(
         request,
         {
-            "host_kind": "managed",
+            "selected_release_id": CURRENT,
             "releases": (),
-            "activations": ({"candidate_release_id": CURRENT},),
-            "backups": ({"backup_id": BACKUP, "current_release_id": INTENDED},),
-            "adoptions": (),
+            "backups": (
+                {
+                    "backup_id": BACKUP,
+                    "dump_sha256": "e" * 64,
+                    "source_release_id": INTENDED,
+                    "migration_versions": (20260905120000,),
+                    "source_database_size_bytes": 1,
+                },
+            ),
             "release_migrations": (
                 {
                     "release_id": INTENDED,

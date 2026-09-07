@@ -10,15 +10,16 @@ import re
 import select
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import Mapping
 
-from taskman_ops.host_protocol import PROTOCOL_VERSION
-
-from .legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 
 from .facts import classify_lifecycle, collect_lifecycle_facts
-from .lifecycle import LifecycleError, LifecycleLockContention
+from .lifecycle import LifecycleError, LifecycleLockContention as LegacyLifecycleLockContention
+from .lock import LifecycleLockContention, lifecycle_lock
 from .paths import ManagedPaths, PathAuthorityError
+from .state import HostState, StateAmbiguityError, observe_host_state
 
 
 _CHECKS = (
@@ -37,8 +38,37 @@ _MINIMUM_DISK_BYTES = 10 * 1024**3
 _SUDO_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 
 
-def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResult:
-    """Run the fixed local checks and return only redacted summaries."""
+@dataclass(frozen=True)
+class _LegacyVerificationResult:
+    """In-process shape retained only for mutable procedures not yet migrated."""
+
+    protocol_version: int
+    operation: str
+    operation_id: str
+    outcome: str
+    stage: str
+    changed_stages: tuple[str, ...]
+    lifecycle: Mapping[str, object]
+    runtime_state: Mapping[str, object]
+    verification: Mapping[str, object]
+    residue_paths: tuple[str, ...]
+    recovery_actions: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def verify(request: object, *, lifecycle_locked: bool = False):
+    """Run read-only verification from a final request or legacy mutation call."""
+
+    # Mutable procedures still pass the private legacy OperationRequest while
+    # they own the lifecycle lock.  Keep that explicit type boundary until
+    # those procedures migrate; a wire HostRequest always receives HostResult.
+    if isinstance(request, HostRequest):
+        return _verify_host_state(request, lifecycle_locked=lifecycle_locked)
+    return _verify_legacy(request, lifecycle_locked=lifecycle_locked)
+
+
+def _verify_legacy(request: object, *, lifecycle_locked: bool = False) -> _LegacyVerificationResult:
+    """Retain the old in-process result only for mutation slices not yet migrated."""
 
     deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
     try:
@@ -72,7 +102,7 @@ def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResul
             assert release_id is not None
             if expected is not None and expected != release_id:
                 return _release_selection_failure(request)
-        except LifecycleLockContention as error:
+        except LegacyLifecycleLockContention as error:
             return _lock_failure(request, error)
         except (LifecycleError, PathAuthorityError, ValueError):
             return _release_selection_failure(request)
@@ -105,6 +135,161 @@ def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResul
     hsts = _hsts(public)
     checks.append(_check("public-hsts", hsts, "public HTTPS response includes HSTS", "public HTTPS response does not include valid HSTS"))
     return _result(request, "succeeded" if ready and hsts else "failed", "verified" if ready and hsts else "verification", _report(0 if ready and hsts else 9, release_id, expected, checks))
+
+
+def _verify_host_state(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResult:
+    """Verify health and topology against one completed HostState snapshot."""
+
+    deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
+    try:
+        paths = ManagedPaths.from_mapping(request.paths)
+        paths.validate_existing(owner_uid=os.geteuid())
+        settings = _settings(request.parameters)
+        expected = _expected_release(request.expected_state)
+    except (PathAuthorityError, ValueError):
+        return _final_host_failure(request, "unsupported")
+
+    authority = _host_authority(settings, paths, deadline)
+    if authority is not None:
+        return _final_host_failure(request, authority)
+
+    if lifecycle_locked:
+        try:
+            state = observe_host_state(paths)
+        except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
+            return _final_refusal(request)
+    else:
+        try:
+            with lifecycle_lock(paths, timeout_seconds=5.0):
+                state = observe_host_state(paths)
+        except LifecycleLockContention:
+            return _final_lock_failure(request)
+        except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
+            return _final_refusal(request)
+
+    release_id = state.selected_release_id
+    if release_id is None:
+        return HostResult(
+            protocol_version=PROTOCOL_VERSION,
+            operation=request.operation,
+            correlation_id=request.correlation_id,
+            outcome="refused",
+            message="no selected release is available for verification",
+            state={"selected_release_id": None},
+            warnings=state.warnings,
+        )
+    if expected is not None and expected != release_id:
+        return _final_release_selection_failure(request, release_id, state.warnings)
+    if not any(record.release_id == release_id for record in state.releases):
+        return _final_release_selection_failure(request, release_id, state.warnings)
+
+    release_path = (paths.release_root / release_id).as_posix()
+    checks: list[dict[str, object]] = []
+    service_ok, pid = _service_state(deadline)
+    checks.append(_check("taskman-service", service_ok, "taskman.service is active with a positive MainPID", "taskman.service is not active with a usable MainPID"))
+    executable_ok = service_ok and _main_pid_matches_release(pid, release_path, deadline)
+    checks.append(_check("release-identity", executable_ok, "systemd MainPID executable is under the selected release", "systemd MainPID executable does not match the selected release"))
+    caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _command_timeout(deadline))[0]
+    checks.append(_check("caddy-service", caddy_ok, "caddy.service is active", "caddy.service is not active"))
+    topology_ok = _listener_topology(settings["application_port"], settings["distribution_port"], settings["database_port"], deadline)
+    checks.append(_check("listener-topology", topology_ok, "Taskman, distribution, and PostgreSQL listeners have the required topology", "listener topology is missing, public, malformed, or ambiguous"))
+    checks.append(_journal_check(deadline))
+    if not _passed(checks):
+        return _final_result(request, "retryable", release_id, expected, checks, state)
+
+    readiness_deadline = min(deadline, time.monotonic() + settings["readiness_timeout"])
+    local_ok = _local_ready(settings["application_port"], settings["connection_timeout"], readiness_deadline)
+    checks.append(_check("local-readiness", local_ok, "loopback health endpoint returned exact ready response", "loopback health endpoint did not return exact ready response before its bounded deadline"))
+    if not local_ok:
+        return _final_result(request, "retryable", release_id, expected, checks, state)
+
+    remaining = min(deadline, readiness_deadline) - time.monotonic()
+    public = _curl(f"https://{settings['public_hostname']}/healthz", min(settings["connection_timeout"], remaining)) if remaining >= 0.001 else None
+    ready = _ready(public)
+    checks.append(_check("public-readiness", ready, "public HTTPS health endpoint returned exact ready response", "public HTTPS health endpoint did not return exact ready response"))
+    hsts = _hsts(public)
+    checks.append(_check("public-hsts", hsts, "public HTTPS response includes HSTS", "public HTTPS response does not include valid HSTS"))
+    return _final_result(request, "succeeded" if ready and hsts else "retryable", release_id, expected, checks, state)
+
+
+def _final_result(
+    request: HostRequest,
+    outcome: str,
+    release_id: str,
+    expected: str | None,
+    checks: list[dict[str, object]],
+    state: HostState,
+) -> HostResult:
+    successful = outcome == "succeeded"
+    report = _report(0 if successful else 9, release_id, expected, checks)
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome=outcome,
+        message="verification completed" if successful else "verification failed",
+        state={
+            "report": report,
+            "selected_release_id": release_id,
+            "service_state": state.service_state,
+            "database_state": state.database_state,
+        },
+        warnings=state.warnings,
+    )
+
+
+def _final_host_failure(request: HostRequest, authority: str) -> HostResult:
+    if authority not in {"preflight", "unsupported"}:
+        raise ValueError("invalid host authority failure")
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome="retryable",
+        message="host preflight failed",
+        state={"preflight": authority},
+        warnings=(),
+    )
+
+
+def _final_refusal(request: HostRequest) -> HostResult:
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome="refused",
+        message="authoritative host state is ambiguous",
+        state={},
+        warnings=(),
+    )
+
+
+def _final_lock_failure(request: HostRequest) -> HostResult:
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome="retryable",
+        message="lifecycle lock is unavailable",
+        state={"locked": True},
+        warnings=(),
+    )
+
+
+def _final_release_selection_failure(
+    request: HostRequest,
+    selected_release_id: str | None,
+    warnings: tuple[str, ...],
+) -> HostResult:
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome="refused",
+        message="selected release does not match the expected release",
+        state={"selected_release_id": selected_release_id},
+        warnings=warnings,
+    )
 
 
 def host_preflight(paths: ManagedPaths, parameters: Mapping[str, object]) -> str | None:
@@ -525,11 +710,24 @@ def _report(exit_status: int, release_id: str, expected: str | None, checks: lis
     return {"schema_version": 1, "status": "ok" if exit_status == 0 else "failed", "exit_status": exit_status, "release_id": release_id, "expected_release_id": expected, "checks": checks, "next_action": None if exit_status == 0 else _NEXT_ACTION}
 
 
-def _result(request: HostRequest, outcome: str, stage: str, report: dict[str, object]) -> HostResult:
-    return HostResult(protocol_version=PROTOCOL_VERSION, operation=request.operation, operation_id=request.operation_id, outcome=outcome, stage=stage, changed_stages=(), lifecycle={}, runtime_state={}, verification=report, residue_paths=(), recovery_actions=(), warnings=())
+def _result(request: object, outcome: str, stage: str, report: dict[str, object]) -> _LegacyVerificationResult:
+    return _LegacyVerificationResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=str(request.operation),
+        operation_id=str(request.operation_id),
+        outcome=outcome,
+        stage=stage,
+        changed_stages=(),
+        lifecycle={},
+        runtime_state={},
+        verification=report,
+        residue_paths=(),
+        recovery_actions=(),
+        warnings=(),
+    )
 
 
-def _host_failure(request: HostRequest, authority: str) -> HostResult:
+def _host_failure(request: object, authority: str) -> _LegacyVerificationResult:
     if authority not in {"preflight", "unsupported"}:
         raise ValueError("invalid host authority failure")
     action = (
@@ -537,7 +735,7 @@ def _host_failure(request: HostRequest, authority: str) -> HostResult:
         if authority == "preflight"
         else "use a supported Ubuntu 26.04 amd64 host and correct the environment configuration"
     )
-    return HostResult(
+    return _LegacyVerificationResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
         operation_id=request.operation_id,
@@ -553,8 +751,8 @@ def _host_failure(request: HostRequest, authority: str) -> HostResult:
     )
 
 
-def _release_selection_failure(request: HostRequest) -> HostResult:
-    return HostResult(
+def _release_selection_failure(request: object) -> _LegacyVerificationResult:
+    return _LegacyVerificationResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
         operation_id=request.operation_id,
@@ -570,10 +768,10 @@ def _release_selection_failure(request: HostRequest) -> HostResult:
     )
 
 
-def _lock_failure(request: HostRequest, error: LifecycleLockContention) -> HostResult:
+def _lock_failure(request: object, error: object) -> _LegacyVerificationResult:
     holder = None if error.holder is None else error.holder.to_mapping()
     runtime = {"lock_holder": holder} if holder is not None else {}
-    return HostResult(
+    return _LegacyVerificationResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
         operation_id=request.operation_id,

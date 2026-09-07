@@ -1,78 +1,96 @@
-"""Read-only lifecycle discovery and list operations."""
+"""Read-only projections of the completed host state."""
 
 from __future__ import annotations
 
-from taskman_ops.host_protocol import PROTOCOL_VERSION
+from collections.abc import Mapping
 
-from ..facts import backup_rows, classify_lifecycle, collect_lifecycle_facts, lifecycle_mapping, release_rows
-from ..legacy_result import OperationRequest as HostRequest, OperationResult as HostResult
-from ..lifecycle import LifecycleError, LifecycleLockContention, LifecycleStore
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+
+from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
+from ..state import HostState, StateAmbiguityError, observe_host_state
+
+
+_SNAPSHOT_TIMEOUT_SECONDS = 5.0
 
 
 def discover(request: HostRequest) -> HostResult:
-    """Return the complete coherent lifecycle classification."""
+    """Return one bounded projection of completed records and physical state."""
 
     try:
-        facts = collect_lifecycle_facts(ManagedPaths.from_mapping(request.paths))
-        state = classify_lifecycle(facts)
-        lifecycle = lifecycle_mapping(facts, state)
-        include_manual_adoption = request.parameters == {"include_manual_adoption": True}
-        if include_manual_adoption:
-            lifecycle["manual_adoption"] = (
-                LifecycleStore(facts.paths, owner_uid=facts.owner_uid).inspect_manual_current().to_mapping()
-                if state == "manual"
-                else None
-            )
-    except LifecycleLockContention as error:
-        return _locked(request, error)
-    except (LifecycleError, PathAuthorityError):
+        state = _observe(request)
+    except LifecycleLockContention:
+        return _locked(request)
+    except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
-    return _success(request, lifecycle, tuple(lifecycle["warnings"]))
+    return _success(request, _discovery_state(state), state.warnings)
 
 
 def list_releases(request: HostRequest) -> HostResult:
-    """Return selected release metadata from one coherent local snapshot."""
+    """Return completed release manifests from one coherent snapshot."""
 
     try:
-        facts = collect_lifecycle_facts(ManagedPaths.from_mapping(request.paths))
-        state = classify_lifecycle(facts)
-        lifecycle = {"state": state, "records": release_rows(facts), "warnings": list(facts.records.warnings)}
-    except LifecycleLockContention as error:
-        return _locked(request, error)
-    except (LifecycleError, PathAuthorityError):
+        state = _observe(request)
+    except LifecycleLockContention:
+        return _locked(request)
+    except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
-    return _success(request, lifecycle, tuple(lifecycle["warnings"]))
+    projection = {"releases": tuple(record.to_mapping() for record in state.releases)}
+    return _success(request, projection, state.warnings)
 
 
 def list_backups(request: HostRequest) -> HostResult:
-    """Return retained backup metadata without fresh dump-content validation."""
+    """Return validated backup manifests from one coherent snapshot."""
 
     try:
-        facts = collect_lifecycle_facts(ManagedPaths.from_mapping(request.paths))
-        state = classify_lifecycle(facts)
-        rows, warnings = backup_rows(facts)
-        lifecycle = {"state": state, "records": rows, "warnings": warnings}
-    except LifecycleLockContention as error:
-        return _locked(request, error)
-    except (LifecycleError, PathAuthorityError):
+        state = _observe(request)
+    except LifecycleLockContention:
+        return _locked(request)
+    except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
-    return _success(request, lifecycle, tuple(warnings))
+    projection = {"backups": tuple(record.to_mapping() for record in state.backups)}
+    return _success(request, projection, state.warnings)
 
 
-def _success(request: HostRequest, lifecycle: dict[str, object], warnings: tuple[str, ...]) -> HostResult:
+def _observe(request: HostRequest) -> HostState:
+    paths = ManagedPaths.from_mapping(request.paths)
+    # The lock is held only while the completed records and physical selection
+    # are read.  Health/readiness commands run after this snapshot is released.
+    with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
+        return observe_host_state(paths)
+
+
+def _discovery_state(state: HostState) -> dict[str, object]:
+    releases = tuple(record.to_mapping() for record in state.releases)
+    return {
+        "selected_release_id": state.selected_release_id,
+        "releases": releases,
+        "backups": tuple(record.to_mapping() for record in state.backups),
+        "selections": tuple(record.to_mapping() for record in state.selections),
+        "applied_migrations": state.applied_migrations,
+        "service_state": state.service_state,
+        "database_state": state.database_state,
+        # Restore planning still consumes this bounded migration authority
+        # until its own command slice moves to HostState records.
+        "release_migrations": tuple(
+            {"release_id": record.release_id, "migrations": tuple(record.migrations)}
+            for record in state.releases
+        ),
+    }
+
+
+def _success(
+    request: HostRequest,
+    state: Mapping[str, object],
+    warnings: tuple[str, ...],
+) -> HostResult:
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
-        operation_id=request.operation_id,
+        correlation_id=request.correlation_id,
         outcome="succeeded",
-        stage="discovered",
-        changed_stages=(),
-        lifecycle=lifecycle,
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=(),
+        message="host state observed",
+        state=state,
         warnings=warnings,
     )
 
@@ -81,33 +99,22 @@ def _refused(request: HostRequest) -> HostResult:
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
-        operation_id=request.operation_id,
+        correlation_id=request.correlation_id,
         outcome="refused",
-        stage="lifecycle-records",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=("inspect the managed lifecycle state before retrying",),
+        message="authoritative host state is ambiguous",
+        state={},
         warnings=(),
     )
 
 
-def _locked(request: HostRequest, error: LifecycleLockContention) -> HostResult:
-    holder = None if error.holder is None else error.holder.to_mapping()
+def _locked(request: HostRequest) -> HostResult:
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
-        operation_id=request.operation_id,
-        outcome="failed",
-        stage="lifecycle-lock",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={} if holder is None else {"lock_holder": holder},
-        verification={},
-        residue_paths=(),
-        recovery_actions=("wait for the recorded lifecycle operation to finish and retry",),
+        correlation_id=request.correlation_id,
+        outcome="retryable",
+        message="lifecycle lock is unavailable",
+        state={"locked": True},
         warnings=(),
     )
 
