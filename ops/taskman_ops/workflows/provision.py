@@ -221,7 +221,7 @@ def _dry_run(invocation: object) -> bool:
 
 
 def _caddyfile_sha256(plan: CaddyPlan) -> str:
-    """Bind later remote Caddy ownership checks to the pre-confirmed plan bytes."""
+    """Bind later remote Caddy ownership checks to the rendered plan bytes."""
 
     caddyfile = plan.caddyfile
     if not isinstance(caddyfile, str):  # pragma: no cover - static CaddyPlan contract
@@ -312,7 +312,7 @@ def _present_plan(plan: Mapping[str, object]) -> None:
                 changed=False,
                 stage="planned",
                 facts={"plan": dict(plan)},
-                next_action="confirm before connecting to the target host",
+                next_action="confirm before host convergence mutates the target host",
             )
         )
     )

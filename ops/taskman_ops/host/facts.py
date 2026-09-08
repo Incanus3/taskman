@@ -432,7 +432,7 @@ def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
 
 
 def _expected_caddyfile_hash(config: EnvironmentConfig, supplied_hash: str | None) -> str:
-    """Use provisioning's pre-confirmed Caddy bytes when they are available."""
+    """Use provisioning's rendered Caddy bytes when they are available."""
 
     if supplied_hash is not None:
         if re.fullmatch(r"[0-9a-f]{64}", supplied_hash) is None:

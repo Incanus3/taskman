@@ -9,11 +9,11 @@ from types import SimpleNamespace
 from tests.test_config import valid_environment
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
-from taskman_ops.workflows.provision import ProvisionCapabilities, provision
+from taskman_ops.workflows.provision import ProvisionCapabilities, _present_plan, provision
 
 
 def config() -> EnvironmentConfig:
@@ -76,7 +76,7 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
 
 
 def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -> None:
-    """Unsafe immutable host facts must stop the workflow before operator interaction."""
+    """Host admission must precede every operator-controlled consequence."""
 
     host = Host()
     capabilities = _capabilities(
@@ -89,6 +89,45 @@ def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -
 
     assert result.stage == "provisioned"
     assert host.events == ["plan", "discovery", "present-plan", "confirm", "provisioning"]
+
+
+def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() -> None:
+    """A rejected immutable snapshot must not reach operator or host consequences."""
+
+    host = Host()
+
+    def reject_discovery(_remote: object, _config: EnvironmentConfig, **_kwargs: object) -> None:
+        host.events.append("discovery")
+        raise OpsError(
+            ExitStatus.REMOTE_PREFLIGHT,
+            "host-admission",
+            "immutable host admission failed",
+            changed=False,
+            next_action="correct the immutable host evidence and retry",
+        )
+
+    capabilities = _capabilities(
+        host,
+        present_plan=lambda _plan: host.events.append("present-plan"),
+        confirm=lambda _plan: host.events.append("confirm") or True,
+    )
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "discover": reject_discovery})
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert result.stage == "provisioning-incomplete"
+    assert result.facts == {"failed_boundary": "host-admission", "release_started": False}
+    assert host.events == ["plan", "discovery"]
+    assert host.closed == 1
+
+
+def test_presented_plan_says_confirmation_precedes_host_convergence(capsys) -> None:
+    """Operator guidance must not imply that connection is the confirmation boundary."""
+
+    _present_plan({"environment": "production"})
+
+    assert "Next action: confirm before host convergence mutates the target host" in capsys.readouterr().out
 
 
 def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability() -> None:
@@ -163,8 +202,8 @@ def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -
     assert host.closed == 1
 
 
-def test_provision_passes_the_one_preconfirmed_caddy_plan_to_discovery_and_convergence() -> None:
-    """The Caddy bytes confirmed by the operator are the deploy input."""
+def test_provision_uses_one_rendered_caddy_plan_for_discovery_and_convergence() -> None:
+    """One rendered Caddy plan is admitted, confirmed, then used for convergence."""
 
     host = Host()
     rendered = CaddyPlan(
