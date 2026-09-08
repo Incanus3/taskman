@@ -1,6 +1,7 @@
 # Deployment controller reduction
 
-**Status:** Approved
+**Status:** Superseded for unfinished Task 9–10 work by the
+[2026-09-08 reassessment](2026-09-08-deployment-controller-reduction-reassessment-design.md)
 **Date:** 2026-09-07
 
 ## Summary
@@ -22,6 +23,10 @@ replaced without compatibility behavior. Completion requires at least a 35% redu
 21,128-line production Python baseline as well as deletion of the obsolete concepts that caused the
 complexity. The percentage is a guard against another architectural rearrangement, not permission
 to compress readable code or weaken the safety floor.
+
+The 35% completion rule and unfinished implementation direction below are retained for historical
+rationale. The reassessment linked above replaces them with the approved scheduled-backup migration,
+active-code simplification boundaries, and a 28% final floor.
 
 Delivery feature: `tas-deployment-controller-simplification-f00.11`.
 

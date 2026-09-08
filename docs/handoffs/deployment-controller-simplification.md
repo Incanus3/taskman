@@ -1,7 +1,7 @@
 # Deployment controller simplification handoff
 
-**Status:** active; reduction design approved, implementation plan ready for execution
-**Updated:** 2026-09-07
+**Status:** reassessment design approved; revised implementation plan pending
+**Updated:** 2026-09-08
 **Resume:** `$resume deployment-controller-simplification`
 
 ## Objective
@@ -14,6 +14,7 @@ the material safety, recovery, and operator-control guarantees.
 
 - [Simplification design](../specs/2026-09-06-deployment-controller-simplification-design.md)
 - [Reduction design](../specs/2026-09-07-deployment-controller-reduction-design.md)
+- [Reduction reassessment](../specs/2026-09-08-deployment-controller-reduction-reassessment-design.md)
 - [Reduction implementation plan](../plans/2026-09-07-deployment-controller-reduction.md)
 - [Implementation plan](../plans/2026-09-06-deployment-controller-simplification.md)
 - [Current deployment runbook](../deployment.md)
@@ -23,82 +24,94 @@ Delivery feature: `tas-deployment-controller-simplification-f00.11`, under paren
 
 ## Current checkpoint
 
-Tasks 1–10 are implemented, independently reviewed, and closed. The final
-whole-branch review approved head
-`b9253eab2d05cb4f36ed5d7701b2029e84e391f0` with no Critical or Important
-findings after four correction rounds.
+Tasks 1–8 of the reduction plan are implemented, independently reviewed, and
+closed. The applied stack now includes commit
+`a2eae96efdb98cd5687d86592d943e3552cbc553`.
 
-The completed architecture uses the documented two-root model, one bounded
-transient standard-library helper protocol, and one programmatic pyinfra
-provisioning path. The root-owned `ops/backup/taskman-backup` remains
-intentionally as the systemd timer target installed by pyinfra. It is a
-scheduled host capability, not a parallel workstation controller.
+The implementation has a verified artifact resolver, completed immutable
+records and one observed `HostState`, the final bounded four-outcome helper
+protocol, read-only workflows projected from observed state, and built-in-first
+pyinfra provisioning. Backup and cleanup now use bounded subprocesses and
+replayable observed-state procedures without journals, residue arrays, or
+generated recovery actions. Deploy and genesis now share one convergent
+procedure with validated backup-before-migration, atomic verified selection,
+and completed selection records. The only retained direct provisioning actions are Caddy
+pre-activation validation, ordered UFW activation with a fresh pinned-host-key
+SSH proof, PostgreSQL cluster/HBA transition, and secret-sensitive writes.
 
-Delivery feature `tas-deployment-controller-simplification-f00` remains open
-while a follow-on reduction is assessed before operator-controlled integration
-and real-host acceptance. All ten implementation tasks are closed in Beads.
+Task 9 is blocked as
+`tas-deployment-controller-simplification-f00.11.9`. Its uncommitted working
+tree deletes the legacy lifecycle/runtime core, temporary result bridge, and
+orphan legacy backup operation; focused architecture/simplification coverage
+passes. The honest production count is 15,948 lines, or 24.517% below the
+21,128-line baseline, still 2,215 lines above the required maximum.
 
-The follow-on direction has been approved section by section and captured in
-the proposed reduction design. It preserves every public command and its main
-responsibility, but replaces exact crash continuation with replayable
-convergence: after a failure, the operator reruns the command, confirms any
-newly dangerous step, and the tool automatically repairs or repeats work unless
-the observed state is genuinely ambiguous. Compatibility with the never-deployed
-lifecycle, recovery, and backup metadata is not required. The design now also
-uses a built-in-first pyinfra boundary: stable, secret-free, independently
-observable, safely repeatable provisioning should use declarative built-ins;
-small custom actions remain only for material availability, access, secret, or
-transaction boundaries. Wrapping custom shell in pyinfra does not qualify as
-simplification.
+The complete suite also cannot collect because the installed scheduled-backup
+asset's black-box tests import the deleted lifecycle records. That asset still
+writes the old activation/lifecycle format. Migrating or removing the scheduled
+capability, plus reducing another 2,215 active lines, is outside the approved
+Task 9 deletion inventory and requires operator-approved design reassessment.
 
-Plain `deploy` must resolve its artifact before connecting to the host. An
-explicit `--artifact` remains authoritative after verification. Otherwise it
-reuses a verified artifact only when its source revision, application version,
-target, pinned toolchain, and builder identity exactly match the current clean
-checkout; on no match it invokes the same build capability as `build`. Artifact
-age is irrelevant, and invalid or nonmatching cache entries are ignored.
+A fresh three-part read-only audit found that scheduled backups are a retained
+product capability and should migrate to the completed-record model rather than
+be removed. The recommended shape is a narrow installed standard-library
+zipapp reusing the backup, state, record, lock, command, and retention
+capabilities; the old 843-line shell lifecycle graph and most of its 1,300-line
+legacy test suite can then be deleted. This migration is architecturally
+necessary but likely adds roughly 140–220 measured production-Python lines.
 
-The retained safety floor covers secret non-disclosure, verified SSH host
-identity, destructive confirmation, privileged mutation confined to
-authoritative Taskman paths, validated backups before migrations or restores,
-atomic release selection, truthful recoverability, and the bounded transient
-helper. Exact operation journals, provisional state, exhaustive residue and
-stage evidence, seamless continuation, and low-value timing/hostile-filesystem
-edge machinery are eligible for deletion. The required result is at least a
-35% reduction from the 21,128-line production-Python baseline; there is no
-absolute line-count target.
+The approved reassessment design records the resulting architecture. The
+active-code audit found credible cohesive reductions in internal interface
+duplication, bounded transport, shared helper primitives, host admission,
+Caddy evidence, PostgreSQL convergence, verification timing/commands, and
+completed-state parsing. After overlap and scheduled-backup migration, the
+honest expected final reduction is approximately 28–31%, not 35%. Reaching 35%
+would require explicit product or guarantee changes such as removing scheduled
+backups, weakening helper/SSH/redaction checks, or narrowing configuration and
+build contracts; none is recommended merely to satisfy the metric.
 
-## Latest evidence and constraints
+## Active decisions and evidence
 
-Independent final review passed a 16-case adversarial matrix, 237 focused
-deployment/recovery/SSH tests, the cache-cleared operations suite, 30
-architecture and contract tests, locked dependency synchronization,
-compileall, shell and diff checks, and `mix precommit` with 802 tests.
-
-The latest builder-relevant source commit
-`6b4717e486203f497bdc8cd37eb2df7e17de94c5` produced and independently
-verified release
-`0.2.0-6b4717e48620-ubuntu26.04-amd64-otp27.3.4.6`, archive SHA-256
-`d56f122fef1ae336c0d22a262e99e3b1721c6e9dcfe3f1aeeabc8508b6d03518`,
-from
-`ubuntu:resolute-20260811.1@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b`.
-Later changes are controller-only Python and do not enter the Phoenix release
-artifact.
-
-Final-head metric: 21,128 production lines, 19,895 test lines, 354 multiline
-executable-string lines, and 114 tracked Python files. The nonbinding 20–30%
-production-line reduction target was not met; the final report records the
-deleted duplicate paths and the cohesive safety-critical boundaries retained.
-
-No real-host action, deployment, push, merge, or publication was performed.
-Those actions remain separately authorized.
+- The final wire protocol is authoritative. One private one-way helper bridge
+  remains only until the last legacy internal consumer is migrated; Task 9 must
+  delete it.
+- Deterministic temporary names remain
+  `.release-<version>-<revision>-<target>.tmp` and
+  `.backup-<backup-id>.dump.tmp`; they carry no operation ID or pending record.
+- Task 4 also migrated restore discovery to the final selected-release, backup
+  source-release, and bounded migration projections.
+- Task 5 passed its focused provisioning suite, architecture and executable
+  guards, controller metric, full operations suite, and two independent fix
+  reviews. Ruff was unavailable in the locked environment.
+- Task 6 passed 34 focused tests, the full operations suite,
+  architecture/contracts, compileall, the controller metric, and
+  `mix precommit` with 802 tests. Independent review confirmed that cleanup
+  protects all selection-referenced backups before any mutation.
+- Task 7 passed 45 focused tests, 53 architecture/protocol contracts, the full
+  operations suite, compileall, the controller metric, and `mix precommit` with
+  802 tests. Independent review confirmed unowned genesis schema state is
+  refused before mutation.
+- Task 8 passed 25 focused helper/dispatch/workflow tests, the full operations
+  suite, architecture/contracts, compileall, metric, and `mix precommit` with
+  802 tests. Independent review approved same-release and interrupted restore
+  replay plus exact fresh-backup provenance.
+- After uncommitted Task 9 deletions, the measured production count is 15,948
+  lines. The required maximum is 13,733.
+- No banned legacy production references remain in the partial Task 9 tree.
+- The largest remaining modules are active SSH transport, PostgreSQL
+  convergence, deploy/restore procedures, host facts, verification,
+  configuration, output, and build code; no further 2,215-line obsolete
+  transaction inventory has been demonstrated.
+- The metric scope is correct: it counts tracked `taskman_ops/*.py` only, not
+  the scheduled shell asset or tests.
+- No real-host action, deployment, push, merge, or publication has been
+  performed.
 
 ## Next action
 
-Start a clean session and execute the ten ordered child tasks
-`tas-deployment-controller-simplification-f00.11.1` through `.11.10` using the
-selected subagent-driven workflow. Begin with the artifact resolver, then the
-completed-state foundation and coarse protocol before migrating commands. No
-implementation agent has yet been spawned and no production code has changed.
-Keep the parent feature open until the operator accepts the intended delivery
-state; real-host acceptance remains separately authorized.
+Create a revised implementation plan from the approved reassessment design.
+The plan must adopt the existing uncommitted Task 9 deletion slice deliberately,
+migrate scheduled backups before final legacy deletion, sequence active
+simplification with explicit transition-deletion owners, update Task 9/10
+Beads acceptance criteria, and preserve the separate real-host/integration
+authorization boundary.
