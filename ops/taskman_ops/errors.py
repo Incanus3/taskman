@@ -7,6 +7,7 @@ the command's internal exception or any protected value.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import IntEnum
 from typing import Any
 
@@ -41,6 +42,8 @@ class OpsError(Exception):
     message: str
     changed: bool
     next_action: str | None
+    state: Mapping[str, object]
+    warnings: tuple[str, ...]
 
     def __init__(
         self,
@@ -49,6 +52,9 @@ class OpsError(Exception):
         message: str,
         changed: bool = False,
         next_action: str | None = None,
+        *,
+        state: Mapping[str, object] | None = None,
+        warnings: tuple[str, ...] = (),
     ) -> None:
         try:
             self.status = status if isinstance(status, ExitStatus) else ExitStatus(status)
@@ -61,11 +67,17 @@ class OpsError(Exception):
             raise TypeError("message must be a string")
         if next_action is not None and not isinstance(next_action, str):
             raise TypeError("next_action must be a string or None")
+        if state is not None and not isinstance(state, Mapping):
+            raise TypeError("state must be a mapping or None")
+        if not isinstance(warnings, tuple) or not all(isinstance(warning, str) for warning in warnings):
+            raise TypeError("warnings must be a tuple of strings")
 
         self.stage = stage
         self.message = message
         self.changed = bool(changed)
         self.next_action = next_action
+        self.state = {} if state is None else dict(state)
+        self.warnings = warnings
         # Do not pass structured metadata as Exception.args: traceback and
         # default reprs should have only the operator message to redact.
         super().__init__(message)
@@ -102,27 +114,25 @@ class OpsError(Exception):
         except Exception:  # pragma: no cover - defensive output boundary
             return "[REDACTED]"
 
-    def as_dict(self) -> dict[str, object]:
-        """Return stable, structured fields for report rendering."""
 
-        try:
-            from .output import redact
+class HelperTransportError(OpsError):
+    """A helper transport failure with the only dispatch fact callers need."""
 
-            stage = redact(self.stage)
-            message = redact(self.message)
-            next_action = redact(self.next_action)
-        except Exception:  # pragma: no cover - defensive output boundary
-            stage = "controller"
-            message = "controller operation failed"
-            next_action = None
+    helper_entry_dispatched: bool
 
-        return {
-            "status": self.status.name.lower(),
-            "stage": stage,
-            "message": message,
-            "changed": self.changed,
-            "next_action": next_action,
-        }
+    def __init__(self, error: OpsError, *, helper_entry_dispatched: bool) -> None:
+        if type(helper_entry_dispatched) is not bool:
+            raise TypeError("helper_entry_dispatched must be a boolean")
+        super().__init__(
+            error.status,
+            error.stage,
+            error.message,
+            error.changed,
+            error.next_action,
+            state=error.state,
+            warnings=error.warnings,
+        )
+        self.helper_entry_dispatched = helper_entry_dispatched
 
 
-__all__ = ["ExitStatus", "OpsError"]
+__all__ = ["ExitStatus", "HelperTransportError", "OpsError"]

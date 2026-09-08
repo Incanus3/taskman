@@ -8,10 +8,12 @@ import re
 from typing import Callable
 
 from ..config import EnvironmentConfig
-from ..errors import ExitStatus, OpsError
+from ..errors import ExitStatus, HelperTransportError, OpsError
 from ..helper_package import HelperPackage, temporary_helper_package
-from ..helper_runner import HelperInvocation, invoke_helper, new_correlation_id
+from ..helper_runner import invoke_helper, new_correlation_id
 from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
+from ..host_protocol.identifiers import ProtocolError
 from ..manifests import VerifiedArtifact
 from ..remote import Remote, UploadReceipt
 from .verification_results import VerificationReport
@@ -76,36 +78,17 @@ def run_request(
     request: HostRequest,
     *,
     package: HelperPackage | None = None,
-    invoker: Callable[[Remote, HelperPackage, HostRequest], HelperInvocation] = invoke_helper,
+    invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
 ) -> HostResult:
     """Invoke once and enforce final protocol/version/operation/correlation."""
 
     manager = temporary_helper_package() if package is None else nullcontext(package)
     with manager as selected:
-        invocation = invoker(remote, selected, request)
-    if not isinstance(invocation, HelperInvocation):
-        raise _safety(request.operation, "host helper returned invalid invocation")
-    result = invocation.result
-    if (
-        not isinstance(result, HostResult)
-        or result.protocol_version != request.protocol_version
-        or result.operation != request.operation
-        or result.correlation_id != request.correlation_id
-    ):
+        result = invoker(remote, selected, request)
+    try:
+        return validate_result_for_request(request, result)
+    except ProtocolError:
         raise _safety(request.operation, "host helper result does not match its request")
-    if invocation.cleanup_warning is None:
-        return result
-    if invocation.cleanup_warning in result.warnings:
-        return result
-    return HostResult(
-        protocol_version=result.protocol_version,
-        operation=result.operation,
-        correlation_id=result.correlation_id,
-        outcome=result.outcome,
-        message=result.message,
-        state=result.state,
-        warnings=(*result.warnings, invocation.cleanup_warning),
-    )
 
 
 def result_error(result: HostResult) -> OpsError:
@@ -139,9 +122,9 @@ def result_error(result: HostResult) -> OpsError:
         result.message,
         changed=state.get("changed") is True,
         next_action="inspect the observed host state before retrying",
+        state=state,
+        warnings=result.warnings,
     )
-    error.state = dict(state)  # type: ignore[attr-defined]
-    error.warnings = tuple(result.warnings)  # type: ignore[attr-defined]
     return error
 
 
@@ -198,7 +181,7 @@ def run_deployment_request(
     migration_policy: str,
     genesis: bool = False,
     package: HelperPackage | None = None,
-    invoker: Callable[[Remote, HelperPackage, HostRequest], HelperInvocation] = invoke_helper,
+    invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
 ) -> HostResult:
     """Upload one verified archive, then invoke the final deployment envelope."""
 
@@ -240,22 +223,16 @@ def run_deployment_request(
             },
         )
         result = run_request(remote, request_value, package=package, invoker=invoker)
-        if not receipt.cleanup_warning or "transient upload cleanup was incomplete" in result.warnings:
-            return result
-        return HostResult(
-            protocol_version=result.protocol_version,
-            operation=result.operation,
-            correlation_id=result.correlation_id,
-            outcome=result.outcome,
-            message=result.message,
-            state=result.state,
-            warnings=(*result.warnings, "transient upload cleanup was incomplete"),
+        return (
+            merge_result_warning(result, "transient upload cleanup was incomplete")
+            if receipt.cleanup_warning
+            else result
         )
-    except Exception as error:
+    except HelperTransportError as error:
         # The uploaded archive is only removed when the runner proves helper
         # entry never started.  No residue path or recovery command crosses
         # the final result boundary.
-        if getattr(error, "helper_entry_dispatched", None) is False:
+        if error.helper_entry_dispatched is False:
             try:
                 remote.run(("rm", "-f", "--", upload.as_posix()), sudo=True, sensitive=True)
             except Exception:

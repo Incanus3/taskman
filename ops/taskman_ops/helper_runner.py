@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import secrets
 from typing import Sequence
 
-from .errors import ExitStatus, OpsError
+from .errors import ExitStatus, HelperTransportError, OpsError
 from .helper_package import HelperPackage
 from .host_protocol import MAX_OUTPUT_BYTES, HostRequest, HostResult, decode_result, encode_request
-from .host_protocol.identifiers import validate_correlation_id
+from .host_protocol.envelope import merge_result_warning, validate_result_for_request
+from .host_protocol.identifiers import ProtocolError, validate_correlation_id
 from .remote import CommandResult, Remote, UploadReceipt
 
 
@@ -26,14 +26,7 @@ _CONTROL_STDERR_LIMIT = 4096
 MAX_STDERR_BYTES = 16 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _DECIMAL_RE = re.compile(r"[0-9]+\Z")
-
-
-@dataclass(frozen=True)
-class HelperInvocation:
-    """The final helper result plus at most one transport cleanup warning."""
-
-    result: HostResult
-    cleanup_warning: str | None = None
+_CLEANUP_WARNING = "transient helper cleanup was incomplete"
 
 
 def new_correlation_id() -> str:
@@ -42,7 +35,7 @@ def new_correlation_id() -> str:
     return validate_correlation_id(f"op-{secrets.token_hex(16)}")
 
 
-def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) -> HelperInvocation:
+def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) -> HostResult:
     """Transfer, verify, execute, decode, and best-effort remove one helper.
 
     The runner owns only strict SSH transport and archive authority.  It never
@@ -107,28 +100,28 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         )
         if not _succeeded(command):
             raise _safety_error("host helper invocation failed")
-        result = _decode_result(command)
-        _validate_correlation(result, package, request)
+        result = validate_result_for_request(request, _decode_result(command))
         completed = True
     except OpsError as error:
-        cleanup_needed = _best_effort_cleanup(
+        raise _cleanup_failure(
+            error,
             remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-            transfer_created, invocation_created,
-        ) or cleanup_needed or (dispatched and not completed)
-        error.helper_entry_dispatched = dispatched  # type: ignore[attr-defined]
-        if cleanup_needed:
-            error.warnings = ("transient helper cleanup was incomplete",)
-        raise
+            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
+        ) from None
+    except ProtocolError:
+        error = _safety_error("host helper result does not match its request")
+        raise _cleanup_failure(
+            error,
+            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
+            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
+        ) from None
     except Exception:
         error = _safety_error("transient helper invocation failed")
-        cleanup_needed = _best_effort_cleanup(
+        raise _cleanup_failure(
+            error,
             remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-            transfer_created, invocation_created,
-        ) or cleanup_needed or (dispatched and not completed)
-        error.helper_entry_dispatched = dispatched  # type: ignore[attr-defined]
-        if cleanup_needed:
-            error.warnings = ("transient helper cleanup was incomplete",)
-        raise error from None
+            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
+        ) from None
 
     cleanup_needed = _best_effort_cleanup(
         remote, transfer_directory, transfer_path, invocation_directory, installed_path,
@@ -136,10 +129,42 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
     ) or cleanup_needed
     if result is None:
         raise _safety_error("transient helper invocation failed")
-    return HelperInvocation(
-        result=result,
-        cleanup_warning="transient helper cleanup was incomplete" if cleanup_needed else None,
-    )
+    return merge_result_warning(result, _CLEANUP_WARNING) if cleanup_needed else result
+
+
+def _cleanup_failure(
+    error: OpsError,
+    remote: Remote,
+    transfer_directory: PurePosixPath,
+    transfer_path: PurePosixPath,
+    invocation_directory: PurePosixPath,
+    installed_path: PurePosixPath,
+    transfer_created: bool,
+    invocation_created: bool,
+    cleanup_needed: bool,
+    dispatched: bool,
+    completed: bool,
+) -> HelperTransportError:
+    cleanup_needed = _best_effort_cleanup(
+        remote,
+        transfer_directory,
+        transfer_path,
+        invocation_directory,
+        installed_path,
+        transfer_created,
+        invocation_created,
+    ) or cleanup_needed or (dispatched and not completed)
+    if cleanup_needed and _CLEANUP_WARNING not in error.warnings:
+        error = OpsError(
+            error.status,
+            error.stage,
+            error.message,
+            error.changed,
+            error.next_action,
+            state=error.state,
+            warnings=(*error.warnings, _CLEANUP_WARNING),
+        )
+    return HelperTransportError(error, helper_entry_dispatched=dispatched)
 
 
 def _validate_inputs(package: HelperPackage, request: HostRequest) -> None:
@@ -248,16 +273,6 @@ def _decode_result(command: CommandResult) -> HostResult:
         raise _safety_error("host helper returned invalid result") from None
 
 
-def _validate_correlation(result: HostResult, package: HelperPackage, request: HostRequest) -> None:
-    if (
-        result.protocol_version != request.protocol_version
-        or result.protocol_version != package.protocol_version
-        or result.operation != request.operation
-        or result.correlation_id != request.correlation_id
-    ):
-        raise _safety_error("host helper result does not match its request")
-
-
 def _run(
     remote: Remote, argv: Sequence[str], *, sudo: bool, stdin: bytes | None = None,
     sensitive: bool = False, stdout_limit: int = _CONTROL_STDOUT_LIMIT,
@@ -309,4 +324,4 @@ def _safety_error(message: str) -> OpsError:
     )
 
 
-__all__ = ["HelperInvocation", "MAX_STDERR_BYTES", "invoke_helper", "new_correlation_id"]
+__all__ = ["MAX_STDERR_BYTES", "invoke_helper", "new_correlation_id"]

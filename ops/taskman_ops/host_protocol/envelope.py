@@ -296,6 +296,39 @@ def decode_result(payload: bytes) -> HostResult:
     return HostResult.from_mapping(_decode_json(payload, maximum=MAX_OUTPUT_BYTES))
 
 
+def validate_result_for_request(request: object, result: object) -> HostResult:
+    """Return only the final result correlated to its exact helper request."""
+
+    if not isinstance(request, HostRequest) or not isinstance(result, HostResult):
+        raise ProtocolError("invalid helper result")
+    if (
+        result.protocol_version != request.protocol_version
+        or result.operation != request.operation
+        or result.correlation_id != request.correlation_id
+    ):
+        raise ProtocolError("helper result does not match its request")
+    return result
+
+
+def merge_result_warning(result: object, warning: object) -> HostResult:
+    """Attach one bounded warning without duplicating an existing final warning."""
+
+    if not isinstance(result, HostResult):
+        raise ProtocolError("invalid helper result")
+    warning = validate_string(warning)
+    if warning in result.warnings:
+        return result
+    return HostResult(
+        protocol_version=result.protocol_version,
+        operation=result.operation,
+        correlation_id=result.correlation_id,
+        outcome=result.outcome,
+        message=result.message,
+        state=result.state,
+        warnings=(*result.warnings, warning),
+    )
+
+
 __all__ = [
     "MAX_COLLECTION_ITEMS",
     "MAX_INPUT_BYTES",
@@ -308,4 +341,6 @@ __all__ = [
     "decode_result",
     "encode_request",
     "encode_result",
+    "merge_result_warning",
+    "validate_result_for_request",
 ]

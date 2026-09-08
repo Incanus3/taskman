@@ -19,6 +19,7 @@ from taskman_ops.host_protocol import (
     encode_request,
     encode_result,
 )
+from taskman_ops.host_protocol import envelope
 
 
 def request_mapping(**overrides: object) -> dict[str, object]:
@@ -82,6 +83,43 @@ def test_result_round_trip_keeps_the_concise_final_state() -> None:
     assert set(encoded_mapping) == set(result_mapping())
     assert encoded_mapping["state"] == {}
     assert encoded_mapping["warnings"] == []
+
+
+@pytest.mark.parametrize("outcome", ("succeeded", "refused", "retryable", "manual"))
+def test_result_round_trip_preserves_each_final_outcome(outcome: str) -> None:
+    """Removing a final outcome would collapse a distinct operator decision."""
+
+    result = HostResult(**result_mapping(outcome=outcome))
+
+    assert decode_result(encode_result(result)).outcome == outcome
+
+
+@pytest.mark.parametrize(
+    "result_overrides",
+    (
+        {"operation": "verify"},
+        {"correlation_id": "op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    ),
+)
+def test_result_request_matcher_rejects_every_unrelated_final_result(
+    result_overrides: dict[str, object],
+) -> None:
+    """Relaxing version, operation, or correlation matching accepts another helper's result."""
+
+    request = HostRequest(**request_mapping())
+    result = HostResult(**result_mapping(**result_overrides))
+
+    with pytest.raises(ProtocolError):
+        envelope.validate_result_for_request(request, result)
+
+
+def test_result_request_matcher_returns_the_exact_correlated_result() -> None:
+    """Replacing a validated result would discard the helper's bounded final evidence."""
+
+    request = HostRequest(**request_mapping())
+    result = HostResult(**result_mapping())
+
+    assert envelope.validate_result_for_request(request, result) is result
 
 
 @pytest.mark.parametrize(

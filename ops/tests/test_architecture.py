@@ -48,6 +48,14 @@ _REMOVED_TRANSACTION_FIELDS = frozenset(
         "recovery_actions",
     }
 )
+_REMOVED_HELPER_INTERFACE_NAMES = frozenset(
+    {
+        "HelperInvocation",
+        "OperationSpec",
+        "OPERATION_SPECS",
+        "operation_spec",
+    }
+)
 
 
 def _imports_removed_transaction_module(relative_path: str, node: ast.Import | ast.ImportFrom) -> bool:
@@ -103,6 +111,25 @@ def _removed_transaction_concept_violations(
     return tuple(violations)
 
 
+def _removed_helper_interface_violations(relative_path: str, tree: ast.AST) -> tuple[str, ...]:
+    """Reject only the superseded helper wrapper and operation-spec API."""
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in _REMOVED_HELPER_INTERFACE_NAMES
+        ):
+            violations.append(f"{relative_path}:{node.lineno}: defines removed helper interface {node.name}")
+        elif isinstance(node, ast.Name) and node.id in _REMOVED_HELPER_INTERFACE_NAMES:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed helper interface {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in _REMOVED_HELPER_INTERFACE_NAMES:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed helper interface {node.attr}")
+        elif isinstance(node, ast.Constant) and node.value in _REMOVED_HELPER_INTERFACE_NAMES:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed helper interface {node.value}")
+    return tuple(violations)
+
+
 def test_deleted_transaction_concepts_are_absent_from_production_ast() -> None:
     """Restoring the journal/runtime model would reintroduce deleted policy."""
 
@@ -117,6 +144,22 @@ def test_deleted_transaction_concepts_are_absent_from_production_ast() -> None:
             continue
         violations.extend(
             _removed_transaction_concept_violations(
+                relative_path, ast.parse(source.read_text(encoding="utf-8"))
+            )
+        )
+
+    assert violations == []
+
+
+def test_deleted_helper_interfaces_are_absent_from_production_ast() -> None:
+    """Restoring wrapper/spec compatibility would fork the canonical result path."""
+
+    package = Path(__file__).resolve().parents[1] / "taskman_ops"
+    violations: list[str] = []
+    for source in sorted(package.rglob("*.py")):
+        relative_path = source.relative_to(package.parent).as_posix()
+        violations.extend(
+            _removed_helper_interface_violations(
                 relative_path, ast.parse(source.read_text(encoding="utf-8"))
             )
         )
@@ -156,6 +199,26 @@ def test_removed_transaction_guard_rejects_imports_fields_and_record_shapes() ->
         "taskman_ops/example.py:8: uses removed transaction field recovery_actions",
         "taskman_ops/example.py:9: defines removed transaction symbol ActivationRecord",
         "taskman_ops/example.py:11: defines removed transaction symbol AdoptionRecord",
+    }
+
+
+def test_removed_helper_interface_guard_rejects_wrapper_and_specification_revival() -> None:
+    tree = ast.parse(
+        "class HelperInvocation:\n"
+        "    pass\n"
+        "def operation_spec():\n"
+        "    return OPERATION_SPECS\n"
+        "result = HelperInvocation\n"
+        "class OperationSpec:\n"
+        "    pass\n"
+    )
+
+    assert set(_removed_helper_interface_violations("taskman_ops/example.py", tree)) == {
+        "taskman_ops/example.py:1: defines removed helper interface HelperInvocation",
+        "taskman_ops/example.py:3: defines removed helper interface operation_spec",
+        "taskman_ops/example.py:4: uses removed helper interface OPERATION_SPECS",
+        "taskman_ops/example.py:5: uses removed helper interface HelperInvocation",
+        "taskman_ops/example.py:6: defines removed helper interface OperationSpec",
     }
 
 

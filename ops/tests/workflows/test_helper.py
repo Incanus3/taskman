@@ -3,8 +3,34 @@ from __future__ import annotations
 import pytest
 
 from taskman_ops.errors import ExitStatus
-from taskman_ops.host_protocol import HostResult
-from taskman_ops.workflows.helper import result_error
+from taskman_ops.host_protocol import HostRequest, HostResult
+from taskman_ops.workflows.helper import result_error, run_request
+
+
+CORRELATION = "op-0123456789abcdef0123456789abcdef"
+
+
+def test_run_request_consumes_the_direct_correlated_host_result() -> None:
+    """Keeping a transport wrapper would make the workflow reconstruct the final result."""
+
+    request = HostRequest(
+        2,
+        "discover",
+        CORRELATION,
+        {},
+        {"install_root": "/opt/taskman"},
+        {},
+    )
+    result = HostResult(2, "discover", CORRELATION, "succeeded", "observed", {}, ())
+
+    returned = run_request(
+        object(),
+        request,
+        package=object(),  # type: ignore[arg-type]
+        invoker=lambda _remote, _package, _request: result,
+    )
+
+    assert returned is result
 
 
 @pytest.mark.parametrize(
@@ -50,7 +76,7 @@ from taskman_ops.workflows.helper import result_error
 def test_result_error_maps_only_final_outcome_and_concise_state(
     operation: str, outcome: str, state: dict[str, object], status: ExitStatus
 ) -> None:
-    result = HostResult(2, operation, "op-0123456789abcdef0123456789abcdef", outcome, "not completed", state, ())
+    result = HostResult(2, operation, CORRELATION, outcome, "not completed", state, ())
 
     error = result_error(result)
 
@@ -64,7 +90,7 @@ def test_result_error_does_not_infer_migration_from_an_unobserved_boundary() -> 
     result = HostResult(
         2,
         "deploy",
-        "op-0123456789abcdef0123456789abcdef",
+        CORRELATION,
         "retryable",
         "not completed",
         {"failed_boundary": "migration"},

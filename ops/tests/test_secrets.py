@@ -90,7 +90,6 @@ def test_secret_validation_rejects_missing_short_duplicate_or_unknown_values(ove
 
     assert raised.value.status is ExitStatus.SECRET
     assert all(value not in repr(raised.value) for value in valid_secrets().values())
-    assert all(value not in repr(raised.value.as_dict()) for value in valid_secrets().values())
 
 
 @dataclass

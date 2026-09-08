@@ -7,15 +7,15 @@ from collections.abc import Callable, Mapping, Sequence
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..helper_package import HelperPackage
-from ..helper_runner import HelperInvocation, invoke_helper
+from ..helper_runner import invoke_helper
 from ..host_helper.records import BackupRecord
-from ..host_protocol import HostRequest
+from ..host_protocol import HostRequest, HostResult
 from ..remote import Remote
 from . import DiscoveryResult
 from .helper import request as helper_request, result_error, run_request
 
 
-HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HelperInvocation]
+HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HostResult]
 
 
 def list_backups(

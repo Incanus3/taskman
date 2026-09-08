@@ -7,8 +7,8 @@ from collections.abc import Callable, Mapping
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..helper_package import HelperPackage
-from ..helper_runner import HelperInvocation, invoke_helper
-from ..host_protocol import HostRequest
+from ..helper_runner import invoke_helper
+from ..host_protocol import HostRequest, HostResult
 from ..output import WorkflowResult
 from ..releases.identifiers import validate_release_id
 from ..remote import Remote
@@ -16,7 +16,7 @@ from .helper import request as helper_request, result_error, run_request
 from .verification_results import VerificationReport
 
 
-HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HelperInvocation]
+HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HostResult]
 
 
 def run_verify(

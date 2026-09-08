@@ -67,11 +67,11 @@ def test_invoke_helper_keeps_correlation_transport_only_and_validates_result(tmp
     helper = package(tmp_path)
     remote = remote_for(value, helper)
 
-    invocation = invoke_helper(remote, helper, value)
+    result = invoke_helper(remote, helper, value)
 
     transfer = PurePosixPath("/tmp/taskman-ops") / value.correlation_id / "taskman-host.pyz"
     installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
-    assert invocation.result == success_result(value)
+    assert result == success_result(value)
     assert remote.uploads[0][1] == transfer
     assert ("sha256sum", "--", transfer.as_posix()) in commands(remote)
     assert ("sha256sum", "--", installed.as_posix()) in commands(remote)
@@ -82,6 +82,23 @@ def test_invoke_helper_keeps_correlation_transport_only_and_validates_result(tmp
     assert helper_call["stdout_limit"] == MAX_OUTPUT_BYTES
     assert helper_call["stderr_limit"] == MAX_STDERR_BYTES
     assert value.correlation_id.encode() in helper_call["stdin"]
+
+
+def test_invoke_helper_returns_one_result_with_one_cleanup_warning(tmp_path: Path) -> None:
+    """Returning a wrapper or duplicate warning would split the final result boundary."""
+
+    from taskman_ops.helper_runner import invoke_helper
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
+    remote.add_response(("rm", "--", installed.as_posix()), CommandResult(1))
+
+    result = invoke_helper(remote, helper, value)
+
+    assert isinstance(result, HostResult)
+    assert result.warnings == ("transient helper cleanup was incomplete",)
 
 
 def test_invoke_helper_refuses_an_unrelated_final_result(tmp_path: Path) -> None:

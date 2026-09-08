@@ -11,7 +11,23 @@ from taskman_ops.host_protocol import (
     decode_result,
     encode_request,
     encode_result,
-    operation_spec,
+)
+import taskman_ops.host_protocol as host_protocol
+
+
+EXPECTED_OPERATIONS = frozenset(
+    {
+        "backup",
+        "cleanup",
+        "deploy",
+        "discover",
+        "genesis",
+        "list_backups",
+        "list_releases",
+        "restore",
+        "rollback",
+        "verify",
+    }
 )
 
 
@@ -46,13 +62,28 @@ def test_each_declared_operation_round_trips_through_both_codecs(operation: str)
     assert decode_result(encode_result(result_for(operation))) == result_for(operation)
 
 
-def test_operation_registry_has_explicit_read_only_and_mutating_boundaries() -> None:
-    """A generic or unknown operation must not reach the privileged helper boundary."""
+def test_operation_vocabulary_is_exact_immutable_and_rejects_unknown_commands() -> None:
+    """A missing or arbitrary operation would desynchronize privileged dispatch."""
 
-    assert operation_spec("discover").mutating is False
-    assert operation_spec("verify").mutating is False
-    assert operation_spec("deploy").mutating is True
-    assert operation_spec("cleanup").mutating is True
+    assert isinstance(OPERATION_NAMES, frozenset)
+    assert OPERATION_NAMES == EXPECTED_OPERATIONS
 
     with pytest.raises(ProtocolError):
-        operation_spec("arbitrary-command")
+        HostRequest(
+            protocol_version=2,
+            operation="arbitrary-command",
+            correlation_id="op-0123456789abcdef0123456789abcdef",
+            expected_state={},
+            paths={"install_root": "/opt/taskman"},
+            parameters={},
+        )
+
+
+def test_protocol_package_exposes_no_specification_compatibility_aliases() -> None:
+    """Reintroducing the deleted registry API would create a second operation authority."""
+
+    assert not {
+        "OperationSpec",
+        "OPERATION_SPECS",
+        "operation_spec",
+    } & set(host_protocol.__all__)
