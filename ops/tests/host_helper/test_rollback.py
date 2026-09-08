@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from taskman_ops.host_helper.operations import rollback as rollback_module
+from taskman_ops.host_helper import services as service_capability
 from taskman_ops.host_helper.records import (
     BackupRecord,
     ReleaseRecord,
@@ -149,9 +150,9 @@ class _Runtime:
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
-    monkeypatch.setattr(rollback_module, "_observe_database", runtime.observe_database, raising=False)
+    monkeypatch.setattr(rollback_module, "observe_database_state", runtime.observe_database)
     monkeypatch.setattr(rollback_module, "create_validated_backup", runtime.backup, raising=False)
-    monkeypatch.setattr(rollback_module, "run_command", runtime.command, raising=False)
+    monkeypatch.setattr(service_capability, "run_command", runtime.command)
     monkeypatch.setattr(rollback_module, "verify", runtime.verify, raising=False)
 
 

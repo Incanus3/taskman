@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -19,16 +18,26 @@ from taskman_ops.manifests import ArtifactManifest
 from taskman_ops.releases.identifiers import validate_release_id
 
 from ..commands import CommandError, run_command
+from ..credentials import validate_credentials
+from ..database import (
+    DatabaseObservationError,
+    database_mapping,
+    migration_versions,
+    observe_database_state_or_empty,
+)
+from ..filesystem import fsync_directory, sha256_file
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..operations.backup import create_validated_backup
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..selection import SelectionAmbiguityError, select_current
+from ..services import change_service
 from ..state import HostState, StateAmbiguityError, observe_host_state
 from ..verification import host_preflight, verify
+from ..verification_requests import verification_request
 
 
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
-_DATABASE_FIELDS = frozenset({"host", "port", "role", "name"})
 _PARAMETERS = frozenset(
     {
         "candidate_release_id",
@@ -103,7 +112,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     try:
         inputs = _inputs(request, first_release=first_release)
         _validate_request_operation(request, first_release)
-        _safe_credentials(inputs.credentials)
+        validate_credentials(inputs.credentials)
         _safe_artifact(inputs)
         authority = host_preflight(inputs.paths, inputs.verification)
         if authority is not None:
@@ -142,7 +151,10 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             # have advanced.  Stop before the candidate migration and before
             # any atomic selection, including no-schema release updates.
             if not first_release and state.selected_release_id != inputs.candidate.release_id:
-                _service("stop")
+                try:
+                    change_service("stop")
+                except CommandError as error:
+                    raise _RetryableError("stop") from error
                 changed = True
 
             if migration_needed and not migration_done:
@@ -168,14 +180,19 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 raise DeploymentManualError("selected release changed outside the confirmed deployment")
             if selected != inputs.candidate.release_id:
                 try:
-                    _atomically_select(inputs.paths, inputs.candidate.release_id)
+                    select_current(inputs.paths, inputs.candidate.release_id)
+                except SelectionAmbiguityError as error:
+                    raise DeploymentManualError("selection temporary is unsafe") from error
                 except (OSError, RecordError, ValueError) as error:
                     raise _RetryableError("selection") from error
                 changed = True
 
             # Starting again and verifying again are intentionally safe on a
             # rerun after either call lost its result.
-            _service("start")
+            try:
+                change_service("start")
+            except CommandError as error:
+                raise _RetryableError("start") from error
             verification = _verify(request, inputs)
             if verification.outcome != "succeeded":
                 raise _RetryableError("verification")
@@ -231,7 +248,7 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     previous = request.expected_state["selected_release_id"]
     if previous is not None:
         previous = validate_release_id(previous)
-    expected_migrations = _migration_versions(request.expected_state["applied_migrations"])
+    expected_migrations = migration_versions(request.expected_state["applied_migrations"])
     if first_release:
         if previous is not None or expected_migrations:
             raise ValueError("first release requires an empty confirmed host")
@@ -262,7 +279,7 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     credentials = request.parameters["credentials_path"]
     if type(credentials) is not str or not Path(credentials).is_absolute():
         raise ValueError("invalid credentials path")
-    database = _database(request.parameters["database"])
+    database = database_mapping(request.parameters["database"])
     verification = request.parameters["verification"]
     if not isinstance(verification, Mapping):
         raise ValueError("invalid verification settings")
@@ -292,35 +309,9 @@ def _validate_request_operation(request: HostRequest, first_release: bool) -> No
         raise ValueError("invalid deployment operation")
 
 
-def _database(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != _DATABASE_FIELDS:
-        raise ValueError("invalid database settings")
-    if (
-        type(value["host"]) is not str
-        or not value["host"]
-        or type(value["role"]) is not str
-        or not value["role"]
-        or type(value["name"]) is not str
-        or not value["name"]
-        or type(value["port"]) is not int
-        or not 0 < value["port"] < 65_536
-    ):
-        raise ValueError("invalid database settings")
-    return value
-
-
-def _migration_versions(value: object) -> tuple[int, ...]:
-    if not isinstance(value, (list, tuple)) or any(type(item) is not int or item < 0 for item in value):
-        raise ValueError("invalid migration versions")
-    versions = tuple(value)
-    if versions != tuple(sorted(set(versions))):
-        raise ValueError("invalid migration versions")
-    return versions
-
-
 def _migration_versions_from_manifest(manifest: ArtifactManifest) -> tuple[int, ...]:
     try:
-        return _migration_versions(tuple(int(item.filename.split("_", 1)[0]) for item in manifest.migrations))
+        return migration_versions(tuple(int(item.filename.split("_", 1)[0]) for item in manifest.migrations))
     except (TypeError, ValueError) as error:
         raise ValueError("invalid candidate migrations") from error
 
@@ -396,9 +387,13 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
 
 
 def _observe(inputs: _Inputs, *, allow_selection_transition: bool = True) -> HostState:
+    try:
+        database = observe_database_state_or_empty(inputs.database, inputs.credentials)
+    except DatabaseObservationError as error:
+        raise DeploymentManualError("database migration authority is invalid") from error
     return observe_host_state(
         inputs.paths,
-        database=_observe_database(inputs.database, inputs.credentials),
+        database=database,
         allow_selection_transition=allow_selection_transition,
     )
 
@@ -432,7 +427,9 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
     if not any(item.release_id == inputs.candidate.release_id for item in state.releases):
         raise DeploymentManualError("selection transition lacks the candidate release")
     try:
-        _atomically_select(inputs.paths, inputs.candidate.release_id)
+        select_current(inputs.paths, inputs.candidate.release_id)
+    except SelectionAmbiguityError as error:
+        raise DeploymentManualError("selection temporary is unsafe") from error
     except OSError as error:
         raise _RetryableError("selection") from error
     return _observe(inputs, allow_selection_transition=False), True
@@ -515,35 +512,6 @@ def _selection_backup(
     return candidates[0]
 
 
-def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
-    """Observe schema versions without accepting a controller-side database fact."""
-
-    environment = {"PGPASSFILE": credentials.as_posix()}
-    common = (
-        "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--host", str(database["host"]),
-        "--port", str(database["port"]), "--username", str(database["role"]),
-        "--dbname", str(database["name"]), "--no-password",
-    )
-    table = run_command(
-        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
-    if table == b"":
-        return {"state": "ready", "applied_migrations": ()}
-    if table != b"1":
-        raise DeploymentManualError("database migration table identity is ambiguous")
-    versions = run_command(
-        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.splitlines()
-    try:
-        return {"state": "ready", "applied_migrations": _migration_versions(tuple(int(item) for item in versions if item))}
-    except ValueError as error:
-        raise DeploymentManualError("database migration versions are invalid") from error
-
-
 def _prepare_release_roots(paths: ManagedPaths) -> None:
     owner_uid = os.geteuid()
     paths.validate_existing(owner_uid=owner_uid)
@@ -573,7 +541,7 @@ def _normalize_staging(inputs: _Inputs) -> None:
     ):
         raise DeploymentManualError("release staging directory is unsafe")
     shutil.rmtree(path)
-    _fsync_directory(path.parent)
+    fsync_directory(path.parent)
 
 
 def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
@@ -596,7 +564,7 @@ def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
         _write_release_manifest(content, inputs.candidate)
         os.replace(content, target)
         staging.rmdir()
-        _fsync_directory(root)
+        fsync_directory(root)
     except (OSError, tarfile.TarError, ValueError) as error:
         raise _RetryableError("staging") from error
     return True
@@ -631,7 +599,7 @@ def _safe_artifact(inputs: _Inputs) -> None:
         or details.st_uid != os.geteuid()
         or stat.S_IMODE(details.st_mode) != 0o600
         or not 0 < details.st_size <= _MAX_ARCHIVE_BYTES
-        or _sha256(inputs.artifact_path) != inputs.artifact_sha256
+        or sha256_file(inputs.artifact_path) != inputs.artifact_sha256
     ):
         raise ValueError("deployment artifact is unsafe")
     try:
@@ -639,20 +607,6 @@ def _safe_artifact(inputs: _Inputs) -> None:
             _validate_archive_members(archive.getmembers())
     except (OSError, tarfile.TarError, ValueError) as error:
         raise ValueError("deployment artifact inventory is unsafe") from error
-
-
-def _safe_credentials(path: Path) -> None:
-    try:
-        details = path.lstat()
-    except OSError as error:
-        raise ValueError("database credentials are unavailable") from error
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != os.geteuid()
-        or stat.S_IMODE(details.st_mode) != 0o600
-    ):
-        raise ValueError("database credentials are unsafe")
 
 
 def _migrate(inputs: _Inputs) -> None:
@@ -665,27 +619,6 @@ def _migrate(inputs: _Inputs) -> None:
         ),
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     )
-
-
-def _service(action: str) -> None:
-    try:
-        run_command(("systemctl", action, "taskman.service"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
-    except CommandError as error:
-        raise _RetryableError("start" if action == "start" else "stop") from error
-
-
-def _atomically_select(paths: ManagedPaths, release_id: str) -> None:
-    root = Path(paths.local(paths.install_root))
-    target = Path(paths.local(paths.release_root / release_id))
-    temporary = root / f".current-{release_id}.tmp"
-    if temporary.exists() or temporary.is_symlink():
-        details = temporary.lstat()
-        if not stat.S_ISLNK(details.st_mode) or temporary.resolve(strict=False) != target:
-            raise DeploymentManualError("selection temporary is unsafe")
-        temporary.unlink()
-    temporary.symlink_to(target)
-    os.replace(temporary, Path(paths.local(paths.current_link)))
-    _fsync_directory(root)
 
 
 def _append_selection_with_previous(
@@ -704,15 +637,10 @@ def _append_selection_with_previous(
 
 
 def _verify(request: HostRequest, inputs: _Inputs) -> HostResult:
-    verification_request = HostRequest(
-        PROTOCOL_VERSION,
-        "verify",
-        request.correlation_id,
-        {"expected_release_id": inputs.candidate.release_id},
-        request.paths,
-        inputs.verification,
+    return verify(
+        verification_request(request, inputs.candidate.release_id, inputs.verification),
+        lifecycle_locked=True,
     )
-    return verify(verification_request, lifecycle_locked=True)
 
 
 def _extract_release(archive: Path, destination: Path) -> None:
@@ -772,22 +700,6 @@ def _normalize_release_tree(path: Path, owner_uid: int) -> None:
             continue
         os.chown(item, owner_uid, -1)
         os.chmod(item, 0o750 if item.is_dir() or os.access(item, os.X_OK) else 0o640)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(64 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _result(

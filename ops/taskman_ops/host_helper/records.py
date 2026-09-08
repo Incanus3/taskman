@@ -27,6 +27,7 @@ from taskman_ops.releases.identifiers import (
 )
 
 from .paths import ManagedPaths, PathAuthorityError
+from .filesystem import fsync_directory, sha256_file
 
 
 MAX_RECORD_BYTES = 64 * 1024
@@ -358,7 +359,7 @@ def _atomic_create(path: Path, payload: bytes, *, owner_uid: int) -> None:
             raise RecordError("completed record already exists") from error
         os.unlink(temporary)
         temporary = None
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
     except RecordError:
         raise
     except OSError as error:
@@ -386,27 +387,6 @@ def _open_temporary(directory: Path, stem: str) -> tuple[int, str]:
         except FileExistsError:
             continue
     raise RecordError("unable to allocate record temporary")
-
-
-def _fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _sha256_file(path: Path) -> str:
-    """Hash a validated dump in bounded memory, regardless of its size."""
-
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-    except OSError as error:
-        raise RecordError("unable to hash backup dump") from error
-    return digest.hexdigest()
 
 
 def _paths(paths: ManagedPaths) -> tuple[ManagedPaths, int]:
@@ -447,7 +427,10 @@ def write_backup_manifest(paths: ManagedPaths, record: BackupRecord) -> None:
     backup_root = Path(paths.local(paths.backup_root))
     dump = backup_root / f"{record.backup_id}.dump"
     _safe_file(dump, owner_uid=owner_uid)
-    digest = _sha256_file(dump)
+    try:
+        digest = sha256_file(dump)
+    except OSError as error:
+        raise RecordError("unable to hash backup dump") from error
     if digest != record.dump_sha256:
         raise RecordError("backup dump checksum does not match completed record")
     target = backup_root / f"{record.backup_id}.json"

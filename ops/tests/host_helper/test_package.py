@@ -36,8 +36,14 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert names == sorted(names)
     assert names == list(ARCHIVE_MEMBERS)
     assert "taskman_ops/host_helper/commands.py" in names
+    assert "taskman_ops/host_helper/credentials.py" in names
+    assert "taskman_ops/host_helper/database.py" in names
+    assert "taskman_ops/host_helper/filesystem.py" in names
     assert "taskman_ops/host_helper/records.py" in names
+    assert "taskman_ops/host_helper/selection.py" in names
+    assert "taskman_ops/host_helper/services.py" in names
     assert "taskman_ops/host_helper/state.py" in names
+    assert "taskman_ops/host_helper/verification_requests.py" in names
     assert not any(
         name in names
         for name in (

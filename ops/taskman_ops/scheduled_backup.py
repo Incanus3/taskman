@@ -13,12 +13,12 @@ from .host_helper.backups import (
     CommandError,
     create_validated_backup,
     normalize_temporary_dumps,
-    observe_database_state,
     prepare_backup_root,
     prune_backups,
     validate_completed_backups,
-    validate_database,
 )
+from .host_helper.credentials import validate_credentials
+from .host_helper.database import database_mapping, observe_database_migrations
 from .host_helper.lock import LifecycleLockContention, lifecycle_lock
 from .host_helper.paths import ManagedPaths, PathAuthorityError
 from .host_helper.records import RecordError
@@ -76,7 +76,7 @@ def inputs_from_environment(environment: Mapping[str, str]) -> ScheduledBackupIn
             "backup_root": values["TASKMAN_BACKUP_BACKUP_ROOT"],
         }
     )
-    database = validate_database(
+    database = database_mapping(
         {
             "host": values["TASKMAN_BACKUP_DATABASE_HOST"],
             "port": port,
@@ -98,7 +98,8 @@ def run_scheduled_backup(inputs: ScheduledBackupInputs) -> None:
         prepare_backup_root(inputs.paths)
         initial_state = observe_host_state(inputs.paths)
         normalize_temporary_dumps(inputs.paths, initial_state)
-        facts = observe_database_state(inputs.database, inputs.credentials_path)
+        validate_credentials(inputs.credentials_path)
+        facts = observe_database_migrations(inputs.database, inputs.credentials_path)
         state = observe_host_state(inputs.paths, database=facts)
         validate_completed_backups(state, inputs.paths)
         create_validated_backup(

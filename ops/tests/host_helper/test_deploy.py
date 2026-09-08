@@ -11,6 +11,7 @@ import tarfile
 import pytest
 
 from taskman_ops.host_helper.operations import deploy as deploy_module
+from taskman_ops.host_helper import services as service_capability
 from taskman_ops.host_helper.operations.deploy import converge_deployment, deploy, genesis
 from taskman_ops.host_helper.records import (
     BackupRecord,
@@ -182,9 +183,10 @@ class _Runtime:
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
-    monkeypatch.setattr(deploy_module, "_observe_database", runtime.observe_database, raising=False)
+    monkeypatch.setattr(deploy_module, "observe_database_state_or_empty", runtime.observe_database)
     monkeypatch.setattr(deploy_module, "create_validated_backup", runtime.backup, raising=False)
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+    monkeypatch.setattr(service_capability, "run_command", runtime.command)
     monkeypatch.setattr(deploy_module, "verify", runtime.verify, raising=False)
     monkeypatch.setattr(deploy_module, "host_preflight", lambda *_args: None, raising=False)
 
@@ -209,6 +211,30 @@ def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_p
     assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
     assert runtime.events == ["backup", "stop", "migration", "start", "verify", "selection"]
     assert (Path(request.paths["install_root"]) / "current").resolve().name == CANDIDATE
+
+
+def test_deploy_does_not_migrate_when_its_pre_deploy_backup_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Migrating after an unrecorded backup failure would leave no recovery point."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def interrupt_backup(*_args: object, **_kwargs: object) -> BackupRecord:
+        runtime.events.append("backup")
+        raise deploy_module.CommandError("pre-deploy backup interrupted")
+
+    monkeypatch.setattr(deploy_module, "create_validated_backup", interrupt_backup)
+
+    result = deploy(request)
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "backup"
+    assert runtime.events == ["backup"]
+    assert runtime.migrations == ()
 
 
 def test_deploy_rerun_is_a_noop_when_the_candidate_is_already_selected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -410,7 +436,7 @@ def test_recognizable_interruption_converges_when_the_same_deploy_is_rerun(
             def fail_selection(*_args: object, **_kwargs: object) -> None:
                 raise OSError("interrupted selection")
 
-            interrupted.setattr(deploy_module, "_atomically_select", fail_selection, raising=False)
+            interrupted.setattr(deploy_module, "select_current", fail_selection)
         elif boundary == "start":
             original = runtime.command
 
@@ -419,7 +445,7 @@ def test_recognizable_interruption_converges_when_the_same_deploy_is_rerun(
                     raise deploy_module.CommandError("interrupted start")
                 return original(argv, **kwargs)
 
-            interrupted.setattr(deploy_module, "run_command", fail_start, raising=False)
+            interrupted.setattr(service_capability, "run_command", fail_start)
         else:
             def fail_readiness(request: HostRequest, **_kwargs: object) -> HostResult:
                 return HostResult(2, "verify", request.correlation_id, "retryable", "not ready", {}, ())

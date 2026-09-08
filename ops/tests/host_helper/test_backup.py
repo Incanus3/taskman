@@ -155,6 +155,32 @@ def test_create_validated_backup_refuses_insufficient_capacity_before_dumping(
     assert [argv[0] for argv, _kwargs in calls] == ["psql"]
 
 
+def test_backup_reports_an_unreadable_new_dump_as_manual_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dump that cannot be re-read after validation is not safe to retry over."""
+
+    paths = _paths(tmp_path)
+    _publish_selected_release(paths)
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
+    monkeypatch.setattr(
+        backup_module,
+        "observe_database_migrations",
+        lambda *_args: {"state": "ready", "applied_migrations": (1,)},
+    )
+
+    def unreadable_dump(_path: Path) -> str:
+        raise OSError("simulated dump read failure")
+
+    monkeypatch.setattr(backup_capability, "sha256_file", unreadable_dump)
+
+    result = backup_module.backup(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "manual"
+    assert result.message == "backup authority is contradictory"
+
+
 @pytest.mark.parametrize("boundary", ["dump", "validation", "publication", "manifest"])
 def test_backup_rerun_finishes_after_each_recognizable_interruption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
@@ -187,6 +213,11 @@ def test_backup_rerun_finishes_after_each_recognizable_interruption(
         )
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
     monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
+    monkeypatch.setattr(
+        backup_module,
+        "observe_database_migrations",
+        lambda *_args: {"state": "ready", "applied_migrations": (1,)},
+    )
 
     result = backup_module.backup(_request(paths, credentials))
 
@@ -302,6 +333,11 @@ def test_backup_keeps_a_raced_dump_inside_a_coarse_retryable_result(
     credentials = _credentials(tmp_path)
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
     monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
+    monkeypatch.setattr(
+        backup_module,
+        "observe_database_migrations",
+        lambda *_args: {"state": "ready", "applied_migrations": (1,)},
+    )
     original_stat = Path.stat
     original_create = backup_module.create_validated_backup
     raced_path: Path | None = None

@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from taskman_ops.host_helper.operations import restore as restore_module
+from taskman_ops.host_helper import services as service_capability
 from taskman_ops.host_helper.records import (
     BackupRecord,
     ReleaseRecord,
@@ -242,6 +243,11 @@ class _IncompleteTemporaryRuntime(_Runtime):
         super().__init__({DATABASE, TEMPORARY})
         self.temporary_valid = False
 
+    def observe_database(self, database: object, *_args: object, **_kwargs: object) -> dict[str, object]:
+        if database["name"] == TEMPORARY and not self.temporary_valid:
+            raise restore_module.DatabaseObservationError("temporary migration table is unavailable")
+        return super().observe_database(database)
+
     def command(self, argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         if (
             "psql" in argv
@@ -259,9 +265,10 @@ class _IncompleteTemporaryRuntime(_Runtime):
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
-    monkeypatch.setattr(restore_module, "_observe_database", runtime.observe_database, raising=False)
+    monkeypatch.setattr(restore_module, "observe_database_state", runtime.observe_database)
     monkeypatch.setattr(restore_module, "create_validated_backup", runtime.backup, raising=False)
     monkeypatch.setattr(restore_module, "run_command", runtime.command, raising=False)
+    monkeypatch.setattr(service_capability, "run_command", runtime.command)
     monkeypatch.setattr(restore_module, "verify", runtime.verify, raising=False)
     monkeypatch.setattr(restore_module, "available_bytes", lambda _path: 10_000, raising=False)
 
@@ -286,6 +293,30 @@ def test_restore_validates_source_and_converges_through_a_deterministic_temporar
     assert runtime.events.index("source-validation") < runtime.events.index(f"backup:{DATABASE}") < runtime.events.index("restore")
     assert runtime.databases == {DATABASE}
     assert Path(paths.local(paths.current_link)).resolve().name == TARGET
+
+
+def test_restore_does_not_replace_the_database_when_its_safety_backup_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring before a fresh safety backup would destroy the only current recovery point."""
+
+    paths = _paths(tmp_path)
+    _seed_state(paths)
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def interrupt_backup(*_args: object, **_kwargs: object) -> BackupRecord:
+        runtime.events.append(f"backup:{DATABASE}")
+        raise restore_module.CommandError("pre-restore backup interrupted")
+
+    monkeypatch.setattr(restore_module, "create_validated_backup", interrupt_backup)
+
+    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "backup"
+    assert runtime.events == ["source-validation", f"backup:{DATABASE}"]
+    assert runtime.databases == {DATABASE}
 
 
 def test_restore_repairs_a_safely_owned_group_or_other_readable_source_dump_before_using_it(

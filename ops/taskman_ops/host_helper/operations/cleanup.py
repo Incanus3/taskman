@@ -10,6 +10,8 @@ import shutil
 import stat
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+
+from ..filesystem import fsync_directory
 from taskman_ops.releases.identifiers import validate_release_id
 
 from ..backups import retained_backup_ids
@@ -230,7 +232,7 @@ def _normalize_incomplete_backups(paths: ManagedPaths, state: HostState) -> None
             continue
         _safe_file(entry)
         entry.unlink()
-        _fsync_directory(root)
+        fsync_directory(root)
 
 
 def _validate_authoritative_paths(paths: ManagedPaths) -> None:
@@ -254,7 +256,7 @@ def _delete_target(target: Mapping[str, object], state: HostState, paths: Manage
             return False
         _safe_directory(path)
         shutil.rmtree(path)
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
         return True
     if kind == "backup":
         expected = Path(paths.local(paths.backup_root / f"{identifier}.dump"))
@@ -271,7 +273,7 @@ def _delete_target(target: Mapping[str, object], state: HostState, paths: Manage
             path.unlink()
             changed = True
         if changed:
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
         return changed
     if path.as_posix() not in {item.as_posix() for item in state.temporary_paths}:
         raise ValueError("cleanup temporary target is not authoritative")
@@ -279,7 +281,7 @@ def _delete_target(target: Mapping[str, object], state: HostState, paths: Manage
         return False
     _safe_file(path)
     path.unlink()
-    _fsync_directory(path.parent)
+    fsync_directory(path.parent)
     return True
 
 
@@ -303,14 +305,6 @@ def _safe_file(path: Path) -> None:
         or details.st_mode & 0o7022
     ):
         raise StateAmbiguityError("cleanup file path is unsafe")
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _identity(target: Mapping[str, object]) -> tuple[str, str, str]:

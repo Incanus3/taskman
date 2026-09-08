@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,12 +12,14 @@ import stat
 from uuid import uuid4
 
 from .commands import CommandError, run_command
+from .credentials import CredentialError, validate_credentials
+from .database import database_mapping
+from .filesystem import fsync_directory, sha256_file
 from .paths import ManagedPaths, PathAuthorityError
 from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, write_backup_manifest
 from .state import HostState, StateAmbiguityError, observe_host_state
 
 
-_DATABASE_KEYS = frozenset({"host", "name", "port", "role"})
 _TEMPORARY_DUMP_RE = re.compile(r"(?:\.backup-[0-9a-f]{32}\.dump\.tmp|backup-[0-9a-f]{32}\.dump)\Z")
 _COMMAND_TIMEOUT_SECONDS = 60.0
 _MINIMUM_CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
@@ -53,10 +54,13 @@ def create_validated_backup(
         raise BackupAuthorityError("backup requires a selected release")
     if state.database_state != "ready":
         raise BackupAuthorityError("backup requires an observed ready database")
-    database = validate_database(database)
+    database = database_mapping(database)
     if purpose not in {"scheduled", "pre-deploy", "pre-rollback", "pre-restore"}:
         raise ValueError("invalid backup purpose")
-    validate_credentials(credentials)
+    try:
+        validate_credentials(credentials)
+    except CredentialError as error:
+        raise BackupAuthorityError(str(error)) from error
     prepare_backup_root(paths)
 
     backup_id = f"backup-{uuid4().hex}"
@@ -91,7 +95,10 @@ def create_validated_backup(
         env=environment,
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     )
-    digest = sha256(temporary)
+    try:
+        digest = sha256_file(temporary)
+    except OSError as error:
+        raise BackupAuthorityError("backup dump cannot be hashed") from error
     record = BackupRecord(
         backup_id=backup_id,
         created_at=datetime.now(UTC).replace(microsecond=0),
@@ -109,45 +116,6 @@ def create_validated_backup(
     if record not in final_state.backups:
         raise BackupAuthorityError("completed backup was not re-observed")
     return record
-
-
-def observe_database_state(database: Mapping[str, object], credentials: Path) -> dict[str, object]:
-    """Read the applied migration versions from the database that will be dumped."""
-
-    database = validate_database(database)
-    validate_credentials(credentials)
-    completed = run_command(
-        (
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--host",
-            str(database["host"]),
-            "--port",
-            str(database["port"]),
-            "--username",
-            str(database["role"]),
-            "--dbname",
-            str(database["name"]),
-            "--no-password",
-            "--command",
-            "SELECT version FROM schema_migrations ORDER BY version",
-        ),
-        env={"PGPASSFILE": credentials.as_posix()},
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    )
-    migrations: list[int] = []
-    for line in completed.stdout.decode("utf-8", "strict").splitlines():
-        value = line.strip()
-        if not value:
-            continue
-        if not value.isdecimal():
-            raise BackupAuthorityError("database migration evidence is invalid")
-        migrations.append(int(value))
-    if migrations != sorted(set(migrations)):
-        raise BackupAuthorityError("database migration evidence is invalid")
-    return {"state": "ready", "applied_migrations": tuple(migrations)}
 
 
 def normalize_temporary_dumps(paths: ManagedPaths, state: HostState) -> None:
@@ -172,7 +140,11 @@ def validate_completed_backups(state: HostState, paths: ManagedPaths) -> None:
     for record in state.backups:
         dump = root / f"{record.backup_id}.dump"
         validate_dump(dump)
-        if sha256(dump) != record.dump_sha256:
+        try:
+            digest = sha256_file(dump)
+        except OSError as error:
+            raise BackupAuthorityError("backup dump cannot be hashed") from error
+        if digest != record.dump_sha256:
             raise BackupAuthorityError("completed backup dump identity changed")
         validate_manifest_identity(root / f"{record.backup_id}.json", record)
 
@@ -202,7 +174,11 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
         dump = root / f"{record.backup_id}.dump"
         manifest = root / f"{record.backup_id}.json"
         dump_identity = validate_dump(dump)
-        if sha256(dump) != record.dump_sha256:
+        try:
+            digest = sha256_file(dump)
+        except OSError as error:
+            raise BackupAuthorityError("backup dump cannot be hashed") from error
+        if digest != record.dump_sha256:
             raise BackupAuthorityError("completed backup dump identity changed")
         if validate_dump(dump) != dump_identity:
             raise BackupAuthorityError("completed backup dump identity changed")
@@ -215,23 +191,6 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
             manifest_identity,
         )
     return observe_host_state(paths, database={"state": state.database_state, "applied_migrations": state.applied_migrations})
-
-
-def validate_database(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != _DATABASE_KEYS:
-        raise ValueError("backup database settings are invalid")
-    if (
-        type(value["host"]) is not str
-        or not value["host"]
-        or type(value["name"]) is not str
-        or not value["name"]
-        or type(value["role"]) is not str
-        or not value["role"]
-        or type(value["port"]) is not int
-        or not 0 < value["port"] < 65536
-    ):
-        raise ValueError("backup database settings are invalid")
-    return value
 
 
 def prepare_backup_root(paths: ManagedPaths) -> None:
@@ -249,20 +208,6 @@ def prepare_backup_root(paths: ManagedPaths) -> None:
         or details.st_mode & 0o7022
     ):
         raise BackupAuthorityError("backup root is unsafe")
-
-
-def validate_credentials(path: Path) -> None:
-    try:
-        details = path.lstat()
-    except OSError as error:
-        raise ValueError("backup credentials are unavailable") from error
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != os.geteuid()
-        or stat.S_IMODE(details.st_mode) != 0o600
-    ):
-        raise ValueError("backup credentials are unsafe")
 
 
 def database_size(database: Mapping[str, object], credentials: Path) -> int:
@@ -414,32 +359,12 @@ def _require_identity(
         raise BackupAuthorityError(f"{label} identity changed")
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-    except OSError as error:
-        raise BackupAuthorityError("backup dump cannot be hashed") from error
-    return digest.hexdigest()
-
-
-def fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 __all__ = [
     "BackupAuthorityError",
     "BackupCapacityError",
     "CommandError",
     "create_validated_backup",
     "normalize_temporary_dumps",
-    "observe_database_state",
     "prepare_backup_root",
     "prune_backups",
     "retained_backup_ids",

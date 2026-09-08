@@ -14,12 +14,11 @@ from ..backups import (
     CommandError,
     create_validated_backup,
     normalize_temporary_dumps,
-    observe_database_state,
     prepare_backup_root,
     validate_completed_backups,
-    validate_database,
-    validate_credentials,
 )
+from ..credentials import validate_credentials
+from ..database import database_mapping, observe_database_migrations
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import RecordError
@@ -44,7 +43,8 @@ def backup(request: HostRequest) -> HostResult:
             normalize_temporary_dumps(paths, state)
             state = observe_host_state(paths)
             validate_completed_backups(state, paths)
-            facts = observe_database_state(database, credentials)
+            validate_credentials(credentials)
+            facts = observe_database_migrations(database, credentials)
             state = observe_host_state(paths, database=facts)
             record = create_validated_backup(state, paths, database, credentials, purpose=purpose)
             final_state = observe_host_state(paths, database=facts)
@@ -92,7 +92,7 @@ def _inputs(request: HostRequest) -> tuple[Path, Mapping[str, object], str]:
         raise ValueError("backup credentials path is invalid")
     if type(purpose) is not str:
         raise ValueError("backup purpose is invalid")
-    return Path(credentials), validate_database(request.parameters["database"]), purpose
+    return Path(credentials), database_mapping(request.parameters["database"]), purpose
 
 
 def _validate_authoritative_paths(paths: ManagedPaths) -> None:

@@ -262,7 +262,7 @@ def test_retention_stops_after_a_dump_is_replaced_during_hashing(
     replacement = tmp_path / "replacement-dump"
     replacement.write_bytes(stale_dump.read_bytes())
     replacement.chmod(stale_dump.stat().st_mode & 0o777)
-    original_hash = backup_capability.sha256
+    original_hash = backup_capability.sha256_file
 
     def replace_after_hash(path: Path) -> str:
         digest = original_hash(path)
@@ -270,7 +270,7 @@ def test_retention_stops_after_a_dump_is_replaced_during_hashing(
             os.replace(replacement, stale_dump)
         return digest
 
-    monkeypatch.setattr(backup_capability, "sha256", replace_after_hash)
+    monkeypatch.setattr(backup_capability, "sha256_file", replace_after_hash)
     monkeypatch.setattr(
         backup_capability,
         "validate_manifest_identity",

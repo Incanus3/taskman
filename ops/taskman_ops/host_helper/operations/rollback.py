@@ -5,30 +5,33 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-import os
 from pathlib import Path
-import re
-import stat
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.releases.identifiers import validate_release_id
 
-from ..commands import CommandError, run_command
+from ..commands import CommandError
+from ..credentials import validate_credentials
+from ..database import (
+    DatabaseObservationError,
+    database_mapping,
+    observe_database_state,
+    release_migration_versions,
+)
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..records import BackupRecord, RecordError, SelectionRecord, append_selection
+from ..selection import SelectionAmbiguityError, select_current
+from ..services import change_service
 from ..state import HostState, StateAmbiguityError, observe_host_state
 from ..verification import verify
+from ..verification_requests import verification_request
 from .backup import create_validated_backup
 
 
 _EXPECTED_STATE_KEYS = frozenset({"selected_release_id"})
 _PARAMETER_KEYS = frozenset({"target_release_id", "credentials_path", "database", "verification"})
-_DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
 _LOCK_TIMEOUT_SECONDS = 5.0
-_COMMAND_TIMEOUT_SECONDS = 60.0
-_RUNTIME_ENVIRONMENT = Path("/etc/taskman/taskman.env")
-_MIGRATION_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
 
 
 class RollbackRefused(ValueError):
@@ -72,7 +75,7 @@ def rollback(request: HostRequest) -> HostResult:
     inputs: _Inputs | None = None
     try:
         inputs = _inputs(request)
-        _safe_credentials(inputs.credentials)
+        validate_credentials(inputs.credentials)
         with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             state = _observe(inputs, allow_selection_transition=True)
             selection_status = _selection_status(state, inputs)
@@ -91,10 +94,15 @@ def rollback(request: HostRequest) -> HostResult:
                 changed = True
                 state = _observe(inputs, allow_selection_transition=True)
                 _require_pending_selection(state, inputs)
-                _service("stop")
+                try:
+                    change_service("stop")
+                except CommandError as error:
+                    raise _Retryable("stop") from error
                 changed = True
                 try:
-                    _atomically_select(inputs.paths, inputs.target_release_id)
+                    select_current(inputs.paths, inputs.target_release_id)
+                except SelectionAmbiguityError as error:
+                    raise RollbackManual("selection temporary is unsafe") from error
                 except (OSError, ValueError) as error:
                     raise _Retryable("selection") from error
                 changed = True
@@ -121,7 +129,10 @@ def rollback(request: HostRequest) -> HostResult:
             else:  # pragma: no cover - _selection_status has a closed return vocabulary
                 raise RollbackManual("rollback selection status is unknown")
 
-            _service("start")
+            try:
+                change_service("start")
+            except CommandError as error:
+                raise _Retryable("start") from error
             verification = _verify(request, inputs)
             if verification.outcome != "succeeded":
                 raise _Retryable("verification")
@@ -196,26 +207,9 @@ def _inputs(request: HostRequest) -> _Inputs:
         current,
         target,
         Path(credentials),
-        _database(request.parameters["database"]),
+        database_mapping(request.parameters["database"]),
         _verification(request.parameters["verification"]),
     )
-
-
-def _database(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != _DATABASE_KEYS:
-        raise ValueError("rollback database settings are invalid")
-    if (
-        type(value["host"]) is not str
-        or not value["host"]
-        or type(value["role"]) is not str
-        or not value["role"]
-        or type(value["name"]) is not str
-        or not value["name"]
-        or type(value["port"]) is not int
-        or not 0 < value["port"] < 65_536
-    ):
-        raise ValueError("rollback database settings are invalid")
-    return value
 
 
 def _verification(value: object) -> Mapping[str, object]:
@@ -224,54 +218,16 @@ def _verification(value: object) -> Mapping[str, object]:
     return value
 
 
-def _safe_credentials(path: Path) -> None:
-    try:
-        details = path.lstat()
-    except OSError as error:
-        raise ValueError("rollback credentials are unavailable") from error
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != os.geteuid()
-        or stat.S_IMODE(details.st_mode) != 0o600
-    ):
-        raise ValueError("rollback credentials are unsafe")
-
-
 def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
+    try:
+        database = observe_database_state(inputs.database, inputs.credentials)
+    except DatabaseObservationError as error:
+        raise RollbackManual("current database migration authority is invalid") from error
     return observe_host_state(
         inputs.paths,
-        database=_observe_database(inputs.database, inputs.credentials),
+        database=database,
         allow_selection_transition=allow_selection_transition,
     )
-
-
-def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
-    environment = {"PGPASSFILE": credentials.as_posix()}
-    common = (
-        "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--host", str(database["host"]),
-        "--port", str(database["port"]), "--username", str(database["role"]),
-        "--dbname", str(database["name"]), "--no-password",
-    )
-    table = run_command(
-        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
-    if table != b"1":
-        raise RollbackManual("current database migration authority is unavailable")
-    output = run_command(
-        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.decode("utf-8", "strict")
-    try:
-        versions = tuple(int(item) for item in output.splitlines() if item)
-    except ValueError as error:
-        raise RollbackManual("current database migration authority is invalid") from error
-    if versions != tuple(sorted(set(versions))):
-        raise RollbackManual("current database migration authority is invalid")
-    return {"state": "ready", "applied_migrations": versions}
 
 
 def _selection_status(state: HostState, inputs: _Inputs) -> str:
@@ -298,27 +254,17 @@ def _require_target_schema(state: HostState, inputs: _Inputs) -> None:
     record = next((item for item in state.releases if item.release_id == inputs.target_release_id), None)
     if record is None:
         raise RollbackRefused("target release is not installed")
-    if _migration_versions(record) != state.applied_migrations:
+    try:
+        target_migrations = release_migration_versions(record.migrations)
+    except ValueError as error:
+        raise RollbackManual("release migration record is invalid") from error
+    if target_migrations != state.applied_migrations:
         raise RollbackRefused("target release is not compatible with the current database")
 
 
 def _require_pending_selection(state: HostState, inputs: _Inputs) -> None:
     if _selection_status(state, inputs) != "pending":
         raise RollbackManual("selection changed before rollback stop")
-
-
-def _migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
-    versions: list[int] = []
-    for migration in record.migrations:
-        name = migration.get("filename")
-        match = _MIGRATION_RE.fullmatch(name) if type(name) is str else None
-        if match is None:
-            raise RollbackManual("release migration record is invalid")
-        versions.append(int(match.group(1)))
-    result = tuple(versions)
-    if result != tuple(sorted(set(result))):
-        raise RollbackManual("release migration record is invalid")
-    return result
 
 
 def _published_safety_backup(state: HostState, inputs: _Inputs, backup: BackupRecord | None) -> BackupRecord:
@@ -339,27 +285,6 @@ def _recorded_backup(state: HostState, inputs: _Inputs) -> BackupRecord | None:
     if backup.source_release_id != inputs.current_release_id:
         raise RollbackManual("completed rollback backup has the wrong source release")
     return backup
-
-
-def _service(action: str) -> None:
-    try:
-        run_command(("systemctl", action, "taskman.service"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
-    except CommandError as error:
-        raise _Retryable("start" if action == "start" else "stop") from error
-
-
-def _atomically_select(paths: ManagedPaths, release_id: str) -> None:
-    root = Path(paths.local(paths.install_root))
-    target = Path(paths.local(paths.release_root / release_id))
-    temporary = root / f".current-{release_id}.tmp"
-    if temporary.exists() or temporary.is_symlink():
-        details = temporary.lstat()
-        if not stat.S_ISLNK(details.st_mode) or temporary.resolve(strict=False) != target:
-            raise RollbackManual("selection temporary is unsafe")
-        temporary.unlink()
-    temporary.symlink_to(target)
-    os.replace(temporary, Path(paths.local(paths.current_link)))
-    _fsync_directory(root)
 
 
 def _record_selection(state: HostState, inputs: _Inputs, backup: BackupRecord | None) -> HostState:
@@ -385,24 +310,9 @@ def _record_selection(state: HostState, inputs: _Inputs, backup: BackupRecord | 
 
 def _verify(request: HostRequest, inputs: _Inputs) -> HostResult:
     return verify(
-        HostRequest(
-            PROTOCOL_VERSION,
-            "verify",
-            request.correlation_id,
-            {"expected_release_id": inputs.target_release_id},
-            request.paths,
-            inputs.verification,
-        ),
+        verification_request(request, inputs.target_release_id, inputs.verification),
         lifecycle_locked=True,
     )
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _result(

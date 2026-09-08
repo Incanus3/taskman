@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -15,19 +14,28 @@ from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.releases.identifiers import validate_release_id
 
 from ..commands import CommandError, run_command
+from ..credentials import validate_credentials
+from ..database import (
+    DatabaseObservationError,
+    database_mapping,
+    observe_database_state,
+    release_migration_versions,
+)
+from ..filesystem import sha256_file
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..records import BackupRecord, RecordError, SelectionRecord, append_selection
+from ..selection import SelectionAmbiguityError, select_current
+from ..services import change_service
 from ..state import HostState, StateAmbiguityError, observe_host_state
 from ..verification import available_bytes, verify
+from ..verification_requests import verification_request
 from .backup import create_validated_backup
 
 
 _EXPECTED_STATE_KEYS = frozenset({"selected_release_id", "backup_id"})
 _PARAMETER_KEYS = frozenset({"backup_id", "credentials_path", "database", "verification"})
-_DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
 _DATABASE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,49}\Z")
-_MIGRATION_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
 _LOCK_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 60.0
 _POSTGRES_DATA = Path("/var/lib/postgresql")
@@ -82,7 +90,7 @@ def restore(request: HostRequest) -> HostResult:
     changed = False
     try:
         inputs = _inputs(request)
-        _safe_credentials(inputs.credentials)
+        validate_credentials(inputs.credentials)
         with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             state = _observe(inputs, allow_selection_transition=True)
             source = _source_record(state, inputs)
@@ -92,7 +100,10 @@ def restore(request: HostRequest) -> HostResult:
             _validate_arrangement(arrangement, inputs, selection_status)
 
             if selection_status == "completed":
-                _service("start")
+                try:
+                    change_service("start")
+                except CommandError as error:
+                    raise _Retryable("start") from error
                 verification = _verify(request, inputs, source.source_release_id)
                 if verification.outcome != "succeeded":
                     raise _Retryable("verification")
@@ -117,7 +128,10 @@ def restore(request: HostRequest) -> HostResult:
                     raise _Retryable("backup") from error
                 changed = True
                 if arrangement != swapped:
-                    _service("stop")
+                    try:
+                        change_service("stop")
+                    except CommandError as error:
+                        raise _Retryable("stop") from error
                     arrangement, restored = _converge_database(arrangement, inputs, source)
                     changed = changed or restored
                 state = _observe(inputs, allow_selection_transition=True)
@@ -125,14 +139,19 @@ def restore(request: HostRequest) -> HostResult:
 
                 if state.selected_release_id != source.source_release_id:
                     try:
-                        _atomically_select(inputs.paths, source.source_release_id)
+                        select_current(inputs.paths, source.source_release_id)
+                    except SelectionAmbiguityError as error:
+                        raise RestoreManual("selection temporary is unsafe") from error
                     except (OSError, ValueError) as error:
                         raise _Retryable("selection") from error
                     changed = True
                     state = _observe(inputs, allow_selection_transition=True)
                 _require_selected_target(state, inputs, source)
 
-                _service("start")
+                try:
+                    change_service("start")
+                except CommandError as error:
+                    raise _Retryable("start") from error
                 verification = _verify(request, inputs, source.source_release_id)
                 if verification.outcome != "succeeded":
                     raise _Retryable("verification")
@@ -222,40 +241,19 @@ def _backup_id(value: object) -> str:
 
 
 def _database(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != _DATABASE_KEYS:
-        raise ValueError("restore database settings are invalid")
+    database = database_mapping(value)
     if (
-        type(value["host"]) is not str
-        or not value["host"]
-        or type(value["role"]) is not str
-        or not _DATABASE_NAME_RE.fullmatch(value["role"])
-        or type(value["name"]) is not str
-        or _DATABASE_NAME_RE.fullmatch(value["name"]) is None
-        or type(value["port"]) is not int
-        or not 0 < value["port"] < 65_536
+        _DATABASE_NAME_RE.fullmatch(str(database["role"])) is None
+        or _DATABASE_NAME_RE.fullmatch(str(database["name"])) is None
     ):
         raise ValueError("restore database settings are invalid")
-    return value
+    return database
 
 
 def _verification(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ValueError("restore verification settings are invalid")
     return value
-
-
-def _safe_credentials(path: Path) -> None:
-    try:
-        details = path.lstat()
-    except OSError as error:
-        raise ValueError("restore credentials are unavailable") from error
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != os.geteuid()
-        or stat.S_IMODE(details.st_mode) != 0o600
-    ):
-        raise ValueError("restore credentials are unsafe")
 
 
 def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
@@ -266,7 +264,10 @@ def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
 
 
 def _state_for_database(state: HostState, inputs: _Inputs, name: str) -> HostState:
-    observed = _observe_database(_database_with_name(inputs.database, name), inputs.credentials)
+    try:
+        observed = observe_database_state(_database_with_name(inputs.database, name), inputs.credentials)
+    except DatabaseObservationError as error:
+        raise RestoreManual("safety backup database observation is invalid") from error
     versions = observed["applied_migrations"]
     database_state = observed["state"]
     if not isinstance(versions, tuple) or database_state != "ready":
@@ -279,34 +280,6 @@ def _state_for_database(state: HostState, inputs: _Inputs, name: str) -> HostSta
     )
 
 
-def _observe_database(database: Mapping[str, object], credentials: Path) -> Mapping[str, object]:
-    environment = {"PGPASSFILE": credentials.as_posix()}
-    common = (
-        "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--host", str(database["host"]),
-        "--port", str(database["port"]), "--username", str(database["role"]),
-        "--dbname", str(database["name"]), "--no-password",
-    )
-    table = run_command(
-        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
-    if table != b"1":
-        raise RestoreManual("database migration authority is unavailable")
-    output = run_command(
-        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.decode("utf-8", "strict")
-    try:
-        versions = tuple(int(item) for item in output.splitlines() if item)
-    except ValueError as error:
-        raise RestoreManual("database migration authority is invalid") from error
-    if versions != tuple(sorted(set(versions))):
-        raise RestoreManual("database migration authority is invalid")
-    return {"state": "ready", "applied_migrations": versions}
-
-
 def _source_record(state: HostState, inputs: _Inputs) -> BackupRecord:
     source = next((item for item in state.backups if item.backup_id == inputs.backup_id), None)
     if source is None:
@@ -314,7 +287,11 @@ def _source_record(state: HostState, inputs: _Inputs) -> BackupRecord:
     release = next((item for item in state.releases if item.release_id == source.source_release_id), None)
     if release is None:
         raise RestoreManual("source backup release is unavailable")
-    if _migration_versions(release) != source.migration_versions:
+    try:
+        source_migrations = release_migration_versions(release.migrations)
+    except ValueError as error:
+        raise RestoreManual("release migration record is invalid") from error
+    if source_migrations != source.migration_versions:
         raise RestoreManual("source backup and release migrations conflict")
     if not any(item.release_id == source.source_release_id for item in state.selections):
         raise RestoreManual("source release is not proven by successful selection history")
@@ -334,7 +311,7 @@ def _validate_source_dump(source: BackupRecord, inputs: _Inputs) -> None:
         or details.st_uid != os.geteuid()
         or details.st_size <= 0
         or details.st_mode & 0o7022
-        or _sha256(dump) != source.dump_sha256
+        or sha256_file(dump) != source.dump_sha256
     ):
         raise RestoreManual("source dump identity is contradictory")
     if stat.S_IMODE(details.st_mode) != 0o600:
@@ -492,28 +469,12 @@ def _restore_dump(inputs: _Inputs, source: BackupRecord, database: str) -> None:
 
 
 def _validate_restored_database(inputs: _Inputs, database: str, expected: tuple[int, ...]) -> None:
-    environment = {"PGPASSFILE": inputs.credentials.as_posix()}
-    common = (
-        "psql", "--no-psqlrc", "--host", str(inputs.database["host"]), "--port",
-        str(inputs.database["port"]), "--username", str(inputs.database["role"]), "--dbname", database,
-        "--no-password", "--tuples-only", "--no-align",
-    )
-    table = run_command(
-        (*common, "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
-    if table != b"1":
-        raise RestoreManual("restored database migration table is unavailable")
-    output = run_command(
-        (*common, "--command", "SELECT version FROM schema_migrations ORDER BY version"),
-        env=environment,
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.decode("utf-8", "strict")
     try:
-        actual = tuple(int(item) for item in output.splitlines() if item)
-    except ValueError as error:
-        raise RestoreManual("restored database migrations are invalid") from error
+        actual = observe_database_state(_database_with_name(inputs.database, database), inputs.credentials)[
+            "applied_migrations"
+        ]
+    except DatabaseObservationError as error:
+        raise RestoreManual("restored database migration table is unavailable") from error
     if actual != expected:
         raise RestoreManual("restored database migrations do not match the source backup")
 
@@ -580,76 +541,15 @@ def _record_selection(
     return _observe(inputs, allow_selection_transition=False)
 
 
-def _service(action: str) -> None:
-    try:
-        run_command(("systemctl", action, "taskman.service"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
-    except CommandError as error:
-        raise _Retryable("start" if action == "start" else "stop") from error
-
-
-def _atomically_select(paths: ManagedPaths, release_id: str) -> None:
-    root = Path(paths.local(paths.install_root))
-    target = Path(paths.local(paths.release_root / release_id))
-    temporary = root / f".current-{release_id}.tmp"
-    if temporary.exists() or temporary.is_symlink():
-        details = temporary.lstat()
-        if not stat.S_ISLNK(details.st_mode) or temporary.resolve(strict=False) != target:
-            raise RestoreManual("selection temporary is unsafe")
-        temporary.unlink()
-    temporary.symlink_to(target)
-    os.replace(temporary, Path(paths.local(paths.current_link)))
-    _fsync_directory(root)
-
-
 def _verify(request: HostRequest, inputs: _Inputs, target: str) -> HostResult:
     return verify(
-        HostRequest(
-            PROTOCOL_VERSION,
-            "verify",
-            request.correlation_id,
-            {"expected_release_id": target},
-            request.paths,
-            inputs.verification,
-        ),
+        verification_request(request, target, inputs.verification),
         lifecycle_locked=True,
     )
 
 
-def _migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
-    versions: list[int] = []
-    for migration in record.migrations:
-        name = migration.get("filename")
-        match = _MIGRATION_RE.fullmatch(name) if type(name) is str else None
-        if match is None:
-            raise RestoreManual("release migration record is invalid")
-        versions.append(int(match.group(1)))
-    result = tuple(versions)
-    if result != tuple(sorted(set(result))):
-        raise RestoreManual("release migration record is invalid")
-    return result
-
-
 def _database_with_name(database: Mapping[str, object], name: str) -> Mapping[str, object]:
     return {**database, "name": name}
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-    except OSError as error:
-        raise RestoreManual("source dump cannot be read") from error
-    return digest.hexdigest()
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _result(

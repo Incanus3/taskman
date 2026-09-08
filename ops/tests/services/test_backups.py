@@ -76,10 +76,22 @@ def test_scheduled_zipapp_is_deterministic_and_contains_only_backup_authority(tm
     assert names == list(BACKUP_ARCHIVE_MEMBERS)
     assert "taskman_ops/scheduled_backup.py" in names
     assert "taskman_ops/host_helper/backups.py" in names
+    assert "taskman_ops/host_helper/credentials.py" in names
+    assert "taskman_ops/host_helper/database.py" in names
+    assert "taskman_ops/host_helper/filesystem.py" in names
     assert not any(
         forbidden in name
         for name in names
-        for forbidden in ("operations/deploy", "operations/rollback", "operations/restore", "remote", "config")
+        for forbidden in (
+            "operations/deploy",
+            "operations/rollback",
+            "operations/restore",
+            "remote",
+            "config",
+            "selection.py",
+            "services.py",
+            "verification_requests.py",
+        )
     )
     first.path.chmod(0o750)
     completed = subprocess.run(
