@@ -174,9 +174,7 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
         raise _safety("Caddy artifacts are missing validated ownership evidence")
     if facts.caddy_state is CaddyState.PREPARED and _CADDYFILE in paths:
         raise _safety("Caddy configuration is missing validated ownership evidence")
-    if facts.caddy_state in {CaddyState.STAGED, CaddyState.ACTIVE} and (
-        "caddy.service" not in units or _CADDYFILE not in paths
-    ):
+    if facts.caddy_state in {CaddyState.STAGED, CaddyState.ACTIVE} and _CADDYFILE not in paths:
         raise _safety("Caddy service evidence is missing its managed configuration boundary")
 
     for listener in _reserved_listeners(facts, config):

@@ -268,6 +268,28 @@ def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_converge
     assert discovery.caddy_state.value == "active"
 
 
+def test_marker_anchored_caddy_service_drift_is_repaired_by_declarative_convergence() -> None:
+    """An exact managed config remains admissible while pyinfra restores the service unit."""
+
+    responses = managed_caddy_responses(
+        listener_owners=(
+            'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+            'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+        )
+    )
+    responses[11] = CommandResult(0)
+
+    discovery = validate_provisionable_host(
+        ScriptedRemote.from_responses(responses),
+        config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+
+    assert discovery.state is ProvisioningState.PARTIAL
+    assert discovery.caddy_state.value == "active"
+
+
 def test_marker_anchored_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
     """The Caddy ownership proof must not reject a legitimate earlier convergence boundary."""
 
