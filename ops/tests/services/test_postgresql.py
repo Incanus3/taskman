@@ -131,7 +131,7 @@ def test_native_configuration_script_has_fail_fast_config_and_hba_gates_before_r
     assert "pg_hba_file_rules" in script
     assert "postgres --config-file" in script
     assert "-C listen_addresses | grep -Fx 127.0.0.1" in script
-    assert "-C port | grep -Fx 5432" in script
+    assert '-C port | grep -Fx "$desired_port"' in script
     assert "-C password_encryption | grep -Fx scram-sha-256" in script
     assert script.index("pg_hba_file_rules") < script.rindex("pg_ctlcluster")
 
@@ -728,7 +728,7 @@ esac''',
 
 
 def test_native_configuration_is_a_noop_for_a_validated_desired_runtime(tmp_path: Path) -> None:
-    """A healthy desired process must not be reloaded or restarted."""
+    """Inspection and convergence must agree that a healthy runtime needs no change."""
 
     plan = build_postgresql_plan(config(database_port=5433))
     stage = tmp_path / "pg_hba.staged"
@@ -813,6 +813,29 @@ esac''',
 
     assert converged.returncode == 0, converged.stderr
     assert converged.stdout == ""
+    assert not restart_log.exists()
+
+    inspected = subprocess.run(
+        (
+            "sh",
+            "-ceu",
+            render_postgresql_native_configuration_script(
+                plan,
+                hba_stage=stage.as_posix(),
+                hba_final=destination.as_posix(),
+                hba_owner=None,
+                hba_group=None,
+                inspection=True,
+            ),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert inspected.returncode == 0, inspected.stderr
+    assert inspected.stdout == "changed=0\n"
     assert not restart_log.exists()
 
 

@@ -235,12 +235,13 @@ def _postgresql_configuration_required(
         raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
     succeeded, output = runner(
         StringCommand(
-            _render_postgresql_native_configuration_probe(
+            render_postgresql_native_configuration_script(
                 plan,
                 hba_stage=hba_stage,
                 hba_final=hba_final,
                 hba_owner=hba_owner,
                 hba_group=hba_group,
+                inspection=True,
             )
         ),
         print_output=False,
@@ -299,7 +300,130 @@ def _run_postgresql_native_configuration(
     raise RuntimeError("PostgreSQL configuration failed")
 
 
-def _render_postgresql_native_configuration_probe(
+def _validate_native_configuration_inputs(
+    plan: PostgreSQLPlan,
+    *,
+    hba_stage: str,
+    hba_final: str,
+    hba_owner: str | None,
+    hba_group: str | None,
+) -> PurePosixPath:
+    if not isinstance(plan, PostgreSQLPlan):
+        raise TypeError("native PostgreSQL script requires a plan")
+    if (hba_owner is None) != (hba_group is None):
+        raise ValueError("PostgreSQL HBA owner and group must be provided together")
+    if not isinstance(hba_stage, str) or not isinstance(hba_final, str):
+        raise TypeError("PostgreSQL HBA paths must be strings")
+    final_path = PurePosixPath(hba_final)
+    if not final_path.is_absolute() or ".." in final_path.parts:
+        raise ValueError("PostgreSQL HBA final path must be an absolute safe path")
+    return final_path
+
+
+def _render_postgresql_native_predicates(plan: PostgreSQLPlan) -> str:
+    """Render the read/mutation predicates that identify one live cluster."""
+
+    track = "" if plan.package_track is None else plan.package_track
+    listen = plan.settings["listen_addresses"]
+    port = plan.settings["port"]
+    encryption = plan.settings["password_encryption"]
+    return f"""clusters=$(pg_lsclusters --no-header)
+if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
+  track == "" || $1 == track {{
+    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
+        $3 !~ /^[0-9]+$/ || ($4 != "online" && $4 != "down") || $5 != "postgres") exit 2
+    print $1, $2, $3, $4
+  }}
+'); then refuse_cluster; fi
+candidate_count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
+[ "$candidate_count" -eq 1 ] || refuse_cluster
+set -- $candidates
+version=$1
+cluster=$2
+cluster_state=$4
+desired_port={shlex.quote(port)}
+data_directory=$(pg_conftool -s "$version" "$cluster" show data_directory 2>/dev/null) || refuse_runtime
+case "$data_directory" in
+  /*) ;;
+  *) refuse_runtime ;;
+esac
+case "$data_directory" in
+  *[!A-Za-z0-9_./-]*) refuse_runtime ;;
+esac
+[ -d "$data_directory" ] && [ "$(readlink -f -- "$data_directory")" = "$data_directory" ] || refuse_runtime
+config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
+pid_file="$data_directory/postmaster.pid"
+admin_query() {{
+  endpoint=$1
+  query=$2
+  runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$endpoint" --username postgres --dbname=postgres --command "$query"
+}}
+load_runtime_pid() {{
+  [ -f "$pid_file" ] && [ ! -L "$pid_file" ] || return 1
+  [ "$(wc -l < "$pid_file" | tr -d ' ')" -eq 8 ] || refuse_runtime
+  runtime_pid=$(sed -n '1p' "$pid_file")
+  runtime_data=$(sed -n '2p' "$pid_file")
+  runtime_start=$(sed -n '3p' "$pid_file")
+  runtime_port=$(sed -n '4p' "$pid_file")
+  runtime_socket=$(sed -n '5p' "$pid_file")
+  runtime_status=$(sed -n '8p' "$pid_file" | sed 's/[[:space:]]*$//')
+  case "$runtime_pid" in ''|*[!0-9]*) refuse_runtime ;; esac
+  case "$runtime_start" in ''|*[!0-9]*) refuse_runtime ;; esac
+  case "$runtime_port" in ''|*[!0-9]*) refuse_runtime ;; esac
+  [ "$runtime_pid" -gt 1 ] && [ "$runtime_port" -ge 1 ] && [ "$runtime_port" -le 65535 ] || refuse_runtime
+  [ "$runtime_data" = "$data_directory" ] || refuse_runtime
+  [ "$runtime_socket" = {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] || refuse_runtime
+  [ "$runtime_status" = ready ] || refuse_runtime
+  pg_ctlcluster "$version" "$cluster" status >/dev/null 2>&1 || refuse_runtime
+}}
+validate_runtime_identity() {{
+  identity=$1
+  old_ifs=$IFS
+  IFS='|'
+  set -- $identity
+  IFS=$old_ifs
+  [ "$#" -eq 3 ] || refuse_runtime
+  [ "$1" = "$runtime_port" ] && [ "$2" = "$data_directory" ] && [ "$3" = "$runtime_start" ] || refuse_runtime
+}}
+validate_configured_settings() {{
+  expected_hba_file=$1
+  [ "$(pg_conftool -s "$version" "$cluster" show hba_file 2>/dev/null || true)" = "$expected_hba_file" ] &&
+  [ "$(pg_conftool -s "$version" "$cluster" show listen_addresses 2>/dev/null || true)" = {shlex.quote(listen)} ] &&
+  [ "$(pg_conftool -s "$version" "$cluster" show port 2>/dev/null || true)" = "$desired_port" ] &&
+  [ "$(pg_conftool -s "$version" "$cluster" show password_encryption 2>/dev/null || true)" = {shlex.quote(encryption)} ]
+}}
+validate_effective_settings() {{
+  expected_hba_file=$1
+  postgres --config-file="$config_file" -C listen_addresses | grep -Fx {shlex.quote(listen)} >/dev/null &&
+  postgres --config-file="$config_file" -C port | grep -Fx "$desired_port" >/dev/null &&
+  postgres --config-file="$config_file" -C password_encryption | grep -Fx {shlex.quote(encryption)} >/dev/null &&
+  postgres --config-file="$config_file" -C hba_file | grep -Fx "$expected_hba_file" >/dev/null
+}}
+validate_hba_parser() {{
+  hba_errors=$(admin_query "$runtime_port" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL')
+  test -z "$hba_errors"
+}}
+"""
+
+
+def _render_postgresql_hba_metadata_probe(
+    hba_final: str,
+    *,
+    hba_owner: str | None,
+    hba_group: str | None,
+) -> str:
+    if hba_owner is None:
+        return f"""hba_state=$(stat --format='%a' {shlex.quote(hba_final)} 2>/dev/null || true)
+hba_metadata_ok() {{ [ "$hba_state" = 640 ]; }}
+"""
+    hba_parent = PurePosixPath(hba_final).parent.as_posix()
+    return f"""hba_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_final)} 2>/dev/null || true)
+hba_parent_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_parent)} 2>/dev/null || true)
+hba_metadata_ok() {{ [ "$hba_state" = {shlex.quote(f'{hba_owner}:{hba_group}:640')} ] && [ "$hba_parent_state" = {shlex.quote(f'{hba_owner}:{hba_group}:750')} ]; }}
+"""
+
+
+def _render_postgresql_native_configuration_inspection(
     plan: PostgreSQLPlan,
     *,
     hba_stage: str,
@@ -307,103 +431,30 @@ def _render_postgresql_native_configuration_probe(
     hba_owner: str | None,
     hba_group: str | None,
 ) -> str:
-    """Return this action's read-only execution-time native-state predicate."""
+    """Render a read-only desired-state check from the native predicates."""
 
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("native PostgreSQL probe requires a plan")
-    if (hba_owner is None) != (hba_group is None):
-        raise ValueError("PostgreSQL HBA owner and group must be provided together")
-    track = "" if plan.package_track is None else plan.package_track
     expected_hba_digest = hashlib.sha256(plan.hba.encode("utf-8")).hexdigest()
-    checks = " && ".join(
-        f'[ "$(pg_conftool -s "$version" "$cluster" show {key} 2>/dev/null || true)" = {shlex.quote(value)} ]'
-        for key, value in (
-            ("hba_file", hba_final),
-            ("listen_addresses", plan.settings["listen_addresses"]),
-            ("port", plan.settings["port"]),
-            ("password_encryption", plan.settings["password_encryption"]),
-        )
-    )
-    if hba_owner is None:
-        hba_metadata = f"""hba_state=$(stat --format='%a' {shlex.quote(hba_final)} 2>/dev/null || true)
-hba_metadata_ok() {{ [ "$hba_state" = 640 ]; }}
-"""
-    else:
-        hba_parent = PurePosixPath(hba_final).parent.as_posix()
-        hba_metadata = f"""hba_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_final)} 2>/dev/null || true)
-hba_parent_state=$(stat --format='%U:%G:%a' {shlex.quote(hba_parent)} 2>/dev/null || true)
-hba_metadata_ok() {{ [ "$hba_state" = {shlex.quote(f'{hba_owner}:{hba_group}:640')} ] && [ "$hba_parent_state" = {shlex.quote(f'{hba_owner}:{hba_group}:750')} ]; }}
-"""
     return f"""set -eu
 changed() {{ printf 'changed=1\\n'; exit 0; }}
-clusters=$(pg_lsclusters --no-header)
-if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
-  track == "" || $1 == track {{
-    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
-        $3 !~ /^[0-9]+$/ || ($4 != "online" && $4 != "down") || $5 != "postgres") exit 2
-    print $1, $2, $3, $4
-  }}
-'); then changed; fi
-candidate_count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
-[ "$candidate_count" -eq 1 ] || changed
-set -- $candidates
-version=$1
-cluster=$2
-cluster_state=$4
-desired_port={shlex.quote(plan.settings["port"])}
-if ! data_directory=$(pg_conftool -s "$version" "$cluster" show data_directory 2>/dev/null); then changed; fi
-case "$data_directory" in
-  /*) ;;
-  *) changed ;;
-esac
-case "$data_directory" in
-  *[!A-Za-z0-9_./-]*) changed ;;
-esac
-if [ ! -d "$data_directory" ] || [ "$(readlink -f -- "$data_directory")" != "$data_directory" ]; then changed; fi
-config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
-pid_file="$data_directory/postmaster.pid"
-if [ "$cluster_state" != online ] || [ ! -f "$pid_file" ] || [ -L "$pid_file" ]; then changed; fi
-if [ "$(wc -l < "$pid_file" | tr -d ' ')" -ne 8 ]; then changed; fi
-runtime_pid=$(sed -n '1p' "$pid_file")
-runtime_data=$(sed -n '2p' "$pid_file")
-runtime_start=$(sed -n '3p' "$pid_file")
-runtime_port=$(sed -n '4p' "$pid_file")
-runtime_socket=$(sed -n '5p' "$pid_file")
-runtime_status=$(sed -n '8p' "$pid_file" | sed 's/[[:space:]]*$//')
-case "$runtime_pid:$runtime_start:$runtime_port" in *[!0-9:]*) changed ;; esac
-if [ -z "$runtime_pid" ] || [ -z "$runtime_start" ] || [ -z "$runtime_port" ] ||
-   [ "$runtime_pid" -le 1 ] || [ "$runtime_port" -lt 1 ] || [ "$runtime_port" -gt 65535 ] ||
-   [ "$runtime_data" != "$data_directory" ] || [ "$runtime_socket" != {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] ||
-   [ "$runtime_status" != ready ] ||
-   ! pg_ctlcluster "$version" "$cluster" status >/dev/null 2>&1; then
-  changed
-fi
-{hba_metadata}stage_digest=$(sha256sum {shlex.quote(hba_stage)} 2>/dev/null | awk '{{print $1}}')
-if ! runtime_identity=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command "SELECT current_setting('port'), current_setting('data_directory'), extract(epoch from pg_postmaster_start_time())::bigint"); then
-  changed
-fi
-old_ifs=$IFS
-IFS='|'
-set -- $runtime_identity
-IFS=$old_ifs
-if [ "$#" -ne 3 ] || [ "$1" != "$runtime_port" ] || [ "$2" != "$data_directory" ] || [ "$3" != "$runtime_start" ]; then
-  changed
-fi
-active_config_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW config_file') || changed
-active_hba_file=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SHOW hba_file') || changed
-hba_errors=$(runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$runtime_port" --username postgres --dbname=postgres --command 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL') || changed
+refuse_cluster() {{ changed; }}
+refuse_runtime() {{ changed; }}
+{_render_postgresql_native_predicates(plan)}
+[ "$cluster_state" = online ] || changed
+load_runtime_pid || changed
+if ! runtime_identity=$(admin_query "$runtime_port" "SELECT current_setting('port'), current_setting('data_directory'), extract(epoch from pg_postmaster_start_time())::bigint"); then changed; fi
+validate_runtime_identity "$runtime_identity"
+active_config_file=$(admin_query "$runtime_port" 'SHOW config_file') || changed
+active_hba_file=$(admin_query "$runtime_port" 'SHOW hba_file') || changed
+{_render_postgresql_hba_metadata_probe(hba_final, hba_owner=hba_owner, hba_group=hba_group)}stage_digest=$(sha256sum {shlex.quote(hba_stage)} 2>/dev/null | awk '{{print $1}}')
 if [ "$runtime_port" = "$desired_port" ] &&
    [ "$active_config_file" = "$config_file" ] &&
    [ "$active_hba_file" = {shlex.quote(hba_final)} ] &&
-   [ -z "$hba_errors" ] &&
+   validate_hba_parser &&
    [ "$stage_digest" = {shlex.quote(expected_hba_digest)} ] &&
    cmp -s {shlex.quote(hba_stage)} {shlex.quote(hba_final)} &&
    hba_metadata_ok &&
-   {checks} &&
-   postgres --config-file="$config_file" -C listen_addresses | grep -Fx {shlex.quote(plan.settings["listen_addresses"])} >/dev/null &&
-   postgres --config-file="$config_file" -C port | grep -Fx "$desired_port" >/dev/null &&
-   postgres --config-file="$config_file" -C password_encryption | grep -Fx {shlex.quote(plan.settings["password_encryption"])} >/dev/null &&
-   postgres --config-file="$config_file" -C hba_file | grep -Fx {shlex.quote(hba_final)} >/dev/null; then
+   validate_configured_settings {shlex.quote(hba_final)} &&
+   validate_effective_settings {shlex.quote(hba_final)}; then
   printf 'changed=0\\n'
 else
   printf 'changed=1\\n'
@@ -574,30 +625,7 @@ def _read_existing_role(remote: Remote, plan: PostgreSQLPlan) -> ExistingRole | 
         "rolreplication, rolbypassrls, rolinherit FROM pg_roles "
         f"WHERE rolname = '{plan.role.name}'"
     )
-    result = remote.run(
-        (
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--field-separator",
-            "|",
-            "--dbname=postgres",
-            "--host",
-            _POSTGRES_ADMIN_SOCKET,
-            "--port",
-            plan.settings["port"],
-            "--username",
-            "postgres",
-            "--command",
-            query,
-        ),
-        sudo=True,
-    )
+    result = _run_postgresql_admin_query(remote, plan, query, field_separator="|")
     _require_success(result, "unable to inspect PostgreSQL role")
     fields = _one_record(result, 8, "PostgreSQL role inspection returned invalid data")
     if fields is None:
@@ -617,28 +645,7 @@ def _read_existing_role_memberships(remote: Remote, plan: PostgreSQLPlan) -> tup
         "JOIN pg_roles member ON member.oid = membership.member "
         f"WHERE member.rolname = '{plan.role.name}' ORDER BY parent.rolname"
     )
-    result = remote.run(
-        (
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--host",
-            _POSTGRES_ADMIN_SOCKET,
-            "--port",
-            plan.settings["port"],
-            "--username",
-            "postgres",
-            "--dbname=postgres",
-            "--command",
-            query,
-        ),
-        sudo=True,
-    )
+    result = _run_postgresql_admin_query(remote, plan, query)
     _require_success(result, "unable to inspect PostgreSQL role memberships")
     memberships = tuple(line for line in result.stdout.splitlines() if line)
     if len(memberships) != len(set(memberships)):
@@ -651,18 +658,38 @@ def _read_existing_database(remote: Remote, plan: PostgreSQLPlan) -> ExistingDat
         "SELECT datname, pg_get_userbyid(datdba) FROM pg_database "
         f"WHERE datname = '{plan.database.name}'"
     )
-    result = remote.run(
+    result = _run_postgresql_admin_query(remote, plan, query, field_separator="|")
+    _require_success(result, "unable to inspect PostgreSQL database")
+    fields = _one_record(result, 2, "PostgreSQL database inspection returned invalid data")
+    if fields is None:
+        return None
+    return ExistingDatabase(*fields)
+
+
+def _run_postgresql_admin_query(
+    remote: Remote,
+    plan: PostgreSQLPlan,
+    query: str,
+    *,
+    field_separator: str | None = None,
+) -> CommandResult:
+    """Run one local peer-authenticated inspection query as PostgreSQL's admin."""
+
+    arguments = (
+        "runuser",
+        "-u",
+        "postgres",
+        "--",
+        "psql",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+    )
+    if field_separator is not None:
+        arguments += ("--field-separator", field_separator)
+    return remote.run(
         (
-            "runuser",
-            "-u",
-            "postgres",
-            "--",
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--field-separator",
-            "|",
+            *arguments,
             "--host",
             _POSTGRES_ADMIN_SOCKET,
             "--port",
@@ -675,11 +702,6 @@ def _read_existing_database(remote: Remote, plan: PostgreSQLPlan) -> ExistingDat
         ),
         sudo=True,
     )
-    _require_success(result, "unable to inspect PostgreSQL database")
-    fields = _one_record(result, 2, "PostgreSQL database inspection returned invalid data")
-    if fields is None:
-        return None
-    return ExistingDatabase(*fields)
 
 
 def _one_record(result: CommandResult, fields: int, message: str) -> tuple[str, ...] | None:
@@ -803,22 +825,28 @@ def render_postgresql_native_configuration_script(
     hba_final: str = "/etc/postgresql/taskman/pg_hba.conf",
     hba_owner: str | None = "root",
     hba_group: str | None = "postgres",
+    inspection: bool = False,
 ) -> str:
-    """Render fail-fast native config/HBA gates and conditional restart logic."""
+    """Render shared native-state inspection or guarded convergence logic."""
 
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("native PostgreSQL script requires a plan")
-    if (hba_owner is None) != (hba_group is None):
-        raise ValueError("PostgreSQL HBA owner and group must be provided together")
-    if not isinstance(hba_stage, str) or not isinstance(hba_final, str):
-        raise TypeError("PostgreSQL HBA paths must be strings")
-    final_path = PurePosixPath(hba_final)
-    if not final_path.is_absolute() or ".." in final_path.parts:
-        raise ValueError("PostgreSQL HBA final path must be an absolute safe path")
-    track = "" if plan.package_track is None else plan.package_track
-    listen = plan.settings["listen_addresses"]
-    port = plan.settings["port"]
-    encryption = plan.settings["password_encryption"]
+    final_path = _validate_native_configuration_inputs(
+        plan,
+        hba_stage=hba_stage,
+        hba_final=hba_final,
+        hba_owner=hba_owner,
+        hba_group=hba_group,
+    )
+    if not isinstance(inspection, bool):
+        raise TypeError("PostgreSQL inspection mode must be boolean")
+    if inspection:
+        return _render_postgresql_native_configuration_inspection(
+            plan,
+            hba_stage=hba_stage,
+            hba_final=hba_final,
+            hba_owner=hba_owner,
+            hba_group=hba_group,
+        )
+
     hba_state = "$(stat --format='%a'" if hba_owner is None else "$(stat --format='%U:%G:%a'"
     expected_hba_state = "640" if hba_owner is None else f"{hba_owner}:{hba_group}:640"
     hba_install_owner = "" if hba_owner is None else f"-o {shlex.quote(hba_owner)} -g {shlex.quote(hba_group)} "
@@ -835,66 +863,8 @@ fi
     return f"""set -eu
 refuse_cluster() {{ echo 'ambiguous PostgreSQL cluster' >&2; exit {int(ExitStatus.SAFETY)}; }}
 refuse_runtime() {{ echo 'ambiguous PostgreSQL runtime state' >&2; exit {int(ExitStatus.SAFETY)}; }}
-clusters=$(pg_lsclusters --no-header)
-if ! candidates=$(printf '%s\\n' \"$clusters\" | awk -v track={shlex.quote(track)} '
-  track == \"\" || $1 == track {{
-    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
-        $3 !~ /^[0-9]+$/ || ($4 != \"online\" && $4 != \"down\") || $5 != \"postgres\") exit 2
-    print $1, $2, $3, $4
-  }}
-'); then refuse_cluster; fi
-candidate_count=$(printf '%s\\n' \"$candidates\" | sed '/^$/d' | wc -l | tr -d ' ')
-[ \"$candidate_count\" -eq 1 ] || refuse_cluster
-set -- $candidates
-version=$1
-cluster=$2
-configured_port=$3
-cluster_state=$4
-desired_port={shlex.quote(port)}
-data_directory=$(pg_conftool -s \"$version\" \"$cluster\" show data_directory 2>/dev/null) || refuse_runtime
-case \"$data_directory\" in
-  /*) ;;
-  *) refuse_runtime ;;
-esac
-case \"$data_directory\" in
-  *[!A-Za-z0-9_./-]*) refuse_runtime ;;
-esac
-[ -d \"$data_directory\" ] && [ \"$(readlink -f -- \"$data_directory\")\" = \"$data_directory\" ] || refuse_runtime
-config_file=\"/etc/postgresql/$version/$cluster/postgresql.conf\"
-pid_file=\"$data_directory/postmaster.pid\"
+{_render_postgresql_native_predicates(plan)}
 changed=0
-admin_query() {{
-  endpoint=$1
-  query=$2
-  runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port \"$endpoint\" --username postgres --dbname=postgres --command \"$query\"
-}}
-load_runtime_pid() {{
-  [ -f \"$pid_file\" ] && [ ! -L \"$pid_file\" ] || return 1
-  [ \"$(wc -l < \"$pid_file\" | tr -d ' ')\" -eq 8 ] || refuse_runtime
-  runtime_pid=$(sed -n '1p' \"$pid_file\")
-  runtime_data=$(sed -n '2p' \"$pid_file\")
-  runtime_start=$(sed -n '3p' \"$pid_file\")
-  runtime_port=$(sed -n '4p' \"$pid_file\")
-  runtime_socket=$(sed -n '5p' \"$pid_file\")
-  runtime_status=$(sed -n '8p' \"$pid_file\" | sed 's/[[:space:]]*$//')
-  case \"$runtime_pid\" in ''|*[!0-9]*) refuse_runtime ;; esac
-  case \"$runtime_start\" in ''|*[!0-9]*) refuse_runtime ;; esac
-  case \"$runtime_port\" in ''|*[!0-9]*) refuse_runtime ;; esac
-  [ \"$runtime_pid\" -gt 1 ] && [ \"$runtime_port\" -ge 1 ] && [ \"$runtime_port\" -le 65535 ] || refuse_runtime
-  [ \"$runtime_data\" = \"$data_directory\" ] || refuse_runtime
-  [ \"$runtime_socket\" = {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] || refuse_runtime
-  [ \"$runtime_status\" = ready ] || refuse_runtime
-  pg_ctlcluster \"$version\" \"$cluster\" status >/dev/null 2>&1 || refuse_runtime
-}}
-validate_runtime_identity() {{
-  identity=$1
-  old_ifs=$IFS
-  IFS='|'
-  set -- $identity
-  IFS=$old_ifs
-  [ \"$#\" -eq 3 ] || refuse_runtime
-  [ \"$1\" = \"$runtime_port\" ] && [ \"$2\" = \"$data_directory\" ] && [ \"$3\" = \"$runtime_start\" ] || refuse_runtime
-}}
 runtime_state=stopped
 active_hba_file=
 case \"$cluster_state\" in
@@ -930,20 +900,16 @@ configure() {{
   if [ \"$current\" != \"$value\" ]; then pg_conftool \"$version\" \"$cluster\" set \"$key\" \"$value\"; changed=1; fi
 }}
 configure hba_file {shlex.quote(hba_final)}
-configure listen_addresses {shlex.quote(listen)}
+configure listen_addresses {shlex.quote(plan.settings["listen_addresses"])}
 configure port \"$desired_port\"
-configure password_encryption {shlex.quote(encryption)}
-postgres --config-file=\"$config_file\" -C listen_addresses | grep -Fx {shlex.quote(listen)} >/dev/null
-postgres --config-file=\"$config_file\" -C port | grep -Fx {shlex.quote(port)} >/dev/null
-postgres --config-file=\"$config_file\" -C password_encryption | grep -Fx {shlex.quote(encryption)} >/dev/null
-postgres --config-file=\"$config_file\" -C hba_file | grep -Fx {shlex.quote(hba_final)} >/dev/null
+configure password_encryption {shlex.quote(plan.settings["password_encryption"])}
+validate_effective_settings {shlex.quote(hba_final)}
 if [ \"$runtime_state\" = reachable ] && [ \"$changed\" -eq 1 ]; then
   pg_ctlcluster \"$version\" \"$cluster\" reload
 fi
 if [ \"$runtime_state\" = reachable ]; then
   [ \"$(admin_query \"$runtime_port\" 'SHOW hba_file')\" = {shlex.quote(hba_final)} ] || refuse_runtime
-  hba_errors=$(admin_query \"$runtime_port\" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL')
-  test -z \"$hba_errors\"
+  validate_hba_parser
 fi
 if [ \"$changed\" -eq 1 ]; then
   pg_ctlcluster \"$version\" \"$cluster\" restart
@@ -954,8 +920,7 @@ runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'
 validate_runtime_identity \"$runtime_identity\"
 [ \"$(admin_query \"$runtime_port\" 'SHOW config_file')\" = \"$config_file\" ] || refuse_runtime
 [ \"$(admin_query \"$runtime_port\" 'SHOW hba_file')\" = {shlex.quote(hba_final)} ] || refuse_runtime
-hba_errors=$(admin_query \"$runtime_port\" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL')
-test -z \"$hba_errors\"
+validate_hba_parser
 """
 
 
