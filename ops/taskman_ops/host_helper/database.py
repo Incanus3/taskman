@@ -11,6 +11,7 @@ from .commands import run_command
 
 _DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
 _MIGRATION_FILENAME_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
+_MIGRATION_VERSION_RE = re.compile(rb"[0-9]+\Z")
 _COMMAND_TIMEOUT_SECONDS = 60.0
 
 
@@ -106,6 +107,8 @@ def _state_from_versions(database: Mapping[str, object], credentials: Path) -> d
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     ).stdout.splitlines()
     try:
+        if any(item and _MIGRATION_VERSION_RE.fullmatch(item) is None for item in output):
+            raise ValueError("migration evidence is not decimal")
         versions = migration_versions(tuple(int(item) for item in output if item))
     except ValueError as error:
         raise DatabaseObservationError("database migration versions are invalid") from error

@@ -9,6 +9,7 @@ import subprocess
 import pytest
 
 from taskman_ops.host_helper import backups as backup_capability
+from taskman_ops.host_helper.database import DatabaseObservationError
 from taskman_ops.host_helper.operations import backup as backup_module
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import (
@@ -179,6 +180,26 @@ def test_backup_reports_an_unreadable_new_dump_as_manual_authority(
 
     assert result.outcome == "manual"
     assert result.message == "backup authority is contradictory"
+
+
+def test_backup_reports_contradictory_migration_evidence_as_manual_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refusing contradictory migrations would invite an unsafe retry over the same authority."""
+
+    paths = _paths(tmp_path)
+    _publish_selected_release(paths)
+
+    def contradictory_migrations(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise DatabaseObservationError("database migration versions are invalid")
+
+    monkeypatch.setattr(backup_module, "observe_database_migrations", contradictory_migrations)
+
+    result = backup_module.backup(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "manual"
+    assert result.message == "backup authority is contradictory"
+    assert result.state == {"selected_release_id": RELEASE}
 
 
 @pytest.mark.parametrize("boundary", ["dump", "validation", "publication", "manifest"])

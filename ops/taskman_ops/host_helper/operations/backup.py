@@ -18,7 +18,7 @@ from ..backups import (
     validate_completed_backups,
 )
 from ..credentials import validate_credentials
-from ..database import database_mapping, observe_database_migrations
+from ..database import DatabaseObservationError, database_mapping, observe_database_migrations
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import RecordError
@@ -44,7 +44,10 @@ def backup(request: HostRequest) -> HostResult:
             state = observe_host_state(paths)
             validate_completed_backups(state, paths)
             validate_credentials(credentials)
-            facts = observe_database_migrations(database, credentials)
+            try:
+                facts = observe_database_migrations(database, credentials)
+            except DatabaseObservationError as error:
+                raise BackupAuthorityError("database migration evidence is invalid") from error
             state = observe_host_state(paths, database=facts)
             record = create_validated_backup(state, paths, database, credentials, purpose=purpose)
             final_state = observe_host_state(paths, database=facts)

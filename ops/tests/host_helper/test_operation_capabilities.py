@@ -47,6 +47,30 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
     }
 
 
+@pytest.mark.parametrize(
+    "raw_versions",
+    (
+        b"20260905_120000\n",
+        b" 20260905120000\n",
+        b"20260905120000 \n",
+    ),
+)
+def test_database_observation_rejects_noncanonical_raw_migration_versions(
+    monkeypatch: pytest.MonkeyPatch, raw_versions: bytes
+) -> None:
+    """Normalizing malformed database evidence could identify the wrong release as applied."""
+
+    database = _capability("database")
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, 0, raw_versions, b"")
+
+    monkeypatch.setattr(database, "run_command", run)
+
+    with pytest.raises(database.DatabaseObservationError, match="migration versions"):
+        database.observe_database_migrations(_database(), Path("/etc/taskman/pgpass"))
+
+
 def test_credentials_refuse_a_group_readable_database_password_file(tmp_path: Path) -> None:
     """A credential file readable by another account would expose the database password."""
 
