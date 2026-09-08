@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
+import re
+import shlex
 from typing import TYPE_CHECKING, Callable
 
 from ..config import EnvironmentConfig
@@ -26,6 +28,7 @@ class SystemdAsset:
     destination: str
     mode: int
     binary_content: bytes | None = None
+    sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,7 @@ def build_systemd_plan(
 def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
     """Add built-in unit/file, daemon-reload, and enablement operations."""
 
-    from pyinfra.operations import files, systemd
+    from pyinfra.operations import files, server, systemd
 
     plan = build_systemd_plan(inputs.config)
     changed_unit_files: list[object] = []
@@ -84,6 +87,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
         )
         if asset.destination.startswith("/etc/systemd/system/"):
             changed_unit_files.append(result)
+        _verify_installed_checksum(server, asset)
     files.put(
         StringIO(plan.backup_environment_content),
         plan.backup_environment_path,
@@ -200,11 +204,24 @@ def _backup_assets(
             str(command.destination),
             command.mode,
             binary_content=command.content,
+            sha256=command.sha256,
         ),
         SystemdAsset(None, "", f"{config.install_root.as_posix()}/lifecycle.lock", 0o600),
         SystemdAsset(None, render_backup_service(config), str(service.destination), service.mode),
         SystemdAsset(None, timer, str(_timer.destination), _timer.mode),
     )
+
+
+def _verify_installed_checksum(server: object, asset: SystemdAsset) -> None:
+    """Declare an on-host checksum check for the immutable scheduled zipapp."""
+
+    if asset.sha256 is None:
+        return
+    if re.fullmatch(r"[0-9a-f]{64}", asset.sha256) is None:
+        raise ValueError("systemd asset checksum is invalid")
+    destination = shlex.quote(asset.destination)
+    command = f"test \"$(sha256sum -- {destination} | awk '{{print $1}}')\" = {asset.sha256}"
+    server.shell(commands=command, name=f"Verify checksum for {asset.destination}")  # type: ignore[attr-defined]
 
 
 def _backup_environment(contract: BackupServiceContract) -> str:

@@ -107,6 +107,17 @@ def test_backup_record_serializes_a_whole_second_utc_creation_time() -> None:
         _backup(created_at=datetime(2026, 9, 7, 12, 0, 0, 1, tzinfo=UTC))
 
 
+@pytest.mark.parametrize("timestamp", ("2026-09-07T12:00Z", "2026-09-07T12:00:00.000Z"))
+def test_backup_record_rejects_noncanonical_creation_timestamps(timestamp: str) -> None:
+    """Accepting alternate spellings would make the persisted record representation ambiguous."""
+
+    mapping = _backup().to_mapping()
+    mapping["created_at"] = timestamp
+
+    with pytest.raises(RecordError, match="creation time"):
+        BackupRecord.from_mapping(mapping)
+
+
 @pytest.mark.parametrize(
     ("factory", "field", "value"),
     [

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .host_helper.backups import (
     BackupAuthorityError,
+    BackupCapacityError,
     CommandError,
     create_validated_backup,
     normalize_temporary_dumps,
@@ -122,7 +123,7 @@ def main(environment: Mapping[str, str] | None = None) -> int:
         run_scheduled_backup(inputs)
     except LifecycleLockContention:
         return _status(12)
-    except (CommandError, RecordError, OSError):
+    except (BackupCapacityError, CommandError, RecordError, OSError):
         return _status(6)
     except (BackupAuthorityError, PathAuthorityError, StateAmbiguityError, TypeError, ValueError):
         return _status(10)

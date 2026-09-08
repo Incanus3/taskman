@@ -100,6 +100,8 @@ def _timestamp(value: object, label: str) -> datetime:
         raise RecordError(f"invalid {label}") from error
     if parsed.tzinfo != UTC:
         raise RecordError(f"invalid {label}")
+    if _format_timestamp(parsed, label) != value:
+        raise RecordError(f"invalid {label}")
     return parsed
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -174,6 +175,41 @@ def test_retention_refuses_a_manifest_replaced_after_observation(tmp_path: Path)
     )
 
     with pytest.raises(backup_capability.BackupAuthorityError, match="manifest"):
+        backup_capability.prune_backups(paths, state, retention=1)
+
+    assert stale_manifest.is_file()
+    assert stale_dump.is_file()
+
+
+@pytest.mark.parametrize("replaced", ("manifest", "dump"))
+def test_retention_refuses_a_completed_pair_replaced_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replaced: str
+) -> None:
+    """A pathname swap after validation must not authorize either completed file's removal."""
+
+    paths = _paths(tmp_path)
+    _managed_state(paths)
+    state = observe_host_state(paths)
+    root = Path(paths.local(paths.backup_root))
+    stale_dump = root / f"{STALE_BACKUP}.dump"
+    stale_manifest = Path(paths.local(paths.backup_manifest(STALE_BACKUP)))
+    target = stale_manifest if replaced == "manifest" else stale_dump
+    replacement = tmp_path / f"replacement-{replaced}"
+    replacement.write_bytes(target.read_bytes())
+    replacement.chmod(target.stat().st_mode & 0o777)
+    original = backup_capability.validate_manifest_identity
+    swapped = False
+
+    def swap_after_validation(path: Path, expected: BackupRecord) -> None:
+        nonlocal swapped
+        original(path, expected)
+        if not swapped:
+            os.replace(replacement, target)
+            swapped = True
+
+    monkeypatch.setattr(backup_capability, "validate_manifest_identity", swap_after_validation)
+
+    with pytest.raises(backup_capability.BackupAuthorityError, match="identity"):
         backup_capability.prune_backups(paths, state, retention=1)
 
     assert stale_manifest.is_file()

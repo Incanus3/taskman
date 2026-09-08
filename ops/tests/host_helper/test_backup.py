@@ -192,10 +192,8 @@ def test_backup_rerun_finishes_after_each_recognizable_interruption(
 
     assert result.outcome == "succeeded"
     assert result.state["backup_id"].startswith("backup-")
-    if boundary in {"dump", "validation"}:
+    if boundary != "manifest":
         assert not prior_dump.exists()
-    elif boundary == "publication":
-        assert prior_dump.is_file()
 
 
 def test_backup_returns_manual_when_a_completed_dump_identity_is_contradictory(

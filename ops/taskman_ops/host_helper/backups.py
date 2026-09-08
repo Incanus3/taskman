@@ -19,7 +19,7 @@ from .state import HostState, StateAmbiguityError, observe_host_state
 
 
 _DATABASE_KEYS = frozenset({"host", "name", "port", "role"})
-_TEMPORARY_DUMP_RE = re.compile(r"\.backup-[0-9a-f]{32}\.dump\.tmp\Z")
+_TEMPORARY_DUMP_RE = re.compile(r"(?:\.backup-[0-9a-f]{32}\.dump\.tmp|backup-[0-9a-f]{32}\.dump)\Z")
 _COMMAND_TIMEOUT_SECONDS = 60.0
 _MINIMUM_CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
 
@@ -201,14 +201,17 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
             continue
         dump = root / f"{record.backup_id}.dump"
         manifest = root / f"{record.backup_id}.json"
-        validate_dump(dump)
+        dump_identity = validate_dump(dump)
         if sha256(dump) != record.dump_sha256:
             raise BackupAuthorityError("completed backup dump identity changed")
-        validate_manifest_identity(manifest, record)
-        manifest.unlink()
-        fsync_directory(root)
-        dump.unlink()
-        fsync_directory(root)
+        manifest_identity = validate_manifest_identity(manifest, record)
+        _unlink_completed_pair(
+            root,
+            dump.name,
+            dump_identity,
+            manifest.name,
+            manifest_identity,
+        )
     return observe_host_state(paths, database={"state": state.database_state, "applied_migrations": state.applied_migrations})
 
 
@@ -318,7 +321,7 @@ def publish_dump(temporary: Path, published: Path) -> None:
     fsync_directory(published.parent)
 
 
-def validate_dump(path: Path) -> None:
+def validate_dump(path: Path) -> tuple[int, int]:
     try:
         details = path.lstat()
     except OSError as error:
@@ -332,9 +335,10 @@ def validate_dump(path: Path) -> None:
     ):
         raise BackupAuthorityError("backup dump is unsafe")
     os.chmod(path, 0o600)
+    return details.st_dev, details.st_ino
 
 
-def validate_private_file(path: Path) -> None:
+def validate_private_file(path: Path) -> tuple[int, int]:
     try:
         details = path.lstat()
     except OSError as error:
@@ -346,9 +350,10 @@ def validate_private_file(path: Path) -> None:
         or stat.S_IMODE(details.st_mode) != 0o600
     ):
         raise BackupAuthorityError("backup manifest is unsafe")
+    return details.st_dev, details.st_ino
 
 
-def validate_manifest_identity(path: Path, expected: BackupRecord) -> None:
+def validate_manifest_identity(path: Path, expected: BackupRecord) -> tuple[int, int]:
     """Re-read the manifest immediately before a destructive retention action."""
 
     validate_private_file(path)
@@ -364,6 +369,45 @@ def validate_manifest_identity(path: Path, expected: BackupRecord) -> None:
         raise BackupAuthorityError("backup manifest is invalid") from error
     if observed != expected:
         raise BackupAuthorityError("backup manifest identity changed")
+    return validate_private_file(path)
+
+
+def _unlink_completed_pair(
+    root: Path,
+    dump_name: str,
+    dump_identity: tuple[int, int],
+    manifest_name: str,
+    manifest_identity: tuple[int, int],
+) -> None:
+    """Remove a validated completed pair only while both directory entries are unchanged."""
+
+    try:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as error:
+        raise BackupAuthorityError("backup root is unavailable") from error
+    try:
+        _require_identity(descriptor, dump_name, dump_identity, "backup dump")
+        _require_identity(descriptor, manifest_name, manifest_identity, "backup manifest")
+        os.unlink(manifest_name, dir_fd=descriptor)
+        os.fsync(descriptor)
+        _require_identity(descriptor, dump_name, dump_identity, "backup dump")
+        os.unlink(dump_name, dir_fd=descriptor)
+        os.fsync(descriptor)
+    except OSError as error:
+        raise BackupAuthorityError("completed backup deletion failed") from error
+    finally:
+        os.close(descriptor)
+
+
+def _require_identity(
+    descriptor: int, name: str, expected: tuple[int, int], label: str
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except OSError as error:
+        raise BackupAuthorityError(f"{label} identity changed") from error
+    if (current.st_dev, current.st_ino) != expected:
+        raise BackupAuthorityError(f"{label} identity changed")
 
 
 def sha256(path: Path) -> str:

@@ -80,6 +80,8 @@ def test_architecture_scan_rejects_the_removed_generic_pyinfra_module(tmp_path: 
 def test_scheduled_backup_guard_rejects_the_shell_and_legacy_record_imports(tmp_path: Path) -> None:
     """The installed zipapp must not regain the superseded lifecycle protocol."""
 
+    from check_architecture import _scheduled_asset_violations
+
     shell = tmp_path / "ops" / "backup" / "taskman-backup"
     shell.parent.mkdir(parents=True)
     shell.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -89,9 +91,26 @@ def test_scheduled_backup_guard_rejects_the_shell_and_legacy_record_imports(tmp_
         "from taskman_ops.host_helper.lifecycle_records import BackupLifecycleRecord\n",
         encoding="utf-8",
     )
+    package = tmp_path / "ops" / "taskman_ops" / "helper_package.py"
+    package.write_text(
+        "BACKUP_ARCHIVE_MEMBERS = (\n"
+        "    '__main__.py',\n"
+        "    'taskman_ops/__init__.py',\n"
+        "    'taskman_ops/host_helper/backups.py',\n"
+        "    'taskman_ops/scheduled_backup.py',\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    backup_capability = tmp_path / "ops" / "taskman_ops" / "host_helper" / "backups.py"
+    backup_capability.parent.mkdir(parents=True)
+    backup_capability.write_text(
+        "from taskman_ops.host_helper.lifecycle import LifecycleStore\n",
+        encoding="utf-8",
+    )
 
     assert set(_scheduled_asset_violations(tmp_path)) == {
         "ops/backup/taskman-backup: legacy scheduled backup shell remains",
+        "ops/taskman_ops/host_helper/backups.py:1: imports legacy scheduled backup record module",
         "ops/taskman_ops/scheduled_backup.py:1: imports legacy scheduled backup record module",
     }
 

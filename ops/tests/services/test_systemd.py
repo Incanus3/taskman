@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from tests.fakes import ScriptedRemote
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
@@ -56,9 +58,10 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
 
     results = [Result(False), Result(False), Result(False), Result(False), Result(False), Result(False)]
     reload_kwargs: dict[str, object] = {}
-    from pyinfra.operations import files, systemd
+    from pyinfra.operations import files, server, systemd
 
     monkeypatch.setattr(files, "put", lambda *_args, **_kwargs: results.pop(0))
+    monkeypatch.setattr(server, "shell", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(systemd, "daemon_reload", lambda **kwargs: reload_kwargs.update(kwargs))
 
@@ -91,7 +94,7 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     puts: list[tuple[str, str, dict[str, object]]] = []
     reloads: list[dict[str, object]] = []
     services: list[tuple[str, dict[str, object]]] = []
-    from pyinfra.operations import files, systemd
+    from pyinfra.operations import files, server, systemd
 
     monkeypatch.setattr(
         files,
@@ -100,6 +103,12 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     )
     monkeypatch.setattr(systemd, "daemon_reload", lambda **kwargs: reloads.append(kwargs))
     monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
+    checksum_checks: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(
+        server,
+        "shell",
+        lambda commands, **kwargs: checksum_checks.append((commands, kwargs)),
+    )
     inputs = ProvisioningInputs(
         config=config(),
         caddy_plan=CaddyPlan(
@@ -128,3 +137,18 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
             {"running": True, "enabled": True, "name": "Enable and start taskman-backup.timer"},
         ),
     ]
+    backup_asset = next(asset for asset in plan.assets if asset.destination.endswith("taskman-backup.pyz"))
+    assert backup_asset.sha256 is not None
+    backup_put = next(entry for entry in puts if entry[1] == backup_asset.destination)
+    assert backup_put[2] == {
+        "user": "root",
+        "group": "root",
+        "mode": 0o750,
+        "add_deploy_dir": False,
+        "name": f"Install {backup_asset.destination}",
+    }
+    assert len(checksum_checks) == 1
+    commands, kwargs = checksum_checks[0]
+    assert backup_asset.destination in commands
+    assert backup_asset.sha256 in commands
+    assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}"}

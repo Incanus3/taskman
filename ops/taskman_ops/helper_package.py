@@ -19,6 +19,7 @@ from .host_protocol import PROTOCOL_VERSION
 _ARCHIVE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 _ARCHIVE_MODE = stat.S_IFREG | 0o644
 _ZIPAPP_MODE = 0o600
+_ZIPAPP_SHEBANG = b"#!/usr/bin/python3\n"
 _FIXED_MAIN = b"from taskman_ops.host_helper.__main__ import main\n\nraise SystemExit(main())\n"
 _FIXED_BACKUP_MAIN = b"from taskman_ops.scheduled_backup import main\n\nraise SystemExit(main())\n"
 _FIXED_NAMESPACE = b'"""Bundled Taskman host-helper namespace."""\n'
@@ -148,20 +149,22 @@ def _build_package(destination: Path, members: tuple[str, ...], main: bytes) -> 
         raise RuntimeError("helper package allowlist is not lexical")
     _validate_imports(members)
 
-    with zipfile.ZipFile(
-        destination,
-        mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
-        strict_timestamps=True,
-    ) as archive:
-        for name in members:
-            archive.writestr(
-                _zip_info(name),
-                _member_bytes(name, main),
-                compress_type=zipfile.ZIP_DEFLATED,
-                compresslevel=9,
-            )
+    with destination.open("wb") as output:
+        output.write(_ZIPAPP_SHEBANG)
+        with zipfile.ZipFile(
+            output,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+            strict_timestamps=True,
+        ) as archive:
+            for name in members:
+                archive.writestr(
+                    _zip_info(name),
+                    _member_bytes(name, main),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
 
     destination.chmod(_ZIPAPP_MODE)
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()

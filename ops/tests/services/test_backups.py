@@ -13,7 +13,7 @@ import pytest
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.helper_package import BACKUP_ARCHIVE_MEMBERS, build_scheduled_backup_package
 from taskman_ops import scheduled_backup
-from taskman_ops.host_helper.backups import BackupAuthorityError
+from taskman_ops.host_helper.backups import BackupAuthorityError, BackupCapacityError
 from taskman_ops.host_helper.commands import CommandError
 from taskman_ops.host_helper.lock import LifecycleLockContention
 from taskman_ops.services.backups import (
@@ -81,8 +81,9 @@ def test_scheduled_zipapp_is_deterministic_and_contains_only_backup_authority(tm
         for name in names
         for forbidden in ("operations/deploy", "operations/rollback", "operations/restore", "remote", "config")
     )
+    first.path.chmod(0o750)
     completed = subprocess.run(
-        ["python", first.path.as_posix()],
+        [first.path.as_posix()],
         env={},
         capture_output=True,
         text=True,
@@ -128,7 +129,7 @@ def test_backup_systemd_unit_has_a_fixed_entrypoint_and_exact_writable_paths() -
     assert "${TASKMAN_BACKUP" not in unit
     assert "ReadWritePaths=/var/backups/taskman /opt/taskman/lifecycle.lock" in unit
     assert "NoNewPrivileges=true" in unit
-    assert "ProtectSystem=full" in unit
+    assert "ProtectSystem=strict" in unit
     assert "PrivateTmp=true" in unit
     assert "/var/lock/taskman" not in unit
     assert "deployment" not in unit.lower()
@@ -155,6 +156,7 @@ def test_backup_timer_is_persistent_and_uses_a_validated_calendar() -> None:
         (None, 0, "taskman scheduled backup completed"),
         (LifecycleLockContention("held"), 12, "taskman scheduled backup lifecycle lock is unavailable"),
         (CommandError("pg_dump failed"), 6, "taskman scheduled backup needs retry"),
+        (BackupCapacityError("insufficient"), 6, "taskman scheduled backup needs retry"),
         (BackupAuthorityError("contradictory"), 10, "taskman scheduled backup needs manual attention"),
     ],
 )

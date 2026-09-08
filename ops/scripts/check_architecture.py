@@ -351,29 +351,77 @@ def _scheduled_asset_violations(repository: Path) -> Iterable[str]:
     if shell.exists():
         violations.append("ops/backup/taskman-backup: legacy scheduled backup shell remains")
 
-    adapter = repository / "ops" / "taskman_ops" / "scheduled_backup.py"
-    if not adapter.is_file():
-        return tuple(violations)
-    tree = ast.parse(adapter.read_text(encoding="utf-8"), filename=adapter.as_posix())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imports = tuple(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            imports = tuple(
-                f"{node.module}.{alias.name}" if node.module else alias.name for alias in node.names
-            )
-        else:
+    for member in _scheduled_backup_members(repository):
+        source = repository / "ops" / member
+        if not source.is_file():
+            violations.append(f"ops/{member}: scheduled backup archive member is unavailable")
             continue
-        if any(
-            imported == legacy or imported.startswith(f"{legacy}.")
-            for imported in imports
-            for legacy in _LEGACY_SCHEDULED_RECORD_MODULES
-        ):
-            violations.append(
-                "ops/taskman_ops/scheduled_backup.py:"
-                f"{node.lineno}: imports legacy scheduled backup record module"
-            )
+        relative = f"ops/{member}"
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=relative)
+        module = member.removesuffix(".py").replace("/", ".")
+        package = module if member.endswith("/__init__.py") else module.rpartition(".")[0]
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if any(_legacy_scheduled_import(imported) for imported in _imported_modules(node, package)):
+                violations.append(
+                    f"{relative}:{node.lineno}: imports legacy scheduled backup record module"
+                )
     return tuple(violations)
+
+
+def _scheduled_backup_members(repository: Path) -> tuple[str, ...]:
+    """Read the archive allowlist as syntax so the guard does not import production code."""
+
+    package = repository / "ops" / "taskman_ops" / "helper_package.py"
+    if not package.is_file():
+        return ()
+    tree = ast.parse(package.read_text(encoding="utf-8"), filename=package.as_posix())
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        if not any(isinstance(target, ast.Name) and target.id == "BACKUP_ARCHIVE_MEMBERS" for target in targets):
+            continue
+        try:
+            members = ast.literal_eval(node.value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("scheduled backup archive allowlist is invalid") from error
+        if (
+            not isinstance(members, tuple)
+            or any(
+                type(member) is not str
+                or (
+                    member not in {"__main__.py", "taskman_ops/__init__.py"}
+                    and (
+                        not member.startswith("taskman_ops/")
+                        or not member.endswith(".py")
+                        or ".." in member.split("/")
+                    )
+                )
+                for member in members
+            )
+        ):
+            raise ValueError("scheduled backup archive allowlist is invalid")
+        return tuple(member for member in members if member not in {"__main__.py", "taskman_ops/__init__.py"})
+    raise ValueError("scheduled backup archive allowlist is unavailable")
+
+
+def _imported_modules(node: ast.Import | ast.ImportFrom, package: str) -> tuple[str, ...]:
+    if isinstance(node, ast.Import):
+        return tuple(alias.name for alias in node.names)
+    base = node.module or ""
+    if node.level:
+        parts = package.split(".")
+        base = ".".join(parts[: len(parts) - node.level + 1] + ([base] if base else []))
+    return tuple(filter(None, (base, *(f"{base}.{alias.name}" for alias in node.names))))
+
+
+def _legacy_scheduled_import(imported: str) -> bool:
+    return any(
+        imported == legacy or imported.startswith(f"{legacy}.")
+        for legacy in _LEGACY_SCHEDULED_RECORD_MODULES
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
