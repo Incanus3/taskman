@@ -49,6 +49,7 @@
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
 - [Dedicated-host deployment automation](plans/2026-09-04-dedicated-host-deployment-automation.md)
 - [Deployment controller simplification](plans/2026-09-06-deployment-controller-simplification.md)
+- [Deployment controller reduction reassessment](plans/2026-09-08-deployment-controller-reduction-reassessment.md)
 
 ## Development
 

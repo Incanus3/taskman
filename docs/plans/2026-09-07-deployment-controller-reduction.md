@@ -1,5 +1,11 @@
 # Deployment Controller Reduction Implementation Plan
 
+> **Status:** Superseded for unfinished Tasks 9–10 by the
+> [approved reassessment design](../specs/2026-09-08-deployment-controller-reduction-reassessment-design.md)
+> and its
+> [revised implementation plan](2026-09-08-deployment-controller-reduction-reassessment.md).
+> Tasks 1–8 remain the authoritative record of completed implementation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or
 > executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
 > tracking.

@@ -1,6 +1,6 @@
 # Deployment controller simplification handoff
 
-**Status:** reassessment design approved; revised implementation plan pending
+**Status:** reassessment design approved; revised implementation plan ready for review
 **Updated:** 2026-09-08
 **Resume:** `$resume deployment-controller-simplification`
 
@@ -15,6 +15,7 @@ the material safety, recovery, and operator-control guarantees.
 - [Simplification design](../specs/2026-09-06-deployment-controller-simplification-design.md)
 - [Reduction design](../specs/2026-09-07-deployment-controller-reduction-design.md)
 - [Reduction reassessment](../specs/2026-09-08-deployment-controller-reduction-reassessment-design.md)
+- [Reassessment implementation plan](../plans/2026-09-08-deployment-controller-reduction-reassessment.md)
 - [Reduction implementation plan](../plans/2026-09-07-deployment-controller-reduction.md)
 - [Implementation plan](../plans/2026-09-06-deployment-controller-simplification.md)
 - [Current deployment runbook](../deployment.md)
@@ -44,13 +45,13 @@ Task 9 is blocked as
 tree deletes the legacy lifecycle/runtime core, temporary result bridge, and
 orphan legacy backup operation; focused architecture/simplification coverage
 passes. The honest production count is 15,948 lines, or 24.517% below the
-21,128-line baseline, still 2,215 lines above the required maximum.
+21,128-line baseline. It is 736 lines above the approved revised final maximum
+of 15,212, before the scheduled-backup migration and active simplification.
 
 The complete suite also cannot collect because the installed scheduled-backup
 asset's black-box tests import the deleted lifecycle records. That asset still
-writes the old activation/lifecycle format. Migrating or removing the scheduled
-capability, plus reducing another 2,215 active lines, is outside the approved
-Task 9 deletion inventory and requires operator-approved design reassessment.
+writes the old activation/lifecycle format. The approved reassessment migrates
+that retained capability before adopting the legacy deletion slice.
 
 A fresh three-part read-only audit found that scheduled backups are a retained
 product capability and should migrate to the completed-record model rather than
@@ -96,7 +97,8 @@ build contracts; none is recommended merely to satisfy the metric.
   802 tests. Independent review approved same-release and interrupted restore
   replay plus exact fresh-backup provenance.
 - After uncommitted Task 9 deletions, the measured production count is 15,948
-  lines. The required maximum is 13,733.
+  lines. The approved revised final maximum is 15,212; intermediate slices
+  are not subject to a per-phase reduction gate.
 - No banned legacy production references remain in the partial Task 9 tree.
 - The largest remaining modules are active SSH transport, PostgreSQL
   convergence, deploy/restore procedures, host facts, verification,
@@ -109,9 +111,14 @@ build contracts; none is recommended merely to satisfy the metric.
 
 ## Next action
 
-Create a revised implementation plan from the approved reassessment design.
-The plan must adopt the existing uncommitted Task 9 deletion slice deliberately,
-migrate scheduled backups before final legacy deletion, sequence active
-simplification with explicit transition-deletion owners, update Task 9/10
-Beads acceptance criteria, and preserve the separate real-host/integration
-authorization boundary.
+Review and approve the revised implementation plan. After approval, update
+Task 9/10 Beads acceptance criteria, create the ordered implementation tasks,
+and begin in a fresh session with:
+
+```text
+$resume deployment-controller-simplification
+```
+
+Default to subagent-driven execution with an independent reviewer for each
+slice. Start with the scheduled-backup migration and preserve the existing
+uncommitted Task 9 deletion slice until it can be adopted deliberately.
