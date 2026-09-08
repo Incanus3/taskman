@@ -26,7 +26,7 @@ _EXECUTABLE_MARKERS = (
 # controller orchestration.
 _REVIEWED_EXECUTABLE_OWNERS = frozenset(
     {
-        ("taskman_ops/host/facts.py", "_CADDY_EVIDENCE_SCRIPT"),
+        ("taskman_ops/host/facts.py", "_CADDY_CONFIG_SCRIPT"),
         ("taskman_ops/host/facts.py", "_RUNTIME_PREFLIGHT"),
         ("taskman_ops/host/facts.py", "_DATABASE_PREFLIGHT"),
         ("taskman_ops/host/firewall.py", "render_firewall_convergence_script"),

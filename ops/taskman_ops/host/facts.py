@@ -33,102 +33,18 @@ _PROVISIONING_MARKER_SCRIPT = (
     'else printf unknown; fi'
 )
 _CADDYFILE = PurePosixPath("/etc/caddy/Caddyfile")
-_CADDY_EVIDENCE_KEYS = (
-    "config",
-    "config_hash",
-    "config_metadata",
-    "unit_load",
-    "unit_active",
-    "unit_pid",
-    "unit_cgroup",
-    "unit_fragment",
-    "unit_metadata",
-    "unit_package",
-    "unit_verified",
-    "process_executable",
-    "process_arguments",
-    "process_cgroup",
-)
-_CADDY_EVIDENCE_SCRIPT = r'''set -eu
+_CADDY_CONFIG_KEYS = ("config", "config_hash", "config_metadata")
+_CADDY_CONFIG_SCRIPT = r'''set -eu
 config=$1
-emit() { printf '%s=%s\n' "$1" "$2"; }
-
 if [ ! -e "$config" ] && [ ! -L "$config" ]; then
-  config_state=absent
-  config_hash=
-  config_metadata=
+  printf 'config=absent\nconfig_hash=\nconfig_metadata=\n'
 elif [ -f "$config" ] && [ ! -L "$config" ]; then
-  config_state=regular
-  config_hash=$(sha256sum "$config" | awk '{print $1}')
-  config_metadata=$(stat --format='%U:%G:%a' "$config" 2>/dev/null || true)
+  printf 'config=regular\n'
+  sha256sum "$config" | awk '{printf "config_hash=%s\n", $1}'
+  stat --format='config_metadata=%U:%G:%a' "$config"
 else
-  config_state=invalid
-  config_hash=
-  config_metadata=
-fi
-
-property() { systemctl show caddy.service "--property=$1" --value 2>/dev/null || true; }
-unit_load=$(property LoadState)
-unit_active=$(property ActiveState)
-unit_pid=$(property MainPID)
-unit_cgroup=$(property ControlGroup)
-unit_fragment=$(property FragmentPath)
-unit_metadata=
-unit_package=missing
-unit_verified=missing
-
-if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
-  unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
-  package_state=$(dpkg-query --showformat='${db:Status-Status}' --show caddy 2>/dev/null || true)
-  package_owner=$(dpkg-query --search "$unit_fragment" 2>/dev/null || true)
-  package_path=
-  case "$package_owner" in
-    'caddy: '*) package_path=${package_owner#caddy: } ;;
-  esac
-  unit_resolved=$(readlink -f "$unit_fragment" 2>/dev/null || true)
-  package_resolved=$(readlink -f "$package_path" 2>/dev/null || true)
-  if [ "$package_state" = installed ] && [ -n "$package_path" ] \
-    && [ -n "$unit_resolved" ] && [ -n "$package_resolved" ] \
-    && [ "$unit_resolved" = "$package_resolved" ]; then
-    unit_package=caddy
-    unit_relative=${package_path#/}
-    unit_expected=$(dpkg-query --control-show caddy md5sums 2>/dev/null | awk -v path="$unit_relative" '$2 == path {print $1}')
-    unit_actual=$(md5sum "$unit_fragment" | awk '{print $1}')
-    if [ -n "$unit_expected" ] && [ "$unit_actual" = "$unit_expected" ]; then unit_verified=clean; else unit_verified=modified; fi
-  else
-    unit_package=foreign
-    unit_verified=unknown
-  fi
-fi
-
-process_executable=
-process_arguments=
-process_cgroup=
-case "$unit_pid" in
-  *[!0-9]*|'') ;;
-  *)
-    if [ "$unit_pid" -gt 0 ]; then
-      process_executable=$(readlink -f "/proc/$unit_pid/exe" 2>/dev/null || true)
-      process_arguments=$(tr '\000' ' ' < "/proc/$unit_pid/cmdline" 2>/dev/null | sed 's/ $//' || true)
-      process_cgroup=$(sed -n -E 's/^0::(.*)$/\1/p' "/proc/$unit_pid/cgroup" 2>/dev/null | head -n 1 || true)
-    fi
-    ;;
-esac
-
-emit config "$config_state"
-emit config_hash "$config_hash"
-emit config_metadata "$config_metadata"
-emit unit_load "$unit_load"
-emit unit_active "$unit_active"
-emit unit_pid "$unit_pid"
-emit unit_cgroup "$unit_cgroup"
-emit unit_fragment "$unit_fragment"
-emit unit_metadata "$unit_metadata"
-emit unit_package "$unit_package"
-emit unit_verified "$unit_verified"
-emit process_executable "$process_executable"
-emit process_arguments "$process_arguments"
-emit process_cgroup "$process_cgroup"'''
+  printf 'config=invalid\nconfig_hash=\nconfig_metadata=\n'
+fi'''
 _CAPACITY_SCRIPT = (
     'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
@@ -319,12 +235,12 @@ def collect_host_facts(
         )
 
     caddy_listener_owners = remote.run(("ss", "-H", "-ltnp"), sudo=True)
-    caddy_evidence = remote.run(
+    caddy_config = remote.run(
         (
             "sh",
             "-c",
-            _CADDY_EVIDENCE_SCRIPT,
-            "taskman-caddy-ownership",
+            _CADDY_CONFIG_SCRIPT,
+            "taskman-caddy-config",
             str(_CADDYFILE),
         ),
         sudo=True,
@@ -342,7 +258,7 @@ def collect_host_facts(
         units=found_units,
         listeners=_listeners(_stdout(listeners)),
         listener_owners=_listener_owners(_stdout(caddy_listener_owners)),
-        evidence=_caddy_evidence(_stdout(caddy_evidence)),
+        config=_caddy_config(_stdout(caddy_config)),
         expected_config_hash=expected_config_hash,
     )
     conflict_states = (
@@ -365,7 +281,7 @@ def collect_host_facts(
         ("TCP listeners", listeners),
         ("provisioning marker", provisioning_marker),
         ("Caddy listener ownership", caddy_listener_owners),
-        ("Caddy service evidence", caddy_evidence),
+        ("Caddy configuration", caddy_config),
     )
     failed_checks = [name for name, result in required_results if not result.succeeded]
     failed_checks.extend(
@@ -573,14 +489,14 @@ def _listener_from_fields(fields: list[str]) -> Listener | None:
     return Listener(address=address or "*", port=port)
 
 
-def _caddy_evidence(value: str) -> dict[str, str] | None:
+def _caddy_config(value: str) -> dict[str, str] | None:
     evidence: dict[str, str] = {}
     for line in value.splitlines():
         key, separator, field = line.partition("=")
-        if not separator or key not in _CADDY_EVIDENCE_KEYS or key in evidence:
+        if not separator or key not in _CADDY_CONFIG_KEYS or key in evidence:
             return None
         evidence[key] = field
-    return evidence if tuple(evidence) == _CADDY_EVIDENCE_KEYS else None
+    return evidence if tuple(evidence) == _CADDY_CONFIG_KEYS else None
 
 
 def _caddy_state(
@@ -589,105 +505,42 @@ def _caddy_state(
     units: tuple[str, ...],
     listeners: tuple[Listener, ...],
     listener_owners: dict[Listener, tuple[str, int]] | None,
-    evidence: dict[str, str] | None,
+    config: dict[str, str] | None,
     expected_config_hash: str,
 ) -> CaddyState:
-    """Classify Caddy only when file, package, process, and sockets agree."""
+    """Classify only the Caddy state that admission must distinguish."""
 
-    if evidence is None or listener_owners is None:
+    if config is None or listener_owners is None:
         return CaddyState.INVALID
     caddy_path_present = _CADDYFILE in paths
-    caddy_unit_present = "caddy.service" in units
     public_listeners = tuple(listener for listener in listeners if listener.port in {80, 443})
-    config_state = evidence["config"]
-    unit_state = evidence["unit_load"]
+    config_state = config["config"]
 
+    caddy_unit_present = "caddy.service" in units
     no_caddy_evidence = not caddy_path_present and not caddy_unit_present and not public_listeners
     if no_caddy_evidence:
-        return CaddyState.ABSENT if _caddy_is_absent(evidence) else CaddyState.INVALID
+        return CaddyState.ABSENT if config_state == "absent" else CaddyState.INVALID
 
-    if not caddy_unit_present or not _trusted_caddy_unit(evidence):
-        return CaddyState.INVALID
-    if config_state == "absent" and not caddy_path_present and not public_listeners:
-        return CaddyState.PREPARED if _inactive_caddy_without_process(evidence) else CaddyState.INVALID
-    if not caddy_path_present or not _trusted_caddy_config(evidence, expected_config_hash):
+    if not caddy_path_present and not public_listeners:
+        return CaddyState.PREPARED if config_state == "absent" else CaddyState.INVALID
+    if not caddy_path_present or not _trusted_caddy_config(config, expected_config_hash):
         return CaddyState.INVALID
     if not public_listeners:
-        return CaddyState.STAGED if _inactive_caddy_without_process(evidence) else CaddyState.INVALID
-    if unit_state != "loaded" or not _active_caddy_process(evidence):
-        return CaddyState.INVALID
+        return CaddyState.STAGED
     if {listener.port for listener in public_listeners} != {80, 443}:
         return CaddyState.INVALID
-    main_pid = int(evidence["unit_pid"])
-    if any(listener_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
+    if any(listener_owners.get(listener, ("", 0))[0] != "caddy" for listener in public_listeners):
         return CaddyState.INVALID
     if set(listener_owners) != set(public_listeners):
         return CaddyState.INVALID
     return CaddyState.ACTIVE
 
 
-def _caddy_is_absent(evidence: dict[str, str]) -> bool:
-    return all(
-        evidence[key] == value
-        for key, value in (
-            ("config", "absent"),
-            ("config_hash", ""),
-            ("config_metadata", ""),
-            ("unit_load", "not-found"),
-            ("unit_active", "inactive"),
-            ("unit_pid", "0"),
-            ("unit_cgroup", ""),
-            ("unit_fragment", ""),
-            ("unit_metadata", ""),
-            ("unit_package", "missing"),
-            ("unit_verified", "missing"),
-            ("process_executable", ""),
-            ("process_arguments", ""),
-            ("process_cgroup", ""),
-        )
-    )
-
-
-def _trusted_caddy_unit(evidence: dict[str, str]) -> bool:
-    fragment = evidence["unit_fragment"]
+def _trusted_caddy_config(config: dict[str, str], expected_hash: str) -> bool:
     return (
-        evidence["unit_load"] == "loaded"
-        and fragment in {"/lib/systemd/system/caddy.service", "/usr/lib/systemd/system/caddy.service"}
-        and evidence["unit_metadata"] == "root:root:644"
-        and evidence["unit_package"] == "caddy"
-        and evidence["unit_verified"] == "clean"
-    )
-
-
-def _trusted_caddy_config(evidence: dict[str, str], expected_hash: str) -> bool:
-    return (
-        evidence["config"] == "regular"
-        and evidence["config_hash"] == expected_hash
-        and evidence["config_metadata"] == "root:root:644"
-    )
-
-
-def _inactive_caddy_without_process(evidence: dict[str, str]) -> bool:
-    return (
-        evidence["unit_active"] == "inactive"
-        and evidence["unit_pid"] == "0"
-        and evidence["process_executable"] == ""
-        and evidence["process_arguments"] == ""
-        and evidence["process_cgroup"] == ""
-    )
-
-
-def _active_caddy_process(evidence: dict[str, str]) -> bool:
-    pid = evidence["unit_pid"]
-    return (
-        evidence["unit_active"] == "active"
-        and pid.isdecimal()
-        and int(pid) > 0
-        and evidence["unit_cgroup"] == "/system.slice/caddy.service"
-        and evidence["process_executable"] == "/usr/bin/caddy"
-        and evidence["process_arguments"]
-        == "/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile"
-        and evidence["process_cgroup"] == "/system.slice/caddy.service"
+        config["config"] == "regular"
+        and config["config_hash"] == expected_hash
+        and config["config_metadata"] == "root:root:644"
     )
 
 

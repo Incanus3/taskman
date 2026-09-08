@@ -61,7 +61,7 @@ def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monk
     monkeypatch.setattr(
         caddy,
         "_validate_and_install_caddy",
-        lambda staged_path, live_path, *_args, **_kwargs: validated.append((staged_path, live_path))
+        lambda staged_path, **_kwargs: validated.append((staged_path, "/etc/caddy/Caddyfile"))
         or operations.append("validate")
         or ValidatedConfiguration(),
         raising=False,

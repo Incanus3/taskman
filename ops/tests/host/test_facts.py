@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 import hashlib
-import os
-from pathlib import Path
-import shlex
-import subprocess
-
 import pytest
 
 from tests.fakes import ScriptedRemote
@@ -22,8 +17,6 @@ from taskman_ops.host.facts import (
     MINIMUM_MEMORY_BYTES,
     HostFacts,
     ProvisioningMarkerState,
-    _CADDY_EVIDENCE_SCRIPT,
-    _caddy_evidence,
 )
 from taskman_ops.remote import CommandResult
 
@@ -46,10 +39,8 @@ def caddy_evidence(
     *,
     config_hash: str | None = None,
     config_metadata: str = "root:root:644",
-    unit_metadata: str = "root:root:644",
-    unit_verified: str = "clean",
 ) -> CommandResult:
-    """Return one complete immutable snapshot of a running packaged Caddy."""
+    """Return the decision-relevant managed Caddy configuration evidence."""
 
     expected_hash = config_hash or _CADDYFILE_SHA256
     return CommandResult(
@@ -59,17 +50,6 @@ def caddy_evidence(
                 "config=regular",
                 f"config_hash={expected_hash}",
                 f"config_metadata={config_metadata}",
-                "unit_load=loaded",
-                "unit_active=active",
-                "unit_pid=402",
-                "unit_cgroup=/system.slice/caddy.service",
-                "unit_fragment=/usr/lib/systemd/system/caddy.service",
-                f"unit_metadata={unit_metadata}",
-                "unit_package=caddy",
-                f"unit_verified={unit_verified}",
-                "process_executable=/usr/bin/caddy",
-                "process_arguments=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile",
-                "process_cgroup=/system.slice/caddy.service",
                 "",
             )
         ),
@@ -95,25 +75,7 @@ def managed_caddy_responses(
 def absent_caddy_evidence() -> CommandResult:
     return CommandResult(
         0,
-        "\n".join(
-            (
-                "config=absent",
-                "config_hash=",
-                "config_metadata=",
-                "unit_load=not-found",
-                "unit_active=inactive",
-                "unit_pid=0",
-                "unit_cgroup=",
-                "unit_fragment=",
-                "unit_metadata=",
-                "unit_package=missing",
-                "unit_verified=missing",
-                "process_executable=",
-                "process_arguments=",
-                "process_cgroup=",
-                "",
-            )
-        ),
+        "config=absent\nconfig_hash=\nconfig_metadata=\n",
     )
 
 
@@ -122,172 +84,9 @@ def inactive_caddy_evidence(*, configured: bool) -> CommandResult:
     config_metadata = "root:root:644" if configured else ""
     return CommandResult(
         0,
-        "\n".join(
-            (
-                f"config={'regular' if configured else 'absent'}",
-                f"config_hash={config_hash}",
-                f"config_metadata={config_metadata}",
-                "unit_load=loaded",
-                "unit_active=inactive",
-                "unit_pid=0",
-                "unit_cgroup=/system.slice/caddy.service",
-                "unit_fragment=/usr/lib/systemd/system/caddy.service",
-                "unit_metadata=root:root:644",
-                "unit_package=caddy",
-                "unit_verified=clean",
-                "process_executable=",
-                "process_arguments=",
-                "process_cgroup=",
-                "",
-            )
-        ),
+        f"config={'regular' if configured else 'absent'}\n"
+        f"config_hash={config_hash}\nconfig_metadata={config_metadata}\n",
     )
-
-
-def test_caddy_evidence_verifies_the_unit_without_treating_its_managed_config_as_package_drift(
-    tmp_path: Path,
-) -> None:
-    """Package-wide verification must not reject Taskman's owned Caddyfile bytes."""
-
-    caddyfile = tmp_path / "Caddyfile"
-    caddyfile.write_text(_CADDYFILE, encoding="utf-8")
-    unit = tmp_path / "caddy.service"
-    unit.write_text("[Service]\nExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile\n", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _fake_executable(
-        bin_dir / "systemctl",
-        "case \"$3\" in "
-        "--property=LoadState) printf loaded;; "
-        "--property=ActiveState) printf inactive;; "
-        "--property=MainPID) printf 0;; "
-        "--property=ControlGroup) printf /system.slice/caddy.service;; "
-        f"--property=FragmentPath) printf %s {shlex.quote(unit.as_posix())};; "
-        "esac",
-    )
-    _fake_executable(bin_dir / "stat", "printf root:root:644")
-    _fake_executable(
-        bin_dir / "dpkg-query",
-        "case \"$1\" in "
-        "--showformat=*) printf installed;; "
-        f"--search) printf 'caddy: %s\\n' {shlex.quote(unit.as_posix())};; "
-        f"--control-show) printf '%s %s\\n' {hashlib.md5(unit.read_bytes()).hexdigest()} {shlex.quote(unit.as_posix().lstrip('/'))};; "
-        "esac",
-    )
-    _fake_executable(bin_dir / "dpkg", "printf '??5?????? c /etc/caddy/Caddyfile\\n'")
-
-    completed = subprocess.run(
-        ("sh", "-ceu", _CADDY_EVIDENCE_SCRIPT, "taskman-caddy-ownership", caddyfile.as_posix()),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-    )
-
-    evidence = _caddy_evidence(completed.stdout)
-    assert completed.returncode == 0, completed.stderr
-    assert evidence is not None
-    assert evidence["unit_verified"] == "clean"
-
-
-def test_caddy_evidence_accepts_the_package_canonical_path_for_the_same_unit(
-    tmp_path: Path,
-) -> None:
-    """usrmerge must not turn the package-owned Caddy unit into foreign state."""
-
-    caddyfile = tmp_path / "Caddyfile"
-    caddyfile.write_text(_CADDYFILE, encoding="utf-8")
-    package_directory = tmp_path / "lib" / "systemd" / "system"
-    package_directory.mkdir(parents=True)
-    package_unit = package_directory / "caddy.service"
-    package_unit.write_text("[Service]\nExecStart=/usr/bin/caddy\n", encoding="utf-8")
-    (tmp_path / "usr").symlink_to(tmp_path / "lib", target_is_directory=True)
-    unit = tmp_path / "usr" / "systemd" / "system" / "caddy.service"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _fake_executable(
-        bin_dir / "systemctl",
-        "case \"$3\" in "
-        "--property=LoadState) printf loaded;; "
-        "--property=ActiveState) printf inactive;; "
-        "--property=MainPID) printf 0;; "
-        "--property=ControlGroup) printf /system.slice/caddy.service;; "
-        f"--property=FragmentPath) printf %s {shlex.quote(unit.as_posix())};; "
-        "esac",
-    )
-    _fake_executable(bin_dir / "stat", "printf root:root:644")
-    _fake_executable(
-        bin_dir / "dpkg-query",
-        "case \"$1\" in "
-        "--showformat=*) printf installed;; "
-        f"--search) printf 'caddy: %s\\n' {shlex.quote(package_unit.as_posix())};; "
-        f"--control-show) printf '%s %s\\n' {hashlib.md5(package_unit.read_bytes()).hexdigest()} {shlex.quote(package_unit.as_posix().lstrip('/'))};; "
-        "esac",
-    )
-
-    completed = subprocess.run(
-        ("sh", "-ceu", _CADDY_EVIDENCE_SCRIPT, "taskman-caddy-ownership", caddyfile.as_posix()),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-    )
-
-    evidence = _caddy_evidence(completed.stdout)
-    assert completed.returncode == 0, completed.stderr
-    assert evidence is not None
-    assert evidence["unit_package"] == "caddy"
-    assert evidence["unit_verified"] == "clean"
-
-
-def test_caddy_evidence_refuses_an_unresolvable_package_unit_path(tmp_path: Path) -> None:
-    """A failed path-normalisation command must not compare as two empty paths."""
-
-    caddyfile = tmp_path / "Caddyfile"
-    caddyfile.write_text(_CADDYFILE, encoding="utf-8")
-    unit = tmp_path / "caddy.service"
-    unit.write_text("[Service]\nExecStart=/usr/bin/caddy\n", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _fake_executable(
-        bin_dir / "systemctl",
-        "case \"$3\" in "
-        "--property=LoadState) printf loaded;; "
-        "--property=ActiveState) printf inactive;; "
-        "--property=MainPID) printf 0;; "
-        "--property=ControlGroup) printf /system.slice/caddy.service;; "
-        f"--property=FragmentPath) printf %s {shlex.quote(unit.as_posix())};; "
-        "esac",
-    )
-    _fake_executable(bin_dir / "stat", "printf root:root:644")
-    _fake_executable(
-        bin_dir / "dpkg-query",
-        "case \"$1\" in "
-        "--showformat=*) printf installed;; "
-        f"--search) printf 'caddy: %s\\n' {shlex.quote(unit.as_posix())};; "
-        f"--control-show) printf '%s %s\\n' {hashlib.md5(unit.read_bytes()).hexdigest()} {shlex.quote(unit.as_posix().lstrip('/'))};; "
-        "esac",
-    )
-    _fake_executable(bin_dir / "readlink", "exit 1")
-
-    completed = subprocess.run(
-        ("sh", "-ceu", _CADDY_EVIDENCE_SCRIPT, "taskman-caddy-ownership", caddyfile.as_posix()),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-    )
-
-    evidence = _caddy_evidence(completed.stdout)
-    assert completed.returncode == 0, completed.stderr
-    assert evidence is not None
-    assert evidence["unit_package"] == "foreign"
-    assert evidence["unit_verified"] == "unknown"
-
-
-def _fake_executable(path: Path, body: str) -> None:
-    path.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
-    path.chmod(0o755)
 
 
 def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
@@ -354,14 +153,12 @@ def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("nginx",pid=901,fd=7))\n',
         'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",fd=6))\n'
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=403,fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=403,fd=7))\n',
     ),
 )
-def test_marker_anchored_caddy_listener_requires_exact_process_and_unit_ownership(
+def test_marker_anchored_caddy_listener_refuses_foreign_or_ambiguous_owners(
     listener_owners: str,
 ) -> None:
-    """Accepting an nginx, missing PID, or non-unit PID owner would adopt foreign HTTPS."""
+    """Accepting a foreign or ambiguous public listener would adopt foreign HTTPS."""
 
     remote = ScriptedRemote.from_responses(managed_caddy_responses(listener_owners=listener_owners))
 
@@ -381,14 +178,12 @@ def test_marker_anchored_caddy_listener_requires_exact_process_and_unit_ownershi
     (
         caddy_evidence(config_hash="f" * 64),
         caddy_evidence(config_metadata="root:root:600"),
-        caddy_evidence(unit_metadata="root:root:600"),
-        caddy_evidence(unit_verified="modified"),
     ),
 )
-def test_marker_anchored_caddy_requires_the_exact_owned_configuration_and_unit(
+def test_marker_anchored_caddy_requires_the_exact_owned_configuration(
     evidence: CommandResult,
 ) -> None:
-    """Matching paths alone must not adopt arbitrary Caddy bytes or a modified unit."""
+    """Matching paths alone must not adopt arbitrary Caddy bytes or modes."""
 
     remote = ScriptedRemote.from_responses(
         managed_caddy_responses(
@@ -448,6 +243,29 @@ def test_marker_anchored_caddy_owner_is_recognized_on_a_rerun_without_mutation()
     assert second.state is ProvisioningState.PARTIAL
     assert first.caddy_state.value == "active"
     assert second.caddy_state.value == "active"
+
+
+def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_convergence() -> None:
+    """The marker and managed config path anchor Caddy; ordinary process drift is repairable."""
+
+    drifted_evidence = caddy_evidence()
+    discovery = validate_provisionable_host(
+        ScriptedRemote.from_responses(
+            managed_caddy_responses(
+                listener_owners=(
+                    'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+                    'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+                ),
+                evidence=drifted_evidence,
+            )
+        ),
+        config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+
+    assert discovery.state is ProvisioningState.PARTIAL
+    assert discovery.caddy_state.value == "active"
 
 
 def test_marker_anchored_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
