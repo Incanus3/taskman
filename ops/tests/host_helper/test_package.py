@@ -36,9 +36,19 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert names == sorted(names)
     assert names == list(ARCHIVE_MEMBERS)
     assert "taskman_ops/host_helper/commands.py" in names
-    assert "taskman_ops/host_helper/operations/legacy_backup.py" in names
-    assert "taskman_ops/host_helper/lifecycle_records.py" in names
-    assert "taskman_ops/host_helper/legacy_result.py" in names
+    assert "taskman_ops/host_helper/records.py" in names
+    assert "taskman_ops/host_helper/state.py" in names
+    assert not any(
+        name in names
+        for name in (
+            "taskman_ops/host_helper/facts.py",
+            "taskman_ops/host_helper/legacy_result.py",
+            "taskman_ops/host_helper/lifecycle.py",
+            "taskman_ops/host_helper/lifecycle_records.py",
+            "taskman_ops/host_helper/operations/legacy_backup.py",
+            "taskman_ops/host_helper/runtime.py",
+        )
+    )
     assert all(member.date_time == (2020, 1, 1, 0, 0, 0) for member in members)
     assert all((member.external_attr >> 16) == (stat.S_IFREG | 0o644) for member in members)
     assert not any(

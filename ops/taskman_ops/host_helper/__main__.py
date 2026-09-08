@@ -15,11 +15,6 @@ from taskman_ops.host_protocol import (
     decode_request,
     encode_result,
 )
-from taskman_ops.host_helper.legacy_result import (
-    OperationRequest,
-    OperationResult,
-    project_result,
-)
 from taskman_ops.host_helper.operations.discover import discover, list_backups, list_releases
 from taskman_ops.host_helper.operations.deploy import deploy, genesis
 from taskman_ops.host_helper.operations.backup import backup
@@ -31,16 +26,6 @@ from taskman_ops.host_helper.verification import verify
 
 _FALLBACK_OPERATION = "discover"
 _FALLBACK_CORRELATION_ID = "op-00000000000000000000000000000000"
-_READ_ONLY_OPERATIONS = frozenset({"discover", "list_releases", "list_backups", "verify"})
-_FINAL_MUTATING_OPERATIONS = frozenset(
-    {"backup", "cleanup", "deploy", "genesis", "rollback", "restore"}
-)
-_READ_ONLY_HANDLERS = {
-    "discover": discover,
-    "list_releases": list_releases,
-    "list_backups": list_backups,
-    "verify": verify,
-}
 
 
 def _failure_result(
@@ -63,42 +48,21 @@ def _failure_result(
     )
 
 
-def _unavailable(request: OperationRequest) -> OperationResult:
-    """Keep dispatch total until a later slice attaches real host-local behavior."""
-
-    return OperationResult(
-        protocol_version=PROTOCOL_VERSION,
-        operation=request.operation,
-        operation_id=request.operation_id,
-        outcome="failed",
-        stage="unavailable",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=(),
-        warnings=(),
-    )
-
-
-_DISPATCH: dict[str, Callable[[OperationRequest], OperationResult]] = {
-    operation: _unavailable for operation in OPERATION_NAMES
+_DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
+    "discover": discover,
+    "list_releases": list_releases,
+    "list_backups": list_backups,
+    "verify": verify,
+    "deploy": deploy,
+    "genesis": genesis,
+    "backup": backup,
+    "cleanup": cleanup,
+    "rollback": rollback,
+    "restore": restore,
 }
-_DISPATCH.update(
-    {
-        "discover": discover,
-        "list_releases": list_releases,
-        "list_backups": list_backups,
-        "verify": verify,
-        "deploy": deploy,
-        "genesis": genesis,
-        "backup": backup,
-        "cleanup": cleanup,
-        "rollback": rollback,
-        "restore": restore,
-    }
-)
+
+if frozenset(_DISPATCH) != frozenset(OPERATION_NAMES):
+    raise RuntimeError("helper dispatch does not cover the protocol operations")
 
 
 def _encode_or_internal_failure(
@@ -122,23 +86,16 @@ def _encode_or_internal_failure(
 
 
 def _dispatch(request: HostRequest) -> HostResult:
-    """Invoke migrated operations directly and bridge only unmigrated mutations."""
+    """Invoke exactly one final-protocol helper operation."""
 
-    if request.operation in _READ_ONLY_OPERATIONS:
-        result = _READ_ONLY_HANDLERS[request.operation](request)
-        if not isinstance(result, HostResult):
-            raise TypeError("read-only helper returned an invalid result")
-        return result
-    handler = _DISPATCH[request.operation]
-    if request.operation in _FINAL_MUTATING_OPERATIONS:
-        result = handler(request)  # type: ignore[arg-type]
-        if not isinstance(result, HostResult):
-            raise TypeError("migrated helper returned an invalid result")
-        return result
-    private = handler(OperationRequest.from_request(request))  # type: ignore[arg-type]
-    if isinstance(private, HostResult):
-        return private
-    return project_result(request, private)
+    try:
+        handler = _DISPATCH[request.operation]
+    except KeyError as error:
+        raise ValueError("helper operation is unsupported") from error
+    result = handler(request)
+    if not isinstance(result, HostResult):
+        raise TypeError("helper returned an invalid result")
+    return result
 
 
 def main() -> int:

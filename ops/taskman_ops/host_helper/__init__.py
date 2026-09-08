@@ -1,1 +1,1 @@
-"""Transient standard-library-only host helper package."""
+"""Transient standard-library-only host helper with final protocol operations."""

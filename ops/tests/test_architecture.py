@@ -13,6 +13,144 @@ sys.path.insert(0, (Path(__file__).resolve().parents[1] / "scripts").as_posix())
 from check_architecture import _executable_string_violations, _import_violations, check
 
 
+_REMOVED_HOST_HELPER_MODULES = frozenset(
+    {
+        "taskman_ops.host_helper.lifecycle",
+        "taskman_ops.host_helper.lifecycle_records",
+        "taskman_ops.host_helper.runtime",
+        "taskman_ops.host_helper.facts",
+        "taskman_ops.host_helper.legacy_result",
+        "taskman_ops.host_helper.operations.legacy_backup",
+    }
+)
+_REMOVED_TRANSACTION_NAMES = frozenset(
+    {
+        "LifecycleStore",
+        "LifecycleRecords",
+        "TransactionRuntime",
+        "TransactionStage",
+        "OperationRequest",
+        "OperationResult",
+        "project_result",
+        "validate_private_operation_id",
+        "_LegacyVerificationResult",
+    }
+)
+_REMOVED_TRANSACTION_FIELDS = frozenset(
+    {
+        "operation_id",
+        "changed_stages",
+        "stage_history",
+        "stage_histories",
+        "residue_paths",
+        "recovery_actions",
+    }
+)
+
+
+def _imports_removed_transaction_module(relative_path: str, node: ast.Import | ast.ImportFrom) -> bool:
+    if isinstance(node, ast.Import):
+        return any(alias.name in _REMOVED_HOST_HELPER_MODULES for alias in node.names)
+
+    module = node.module or ""
+    if node.level:
+        parts = relative_path.removesuffix(".py").split("/")
+        package = parts[:-1]
+        parent = package[: len(package) - node.level + 1]
+        module = ".".join((*parent, module)) if module else ".".join(parent)
+
+    imported = (module, *(f"{module}.{alias.name}" for alias in node.names))
+    return any(name in _REMOVED_HOST_HELPER_MODULES for name in imported)
+
+
+def _removed_transaction_concept_violations(
+    relative_path: str, tree: ast.AST
+) -> tuple[str, ...]:
+    """Find only structural remnants of the removed helper transaction model."""
+
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if _imports_removed_transaction_module(relative_path, node):
+                violations.append(
+                    f"{relative_path}:{node.lineno}: imports removed transaction module"
+                )
+        elif isinstance(node, ast.Name) and node.id in _REMOVED_TRANSACTION_NAMES:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed transaction symbol {node.id}")
+        elif isinstance(node, ast.Name) and node.id in _REMOVED_TRANSACTION_FIELDS:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed transaction field {node.id}")
+        elif isinstance(node, ast.arg) and node.arg in _REMOVED_TRANSACTION_FIELDS:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed transaction field {node.arg}")
+        elif isinstance(node, ast.Attribute) and node.attr in _REMOVED_TRANSACTION_FIELDS:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed transaction field {node.attr}")
+        elif isinstance(node, ast.keyword) and node.arg in _REMOVED_TRANSACTION_FIELDS:
+            violations.append(f"{relative_path}:{node.value.lineno}: uses removed transaction field {node.arg}")
+        elif isinstance(node, ast.Constant) and node.value in _REMOVED_TRANSACTION_FIELDS:
+            violations.append(f"{relative_path}:{node.lineno}: uses removed transaction field {node.value}")
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in _REMOVED_TRANSACTION_NAMES:
+            violations.append(f"{relative_path}:{node.lineno}: defines removed transaction symbol {node.name}")
+        elif isinstance(node, ast.ClassDef):
+            lowered = node.name.lower()
+            if (
+                any(marker in lowered for marker in ("pending", "provisional", "finalization", "recovery"))
+                and any(marker in lowered for marker in ("record", "publication", "action"))
+            ):
+                violations.append(f"{relative_path}:{node.lineno}: defines removed transaction record {node.name}")
+
+    return tuple(violations)
+
+
+def test_deleted_transaction_concepts_are_absent_from_production_ast() -> None:
+    """Restoring the journal/runtime model would reintroduce deleted policy."""
+
+    package = Path(__file__).resolve().parents[1] / "taskman_ops"
+    violations: list[str] = []
+
+    for source in sorted(package.rglob("*.py")):
+        relative_path = source.relative_to(package.parent).as_posix()
+        module_name = source.relative_to(package).with_suffix("").as_posix().replace("/", ".")
+        if module_name in {module.removeprefix("taskman_ops.") for module in _REMOVED_HOST_HELPER_MODULES}:
+            violations.append(f"{relative_path}: removed transaction module remains")
+            continue
+        violations.extend(
+            _removed_transaction_concept_violations(
+                relative_path, ast.parse(source.read_text(encoding="utf-8"))
+            )
+        )
+
+    assert violations == []
+
+
+def test_removed_transaction_guard_rejects_imports_fields_and_record_shapes() -> None:
+    tree = ast.parse(
+        "from taskman_ops.host_helper.lifecycle import LifecycleStore\n"
+        "result.operation_id\n"
+        "OperationResult(changed_stages=(), residue_paths=(), recovery_actions=())\n"
+        "class PendingRecoveryRecord:\n"
+        "    pass\n"
+        "from .host_helper import legacy_result\n"
+        "def project_result(operation_id):\n"
+        "    return {'changed_stages': (), 'residue_paths': (), 'recovery_actions': ()}\n"
+    )
+
+    assert set(_removed_transaction_concept_violations("taskman_ops/example.py", tree)) == {
+        "taskman_ops/example.py:1: imports removed transaction module",
+        "taskman_ops/example.py:2: uses removed transaction field operation_id",
+        "taskman_ops/example.py:3: uses removed transaction symbol OperationResult",
+        "taskman_ops/example.py:3: uses removed transaction field changed_stages",
+        "taskman_ops/example.py:3: uses removed transaction field residue_paths",
+        "taskman_ops/example.py:3: uses removed transaction field recovery_actions",
+        "taskman_ops/example.py:4: defines removed transaction record PendingRecoveryRecord",
+        "taskman_ops/example.py:6: imports removed transaction module",
+        "taskman_ops/example.py:7: defines removed transaction symbol project_result",
+        "taskman_ops/example.py:7: uses removed transaction field operation_id",
+        "taskman_ops/example.py:8: uses removed transaction field changed_stages",
+        "taskman_ops/example.py:8: uses removed transaction field residue_paths",
+        "taskman_ops/example.py:8: uses removed transaction field recovery_actions",
+    }
+
+
 def test_architecture_scan_accepts_only_the_supported_deployment_boundaries() -> None:
     repository = Path(__file__).resolve().parents[2]
     completed = subprocess.run(

@@ -10,13 +10,10 @@ import re
 import select
 import subprocess
 import time
-from dataclasses import dataclass
 from typing import Mapping
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 
-from .facts import classify_lifecycle, collect_lifecycle_facts
-from .lifecycle import LifecycleError, LifecycleLockContention as LegacyLifecycleLockContention
 from .lock import LifecycleLockContention, lifecycle_lock
 from .paths import ManagedPaths, PathAuthorityError
 from .state import HostState, StateAmbiguityError, observe_host_state
@@ -38,106 +35,7 @@ _MINIMUM_DISK_BYTES = 10 * 1024**3
 _SUDO_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 
 
-@dataclass(frozen=True)
-class _LegacyVerificationResult:
-    """In-process shape retained only for mutable procedures not yet migrated."""
-
-    protocol_version: int
-    operation: str
-    operation_id: str
-    outcome: str
-    stage: str
-    changed_stages: tuple[str, ...]
-    lifecycle: Mapping[str, object]
-    runtime_state: Mapping[str, object]
-    verification: Mapping[str, object]
-    residue_paths: tuple[str, ...]
-    recovery_actions: tuple[str, ...]
-    warnings: tuple[str, ...]
-
-
-def verify(request: object, *, lifecycle_locked: bool = False):
-    """Run read-only verification from a final request or legacy mutation call."""
-
-    # Only the rollback/restore slices still pass the private legacy request
-    # while they own the lifecycle lock. Deploy and genesis always use the
-    # final HostRequest/HostResult boundary.
-    if isinstance(request, HostRequest):
-        return _verify_host_state(request, lifecycle_locked=lifecycle_locked)
-    return _verify_legacy(request, lifecycle_locked=lifecycle_locked)
-
-
-def _verify_legacy(request: object, *, lifecycle_locked: bool = False) -> _LegacyVerificationResult:
-    """Retain the old in-process result only for mutation slices not yet migrated."""
-
-    deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
-    try:
-        paths = ManagedPaths.from_mapping(request.paths)
-        # Capacity checks run before the lifecycle snapshot.  Establish root
-        # authority first so ``df`` never follows a caller-controlled link.
-        paths.validate_existing(owner_uid=os.geteuid())
-        settings = _settings(request.parameters)
-        expected = _expected_release(request.expected_state)
-    except (PathAuthorityError, ValueError):
-        return _host_failure(request, "unsupported")
-
-    authority = _host_authority(settings, paths, deadline)
-    if authority is not None:
-        return _host_failure(request, authority)
-
-    if lifecycle_locked:
-        # The deploy/genesis operation already owns the exclusive lifecycle
-        # lock and has atomically selected ``expected``. Reacquiring discovery's
-        # shared flock would contend with that same process on Linux.
-        if expected is None:
-            return _release_selection_failure(request)
-        release_id = expected
-        release_path = (paths.release_root / release_id).as_posix()
-    else:
-        try:
-            facts = collect_lifecycle_facts(paths, deadline=deadline, operation="verify")
-            if classify_lifecycle(facts) != "managed":
-                raise LifecycleError("no current managed release")
-            release_id = facts.records.current_release_id
-            assert release_id is not None
-            if expected is not None and expected != release_id:
-                return _release_selection_failure(request)
-        except LegacyLifecycleLockContention as error:
-            return _lock_failure(request, error)
-        except (LifecycleError, PathAuthorityError, ValueError):
-            return _release_selection_failure(request)
-
-        adoption = {record.release_id: record.release_path.as_posix() for record in facts.records.adoptions}
-        release_path = adoption.get(release_id, (paths.release_root / release_id).as_posix())
-    checks: list[dict[str, object]] = []
-    service_ok, pid = _service_state(deadline)
-    checks.append(_check("taskman-service", service_ok, "taskman.service is active with a positive MainPID", "taskman.service is not active with a usable MainPID"))
-    executable_ok = service_ok and _main_pid_matches_release(pid, release_path, deadline)
-    checks.append(_check("release-identity", executable_ok, "systemd MainPID executable is under the selected release", "systemd MainPID executable does not match the selected release"))
-    caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _command_timeout(deadline))[0]
-    checks.append(_check("caddy-service", caddy_ok, "caddy.service is active", "caddy.service is not active"))
-    topology_ok = _listener_topology(settings["application_port"], settings["distribution_port"], settings["database_port"], deadline)
-    checks.append(_check("listener-topology", topology_ok, "Taskman, distribution, and PostgreSQL listeners have the required topology", "listener topology is missing, public, malformed, or ambiguous"))
-    checks.append(_journal_check(deadline))
-    if not _passed(checks):
-        return _result(request, "failed", "verification", _report(8, release_id, expected, checks))
-
-    readiness_deadline = min(deadline, time.monotonic() + settings["readiness_timeout"])
-    local_ok = _local_ready(settings["application_port"], settings["connection_timeout"], readiness_deadline)
-    checks.append(_check("local-readiness", local_ok, "loopback health endpoint returned exact ready response", "loopback health endpoint did not return exact ready response before its bounded deadline"))
-    if not local_ok:
-        return _result(request, "failed", "verification", _report(9, release_id, expected, checks))
-
-    remaining = min(deadline, readiness_deadline) - time.monotonic()
-    public = _curl(f"https://{settings['public_hostname']}/healthz", min(settings["connection_timeout"], remaining)) if remaining >= 0.001 else None
-    ready = _ready(public)
-    checks.append(_check("public-readiness", ready, "public HTTPS health endpoint returned exact ready response", "public HTTPS health endpoint did not return exact ready response"))
-    hsts = _hsts(public)
-    checks.append(_check("public-hsts", hsts, "public HTTPS response includes HSTS", "public HTTPS response does not include valid HSTS"))
-    return _result(request, "succeeded" if ready and hsts else "failed", "verified" if ready and hsts else "verification", _report(0 if ready and hsts else 9, release_id, expected, checks))
-
-
-def _verify_host_state(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResult:
+def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResult:
     """Verify health and topology against one completed HostState snapshot."""
 
     deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
@@ -715,83 +613,6 @@ def _passed(checks: list[dict[str, object]]) -> bool:
 
 def _report(exit_status: int, release_id: str, expected: str | None, checks: list[dict[str, object]]) -> dict[str, object]:
     return {"schema_version": 1, "status": "ok" if exit_status == 0 else "failed", "exit_status": exit_status, "release_id": release_id, "expected_release_id": expected, "checks": checks, "next_action": None if exit_status == 0 else _NEXT_ACTION}
-
-
-def _result(request: object, outcome: str, stage: str, report: dict[str, object]) -> _LegacyVerificationResult:
-    return _LegacyVerificationResult(
-        protocol_version=PROTOCOL_VERSION,
-        operation=str(request.operation),
-        operation_id=str(request.operation_id),
-        outcome=outcome,
-        stage=stage,
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification=report,
-        residue_paths=(),
-        recovery_actions=(),
-        warnings=(),
-    )
-
-
-def _host_failure(request: object, authority: str) -> _LegacyVerificationResult:
-    if authority not in {"preflight", "unsupported"}:
-        raise ValueError("invalid host authority failure")
-    action = (
-        "restore SSH administrator connectivity and required sudo access before retrying"
-        if authority == "preflight"
-        else "use a supported Ubuntu 26.04 amd64 host and correct the environment configuration"
-    )
-    return _LegacyVerificationResult(
-        protocol_version=PROTOCOL_VERSION,
-        operation=request.operation,
-        operation_id=request.operation_id,
-        outcome="failed",
-        stage="host-preflight",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={"host_authority": authority},
-        verification={},
-        residue_paths=(),
-        recovery_actions=(action,),
-        warnings=(),
-    )
-
-
-def _release_selection_failure(request: object) -> _LegacyVerificationResult:
-    return _LegacyVerificationResult(
-        protocol_version=PROTOCOL_VERSION,
-        operation=request.operation,
-        operation_id=request.operation_id,
-        outcome="refused",
-        stage="release-selection",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state={},
-        verification={},
-        residue_paths=(),
-        recovery_actions=("inspect the managed lifecycle metadata and resolve the contradiction before retrying",),
-        warnings=(),
-    )
-
-
-def _lock_failure(request: object, error: object) -> _LegacyVerificationResult:
-    holder = None if error.holder is None else error.holder.to_mapping()
-    runtime = {"lock_holder": holder} if holder is not None else {}
-    return _LegacyVerificationResult(
-        protocol_version=PROTOCOL_VERSION,
-        operation=request.operation,
-        operation_id=request.operation_id,
-        outcome="failed",
-        stage="lifecycle-lock",
-        changed_stages=(),
-        lifecycle={},
-        runtime_state=runtime,
-        verification={},
-        residue_paths=(),
-        recovery_actions=("wait for the recorded lifecycle operation to finish and retry",),
-        warnings=(),
-    )
 
 
 __all__ = ["verify"]

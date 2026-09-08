@@ -97,24 +97,6 @@ def test_empty_host_returns_a_bounded_release_selection_refusal(
     assert result.state == {"selected_release_id": None}
 
 
-def test_wire_host_request_never_enters_legacy_result_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    marker = object()
-    monkeypatch.setattr(
-        verification_module,
-        "_verify_host_state",
-        lambda _request, **_kwargs: marker,
-    )
-    monkeypatch.setattr(
-        verification_module,
-        "_verify_legacy",
-        lambda *_args, **_kwargs: pytest.fail("wire requests must not use legacy results"),
-    )
-
-    assert verification_module.verify(_request(), lifecycle_locked=True) is marker
-
-
 def test_healthy_host_returns_complete_verification_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

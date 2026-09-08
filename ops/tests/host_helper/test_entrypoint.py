@@ -19,7 +19,6 @@ from taskman_ops.host_protocol import (
     encode_request,
 )
 from taskman_ops.host_helper import __main__ as entrypoint
-from taskman_ops.host_helper.legacy_result import OperationRequest, OperationResult, project_result
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
@@ -156,14 +155,13 @@ def test_entrypoint_dispatches_final_rollback_and_restore_without_a_legacy_bridg
     assert received[0].operation == operation
 
 
-def test_entrypoint_replaces_projection_failure_with_small_final_result() -> None:
-    def invalid_private_result(request: OperationRequest) -> OperationResult:
-        return OperationResult(
-            2, request.operation, request.operation_id, "unknown", "internal", (), {}, {}, {}, (), (), (),
-        )
+def test_entrypoint_replaces_an_invalid_final_handler_result_with_small_final_result() -> None:
+    def invalid_final_result(request: object) -> object:
+        assert isinstance(request, HostRequest)
+        return object()
 
     with invoke_entrypoint(
-        request_bytes(operation="backup"), invalid_private_result, operation="backup"
+        request_bytes(operation="backup"), invalid_final_result, operation="backup"
     ) as stdout:
         try:
             assert entrypoint.main() == 0
