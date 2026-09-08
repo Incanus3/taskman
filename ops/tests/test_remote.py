@@ -76,7 +76,9 @@ def test_default_remote_execution_stops_output_at_its_finite_bound() -> None:
     """Removing the default cap would let an ordinary host check exhaust controller memory."""
 
     channel = StreamingChannel(stdout=bytearray(b"x" * (16 * 1024 + 1)), stderr=bytearray())
-    remote = PyinfraRemote(StreamingHost(StreamingConnector(StreamingClient(channel))), config())
+    client = StreamingClient(channel)
+    connector = StreamingConnector(client)
+    remote = PyinfraRemote(StreamingHost(connector), config())
 
     with pytest.raises(OpsError) as raised:
         remote.run(("cat",))
@@ -84,6 +86,8 @@ def test_default_remote_execution_stops_output_at_its_finite_bound() -> None:
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert channel.stdout_read == 16 * 1024 + 1
     assert channel.closed is True
+    assert client.closed is True
+    assert connector.disconnected is True
 
 
 def test_remote_run_has_no_marker_result_parser_branch() -> None:
@@ -176,6 +180,7 @@ class StreamingClient:
     commands: list[tuple[str, bool]] = field(default_factory=list)
     timeouts: list[int | float | None] = field(default_factory=list)
     failures: deque[BaseException] = field(default_factory=deque)
+    closed: bool = False
 
     def exec_command(
         self, command: str, *, get_pty: bool, timeout: int | float | None = None
@@ -186,10 +191,17 @@ class StreamingClient:
             raise self.failures.popleft()
         return self.stdin, StreamingOutput(self.channel), StreamingOutput(self.channel)
 
+    def close(self) -> None:
+        self.closed = True
+
 
 @dataclass
 class StreamingConnector:
     client: StreamingClient
+    disconnected: bool = False
+
+    def disconnect(self) -> None:
+        self.disconnected = True
 
 
 @dataclass
@@ -202,6 +214,14 @@ class StreamingHost:
     def run_shell_command(self, *_args: object, **_kwargs: object) -> object:
         self.host_api_calls += 1
         raise AssertionError("bounded commands must not buffer through Host.run_shell_command")
+
+
+@dataclass
+class StalledChannel(StreamingChannel):
+    """A channel whose command has not produced output or an exit status."""
+
+    def exit_status_ready(self) -> bool:
+        return False
 
 
 @dataclass
@@ -317,6 +337,33 @@ def test_bounded_run_interrupts_blocking_setup_at_the_single_deadline(
         worker.name == "taskman-bounded-ssh-setup" and worker.is_alive()
         for worker in threading.enumerate()
     )
+
+
+def test_bounded_run_timeout_closes_the_authenticated_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out channel must not leave the authenticated transport able to run the helper."""
+
+    channel = StalledChannel(stdout=bytearray(), stderr=bytearray())
+    client = StreamingClient(channel)
+    connector = StreamingConnector(client)
+    remote = PyinfraRemote(StreamingHost(connector), config())
+
+    def wait_for_timeout(
+        _read: object, _write: object, _error: object, timeout: float
+    ) -> tuple[list[object], list[object], list[object]]:
+        time.sleep(timeout)
+        return [], [], []
+
+    monkeypatch.setattr("taskman_ops.remote.select.select", wait_for_timeout)
+
+    with pytest.raises(OpsError) as raised:
+        remote.run(("sleep", "forever"), timeout=1)
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert channel.closed is True
+    assert client.closed is True
+    assert connector.disconnected is True
 
 
 @pytest.mark.parametrize(
@@ -571,6 +618,29 @@ def test_put_attempts_exact_private_cleanup_after_uncertain_stage_creation(tmp_p
     source = tmp_path / "helper.pyz"
     source.write_bytes(b"helper")
     remote = StageTransportFailureRemote()
+
+    with pytest.raises(OpsError):
+        remote.put(source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True)
+
+    assert [command[0] for command in remote.calls] == ["install", "rm", "rmdir"]
+
+
+def test_put_attempts_exact_private_cleanup_after_nonzero_stage_creation(tmp_path: Path) -> None:
+    """A nonzero stage response can follow successful remote creation and must not skip cleanup."""
+
+    class StageNonzeroRemote(PyinfraRemote):
+        def __init__(self) -> None:
+            super().__init__(object(), config())
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, argv: object, **_kwargs: object) -> CommandResult:
+            command = tuple(argv)  # type: ignore[arg-type]
+            self.calls.append(command)
+            return CommandResult(1 if command[:2] == ("install", "-d") else 0)
+
+    source = tmp_path / "helper.pyz"
+    source.write_bytes(b"helper")
+    remote = StageNonzeroRemote()
 
     with pytest.raises(OpsError):
         remote.put(source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True)

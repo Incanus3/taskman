@@ -1,4 +1,5 @@
 import sys
+import time
 
 import pytest
 
@@ -42,6 +43,29 @@ def test_run_command_stops_one_subprocess_at_its_timeout() -> None:
             (sys.executable, "-c", "while True: pass"),
             timeout_seconds=0.01,
         )
+
+
+def test_run_command_terminates_a_child_that_holds_its_inherited_pipes(tmp_path) -> None:
+    """Killing only the immediate process would let its child block output draining past the deadline."""
+
+    marker = tmp_path / "escaped-child"
+    child = (
+        "import pathlib, sys, time; "
+        "time.sleep(1); "
+        "pathlib.Path(sys.argv[1]).write_text('still running', encoding='utf-8')"
+    )
+    parent = "import subprocess, sys; subprocess.Popen((sys.executable, '-c', sys.argv[1], sys.argv[2]))"
+    started = time.monotonic()
+
+    with pytest.raises(CommandTimeout, match="timed out"):
+        run_command(
+            (sys.executable, "-c", parent, child, str(marker)),
+            timeout_seconds=0.1,
+        )
+
+    assert time.monotonic() - started < 0.7
+    time.sleep(0.2)
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("timeout", [float("nan"), float("inf"), float("-inf")])

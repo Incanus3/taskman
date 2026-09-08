@@ -57,8 +57,8 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
     try:
         administrator = _administrator_identity(remote)
         _ensure_directory(remote, _TRANSFER_ROOT, administrator, sudo=False)
-        _create_directory(remote, transfer_directory, administrator, sudo=False)
         cleanup_targets.append((transfer_directory, transfer_path, False))
+        _create_directory(remote, transfer_directory, administrator, sudo=False)
         receipt = remote.put(
             package.path, transfer_path, mode=0o600, sensitive=True,
             timeout=_CONTROL_TIMEOUT_SECONDS, sudo=False,
@@ -70,8 +70,8 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         _assert_checksum(remote, transfer_path, package.sha256, sudo=False)
 
         _ensure_directory(remote, _INVOCATION_ROOT, ("0", "0"), sudo=True)
-        _create_directory(remote, invocation_directory, ("0", "0"), sudo=True)
         cleanup_targets.append((invocation_directory, installed_path, True))
+        _create_directory(remote, invocation_directory, ("0", "0"), sudo=True)
         _require_success(
             remote,
             ("install", "-o", "root", "-g", "root", "-m", "500", "--", transfer_path.as_posix(), installed_path.as_posix()),

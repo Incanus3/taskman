@@ -209,3 +209,54 @@ def test_invoke_helper_attempts_generic_cleanup_after_unconfirmed_dispatch(
     assert ("rmdir", "--", invocation_directory.as_posix()) in commands(remote)
     assert raised.value.warnings == ("transient helper cleanup was incomplete",)
     assert value.correlation_id not in repr(raised.value.warnings)
+
+
+@pytest.mark.parametrize("location", ("transfer", "invocation"))
+def test_invoke_helper_cleans_attempted_private_paths_after_lost_creation_response(
+    tmp_path: Path,
+    location: str,
+) -> None:
+    """A lost mkdir response must still trigger exact-path cleanup for either private workspace."""
+
+    from taskman_ops.helper_runner import invoke_helper
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    transfer_directory = PurePosixPath("/tmp/taskman-ops") / value.correlation_id
+    transfer_path = transfer_directory / "taskman-host.pyz"
+    invocation_directory = PurePosixPath("/run/taskman-ops") / value.correlation_id
+    installed_path = invocation_directory / "taskman-host.pyz"
+    directory, path, sudo = (
+        (transfer_directory, transfer_path, False)
+        if location == "transfer"
+        else (invocation_directory, installed_path, True)
+    )
+    remote.add_response(
+        ("mkdir", "-m", "700", "--", directory.as_posix()),
+        OpsError(ExitStatus.REMOTE_PREFLIGHT, "remote", "lost creation response", False),
+    )
+
+    with pytest.raises(OpsError):
+        invoke_helper(remote, helper, value)
+
+    cleanup = {
+        command: kwargs
+        for command, kwargs in remote.calls
+        if command in {
+            ("rm", "--", path.as_posix()),
+            ("rmdir", "--", directory.as_posix()),
+        }
+    }
+    assert set(cleanup) == {
+        ("rm", "--", path.as_posix()),
+        ("rmdir", "--", directory.as_posix()),
+    }
+    assert all(
+        kwargs["sudo"] is sudo
+        and kwargs["sensitive"] is True
+        and kwargs["timeout"] == 60
+        and kwargs["stdout_limit"] == 1024
+        and kwargs["stderr_limit"] == 4096
+        for kwargs in cleanup.values()
+    )

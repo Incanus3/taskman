@@ -259,7 +259,6 @@ class PyinfraRemote:
         stage_directory = _PRIVATE_UPLOAD_ROOT / f"taskman-upload-{uuid4().hex}"
         stage_file = stage_directory / "payload"
 
-        created: CommandResult | None = None
         cleanup_warning = False
         try:
             try:
@@ -302,12 +301,11 @@ class PyinfraRemote:
                     sensitive=sensitive,
                 )
             finally:
-                if created is None or created.succeeded:
-                    cleanup_warning = self._remove_private_stage(
-                        stage_file,
-                        stage_directory,
-                        timeout=effective_timeout,
-                    )
+                cleanup_warning = self._remove_private_stage(
+                    stage_file,
+                    stage_directory,
+                    timeout=effective_timeout,
+                )
         except OpsError as error:
             if cleanup_warning:
                 error.warnings = ("transient upload cleanup was incomplete",)  # type: ignore[attr-defined]
@@ -531,20 +529,22 @@ class _BoundedSSHChannelAdapter:
                 stdout_limit=stdout_limit,
                 stderr_limit=stderr_limit,
             )
+            result = CommandResult(
+                returncode=returncode,
+                stdout=_channel_text(stdout),
+                stderr=_channel_text(stderr),
+            )
+            if sensitive:
+                return CommandResult(returncode=result.returncode)
+            return result
         except OpsError:
+            _close_channel(channel)
+            _close_ssh_connection(connector, client)
             raise
         except Exception:
             _close_channel(channel)
+            _close_ssh_connection(connector, client)
             raise _remote_error("remote command transport failed") from None
-
-        result = CommandResult(
-            returncode=returncode,
-            stdout=_channel_text(stdout),
-            stderr=_channel_text(stderr),
-        )
-        if sensitive:
-            return CommandResult(returncode=result.returncode)
-        return result
 
 
 def _open_bounded_channel(
