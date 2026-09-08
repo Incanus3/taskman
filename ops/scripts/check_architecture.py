@@ -359,7 +359,11 @@ def _scheduled_asset_violations(repository: Path) -> Iterable[str]:
         content, relative = source
         tree = ast.parse(content, filename=relative)
         module = member.removesuffix(".py").replace("/", ".")
-        package = module if member.endswith("/__init__.py") else module.rpartition(".")[0]
+        package = (
+            module.removesuffix(".__init__")
+            if member.endswith("/__init__.py")
+            else module.rpartition(".")[0]
+        )
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue
