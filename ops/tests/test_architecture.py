@@ -93,6 +93,8 @@ def test_scheduled_backup_guard_rejects_the_shell_and_legacy_record_imports(tmp_
     )
     package = tmp_path / "ops" / "taskman_ops" / "helper_package.py"
     package.write_text(
+        "_FIXED_BACKUP_MAIN = b'from taskman_ops.host_helper.lifecycle import LifecycleStore\\n'\n"
+        "_FIXED_NAMESPACE = b''\n"
         "BACKUP_ARCHIVE_MEMBERS = (\n"
         "    '__main__.py',\n"
         "    'taskman_ops/__init__.py',\n"
@@ -110,6 +112,7 @@ def test_scheduled_backup_guard_rejects_the_shell_and_legacy_record_imports(tmp_
 
     assert set(_scheduled_asset_violations(tmp_path)) == {
         "ops/backup/taskman-backup: legacy scheduled backup shell remains",
+        "ops/taskman_ops/helper_package.py:1: imports legacy scheduled backup record module",
         "ops/taskman_ops/host_helper/backups.py:1: imports legacy scheduled backup record module",
         "ops/taskman_ops/scheduled_backup.py:1: imports legacy scheduled backup record module",
     }

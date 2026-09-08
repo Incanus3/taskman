@@ -352,12 +352,12 @@ def _scheduled_asset_violations(repository: Path) -> Iterable[str]:
         violations.append("ops/backup/taskman-backup: legacy scheduled backup shell remains")
 
     for member in _scheduled_backup_members(repository):
-        source = repository / "ops" / member
-        if not source.is_file():
+        source = _scheduled_backup_member_source(repository, member)
+        if source is None:
             violations.append(f"ops/{member}: scheduled backup archive member is unavailable")
             continue
-        relative = f"ops/{member}"
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=relative)
+        content, relative = source
+        tree = ast.parse(content, filename=relative)
         module = member.removesuffix(".py").replace("/", ".")
         package = module if member.endswith("/__init__.py") else module.rpartition(".")[0]
         for node in ast.walk(tree):
@@ -403,8 +403,45 @@ def _scheduled_backup_members(repository: Path) -> tuple[str, ...]:
             )
         ):
             raise ValueError("scheduled backup archive allowlist is invalid")
-        return tuple(member for member in members if member not in {"__main__.py", "taskman_ops/__init__.py"})
+        return members
     raise ValueError("scheduled backup archive allowlist is unavailable")
+
+
+def _scheduled_backup_member_source(repository: Path, member: str) -> tuple[str, str] | None:
+    package = repository / "ops" / "taskman_ops" / "helper_package.py"
+    generated_members = {
+        "__main__.py": "_FIXED_BACKUP_MAIN",
+        "taskman_ops/__init__.py": "_FIXED_NAMESPACE",
+    }
+    if member in generated_members:
+        return _generated_member_source(package, generated_members[member])
+    source = repository / "ops" / member
+    if not source.is_file():
+        return None
+    return source.read_text(encoding="utf-8"), f"ops/{member}"
+
+
+def _generated_member_source(package: Path, name: str) -> tuple[str, str] | None:
+    """Return generated archive Python with its defining source location."""
+
+    tree = ast.parse(package.read_text(encoding="utf-8"), filename=package.as_posix())
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        if not any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            continue
+        try:
+            content = ast.literal_eval(node.value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("scheduled backup generated member is invalid") from error
+        if type(content) is not bytes:
+            raise ValueError("scheduled backup generated member is invalid")
+        try:
+            return content.decode("utf-8"), "ops/taskman_ops/helper_package.py"
+        except UnicodeDecodeError as error:
+            raise ValueError("scheduled backup generated member is invalid") from error
+    return None
 
 
 def _imported_modules(node: ast.Import | ast.ImportFrom, package: str) -> tuple[str, ...]:

@@ -204,6 +204,8 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
         dump_identity = validate_dump(dump)
         if sha256(dump) != record.dump_sha256:
             raise BackupAuthorityError("completed backup dump identity changed")
+        if validate_dump(dump) != dump_identity:
+            raise BackupAuthorityError("completed backup dump identity changed")
         manifest_identity = validate_manifest_identity(manifest, record)
         _unlink_completed_pair(
             root,
@@ -356,7 +358,7 @@ def validate_private_file(path: Path) -> tuple[int, int]:
 def validate_manifest_identity(path: Path, expected: BackupRecord) -> tuple[int, int]:
     """Re-read the manifest immediately before a destructive retention action."""
 
-    validate_private_file(path)
+    initial_identity = validate_private_file(path)
     try:
         raw = path.read_bytes()
     except OSError as error:
@@ -369,7 +371,9 @@ def validate_manifest_identity(path: Path, expected: BackupRecord) -> tuple[int,
         raise BackupAuthorityError("backup manifest is invalid") from error
     if observed != expected:
         raise BackupAuthorityError("backup manifest identity changed")
-    return validate_private_file(path)
+    if validate_private_file(path) != initial_identity:
+        raise BackupAuthorityError("backup manifest identity changed")
+    return initial_identity
 
 
 def _unlink_completed_pair(

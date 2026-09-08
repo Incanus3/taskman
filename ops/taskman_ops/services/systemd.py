@@ -221,7 +221,11 @@ def _verify_installed_checksum(server: object, asset: SystemdAsset) -> None:
         raise ValueError("systemd asset checksum is invalid")
     destination = shlex.quote(asset.destination)
     command = f"test \"$(sha256sum -- {destination} | awk '{{print $1}}')\" = {asset.sha256}"
-    server.shell(commands=command, name=f"Verify checksum for {asset.destination}")  # type: ignore[attr-defined]
+    server.shell(  # type: ignore[attr-defined]
+        commands=command,
+        name=f"Verify checksum for {asset.destination}",
+        _sudo=True,
+    )
 
 
 def _backup_environment(contract: BackupServiceContract) -> str:

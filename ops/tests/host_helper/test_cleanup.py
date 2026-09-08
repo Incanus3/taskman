@@ -216,6 +216,74 @@ def test_retention_refuses_a_completed_pair_replaced_after_validation(
     assert stale_dump.is_file()
 
 
+def test_retention_refuses_a_manifest_replaced_between_read_and_identity_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returning a replacement inode after parsing another file would delete unvalidated bytes."""
+
+    paths = _paths(tmp_path)
+    _managed_state(paths)
+    state = observe_host_state(paths)
+    stale_dump = Path(paths.local(paths.backup_root / f"{STALE_BACKUP}.dump"))
+    stale_manifest = Path(paths.local(paths.backup_manifest(STALE_BACKUP)))
+    replacement = tmp_path / "replacement-manifest"
+    replacement.write_bytes(stale_manifest.read_bytes())
+    replacement.chmod(stale_manifest.stat().st_mode & 0o777)
+    original_read = Path.read_bytes
+    swapped = False
+
+    def swap_after_read(path: Path) -> bytes:
+        nonlocal swapped
+        content = original_read(path)
+        if path == stale_manifest and not swapped:
+            os.replace(replacement, stale_manifest)
+            swapped = True
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", swap_after_read)
+
+    with pytest.raises(backup_capability.BackupAuthorityError, match="manifest identity changed"):
+        backup_capability.prune_backups(paths, state, retention=1)
+
+    assert stale_manifest.is_file()
+    assert stale_dump.is_file()
+
+
+def test_retention_stops_after_a_dump_is_replaced_during_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading a manifest after dump identity changes would extend a stale destructive decision."""
+
+    paths = _paths(tmp_path)
+    _managed_state(paths)
+    state = observe_host_state(paths)
+    stale_dump = Path(paths.local(paths.backup_root / f"{STALE_BACKUP}.dump"))
+    stale_manifest = Path(paths.local(paths.backup_manifest(STALE_BACKUP)))
+    replacement = tmp_path / "replacement-dump"
+    replacement.write_bytes(stale_dump.read_bytes())
+    replacement.chmod(stale_dump.stat().st_mode & 0o777)
+    original_hash = backup_capability.sha256
+
+    def replace_after_hash(path: Path) -> str:
+        digest = original_hash(path)
+        if path == stale_dump:
+            os.replace(replacement, stale_dump)
+        return digest
+
+    monkeypatch.setattr(backup_capability, "sha256", replace_after_hash)
+    monkeypatch.setattr(
+        backup_capability,
+        "validate_manifest_identity",
+        lambda *_args: pytest.fail("must not read a manifest after dump identity changes"),
+    )
+
+    with pytest.raises(backup_capability.BackupAuthorityError, match="dump identity changed"):
+        backup_capability.prune_backups(paths, state, retention=1)
+
+    assert stale_manifest.is_file()
+    assert stale_dump.is_file()
+
+
 def test_cleanup_executes_only_the_exact_confirmed_paths(tmp_path: Path) -> None:
     """Substituting an operator path after confirmation must not broaden deletion."""
 

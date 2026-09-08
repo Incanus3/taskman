@@ -151,4 +151,4 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     commands, kwargs = checksum_checks[0]
     assert backup_asset.destination in commands
     assert backup_asset.sha256 in commands
-    assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}"}
+    assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}", "_sudo": True}
