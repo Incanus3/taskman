@@ -311,13 +311,18 @@ def validate_result_for_request(request: object, result: object) -> HostResult:
 
 
 def merge_result_warning(result: object, warning: object) -> HostResult:
-    """Attach one bounded warning without duplicating an existing final warning."""
+    """Attach one warning, retaining newest evidence when the fixed bound is full."""
 
     if not isinstance(result, HostResult):
         raise ProtocolError("invalid helper result")
     warning = validate_string(warning)
     if warning in result.warnings:
         return result
+    warnings = (
+        result.warnings[1:]
+        if len(result.warnings) == MAX_COLLECTION_ITEMS
+        else result.warnings
+    )
     return HostResult(
         protocol_version=result.protocol_version,
         operation=result.operation,
@@ -325,7 +330,7 @@ def merge_result_warning(result: object, warning: object) -> HostResult:
         outcome=result.outcome,
         message=result.message,
         state=result.state,
-        warnings=(*result.warnings, warning),
+        warnings=(*warnings, warning),
     )
 
 

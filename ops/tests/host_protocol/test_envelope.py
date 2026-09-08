@@ -122,6 +122,21 @@ def test_result_request_matcher_returns_the_exact_correlated_result() -> None:
     assert envelope.validate_result_for_request(request, result) is result
 
 
+def test_merge_result_warning_keeps_the_newest_bounded_evidence_and_cleanup_warning() -> None:
+    """Cleanup evidence stays visible when a valid result has reached its warning bound."""
+
+    warnings = tuple(f"warning-{index}" for index in range(MAX_COLLECTION_ITEMS))
+    result = HostResult(**result_mapping(warnings=warnings))
+
+    merged = envelope.merge_result_warning(result, "transient helper cleanup was incomplete")
+
+    assert merged.warnings == (
+        *warnings[1:],
+        "transient helper cleanup was incomplete",
+    )
+    assert envelope.merge_result_warning(merged, "transient helper cleanup was incomplete") is merged
+
+
 @pytest.mark.parametrize(
     ("payload", "decoder"),
     [

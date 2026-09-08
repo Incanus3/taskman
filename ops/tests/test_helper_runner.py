@@ -9,7 +9,13 @@ import pytest
 from fakes import HelperRunnerRemote
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.helper_package import HelperPackage, build_helper_package
-from taskman_ops.host_protocol import HostRequest, HostResult, MAX_OUTPUT_BYTES, encode_result
+from taskman_ops.host_protocol import (
+    HostRequest,
+    HostResult,
+    MAX_COLLECTION_ITEMS,
+    MAX_OUTPUT_BYTES,
+    encode_result,
+)
 from taskman_ops.remote import CommandResult
 
 
@@ -60,7 +66,7 @@ def test_new_correlation_id_is_unique_and_uses_the_protocol_allowlist() -> None:
     assert all(re.fullmatch(r"op-[0-9a-f]{32}", value) for value in values)
 
 
-def test_invoke_helper_keeps_correlation_transport_only_and_validates_result(tmp_path: Path) -> None:
+def test_invoke_helper_keeps_correlation_transport_only(tmp_path: Path) -> None:
     from taskman_ops.helper_runner import MAX_STDERR_BYTES, invoke_helper
 
     value = request()
@@ -101,19 +107,23 @@ def test_invoke_helper_returns_one_result_with_one_cleanup_warning(tmp_path: Pat
     assert result.warnings == ("transient helper cleanup was incomplete",)
 
 
-def test_invoke_helper_refuses_an_unrelated_final_result(tmp_path: Path) -> None:
+def test_invoke_helper_bounds_cleanup_warning_when_result_is_full(tmp_path: Path) -> None:
+    """A cleanup warning must not turn an otherwise valid helper result into a protocol error."""
+
     from taskman_ops.helper_runner import invoke_helper
 
     value = request()
     helper = package(tmp_path)
     remote = remote_for(value, helper)
-    unrelated = success_result(request("op-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-    remote.helper_result = CommandResult(0, encode_result(unrelated).decode("utf-8"))
+    warnings = tuple(f"warning-{index}" for index in range(MAX_COLLECTION_ITEMS))
+    full_result = replace(success_result(value), warnings=warnings)
+    remote.helper_result = CommandResult(0, encode_result(full_result).decode("utf-8"))
+    installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
+    remote.add_response(("rm", "--", installed.as_posix()), CommandResult(1))
 
-    with pytest.raises(OpsError) as raised:
-        invoke_helper(remote, helper, value)
+    result = invoke_helper(remote, helper, value)
 
-    assert raised.value.status is ExitStatus.SAFETY
+    assert result.warnings == (*warnings[1:], "transient helper cleanup was incomplete")
 
 
 def test_invoke_helper_refuses_package_checksum_before_transfer(tmp_path: Path) -> None:

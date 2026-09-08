@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from taskman_ops.errors import ExitStatus
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host_protocol import HostRequest, HostResult
 from taskman_ops.workflows.helper import result_error, run_request
 
@@ -31,6 +31,38 @@ def test_run_request_consumes_the_direct_correlated_host_result() -> None:
     )
 
     assert returned is result
+
+
+def test_run_request_refuses_an_unrelated_injected_result() -> None:
+    """The workflow is the single consumer that trusts a helper's final result."""
+
+    request = HostRequest(
+        2,
+        "discover",
+        CORRELATION,
+        {},
+        {"install_root": "/opt/taskman"},
+        {},
+    )
+    unrelated = HostResult(
+        2,
+        "verify",
+        CORRELATION,
+        "succeeded",
+        "observed",
+        {},
+        (),
+    )
+
+    with pytest.raises(OpsError) as raised:
+        run_request(
+            object(),
+            request,
+            package=object(),  # type: ignore[arg-type]
+            invoker=lambda _remote, _package, _request: unrelated,
+        )
+
+    assert raised.value.status is ExitStatus.SAFETY
 
 
 @pytest.mark.parametrize(

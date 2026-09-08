@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.host_protocol import HostResult
+from taskman_ops.host_protocol import HostResult, MAX_COLLECTION_ITEMS
 from taskman_ops.remote import CommandResult, UploadReceipt
 from tests.test_config import valid_environment
 
@@ -106,6 +106,50 @@ def test_uploaded_deploy_request_carries_only_final_protocol_authority(
         "migration_policy", "credentials_path", "database", "verification",
     }
     assert "manual_adoption" not in request.parameters
+
+
+def test_uploaded_deploy_result_keeps_cleanup_warning_when_result_is_full(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Upload cleanup evidence survives the protocol's fixed warning capacity."""
+
+    from tests.workflows.test_deploy import artifact
+    from taskman_ops.workflows import helper
+
+    class Remote:
+        def run(self, *_args, **_kwargs):
+            return CommandResult(0)
+
+        def put(self, *_args, **_kwargs):
+            return UploadReceipt(cleanup_warning=True)
+
+    warnings = tuple(f"warning-{index}" for index in range(MAX_COLLECTION_ITEMS))
+
+    def invoke(_remote, request, **_kwargs):
+        return HostResult(
+            2,
+            request.operation,
+            request.correlation_id,
+            "succeeded",
+            "completed",
+            {},
+            warnings,
+        )
+
+    monkeypatch.setattr(helper, "run_request", invoke)
+    config = EnvironmentConfig.model_validate(valid_environment())
+
+    result = helper.run_deployment_request(
+        Remote(),
+        config,
+        artifact(tmp_path),
+        previous_release_id=CURRENT,
+        applied_migrations=(20260905120000,),
+        migration_policy="backward-compatible",
+    )
+
+    assert result.warnings == (*warnings[1:], "transient upload cleanup was incomplete")
 
 
 def test_uploaded_genesis_request_keeps_restore_required_migration_authority(

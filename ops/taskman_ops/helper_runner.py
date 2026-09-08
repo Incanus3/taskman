@@ -11,8 +11,8 @@ from typing import Sequence
 from .errors import ExitStatus, HelperTransportError, OpsError
 from .helper_package import HelperPackage
 from .host_protocol import MAX_OUTPUT_BYTES, HostRequest, HostResult, decode_result, encode_request
-from .host_protocol.envelope import merge_result_warning, validate_result_for_request
-from .host_protocol.identifiers import ProtocolError, validate_correlation_id
+from .host_protocol.envelope import merge_result_warning
+from .host_protocol.identifiers import validate_correlation_id
 from .remote import CommandResult, Remote, UploadReceipt
 
 
@@ -100,16 +100,9 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         )
         if not _succeeded(command):
             raise _safety_error("host helper invocation failed")
-        result = validate_result_for_request(request, _decode_result(command))
+        result = _decode_result(command)
         completed = True
     except OpsError as error:
-        raise _cleanup_failure(
-            error,
-            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
-        ) from None
-    except ProtocolError:
-        error = _safety_error("host helper result does not match its request")
         raise _cleanup_failure(
             error,
             remote, transfer_directory, transfer_path, invocation_directory, installed_path,
