@@ -126,6 +126,33 @@ def test_invoke_helper_bounds_cleanup_warning_when_result_is_full(tmp_path: Path
     assert result.warnings == (*warnings[1:], "transient helper cleanup was incomplete")
 
 
+def test_run_request_preserves_only_local_cleanup_warning_for_an_unrelated_result(
+    tmp_path: Path,
+) -> None:
+    """A rejected helper result must not erase exact-path cleanup evidence or trust its warnings."""
+
+    from taskman_ops.workflows.helper import run_request
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    unrelated = replace(
+        success_result(value),
+        operation="verify",
+        warnings=("untrusted remote warning",),
+    )
+    remote.helper_result = CommandResult(0, encode_result(unrelated).decode("utf-8"))
+    installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
+    remote.add_response(("rm", "--", installed.as_posix()), CommandResult(1))
+
+    with pytest.raises(OpsError) as raised:
+        run_request(remote, value, package=helper)
+
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.warnings == ("transient helper cleanup was incomplete",)
+    assert ("rm", "--", installed.as_posix()) in commands(remote)
+
+
 def test_invoke_helper_refuses_package_checksum_before_transfer(tmp_path: Path) -> None:
     from taskman_ops.helper_runner import invoke_helper
 

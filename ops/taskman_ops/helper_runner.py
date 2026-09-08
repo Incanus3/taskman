@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 import re
 import secrets
@@ -122,7 +123,12 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
     ) or cleanup_needed
     if result is None:
         raise _safety_error("transient helper invocation failed")
-    return merge_result_warning(result, _CLEANUP_WARNING) if cleanup_needed else result
+    if cleanup_needed:
+        return replace(
+            merge_result_warning(result, _CLEANUP_WARNING),
+            local_cleanup_incomplete=True,
+        )
+    return result
 
 
 def _cleanup_failure(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from types import MappingProxyType
 from typing import Any
@@ -174,6 +174,7 @@ class HostResult:
     message: str
     state: Mapping[str, object]
     warnings: tuple[str, ...]
+    local_cleanup_incomplete: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in _OUTCOMES:
@@ -184,6 +185,8 @@ class HostResult:
         object.__setattr__(self, "message", validate_string(self.message))
         object.__setattr__(self, "state", _freeze_mapping(self.state))
         object.__setattr__(self, "warnings", _freeze_string_sequence(self.warnings))
+        if type(self.local_cleanup_incomplete) is not bool:
+            raise ProtocolError("invalid local cleanup state")
 
     def to_mapping(self) -> dict[str, object]:
         return {

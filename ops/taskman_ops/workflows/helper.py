@@ -88,7 +88,16 @@ def run_request(
     try:
         return validate_result_for_request(request, result)
     except ProtocolError:
-        raise _safety(request.operation, "host helper result does not match its request")
+        warnings = (
+            ("transient helper cleanup was incomplete",)
+            if isinstance(result, HostResult) and result.local_cleanup_incomplete
+            else ()
+        )
+        raise _safety(
+            request.operation,
+            "host helper result does not match its request",
+            warnings=warnings,
+        )
 
 
 def result_error(result: HostResult) -> OpsError:
@@ -240,13 +249,14 @@ def run_deployment_request(
         raise
 
 
-def _safety(operation: str, message: str) -> OpsError:
+def _safety(operation: str, message: str, *, warnings: tuple[str, ...] = ()) -> OpsError:
     return OpsError(
         ExitStatus.SAFETY,
         operation,
         message,
         changed=False,
         next_action="inspect helper request and observed host state before retrying",
+        warnings=warnings,
     )
 
 
