@@ -27,6 +27,8 @@ _REMOVED_TRANSACTION_NAMES = frozenset(
     {
         "LifecycleStore",
         "LifecycleRecords",
+        "ActivationRecord",
+        "AdoptionRecord",
         "TransactionRuntime",
         "TransactionStage",
         "OperationRequest",
@@ -132,6 +134,10 @@ def test_removed_transaction_guard_rejects_imports_fields_and_record_shapes() ->
         "from .host_helper import legacy_result\n"
         "def project_result(operation_id):\n"
         "    return {'changed_stages': (), 'residue_paths': (), 'recovery_actions': ()}\n"
+        "class ActivationRecord:\n"
+        "    pass\n"
+        "class AdoptionRecord:\n"
+        "    pass\n"
     )
 
     assert set(_removed_transaction_concept_violations("taskman_ops/example.py", tree)) == {
@@ -148,6 +154,8 @@ def test_removed_transaction_guard_rejects_imports_fields_and_record_shapes() ->
         "taskman_ops/example.py:8: uses removed transaction field changed_stages",
         "taskman_ops/example.py:8: uses removed transaction field residue_paths",
         "taskman_ops/example.py:8: uses removed transaction field recovery_actions",
+        "taskman_ops/example.py:9: defines removed transaction symbol ActivationRecord",
+        "taskman_ops/example.py:11: defines removed transaction symbol AdoptionRecord",
     }
 
 
