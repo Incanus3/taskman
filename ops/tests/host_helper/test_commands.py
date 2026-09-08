@@ -48,23 +48,32 @@ def test_run_command_stops_one_subprocess_at_its_timeout() -> None:
 def test_run_command_terminates_a_child_that_holds_its_inherited_pipes(tmp_path) -> None:
     """Killing only the immediate process would let its child block output draining past the deadline."""
 
+    child_started = tmp_path / "child-started"
     marker = tmp_path / "escaped-child"
     child = (
-        "import pathlib, sys, time; "
-        "time.sleep(1); "
-        "pathlib.Path(sys.argv[1]).write_text('still running', encoding='utf-8')"
+        "import pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text('started', encoding='utf-8')\n"
+        "time.sleep(0.15)\n"
+        "pathlib.Path(sys.argv[2]).write_text('still running', encoding='utf-8')\n"
     )
-    parent = "import subprocess, sys; subprocess.Popen((sys.executable, '-c', sys.argv[1], sys.argv[2]))"
+    parent = (
+        "import pathlib, subprocess, sys, time\n"
+        "subprocess.Popen((sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]))\n"
+        "deadline = time.monotonic() + 0.5\n"
+        "while not pathlib.Path(sys.argv[2]).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.001)\n"
+    )
     started = time.monotonic()
 
     with pytest.raises(CommandTimeout, match="timed out"):
         run_command(
-            (sys.executable, "-c", parent, child, str(marker)),
+            (sys.executable, "-c", parent, child, str(child_started), str(marker)),
             timeout_seconds=0.1,
         )
 
+    assert child_started.exists()
     assert time.monotonic() - started < 0.7
-    time.sleep(0.2)
+    time.sleep(0.25)
     assert not marker.exists()
 
 
