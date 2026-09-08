@@ -135,6 +135,7 @@ def test_uploaded_deploy_result_keeps_cleanup_warning_when_result_is_full(
             "completed",
             {},
             warnings,
+            local_cleanup_incomplete=True,
         )
 
     monkeypatch.setattr(helper, "run_request", invoke)
@@ -150,6 +151,7 @@ def test_uploaded_deploy_result_keeps_cleanup_warning_when_result_is_full(
     )
 
     assert result.warnings == (*warnings[1:], "transient upload cleanup was incomplete")
+    assert result.local_cleanup_incomplete is True
 
 
 def test_uploaded_genesis_request_keeps_restore_required_migration_authority(

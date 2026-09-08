@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from types import MappingProxyType
 from typing import Any
@@ -326,15 +326,7 @@ def merge_result_warning(result: object, warning: object) -> HostResult:
         if len(result.warnings) == MAX_COLLECTION_ITEMS
         else result.warnings
     )
-    return HostResult(
-        protocol_version=result.protocol_version,
-        operation=result.operation,
-        correlation_id=result.correlation_id,
-        outcome=result.outcome,
-        message=result.message,
-        state=result.state,
-        warnings=(*warnings, warning),
-    )
+    return replace(result, warnings=(*warnings, warning))
 
 
 __all__ = [

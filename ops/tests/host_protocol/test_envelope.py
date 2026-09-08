@@ -137,6 +137,23 @@ def test_merge_result_warning_keeps_the_newest_bounded_evidence_and_cleanup_warn
     assert envelope.merge_result_warning(merged, "transient helper cleanup was incomplete") is merged
 
 
+def test_merge_result_warning_preserves_trusted_local_cleanup_provenance() -> None:
+    """Later warning evidence must not erase the runner's exact cleanup fact."""
+
+    result = HostResult(
+        **result_mapping(warnings=("helper completed",)),
+        local_cleanup_incomplete=True,
+    )
+
+    merged = envelope.merge_result_warning(result, "transient upload cleanup was incomplete")
+
+    assert merged.warnings == (
+        "helper completed",
+        "transient upload cleanup was incomplete",
+    )
+    assert merged.local_cleanup_incomplete is True
+
+
 @pytest.mark.parametrize(
     ("payload", "decoder"),
     [
