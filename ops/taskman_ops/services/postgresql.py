@@ -400,7 +400,9 @@ validate_effective_settings() {{
   postgres --config-file="$config_file" -C hba_file | grep -Fx "$expected_hba_file" >/dev/null
 }}
 validate_hba_parser() {{
-  hba_errors=$(admin_query "$runtime_port" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL')
+  if ! hba_errors=$(admin_query "$runtime_port" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL'); then
+    return 1
+  fi
   test -z "$hba_errors"
 }}
 """

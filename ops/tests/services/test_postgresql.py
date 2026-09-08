@@ -727,8 +727,15 @@ esac''',
     assert admin_log.read_text(encoding="utf-8").splitlines()
 
 
-def test_native_configuration_is_a_noop_for_a_validated_desired_runtime(tmp_path: Path) -> None:
-    """Inspection and convergence must agree that a healthy runtime needs no change."""
+@pytest.mark.parametrize(
+    ("parser_query_succeeds", "expected_inspection"),
+    ((True, "changed=0\n"), (False, "changed=1\n")),
+    ids=("parser-clean", "parser-unavailable"),
+)
+def test_native_configuration_inspection_requires_a_successful_hba_parser_query(
+    tmp_path: Path, *, parser_query_succeeds: bool, expected_inspection: str
+) -> None:
+    """A failed parser query must keep desired-state inspection conservative."""
 
     plan = build_postgresql_plan(config(database_port=5433))
     stage = tmp_path / "pg_hba.staged"
@@ -780,7 +787,7 @@ esac''',
   *'--port 5433'*'current_setting'*) printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
   *'--port 5433'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5433'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
-  *'--port 5433'*'pg_hba_file_rules'*) ;;
+  *'--port 5433'*'pg_hba_file_rules'*) {":" if parser_query_succeeds else "exit 91"} ;;
   *) exit 91 ;;
 esac''',
     )
@@ -793,27 +800,28 @@ esac''',
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
 
-    converged = subprocess.run(
-        (
-            "sh",
-            "-ceu",
-            render_postgresql_native_configuration_script(
-                plan,
-                hba_stage=stage.as_posix(),
-                hba_final=destination.as_posix(),
-                hba_owner=None,
-                hba_group=None,
+    if parser_query_succeeds:
+        converged = subprocess.run(
+            (
+                "sh",
+                "-ceu",
+                render_postgresql_native_configuration_script(
+                    plan,
+                    hba_stage=stage.as_posix(),
+                    hba_final=destination.as_posix(),
+                    hba_owner=None,
+                    hba_group=None,
+                ),
             ),
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
 
-    assert converged.returncode == 0, converged.stderr
-    assert converged.stdout == ""
-    assert not restart_log.exists()
+        assert converged.returncode == 0, converged.stderr
+        assert converged.stdout == ""
+        assert not restart_log.exists()
 
     inspected = subprocess.run(
         (
@@ -835,7 +843,7 @@ esac''',
     )
 
     assert inspected.returncode == 0, inspected.stderr
-    assert inspected.stdout == "changed=0\n"
+    assert inspected.stdout == expected_inspection
     assert not restart_log.exists()
 
 
