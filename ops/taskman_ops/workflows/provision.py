@@ -87,11 +87,10 @@ def provision(
 ) -> WorkflowResult:
     """Converge one supported clean host without expanding lower-level ownership.
 
-    All local validation, artifact construction, secret validation, and plan
-    presentation happen before either confirmation or SSH.  A release result
-    is deliberately returned unchanged once its transaction has begun: the
-    deployment transaction is the authoritative owner of staging, backup,
-    activation, and migration failure semantics.
+    Local validation and plan construction happen before SSH. Immutable host
+    admission occurs before plan presentation and confirmation, while the
+    deployment transaction remains the authoritative owner of staging,
+    backup, activation, and migration failure semantics.
     """
 
     environment_name = _environment_name(invocation)
@@ -112,24 +111,14 @@ def provision(
     caddy_plan = cap.caddy_plan(config)
     expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
     plan = _redacted_plan(cap.render_plan(config, artifact))
-    cap.present_plan(plan)
-
-    if not dry_run and not cap.confirm(plan):
-        return WorkflowResult(
-            command="provision",
-            environment=environment_name,
-            changed=False,
-            stage="confirmation-cancelled",
-            facts={"plan": plan},
-            next_action="review the redacted plan and confirm a later provisioning run when ready",
-            exit_status=ExitStatus.SAFETY,
-        )
 
     remote = cap.connect(config)
     try:
         # Discovery is a complete immutable snapshot.  It must precede every
-        # convergence call below, including package installation.
+        # consequence below, including plan presentation, confirmation, and
+        # package installation.
         cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
+        cap.present_plan(plan)
         if dry_run:
             return _close_result(remote, WorkflowResult(
                 command="provision",
@@ -138,6 +127,17 @@ def provision(
                 stage="planned",
                 facts={"plan": plan, "discovery": "validated"},
                 next_action="review the redacted plan and rerun without --dry-run only after confirmation",
+            ))
+
+        if not cap.confirm(plan):
+            return _close_result(remote, WorkflowResult(
+                command="provision",
+                environment=environment_name,
+                changed=False,
+                stage="confirmation-cancelled",
+                facts={"plan": plan},
+                next_action="review the redacted plan and confirm a later provisioning run when ready",
+                exit_status=ExitStatus.SAFETY,
             ))
 
         provisioning_changed = _changed(

@@ -241,15 +241,6 @@ class HostFacts:
         return self.pid1 == "systemd"
 
 
-@dataclass(frozen=True)
-class ProvisioningDiscovery:
-    """Immutable host facts plus the strictly validated provisioning state."""
-
-    facts: HostFacts
-    state: ProvisioningState
-    caddy_state: CaddyState
-
-
 def collect_host_facts(
     remote: Remote,
     config: EnvironmentConfig,
@@ -768,30 +759,6 @@ def _normalise_addresses(addresses: Iterable[str]) -> tuple[str, ...]:
 def _resolve_public_dns(hostname: str) -> tuple[str, ...]:
     records = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     return tuple(record[4][0] for record in records)
-
-
-def _expected_addresses(config: EnvironmentConfig) -> tuple[str, ...]:
-    values = {config.public_ipv4}
-    if config.public_ipv6 is not None:
-        values.add(config.public_ipv6)
-    return tuple(sorted(values))
-
-
-def _managed_conflicts(facts: HostFacts, config: EnvironmentConfig) -> bool:
-    reserved_ports = {
-        80,
-        443,
-        config.application_port,
-        config.distribution_port,
-        config.database_port,
-    }
-    return bool(
-        any(listener.port in reserved_ports for listener in facts.listeners)
-        or facts.existing_paths
-        or facts.existing_units
-        or facts.existing_accounts
-        or facts.existing_databases
-    )
 
 
 def _stdout(result: CommandResult) -> str:

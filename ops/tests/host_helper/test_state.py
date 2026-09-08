@@ -98,6 +98,21 @@ def test_observe_selected_release_and_database_projection(tmp_path: Path) -> Non
     assert state.service_state == "unknown"
 
 
+def test_observe_refuses_conflicting_duplicate_database_facts(tmp_path: Path) -> None:
+    """Accepting aliases with divergent migrations could select the wrong completed state."""
+
+    with pytest.raises(StateAmbiguityError, match="database|migration|contradict"):
+        observe_host_state(
+            _paths(tmp_path),
+            database={
+                "state": "ready",
+                "database_state": "ready",
+                "applied_migrations": (1,),
+                "migrations": (2,),
+            },
+        )
+
+
 def test_observed_release_migrations_cannot_be_mutated_through_host_state(
     tmp_path: Path,
 ) -> None:

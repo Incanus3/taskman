@@ -47,10 +47,6 @@ class StateAmbiguityError(ValueError):
     """Authoritative host facts contradict or cannot prove one state."""
 
 
-HostStateError = StateAmbiguityError
-LifecycleStateError = StateAmbiguityError
-
-
 @dataclass(frozen=True)
 class HostState:
     """The finite host facts consumed by later helper commands."""
@@ -480,13 +476,12 @@ def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, .
         return (), "unknown"
     if not isinstance(database, Mapping):
         raise StateAmbiguityError("database observation is invalid")
-    values = [database[key] for key in ("state", "database_state") if key in database]
-    if values and any(value not in {"ready", "absent", "unknown"} for value in values):
+    if set(database) - {"state", "applied_migrations"}:
+        raise StateAmbiguityError("database observation contains duplicate or unknown facts")
+    state = database.get("state", "unknown")
+    if type(state) is not str or state not in {"ready", "absent", "unknown"}:
         raise StateAmbiguityError("database state is invalid")
-    if len(values) == 2 and values[0] != values[1]:
-        raise StateAmbiguityError("database observations contradict")
-    state = values[0] if values else "unknown"
-    raw_migrations = database.get("applied_migrations", database.get("migrations", ()))
+    raw_migrations = database.get("applied_migrations", ())
     if not isinstance(raw_migrations, (tuple, list)):
         raise StateAmbiguityError("applied migrations are invalid")
     migrations = tuple(raw_migrations)
@@ -494,7 +489,7 @@ def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, .
         raise StateAmbiguityError("applied migrations are invalid")
     if migrations != tuple(sorted(set(migrations))):
         raise StateAmbiguityError("applied migrations are not sorted and unique")
-    return migrations, state  # type: ignore[return-value]
+    return migrations, state
 
 
 def _service_state(include_runtime: bool) -> str:
@@ -521,8 +516,6 @@ def _service_state(include_runtime: bool) -> str:
 
 __all__ = [
     "HostState",
-    "HostStateError",
-    "LifecycleStateError",
     "MAX_INVENTORY_ENTRIES",
     "StateAmbiguityError",
     "observe_host_state",

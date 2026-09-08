@@ -29,7 +29,6 @@ _MAX_OUTPUT = 9_216
 _MAX_COMMAND_SECONDS = 3.0
 _MAX_READINESS_SECONDS = 30.0
 _VERIFY_DEADLINE_SECONDS = 45.0
-_MINIMUM_MEMORY_BYTES = 1 * 1024**3
 _MINIMUM_DISK_BYTES = 10 * 1024**3
 _SUDO_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 
@@ -200,9 +199,9 @@ def host_preflight(paths: ManagedPaths, parameters: Mapping[str, object]) -> str
     """Validate non-mutating host authority before a lifecycle operation.
 
     Deploy and genesis call this before creating derived roots or unpacking an
-    archive.  Verification calls the same private checks later alongside its
-    service/readiness observations, so platform, DNS, SSH/sudo and PostgreSQL
-    authority have one implementation and one bounded deadline.
+    archive. Verification calls the same private checks later alongside its
+    service/readiness observations, so fresh capacity, SSH/sudo and
+    PostgreSQL authority share one implementation and one bounded deadline.
     """
 
     deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
@@ -281,22 +280,10 @@ def _host_authority(
     administrator and connection port without inventing a sudo variable.
     """
 
-    unsupported = not all(
-        (
-            _os_release_ok(deadline),
-            _architecture_ok(deadline),
-            _pid_one_is_systemd(deadline),
-            _memory_bytes(deadline) >= _MINIMUM_MEMORY_BYTES,
-            all(_available_bytes(paths.local(path), deadline) >= _MINIMUM_DISK_BYTES for path in (paths.install_root, paths.backup_root)),
-            _dns_addresses(
-                str(settings["public_hostname"]),
-                require_ipv6=settings["public_ipv6"] is not None,
-                deadline=deadline,
-            )
-            == _expected_public_addresses(settings),
-        )
-    )
-    if unsupported:
+    if not all(
+        _available_bytes(paths.local(path), deadline) >= _MINIMUM_DISK_BYTES
+        for path in (paths.install_root, paths.backup_root)
+    ):
         return "unsupported"
     if not _invoking_administrator_ok(str(settings["ssh_user"]), deadline):
         return "preflight"
@@ -305,29 +292,6 @@ def _host_authority(
     if not _successful(("runuser", "-u", "postgres", "--", "psql", "-Atqc", "SELECT 1"), _command_timeout(deadline))[0]:
         return "preflight"
     return None
-
-
-def _os_release_ok(deadline: float) -> bool:
-    succeeded, output = _successful(("cat", "/etc/os-release"), _command_timeout(deadline))
-    if not succeeded:
-        return False
-    values: dict[str, str] = {}
-    for line in output.splitlines():
-        key, separator, field = line.partition("=")
-        if not separator or key in values:
-            return False
-        values[key] = field.strip('"')
-    return values.get("ID") == "ubuntu" and values.get("VERSION_ID") == "26.04"
-
-
-def _architecture_ok(deadline: float) -> bool:
-    succeeded, output = _successful(("uname", "-m"), _command_timeout(deadline))
-    return succeeded and output.strip().lower().replace("_", "") in {"amd64", "x8664"}
-
-
-def _pid_one_is_systemd(deadline: float) -> bool:
-    succeeded, output = _successful(("cat", "/proc/1/comm"), _command_timeout(deadline))
-    return succeeded and output == "systemd\n"
 
 
 def _invoking_administrator_ok(expected_user: str, deadline: float) -> bool:
@@ -362,17 +326,6 @@ def _active_ssh_connection_ok(expected_port: int) -> bool:
     )
 
 
-def _memory_bytes(deadline: float) -> int:
-    succeeded, output = _successful(("free", "--bytes"), _command_timeout(deadline))
-    if not succeeded:
-        return 0
-    for line in output.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "Mem:" and fields[1].isdecimal():
-            return int(fields[1])
-    return 0
-
-
 def _available_bytes(path: Path, deadline: float) -> int:
     candidate = path
     while True:
@@ -390,35 +343,6 @@ def _available_bytes(path: Path, deadline: float) -> int:
     if not succeeded or len(lines) != 2 or lines[0].strip() != "Avail" or not lines[1].strip().isdecimal():
         return 0
     return int(lines[1].strip())
-
-
-def _dns_addresses(hostname: str, *, require_ipv6: bool, deadline: float) -> frozenset[str]:
-    """Resolve all configured public families through fixed local commands."""
-
-    commands = [("getent", "ahosts", hostname)]
-    if require_ipv6:
-        commands.append(("getent", "ahostsv6", hostname))
-    addresses: set[str] = set()
-    for command in commands:
-        succeeded, output = _successful(command, _command_timeout(deadline))
-        if not succeeded:
-            return frozenset()
-        for line in output.splitlines():
-            fields = line.split()
-            if not fields:
-                continue
-            try:
-                addresses.add(str(ipaddress.ip_address(fields[0])))
-            except ValueError:
-                return frozenset()
-    return frozenset(addresses)
-
-
-def _expected_public_addresses(settings: Mapping[str, int | str | float]) -> frozenset[str]:
-    values = {str(settings["public_ipv4"])}
-    if settings["public_ipv6"] is not None:
-        values.add(str(settings["public_ipv6"]))
-    return frozenset(values)
 
 
 def _service_state(deadline: float) -> tuple[bool, int]:

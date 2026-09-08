@@ -9,6 +9,7 @@ import pytest
 
 from taskman_ops.host_helper import verification as verification_module
 from taskman_ops.host_helper.commands import CommandTimeout
+from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
@@ -64,6 +65,78 @@ def _state(*, selected_release_id: str | None = RELEASE_ID) -> HostState:
         temporary_paths=(),
         warnings=(),
     )
+
+
+def _preflight_paths(tmp_path) -> ManagedPaths:
+    return ManagedPaths.from_mapping(
+        {
+            "install_root": (tmp_path / "install").as_posix(),
+            "backup_root": (tmp_path / "backups").as_posix(),
+        }
+    )
+
+
+def _host_command_response(argv: tuple[str, ...]) -> tuple[bool, str]:
+    if argv == ("cat", "/etc/os-release"):
+        return True, 'ID=ubuntu\nVERSION_ID="26.04"\n'
+    if argv == ("uname", "-m"):
+        return True, "amd64\n"
+    if argv == ("cat", "/proc/1/comm"):
+        return True, "systemd\n"
+    if argv == ("free", "--bytes"):
+        return True, "Mem: 1073741824\n"
+    if argv[:2] == ("getent", "ahosts"):
+        return True, "203.0.113.10 STREAM taskman.example.test\n"
+    if argv[0] == "df":
+        return True, "Avail\n10737418240\n"
+    if argv[0] == "runuser":
+        return True, ""
+    raise AssertionError(f"unexpected host preflight command: {argv!r}")
+
+
+def test_host_preflight_does_not_repeat_controller_immutable_admission(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-reading immutable platform evidence would duplicate controller admission."""
+
+    commands: list[tuple[str, ...]] = []
+
+    def successful(argv: tuple[str, ...], _timeout: float) -> tuple[bool, str]:
+        commands.append(argv)
+        return _host_command_response(argv)
+
+    monkeypatch.setattr(verification_module, "_successful", successful)
+    monkeypatch.setenv("SUDO_USER", "deployer")
+    monkeypatch.setenv("SSH_CONNECTION", "198.51.100.7 51324 203.0.113.10 22")
+
+    assert verification_module.host_preflight(_preflight_paths(tmp_path), _request().parameters) is None
+    assert not any(command[0] in {"cat", "uname", "free", "getent"} for command in commands)
+
+
+@pytest.mark.parametrize(
+    ("sudo_user", "ssh_connection"),
+    (
+        ("other-admin", "198.51.100.7 51324 203.0.113.10 22"),
+        ("deployer", "198.51.100.7 51324 203.0.113.10 2202"),
+    ),
+)
+def test_host_preflight_refuses_changed_administrator_or_ssh_session_identity(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    sudo_user: str,
+    ssh_connection: str,
+) -> None:
+    """An identity change after controller admission must stop a consequence."""
+
+    monkeypatch.setattr(
+        verification_module,
+        "_successful",
+        lambda argv, _timeout: _host_command_response(argv),
+    )
+    monkeypatch.setenv("SUDO_USER", sudo_user)
+    monkeypatch.setenv("SSH_CONNECTION", ssh_connection)
+
+    assert verification_module.host_preflight(_preflight_paths(tmp_path), _request().parameters) == "preflight"
 
 
 def _install_healthy_observation(

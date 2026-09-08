@@ -75,6 +75,22 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
     assert host.closed == 2
 
 
+def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -> None:
+    """Unsafe immutable host facts must stop the workflow before operator interaction."""
+
+    host = Host()
+    capabilities = _capabilities(
+        host,
+        present_plan=lambda _plan: host.events.append("present-plan"),
+        confirm=lambda _plan: host.events.append("confirm") or True,
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.stage == "provisioned"
+    assert host.events == ["plan", "discovery", "present-plan", "confirm", "provisioning"]
+
+
 def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability() -> None:
     host = Host()
     migration = SimpleNamespace(filename="20260905120000_create_tasks.exs", sha256="d" * 64)
@@ -190,6 +206,7 @@ def _capabilities(
     *,
     provisioning=None,
     release=None,
+    present_plan=None,
     confirm=None,
     artifact_value=None,
 ) -> ProvisionCapabilities:
@@ -202,7 +219,7 @@ def _capabilities(
         render_pgpass=lambda _config, _secrets: b"pgpass\n",
         render_role_password_input=lambda _role, _password: b"role-password-input\n",
         render_plan=lambda _config, _artifact: host.events.append("plan") or {"candidate_release_id": value.manifest.release_id},
-        present_plan=lambda _plan: None,
+        present_plan=present_plan or (lambda _plan: None),
         confirm=confirm or (lambda _plan: True),
         connect=lambda _config: host,
         discover=lambda _remote, _config, **_kwargs: host.events.append("discovery"),
