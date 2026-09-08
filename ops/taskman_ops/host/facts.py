@@ -453,10 +453,10 @@ def _listeners(value: str) -> tuple[Listener, ...]:
     return tuple(sorted(listeners, key=lambda listener: (listener.port, listener.address)))
 
 
-def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
+def _listener_owners(value: str) -> dict[Listener, str] | None:
     """Parse only unambiguous process owners from privileged ``ss`` output."""
 
-    owners: dict[Listener, tuple[str, int]] = {}
+    owners: dict[Listener, str] = {}
     for line in value.splitlines():
         fields = line.split(maxsplit=5)
         if len(fields) < 4 or fields[0].upper() != "LISTEN":
@@ -472,7 +472,7 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
         )
         if match is None:
             return None
-        owner = (match.group("name"), int(match.group("pid")))
+        owner = match.group("name")
         if listener in owners:
             return None
         owners[listener] = owner
@@ -504,7 +504,7 @@ def _caddy_state(
     paths: tuple[PurePosixPath, ...],
     units: tuple[str, ...],
     listeners: tuple[Listener, ...],
-    listener_owners: dict[Listener, tuple[str, int]] | None,
+    listener_owners: dict[Listener, str] | None,
     config: dict[str, str] | None,
     expected_config_hash: str,
 ) -> CaddyState:
@@ -529,7 +529,7 @@ def _caddy_state(
         return CaddyState.STAGED
     if {listener.port for listener in public_listeners} != {80, 443}:
         return CaddyState.INVALID
-    if any(listener_owners.get(listener, ("", 0))[0] != "caddy" for listener in public_listeners):
+    if any(listener_owners.get(listener, "") != "caddy" for listener in public_listeners):
         return CaddyState.INVALID
     if set(listener_owners) != set(public_listeners):
         return CaddyState.INVALID
