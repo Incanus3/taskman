@@ -33,18 +33,83 @@ _PROVISIONING_MARKER_SCRIPT = (
     'else printf unknown; fi'
 )
 _CADDYFILE = PurePosixPath("/etc/caddy/Caddyfile")
-_CADDY_CONFIG_KEYS = ("config", "config_hash", "config_metadata")
+_CADDY_AUTHORITY_KEYS = (
+    "config",
+    "config_hash",
+    "config_metadata",
+    "unit_load",
+    "unit_active",
+    "unit_pid",
+    "unit_fragment",
+    "unit_metadata",
+    "unit_package",
+    "unit_verified",
+)
 _CADDY_CONFIG_SCRIPT = r'''set -eu
 config=$1
+emit() { printf '%s=%s\n' "$1" "$2"; }
+
 if [ ! -e "$config" ] && [ ! -L "$config" ]; then
-  printf 'config=absent\nconfig_hash=\nconfig_metadata=\n'
+  config_state=absent
+  config_hash=
+  config_metadata=
 elif [ -f "$config" ] && [ ! -L "$config" ]; then
-  printf 'config=regular\n'
-  sha256sum "$config" | awk '{printf "config_hash=%s\n", $1}'
-  stat --format='config_metadata=%U:%G:%a' "$config"
+  config_state=regular
+  config_hash=$(sha256sum "$config" | awk '{print $1}')
+  config_metadata=$(stat --format='%U:%G:%a' "$config")
 else
-  printf 'config=invalid\nconfig_hash=\nconfig_metadata=\n'
-fi'''
+  config_state=invalid
+  config_hash=
+  config_metadata=
+fi
+
+property() { systemctl show caddy.service "--property=$1" --value 2>/dev/null || true; }
+unit_load=$(property LoadState)
+unit_active=$(property ActiveState)
+unit_pid=$(property MainPID)
+unit_fragment=$(property FragmentPath)
+unit_metadata=
+unit_package=missing
+unit_verified=missing
+
+if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
+  unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
+  package_state=$(dpkg-query --showformat='${db:Status-Status}' --show caddy 2>/dev/null || true)
+  package_owner=$(dpkg-query --search "$unit_fragment" 2>/dev/null || true)
+  package_path=
+  case "$package_owner" in
+    'caddy: '*) package_path=${package_owner#caddy: } ;;
+  esac
+  unit_resolved=$(readlink -f "$unit_fragment" 2>/dev/null || true)
+  package_resolved=$(readlink -f "$package_path" 2>/dev/null || true)
+  if [ "$package_state" = installed ] && [ -n "$package_path" ] \
+    && [ -n "$unit_resolved" ] && [ -n "$package_resolved" ] \
+    && [ "$unit_resolved" = "$package_resolved" ]; then
+    unit_package=caddy
+    unit_relative=${package_path#/}
+    unit_expected=$(dpkg-query --control-show caddy md5sums 2>/dev/null | awk -v path="$unit_relative" '$2 == path {print $1}')
+    unit_actual=$(md5sum "$unit_fragment" | awk '{print $1}')
+    if [ -n "$unit_expected" ] && [ "$unit_actual" = "$unit_expected" ]; then
+      unit_verified=clean
+    else
+      unit_verified=modified
+    fi
+  else
+    unit_package=foreign
+    unit_verified=unknown
+  fi
+fi
+
+emit config "$config_state"
+emit config_hash "$config_hash"
+emit config_metadata "$config_metadata"
+emit unit_load "$unit_load"
+emit unit_active "$unit_active"
+emit unit_pid "$unit_pid"
+emit unit_fragment "$unit_fragment"
+emit unit_metadata "$unit_metadata"
+emit unit_package "$unit_package"
+emit unit_verified "$unit_verified"'''
 _CAPACITY_SCRIPT = (
     'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
@@ -453,10 +518,10 @@ def _listeners(value: str) -> tuple[Listener, ...]:
     return tuple(sorted(listeners, key=lambda listener: (listener.port, listener.address)))
 
 
-def _listener_owners(value: str) -> dict[Listener, str] | None:
+def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
     """Parse only unambiguous process owners from privileged ``ss`` output."""
 
-    owners: dict[Listener, str] = {}
+    owners: dict[Listener, tuple[str, int]] = {}
     for line in value.splitlines():
         fields = line.split(maxsplit=5)
         if len(fields) < 4 or fields[0].upper() != "LISTEN":
@@ -472,7 +537,7 @@ def _listener_owners(value: str) -> dict[Listener, str] | None:
         )
         if match is None:
             return None
-        owner = match.group("name")
+        owner = (match.group("name"), int(match.group("pid")))
         if listener in owners:
             return None
         owners[listener] = owner
@@ -493,10 +558,10 @@ def _caddy_config(value: str) -> dict[str, str] | None:
     evidence: dict[str, str] = {}
     for line in value.splitlines():
         key, separator, field = line.partition("=")
-        if not separator or key not in _CADDY_CONFIG_KEYS or key in evidence:
+        if not separator or key not in _CADDY_AUTHORITY_KEYS or key in evidence:
             return None
         evidence[key] = field
-    return evidence if tuple(evidence) == _CADDY_CONFIG_KEYS else None
+    return evidence if tuple(evidence) == _CADDY_AUTHORITY_KEYS else None
 
 
 def _caddy_state(
@@ -504,7 +569,7 @@ def _caddy_state(
     paths: tuple[PurePosixPath, ...],
     units: tuple[str, ...],
     listeners: tuple[Listener, ...],
-    listener_owners: dict[Listener, str] | None,
+    listener_owners: dict[Listener, tuple[str, int]] | None,
     config: dict[str, str] | None,
     expected_config_hash: str,
 ) -> CaddyState:
@@ -521,19 +586,44 @@ def _caddy_state(
     if no_caddy_evidence:
         return CaddyState.ABSENT if config_state == "absent" else CaddyState.INVALID
 
+    if not caddy_unit_present or not _trusted_caddy_unit(config):
+        return CaddyState.INVALID
     if not caddy_path_present and not public_listeners:
-        return CaddyState.PREPARED if config_state == "absent" else CaddyState.INVALID
+        return CaddyState.PREPARED if config_state == "absent" and _inactive_caddy_unit(config) else CaddyState.INVALID
     if not caddy_path_present or not _trusted_caddy_config(config, expected_config_hash):
         return CaddyState.INVALID
     if not public_listeners:
-        return CaddyState.STAGED
+        return CaddyState.STAGED if _inactive_caddy_unit(config) else CaddyState.INVALID
     if {listener.port for listener in public_listeners} != {80, 443}:
         return CaddyState.INVALID
-    if any(listener_owners.get(listener, "") != "caddy" for listener in public_listeners):
+    main_pid = _caddy_pid(config)
+    if config["unit_active"] != "active" or main_pid is None:
+        return CaddyState.INVALID
+    if any(listener_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
         return CaddyState.INVALID
     if set(listener_owners) != set(public_listeners):
         return CaddyState.INVALID
     return CaddyState.ACTIVE
+
+
+def _trusted_caddy_unit(config: dict[str, str]) -> bool:
+    return (
+        config["unit_load"] == "loaded"
+        and config["unit_fragment"]
+        in {"/lib/systemd/system/caddy.service", "/usr/lib/systemd/system/caddy.service"}
+        and config["unit_metadata"] == "root:root:644"
+        and config["unit_package"] == "caddy"
+        and config["unit_verified"] == "clean"
+    )
+
+
+def _inactive_caddy_unit(config: dict[str, str]) -> bool:
+    return config["unit_active"] == "inactive" and config["unit_pid"] == "0"
+
+
+def _caddy_pid(config: dict[str, str]) -> int | None:
+    value = config["unit_pid"]
+    return int(value) if value.isdecimal() and int(value) > 0 else None
 
 
 def _trusted_caddy_config(config: dict[str, str], expected_hash: str) -> bool:

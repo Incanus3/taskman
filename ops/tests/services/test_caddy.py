@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from pyinfra.api import Config, Inventory, State, deploy
+
 from tests.test_config import valid_environment
 from taskman_ops.config import EnvironmentConfig
+from taskman_ops.remote import ChangeSet, PyinfraRemote
 import taskman_ops.services.caddy as caddy
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository, build_caddy_plan, render_caddyfile
 
@@ -61,7 +67,7 @@ def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monk
     monkeypatch.setattr(
         caddy,
         "_validate_and_install_caddy",
-        lambda staged_path, **_kwargs: validated.append((staged_path, "/etc/caddy/Caddyfile"))
+        lambda staged_path, *_args, **_kwargs: validated.append((staged_path, "/etc/caddy/Caddyfile"))
         or operations.append("validate")
         or ValidatedConfiguration(),
         raising=False,
@@ -149,3 +155,88 @@ def test_caddy_uses_builtin_live_file_change_for_reload_after_custom_validation(
 
     assert puts == ["/etc/taskman/Caddyfile.staged", "/etc/caddy/Caddyfile"]
     assert services[-1][1]["_if"]() is False
+
+
+def test_declare_caddy_programmatic_replay_reports_no_change_when_converged(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The real Caddy declaration must preserve pyinfra's converged result."""
+
+    staged_path = tmp_path / "Caddyfile.staged"
+    live_path = tmp_path / "Caddyfile"
+    monkeypatch.setattr(caddy, "_STAGED_CADDYFILE", staged_path.as_posix())
+    monkeypatch.setattr(caddy, "_CADDYFILE", live_path.as_posix())
+
+    class Result:
+        def did_change(self) -> bool:
+            return False
+
+    from pyinfra.operations import apt, systemd
+
+    monkeypatch.setattr(apt, "packages", lambda **_kwargs: Result())
+    monkeypatch.setattr(apt, "key", lambda **_kwargs: Result())
+    monkeypatch.setattr(apt, "repo", lambda *_args, **_kwargs: Result())
+    monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: Result())
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "caddy",
+        "#!/bin/sh\nexit 0\n",
+    )
+    _write_executable(
+        bin_dir / "sudo",
+        "#!/bin/sh\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -u|-g|-C) shift 2 ;;\n"
+        "    -*) shift ;;\n"
+        "    *) break ;;\n"
+        "  esac\n"
+        "done\n"
+        "exec \"$@\"\n",
+    )
+    _write_executable(bin_dir / "chown", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        bin_dir / "stat",
+        "#!/bin/sh\n"
+        "/usr/bin/stat \"$@\" | sed -E -e 's/^[^:]+:[^:]+:/root:root:/' -e 's/^user=[^ ]+ group=[^ ]+/user=root group=root/'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    plan = CaddyPlan(
+        CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+        (),
+        ("caddy",),
+        "taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n",
+    )
+
+    def run_once() -> ChangeSet:
+        inventory = Inventory((["@local"], {}))
+        state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+        host = inventory.get_host("@local")
+        state.activate_host(host)
+        remote = PyinfraRemote(
+            host,
+            config(),
+            inventory=inventory,
+            state=state,
+        )
+
+        @deploy("Converge Caddy")
+        def converge() -> None:
+            caddy.declare_caddy(plan)
+
+        return remote.run_deploy(converge)
+
+    first = run_once()
+    second = run_once()
+
+    assert first.changed is True
+    assert second == ChangeSet(changed=False)
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)

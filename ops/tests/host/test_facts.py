@@ -39,8 +39,15 @@ def caddy_evidence(
     *,
     config_hash: str | None = None,
     config_metadata: str = "root:root:644",
+    unit_load: str = "loaded",
+    unit_active: str = "active",
+    unit_pid: str = "402",
+    unit_fragment: str = "/usr/lib/systemd/system/caddy.service",
+    unit_metadata: str = "root:root:644",
+    unit_package: str = "caddy",
+    unit_verified: str = "clean",
 ) -> CommandResult:
-    """Return the decision-relevant managed Caddy configuration evidence."""
+    """Return the decision-relevant managed Caddy authority evidence."""
 
     expected_hash = config_hash or _CADDYFILE_SHA256
     return CommandResult(
@@ -50,6 +57,13 @@ def caddy_evidence(
                 "config=regular",
                 f"config_hash={expected_hash}",
                 f"config_metadata={config_metadata}",
+                f"unit_load={unit_load}",
+                f"unit_active={unit_active}",
+                f"unit_pid={unit_pid}",
+                f"unit_fragment={unit_fragment}",
+                f"unit_metadata={unit_metadata}",
+                f"unit_package={unit_package}",
+                f"unit_verified={unit_verified}",
                 "",
             )
         ),
@@ -75,7 +89,21 @@ def managed_caddy_responses(
 def absent_caddy_evidence() -> CommandResult:
     return CommandResult(
         0,
-        "config=absent\nconfig_hash=\nconfig_metadata=\n",
+        "\n".join(
+            (
+                "config=absent",
+                "config_hash=",
+                "config_metadata=",
+                "unit_load=not-found",
+                "unit_active=inactive",
+                "unit_pid=0",
+                "unit_fragment=",
+                "unit_metadata=",
+                "unit_package=missing",
+                "unit_verified=missing",
+                "",
+            )
+        ),
     )
 
 
@@ -84,8 +112,21 @@ def inactive_caddy_evidence(*, configured: bool) -> CommandResult:
     config_metadata = "root:root:644" if configured else ""
     return CommandResult(
         0,
-        f"config={'regular' if configured else 'absent'}\n"
-        f"config_hash={config_hash}\nconfig_metadata={config_metadata}\n",
+        "\n".join(
+            (
+                f"config={'regular' if configured else 'absent'}",
+                f"config_hash={config_hash}",
+                f"config_metadata={config_metadata}",
+                "unit_load=loaded",
+                "unit_active=inactive",
+                "unit_pid=0",
+                "unit_fragment=/usr/lib/systemd/system/caddy.service",
+                "unit_metadata=root:root:644",
+                "unit_package=caddy",
+                "unit_verified=clean",
+                "",
+            )
+        ),
     )
 
 
@@ -268,26 +309,88 @@ def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_converge
     assert discovery.caddy_state.value == "active"
 
 
-def test_marker_anchored_caddy_service_drift_is_repaired_by_declarative_convergence() -> None:
-    """An exact managed config remains admissible while pyinfra restores the service unit."""
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        caddy_evidence(unit_verified="modified"),
+        absent_caddy_evidence(),
+    ),
+)
+def test_marker_anchored_caddy_service_drift_cannot_be_activated_unsafely(
+    evidence: CommandResult,
+) -> None:
+    """A modified or missing package-owned unit is refused before activation."""
 
     responses = managed_caddy_responses(
         listener_owners=(
             'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
             'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+        ),
+        evidence=evidence,
+    )
+    if evidence.stdout.startswith("config=absent"):
+        responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n/etc/caddy/Caddyfile\n")
+        responses[11] = CommandResult(0)
+
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            ScriptedRemote.from_responses(responses),
+            config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
         )
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+@pytest.mark.parametrize(
+    "listener_owners",
+    (
+        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=401,fd=6))\n'
+        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
+        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=999,fd=6))\n'
+        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=999,fd=7))\n',
+    ),
+)
+def test_marker_anchored_caddy_requires_one_authorized_listener_pid(
+    listener_owners: str,
+) -> None:
+    """A named process is not enough without one service-correlated PID."""
+
+    remote = ScriptedRemote.from_responses(managed_caddy_responses(listener_owners=listener_owners))
+
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            remote,
+            config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_marker_anchored_named_caddy_without_service_authority_is_refused() -> None:
+    """A process name on both ports cannot establish managed service ownership."""
+
+    responses = managed_caddy_responses(
+        listener_owners=(
+            'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+            'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+        ),
+        evidence=caddy_evidence(unit_load="not-found", unit_active="inactive", unit_pid="0", unit_fragment="", unit_metadata="", unit_package="missing", unit_verified="missing"),
     )
     responses[11] = CommandResult(0)
 
-    discovery = validate_provisionable_host(
-        ScriptedRemote.from_responses(responses),
-        config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            ScriptedRemote.from_responses(responses),
+            config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
-    assert discovery.state is ProvisioningState.PARTIAL
-    assert discovery.caddy_state.value == "active"
+    assert raised.value.status is ExitStatus.SAFETY
 
 
 def test_marker_anchored_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
