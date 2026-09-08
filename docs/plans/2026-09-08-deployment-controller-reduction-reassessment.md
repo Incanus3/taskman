@@ -4,6 +4,8 @@
 > [approved reassessment design](../specs/2026-09-08-deployment-controller-reduction-reassessment-design.md)
 > before changing production code. Execute this plan in a fresh session with
 > subagent-driven development and an independent review after each task.
+> Every implementation and review subagent must read that complete design and
+> its assigned task in this plan before inspecting or changing implementation.
 
 **Goal:** Finish the deployment-controller simplification without removing a
 public command, scheduled backups, or an accepted safety guarantee, and reduce
@@ -34,6 +36,11 @@ discard or broadly commit it.
 - Use repository-local Beads through `br`. Revise the blocked Task 9 and old
   Task 10 acceptance criteria to point to this plan, then create ordered child
   tasks for the slices below before implementation.
+- Every subagent prompt must identify the approved design and this plan by
+  path, require the subagent to read the complete design plus its assigned
+  task before acting, and ask it to report any conflict between them instead
+  of silently resolving the conflict. A task summary is not a substitute for
+  reading the design.
 - Before each version-control operation run `but status --json`. Select only
   the intended file or hunk IDs; unrelated dirty changes are user-owned.
 - For every behavior change, first add or adjust a focused test, run it to
@@ -350,7 +357,7 @@ discard or broadly commit it.
 
 ---
 
-### Task 9: Enforce final structure, metric, documentation, and verification
+### Task 9: Complete the reduction and establish the audited baseline
 
 **Files:**
 
@@ -412,17 +419,157 @@ discard or broadly commit it.
   `sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b`.
   Prove exact-input reuse without connecting to or mutating a real host.
 
-- [ ] **Step 6: Request fresh independent whole-workstream review**
+- [ ] **Step 6: Request fresh independent reduction review**
 
   Have a fresh reviewer reproduce the metric and map every public command,
   scheduled backups, protected guarantee, interruption boundary, retained
   custom action, and deleted concept to implementation and tests. Resolve
   Critical and Important findings and rerun affected plus complete gates.
 
-- [ ] **Step 7: Persist delivery evidence**
+- [ ] **Step 7: Persist the reduction baseline**
 
   Through `br`, record final counts, percentage, deleted concepts, retained
   responsibilities, test evidence, builder identity, review outcome, and the
-  still-unperformed real-host acceptance. Update the handoff and indexes,
-  close completed child tasks, and leave integration/external actions for
-  explicit operator authorization.
+  still-unperformed real-host acceptance. Update the handoff and indexes and
+  close the reduction implementation tasks. Keep the delivery feature open
+  for the two read-only audits below, and leave integration/external actions
+  for explicit operator authorization.
+
+---
+
+### Task 10: Audit the final production operations code
+
+**Files:**
+
+- Read: `ops/taskman_ops/**/*.py`
+- Read: `ops/scripts/*.py`
+- Read: `ops/taskman`
+- Read: `ops/backup/` and `ops/systemd/`
+- Read: the approved design and Tasks 1–9 of this plan
+- Create: `docs/research/2026-09-08-deployment-controller-final-audit.md`
+- Modify: `docs/README.md`
+- Modify: `.beads/issues.jsonl` through `br` only
+
+**Interfaces:**
+
+- Consumes: the verified, committed Task 9 production baseline and its exact
+  production-Python measurement.
+- Produces: a read-only, evidence-backed inventory of remaining safe
+  simplification candidates. It does not authorize code changes.
+
+- [ ] **Step 1: Freeze and record the audit baseline**
+
+  Record the exact commit, production-Python count, largest modules, public
+  command inventory, retained custom provisioning actions, and passing Task 9
+  verification. Do not audit an uncommitted or failing implementation.
+
+- [ ] **Step 2: Perform a fresh responsibility and dependency inventory**
+
+  Map each production module to its responsibility and consumers. Search for
+  duplicate parsing, validation, evidence construction, command execution,
+  result translation, compatibility branches, unused public/internal
+  interfaces, and single-consumer abstractions. Inspect actual call sites
+  before classifying anything as redundant.
+
+- [ ] **Step 3: Apply the non-regression filter**
+
+  Reject any candidate that would remove or narrow functionality, weaken a
+  core guarantee, make consequence ordering harder to verify, reduce
+  readability or understandability, combine unrelated responsibilities, or
+  damage coherent organization. Treat retaining the current code as the
+  correct outcome when those costs exceed the reduction.
+
+- [ ] **Step 4: Validate each surviving candidate**
+
+  For each candidate, identify exact files/symbols/consumers, duplicated
+  responsibility, retained owner, required characterization tests, safety
+  boundaries, estimated net line reduction, interaction with other
+  candidates, and why the resulting organization is at least as clear.
+  Separate high-confidence candidates from ideas needing design work.
+
+- [ ] **Step 5: Record negative findings**
+
+  Document the major areas inspected that should not be reduced and the
+  guarantee, readability, or organizational reason. This prevents a later
+  session from repeatedly proposing already-rejected compression.
+
+- [ ] **Step 6: Request independent audit review**
+
+  Give a fresh reviewer the complete approved design, this task, the baseline,
+  and the draft audit report. Require it to challenge unsupported duplication
+  claims, missing consumers, optimistic line estimates, and any hidden
+  guarantee or readability loss.
+
+- [ ] **Step 7: Publish the audit result without implementing it**
+
+  Add the reviewed production audit to the research index and record ranked
+  findings in Beads. Any material implementation candidate requires separate
+  operator approval and an appropriately scoped design/plan. If no worthwhile
+  candidates survive, record that conclusion and close the audit task.
+
+---
+
+### Task 11: Audit tests for duplicated coverage and support code
+
+**Files:**
+
+- Read: `ops/tests/**/*.py`
+- Read: test configuration and shared fixtures under `ops/`
+- Read: the Task 9 verification evidence
+- Modify: `docs/research/2026-09-08-deployment-controller-final-audit.md`
+- Modify: `.beads/issues.jsonl` through `br` only
+- Modify: `docs/handoffs/deployment-controller-simplification.md`
+
+**Interfaces:**
+
+- Consumes: the same committed Task 9 baseline and the reviewed production
+  audit from Task 10.
+- Produces: a read-only map of genuinely duplicate behavioral coverage and
+  fixture/helper code. It does not authorize test deletion or refactoring.
+
+- [ ] **Step 1: Inventory the test topology**
+
+  Record test files, line counts, shared fixtures/fakes, dominant local setup
+  patterns, and the production boundary each test group protects. Distinguish
+  unit, protocol, integration, architecture, interruption, security, and
+  public-command coverage.
+
+- [ ] **Step 2: Find duplicate behavioral coverage**
+
+  Identify tests that exercise the same input, boundary, observable outcome,
+  and failure mode without adding a distinct regression, layer, platform, or
+  safety assertion. Do not treat intentionally layered unit/integration
+  coverage or repeated safety checks at different consequence boundaries as
+  duplication merely because assertions resemble each other.
+
+- [ ] **Step 3: Find duplicated fixture and helper machinery**
+
+  Compare request/record builders, filesystem arrangements, fake command
+  runners, subprocess stubs, environment construction, and repeated expected
+  mappings. Propose extraction only where the shared helper has one clear
+  meaning, keeps relevant test data visible, and would not couple otherwise
+  independent tests.
+
+- [ ] **Step 4: Validate each surviving candidate**
+
+  For every candidate, list exact tests/helpers, the unique coverage that must
+  remain, the proposed retained test or shared owner, estimated net line
+  reduction, coupling risk, and the command that would verify unchanged
+  coverage. Reject clever parameterization or helper indirection that makes a
+  failure harder to diagnose.
+
+- [ ] **Step 5: Request independent test-audit review**
+
+  Give a fresh reviewer the complete approved design, this task, the Task 9
+  verification evidence, and the draft report. Require it to check that
+  proposed deduplication preserves meaningful layer separation, regression
+  specificity, interruption coverage, and security guarantees.
+
+- [ ] **Step 6: Finalize durable findings and close the workstream checkpoint**
+
+  Add the reviewed test findings and negative findings to the audit report and
+  Beads. Close the audit tasks when the evidence is complete, even if they find
+  no worthwhile reduction. Update the handoff with any separately approved
+  follow-up or retire it if nothing remains. Do not push, merge, deploy, run
+  real-host acceptance, or implement audit findings without explicit
+  authorization.

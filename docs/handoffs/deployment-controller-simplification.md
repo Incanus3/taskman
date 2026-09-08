@@ -1,6 +1,6 @@
 # Deployment controller simplification handoff
 
-**Status:** reassessment design approved; revised implementation plan ready for review
+**Status:** reassessment design and implementation plan approved; ready for clean-session execution
 **Updated:** 2026-09-08
 **Resume:** `$resume deployment-controller-simplification`
 
@@ -22,6 +22,11 @@ the material safety, recovery, and operator-control guarantees.
 
 Delivery feature: `tas-deployment-controller-simplification-f00.11`, under parent
 `tas-deployment-controller-simplification-f00`.
+
+Approved continuation tasks are
+`tas-deployment-controller-simplification-f00.11.9` through `.11.19`.
+Task `.11.9` is the next ready task; `.11.18` and `.11.19` are the terminal
+read-only production and test audits.
 
 ## Current checkpoint
 
@@ -111,14 +116,22 @@ build contracts; none is recommended merely to satisfy the metric.
 
 ## Next action
 
-Review and approve the revised implementation plan. After approval, update
-Task 9/10 Beads acceptance criteria, create the ordered implementation tasks,
-and begin in a fresh session with:
+Begin the scheduled-backup migration
+(`tas-deployment-controller-simplification-f00.11.9`) in a fresh session with:
 
 ```text
 $resume deployment-controller-simplification
 ```
 
 Default to subagent-driven execution with an independent reviewer for each
-slice. Start with the scheduled-backup migration and preserve the existing
-uncommitted Task 9 deletion slice until it can be adopted deliberately.
+slice. Every implementation and review subagent must first read the complete
+approved reassessment design and its assigned plan task. Start with the
+scheduled-backup migration and preserve the existing uncommitted Task 9
+deletion slice until it can be adopted deliberately.
+
+After the verified reduction baseline, perform two read-only terminal audits:
+first inspect production operations code for further simplification that
+preserves all functionality, core guarantees, readability, understandability,
+and organization; then inspect tests for genuinely duplicated coverage and
+fixture/helper machinery. Record and independently review findings, but do not
+implement them without separate operator approval.
