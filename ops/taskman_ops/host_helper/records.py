@@ -205,6 +205,7 @@ class BackupRecord:
     """A validated PostgreSQL dump and the migration state it captured."""
 
     backup_id: str
+    created_at: datetime
     dump_sha256: str
     source_release_id: str
     migration_versions: tuple[int, ...]
@@ -213,6 +214,7 @@ class BackupRecord:
     _FIELDS = frozenset(
         {
             "backup_id",
+            "created_at",
             "dump_sha256",
             "source_release_id",
             "migration_versions",
@@ -222,6 +224,7 @@ class BackupRecord:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backup_id", _backup(self.backup_id))
+        _format_timestamp(self.created_at, "backup creation time")
         object.__setattr__(self, "dump_sha256", _sha256(self.dump_sha256, "dump checksum"))
         object.__setattr__(self, "source_release_id", _release(self.source_release_id, "source release identifier"))
         object.__setattr__(self, "migration_versions", _migration_versions(self.migration_versions))
@@ -234,6 +237,7 @@ class BackupRecord:
         data = _exact(value, cls._FIELDS, "backup record")
         return cls(
             _backup(data["backup_id"]),
+            _timestamp(data["created_at"], "backup creation time"),
             _sha256(data["dump_sha256"], "dump checksum"),
             _release(data["source_release_id"], "source release identifier"),
             _migration_versions(data["migration_versions"]),
@@ -243,6 +247,7 @@ class BackupRecord:
     def to_mapping(self) -> dict[str, object]:
         return {
             "backup_id": self.backup_id,
+            "created_at": _format_timestamp(self.created_at, "backup creation time"),
             "dump_sha256": self.dump_sha256,
             "source_release_id": self.source_release_id,
             "migration_versions": list(self.migration_versions),

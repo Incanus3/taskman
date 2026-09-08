@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import json
 from pathlib import Path
 import shutil
 
 import pytest
 
 from taskman_ops.host_helper.operations import cleanup as cleanup_module
+from taskman_ops.host_helper import backups as backup_capability
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import (
     BackupRecord,
@@ -18,6 +20,7 @@ from taskman_ops.host_helper.records import (
     write_release_manifest,
 )
 from taskman_ops.host_protocol import HostRequest
+from taskman_ops.host_helper.state import observe_host_state
 
 
 RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
@@ -25,6 +28,7 @@ STALE_RELEASE = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6"
 STALE_BACKUP = "backup-00000000000000000000000000000000"
 IN_USE_BACKUP = "backup-11111111111111111111111111111111"
 RETAINED_BACKUP = "backup-22222222222222222222222222222222"
+BACKUP_AT = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 
 
 def _paths(tmp_path: Path) -> ManagedPaths:
@@ -45,7 +49,11 @@ def _publish_release(paths: ManagedPaths, release_id: str) -> None:
     write_release_manifest(paths, _release(release_id))
 
 
-def _publish_backup(paths: ManagedPaths, backup_id: str) -> None:
+def _publish_backup(
+    paths: ManagedPaths,
+    backup_id: str,
+    created_at: datetime = BACKUP_AT,
+) -> None:
     root = Path(paths.local(paths.backup_root))
     root.mkdir(parents=True, exist_ok=True)
     dump = root / f"{backup_id}.dump"
@@ -55,6 +63,7 @@ def _publish_backup(paths: ManagedPaths, backup_id: str) -> None:
         paths,
         BackupRecord(
             backup_id,
+            created_at,
             hashlib.sha256(dump.read_bytes()).hexdigest(),
             RELEASE,
             (),
@@ -120,6 +129,55 @@ def test_cleanup_inspection_excludes_selected_and_in_use_artifacts(tmp_path: Pat
     assert RELEASE not in identifiers
     assert IN_USE_BACKUP not in identifiers
     assert {STALE_RELEASE, STALE_BACKUP} <= identifiers
+
+
+def test_cleanup_retains_newest_unprotected_backups_by_creation_time_then_identifier(
+    tmp_path: Path,
+) -> None:
+    """Sorting by backup ID would prune a newer dump when UUID order disagrees with time."""
+
+    paths = _paths(tmp_path)
+    _publish_release(paths, RELEASE)
+    _publish_release(paths, STALE_RELEASE)
+    _publish_backup(paths, STALE_BACKUP, datetime(2026, 9, 7, 12, 2, tzinfo=UTC))
+    _publish_backup(paths, IN_USE_BACKUP, datetime(2026, 9, 7, 12, 1, tzinfo=UTC))
+    _publish_backup(paths, RETAINED_BACKUP, datetime(2026, 9, 7, 12, 0, tzinfo=UTC))
+    append_selection(paths, SelectionRecord(RELEASE, None, IN_USE_BACKUP, BACKUP_AT))
+    Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    targets = _inspect(paths)
+
+    backup_targets = {target["identifier"] for target in targets if target["kind"] == "backup"}
+    assert backup_targets == {RETAINED_BACKUP}
+
+
+def test_retention_refuses_a_manifest_replaced_after_observation(tmp_path: Path) -> None:
+    """A changed manifest must not authorize deleting the completed dump it no longer describes."""
+
+    paths = _paths(tmp_path)
+    _managed_state(paths)
+    state = observe_host_state(paths)
+    stale_dump = Path(paths.local(paths.backup_root / f"{STALE_BACKUP}.dump"))
+    stale_manifest = Path(paths.local(paths.backup_manifest(STALE_BACKUP)))
+    stale_manifest.write_text(
+        json.dumps(
+            BackupRecord(
+                STALE_BACKUP,
+                BACKUP_AT,
+                hashlib.sha256(stale_dump.read_bytes()).hexdigest(),
+                STALE_RELEASE,
+                (),
+                1024,
+            ).to_mapping()
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(backup_capability.BackupAuthorityError, match="manifest"):
+        backup_capability.prune_backups(paths, state, retention=1)
+
+    assert stale_manifest.is_file()
+    assert stale_dump.is_file()
 
 
 def test_cleanup_executes_only_the_exact_confirmed_paths(tmp_path: Path) -> None:

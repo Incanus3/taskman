@@ -64,6 +64,7 @@ def test_discovery_result_exposes_compact_completed_backup_rows(
 ) -> None:
     row = {
         "backup_id": BACKUP_ID,
+        "created_at": "2026-09-08T10:15:30Z",
         "dump_sha256": "e" * 64,
         "source_release_id": RELEASE_ID,
         "migration_versions": (20260905120000,),

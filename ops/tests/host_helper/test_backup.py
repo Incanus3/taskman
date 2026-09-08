@@ -8,6 +8,7 @@ import subprocess
 
 import pytest
 
+from taskman_ops.host_helper import backups as backup_capability
 from taskman_ops.host_helper.operations import backup as backup_module
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import (
@@ -91,15 +92,15 @@ def test_create_validated_backup_validates_before_same_root_publication(
     paths = _paths(tmp_path)
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
     events: list[str] = []
-    monkeypatch.setattr(backup_module, "run_command", _command_double(calls))
-    replace = os.replace
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
+    link = os.link
 
-    def same_root_replace(source: Path | str, destination: Path | str) -> None:
+    def same_root_link(source: Path | str, destination: Path | str) -> None:
         assert Path(source).parent == Path(destination).parent
         events.append("publish")
-        replace(source, destination)
+        link(source, destination)
 
-    monkeypatch.setattr(backup_module.os, "replace", same_root_replace)
+    monkeypatch.setattr(backup_capability.os, "link", same_root_link)
 
     record = backup_module.create_validated_backup(
         _state(), paths, _database(), _credentials(tmp_path), purpose="scheduled"
@@ -107,10 +108,12 @@ def test_create_validated_backup_validates_before_same_root_publication(
 
     command_names = [argv[0] for argv, _kwargs in calls]
     assert command_names == ["psql", "pg_dump", "pg_restore"]
-    assert events == ["publish"]
+    assert events == ["publish", "publish"]
     dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
     assert dump.read_bytes() == b"validated custom dump"
     assert Path(paths.local(paths.backup_manifest(record.backup_id))).is_file()
+    assert record.created_at.tzinfo == UTC
+    assert record.created_at.microsecond == 0
 
 
 def test_create_validated_backup_uses_pgpassfile_without_putting_the_password_in_argv(
@@ -121,13 +124,35 @@ def test_create_validated_backup_uses_pgpassfile_without_putting_the_password_in
     paths = _paths(tmp_path)
     credentials = _credentials(tmp_path)
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-    monkeypatch.setattr(backup_module, "run_command", _command_double(calls))
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
 
     backup_module.create_validated_backup(_state(), paths, _database(), credentials, purpose="scheduled")
 
     pg_dump, kwargs = next((argv, kwargs) for argv, kwargs in calls if argv[0] == "pg_dump")
     assert "database-password-canary" not in " ".join(pg_dump)
     assert kwargs["env"] == {"PGPASSFILE": credentials.as_posix()}
+
+
+def test_create_validated_backup_refuses_insufficient_capacity_before_dumping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Starting pg_dump without its retained capacity margin could fill the managed filesystem."""
+
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
+
+    class Filesystem:
+        f_bavail = 1
+        f_frsize = 1
+
+    monkeypatch.setattr(backup_capability.os, "statvfs", lambda _path: Filesystem())
+
+    with pytest.raises(backup_capability.BackupCapacityError, match="capacity"):
+        backup_capability.create_validated_backup(
+            _state(), _paths(tmp_path), _database(), _credentials(tmp_path), purpose="scheduled"
+        )
+
+    assert [argv[0] for argv, _kwargs in calls] == ["psql"]
 
 
 @pytest.mark.parametrize("boundary", ["dump", "validation", "publication", "manifest"])
@@ -151,23 +176,26 @@ def test_backup_rerun_finishes_after_each_recognizable_interruption(
     if boundary == "manifest":
         write_backup_manifest(
             paths,
-            BackupRecord(
-                PREVIOUS_BACKUP,
-                hashlib.sha256(prior_dump.read_bytes()).hexdigest(),
+                BackupRecord(
+                    PREVIOUS_BACKUP,
+                    datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
+                    hashlib.sha256(prior_dump.read_bytes()).hexdigest(),
                 RELEASE,
                 (1,),
                 1024,
             ),
         )
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-    monkeypatch.setattr(backup_module, "run_command", _command_double(calls))
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
 
     result = backup_module.backup(_request(paths, credentials))
 
     assert result.outcome == "succeeded"
     assert result.state["backup_id"].startswith("backup-")
-    if boundary != "manifest":
+    if boundary in {"dump", "validation"}:
         assert not prior_dump.exists()
+    elif boundary == "publication":
+        assert prior_dump.is_file()
 
 
 def test_backup_returns_manual_when_a_completed_dump_identity_is_contradictory(
@@ -186,6 +214,7 @@ def test_backup_returns_manual_when_a_completed_dump_identity_is_contradictory(
         paths,
         BackupRecord(
             PREVIOUS_BACKUP,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(dump.read_bytes()).hexdigest(),
             RELEASE,
             (1,),
@@ -193,7 +222,7 @@ def test_backup_returns_manual_when_a_completed_dump_identity_is_contradictory(
         ),
     )
     dump.write_bytes(b"contradictory replacement")
-    monkeypatch.setattr(backup_module, "run_command", lambda *_args, **_kwargs: pytest.fail("must not dump"))
+    monkeypatch.setattr(backup_capability, "run_command", lambda *_args, **_kwargs: pytest.fail("must not dump"))
 
     result = backup_module.backup(_request(paths, _credentials(tmp_path)))
 
@@ -214,7 +243,7 @@ def test_backup_keeps_a_dump_when_its_manifest_path_is_an_ambiguous_symlink(
     dump.write_bytes(b"validated custom dump")
     dump.chmod(0o600)
     (backup_root / f"{PREVIOUS_BACKUP}.json").symlink_to(tmp_path / "missing-manifest")
-    monkeypatch.setattr(backup_module, "run_command", lambda *_args, **_kwargs: pytest.fail("must not dump"))
+    monkeypatch.setattr(backup_capability, "run_command", lambda *_args, **_kwargs: pytest.fail("must not dump"))
 
     result = backup_module.backup(_request(paths, _credentials(tmp_path)))
 
@@ -274,7 +303,7 @@ def test_backup_keeps_a_raced_dump_inside_a_coarse_retryable_result(
     _publish_selected_release(paths)
     credentials = _credentials(tmp_path)
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-    monkeypatch.setattr(backup_module, "run_command", _command_double(calls))
+    monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
     original_stat = Path.stat
     original_create = backup_module.create_validated_backup
     raced_path: Path | None = None

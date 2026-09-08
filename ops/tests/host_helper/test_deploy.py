@@ -152,7 +152,7 @@ class _Runtime:
         self.events.append("backup")
         self.backup_calls += 1
         record = BackupRecord(
-            f"backup-{self.backup_calls:032x}", "e" * 64, state.selected_release_id,
+            f"backup-{self.backup_calls:032x}", datetime(2026, 9, 7, 12, 0, tzinfo=UTC), "e" * 64, state.selected_release_id,
             state.applied_migrations, 1024,
         )
         dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
@@ -160,7 +160,7 @@ class _Runtime:
         dump.write_bytes(b"backup")
         dump.chmod(0o600)
         record = BackupRecord(
-            record.backup_id, hashlib.sha256(b"backup").hexdigest(), record.source_release_id,
+            record.backup_id, record.created_at, hashlib.sha256(b"backup").hexdigest(), record.source_release_id,
             record.migration_versions, record.source_database_size_bytes,
         )
         write_backup_manifest(paths, record)

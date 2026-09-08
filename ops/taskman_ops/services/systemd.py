@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -25,6 +25,7 @@ class SystemdAsset:
     content: str | None
     destination: str
     mode: int
+    binary_content: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,13 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
     plan = build_systemd_plan(inputs.config)
     changed_unit_files: list[object] = []
     for asset in plan.assets:
-        source: Path | StringIO = asset.source if asset.source is not None else StringIO(asset.content or "")
+        source: Path | StringIO | BytesIO
+        if asset.source is not None:
+            source = asset.source
+        elif asset.binary_content is not None:
+            source = BytesIO(asset.binary_content)
+        else:
+            source = StringIO(asset.content or "")
         result = files.put(
             source,
             asset.destination,
@@ -119,7 +126,7 @@ def render_backup_service(config: EnvironmentConfig) -> str:
     template = (_OPS_ROOT / "systemd" / "taskman-backup.service").read_text(encoding="utf-8")
     markers = {
         "{{TASKMAN_BACKUP_ROOT}}": config.backup_root.as_posix(),
-        "{{TASKMAN_DEPLOYMENT_ROOT}}": config.deployment_root.as_posix(),
+        "{{TASKMAN_INSTALL_ROOT}}": config.install_root.as_posix(),
     }
     if any(template.count(marker) != 1 for marker in markers):
         raise RuntimeError("backup unit template has an unexpected install-root contract")
@@ -187,7 +194,14 @@ def _backup_assets(
 ) -> tuple[SystemdAsset, ...]:
     command, service, _timer = contract.assets
     return (
-        SystemdAsset(command.source, None, str(command.destination), command.mode),
+        SystemdAsset(
+            command.source,
+            None,
+            str(command.destination),
+            command.mode,
+            binary_content=command.content,
+        ),
+        SystemdAsset(None, "", f"{config.install_root.as_posix()}/lifecycle.lock", 0o600),
         SystemdAsset(None, render_backup_service(config), str(service.destination), service.mode),
         SystemdAsset(None, timer, str(_timer.destination), _timer.mode),
     )

@@ -21,7 +21,8 @@ def test_systemd_plan_uses_builtin_non_secret_assets_and_never_starts_taskman() 
 
     assert [(asset.destination, asset.mode) for asset in plan.assets] == [
         ("/etc/systemd/system/taskman.service", 0o644),
-        ("/usr/local/lib/taskman/taskman-backup", 0o750),
+        ("/usr/local/lib/taskman/taskman-backup.pyz", 0o750),
+        ("/srv/taskman/lifecycle.lock", 0o600),
         ("/etc/systemd/system/taskman-backup.service", 0o644),
         ("/etc/systemd/system/taskman-backup.timer", 0o644),
     ]
@@ -53,7 +54,7 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
         def did_change(self) -> bool:
             return self.changed
 
-    results = [Result(False), Result(False), Result(False), Result(False), Result(False)]
+    results = [Result(False), Result(False), Result(False), Result(False), Result(False), Result(False)]
     reload_kwargs: dict[str, object] = {}
     from pyinfra.operations import files, systemd
 

@@ -48,7 +48,7 @@ def _release(release_id: str = RELEASE) -> ReleaseRecord:
 
 
 def _backup() -> BackupRecord:
-    return BackupRecord(BACKUP, "c" * 64, RELEASE, (1,), 1024)
+    return BackupRecord(BACKUP, AT, "c" * 64, RELEASE, (1,), 1024)
 
 
 def _selection(release_id: str = RELEASE, previous_release_id: str | None = None) -> SelectionRecord:
@@ -127,7 +127,7 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
     dump.chmod(0o600)
     write_backup_manifest(
         paths,
-        BackupRecord(BACKUP, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
+        BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
     )
     append_selection(paths, _selection())
     append_selection(
@@ -142,7 +142,7 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
 
     assert {item.release_id for item in state.releases} == {RELEASE, OTHER_RELEASE}
     assert state.backups == (
-        BackupRecord(BACKUP, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
+        BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
     )
     assert [item.release_id for item in state.selections] == [RELEASE, OTHER_RELEASE]
     assert state.selected_release_id == OTHER_RELEASE
@@ -159,6 +159,7 @@ def test_observe_refuses_manifest_identity_mismatch_at_canonical_backup_path(
     dump.chmod(0o600)
     mismatched = BackupRecord(
         OTHER_BACKUP,
+        AT,
         hashlib.sha256(b"other backup").hexdigest(),
         RELEASE,
         (1,),

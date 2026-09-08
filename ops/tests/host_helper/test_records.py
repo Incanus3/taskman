@@ -49,6 +49,7 @@ def _release(**changes: object) -> ReleaseRecord:
 def _backup(**changes: object) -> BackupRecord:
     values: dict[str, object] = {
         "backup_id": BACKUP,
+        "created_at": AT,
         "dump_sha256": "d" * 64,
         "source_release_id": RELEASE,
         "migration_versions": (1, 2),
@@ -78,8 +79,8 @@ def test_completed_records_have_exact_flat_schemas_and_round_trip() -> None:
         "release_id", "source_revision", "artifact_sha256", "migrations"
     }
     assert set(backup.to_mapping()) == {
-        "backup_id", "dump_sha256", "source_release_id", "migration_versions",
-        "source_database_size_bytes",
+        "backup_id", "created_at", "dump_sha256", "source_release_id",
+        "migration_versions", "source_database_size_bytes",
     }
     assert set(selection.to_mapping()) == {
         "release_id", "previous_release_id", "backup_id", "selected_at"
@@ -94,6 +95,16 @@ def test_completed_records_have_exact_flat_schemas_and_round_trip() -> None:
     assert ReleaseRecord.from_mapping(release.to_mapping()) == release
     assert BackupRecord.from_mapping(backup.to_mapping()) == backup
     assert SelectionRecord.from_mapping(selection.to_mapping()) == selection
+
+
+def test_backup_record_serializes_a_whole_second_utc_creation_time() -> None:
+    """Dropping or fractionalizing creation time would make backup retention nondeterministic."""
+
+    record = _backup()
+
+    assert record.to_mapping()["created_at"] == "2026-09-07T12:00:00Z"
+    with pytest.raises(RecordError, match="creation time"):
+        _backup(created_at=datetime(2026, 9, 7, 12, 0, 0, 1, tzinfo=UTC))
 
 
 @pytest.mark.parametrize(

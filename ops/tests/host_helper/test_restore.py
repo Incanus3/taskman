@@ -108,6 +108,7 @@ def _write_source_backup(
         paths,
         BackupRecord(
             BACKUP,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(dump.read_bytes()).hexdigest(),
             source_release_id,
             migration_versions,
@@ -152,6 +153,7 @@ class _Runtime:
         dump.chmod(0o600)
         record = BackupRecord(
             backup_id,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(dump.read_bytes()).hexdigest(),
             state.selected_release_id,
             state.applied_migrations,
@@ -426,6 +428,7 @@ def test_restore_rerun_after_atomic_selection_creates_a_fresh_backup_from_the_re
         paths,
         BackupRecord(
             safety_id,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(safety_dump.read_bytes()).hexdigest(),
             CURRENT,
             (MIGRATION_VERSION,),
@@ -440,6 +443,7 @@ def test_restore_rerun_after_atomic_selection_creates_a_fresh_backup_from_the_re
         paths,
         BackupRecord(
             historical_id,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(historical_dump.read_bytes()).hexdigest(),
             CURRENT,
             (MIGRATION_VERSION,),

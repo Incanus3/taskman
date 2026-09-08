@@ -39,12 +39,13 @@ def _release_for(index: int, migrations: tuple[dict[str, object], ...] = ()) -> 
 
 
 def _backup() -> BackupRecord:
-    return BackupRecord(BACKUP_ID, "e" * 64, RELEASE_ID, (20260905120000,), 128)
+    return BackupRecord(BACKUP_ID, SELECTED_AT, "e" * 64, RELEASE_ID, (20260905120000,), 128)
 
 
 def _backup_for(index: int) -> BackupRecord:
     return BackupRecord(
         f"backup-{index:032x}",
+        SELECTED_AT + timedelta(seconds=index),
         "e" * 64,
         RELEASE_ID,
         (20260905120000,),

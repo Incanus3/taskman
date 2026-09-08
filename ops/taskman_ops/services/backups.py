@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import tempfile
 
 from ..config import EnvironmentConfig
+from ..helper_package import build_scheduled_backup_package
 
 
-BACKUP_COMMAND = PurePosixPath("/usr/local/lib/taskman/taskman-backup")
+BACKUP_COMMAND = PurePosixPath("/usr/local/lib/taskman/taskman-backup.pyz")
 BACKUP_SERVICE = PurePosixPath("/etc/systemd/system/taskman-backup.service")
 BACKUP_TIMER = PurePosixPath("/etc/systemd/system/taskman-backup.timer")
 BACKUP_ENVIRONMENT_FILE = PurePosixPath("/etc/taskman/taskman-backup.env")
@@ -25,9 +28,11 @@ CalendarValidator = Callable[[str], None]
 class ManagedBackupAsset:
     """One root-controlled file host convergence may install without enabling it."""
 
-    source: Path
+    source: Path | None
     destination: PurePosixPath
     mode: int
+    content: bytes = b""
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,9 +54,10 @@ def backup_service_contract(config: EnvironmentConfig) -> BackupServiceContract:
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("backup service contract requires an environment configuration")
+    package = _scheduled_backup_asset()
     return BackupServiceContract(
         assets=(
-            ManagedBackupAsset(_ASSET_ROOT / "backup" / "taskman-backup", BACKUP_COMMAND, 0o750),
+            package,
             ManagedBackupAsset(_ASSET_ROOT / "systemd" / "taskman-backup.service", BACKUP_SERVICE, 0o644),
             ManagedBackupAsset(_ASSET_ROOT / "systemd" / "taskman-backup.timer", BACKUP_TIMER, 0o644),
         ),
@@ -60,12 +66,25 @@ def backup_service_contract(config: EnvironmentConfig) -> BackupServiceContract:
             "TASKMAN_BACKUP_DATABASE_PORT": str(config.database_port),
             "TASKMAN_BACKUP_DATABASE_ROLE": config.database_role,
             "TASKMAN_BACKUP_DATABASE_NAME": config.database_name,
-            "TASKMAN_BACKUP_ROOT": config.backup_root.as_posix(),
-            "TASKMAN_DEPLOYMENT_ROOT": config.deployment_root.as_posix(),
-            "TASKMAN_INSTALL_ROOT": config.install_root.as_posix(),
-            "TASKMAN_RELEASE_ROOT": config.release_root.as_posix(),
+            "TASKMAN_BACKUP_BACKUP_ROOT": config.backup_root.as_posix(),
+            "TASKMAN_BACKUP_INSTALL_ROOT": config.install_root.as_posix(),
             "TASKMAN_BACKUP_RETENTION": str(config.backup_retention),
         },
+    )
+
+
+def _scheduled_backup_asset() -> ManagedBackupAsset:
+    """Build the persistent package in memory so convergence installs exact bytes."""
+
+    with tempfile.TemporaryDirectory(prefix="taskman-scheduled-backup-") as directory:
+        package = build_scheduled_backup_package(Path(directory) / "taskman-backup.pyz")
+        content = package.path.read_bytes()
+    return ManagedBackupAsset(
+        source=None,
+        destination=BACKUP_COMMAND,
+        mode=0o750,
+        content=content,
+        sha256=hashlib.sha256(content).hexdigest(),
     )
 
 

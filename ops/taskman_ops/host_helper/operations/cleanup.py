@@ -12,6 +12,7 @@ import stat
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.releases.identifiers import validate_release_id
 
+from ..backups import retained_backup_ids
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import BACKUP_ID_RE
@@ -157,8 +158,7 @@ def _plan(
     protected_releases.update(
         record.previous_release_id for record in recent_selections if record.previous_release_id
     )
-    protected_backups = {record.backup_id for record in state.selections if record.backup_id}
-    protected_backups.update(record.backup_id for record in sorted(state.backups, key=lambda item: item.backup_id, reverse=True)[:backup_retention])
+    protected_backups = retained_backup_ids(state, backup_retention)
     protected_releases.update(
         record.source_release_id for record in state.backups if record.backup_id in protected_backups
     )

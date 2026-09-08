@@ -87,9 +87,12 @@ _APPROVED_DIRECT_OPERATIONS = {
 }
 _PLANNING_TERMS = re.compile(r"\b(?:task|tasks|phase|phases|milestone|milestones)\b", re.IGNORECASE)
 
-# This is deliberately not a controller adapter: it is the root-owned command
-# called by the unit timer that declarative pyinfra convergence installs.
-_ROOT_OWNED_SCHEDULED_ASSETS = frozenset({"ops/backup/taskman-backup"})
+_LEGACY_SCHEDULED_RECORD_MODULES = frozenset(
+    {
+        "taskman_ops.host_helper.lifecycle",
+        "taskman_ops.host_helper.lifecycle_records",
+    }
+)
 
 
 def check(repository: Path) -> tuple[str, ...]:
@@ -343,15 +346,34 @@ def _convergence_violations(repository: Path, files: Iterable[Path]) -> Iterable
 
 
 def _scheduled_asset_violations(repository: Path) -> Iterable[str]:
-    asset_root = repository / "ops" / "backup"
-    discovered = {
-        path.relative_to(repository).as_posix()
-        for path in asset_root.iterdir()
-        if path.is_file() and path.read_text(encoding="utf-8").startswith("#!")
-    }
-    if discovered == _ROOT_OWNED_SCHEDULED_ASSETS:
-        return ()
-    return ("root-owned scheduled backup assets are not the reviewed singleton",)
+    violations: list[str] = []
+    shell = repository / "ops" / "backup" / "taskman-backup"
+    if shell.exists():
+        violations.append("ops/backup/taskman-backup: legacy scheduled backup shell remains")
+
+    adapter = repository / "ops" / "taskman_ops" / "scheduled_backup.py"
+    if not adapter.is_file():
+        return tuple(violations)
+    tree = ast.parse(adapter.read_text(encoding="utf-8"), filename=adapter.as_posix())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports = tuple(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imports = tuple(
+                f"{node.module}.{alias.name}" if node.module else alias.name for alias in node.names
+            )
+        else:
+            continue
+        if any(
+            imported == legacy or imported.startswith(f"{legacy}.")
+            for imported in imports
+            for legacy in _LEGACY_SCHEDULED_RECORD_MODULES
+        ):
+            violations.append(
+                "ops/taskman_ops/scheduled_backup.py:"
+                f"{node.lineno}: imports legacy scheduled backup record module"
+            )
+    return tuple(violations)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

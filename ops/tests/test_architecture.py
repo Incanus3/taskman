@@ -77,6 +77,25 @@ def test_architecture_scan_rejects_the_removed_generic_pyinfra_module(tmp_path: 
     assert "taskman_ops/pyinfra.py: superseded production path remains" in check(tmp_path)
 
 
+def test_scheduled_backup_guard_rejects_the_shell_and_legacy_record_imports(tmp_path: Path) -> None:
+    """The installed zipapp must not regain the superseded lifecycle protocol."""
+
+    shell = tmp_path / "ops" / "backup" / "taskman-backup"
+    shell.parent.mkdir(parents=True)
+    shell.write_text("#!/bin/sh\n", encoding="utf-8")
+    adapter = tmp_path / "ops" / "taskman_ops" / "scheduled_backup.py"
+    adapter.parent.mkdir(parents=True)
+    adapter.write_text(
+        "from taskman_ops.host_helper.lifecycle_records import BackupLifecycleRecord\n",
+        encoding="utf-8",
+    )
+
+    assert set(_scheduled_asset_violations(tmp_path)) == {
+        "ops/backup/taskman-backup: legacy scheduled backup shell remains",
+        "ops/taskman_ops/scheduled_backup.py:1: imports legacy scheduled backup record module",
+    }
+
+
 def test_architecture_scan_rejects_a_substantial_controller_program_outside_reviewed_paths() -> None:
     tree = ast.parse("PROGRAM = " + repr("\n".join(["systemctl status taskman.service"] * 12)))
 

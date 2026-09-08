@@ -123,6 +123,7 @@ class _Runtime:
         dump.chmod(0o600)
         record = BackupRecord(
             backup_id,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(dump.read_bytes()).hexdigest(),
             state.selected_release_id,
             state.applied_migrations,
@@ -190,6 +191,7 @@ def test_rollback_rerun_completes_after_selection_when_start_loses_its_result(
         paths,
         BackupRecord(
             historical_id,
+            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
             hashlib.sha256(historical_dump.read_bytes()).hexdigest(),
             CURRENT,
             (MIGRATION_VERSION,),
