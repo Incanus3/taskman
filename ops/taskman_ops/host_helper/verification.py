@@ -7,8 +7,6 @@ import math
 import os
 from pathlib import Path
 import re
-import select
-import subprocess
 import time
 from typing import Mapping
 
@@ -17,6 +15,7 @@ from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from .lock import LifecycleLockContention, lifecycle_lock
 from .paths import ManagedPaths, PathAuthorityError
 from .state import HostState, StateAmbiguityError, observe_host_state
+from .commands import CommandError, run_command
 
 
 _CHECKS = (
@@ -488,47 +487,19 @@ def _command_timeout(deadline: float) -> float:
 
 
 def _successful(argv: tuple[str, ...], timeout: float) -> tuple[bool, str]:
-    """Run one fixed command under a deadline without unbounded buffering."""
+    """Run one fixed command under its own deadline and evidence bound."""
 
     if timeout < 0.001 or not math.isfinite(timeout):
         return False, ""
-    process: subprocess.Popen[bytes] | None = None
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        assert process.stdout is not None
-        deadline = time.monotonic() + timeout
-        output = bytearray()
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False, ""
-            readable, _, _ = select.select((process.stdout,), (), (), remaining)
-            if not readable:
-                return False, ""
-            available = _MAX_OUTPUT - len(output)
-            chunk = os.read(process.stdout.fileno(), min(8192, max(1, available)))
-            if not chunk:
-                break
-            if available == 0 or len(chunk) > available:
-                return False, ""
-            output.extend(chunk)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False, ""
-        try:
-            status = process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            return False, ""
-        return status == 0, output.decode("utf-8", errors="replace")
-    except OSError:
+        completed = run_command(
+            argv,
+            timeout_seconds=timeout,
+            output_limit=_MAX_OUTPUT,
+        )
+    except CommandError:
         return False, ""
-    finally:
-        if process is not None:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-            if process.stdout is not None:
-                process.stdout.close()
+    return True, completed.stdout.decode("utf-8", errors="replace")
 
 
 def _listeners(value: str) -> tuple[tuple[str, int], ...] | None:

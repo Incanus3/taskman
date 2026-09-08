@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 from collections import deque
 from dataclasses import dataclass, field
+import inspect
 from pathlib import Path, PurePosixPath
 import subprocess
 import threading
+import textwrap
 import time
 
 import pytest
@@ -30,35 +33,71 @@ def config() -> EnvironmentConfig:
 
 
 def test_run_quotes_each_argument_and_keeps_untrusted_text_out_of_the_shell() -> None:
-    host = RecordingPyinfraHost()
+    client = StreamingClient(StreamingChannel(stdout=bytearray(), stderr=bytearray()))
+    host = StreamingHost(StreamingConnector(client))
     remote = PyinfraRemote(host, config())
 
     result = remote.run(("printf", "%s", "$(touch /tmp/not-run); value with spaces"))
 
-    command, print_output, print_input, kwargs = host.commands[-1]
-    rendered = command.get_raw_value()
+    rendered = client.commands[-1][0]
     assert result.returncode == 0
     assert "'$(touch /tmp/not-run); value with spaces'" in rendered
-    assert print_output is False
-    assert print_input is False
-    assert kwargs["_timeout"] == 17
+    assert client.timeouts == [17]
+    assert host.host_api_calls == 0
 
 
 def test_sensitive_stdin_is_not_requested_for_display_or_retained_in_result() -> None:
-    host = RecordingPyinfraHost()
+    client = StreamingClient(StreamingChannel(stdout=bytearray(), stderr=bytearray()))
+    host = StreamingHost(StreamingConnector(client))
     remote = PyinfraRemote(host, config())
     canary = b"sensitive stdin canary"
 
     result = remote.run(("cat",), stdin=canary, sensitive=True, timeout=4)
 
-    _command, print_output, print_input, kwargs = host.commands[-1]
-    assert print_output is False
-    assert print_input is False
-    assert kwargs["_stdin"] == canary.decode()
-    assert kwargs["_timeout"] == 4
+    assert client.stdin.writes == [canary]
+    assert client.timeouts == [4]
     assert result.stdout == ""
     assert result.stderr == ""
     assert canary.decode() not in repr(result)
+
+
+def test_default_remote_execution_keeps_a_numeric_channel_exit_status() -> None:
+    """A marker fallback would erase a nonzero command status from default calls."""
+
+    channel = StreamingChannel(stdout=bytearray(b"failed"), stderr=bytearray(), returncode=23)
+    remote = PyinfraRemote(StreamingHost(StreamingConnector(StreamingClient(channel))), config())
+
+    result = remote.run(("false",))
+
+    assert result == CommandResult(23, "failed", "")
+
+
+def test_default_remote_execution_stops_output_at_its_finite_bound() -> None:
+    """Removing the default cap would let an ordinary host check exhaust controller memory."""
+
+    channel = StreamingChannel(stdout=bytearray(b"x" * (16 * 1024 + 1)), stderr=bytearray())
+    remote = PyinfraRemote(StreamingHost(StreamingConnector(StreamingClient(channel))), config())
+
+    with pytest.raises(OpsError) as raised:
+        remote.run(("cat",))
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert channel.stdout_read == 16 * 1024 + 1
+    assert channel.closed is True
+
+
+def test_remote_run_has_no_marker_result_parser_branch() -> None:
+    """Reintroducing marker transport would create a second, unbounded remote command path."""
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(PyinfraRemote.run)))
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "_run_shell_command" not in calls
+    assert "_command_result" not in calls
 
 
 def test_run_refuses_explicit_limits_when_the_authenticated_channel_is_unavailable() -> None:
@@ -83,6 +122,7 @@ class StreamingChannel:
     stdout_read: int = 0
     stderr_read: int = 0
     closed: bool = False
+    returncode: int = 0
 
     def recv_ready(self) -> bool:
         return bool(self.stdout)
@@ -106,7 +146,7 @@ class StreamingChannel:
         return not self.stdout and not self.stderr
 
     def recv_exit_status(self) -> int:
-        return 0
+        return self.returncode
 
     def close(self) -> None:
         self.closed = True
@@ -135,12 +175,15 @@ class StreamingClient:
     stdin: StreamingStdin = field(default_factory=StreamingStdin)
     commands: list[tuple[str, bool]] = field(default_factory=list)
     timeouts: list[int | float | None] = field(default_factory=list)
+    failures: deque[BaseException] = field(default_factory=deque)
 
     def exec_command(
         self, command: str, *, get_pty: bool, timeout: int | float | None = None
     ) -> tuple[StreamingStdin, StreamingOutput, StreamingOutput]:
         self.commands.append((command, get_pty))
         self.timeouts.append(timeout)
+        if self.failures:
+            raise self.failures.popleft()
         return self.stdin, StreamingOutput(self.channel), StreamingOutput(self.channel)
 
 
@@ -510,6 +553,31 @@ def test_put_keeps_its_primary_error_when_private_stage_cleanup_is_uncertain(tmp
     assert not hasattr(raised.value, "residue_paths")
 
 
+def test_put_attempts_exact_private_cleanup_after_uncertain_stage_creation(tmp_path: Path) -> None:
+    """A transport fault during staging can still leave the generated private directory behind."""
+
+    class StageTransportFailureRemote(PyinfraRemote):
+        def __init__(self) -> None:
+            super().__init__(object(), config())
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, argv: object, **_kwargs: object) -> CommandResult:
+            command = tuple(argv)  # type: ignore[arg-type]
+            self.calls.append(command)
+            if command[:2] == ("install", "-d"):
+                raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "remote", "transport failed", False)
+            return CommandResult(0)
+
+    source = tmp_path / "helper.pyz"
+    source.write_bytes(b"helper")
+    remote = StageTransportFailureRemote()
+
+    with pytest.raises(OpsError):
+        remote.put(source, PurePosixPath("/tmp/taskman-ops/helper.pyz"), mode=0o600, sensitive=True)
+
+    assert [command[0] for command in remote.calls] == ["install", "rm", "rmdir"]
+
+
 class RecordingUploadRemote(PyinfraRemote):
     """Exercise ``PyinfraRemote.put`` without a real SSH transport."""
 
@@ -730,8 +798,11 @@ def test_pyinfra_host_ignores_user_ssh_configuration_and_requires_known_hosts(
 
 
 def test_transport_failures_map_to_five_without_reclassifying_explicit_lock_contention() -> None:
-    host = RecordingPyinfraHost(failures=deque([OSError("network down"), OpsError(ExitStatus.LOCKED, "lock", "held")]))
-    remote = PyinfraRemote(host, config())
+    client = StreamingClient(
+        StreamingChannel(stdout=bytearray(), stderr=bytearray()),
+        failures=deque([OSError("network down"), OpsError(ExitStatus.LOCKED, "lock", "held")]),
+    )
+    remote = PyinfraRemote(StreamingHost(StreamingConnector(client)), config())
 
     with pytest.raises(OpsError) as transport_error:
         remote.run(("true",))

@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
 import queue
-import secrets
 import select
 import subprocess
 import tempfile
@@ -39,6 +38,8 @@ _PRIVATE_UPLOAD_MODE = 0o600
 _PRIVATE_DIRECTORY_MODE = 0o700
 _UPLOAD_STDOUT_LIMIT = 1024
 _UPLOAD_STDERR_LIMIT = 4096
+_DEFAULT_STDOUT_LIMIT = 16 * 1024
+_DEFAULT_STDERR_LIMIT = 16 * 1024
 _CHANNEL_READ_CHUNK_BYTES = 64 * 1024
 _SETUP_CANCEL_GRACE_SECONDS = 0.2
 
@@ -203,49 +204,24 @@ class PyinfraRemote:
         """Run a fully quoted argv command without displaying sensitive data.
 
         pyinfra exposes a shell-command API. Every argument is therefore a
-        ``QuoteString``. Unbounded calls use a fixed status wrapper because
-        the public Host API reports only success; explicitly bounded calls use
-        the already-authenticated channel's numeric exit status directly. No
-        caller value is interpolated into a shell program.
+        ``QuoteString``. Every call uses the already-authenticated channel so
+        stdout and stderr have finite defaults and the numeric exit status is
+        available without a shell status wrapper. No caller value is
+        interpolated into a shell program.
         """
 
         arguments = _validate_argv(argv)
         effective_timeout = _timeout(timeout, self._config.connection_timeout)
-        maximum_stdout = _output_limit(stdout_limit)
-        maximum_stderr = _output_limit(stderr_limit)
+        maximum_stdout = _output_limit(stdout_limit, default=_DEFAULT_STDOUT_LIMIT)
+        maximum_stderr = _output_limit(stderr_limit, default=_DEFAULT_STDERR_LIMIT)
         input_text = _stdin_text(stdin)
         try:
-            if maximum_stdout is not None or maximum_stderr is not None:
-                return self._run_bounded_command(
-                    arguments,
-                    sudo=sudo,
-                    stdin=input_text,
-                    sensitive=sensitive,
-                    timeout=effective_timeout,
-                    stdout_limit=maximum_stdout,
-                    stderr_limit=maximum_stderr,
-                )
-
-            marker = f"__taskman_remote_status_{secrets.token_hex(16)}__:"
-            wrapper = '"$@"; status=$?; printf "\\n%s%s\\n" "$0" "$status"; exit 0'
-            command = StringCommand(
-                *(
-                    QuoteString(value)
-                    for value in ("sh", "-c", wrapper, marker, *arguments)
-                )
-            )
-            succeeded, output = self._run_shell_command(
-                command,
+            return self._run_bounded_command(
+                arguments,
                 sudo=sudo,
                 stdin=input_text,
-                timeout=effective_timeout,
-            )
-            if not succeeded:
-                raise _remote_error("remote command transport failed")
-            return _command_result(
-                output,
-                marker,
                 sensitive=sensitive,
+                timeout=effective_timeout,
                 stdout_limit=maximum_stdout,
                 stderr_limit=maximum_stderr,
             )
@@ -283,62 +259,64 @@ class PyinfraRemote:
         stage_directory = _PRIVATE_UPLOAD_ROOT / f"taskman-upload-{uuid4().hex}"
         stage_file = stage_directory / "payload"
 
-        stage_may_remain = True
-        primary_error: OpsError | None = None
+        created: CommandResult | None = None
+        cleanup_warning = False
         try:
-            created = self.run(
-                (
-                    "install",
-                    "-d",
-                    "-m",
-                    f"{_PRIVATE_DIRECTORY_MODE:o}",
-                    "--",
-                    str(stage_directory),
-                ),
-                sudo=False,
-                timeout=effective_timeout,
-                sensitive=True,
-                stdout_limit=_UPLOAD_STDOUT_LIMIT,
-                stderr_limit=_UPLOAD_STDERR_LIMIT,
-            )
-            if not created.succeeded:
-                stage_may_remain = False
-                raise _remote_error("private remote upload failed")
-            uploaded = self._put_file(local_source, stage_file, timeout=effective_timeout)
-            if not uploaded:
-                raise _remote_error("private remote upload failed")
-            self._require_upload_success(
-                ("chmod", f"{_PRIVATE_UPLOAD_MODE:o}", "--", str(stage_file)),
-                timeout=effective_timeout,
-                sensitive=sensitive,
-            )
-            self._require_upload_success(
-                (
-                    "install",
-                    "-m",
-                    f"{final_mode:o}",
-                    "--",
-                    str(stage_file),
-                    str(remote_destination),
-                ),
-                sudo=sudo,
-                timeout=effective_timeout,
-                sensitive=sensitive,
-            )
+            try:
+                created = self.run(
+                    (
+                        "install",
+                        "-d",
+                        "-m",
+                        f"{_PRIVATE_DIRECTORY_MODE:o}",
+                        "--",
+                        str(stage_directory),
+                    ),
+                    sudo=False,
+                    timeout=effective_timeout,
+                    sensitive=True,
+                    stdout_limit=_UPLOAD_STDOUT_LIMIT,
+                    stderr_limit=_UPLOAD_STDERR_LIMIT,
+                )
+                if not created.succeeded:
+                    raise _remote_error("private remote upload failed")
+                uploaded = self._put_file(local_source, stage_file, timeout=effective_timeout)
+                if not uploaded:
+                    raise _remote_error("private remote upload failed")
+                self._require_upload_success(
+                    ("chmod", f"{_PRIVATE_UPLOAD_MODE:o}", "--", str(stage_file)),
+                    timeout=effective_timeout,
+                    sensitive=sensitive,
+                )
+                self._require_upload_success(
+                    (
+                        "install",
+                        "-m",
+                        f"{final_mode:o}",
+                        "--",
+                        str(stage_file),
+                        str(remote_destination),
+                    ),
+                    sudo=sudo,
+                    timeout=effective_timeout,
+                    sensitive=sensitive,
+                )
+            finally:
+                if created is None or created.succeeded:
+                    cleanup_warning = self._remove_private_stage(
+                        stage_file,
+                        stage_directory,
+                        timeout=effective_timeout,
+                    )
         except OpsError as error:
-            primary_error = error
-        except Exception:
-            primary_error = _remote_error("private remote upload failed")
-
-        cleanup_warning = (
-            self._remove_private_stage(stage_file, stage_directory, timeout=effective_timeout)
-            if stage_may_remain
-            else False
-        )
-        if primary_error is not None:
             if cleanup_warning:
-                primary_error.warnings = ("transient upload cleanup was incomplete",)  # type: ignore[attr-defined]
-            raise primary_error
+                error.warnings = ("transient upload cleanup was incomplete",)  # type: ignore[attr-defined]
+            raise
+        except Exception:
+            error = _remote_error("private remote upload failed")
+            if cleanup_warning:
+                error.warnings = ("transient upload cleanup was incomplete",)  # type: ignore[attr-defined]
+            raise error from None
         return UploadReceipt(cleanup_warning=cleanup_warning)
 
     def run_deploy(self, deploy: Callable[..., object], *args: object, **kwargs: object) -> ChangeSet:
@@ -375,26 +353,6 @@ class PyinfraRemote:
         if callable(disconnect):
             with suppress(Exception):
                 disconnect()
-
-    def _run_shell_command(
-        self,
-        command: StringCommand,
-        *,
-        sudo: bool,
-        stdin: str | None,
-        timeout: int,
-    ) -> tuple[bool, object]:
-        runner = getattr(self._host, "run_shell_command", None)
-        if not callable(runner):
-            raise TypeError("invalid pyinfra host")
-        return runner(
-            command,
-            print_output=False,
-            print_input=False,
-            _sudo=sudo,
-            _stdin=stdin,
-            _timeout=timeout,
-        )
 
     def _run_bounded_command(
         self,
@@ -581,8 +539,8 @@ class _BoundedSSHChannelAdapter:
 
         result = CommandResult(
             returncode=returncode,
-            stdout=_bounded_output(_channel_text(stdout), stdout_limit),
-            stderr=_bounded_output(_channel_text(stderr), stderr_limit),
+            stdout=_channel_text(stdout),
+            stderr=_channel_text(stderr),
         )
         if sensitive:
             return CommandResult(returncode=result.returncode)
@@ -925,32 +883,6 @@ def _write_known_hosts(lines: Sequence[str], directory: Path | None) -> Path:
     return path
 
 
-def _command_result(
-    output: object,
-    marker: str,
-    *,
-    sensitive: bool,
-    stdout_limit: int | None,
-    stderr_limit: int | None,
-) -> CommandResult:
-    stdout = _text(getattr(output, "stdout", ""))
-    stderr = _text(getattr(output, "stderr", ""))
-    lines = stdout.splitlines()
-    if not lines or not lines[-1].startswith(marker):
-        raise _remote_error("remote command did not return a valid status")
-    status_text = lines[-1][len(marker) :]
-    if not status_text.isdecimal():
-        raise _remote_error("remote command did not return a valid status")
-    result = CommandResult(
-        returncode=int(status_text),
-        stdout=_bounded_output("\n".join(lines[:-1]), stdout_limit),
-        stderr=_bounded_output(stderr, stderr_limit),
-    )
-    if sensitive:
-        return CommandResult(returncode=result.returncode)
-    return result
-
-
 def _validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
     if isinstance(argv, (str, bytes)):
         raise TypeError("remote commands must be an argv sequence")
@@ -980,23 +912,11 @@ def _timeout(value: int | None, default: int) -> int:
     return timeout
 
 
-def _output_limit(value: int | None) -> int | None:
+def _output_limit(value: int | None, *, default: int) -> int:
     if value is None:
-        return None
+        return default
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("remote output limit must be a non-negative integer")
-    return value
-
-
-def _bounded_output(value: str, limit: int | None) -> str:
-    if limit is None:
-        return value
-    try:
-        exceeds_limit = len(value.encode("utf-8", "strict")) > limit
-    except UnicodeEncodeError:
-        exceeds_limit = True
-    if exceeds_limit:
-        raise _remote_error("remote command output exceeded its bound")
     return value
 
 

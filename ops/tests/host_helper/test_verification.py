@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ast
 from contextlib import nullcontext
 from datetime import UTC, datetime
+import inspect
 
 import pytest
 
 from taskman_ops.host_helper import verification as verification_module
+from taskman_ops.host_helper.commands import CommandTimeout
 from taskman_ops.host_helper.records import ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
@@ -241,6 +244,45 @@ def test_subprocess_timeout_and_output_bounds_are_safe(
 
     assert succeeded is False
     assert output == ""
+
+
+def test_verification_runs_each_host_command_through_the_shared_bounded_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second subprocess loop could diverge from the helper timeout and output contract."""
+
+    seen: dict[str, object] = {}
+
+    def bounded(argv: tuple[str, ...], *, timeout_seconds: float, output_limit: int):
+        seen["argv"] = argv
+        seen["timeout"] = timeout_seconds
+        seen["output_limit"] = output_limit
+        raise CommandTimeout("command timed out")
+
+    monkeypatch.setattr(verification_module, "run_command", bounded, raising=False)
+
+    assert verification_module._successful(("journalctl", "--no-pager"), 0.5) == (False, "")
+    assert seen == {
+        "argv": ("journalctl", "--no-pager"),
+        "timeout": 0.5,
+        "output_limit": 9_216,
+    }
+
+
+def test_verification_has_no_competing_popen_or_select_command_loop() -> None:
+    """Adding a second command engine would bypass the shared forced-termination boundary."""
+
+    tree = ast.parse(inspect.getsource(verification_module))
+    calls = {
+        (node.func.value.id, node.func.attr)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+    }
+
+    assert ("subprocess", "Popen") not in calls
+    assert ("select", "select") not in calls
 
 
 @pytest.mark.parametrize(

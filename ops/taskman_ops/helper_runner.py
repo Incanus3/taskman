@@ -50,31 +50,28 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
     transfer_path = transfer_directory / _HELPER_NAME
     invocation_directory = _INVOCATION_ROOT / correlation
     installed_path = invocation_directory / _HELPER_NAME
-    transfer_created = False
-    invocation_created = False
-    dispatched = False
-    completed = False
-    cleanup_needed = False
-    result: HostResult | None = None
+    cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]] = []
+    entry_dispatched = False
+    cleanup_warning = False
 
     try:
         administrator = _administrator_identity(remote)
         _ensure_directory(remote, _TRANSFER_ROOT, administrator, sudo=False)
         _create_directory(remote, transfer_directory, administrator, sudo=False)
-        transfer_created = True
+        cleanup_targets.append((transfer_directory, transfer_path, False))
         receipt = remote.put(
             package.path, transfer_path, mode=0o600, sensitive=True,
             timeout=_CONTROL_TIMEOUT_SECONDS, sudo=False,
         )
         if not isinstance(receipt, UploadReceipt):
             raise _safety_error("helper transfer receipt is invalid")
-        cleanup_needed = receipt.cleanup_warning
+        cleanup_warning = receipt.cleanup_warning
         _assert_metadata(remote, transfer_path, administrator, "600", "regular file", sudo=False)
         _assert_checksum(remote, transfer_path, package.sha256, sudo=False)
 
         _ensure_directory(remote, _INVOCATION_ROOT, ("0", "0"), sudo=True)
         _create_directory(remote, invocation_directory, ("0", "0"), sudo=True)
-        invocation_created = True
+        cleanup_targets.append((invocation_directory, installed_path, True))
         _require_success(
             remote,
             ("install", "-o", "root", "-g", "root", "-m", "500", "--", transfer_path.as_posix(), installed_path.as_posix()),
@@ -85,11 +82,11 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         _assert_checksum(remote, installed_path, package.sha256, sudo=True)
 
         if not _remove_transfer(remote, transfer_directory, transfer_path, administrator):
-            cleanup_needed = True
+            cleanup_warning = True
         else:
-            transfer_created = False
+            cleanup_targets.remove((transfer_directory, transfer_path, False))
 
-        dispatched = True
+        entry_dispatched = True
         command = _run(
             remote,
             ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed_path.as_posix()),
@@ -102,28 +99,26 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
         if not _succeeded(command):
             raise _safety_error("host helper invocation failed")
         result = _decode_result(command)
-        completed = True
     except OpsError as error:
         raise _cleanup_failure(
             error,
-            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
+            remote,
+            cleanup_targets,
+            cleanup_warning,
+            entry_dispatched,
         ) from None
     except Exception:
         error = _safety_error("transient helper invocation failed")
         raise _cleanup_failure(
             error,
-            remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-            transfer_created, invocation_created, cleanup_needed, dispatched, completed,
+            remote,
+            cleanup_targets,
+            cleanup_warning,
+            entry_dispatched,
         ) from None
 
-    cleanup_needed = _best_effort_cleanup(
-        remote, transfer_directory, transfer_path, invocation_directory, installed_path,
-        transfer_created, invocation_created,
-    ) or cleanup_needed
-    if result is None:
-        raise _safety_error("transient helper invocation failed")
-    if cleanup_needed:
+    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets) or cleanup_warning
+    if cleanup_warning:
         return replace(
             merge_result_warning(result, _CLEANUP_WARNING),
             local_cleanup_incomplete=True,
@@ -134,26 +129,12 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
 def _cleanup_failure(
     error: OpsError,
     remote: Remote,
-    transfer_directory: PurePosixPath,
-    transfer_path: PurePosixPath,
-    invocation_directory: PurePosixPath,
-    installed_path: PurePosixPath,
-    transfer_created: bool,
-    invocation_created: bool,
-    cleanup_needed: bool,
-    dispatched: bool,
-    completed: bool,
+    cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]],
+    cleanup_warning: bool,
+    entry_dispatched: bool,
 ) -> HelperTransportError:
-    cleanup_needed = _best_effort_cleanup(
-        remote,
-        transfer_directory,
-        transfer_path,
-        invocation_directory,
-        installed_path,
-        transfer_created,
-        invocation_created,
-    ) or cleanup_needed or (dispatched and not completed)
-    if cleanup_needed and _CLEANUP_WARNING not in error.warnings:
+    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets) or cleanup_warning or entry_dispatched
+    if cleanup_warning and _CLEANUP_WARNING not in error.warnings:
         error = OpsError(
             error.status,
             error.stage,
@@ -163,7 +144,7 @@ def _cleanup_failure(
             state=error.state,
             warnings=(*error.warnings, _CLEANUP_WARNING),
         )
-    return HelperTransportError(error, helper_entry_dispatched=dispatched)
+    return HelperTransportError(error, helper_entry_dispatched=entry_dispatched)
 
 
 def _validate_inputs(package: HelperPackage, request: HostRequest) -> None:
@@ -226,25 +207,14 @@ def _remove_transfer(remote: Remote, directory: PurePosixPath, path: PurePosixPa
 
 def _best_effort_cleanup(
     remote: Remote,
-    transfer_directory: PurePosixPath,
-    transfer_path: PurePosixPath,
-    invocation_directory: PurePosixPath,
-    installed_path: PurePosixPath,
-    transfer_created: bool,
-    invocation_created: bool,
+    cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]],
 ) -> bool:
     incomplete = False
-    if invocation_created:
-        incomplete = not _remove_invocation(remote, invocation_directory, installed_path) or incomplete
-    if transfer_created:
+    for directory, path, sudo in reversed(cleanup_targets):
         # We cannot prove the administrator identity after a transport fault;
         # ``rm``/``rmdir`` is still restricted to the derived private path.
-        incomplete = not _remove_plain(remote, transfer_directory, transfer_path, sudo=False) or incomplete
+        incomplete = not _remove_plain(remote, directory, path, sudo=sudo) or incomplete
     return incomplete
-
-
-def _remove_invocation(remote: Remote, directory: PurePosixPath, path: PurePosixPath) -> bool:
-    return _remove_plain(remote, directory, path, sudo=True)
 
 
 def _remove_plain(remote: Remote, directory: PurePosixPath, path: PurePosixPath, *, sudo: bool) -> bool:

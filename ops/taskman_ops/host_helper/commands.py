@@ -25,10 +25,11 @@ def run_command(
     stdin: bytes | None = None,
     env: Mapping[str, str] | None = None,
     timeout_seconds: float,
+    output_limit: int = MAX_COMMAND_OUTPUT_BYTES,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one non-shell command with protected optional stdin and bounded output."""
 
-    _validate_inputs(argv, stdin, env, timeout_seconds)
+    _validate_inputs(argv, stdin, env, timeout_seconds, output_limit)
     try:
         process = subprocess.Popen(
             argv,
@@ -46,8 +47,8 @@ def run_command(
     stdout = bytearray()
     stderr = bytearray()
     readers = (
-        Thread(target=_read_bounded, args=(process, process.stdout, stdout, overflow)),
-        Thread(target=_read_bounded, args=(process, process.stderr, stderr, overflow)),
+        Thread(target=_read_bounded, args=(process, process.stdout, stdout, overflow, output_limit)),
+        Thread(target=_read_bounded, args=(process, process.stderr, stderr, overflow, output_limit)),
     )
     for reader in readers:
         reader.start()
@@ -75,9 +76,10 @@ def _read_bounded(
     stream: object,
     buffer: bytearray,
     overflow: Event,
+    output_limit: int,
 ) -> None:
     while chunk := stream.read(4096):  # type: ignore[union-attr]
-        if len(buffer) + len(chunk) > MAX_COMMAND_OUTPUT_BYTES:
+        if len(buffer) + len(chunk) > output_limit:
             overflow.set()
             process.kill()
             return
@@ -108,6 +110,7 @@ def _validate_inputs(
     stdin: bytes | None,
     env: Mapping[str, str] | None,
     timeout_seconds: float,
+    output_limit: int,
 ) -> None:
     if (
         not isinstance(argv, tuple)
@@ -128,6 +131,8 @@ def _validate_inputs(
         or type(timeout_seconds) is float and not math.isfinite(timeout_seconds)
     ):
         raise ValueError("timeout_seconds must be positive")
+    if not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 0:
+        raise ValueError("output_limit must be a non-negative integer")
 
 
 __all__ = [

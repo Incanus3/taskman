@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
+import inspect
 from pathlib import Path, PurePosixPath
 import re
+import textwrap
 
 import pytest
 
 from fakes import HelperRunnerRemote
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops import helper_runner as helper_runner_module
 from taskman_ops.helper_package import HelperPackage, build_helper_package
 from taskman_ops.host_protocol import (
     HostRequest,
@@ -64,6 +68,15 @@ def test_new_correlation_id_is_unique_and_uses_the_protocol_allowlist() -> None:
 
     assert len(values) == 16
     assert all(re.fullmatch(r"op-[0-9a-f]{32}", value) for value in values)
+
+
+def test_helper_runner_has_one_created_path_cleanup_tracker() -> None:
+    """Reintroducing parallel cleanup flags would split exact-path cleanup authority."""
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(helper_runner_module.invoke_helper)))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+    assert not {"transfer_created", "invocation_created", "completed", "cleanup_needed"} & names
 
 
 def test_invoke_helper_keeps_correlation_transport_only(tmp_path: Path) -> None:

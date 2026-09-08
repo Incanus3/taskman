@@ -66,6 +66,17 @@ def test_run_command_refuses_unbounded_captured_output() -> None:
         )
 
 
+def test_run_command_honors_a_callers_smaller_output_limit() -> None:
+    """Removing a verification-specific cap would admit oversized service evidence."""
+
+    with pytest.raises(CommandError, match="output exceeds"):
+        run_command(
+            (sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 9)"),
+            timeout_seconds=1,
+            output_limit=8,
+        )
+
+
 def test_run_command_redacts_protected_stdin_from_a_failure() -> None:
     """Including stdin in a failure would leak a database credential."""
 
