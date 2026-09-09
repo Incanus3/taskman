@@ -4,8 +4,9 @@ Status: active. Updated: 2026-09-09. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Authorized staging provisioning and readiness now succeed. Continue only the next operator-chosen
-acceptance increment. Active task: `tas-b7kd`; bounded diagnostic follow-up: `tas-6dkg`.
+Authorized staging provisioning and readiness now succeed. This workstream owns the remaining
+operator-selected host acceptance. Readiness task: `tas-b7kd`. The operator currently prioritizes
+the separate [CLI UX workstream](operations-cli-ux.md) before further host acceptance.
 The [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) owns architecture;
 the [runbook](../deployment.md) owns commands, shell prerequisites, recovery, and acceptance gates.
 
@@ -53,16 +54,15 @@ existing upload directory; the release inventory remains valid. Failed release v
 its existing bounded check report, forcing separate diagnostics; `tas-6dkg` tracks that correction.
 Neither observation authorizes cleanup or broader refactoring.
 
-The [PostgreSQL Python proposal](../specs/2026-09-09-postgresql-host-python-design.md) remains
-parked by operator priority. Written-spec acceptance and an implementation plan remain pending;
-no refactor code exists. Preserve the native-HBA safety decisions if that work resumes.
+The [PostgreSQL Python workstream](postgresql-host-python.md) remains separately parked. Its design
+and planning state do not belong to host acceptance and are not prerequisites for it.
 
 ## Next actions
 
-1. Ask which acceptance increment the operator wants next. Initial administrator creation is
+1. When the operator selects host acceptance again, ask which increment to perform. Initial administrator creation is
    interactive; do not request or capture its password in chat. Follow the runbook's command.
 2. Then, with authorization, verify sign-in, invitation delivery, API key, and connected LiveView.
 3. Backup/off-host-copy, second-release/rollback/restore, controlled failures, reboot, and leakage
    acceptance remain unperformed; destructive or external effects need their explicit gates.
-4. Keep `tas-6dkg` bounded and separate from the parked PostgreSQL refactor. Do not resume a broad
-   correctness search or merge without operator direction.
+4. Do not resume a broad correctness search or merge without operator direction. Failed-result
+   diagnostics (`tas-6dkg`) are coordinated by the separate CLI UX workstream.

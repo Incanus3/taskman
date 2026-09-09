@@ -3,6 +3,8 @@
 Status: parked proposal; scope and invocation boundary approved, written review pending.
 Updated: 2026-09-09.
 
+Workstream task: `tas-sidn`. Resume state: [PostgreSQL host-side Python](../handoffs/postgresql-host-python.md).
+
 The operator chose to finish VPS provisioning using the verified current implementation before
 this refactor. This proposal is not a provisioning prerequisite. Resume design approval and
 planning later against the observed running-host baseline.
