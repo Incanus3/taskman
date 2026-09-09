@@ -11,6 +11,7 @@ import time
 from typing import Mapping
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.releases.identifiers import validate_release_id
 
 from .lock import LifecycleLockContention, lifecycle_lock
 from .paths import ManagedPaths, PathAuthorityError
@@ -240,9 +241,12 @@ def _expected_release(value: Mapping[str, object]) -> str | None:
     expected = value.get("expected_release_id")
     if expected is None:
         return None
-    if type(expected) is not str or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?-[0-9a-f]{12}-ubuntu26\.04-amd64-otp27\.3\.4\.6", expected):
+    if type(expected) is not str:
         raise ValueError("invalid expected release")
-    return expected
+    try:
+        return validate_release_id(expected)
+    except ValueError as error:
+        raise ValueError("invalid expected release") from error
 
 
 def _settings(value: Mapping[str, object]) -> dict[str, int | str | float]:

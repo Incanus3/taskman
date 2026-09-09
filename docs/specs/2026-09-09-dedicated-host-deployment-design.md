@@ -279,10 +279,22 @@ sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
 ```
 
 The dated tag communicates the image release; the digest fixes the content. They are reviewed and
-updated together. OTP `27.3.4.6`, Elixir `1.18.3`, Node `22.22.1`, Hex `2.5.1`, and Rebar3 `3.24.0`
-are pinned inputs. The versioned Rebar3 binary is checked against its recorded SHA-512. The
-Containerfile and artifact schema own the exact package constraints. External package indexes mean
+updated together. New builds pin OTP `29.0.6`, Elixir `1.20.4`, Node `22.22.1`, Hex `2.5.1`, and
+Rebar3 `3.24.0`. OTP and Elixir come from the published HexPM Ubuntu 26.04/amd64 and OTP-29
+archives, each verified against its fixed SHA-256 before installation. The versioned Rebar3 binary
+is checked against its recorded SHA-512. The Containerfile and artifact schema own the exact
+toolchain constraints. External package indexes mean
 this is not a claim of bit-for-bit reproducible release archives.
+
+This supersedes the original Ubuntu-package build pin, OTP `27.3.4.6` with Elixir `1.18.3`.
+That exact historical tuple remains supported for artifact and persisted-record validation,
+verification, backups, and rollback; validators derive provenance from each release's own OTP
+identity rather than the new-build default. No historical record is rewritten and no arbitrary
+toolchain tuple is admitted. The upgrade resolves the administrator prompt's reliance on the
+reversible no-shell raw/cooked terminal API, introduced in OTP 28. It does not change the separate
+[Alpine CI compatibility decision](2026-08-10-alpine-elixir-ci-design.md) or local mise management.
+The [runbook](../deployment.md#build-an-artifact) owns the first-install transition sequence,
+including updating the persistent backup executable before selecting a new-runtime release.
 
 Release identity is
 `<application-version>-<12-hex-source-sha>-ubuntu26.04-amd64-otp<otp-version>`. The manifest records

@@ -24,6 +24,8 @@ from taskman_ops.host_helper.records import (
 
 RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
 OTHER_RELEASE = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT_RELEASE = "0.2.0-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
+CURRENT_PRERELEASE = "0.2.0-rc.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
 BACKUP = "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 AT = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 
@@ -90,6 +92,26 @@ def test_completed_records_have_exact_flat_schemas_and_round_trip() -> None:
     assert ReleaseRecord.from_mapping(release.to_mapping()) == release
     assert BackupRecord.from_mapping(backup.to_mapping()) == backup
     assert SelectionRecord.from_mapping(selection.to_mapping()) == selection
+
+
+def test_release_records_validate_source_provenance_against_their_own_runtime_identity() -> None:
+    """Using the new default while reading an OTP 27 record would reject deployed history."""
+
+    legacy = _release()
+    current = _release(release_id=CURRENT_RELEASE, source_revision="b" * 40)
+
+    assert ReleaseRecord.from_mapping(legacy.to_mapping()) == legacy
+    assert ReleaseRecord.from_mapping(current.to_mapping()) == current
+    with pytest.raises(RecordError, match="release identity"):
+        _release(release_id=CURRENT_RELEASE, source_revision="a" * 40)
+
+
+def test_release_record_provenance_keeps_prerelease_version_metadata() -> None:
+    """Splitting an ID at its first hyphen would corrupt a valid prerelease identity."""
+
+    record = _release(release_id=CURRENT_PRERELEASE, source_revision="b" * 40)
+
+    assert ReleaseRecord.from_mapping(record.to_mapping()) == record
 
 
 def test_backup_record_serializes_a_whole_second_utc_creation_time() -> None:

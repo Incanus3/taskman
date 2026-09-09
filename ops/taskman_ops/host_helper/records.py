@@ -20,8 +20,9 @@ import stat
 from types import MappingProxyType
 
 from taskman_ops.releases.identifiers import (
-    RELEASE_ID_RE,
     build_release_id,
+    release_application_version,
+    release_otp_version,
     validate_release_id,
     validate_source_revision,
 )
@@ -73,13 +74,12 @@ def _release(value: object, label: str = "release identifier") -> str:
 
 
 def _release_for_revision(release_id: str, source_revision: str) -> None:
-    match = RELEASE_ID_RE.fullmatch(release_id)
-    if match is None:
-        raise RecordError("invalid release identifier")
     try:
-        expected = build_release_id(match.group("version"), source_revision)
+        otp_version = release_otp_version(release_id)
+        version = release_application_version(release_id)
+        expected = build_release_id(version, source_revision, otp_version=otp_version)
     except ValueError as error:
-        raise RecordError("invalid source revision") from error
+        raise RecordError("invalid release identifier or source revision") from error
     if expected != release_id:
         raise RecordError("release identity does not match source revision")
 

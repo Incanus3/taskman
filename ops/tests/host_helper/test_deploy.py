@@ -48,8 +48,8 @@ from taskman_ops.releases.identifiers import build_release_id
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 CURRENT_REVISION = "a" * 40
 CANDIDATE_REVISION = "b" * 40
-CURRENT = build_release_id("0.2.0", CURRENT_REVISION)
-CANDIDATE = build_release_id("0.2.0", CANDIDATE_REVISION)
+CURRENT = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CANDIDATE = "0.2.0-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
 MIGRATION = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
 SECOND_MIGRATION = MigrationFingerprint("20260906120000_add_projects.exs", "e" * 64)
 

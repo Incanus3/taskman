@@ -17,7 +17,7 @@ from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG
 
 
 REVISION = "c" * 40
-RELEASE_ID = "0.2.0-cccccccccccc-ubuntu26.04-amd64-otp27.3.4.6"
+RELEASE_ID = "0.2.0-cccccccccccc-ubuntu26.04-amd64-otp29.0.6"
 
 
 def write_release_tree(destination: Path, *, source_revision: str = REVISION) -> None:
@@ -33,8 +33,8 @@ def write_release_tree(destination: Path, *, source_revision: str = REVISION) ->
                 "source_revision": source_revision,
                 "target_os": "ubuntu26.04",
                 "architecture": "amd64",
-                "otp_version": "27.3.4.6",
-                "elixir_version": "1.18.3",
+                "otp_version": "29.0.6",
+                "elixir_version": "1.20.4",
                 "node_version": "22.22.1",
                 "hex_version": "2.5.1",
                 "rebar3_version": "3.24.0",

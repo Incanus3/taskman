@@ -19,6 +19,7 @@ from tests.support.environments import environment_config
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT_RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6"
 CHECK_NAMES = (
     "taskman-service",
     "release-identity",
@@ -99,6 +100,13 @@ def test_environment_verification_settings_accept_connection_timeout_above_comma
     settings = verification_module._settings(verification_settings(config))
 
     assert settings["connection_timeout"] == 10.0
+
+
+@pytest.mark.parametrize("release_id", (RELEASE_ID, CURRENT_RELEASE_ID))
+def test_verification_expected_state_accepts_each_supported_release_runtime(release_id: str) -> None:
+    """Verification must inspect a selected legacy release as well as a new build."""
+
+    assert verification_module._expected_release({"expected_release_id": release_id}) == release_id
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), float("-inf"), True, "10", None])

@@ -74,6 +74,17 @@ behavior.
 
 ## Current technology direction
 
+### Elixir and Erlang versions
+
+Non-CI development and release builds target Elixir `1.20.4` with Erlang/OTP `29.0.6`.
+Local developers may use mise to manage that pair; the release builder installs checksum-pinned
+HexPM Ubuntu binaries directly and does not use mise or alter workstation settings.
+Alpine CI intentionally remains on Elixir `1.19.5` / OTP `26.2.5.21` until its
+[upstream signal-stack restriction](specs/2026-08-10-alpine-elixir-ci-design.md) is resolved.
+Keep source compatibility with that CI pair, but verify release-only runtime behavior separately.
+
+### Application architecture
+
 - The implementation is greenfield in `Incanus3/taskman`.
 - Use Elixir/OTP with Phoenix LiveView.
 - Use Phoenix's default Tailwind-backed component setup.
@@ -168,6 +179,22 @@ with supported options when the same configuration must also load on older pinne
 Keep pattern matching unchanged. The isolated build-time release `eval` gate uses synthetic
 configuration and external temporary storage; it must not start the application or package its
 temporary configuration. See [Elixir Regex options](https://hexdocs.pm/elixir/main/Regex.html#module-modifiers).
+
+Credential-prompt changes require real-terminal verification on the pinned runtime as well as the
+local runtime. `StringIO` and a substituted service launcher do not establish native-terminal
+compatibility. Run the focused test against an extracted release without starting the application
+or using real credentials:
+
+```sh
+TASKMAN_TEST_RELEASE=/absolute/path/to/extracted/taskman uv run --project ops pytest ops/tests/test_terminal.py
+```
+
+The test runs the prompt modules packaged in that release without starting the application.
+Without the variable, it compiles the current prompt sources using local Elixir. Neither mode
+establishes native SSH/systemd acceptance. The historical OTP 27 runtime cannot support the
+prompt's reversible raw/cooked terminal API; that API was introduced in OTP 28. Use the current
+OTP 29 release for credential entry. Do not treat local-runtime success as evidence that the
+deployed prompt works.
 
 Architecture checks run within the operations pytest suite. Cross-suite test support lives in
 focused modules under `ops/tests/support/`; domain-specific support stays beside its consumers.

@@ -14,18 +14,20 @@ from ..checksums import sha256_file
 from ..errors import ExitStatus, OpsError
 from .identifiers import (
     build_release_id,
+    release_otp_version,
     validate_application_version,
     validate_release_id,
     validate_source_revision,
 )
+from .toolchains import CURRENT_RUNTIME, runtime_for_otp_version
 
 
 SCHEMA_VERSION = 2
 APPLICATION = "taskman"
 TARGET_OS = "ubuntu26.04"
 ARCHITECTURE = "amd64"
-OTP_VERSION = "27.3.4.6"
-ELIXIR_VERSION = "1.18.3"
+OTP_VERSION = CURRENT_RUNTIME.otp_version
+ELIXIR_VERSION = CURRENT_RUNTIME.elixir_version
 NODE_VERSION = "22.22.1"
 HEX_VERSION = "2.5.1"
 REBAR3_VERSION = "3.24.0"
@@ -166,13 +168,18 @@ class ArtifactManifest:
         application_version = validate_application_version(mapping["application_version"])
         source_revision = validate_source_revision(mapping["source_revision"])
         release_id = validate_release_id(mapping["release_id"])
-        if release_id != build_release_id(application_version, source_revision):
+        runtime = runtime_for_otp_version(release_otp_version(release_id))
+        if release_id != build_release_id(
+            application_version,
+            source_revision,
+            otp_version=runtime.otp_version,
+        ):
             raise ValueError("release identity does not match source provenance")
         if mapping["target_os"] != TARGET_OS or mapping["architecture"] != ARCHITECTURE:
             raise ValueError("unsupported artifact target")
         if (
-            mapping["otp_version"] != OTP_VERSION
-            or mapping["elixir_version"] != ELIXIR_VERSION
+            mapping["otp_version"] != runtime.otp_version
+            or mapping["elixir_version"] != runtime.elixir_version
             or mapping["node_version"] != NODE_VERSION
             or mapping["hex_version"] != HEX_VERSION
             or mapping["rebar3_version"] != REBAR3_VERSION
@@ -199,8 +206,8 @@ class ArtifactManifest:
             built_at=_parse_utc_timestamp(mapping["built_at"]),
             target_os=TARGET_OS,
             architecture=ARCHITECTURE,
-            otp_version=OTP_VERSION,
-            elixir_version=ELIXIR_VERSION,
+            otp_version=runtime.otp_version,
+            elixir_version=runtime.elixir_version,
             node_version=NODE_VERSION,
             builder_base_tag=BUILDER_BASE_TAG,
             builder_base_digest=BUILDER_BASE_DIGEST,

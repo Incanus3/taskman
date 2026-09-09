@@ -10,12 +10,17 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 import re
 
+from .toolchains import CURRENT_RUNTIME, SUPPORTED_RUNTIMES, runtime_for_otp_version
+
 
 APPLICATION_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
 SOURCE_REVISION_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 RELEASE_ID_RE = re.compile(
     r"(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)-"
-    r"(?P<revision>[0-9a-f]{12})-ubuntu26\.04-amd64-otp27\.3\.4\.6\Z"
+    r"(?P<revision>[0-9a-f]{12})-ubuntu26\.04-amd64-otp"
+    + "(?P<otp_version>"
+    + "|".join(re.escape(runtime.otp_version) for runtime in SUPPORTED_RUNTIMES)
+    + r")\Z"
 )
 
 
@@ -35,12 +40,18 @@ def validate_source_revision(value: str) -> str:
     return value
 
 
-def build_release_id(application_version: str, source_revision: str) -> str:
+def build_release_id(
+    application_version: str,
+    source_revision: str,
+    *,
+    otp_version: str = CURRENT_RUNTIME.otp_version,
+) -> str:
     """Build the stable logical release identity from audited source inputs."""
 
     version = validate_application_version(application_version)
     revision = validate_source_revision(source_revision)
-    return f"{version}-{revision[:12]}-ubuntu26.04-amd64-otp27.3.4.6"
+    runtime = runtime_for_otp_version(otp_version)
+    return f"{version}-{revision[:12]}-ubuntu26.04-amd64-otp{runtime.otp_version}"
 
 
 def validate_release_id(value: str) -> str:
@@ -49,6 +60,28 @@ def validate_release_id(value: str) -> str:
     if not isinstance(value, str) or RELEASE_ID_RE.fullmatch(value) is None:
         raise ValueError("invalid release identifier")
     return value
+
+
+def release_otp_version(value: str) -> str:
+    """Read the exact allowlisted OTP runtime encoded in one validated ID."""
+
+    if not isinstance(value, str):
+        raise ValueError("invalid release identifier")
+    match = RELEASE_ID_RE.fullmatch(value)
+    if match is None:
+        raise ValueError("invalid release identifier")
+    return runtime_for_otp_version(match.group("otp_version")).otp_version
+
+
+def release_application_version(value: str) -> str:
+    """Read the validated application version without re-parsing a release ID."""
+
+    if not isinstance(value, str):
+        raise ValueError("invalid release identifier")
+    match = RELEASE_ID_RE.fullmatch(value)
+    if match is None:
+        raise ValueError("invalid release identifier")
+    return match.group("version")
 
 
 def managed_release_path(root: PurePosixPath, release_id: str) -> PurePosixPath:
@@ -65,6 +98,8 @@ __all__ = [
     "SOURCE_REVISION_RE",
     "build_release_id",
     "managed_release_path",
+    "release_application_version",
+    "release_otp_version",
     "validate_application_version",
     "validate_release_id",
     "validate_source_revision",

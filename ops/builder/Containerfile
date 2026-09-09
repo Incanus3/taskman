@@ -3,6 +3,10 @@ FROM ubuntu:resolute-20260811.1@sha256:2260313b31c8c011cd2eebe728008efac1b3982be
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG SOURCE_REVISION
+ARG OTP_VERSION=29.0.6
+ARG OTP_SHA256=34b93d66fb4dea9e14509fc0622e212303e7beb218c2718646ab47b3cfa6c348
+ARG ELIXIR_VERSION=1.20.4
+ARG ELIXIR_SHA256=7863c546cda13fecc949e562e326042451dacf8fd8698a36783cb71eeb223b46
 ARG HEX_VERSION=2.5.1
 ARG REBAR3_VERSION=3.24.0
 ARG REBAR3_SHA512=158473850233093e6a1417e9779919cb6768402ea967db510d926bc5e74361377e9176014e827c622098e0dbf96b505677addc4bd4817ce2b9b4f4bc8121768b
@@ -14,14 +18,35 @@ RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
       ca-certificates \
       build-essential \
+      curl \
       git \
-      erlang-base=1:27.3.4.6+dfsg-1 \
-      erlang-dev=1:27.3.4.6+dfsg-1 \
-      erlang-xmerl=1:27.3.4.6+dfsg-1 \
-      elixir=1.18.3.dfsg-1build1 \
+      libc6 \
+      libgcc-s1 \
+      libssl3t64 \
+      libstdc++6 \
+      libtinfo6 \
       nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 \
       npm=9.2.0~ds3-1 \
+      unzip \
+      zlib1g \
  && rm -rf /var/lib/apt/lists/*
+
+RUN curl --fail --location --silent --show-error \
+      "https://builds.hex.pm/builds/otp/amd64/ubuntu-26.04/OTP-${OTP_VERSION}.tar.gz" \
+      --output /tmp/otp.tar.gz \
+ && echo "${OTP_SHA256}  /tmp/otp.tar.gz" | sha256sum --check --strict \
+ && tar --extract --gzip --file /tmp/otp.tar.gz --directory /tmp \
+ && mkdir --parents /opt/taskman-runtime \
+ && mv /tmp/OTP-${OTP_VERSION} /opt/taskman-runtime/otp \
+ && /opt/taskman-runtime/otp/Install -minimal /opt/taskman-runtime/otp \
+ && curl --fail --location --silent --show-error \
+      "https://builds.hex.pm/builds/elixir/v${ELIXIR_VERSION}-otp-29.zip" \
+      --output /tmp/elixir.zip \
+ && echo "${ELIXIR_SHA256}  /tmp/elixir.zip" | sha256sum --check --strict \
+ && mkdir --parents /opt/taskman-runtime/elixir \
+ && unzip -q /tmp/elixir.zip -d /opt/taskman-runtime/elixir
+
+ENV PATH=/opt/taskman-runtime/elixir/bin:/opt/taskman-runtime/otp/bin:${PATH}
 
 WORKDIR /app
 COPY . .
@@ -48,7 +73,7 @@ RUN --network=none \
 RUN test "$(mix hex.info | sed -n 's/^Hex:[[:space:]]*//p')" = "$HEX_VERSION" \
  && mkdir -p /artifact \
  && cp -a /app/_build/prod/rel/taskman /artifact/taskman \
- && printf '{"source_revision":"%s","target_os":"ubuntu26.04","architecture":"amd64","otp_version":"27.3.4.6","elixir_version":"1.18.3","node_version":"22.22.1","hex_version":"%s","rebar3_version":"%s"}\n' "$SOURCE_REVISION" "$HEX_VERSION" "$REBAR3_VERSION" \
+ && printf '{"source_revision":"%s","target_os":"ubuntu26.04","architecture":"amd64","otp_version":"%s","elixir_version":"%s","node_version":"22.22.1","hex_version":"%s","rebar3_version":"%s"}\n' "$SOURCE_REVISION" "$OTP_VERSION" "$ELIXIR_VERSION" "$HEX_VERSION" "$REBAR3_VERSION" \
       > /artifact/toolchain.json
 
 FROM scratch AS artifact

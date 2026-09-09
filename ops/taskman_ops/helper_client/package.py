@@ -59,6 +59,7 @@ ARCHIVE_MEMBERS = (
     "taskman_ops/releases/__init__.py",
     "taskman_ops/releases/identifiers.py",
     "taskman_ops/releases/manifests.py",
+    "taskman_ops/releases/toolchains.py",
 )
 
 BACKUP_ARCHIVE_MEMBERS = (
@@ -79,6 +80,7 @@ BACKUP_ARCHIVE_MEMBERS = (
     "taskman_ops/migrations.py",
     "taskman_ops/releases/__init__.py",
     "taskman_ops/releases/identifiers.py",
+    "taskman_ops/releases/toolchains.py",
 )
 
 _SOURCE_MEMBERS = {
@@ -109,6 +111,7 @@ _SOURCE_MEMBERS = {
     "taskman_ops/releases/__init__.py": _SOURCE_ROOT / "releases" / "__init__.py",
     "taskman_ops/releases/identifiers.py": _SOURCE_ROOT / "releases" / "identifiers.py",
     "taskman_ops/releases/manifests.py": _SOURCE_ROOT / "releases" / "manifests.py",
+    "taskman_ops/releases/toolchains.py": _SOURCE_ROOT / "releases" / "toolchains.py",
     "taskman_ops/host_helper/scheduled_backup.py": _SOURCE_ROOT / "host_helper" / "scheduled_backup.py",
     "taskman_ops/host_protocol/__init__.py": _SOURCE_ROOT / "host_protocol" / "__init__.py",
     "taskman_ops/host_protocol/envelope.py": _SOURCE_ROOT / "host_protocol" / "envelope.py",

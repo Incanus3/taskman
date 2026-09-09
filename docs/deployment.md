@@ -245,10 +245,13 @@ Build the current clean, identified revision:
 ./ops/taskman build
 ```
 
-The pinned Ubuntu 26.04 `linux/amd64` builder runs production dependency resolution, compilation
-with warnings as errors, asset deployment, and OTP release assembly. Hex `2.5.1` and Rebar3
-`3.24.0` are exact build inputs; Rebar3 is downloaded from its versioned Hex build URL and checked
-against the recorded SHA-512 digest. The resulting archive, manifest, and detached SHA-256 file
+The pinned Ubuntu 26.04 `linux/amd64` builder uses Elixir `1.20.4` and OTP `29.0.6` from
+checksum-verified [HexPM builds](https://github.com/hexpm/bob#erlang-builds), rather than Ubuntu's
+older Elixir/Erlang packages. It runs production dependency resolution, compilation with warnings
+as errors, asset deployment, and OTP release assembly. Node `22.22.1`, Hex `2.5.1`, and Rebar3
+`3.24.0` remain exact build inputs. The existing versioned Rebar3 binary, compiled for OTP 27,
+also runs on OTP 29 and remains checked against its recorded SHA-512 digest; do not replace it
+with an unpinned `mix local.rebar` download. The resulting archive, manifest, and detached SHA-256 file
 identify the exact source, migration fingerprints, platform, OTP/Elixir/Node/Hex/Rebar3 inputs,
 and archive bytes. Treat the archive as a credential because it contains the Erlang distribution
 cookie.
@@ -257,6 +260,29 @@ Before packaging, a bounded, network-isolated release `eval` checks runtime conf
 the pinned VM using synthetic values. It does not start Taskman or test database/email access;
 its temporary configuration stays outside the release tree. A successful build still requires
 real-host readiness and acceptance checks.
+
+The older Ubuntu build tuple, Elixir `1.18.3` / OTP `27.3.4.6`, remains accepted for existing
+artifacts, release records, backups, and rollback. New builds use only the current tuple. The
+controller does not rewrite historical identities or accept arbitrary OTP versions. Alpine CI
+retains its separate temporary Elixir `1.19.5` / OTP `26.2.5.21` pin; see the
+[documented CI restriction](specs/2026-08-10-alpine-elixir-ci-design.md).
+
+For the existing first-install staging baseline, an eventual authorized runtime deployment must
+first converge the host using the new controller and the **exact original OTP 27 artifact**. This
+updates the persistent scheduled-backup executable so it understands both release identities.
+Then deploy the new OTP 29 artifact through the ordinary reviewed deployment command. Merely
+uploading the transient deploy helper does not update the scheduled executable. After authorization,
+substitute the verified archive paths in this sequence:
+
+```sh
+./ops/taskman provision staging --artifact /secure/artifacts/EXACT_ORIGINAL_OTP27_RELEASE.tar.gz
+./ops/taskman deploy staging --artifact /secure/artifacts/EXACT_NEW_OTP29_RELEASE.tar.gz
+```
+
+Do not omit `--artifact` from the first command: that would build the new runtime instead of
+replaying the original installation. Do not use this sequence on a host with later release
+history; its existing replay restrictions still apply. No package or runtime upgrade requires
+editing an installed release in place.
 
 `provision` builds by default. When `deploy` is invoked without `--artifact`, it first requires a
 clean, identified checkout, then reuses a locally cached artifact only when the archive, manifest,

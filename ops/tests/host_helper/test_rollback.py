@@ -29,8 +29,8 @@ from taskman_ops.releases.identifiers import build_release_id
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 TARGET_REVISION = "a" * 40
 CURRENT_REVISION = "b" * 40
-TARGET = build_release_id("0.2.0", TARGET_REVISION)
-CURRENT = build_release_id("0.2.1", CURRENT_REVISION)
+TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
 MIGRATION = {"filename": "20260905120000_create_tasks.exs", "sha256": "c" * 64}
 MIGRATION_VERSION = 20260905120000
 

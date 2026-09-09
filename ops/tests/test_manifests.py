@@ -27,6 +27,7 @@ from taskman_ops.releases.identifiers import build_release_id, managed_release_p
 
 REVISION = "a" * 40
 RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT_RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6"
 CHECKSUM = "b" * 64
 
 
@@ -120,14 +121,63 @@ def write_release_archive(
     return archive_path
 
 
-def test_release_identity_is_exact_and_release_paths_accept_only_validated_ids() -> None:
+def test_release_identity_defaults_to_the_current_runtime_and_keeps_legacy_ids_valid() -> None:
     release_id = build_release_id("0.2.0", REVISION)
 
-    assert release_id == RELEASE_ID
+    assert release_id == CURRENT_RELEASE_ID
     assert validate_release_id(release_id) == release_id
     assert managed_release_path(PurePosixPath("/opt/taskman/releases"), release_id) == PurePosixPath(
-        f"/opt/taskman/releases/{RELEASE_ID}"
+        f"/opt/taskman/releases/{CURRENT_RELEASE_ID}"
     )
+    assert validate_release_id(RELEASE_ID) == RELEASE_ID
+
+
+@pytest.mark.parametrize(
+    ("release_id", "otp_version", "elixir_version"),
+    (
+        (RELEASE_ID, "27.3.4.6", "1.18.3"),
+        (CURRENT_RELEASE_ID, "29.0.6", "1.20.4"),
+    ),
+)
+def test_manifest_preserves_each_allowlisted_runtime_tuple(
+    release_id: str, otp_version: str, elixir_version: str
+) -> None:
+    """A new default must not invalidate immutable release provenance."""
+
+    manifest = ArtifactManifest.from_mapping(
+        manifest_payload(
+            release_id=release_id,
+            otp_version=otp_version,
+            elixir_version=elixir_version,
+        )
+    )
+
+    assert manifest.release_id == release_id
+    assert manifest.otp_version == otp_version
+    assert manifest.elixir_version == elixir_version
+
+
+@pytest.mark.parametrize(
+    ("release_id", "otp_version", "elixir_version"),
+    (
+        (RELEASE_ID, "29.0.6", "1.20.4"),
+        (CURRENT_RELEASE_ID, "27.3.4.6", "1.18.3"),
+        ("0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp28.0.0", "28.0.0", "1.19.0"),
+    ),
+)
+def test_manifest_refuses_an_unsupported_or_mismatched_runtime_tuple(
+    release_id: str, otp_version: str, elixir_version: str
+) -> None:
+    """Accepting an arbitrary OTP version or cross-paired metadata loses provenance."""
+
+    with pytest.raises(ValueError, match="release|toolchain"):
+        ArtifactManifest.from_mapping(
+            manifest_payload(
+                release_id=release_id,
+                otp_version=otp_version,
+                elixir_version=elixir_version,
+            )
+        )
 
 
 @pytest.mark.parametrize(
