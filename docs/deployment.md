@@ -320,7 +320,10 @@ the release. Do not fix an execution-permission failure by granting world access
 `taskman` to the root group; inspect the exact release metadata and preserve immutable contents.
 
 Run the same command again after success. A converged host reports no declarative changes apart
-from procedural verification. Before the first release procedure, a failure retains compatible
+from procedural verification. The scheduled-backup checksum check runs every time and pyinfra
+counts that executed check as changed; consequently the top-level `changed` can remain `true`
+while `release.changed` is `false` and no desired-state replacement is needed. Do not infer a
+new release deployment from that aggregate boolean alone. Before the first release procedure, a failure retains compatible
 partial state for a safe rerun rather than removing packages, the database, firewall rules, or
 generated secrets.
 
@@ -649,8 +652,18 @@ renew the domain or explicitly enable auto-renew before that date if it should b
 
 Cloudflare DNS is active and publishes DNS-only apex `A` and `AAAA` records for `2.29.47.77` and
 `2a01:4f9:c015:6045::1`. The authoritative nameservers and public `1.1.1.1` resolution returned
-those addresses when last verified on 2026-09-06. The VPS, provider firewall, Caddy, and Resend
-configuration still require separate operator action and acceptance testing.
+those addresses when last verified on 2026-09-06. On 2026-09-09 the operator opened the
+Hetzner provider firewall for public TCP 80/443. Caddy obtained a valid certificate;
+external IPv4 checks confirmed HTTP-to-HTTPS redirection, exact HTTPS readiness, and HSTS.
+Host-side HTTPS checks also succeeded over both IPv4 and IPv6; independent external IPv6
+reachability has not been established from the current workstation.
+
+Provisioning and standalone verification subsequently succeeded for release
+`0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6`, including all ten migrations and the completed
+selection record. The controller at local revision `730c002` includes the scoped-listener and
+empty-HTTP-reason-phrase verification corrections. Repeat provisioning preserved the release;
+its only reported pyinfra operation was the scheduled-backup checksum verification. This is
+readiness evidence, not completion of the broader acceptance checklist below.
 
 On 2026-09-09, `notify.taskman.page` was created in Resend's `eu-west-1` region
 for sending only, with open/click tracking disabled. The intended sender is

@@ -4,86 +4,65 @@ Status: active. Updated: 2026-09-09. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Complete authorized disposable-VPS provisioning and readiness checks. Task: `tas-b7kd`.
+Authorized staging provisioning and readiness now succeed. Continue only the next operator-chosen
+acceptance increment. Active task: `tas-b7kd`; bounded diagnostic follow-up: `tas-6dkg`.
 The [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) owns architecture;
-the [runbook](../deployment.md) owns operation, recovery, and external acceptance gates.
+the [runbook](../deployment.md) owns commands, shell prerequisites, recovery, and acceptance gates.
 
-Operator authorized provisioning packages, PostgreSQL, systemd, Caddy/HTTPS, firewall, and
-fixing demonstrated errors while continuing. Do not ask again for that scope. No merge/push
-or destructive acceptance authorization. Operator approved committing all current changes,
-including the staging configuration and encrypted secrets; no push was authorized.
+Provisioning packages, PostgreSQL, systemd, Caddy/HTTPS, firewall, and demonstrated corrections
+were authorized. The operator subsequently authorized committing and pushing all current changes
+to the existing branch. Merge, destructive acceptance, and administrator creation remain gated.
+Do not expand that scope implicitly.
 
-## Current host and artifact
+## Completed checkpoint
 
-- Target: SSH alias `deploy`, `root@taskman.page:22`, Ubuntu 26.04.1 x86_64/systemd.
-  SSH remains reachable. Baseline account/directories/marker, active UFW/Caddy/PostgreSQL,
-  enabled Taskman/backup units, Taskman database/role, and protected environment/pgpass exist.
-- PostgreSQL 18/main is healthy on `127.0.0.1:5432`. Native
-  `/etc/postgresql/18/main/pg_hba.conf` is active, `postgres:postgres:640`, parser clean.
-  No HBA recovery directory remains. Operator chose native-path parser validation with the
-  accepted brief on-disk crash window; design/runbook own that contract.
-- Taskman is inactive. No current link, selections, or migration table exists. One immutable
-  candidate is installed but has never started successfully. Its group-only access repair
-  was independently reviewed and applied after exact archive/tree verification; it is now
-  accessible to `taskman`. Do not repeat the completed marker or release-group repairs.
-- PR #16 remains open at remote source `d2a0131722341f9427ba71f9d8fb59e7bb806223`; its CI passed.
-  This checkpoint accompanies the local correction commit on
-  `dedicated-host-deployment-automation`. No push or merge; remote CI does not verify these fixes.
-- Failed candidate: `0.2.0-d2a013172234-ubuntu26.04-amd64-otp27.3.4.6`.
-  Archive directory:
-  `/tmp/taskman-artifacts-1000/0.2.0-d2a013172234-ubuntu26.04-amd64-otp27.3.4.6-4b1lhdvt`.
-  Archive: `taskman-0.2.0-d2a013172234-ubuntu26.04-amd64-otp27.3.4.6.tar.gz`.
-  SHA-256: `36e8a916cbd7399d9fd142ded951cf2eba14cd5b2867bb144994350db42daba1`.
-  Built from clean clone `/tmp/taskman-vps-build.DPHKD5`.
-  This archive is now known to fail runtime-config compilation; do not retry or edit it.
-- Staging YAML/SOPS secrets validate. Resend `notify.taskman.page` and its DNS records are
-  verified; actual email delivery remains untested. Sender: `no-reply@notify.taskman.page`.
-  Current controller shell requires `SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket` and
-  `SOPS_AGE_KEY_FILE=/home/jakub/.config/sops/age/taskman.txt`; runbook explains both.
+- Target: `root@taskman.page:22`, Ubuntu 26.04.1 x86_64/systemd. The operator opened Hetzner
+  TCP 443 and then TCP 80. Caddy obtained a valid certificate after validation and reload.
+  External IPv4 HTTP redirects to HTTPS; `/healthz` returns exact `ready`, no-store, HSTS.
+  Host-side HTTPS works over IPv4 and IPv6; independent external IPv6 remains unverified.
+- Taskman is active on the replacement release with all ten migrations and a completed selection
+  published by ordinary provisioning. Standalone `verify` passes all eight checks. Repeat
+  provisioning succeeds with `release.changed=false`; its only reported pyinfra operation is
+  the scheduled-backup checksum check. Aggregate `changed=true` is explained in the runbook.
+- PostgreSQL 18/main is healthy on loopback. Native HBA is active, parser clean, with no recovery
+  directory. Taskman, PostgreSQL, and Erlang distribution remain loopback-only; no EPMD listener.
+- Current application source: `8266656863adf6f710ab05fc7e8024f7e4a2b126`. Release:
+  `0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6`.
+  SHA-256: `632f2a44ee1e265961e25e226f68751e00cfeabc3d10aa4236a82b80c49e3cf8`.
+  Artifact directory:
+  `/tmp/taskman-artifacts-1000/0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6-z69je_z6`.
+  Archive basename: `taskman-0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6.tar.gz`.
+- Reviewed controller corrections are committed locally through `730c002` on
+  `dedicated-host-deployment-automation`. Clean controller: `/tmp/taskman-vps-controller.BahJ7r`.
+  Earlier clean clones lack one or both verifier fixes. No new application build is needed.
+- The failed `d2a013172234` release and uploaded archive remain recoverably quarantined under
+  `/opt/taskman-retired-d2a013172234-20260909`. Do not retry that archive or repeat completed repairs.
+- Resend sending domain and DNS are verified, sender `no-reply@notify.taskman.page`; actual email
+  delivery is not yet tested. Secrets remain in the protected deployment workflow.
 
-## Current blocker and verification
+## Verification and remaining uncertainty
 
-The migration VM reached runtime configuration, then Elixir 1.18.3 rejected the four dev-only
-`~r` literals with `E` in `config/runtime.exs`. Macro expansion occurs even in production.
-`E` means export (added in 1.19.3), not an end anchor. Local Elixir 1.20.2 tests missed this.
+904 operations tests and `mix precommit` 805 tests passed, plus compileall and shell syntax.
+Independent HTTP-parser review passed 53 verification/package tests. Its three failing regression
+cases were demonstrated before the one-character correction. Independent scoped-listener review
+also passed; exact live `ss` output now validates. Both fixes passed live read-only verification
+before the successful ordinary provisioning retry. See `tas-b7kd` for detailed evidence.
 
-The runtime regex-compilation correction is implemented and independently approved. It preserves
-matching behavior and export where supported, without upgrading the toolchain. Both main and
-reviewer reproduced the original failure and successful dev/production configuration loads on
-the exact Elixir 1.18.3/OTP27 VM. Local newer-runtime behavior is also verified.
+Standalone listings/verification emit `unknown deployment entry: uploads` for the controller's
+existing upload directory; the release inventory remains valid. Failed release verification loses
+its existing bounded check report, forcing separate diagnostics; `tas-6dkg` tracks that correction.
+Neither observation authorizes cleanup or broader refactoring.
 
-The independently approved build gate executes bounded, network-isolated release `eval` with
-synthetic inputs before packaging. It does not start Taskman or exercise database/email access.
-`RELEASE_TMP` is outside the release tree to avoid packaging temporary runtime configuration.
-The full replacement build has not yet run.
-
-A fresh artifact needs a new clean source revision. Operator approved committing all current
-changes locally, without push. The old exact unselected release must subsequently be retired
-recoverably outside managed discovery before attempting a different first release; that
-retirement has not occurred.
-
-Operator also asked whether extensive embedded shell in PostgreSQL provisioning is necessary.
-Assessment: native commands and one guarded host-local operation are justified; the large shell
-workflow is not inherently required. A focused host-side Python implementation is a candidate
-for reducing quoting/parsing/state-management complexity while preserving existing safety
-semantics. Operator approved shell-to-Python refactoring where it makes sense. Detailed
-scope and invocation design still need to be settled before implementation; no refactor
-has been implemented. Prioritize the large PostgreSQL configuration workflow, not blanket
-replacement of every short shell command.
-
-Earlier demonstrated controller fixes are reviewed, including native HBA, protected receipts,
-partial-change reporting, timeout parity, release ownership, and staged-unmigrated first-release
-replay. Latest integrated baseline: 886 operations tests and precommit 805 tests; independent
-runtime config 8 tests and build gate 16 tests. Focused build checks were rerun after the final
-temporary-directory correction. Compileall, shell syntax, and whitespace passed. Detailed
-evidence belongs to `tas-b7kd`.
+The [PostgreSQL Python proposal](../specs/2026-09-09-postgresql-host-python-design.md) remains
+parked by operator priority. Written-spec acceptance and an implementation plan remain pending;
+no refactor code exists. Preserve the native-HBA safety decisions if that work resumes.
 
 ## Next actions
 
-1. Scope the approved PostgreSQL shell-to-Python refactor separately from this verified
-   corrections checkpoint, preserving native tooling and all failure/safety semantics.
-2. Complete the agreed refactor and build a fresh exact application artifact from clean source.
-3. Review/perform exact recoverable retirement of the failed unselected release and provision
-   the replacement. No provisioning command is currently running.
-4. Verify the running host and repeat provisioning after success. Keep administrator creation,
-   email delivery, destructive acceptance, publication, and merging behind their explicit gates.
+1. Ask which acceptance increment the operator wants next. Initial administrator creation is
+   interactive; do not request or capture its password in chat. Follow the runbook's command.
+2. Then, with authorization, verify sign-in, invitation delivery, API key, and connected LiveView.
+3. Backup/off-host-copy, second-release/rollback/restore, controlled failures, reboot, and leakage
+   acceptance remain unperformed; destructive or external effects need their explicit gates.
+4. Keep `tas-6dkg` bounded and separate from the parked PostgreSQL refactor. Do not resume a broad
+   correctness search or merge without operator direction.

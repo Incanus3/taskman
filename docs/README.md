@@ -40,6 +40,7 @@
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [Dedicated-host deployment design](specs/2026-09-09-dedicated-host-deployment-design.md)
+- [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
 ## Active implementation plans
 
