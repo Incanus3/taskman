@@ -9,6 +9,10 @@ and external acceptance. The [development guide](../development.md#operations-ve
 the runnable local verification recipe. Neither this design nor passing local checks authorizes
 deployment, publication, or changes to an external host.
 
+The proposed [desired-target deployment reconciliation design](2026-09-09-deploy-reconciliation-design.md)
+is awaiting operator review. It identifies changes to deployment recovery, artifact identity, backup
+protection, and confirmation; those changes are not yet implemented or a replacement for this baseline.
+
 ## Purpose and supported scope
 
 One workstation-driven controller builds, provisions, deploys, inspects, backs up, and recovers one

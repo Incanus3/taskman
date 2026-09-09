@@ -691,6 +691,19 @@ empty-HTTP-reason-phrase verification corrections. Repeat provisioning preserved
 its only reported pyinfra operation was the scheduled-backup checksum verification. This is
 readiness evidence, not completion of the broader acceptance checklist below.
 
+Later on 2026-09-09, the authorized OTP 29 upgrade selected and started
+`0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6` but failed before successful-selection history was
+published. Fresh individual checks confirmed the exact running release, all ten unchanged migrations,
+loopback topology, clean journal, local/public readiness, and HSTS. The deployment-record mismatch
+remains unresolved; do not repeat first-install provisioning or manufacture a selection record.
+
+Administrator acceptance subsequently succeeded independently: the operator privately created the
+account and signed in, browser inspection confirmed active administrator access at `/admin`, and
+normal logout followed by fresh `/admin` and `/` requests required sign-in again. No password or
+token was captured. This closes the initial administrator/login/logout gate, not deployment
+reconciliation or the remaining email, API, backup, and restore acceptance. Current continuation
+state is in the [VPS readiness handoff](handoffs/ops-vps-readiness.md).
+
 On 2026-09-09, `notify.taskman.page` was created in Resend's `eu-west-1` region
 for sending only, with open/click tracking disabled. The intended sender is
 `no-reply@notify.taskman.page`. Cloudflare now contains Resend's DKIM TXT at
