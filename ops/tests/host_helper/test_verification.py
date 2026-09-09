@@ -78,6 +78,21 @@ def _preflight_paths(tmp_path) -> ManagedPaths:
     )
 
 
+@pytest.mark.parametrize("status_line", ["HTTP/1.1 200 OK", "HTTP/1.1 200 ", "HTTP/2 200", "HTTP/2 200 ", "HTTP/3 200 "])
+def test_http_readiness_accepts_curl_status_lines_with_empty_reason_phrase(status_line: str) -> None:
+    response = verification_module._http(
+        status_line + "\r\ncache-control: no-store\r\nstrict-transport-security: max-age=31536000\r\n\r\nready"
+    )
+
+    assert verification_module._ready(response)
+    assert verification_module._hsts(response)
+
+
+@pytest.mark.parametrize("status_line", ["HTTP/2 20 ", "HTTP/2 2000 ", "HTTP/2 200\nforged", "HTTP/2 200\rforged"])
+def test_http_readiness_rejects_malformed_status_lines(status_line: str) -> None:
+    assert verification_module._http(status_line + "\r\ncache-control: no-store\r\n\r\nready") is None
+
+
 def test_environment_verification_settings_accept_connection_timeout_above_command_bound() -> None:
     config = environment_config()
 

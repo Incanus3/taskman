@@ -23,7 +23,7 @@ _CHECKS = (
     "startup-journal", "local-readiness", "public-readiness", "public-hsts",
 )
 _NEXT_ACTION = "inspect the fixed verification summaries and correct the reported host state before retrying"
-_STATUS_RE = re.compile(r"HTTP/(?:1\.[01]|2|3) ([0-9]{3})(?: [^\r\n]+)?\Z")
+_STATUS_RE = re.compile(r"HTTP/(?:1\.[01]|2|3) ([0-9]{3})(?: [^\r\n]*)?\Z")
 _FAILURE_RE = re.compile(r"failed to start|boot failed|application.*(failed|error)|database.*(failed|error)", re.I)
 _INTERFACE_SCOPE_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}\Z")
 _MAX_OUTPUT = 9_216
