@@ -265,11 +265,17 @@ def collect_host_facts(
             str(_PROVISIONING_MARKER),
         )
     )
-    units = remote.run(("systemctl", "list-unit-files", "--no-legend", "--no-pager", *_SYSTEMD_UNITS))
+    # A filtered query returns status 1 when no requested units exist. Read the
+    # inventory and filter locally so genuine systemctl failures remain failures.
+    units = remote.run(
+        ("systemctl", "list-unit-files", "--no-legend", "--no-pager"),
+        stdout_limit=64 * 1024,
+    )
     account = remote.run(("getent", "passwd", _ACCOUNT_NAME))
     account_group = remote.run(("getent", "group", _ACCOUNT_NAME))
     postgres_account = remote.run(("getent", "passwd", "postgres"))
-    postgres_client = remote.run(("sh", "-c", "command -v psql"))
+    # POSIX shells differ on command-v absence (bash: 1, dash: 127).
+    postgres_client = remote.run(("sh", "-c", "if command -v psql; then exit 0; else exit 1; fi"))
 
     account_states = (
         _getent_state(account),
@@ -531,6 +537,7 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
             continue
         if len(fields) != 6:
             return None
+        fields[5] = fields[5].rstrip()
         match = re.fullmatch(
             r'users:\(\("(?P<name>[^"]+)",pid=(?P<pid>[1-9][0-9]*),fd=[0-9]+\)\)',
             fields[5],

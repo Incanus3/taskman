@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 
 _OPS_ROOT = Path(__file__).resolve().parents[2]
+_PROTECTED_WRITE_CHANGED = 3
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
             asset.destination,
             user="root",
             group="root",
-            mode=asset.mode,
+            mode=format(asset.mode, "o"),
             add_deploy_dir=False,
             name=f"Install {asset.destination}",
         )
@@ -93,7 +94,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
         plan.backup_environment_path,
         user="root",
         group="root",
-        mode=0o600,
+        mode="600",
         add_deploy_dir=False,
         name="Install Taskman backup environment",
     )
@@ -151,25 +152,32 @@ def render_backup_service(config: EnvironmentConfig) -> str:
 def _install_protected_environment(remote: Remote, content: bytes, destination: str) -> ChangeSet:
     if not isinstance(content, bytes) or not content:
         raise ValueError("runtime environment content must be non-empty bytes")
-    result = remote.run(
-        (
-            "sh",
-            "-c",
-            "set -eu; changed=0; stage=$(mktemp /tmp/taskman-environment.XXXXXX); "
-            "trap 'rm -f \"$stage\"' EXIT HUP INT TERM; umask 077; cat > \"$stage\"; "
-            "state=$(stat --format='%U:%G:%a' \"$1\" 2>/dev/null || true); "
-            "if ! cmp -s \"$stage\" \"$1\" || [ \"$state\" != root:root:600 ]; then "
-            "install -o root -g root -m 0600 \"$stage\" \"$1\"; changed=1; fi; "
-            "printf 'changed=%s\\n' \"$changed\"",
-            "taskman-runtime-environment",
-            destination,
-        ),
-        sudo=True,
-        stdin=content,
-        sensitive=True,
-    )
-    _require_success(result)
-    changed = _changed_result(result.stdout)
+    try:
+        result = remote.run(
+            (
+                "sh",
+                "-c",
+                "exec >/dev/null 2>&1; set -eu; changed=0; stage=; "
+                "finish() { status=$?; trap - EXIT HUP INT TERM; cleanup_status=0; "
+                "if [ -n \"$stage\" ]; then rm -f -- \"$stage\" || cleanup_status=1; fi; "
+                "if [ \"$status\" -ne 0 ] || [ \"$cleanup_status\" -ne 0 ]; then exit 1; fi; "
+                f"if [ \"$changed\" -eq 1 ]; then exit {_PROTECTED_WRITE_CHANGED}; fi; exit 0; }}; "
+                "trap finish EXIT; trap 'exit 1' HUP INT TERM; umask 077; "
+                "stage=$(mktemp /tmp/taskman-environment.XXXXXX); cat > \"$stage\"; "
+                "state=$(stat --format='%U:%G:%a' \"$1\" 2>/dev/null || true); "
+                "if ! cmp -s \"$stage\" \"$1\" || [ \"$state\" != root:root:600 ]; then "
+                "install -o root -g root -m 0600 \"$stage\" \"$1\"; changed=1; fi",
+                "taskman-runtime-environment",
+                destination,
+            ),
+            sudo=True,
+            stdin=content,
+            sensitive=True,
+        )
+    except OpsError as error:
+        error.changed = True
+        raise
+    changed = _changed_result(result)
     return ChangeSet(changed=changed, operations=("Install protected runtime environment",) if changed else ())
 
 
@@ -185,19 +193,17 @@ def _require_success(result: CommandResult) -> None:
     )
 
 
-def _changed_result(stdout: str) -> bool:
-    markers = [line.removeprefix("changed=") for line in stdout.splitlines() if line.startswith("changed=")]
-    if markers == ["0"]:
-        return False
-    if markers == ["1"]:
+def _changed_result(result: CommandResult) -> bool:
+    if result.returncode == _PROTECTED_WRITE_CHANGED:
         return True
-    raise OpsError(
-        ExitStatus.REMOTE_PREFLIGHT,
-        "systemd",
-        "runtime environment installation returned an invalid change result",
-        changed=False,
-        next_action="inspect the protected runtime environment and retry",
-    )
+    if result.returncode == 0:
+        return False
+    try:
+        _require_success(result)
+    except OpsError as error:
+        error.changed = True
+        raise
+    return False
 
 
 def _backup_assets(

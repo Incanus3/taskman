@@ -59,6 +59,31 @@ The launcher always uses the checked-in lock:
 ./ops/taskman build --help
 ```
 
+### Operator shell environment
+
+Before running host commands, set the age identity used to decrypt deployment secrets
+and the SSH agent socket used to authenticate to the VPS:
+
+```sh
+export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/taskman.txt"
+export SSH_AUTH_SOCK="/run/user/$(id -u)/ssh-agent.socket"
+./ops/taskman provision staging --artifact /secure/artifacts/EXACT_RELEASE.tar.gz --dry-run
+```
+
+These paths match the current staging workstation setup; use the actual identity file
+and agent socket on another workstation. Exports apply to the current shell and commands
+started from it. A shell opened elsewhere needs the same settings. `build` is local and
+does not need either variable; read-only host commands need SSH authentication but do
+not necessarily decrypt secrets.
+
+The controller uses explicit environment YAML and pinned host-key authority with
+`ssh_config_file=/dev/null`. It therefore does not inherit the `deploy` alias's
+`IdentityAgent` setting. OpenSSH may work through that alias while the controller fails
+with `strict SSH connection setup failed` until `SSH_AUTH_SOCK` points to the same agent.
+Inspect `ssh -G deploy` for its `identityagent` setting; `ssh-add -l` checks whether the
+current shell can reach its configured agent. Keep the private identity outside the
+repository; neither variable should contain secret values, only paths.
+
 The target must boot Ubuntu 26.04 LTS `amd64` with systemd as PID 1. The configured SSH
 administrator must already be able to use the required `sudo` operations. The supported host
 baseline includes Ubuntu's `python3-minimal` package. The controller uses it only to run a
@@ -228,6 +253,11 @@ identify the exact source, migration fingerprints, platform, OTP/Elixir/Node/Hex
 and archive bytes. Treat the archive as a credential because it contains the Erlang distribution
 cookie.
 
+Before packaging, a bounded, network-isolated release `eval` checks runtime configuration on
+the pinned VM using synthetic values. It does not start Taskman or test database/email access;
+its temporary configuration stays outside the release tree. A successful build still requires
+real-host readiness and acceptance checks.
+
 `provision` builds by default. When `deploy` is invoked without `--artifact`, it first requires a
 clean, identified checkout, then reuses a locally cached artifact only when the archive, manifest,
 and checksum verify and the release ID, source revision, and application version exactly match the
@@ -259,9 +289,23 @@ non-secret configuration and units, Caddy, systemd enablement, and the root-owne
 zipapp and timer. Ordinary package, file, and service drift is declarative. Three direct custom
 actions remain because they guard material consequences: UFW activation revalidates the active SSH
 path, Caddy validates the candidate configuration immediately before installation, and PostgreSQL
-validates the selected cluster and parser-backed HBA state immediately before native
-configuration. Database role/password authority plus private runtime and pgpass installation stay
+validates the selected cluster before changing its native HBA file, then validates HBA syntax
+before reload/restart. Database role/password authority plus private runtime and pgpass installation stay
 outside pyinfra's logged command path so secret bytes are not exposed.
+
+PostgreSQL retains the selected cluster's native `pg_hba.conf` location. Its live rules view
+can validate changed file contents before they are loaded, but cannot validate an arbitrary
+file path. Provisioning keeps a recoverable copy of the prior HBA bytes and metadata on the host and
+restores it if validation fails. It refuses to replace authentication configuration when it
+cannot verify the running cluster and native HBA path. The operator accepted the brief
+crash/power-loss window after candidate installation and before validation/restoration;
+after an interrupted attempt, inspect the HBA file and recovery copy before manually restarting
+PostgreSQL. The recovery directory is beside the native file as `pg_hba.conf.taskman-backup`,
+containing the previous `pg_hba.conf` and its `metadata`. A leftover directory blocks another
+attempt until manually reconciled. Parser failure restores the prior file; a later
+restart or verification failure retains the recovery copy for inspection rather than silently
+changing disk configuration back underneath the running process. An isolated validation
+instance is not part of this workflow.
 
 The transient helper then converges the first immutable release from an empty completed host state.
 It stages and verifies the release, applies the declared initial migration policy, atomically
@@ -270,6 +314,11 @@ selects and starts the release, verifies readiness, and publishes create-once `R
 deterministic staging directory, and completed records; it repeats only a recognizable unfinished
 step. A completed first selection is a verified no-op.
 
+Installed releases are `root:taskman`: directories/executables are `0750`, regular data and
+the completed manifest are `0640`. The service account can read and execute but cannot modify
+the release. Do not fix an execution-permission failure by granting world access or adding
+`taskman` to the root group; inspect the exact release metadata and preserve immutable contents.
+
 Run the same command again after success. A converged host reports no declarative changes apart
 from procedural verification. Before the first release procedure, a failure retains compatible
 partial state for a safe rerun rather than removing packages, the database, firewall rules, or
@@ -277,6 +326,12 @@ generated secrets.
 
 Provisioning deliberately does not perform the interactive administrator step. Do it after
 readiness succeeds as described below.
+
+After successful admission and confirmation, provisioning installs its private ownership
+marker before package, account, or directory changes. This lets a later run recognize a
+compatible partial installation. A failed convergence after execution begins can report
+`changed=true` conservatively: inspect the partial host state before retrying. Do not
+create an ownership marker to adopt an unknown existing installation.
 
 ## Deploy an existing host
 
@@ -596,6 +651,16 @@ Cloudflare DNS is active and publishes DNS-only apex `A` and `AAAA` records for 
 `2a01:4f9:c015:6045::1`. The authoritative nameservers and public `1.1.1.1` resolution returned
 those addresses when last verified on 2026-09-06. The VPS, provider firewall, Caddy, and Resend
 configuration still require separate operator action and acceptance testing.
+
+On 2026-09-09, `notify.taskman.page` was created in Resend's `eu-west-1` region
+for sending only, with open/click tracking disabled. The intended sender is
+`no-reply@notify.taskman.page`. Cloudflare now contains Resend's DKIM TXT at
+`resend._domainkey.notify.taskman.page` and its return-path MX (priority 10,
+`feedback-smtp.eu-west-1.amazonses.com`) and SPF TXT
+(`v=spf1 include:amazonses.com ~all`) at `send.notify.taskman.page`.
+DNS publication was checked; Resend subsequently verified the domain and all three
+records on 2026-09-09. The API key has been supplied through the protected deployment
+secrets workflow. Actual email delivery remains to be tested.
 
 ## Unresolved disposable-host acceptance
 

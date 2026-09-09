@@ -90,6 +90,15 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
     from pyinfra.operations import apt, files, server
 
     plan = build_baseline_plan(config)
+    files.put(
+        StringIO(plan.provisioning_marker_content),
+        plan.provisioning_marker_path,
+        user="root",
+        group="root",
+        mode="600",
+        add_deploy_dir=False,
+        name="Install Taskman provisioning marker",
+    )
     apt.packages(
         packages=list(plan.packages),
         update=True,
@@ -109,7 +118,7 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
             directory.path,
             user=directory.owner,
             group=directory.group,
-            mode=directory.mode,
+            mode=format(directory.mode, "o"),
             name=f"Create {directory.path}",
         )
     files.put(
@@ -117,18 +126,9 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
         "/etc/apt/apt.conf.d/52taskman-unattended-upgrades",
         user="root",
         group="root",
-        mode=0o644,
+        mode="644",
         add_deploy_dir=False,
         name="Configure unattended upgrades",
-    )
-    files.put(
-        StringIO(plan.provisioning_marker_content),
-        plan.provisioning_marker_path,
-        user="root",
-        group="root",
-        mode=0o600,
-        add_deploy_dir=False,
-        name="Install Taskman provisioning marker",
     )
     server.service(
         "unattended-upgrades",

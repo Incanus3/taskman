@@ -147,17 +147,20 @@ def _executable_string_violations(relative: str, tree: ast.AST) -> Iterable[str]
 
 def _executable_string_owner(node: ast.AST, parents: dict[int, ast.AST]) -> str | None:
     current = node
+    assigned_name: str | None = None
     while parent := parents.get(id(current)):
         if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return parent.name
         if isinstance(parent, ast.Assign):
-            for target in parent.targets:
-                if isinstance(target, ast.Name):
-                    return target.id
-        if isinstance(parent, ast.AnnAssign) and isinstance(parent.target, ast.Name):
-            return parent.target.id
+            if assigned_name is None:
+                for target in parent.targets:
+                    if isinstance(target, ast.Name):
+                        assigned_name = target.id
+                        break
+        if isinstance(parent, ast.AnnAssign) and assigned_name is None and isinstance(parent.target, ast.Name):
+            assigned_name = parent.target.id
         current = parent
-    return None
+    return assigned_name
 
 
 def _import_violations(relative: str, tree: ast.AST) -> Iterable[str]:

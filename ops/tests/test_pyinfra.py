@@ -15,7 +15,7 @@ from pyinfra.operations import files
 from taskman_ops.cli import Invocation
 from taskman_ops.output import WorkflowResult
 from taskman_ops.provisioning import taskman_provisioning
-from taskman_ops.remote import ChangeSet, PyinfraRemote
+from taskman_ops.remote import ChangeSet, PyinfraRemote, summarize_deploy
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.provisioning import ProvisioningInputs
@@ -227,6 +227,128 @@ def test_converge_provisioning_stops_later_mutation_after_a_database_refusal(mon
     assert remote.executions == 1
 
 
+def test_converge_provisioning_reports_deploy_changes_when_database_fails(monkeypatch) -> None:
+    remote = DeployTraceRemote()
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    refusal = OpsError(
+        ExitStatus.SAFETY,
+        "postgresql",
+        "database installation failed",
+        changed=False,
+        next_action="inspect PostgreSQL state before retrying",
+        state={"boundary": "database"},
+        warnings=("database warning",),
+    )
+
+    def database(*_args: object, **_kwargs: object) -> ChangeSet:
+        raise refusal
+
+    monkeypatch.setattr(provisioning, "converge_database", database)
+
+    with pytest.raises(OpsError) as error:
+        provisioning.converge_provisioning(
+            remote,
+            ProvisioningInputs(
+                config=EnvironmentConfig.model_validate(valid_environment()),
+                caddy_plan=_CADDY_PLAN,
+                runtime_environment=b"RUNTIME=value\n",
+                pgpass=b"pgpass\n",
+                role_password_input=b"role-password-input\n",
+            ),
+        )
+
+    assert error.value is refusal
+    assert error.value.changed is True
+    assert error.value.status is ExitStatus.SAFETY
+    assert error.value.stage == "postgresql"
+    assert error.value.message == "database installation failed"
+    assert error.value.next_action == "inspect PostgreSQL state before retrying"
+    assert error.value.state == {"boundary": "database"}
+    assert error.value.warnings == ("database warning",)
+
+
+def test_converge_provisioning_reports_database_changes_when_runtime_fails(monkeypatch) -> None:
+    remote = DeployTraceRemote()
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    monkeypatch.setattr(
+        remote,
+        "run_deploy",
+        lambda *_args, **_kwargs: ChangeSet(changed=False),
+    )
+    runtime_refusal = OpsError(
+        ExitStatus.SAFETY,
+        "runtime",
+        "runtime installation failed",
+        changed=False,
+        next_action="inspect runtime state before retrying",
+    )
+    monkeypatch.setattr(
+        provisioning,
+        "converge_database",
+        lambda *_args, **_kwargs: ChangeSet(changed=True, operations=("pgpass",)),
+    )
+
+    def runtime(*_args: object, **_kwargs: object) -> ChangeSet:
+        raise runtime_refusal
+
+    monkeypatch.setattr(provisioning, "install_runtime_environment", runtime)
+
+    with pytest.raises(OpsError) as error:
+        provisioning.converge_provisioning(
+            remote,
+            ProvisioningInputs(
+                config=EnvironmentConfig.model_validate(valid_environment()),
+                caddy_plan=_CADDY_PLAN,
+                runtime_environment=b"RUNTIME=value\n",
+                pgpass=b"pgpass\n",
+                role_password_input=b"role-password-input\n",
+            ),
+        )
+
+    assert error.value is runtime_refusal
+    assert error.value.changed is True
+    assert error.value.status is ExitStatus.SAFETY
+    assert error.value.stage == "runtime"
+    assert error.value.message == "runtime installation failed"
+    assert error.value.next_action == "inspect runtime state before retrying"
+
+
+def test_converge_provisioning_keeps_unchanged_for_pre_mutation_refusal(monkeypatch) -> None:
+    remote = DeployTraceRemote()
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    monkeypatch.setattr(
+        remote,
+        "run_deploy",
+        lambda *_args, **_kwargs: ChangeSet(changed=False),
+    )
+    refusal = OpsError(
+        ExitStatus.SAFETY,
+        "postgresql",
+        "database authority is ambiguous",
+        changed=False,
+    )
+
+    def database(*_args: object, **_kwargs: object) -> ChangeSet:
+        raise refusal
+
+    monkeypatch.setattr(provisioning, "converge_database", database)
+
+    with pytest.raises(OpsError) as error:
+        provisioning.converge_provisioning(
+            remote,
+            ProvisioningInputs(
+                config=EnvironmentConfig.model_validate(valid_environment()),
+                caddy_plan=_CADDY_PLAN,
+                runtime_environment=b"RUNTIME=value\n",
+                pgpass=b"pgpass\n",
+                role_password_input=b"role-password-input\n",
+            ),
+        )
+
+    assert error.value is refusal
+    assert error.value.changed is False
+
+
 def test_direct_firewall_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -334,6 +456,129 @@ def test_programmatic_pyinfra_deploy_converges_then_repairs_ordinary_drift(tmp_p
     assert second == ChangeSet(changed=False)
     assert repaired.changed is True
     assert target.read_text(encoding="utf-8") == "desired\n"
+
+
+def test_programmatic_pyinfra_failure_reports_partial_mutation_after_execution_begins(
+    tmp_path: Path,
+) -> None:
+    """A generator failure after one operation must not report a pristine host."""
+
+    from pyinfra.api import operation
+
+    target = tmp_path / "partial-state"
+    remote = _local_pyinfra_remote()
+
+    @operation(is_idempotent=True)
+    def fail_during_generation():
+        raise ValueError("raw pyinfra failure canary")
+        yield "unreachable"
+
+    @deploy("Fail after a partial mutation")
+    def converge() -> None:
+        files.put(
+            StringIO("desired\n"),
+            target.as_posix(),
+            add_deploy_dir=False,
+            name="Install partial state",
+        )
+        fail_during_generation(name="Raise during operation generation")
+
+    with pytest.raises(OpsError) as error:
+        remote.run_deploy(converge)
+
+    assert target.read_text(encoding="utf-8") == "desired\n"
+    assert error.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert error.value.changed is True
+    assert error.value.next_action == "inspect the host's partial provisioning state, then retry provisioning"
+    assert "raw pyinfra failure canary" not in str(error.value)
+    assert "raw pyinfra failure canary" not in repr(error.value)
+
+
+def test_summarize_failed_pyinfra_results_reports_possible_mutation_after_execution_begins() -> None:
+    """An executing state with incomplete results must not claim no mutation."""
+
+    inventory = Inventory((['@local'], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host('@local')
+    state.activate_host(host)
+    state.is_executing = True
+    state.get_results_for_host(host).error_ops = 1
+
+    with pytest.raises(OpsError) as error:
+        summarize_deploy(state)
+
+    assert error.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert error.value.changed is True
+    assert error.value.next_action == "inspect the host's partial provisioning state, then retry provisioning"
+
+
+def test_categorized_pyinfra_failure_preserves_category_and_prior_mutation(tmp_path: Path) -> None:
+    """A categorized safety refusal must retain earlier pyinfra change evidence."""
+
+    from pyinfra.api import operation
+    from pyinfra.api.command import FunctionCommand
+
+    target = tmp_path / "categorized-partial-state"
+    remote = _local_pyinfra_remote()
+
+    def refuse(state: object, host: object) -> None:
+        failure = OpsError(
+            ExitStatus.SAFETY,
+            "firewall",
+            "existing UFW policy is conflicting or unrecognized and will not be replaced",
+            changed=False,
+            next_action="inspect the active UFW rules and resolve the contradiction before retrying",
+            state={"failed_boundary": "firewall"},
+            warnings=("safe category warning",),
+        )
+        setattr(state, "_taskman_categorized_error", failure)
+        raise failure
+
+    @operation(is_idempotent=True)
+    def categorized_refusal():
+        yield FunctionCommand(refuse, (), {})
+
+    @deploy("Fail with a categorized refusal after a partial mutation")
+    def converge() -> None:
+        files.put(
+            StringIO("desired\n"),
+            target.as_posix(),
+            add_deploy_dir=False,
+            name="Install categorized partial state",
+        )
+        categorized_refusal(name="Refuse unsafe firewall state")
+
+    with pytest.raises(OpsError) as error:
+        remote.run_deploy(converge)
+
+    assert target.read_text(encoding="utf-8") == "desired\n"
+    assert error.value.status is ExitStatus.SAFETY
+    assert error.value.stage == "firewall"
+    assert error.value.message == "existing UFW policy is conflicting or unrecognized and will not be replaced"
+    assert error.value.changed is True
+    assert error.value.next_action == "inspect the active UFW rules and resolve the contradiction before retrying"
+    assert error.value.state == {"failed_boundary": "firewall"}
+    assert error.value.warnings == ("safe category warning",)
+
+
+def test_preexecution_pyinfra_failure_retains_pristine_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declaration failure before run_ops keeps the connection retry semantics."""
+
+    remote = _local_pyinfra_remote()
+
+    def fail_before_execution(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("raw declaration failure canary")
+
+    monkeypatch.setattr("taskman_ops.remote.add_deploy", fail_before_execution)
+
+    with pytest.raises(OpsError) as error:
+        remote.run_deploy(lambda: None)
+
+    assert error.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert error.value.changed is False
+    assert error.value.next_action == "check the SSH host, host key, and administrator sudo access before retrying"
+    assert "raw declaration failure canary" not in str(error.value)
+    assert "raw declaration failure canary" not in repr(error.value)
 
 
 def _local_pyinfra_remote() -> PyinfraRemote:

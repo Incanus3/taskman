@@ -25,6 +25,30 @@ defmodule Taskman.RuntimeConfigTest do
     end)
   end
 
+  test "development live reload patterns compile with compatible export options" do
+    runtime_config = Config.Reader.read!("config/runtime.exs", env: :dev, imports: :disabled)
+    patterns = get_in(runtime_config, [:taskman, TaskmanWeb.Endpoint, :live_reload, :patterns])
+    [static, gettext, router, source] = patterns
+
+    assert Regex.match?(static, "priv/static/app.js")
+    refute Regex.match?(static, "priv/static/uploads/avatar.png")
+    refute Regex.match?(static, "priv/static/app.js.bak")
+    assert Regex.match?(gettext, "priv/gettext/en/LC_MESSAGES/default.po")
+    refute Regex.match?(gettext, "priv/gettext/en/LC_MESSAGES/default.po.bak")
+    assert Regex.match?(gettext, "priv/gettext/en/LC_MESSAGES/default.po\n")
+    assert Regex.match?(router, "lib/taskman_web/router.ex")
+    refute Regex.match?(router, "lib/taskman_web/router.ex.bak")
+    assert Regex.match?(source, "lib/taskman_web/live/task_live.html.heex")
+    refute Regex.match?(source, "lib/taskman_web/live/task_live.html.heex.bak")
+
+    export_supported? =
+      Version.match?(System.version(), ">= 1.19.3") and
+        Version.match?(System.otp_release() <> ".0.0", ">= 28.0.0")
+
+    expected_options = if export_supported?, do: [:export], else: []
+    assert Enum.all?(patterns, &(Regex.opts(&1) == expected_options))
+  end
+
   test "production names every missing required environment variable without its value" do
     for name <- @required_environment do
       values = production_environment(%{name => nil})

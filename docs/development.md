@@ -144,11 +144,30 @@ For changed command or documentation surfaces, also exercise the relevant
 current product surfaces contain no leaked planning identifiers. Native systemd asset tests must inspect both
 exit status and diagnostics: a successful exit alone does not prove every directive was accepted.
 
+At pyinfra file/directory declaration boundaries, serialize numeric Unix permission bits
+as octal-digit strings (for example, `format(mode, "o")` or `"600"`). Pyinfra interprets
+integer modes as octal digits, so Python literals such as `0o755` are incorrect inputs.
+Keep numeric permission bits for native filesystem APIs and validate declaration tests
+against pyinfra's actual mode interpretation.
+
+Sensitive SSH commands intentionally suppress stdout and stderr, including innocuous receipts.
+Protected file convergence reports unchanged/changed through exit statuses `0`/`3`, normalizing
+actual shell failures to `1`; do not make callers parse suppressed output. Test with suppression
+enabled. A failed or interrupted write may already have changed the destination, so retain known
+or possible mutation evidence without exposing command output or credential bytes.
+
 For build or packaging changes, run `./ops/taskman build` from a clean, identified checkout and
 verify the resulting archive, manifest, checksum, pinned builder identity, and exact-input cache
 reuse without connecting to a host. The [runbook](deployment.md) owns artifact handling and the
 separately authorized disposable-host acceptance gates. Container and local test results do not
 establish real systemd, firewall, ACME, email, reboot, or complete restore acceptance.
+
+Runtime configuration must compile under the pinned release Elixir/OTP, not only the local
+development version. Regex `E` export support begins in Elixir 1.19.3; use runtime compilation
+with supported options when the same configuration must also load on older pinned releases.
+Keep pattern matching unchanged. The isolated build-time release `eval` gate uses synthetic
+configuration and external temporary storage; it must not start the application or package its
+temporary configuration. See [Elixir Regex options](https://hexdocs.pm/elixir/main/Regex.html#module-modifiers).
 
 Architecture checks run within the operations pytest suite. Cross-suite test support lives in
 focused modules under `ops/tests/support/`; domain-specific support stays beside its consumers.

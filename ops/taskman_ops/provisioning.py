@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pyinfra.api import deploy
 
 from .config import EnvironmentConfig
+from .errors import OpsError
 from .remote import ChangeSet, PyinfraRemote
 from .services.caddy import CaddyPlan
 from .services.postgresql import (
@@ -56,8 +57,8 @@ def converge_provisioning(remote: PyinfraRemote, inputs: ProvisioningInputs) -> 
     """Execute stable pyinfra convergence, then the three secret/database guards.
 
     The remaining imperative work has concrete material-risk ownership:
-    PostgreSQL validates the selected cluster/HBA immediately before mutation,
-    then validates role/database authority and the application connection;
+    PostgreSQL validates the selected cluster before HBA installation and the
+    candidate before restart, then validates database authority and connectivity;
     runtime and pgpass bytes never enter pyinfra's command or logging path.
     """
 
@@ -67,13 +68,21 @@ def converge_provisioning(remote: PyinfraRemote, inputs: ProvisioningInputs) -> 
         raise TypeError("provisioning convergence requires ProvisioningInputs")
 
     deploy_changes = remote.run_deploy(taskman_provisioning, inputs=inputs)
-    database_changes = converge_database(
-        remote,
-        build_postgresql_plan(inputs.config),
-        role_password_input=inputs.role_password_input,
-        pgpass=inputs.pgpass,
-    )
-    runtime_changes = install_runtime_environment(remote, inputs.runtime_environment)
+    try:
+        database_changes = converge_database(
+            remote,
+            build_postgresql_plan(inputs.config),
+            role_password_input=inputs.role_password_input,
+            pgpass=inputs.pgpass,
+        )
+    except OpsError as error:
+        error.changed = error.changed or deploy_changes.changed
+        raise
+    try:
+        runtime_changes = install_runtime_environment(remote, inputs.runtime_environment)
+    except OpsError as error:
+        error.changed = error.changed or deploy_changes.changed or database_changes.changed
+        raise
     operations = tuple(dict.fromkeys((*deploy_changes.operations, *database_changes.operations, *runtime_changes.operations)))
     return ChangeSet(changed=bool(operations), operations=operations)
 

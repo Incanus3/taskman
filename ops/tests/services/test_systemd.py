@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import stat
 import subprocess
 
 import pytest
+from pyinfra.api import Config, Inventory, State, deploy
+from pyinfra.api.deploy import add_deploy
+from pyinfra.api.operations import run_ops
+from pyinfra.operations.files import ensure_mode_int
 
-from tests.support.remotes import ScriptedRemote
+from tests.support.remotes import LocalProtectedRemote, ScriptedRemote
 from tests.support.environments import environment_config
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.provisioning import ProvisioningInputs
 from taskman_ops.remote import ChangeSet, CommandResult
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
@@ -81,8 +87,10 @@ def test_rendered_taskman_unit_validates_with_supported_install_roots(
     assert completed.stderr == ""
 
 
-def test_runtime_environment_stays_on_the_private_stdin_boundary() -> None:
-    remote = ScriptedRemote.from_responses([CommandResult(0, "changed=1\n")])
+def test_runtime_environment_uses_a_non_sensitive_exit_status_receipt() -> None:
+    """A sensitive transport that suppresses streams still reports a changed write."""
+
+    remote = ScriptedRemote.from_responses([CommandResult(3)])
     content = b"SECRET_KEY_BASE=runtime-sensitive-canary\n"
 
     result = install_runtime_environment(remote, content)
@@ -92,6 +100,86 @@ def test_runtime_environment_stays_on_the_private_stdin_boundary() -> None:
     assert "runtime-sensitive-canary" not in " ".join(command)
     assert kwargs["stdin"] == content
     assert kwargs["sensitive"] is True
+
+
+def test_runtime_environment_performs_actual_idempotent_and_mode_repairing_writes(tmp_path: Path) -> None:
+    """Protected writes change on first install and mode drift, but not on a rerun."""
+
+    destination = tmp_path / "taskman.env"
+    remote = LocalProtectedRemote(destination, tmp_path)
+    content = b"SECRET_KEY_BASE=runtime-sensitive-canary\n"
+
+    first = install_runtime_environment(remote, content)
+    second = install_runtime_environment(remote, content)
+    destination.chmod(0o644)
+    repaired = install_runtime_environment(remote, content)
+
+    assert first == ChangeSet(changed=True, operations=("Install protected runtime environment",))
+    assert second == ChangeSet(changed=False, operations=())
+    assert repaired == ChangeSet(changed=True, operations=("Install protected runtime environment",))
+    assert destination.read_bytes() == content
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert remote.results == [(3, b"", b""), (0, b"", b""), (3, b"", b"")]
+
+
+def test_runtime_environment_normalizes_actual_remote_write_errors(tmp_path: Path) -> None:
+    """A protected shell failure is generic, non-success, and stream-free."""
+
+    destination = tmp_path / "missing" / "taskman.env"
+    remote = LocalProtectedRemote(destination, tmp_path)
+
+    with pytest.raises(OpsError) as raised:
+        install_runtime_environment(remote, b"SECRET_KEY_BASE=runtime-sensitive-canary\n")
+
+    assert raised.value.status is ExitStatus.SECRET
+    assert raised.value.changed is True
+    assert remote.results == [(1, b"", b"")]
+
+
+@pytest.mark.parametrize("failure", ("cleanup", "signal"))
+def test_runtime_environment_marks_possible_mutation_for_protected_failures(
+    tmp_path: Path, *, failure: str
+) -> None:
+    """Cleanup and signal failures after replacement retain conservative change evidence."""
+
+    destination = tmp_path / "taskman.env"
+    remote = LocalProtectedRemote(destination, tmp_path, failure=failure)
+    content = b"SECRET_KEY_BASE=runtime-sensitive-canary\n"
+
+    with pytest.raises(OpsError) as raised:
+        install_runtime_environment(remote, content)
+
+    assert raised.value.status is ExitStatus.SECRET
+    assert raised.value.changed is True
+    assert destination.read_bytes() == content
+    assert remote.results == [(1, b"", b"")]
+
+
+def test_runtime_environment_preserves_a_structured_transport_error(tmp_path: Path) -> None:
+    """A transport error stays intact while recording possible protected mutation."""
+
+    error = OpsError(
+        ExitStatus.REMOTE_PREFLIGHT,
+        "transport",
+        "protected transport failed",
+        changed=False,
+        next_action="retry the protected operation",
+        state={"boundary": "runtime"},
+        warnings=("transport warning",),
+    )
+    remote = ScriptedRemote.from_responses([error])
+
+    with pytest.raises(OpsError) as raised:
+        install_runtime_environment(remote, b"SECRET_KEY_BASE=runtime-sensitive-canary\n")
+
+    assert raised.value is error
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert raised.value.stage == "transport"
+    assert raised.value.message == "protected transport failed"
+    assert raised.value.next_action == "retry the protected operation"
+    assert raised.value.state == {"boundary": "runtime"}
+    assert raised.value.warnings == ("transport warning",)
+    assert raised.value.changed is True
 
 
 def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None:
@@ -172,7 +260,10 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
 
     plan = taskman_systemd.declare_systemd(inputs)
 
-    assert [(destination, kwargs["mode"]) for _content, destination, kwargs in puts] == [
+    assert [
+        (destination, int(str(ensure_mode_int(kwargs["mode"])), 8))
+        for _content, destination, kwargs in puts
+    ] == [
         *((asset.destination, asset.mode) for asset in plan.assets),
         (plan.backup_environment_path, 0o600),
     ]
@@ -188,10 +279,10 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     backup_asset = next(asset for asset in plan.assets if asset.destination.endswith("taskman-backup.pyz"))
     assert backup_asset.sha256 is not None
     backup_put = next(entry for entry in puts if entry[1] == backup_asset.destination)
-    assert backup_put[2] == {
+    assert {**backup_put[2], "mode": int(str(ensure_mode_int(backup_put[2]["mode"])), 8)} == {
         "user": "root",
         "group": "root",
-        "mode": 0o750,
+        "mode": backup_asset.mode,
         "add_deploy_dir": False,
         "name": f"Install {backup_asset.destination}",
     }
@@ -200,3 +291,61 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     assert backup_asset.destination in commands
     assert backup_asset.sha256 in commands
     assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}", "_sudo": True}
+
+
+def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Pyinfra applies each systemd and backup asset with its intended permission bits."""
+
+    remote_root = tmp_path / "remote"
+    config = environment_config()
+    from pyinfra.operations import files, server, systemd
+
+    original_put = files.put
+
+    def remote_path(path: str) -> str:
+        return (remote_root / path.lstrip("/")).as_posix()
+
+    def put(source: object, destination: str, **kwargs: object) -> object:
+        return original_put(
+            source,
+            remote_path(destination),
+            **{**kwargs, "user": None, "group": None},
+        )
+
+    monkeypatch.setattr(files, "put", put)
+    monkeypatch.setattr(server, "shell", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(systemd, "daemon_reload", lambda **_kwargs: None)
+    monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: None)
+    inputs = ProvisioningInputs(
+        config=config,
+        caddy_plan=CaddyPlan(
+            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+            (),
+            ("caddy",),
+            "taskman.acme.tld {}\n",
+        ),
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"pgpass\n",
+        role_password_input=b"role-password-input\n",
+    )
+
+    @deploy("Systemd mode semantics")
+    def converge() -> None:
+        taskman_systemd.declare_systemd(inputs)
+
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    state.activate_host(inventory.get_host("@local"))
+    add_deploy(state, converge)
+    run_ops(state)
+
+    plan = build_systemd_plan(config)
+    for asset in plan.assets:
+        asset_path = Path(remote_path(asset.destination))
+        assert stat.S_IMODE(asset_path.stat().st_mode) == asset.mode
+
+    environment_path = Path(remote_path(plan.backup_environment_path))
+    assert stat.S_IMODE(environment_path.stat().st_mode) == 0o600

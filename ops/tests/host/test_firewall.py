@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 from pyinfra.api import Config, Inventory, State, deploy
 from tests.support.environments import environment_config
 from tests.support.shell import write_shell_script
@@ -111,10 +112,57 @@ esac""",
     assert not changes.exists()
 
 
-def test_firewall_script_executable_refuses_saved_rules_before_enabling_an_inactive_ufw(
+@pytest.mark.parametrize(
+    "saved_rules",
+    (
+        "ufw allow 4000/tcp",
+        "(None)\nufw allow 4000/tcp",
+        "unrecognized saved output",
+    ),
+    ids=("saved-rule", "none-with-saved-rule", "unrecognized-output"),
+)
+def test_firewall_script_executable_refuses_nonempty_or_unrecognized_saved_rules_before_enabling(
+    tmp_path: Path,
+    saved_rules: str,
+) -> None:
+    """Inactive UFW must refuse saved rules, mixed output, and unknown output."""
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    changes = tmp_path / "changes.log"
+    write_shell_script(
+        bin_dir / "ufw",
+        """case \"$1 ${2-}\" in
+  'status numbered') printf 'Status: inactive\\n' ;;
+  'show added')
+    printf '%s\\n' "Added user rules (see 'ufw status' for running firewall):"
+    printf '%s\\n' "$TASKMAN_UFW_SAVED_RULES"
+    ;;
+  *) printf '%s\\n' \"$*\" >> \"$TASKMAN_UFW_CHANGES\" ;;
+esac""",
+    )
+
+    completed = subprocess.run(
+        ("sh", "-ceu", render_firewall_convergence_script(build_firewall_plan(environment_config()))),
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TASKMAN_UFW_CHANGES": changes.as_posix(),
+            "TASKMAN_UFW_SAVED_RULES": saved_rules,
+        },
+    )
+
+    assert completed.returncode == int(ExitStatus.SAFETY)
+    assert not changes.exists()
+
+
+def test_firewall_script_executable_accepts_ufw_none_saved_rules_before_enabling(
     tmp_path: Path,
 ) -> None:
-    """Inactive UFW can still retain rules that would take effect on enablement."""
+    """UFW's literal ``(None)`` means inactive UFW has no saved user rules."""
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -125,7 +173,7 @@ def test_firewall_script_executable_refuses_saved_rules_before_enabling_an_inact
   'status numbered') printf 'Status: inactive\\n' ;;
   'show added') cat <<'RULES'
 Added user rules (see 'ufw status' for running firewall):
-ufw allow 4000/tcp
+(None)
 RULES
   ;;
   *) printf '%s\\n' \"$*\" >> \"$TASKMAN_UFW_CHANGES\" ;;
@@ -144,8 +192,19 @@ esac""",
         },
     )
 
-    assert completed.returncode == int(ExitStatus.SAFETY)
-    assert not changes.exists()
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == ""
+    assert changes.read_text(encoding="utf-8").splitlines() == [
+        "allow 2202/tcp",
+        "allow 80/tcp",
+        "allow 443/tcp",
+        "deny 4000/tcp",
+        "deny 5432/tcp",
+        "deny 6789/tcp",
+        "deny 4369/tcp",
+        "default deny incoming",
+        "--force enable",
+    ]
 
 
 def test_firewall_script_executable_accepts_only_the_known_owned_rule_set_as_a_noop(tmp_path: Path) -> None:

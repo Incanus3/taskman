@@ -149,6 +149,11 @@ failed. Report fixed reasons and bounded observed facts instead.
 
 Root, the trusted SSH administrator, and the service account with access to the release cookie
 are trusted application operators. `nologin` is not a sandbox after account compromise.
+Installed release directories, executables, data, and the completed manifest remain root-owned
+with the `taskman` group: directories and executables use `0750`, other regular files `0640`.
+This permits service-account read/execute access without group writes or world access. Resolve
+the service group explicitly during staging; do not retain archive/extractor group ownership.
+Existing immutable releases are not silently rewritten to repair historical metadata mistakes.
 `bin/taskman eval`, `rpc`, and `remote` provide arbitrary application-code authority; no generic
 sudo access to release launchers or unrestricted `systemd-run` is granted. Release archives and
 installed cookies are deployment credentials. Loopback distribution uses cookie authentication,
@@ -317,12 +322,29 @@ Three native custom operations are retained for specific material risks:
 | --- | --- |
 | UFW activation | SSH must be allowed before enablement and verified with a fresh pinned connection afterward |
 | Caddy validation/install | Candidate configuration must validate immediately before replacing the live configuration |
-| PostgreSQL cluster/HBA configuration | Cluster selection, live endpoint identity, and parser-backed HBA/SCRAM validation must precede the native transition |
+| PostgreSQL cluster/HBA configuration | Cluster selection and live endpoint identity precede candidate installation; parser-backed HBA/SCRAM validation precedes reload/restart |
 
 Database role/password authority and private runtime/pgpass installation remain outside pyinfra's
 logged command path. PostgreSQL retains one-cluster authority, least-privilege role/database
 ownership, loopback binding, SCRAM, and connection verification. Read/mutation predicates are shared
 where they represent one policy, not reimplemented as separate evidence frameworks.
+
+The operator selected native-path HBA validation on 2026-09-09 after VPS testing established
+that PostgreSQL's `hba_file` setting is startup-only. Keep the selected Ubuntu cluster's
+`/etc/postgresql/<version>/<cluster>/pg_hba.conf` path rather than relocate it. Install the
+candidate atomically with a recoverable copy of the previous file and its metadata, query
+`pg_hba_file_rules` before reload/restart, and restore the previous file on validation failure.
+Validate the exact selected-cluster path and live endpoint; an unavailable or contradictory
+live parser must not authorize an authentication-file replacement. Preserve the native cluster
+directory metadata rather than applying the former dedicated-HBA-directory ownership policy.
+
+This supersedes the stronger interpretation that parser validation must precede all live-path
+disk changes. The operator accepts the brief crash/power-loss window between candidate
+installation and validation/restoration. A separate temporary PostgreSQL validation instance
+was rejected for now because of its lifecycle and cleanup complexity. A later requirement to
+eliminate that window needs a new decision. PostgreSQL documents the
+[startup-only file setting](https://www.postgresql.org/docs/18/runtime-config-file-locations.html)
+and the [rules view's inspection of current file contents](https://www.postgresql.org/docs/18/view-pg-hba-file-rules.html).
 
 Provisioning installs hardened systemd assets, creates the lifecycle lock before enabling backups,
 and invokes the same deployment procedure for the first release. First release requires empty,

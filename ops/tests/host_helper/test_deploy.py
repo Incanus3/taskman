@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 import hashlib
+import os
+import stat
 import subprocess
 import sys
 import tarfile
@@ -205,6 +207,7 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None
     monkeypatch.setattr(service_capability, "run_command", runtime.command)
     monkeypatch.setattr(deploy_module, "verify", runtime.verify, raising=False)
     monkeypatch.setattr(deploy_module, "host_preflight", lambda *_args: None, raising=False)
+    monkeypatch.setattr(deploy_module, "_taskman_gid", os.getegid, raising=False)
 
 
 def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,6 +230,21 @@ def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_p
     assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
     assert runtime.events == ["backup", "stop", "migration", "start", "verify", "selection"]
     assert (Path(request.paths["install_root"]) / "current").resolve().name == CANDIDATE
+    candidate = Path(request.paths["install_root"]) / "releases" / CANDIDATE
+    for item in (candidate, *candidate.rglob("*")):
+        details = item.lstat()
+        assert details.st_uid == os.geteuid()
+        assert details.st_gid == os.getegid()
+        if stat.S_ISLNK(details.st_mode):
+            continue
+        mode = stat.S_IMODE(details.st_mode)
+        assert (mode & stat.S_IWGRP) == 0
+        assert (mode & 0o007) == 0
+    assert stat.S_IMODE((candidate / "bin" / "server").stat().st_mode) == 0o750
+    assert stat.S_IMODE((candidate / "bin" / "migrate").stat().st_mode) == 0o750
+    assert stat.S_IMODE((candidate / "lib" / "runtime").stat().st_mode) == 0o640
+    assert stat.S_IMODE((candidate / "releases" / "start_erl.data").stat().st_mode) == 0o640
+    assert stat.S_IMODE((candidate / ".taskman-release.json").stat().st_mode) == 0o640
 
 
 def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
@@ -348,6 +366,137 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
     assert result.state["backup_id"] is None
     assert runtime.backup_calls == 0
     assert runtime.events == ["migration", "start", "verify"]
+
+
+def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    migration_attempts = 0
+
+    def fail_before_database_change(
+        argv: tuple[str, ...], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal migration_attempts
+        if argv[0] == "systemd-run":
+            migration_attempts += 1
+            raise deploy_module.CommandError("migration failed before database change")
+        return runtime.command(argv, **kwargs)
+
+    monkeypatch.setattr(deploy_module, "run_command", fail_before_database_change, raising=False)
+    first = genesis(request)
+
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    state = deploy_module.observe_host_state(paths, database=runtime.observe_database())
+    assert first.outcome == "retryable"
+    assert state.selected_release_id is None
+    assert state.selections == ()
+    assert state.applied_migrations == ()
+    assert state.temporary_paths == ()
+    assert len(state.releases) == 1
+    assert state.releases[0].release_id == CANDIDATE
+    assert state.releases[0].source_revision == CANDIDATE_REVISION
+    assert state.releases[0].artifact_sha256 == request.parameters["artifact_sha256"]
+
+    monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+    result = genesis(request)
+
+    assert result.outcome == "succeeded"
+    assert migration_attempts == 1
+    assert runtime.events == ["migration", "start", "verify"]
+
+
+def test_genesis_rejects_an_exact_staged_candidate_with_partial_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(
+        tmp_path,
+        operation="genesis",
+        previous=None,
+        migrations=(MIGRATION, SECOND_MIGRATION),
+        policy="restore-required",
+    )
+    runtime = _Runtime(migration_result=(20260905120000,))
+    _install_runtime(monkeypatch, runtime)
+
+    def fail_after_partial_database_change(
+        argv: tuple[str, ...], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        result = runtime.command(argv, **kwargs)
+        if argv[0] == "systemd-run":
+            raise deploy_module.CommandError("migration result lost after partial change")
+        return result
+
+    monkeypatch.setattr(deploy_module, "run_command", fail_after_partial_database_change, raising=False)
+    first = genesis(request)
+    monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert result.outcome == "manual"
+    assert result.state["selected_release_id"] is None
+    assert runtime.events == ["migration"]
+
+
+def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_current_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def fail_before_database_change(
+        argv: tuple[str, ...], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if argv[0] == "systemd-run":
+            raise deploy_module.CommandError("migration failed before database change")
+        return runtime.command(argv, **kwargs)
+
+    monkeypatch.setattr(deploy_module, "run_command", fail_before_database_change, raising=False)
+    first = genesis(request)
+    install = Path(request.paths["install_root"])
+    (install / "current").symlink_to(install / "releases" / CANDIDATE)
+    monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert result.outcome == "manual"
+    assert result.state["selected_release_id"] == CANDIDATE
+    assert runtime.events == []
+
+
+def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def fail_before_database_change(
+        argv: tuple[str, ...], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if argv[0] == "systemd-run":
+            raise deploy_module.CommandError("migration failed before database change")
+        return runtime.command(argv, **kwargs)
+
+    monkeypatch.setattr(deploy_module, "run_command", fail_before_database_change, raising=False)
+    first = genesis(request)
+    append_selection(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
+        SelectionRecord(CANDIDATE, None, None, datetime(2026, 9, 7, 12, tzinfo=UTC)),
+    )
+    monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
+
+    result = genesis(request)
+
+    assert first.outcome == "retryable"
+    assert result.outcome == "manual"
+    assert result.state["selected_release_id"] is None
+    assert runtime.events == []
 
 
 @pytest.mark.parametrize("applied_migrations", ((999,), (20260905120000,)))
@@ -678,6 +827,95 @@ def test_contradictory_release_schema_identity_requires_manual_intervention(
     assert result.outcome == "manual"
     assert result.state["selected_release_id"] == CURRENT
     assert runtime.events == []
+
+
+def test_normalize_release_tree_assigns_runtime_group_without_following_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "bin").mkdir()
+    executable = release / "bin" / "server"
+    executable.write_text("server\n")
+    executable.chmod(0o750)
+    data = release / "runtime.config"
+    data.write_text("runtime\n")
+    outside = tmp_path / "outside"
+    outside.write_text("outside\n")
+    link = release / "outside-link"
+    link.symlink_to(outside)
+    chown_calls: list[tuple[Path, int, int]] = []
+    lchown_calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(
+        deploy_module.os,
+        "chown",
+        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+    )
+    monkeypatch.setattr(
+        deploy_module.os,
+        "lchown",
+        lambda path, uid, gid: lchown_calls.append((Path(path), uid, gid)),
+    )
+
+    deploy_module._normalize_release_tree(release, owner_uid=101, owner_gid=202)
+
+    assert set(chown_calls) == {
+        (release, 101, 202),
+        (release / "bin", 101, 202),
+        (executable, 101, 202),
+        (data, 101, 202),
+    }
+    assert lchown_calls == [(link, 101, 202)]
+    assert outside not in {path for path, _uid, _gid in chown_calls + lchown_calls}
+    assert stat.S_IMODE(release.stat().st_mode) == 0o750
+    assert stat.S_IMODE(executable.stat().st_mode) == 0o750
+    assert stat.S_IMODE(data.stat().st_mode) == 0o640
+
+
+def test_write_release_manifest_assigns_runtime_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = tmp_path / "release"
+    release.mkdir()
+    target = release / ".taskman-release.json"
+    chown_calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(
+        deploy_module.os,
+        "chown",
+        lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+    )
+    record = ReleaseRecord(CANDIDATE, CANDIDATE_REVISION, "c" * 64, ())
+
+    deploy_module._write_release_manifest(release, record, owner_uid=101, owner_gid=202)
+
+    assert chown_calls == [(target, 101, 202)]
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_taskman_gid_resolves_the_named_runtime_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    names: list[str] = []
+
+    class _Group:
+        gr_gid = 202
+
+    def getgrnam(name: str) -> _Group:
+        names.append(name)
+        return _Group()
+
+    monkeypatch.setattr(deploy_module.grp, "getgrnam", getgrnam)
+
+    assert deploy_module._taskman_gid() == 202
+    assert names == ["taskman"]
+
+
+def test_missing_taskman_group_requires_manual_intervention(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(_name: str) -> object:
+        raise KeyError("taskman")
+
+    monkeypatch.setattr(deploy_module.grp, "getgrnam", missing)
+
+    with pytest.raises(deploy_module.DeploymentManualError, match="taskman service group is unavailable"):
+        deploy_module._taskman_gid()
 
 
 def test_packaged_deploy_uses_the_final_protocol_directly(tmp_path: Path) -> None:

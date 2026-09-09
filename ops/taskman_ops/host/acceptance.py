@@ -210,6 +210,10 @@ def _fully_managed(facts: HostFacts, config: EnvironmentConfig) -> bool:
 
 
 def _loopback(address: str) -> bool:
+    if address.startswith("[") or address.endswith("]"):
+        if not (address.startswith("[") and address.endswith("]")):
+            return False
+        address = address[1:-1]
     try:
         return ipaddress.ip_address(address).is_loopback
     except ValueError:

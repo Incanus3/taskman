@@ -370,6 +370,50 @@ def test_architecture_scan_rejects_a_substantial_controller_program_outside_revi
     )
 
 
+def test_architecture_scan_accepts_a_local_program_owned_by_its_enclosing_reviewed_function() -> None:
+    program = "\n".join(["set -e"] + ["systemctl status taskman.service"] * 11)
+    tree = ast.parse(
+        "def render_postgresql_native_configuration_script():\n"
+        "    program = "
+        + repr(program)
+        + "\n"
+    )
+
+    assert tuple(
+        _executable_string_violations("ops/taskman_ops/services/postgresql.py", tree)
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    ("source", "line"),
+    (
+        (
+            "def unapproved():\n"
+            "    program = "
+            + repr("\n".join(["set -e"] + ["systemctl status taskman.service"] * 11))
+            + "\n",
+            2,
+        ),
+        (
+            "PROGRAM = "
+            + repr("\n".join(["set -e"] + ["systemctl status taskman.service"] * 11))
+            + "\n",
+            1,
+        ),
+    ),
+)
+def test_architecture_scan_rejects_unapproved_function_or_module_programs(
+    source: str, line: int
+) -> None:
+    tree = ast.parse(source)
+
+    assert tuple(
+        _executable_string_violations("ops/taskman_ops/services/postgresql.py", tree)
+    ) == (
+        f"ops/taskman_ops/services/postgresql.py:{line}: substantial executable controller string belongs in a helper or declarative operation",
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     (

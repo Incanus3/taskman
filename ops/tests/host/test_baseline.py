@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import stat
+from dataclasses import replace
+from pathlib import Path
+
+from pyinfra.api import Config, Inventory, State, deploy
+from pyinfra.api.deploy import add_deploy
+from pyinfra.api.operations import run_ops
+from pyinfra.operations.files import ensure_mode_int
 from tests.support.environments import environment_config
 import taskman_ops.host.baseline as baseline
 from taskman_ops.host.baseline import (
@@ -97,12 +105,18 @@ def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to
             },
         )
     ]
-    assert [(path, kwargs["user"], kwargs["group"], kwargs["mode"]) for path, kwargs in directories] == [
+    assert [
+        (path, kwargs["user"], kwargs["group"], int(str(ensure_mode_int(kwargs["mode"])), 8))
+        for path, kwargs in directories
+    ] == [
         (directory.path, directory.owner, directory.group, directory.mode) for directory in plan.directories
     ]
-    assert [(content, destination, kwargs["user"], kwargs["group"], kwargs["mode"]) for content, destination, kwargs in files_written] == [
-        (plan.unattended_updates, "/etc/apt/apt.conf.d/52taskman-unattended-upgrades", "root", "root", 0o644),
+    assert [
+        (content, destination, kwargs["user"], kwargs["group"], int(str(ensure_mode_int(kwargs["mode"])), 8))
+        for content, destination, kwargs in files_written
+    ] == [
         (plan.provisioning_marker_content, plan.provisioning_marker_path, "root", "root", 0o600),
+        (plan.unattended_updates, "/etc/apt/apt.conf.d/52taskman-unattended-upgrades", "root", "root", 0o644),
     ]
     assert services == [
         (
@@ -110,3 +124,92 @@ def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to
             {"running": True, "enabled": True, "name": "Enable unattended upgrades"},
         )
     ]
+
+
+def test_baseline_declares_the_provisioning_marker_before_other_mutations(monkeypatch) -> None:
+    """A partial baseline run is marked before package/account/directory work begins."""
+
+    events: list[tuple[str, str]] = []
+    from pyinfra.operations import apt, files, server
+
+    monkeypatch.setattr(apt, "packages", lambda **_kwargs: events.append(("packages", "")))
+    monkeypatch.setattr(server, "user", lambda user, **_kwargs: events.append(("user", user)))
+    monkeypatch.setattr(
+        files,
+        "directory",
+        lambda path, **_kwargs: events.append(("directory", path)),
+    )
+    monkeypatch.setattr(
+        files,
+        "put",
+        lambda _source, destination, **_kwargs: events.append(("file", destination)),
+    )
+    monkeypatch.setattr(server, "service", lambda service, **_kwargs: events.append(("service", service)))
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: events.append(("firewall", "")))
+
+    plan = baseline.declare_baseline(environment_config())
+
+    assert events[0] == ("file", plan.provisioning_marker_path)
+
+
+def test_baseline_applies_domain_modes_through_actual_pyinfra_commands(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Pyinfra receives octal-digit modes and applies the plan's intended permission bits."""
+
+    remote_root = tmp_path / "remote"
+    config = environment_config()
+    from pyinfra.operations import apt, files, server
+
+    original_put = files.put
+
+    def remote_path(path: str) -> str:
+        return (remote_root / path.lstrip("/")).as_posix()
+
+    def put(source: object, destination: str, **kwargs: object) -> object:
+        mapped_destination = (
+            destination
+            if destination.startswith(f"{remote_root.as_posix()}/")
+            else remote_path(destination)
+        )
+        return original_put(
+            source,
+            mapped_destination,
+            **{**kwargs, "user": None, "group": None},
+        )
+
+    plan = baseline.build_baseline_plan(config)
+    mapped_plan = replace(
+        plan,
+        directories=tuple(
+            replace(directory_plan, path=remote_path(directory_plan.path), owner="", group="")
+            for directory_plan in plan.directories
+        ),
+        provisioning_marker_path=remote_path(plan.provisioning_marker_path),
+    )
+    monkeypatch.setattr(baseline, "build_baseline_plan", lambda _config: mapped_plan)
+    monkeypatch.setattr(files, "put", put)
+    monkeypatch.setattr(apt, "packages", lambda **_kwargs: None)
+    monkeypatch.setattr(server, "user", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "service", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: None)
+
+    @deploy("Baseline mode semantics")
+    def converge() -> None:
+        baseline.declare_baseline(config)
+
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    state.activate_host(inventory.get_host("@local"))
+    add_deploy(state, converge)
+    run_ops(state)
+
+    for directory_plan in mapped_plan.directories:
+        directory_path = Path(directory_plan.path)
+        assert stat.S_IMODE(directory_path.stat().st_mode) == directory_plan.mode
+
+    assert stat.S_IMODE(Path(mapped_plan.provisioning_marker_path).stat().st_mode) == 0o600
+    assert stat.S_IMODE(
+        Path(remote_path("/etc/apt/apt.conf.d/52taskman-unattended-upgrades")).stat().st_mode
+    ) == 0o644

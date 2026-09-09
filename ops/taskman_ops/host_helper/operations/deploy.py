@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
 import os
+import grp
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -365,6 +366,19 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
             raise DeploymentManualError("genesis staging is not attributable to the candidate")
         return
 
+    # A release manifest can be published before its first migration runs.  It
+    # is safe to resume that exact genesis only while every other authoritative
+    # fact still proves the clean, unselected starting state.
+    if (
+        state.selected_release_id is None
+        and state.releases == (inputs.candidate,)
+        and not state.selections
+        and state.applied_migrations == inputs.expected_migrations
+        and not state.applied_migrations
+        and not state.temporary_paths
+    ):
+        return
+
     installed = next((item for item in state.releases if item.release_id == candidate), None)
     if (
         len(state.releases) != 1
@@ -555,13 +569,15 @@ def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
     if target.exists() or target.is_symlink():
         raise DeploymentManualError("release path exists without a completed manifest")
     staging = _staging_path(inputs)
+    owner_uid = os.geteuid()
+    owner_gid = _taskman_gid()
     try:
         staging.mkdir(mode=0o750)
         _extract_release(inputs.artifact_path, staging)
         content = staging / "taskman"
         _validate_release_tree(content)
-        _normalize_release_tree(content, os.geteuid())
-        _write_release_manifest(content, inputs.candidate)
+        _normalize_release_tree(content, owner_uid, owner_gid)
+        _write_release_manifest(content, inputs.candidate, owner_uid=owner_uid, owner_gid=owner_gid)
         os.replace(content, target)
         staging.rmdir()
         fsync_directory(root)
@@ -574,7 +590,14 @@ def _staging_path(inputs: _Inputs) -> Path:
     return Path(inputs.paths.local(inputs.paths.release_root / f".release-{inputs.candidate.release_id}.tmp"))
 
 
-def _write_release_manifest(directory: Path, record: ReleaseRecord) -> None:
+def _taskman_gid() -> int:
+    try:
+        return grp.getgrnam("taskman").gr_gid
+    except KeyError as error:
+        raise DeploymentManualError("taskman service group is unavailable") from error
+
+
+def _write_release_manifest(directory: Path, record: ReleaseRecord, *, owner_uid: int, owner_gid: int) -> None:
     target = directory / ".taskman-release.json"
     payload = json.dumps(record.to_mapping(), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
@@ -583,7 +606,7 @@ def _write_release_manifest(directory: Path, record: ReleaseRecord) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    os.chown(target, os.geteuid(), -1)
+    os.chown(target, owner_uid, owner_gid)
     os.chmod(target, 0o640)
 
 
@@ -694,12 +717,14 @@ def _validate_release_tree(path: Path) -> None:
             raise ValueError("release archive tree is unsafe")
 
 
-def _normalize_release_tree(path: Path, owner_uid: int) -> None:
+def _normalize_release_tree(path: Path, owner_uid: int, owner_gid: int) -> None:
     for item in (path, *path.rglob("*")):
-        if item.is_symlink():
+        details = item.lstat()
+        if stat.S_ISLNK(details.st_mode):
+            os.lchown(item, owner_uid, owner_gid)
             continue
-        os.chown(item, owner_uid, -1)
-        os.chmod(item, 0o750 if item.is_dir() or os.access(item, os.X_OK) else 0o640)
+        os.chown(item, owner_uid, owner_gid)
+        os.chmod(item, 0o750 if stat.S_ISDIR(details.st_mode) or details.st_mode & 0o111 else 0o640)
 
 
 def _result(

@@ -43,6 +43,8 @@ _DEFAULT_STDOUT_LIMIT = 16 * 1024
 _DEFAULT_STDERR_LIMIT = 16 * 1024
 _CHANNEL_READ_CHUNK_BYTES = 64 * 1024
 _SETUP_CANCEL_GRACE_SECONDS = 0.2
+_REMOTE_RETRY_NEXT_ACTION = "check the SSH host, host key, and administrator sudo access before retrying"
+_PARTIAL_PROVISIONING_NEXT_ACTION = "inspect the host's partial provisioning state, then retry provisioning"
 
 
 @dataclass(frozen=True)
@@ -339,13 +341,13 @@ class PyinfraRemote:
             add_deploy(self._state, deploy, *args, **kwargs)
             run_ops(self._state)
             return summarize_deploy(self._state)
-        except OpsError:
-            raise
+        except OpsError as error:
+            raise _merge_pyinfra_change_evidence(error, self._state)
         except Exception:
             categorized_error = getattr(self._state, "_taskman_categorized_error", None)
             if isinstance(categorized_error, OpsError):
-                raise categorized_error
-            raise _remote_error("programmatic pyinfra deployment failed") from None
+                raise _merge_pyinfra_change_evidence(categorized_error, self._state)
+            raise _pyinfra_deploy_error("programmatic pyinfra deployment failed", self._state) from None
 
     def close(self) -> None:
         """Disconnect the private pyinfra connection when a workflow is done."""
@@ -789,17 +791,20 @@ def summarize_deploy(state: State) -> ChangeSet:
         raise TypeError("pyinfra deployment summary requires State")
     categorized_error = getattr(state, "_taskman_categorized_error", None)
     if isinstance(categorized_error, OpsError):
-        raise categorized_error
+        raise _merge_pyinfra_change_evidence(categorized_error, state)
     operations: list[str] = []
     for host in state.inventory:
         result = state.get_results_for_host(host)
         if result.error_ops or result.partial_ops:
-            raise _remote_error("programmatic pyinfra deployment failed")
+            raise _pyinfra_deploy_error("programmatic pyinfra deployment failed", state)
         for op_hash in host.op_hash_order:
             operation_data = state.get_op_data_for_host(host, op_hash)
             operation_result = operation_data.operation_meta
             if not operation_result.is_complete():
-                raise _remote_error("programmatic pyinfra deployment produced incomplete results")
+                raise _pyinfra_deploy_error(
+                    "programmatic pyinfra deployment produced incomplete results",
+                    state,
+                )
             if not operation_result.did_change():
                 continue
             for name in sorted(state.get_op_meta(op_hash).names):
@@ -950,13 +955,48 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _remote_error(message: str) -> OpsError:
+def _pyinfra_deploy_error(message: str, state: State) -> OpsError:
+    changed = _pyinfra_deploy_may_have_changed(state)
+    next_action = _PARTIAL_PROVISIONING_NEXT_ACTION if changed else None
+    return _remote_error(message, changed=changed, next_action=next_action)
+
+
+def _merge_pyinfra_change_evidence(error: OpsError, state: State) -> OpsError:
+    """Retain category guidance while adding prior or possible pyinfra changes."""
+
+    if not error.changed and _pyinfra_deploy_may_have_changed(state):
+        error.changed = True
+    return error
+
+
+def _pyinfra_deploy_may_have_changed(state: State) -> bool:
+    """Report known changes or possible mutation after pyinfra starts execution."""
+
+    try:
+        for host in state.inventory:
+            for op_hash in host.op_hash_order:
+                operation_meta = state.get_op_data_for_host(host, op_hash).operation_meta
+                if operation_meta.is_complete() and operation_meta.did_change():
+                    return True
+    except Exception:
+        # A malformed/incomplete result must not hide the conservative execution
+        # boundary or leak pyinfra diagnostics into the operator-facing error.
+        pass
+    return bool(state.is_executing)
+
+
+def _remote_error(
+    message: str,
+    *,
+    changed: bool = False,
+    next_action: str | None = None,
+) -> OpsError:
     return OpsError(
         status=ExitStatus.REMOTE_PREFLIGHT,
         stage="remote",
         message=message,
-        changed=False,
-        next_action="check the SSH host, host key, and administrator sudo access before retrying",
+        changed=changed,
+        next_action=_REMOTE_RETRY_NEXT_ACTION if next_action is None else next_action,
     )
 
 

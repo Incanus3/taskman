@@ -167,6 +167,8 @@ def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() ->
             changed=False,
             stage="safety-refused",
             facts={"selected_release_id": None, "applied_migrations": (999,)},
+            warnings=("release warning",),
+            next_action="inspect the release state before retrying",
             exit_status=ExitStatus.SAFETY,
         )
 
@@ -175,10 +177,80 @@ def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() ->
         capabilities=_capabilities(host, release=release),
     )
 
+    assert result.command == "provision"
+    assert result.changed is True
     assert result.exit_status is ExitStatus.SAFETY
     assert result.stage == "safety-refused"
     assert result.facts["applied_migrations"] == (999,)
+    assert result.warnings == ("release warning",)
+    assert result.next_action == "inspect the release state before retrying"
     assert host.events == ["plan", "discovery", "provisioning"]
+
+
+def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_change() -> None:
+    host = Host()
+
+    def release(_remote: object, _config: EnvironmentConfig, _artifact: object) -> WorkflowResult:
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=False,
+            stage="release-refused",
+            facts={"failure": "not-ready"},
+            warnings=("release warning",),
+            next_action="inspect release state before retrying",
+            exit_status=ExitStatus.RELEASE,
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(
+            host,
+            provisioning=lambda *_args: ChangeSet(changed=False),
+            release=release,
+        ),
+    )
+
+    assert result.command == "provision"
+    assert result.changed is False
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.stage == "release-refused"
+    assert result.facts == {"failure": "not-ready"}
+    assert result.warnings == ("release warning",)
+    assert result.next_action == "inspect release state before retrying"
+
+
+def test_provision_release_failure_retains_release_change_evidence() -> None:
+    host = Host()
+
+    def release(_remote: object, _config: EnvironmentConfig, _artifact: object) -> WorkflowResult:
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="release-incomplete",
+            facts={"failure": "started"},
+            warnings=("release warning",),
+            next_action="inspect the partially deployed release before retrying",
+            exit_status=ExitStatus.RELEASE,
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(
+            host,
+            provisioning=lambda *_args: ChangeSet(changed=False),
+            release=release,
+        ),
+    )
+
+    assert result.command == "provision"
+    assert result.changed is True
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.stage == "release-incomplete"
+    assert result.facts == {"failure": "started"}
+    assert result.warnings == ("release warning",)
+    assert result.next_action == "inspect the partially deployed release before retrying"
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

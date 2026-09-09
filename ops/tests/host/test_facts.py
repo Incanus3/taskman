@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 import hashlib
+from pathlib import Path
+import shutil
+import subprocess
 import pytest
 
 from tests.support.remotes import ScriptedRemote
@@ -9,6 +12,7 @@ from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host.acceptance import (
     ProvisioningState,
+    _loopback,
     validate_provisionable_host,
     validate_supported_host,
 )
@@ -16,7 +20,9 @@ from taskman_ops.host.facts import (
     MINIMUM_DISK_BYTES,
     MINIMUM_MEMORY_BYTES,
     HostFacts,
+    Listener,
     ProvisioningMarkerState,
+    _listener_owners,
 )
 from taskman_ops.remote import CommandResult
 
@@ -79,6 +85,29 @@ def managed_caddy_responses(
     responses[10] = CommandResult(0, "managed\n")
     responses[11] = CommandResult(0, "caddy.service enabled\n")
     responses[-2:] = [CommandResult(0, listener_owners), evidence or caddy_evidence()]
+    return responses
+
+
+def managed_postgresql_responses(*, database_listeners: tuple[str, ...]) -> list[CommandResult]:
+    responses = fact_responses(postgres=True)
+    responses[8] = CommandResult(
+        0,
+        "LISTEN 0 4096 *:80 0.0.0.0:*\n"
+        "LISTEN 0 4096 *:443 0.0.0.0:*\n"
+        + "".join(f"LISTEN 0 4096 {listener} *:*\n" for listener in database_listeners),
+    )
+    responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n/etc/caddy/Caddyfile\n")
+    responses[10] = CommandResult(0, "managed\n")
+    responses[11] = CommandResult(0, "caddy.service enabled\n")
+    responses[12] = CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")
+    responses[13] = CommandResult(0, "taskman:x:1000:1000::\n")
+    responses[17] = CommandResult(0, "taskman_prod\n")
+    responses[-2] = CommandResult(
+        0,
+        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
+    )
+    responses[-1] = caddy_evidence()
     return responses
 
 
@@ -183,6 +212,31 @@ def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
         facts.architecture = "arm64"  # type: ignore[misc]
 
 
+def test_listener_owner_parser_accepts_ss_field_padding() -> None:
+    listener_owners = (
+        'LISTEN 0      4096               *:80         *:* users:(("caddy",pid=402,fd=6))                      \n'
+        'LISTEN 0\t4096\t*:443\t*:*\tusers:(("caddy",pid=402,fd=7))\t\t\n'
+    )
+
+    assert _listener_owners(listener_owners) == {
+        Listener("*", 80): ("caddy", 402),
+        Listener("*", 443): ("caddy", 402),
+    }
+
+
+@pytest.mark.parametrize(
+    "listener_owners",
+    (
+        'LISTEN 0 4096 *:80 *:* users:(("caddy",pid=402,fd=6),("sidecar",pid=403,fd=7))\n',
+        'LISTEN 0 4096 *:80 *:* users:(("caddy",pid=402,fd=6)) unexpected\n',
+    ),
+)
+def test_listener_owner_parser_rejects_ambiguous_or_nonwhitespace_suffix(
+    listener_owners: str,
+) -> None:
+    assert _listener_owners(listener_owners) is None
+
+
 @pytest.mark.parametrize(
     "listener_owners",
     (
@@ -280,6 +334,38 @@ def test_marker_anchored_caddy_owner_is_recognized_on_a_rerun_without_mutation()
     assert second.state is ProvisioningState.PARTIAL
     assert first.caddy_state.value == "active"
     assert second.caddy_state.value == "active"
+
+
+def test_managed_postgresql_bracketed_ipv6_loopback_is_admitted_as_partial() -> None:
+    remote = ScriptedRemote.from_responses(
+        managed_postgresql_responses(database_listeners=("127.0.0.1:5432", "[::1]:5432"))
+    )
+
+    discovery = validate_provisionable_host(
+        remote,
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+
+    assert discovery.state is ProvisioningState.PARTIAL
+    assert Listener("[::1]", 5432) in discovery.facts.listeners
+
+
+@pytest.mark.parametrize(
+    "address",
+    (
+        "[0.0.0.0]",
+        "[::]",
+        "[203.0.113.10]",
+        "[2001:db8::10]",
+        "[::1",
+        "::1]",
+        "[::1]unexpected",
+    ),
+)
+def test_loopback_rejects_bracketed_wildcard_public_and_malformed_addresses(address: str) -> None:
+    assert not _loopback(address)
 
 
 def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_convergence() -> None:
@@ -549,6 +635,58 @@ def test_pristine_host_skips_postgresql_sudo_and_database_discovery() -> None:
     assert facts.postgres_sudo_available is None
     assert ("sudo", "-n", "-u", "postgres", "true") not in [argv for argv, _kwargs in remote.calls]
     assert not any("psql -Atq" in " ".join(argv) for argv, _kwargs in remote.calls)
+
+
+def test_absent_managed_units_pass_native_systemd_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemctl = shutil.which("systemctl")
+    if systemctl is None:
+        pytest.skip("native systemctl is required")
+    units = tmp_path / "etc/systemd/system"
+    units.mkdir(parents=True)
+    (units / "ssh.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
+    remote = ScriptedRemote.from_responses(fact_responses())
+    scripted_run = remote.run
+
+    def run(argv, **kwargs):
+        response = scripted_run(argv, **kwargs)
+        if tuple(argv[:2]) == ("systemctl", "list-unit-files"):
+            result = subprocess.run(
+                [systemctl, "--root", str(tmp_path), *argv[1:]],
+                capture_output=True, text=True, check=False,
+            )
+            return CommandResult(result.returncode, result.stdout, result.stderr)
+        return response
+
+    monkeypatch.setattr(remote, "run", run)
+    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    assert facts.existing_units == ()
+    assert facts.failed_checks == ()
+
+
+@pytest.mark.parametrize("absence_status", [1, 127])
+def test_absent_postgresql_passes_shell_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, absence_status: int
+) -> None:
+    remote = ScriptedRemote.from_responses(fact_responses())
+    scripted_run = remote.run
+
+    def run(argv, **kwargs):
+        response = scripted_run(argv, **kwargs)
+        if tuple(argv[:2]) == ("sh", "-c") and "command -v psql" in argv[2]:
+            result = subprocess.run(
+                ["/bin/sh", "-c", f"command() {{ return {absence_status}; }}\n{argv[2]}"],
+                env={"PATH": str(tmp_path)},
+                capture_output=True, text=True, check=False,
+            )
+            return CommandResult(result.returncode, result.stdout, result.stderr)
+        return response
+
+    monkeypatch.setattr(remote, "run", run)
+    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    assert facts.postgres_available is False
+    assert facts.failed_checks == ()
 
 
 def test_present_postgresql_requires_sudo_and_detects_a_managed_database() -> None:

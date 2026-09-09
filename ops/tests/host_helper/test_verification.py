@@ -13,6 +13,8 @@ from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
+from taskman_ops.workflows.helper import verification_settings
+from tests.support.environments import environment_config
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
@@ -74,6 +76,32 @@ def _preflight_paths(tmp_path) -> ManagedPaths:
             "backup_root": (tmp_path / "backups").as_posix(),
         }
     )
+
+
+def test_environment_verification_settings_accept_connection_timeout_above_command_bound() -> None:
+    config = environment_config()
+
+    settings = verification_module._settings(verification_settings(config))
+
+    assert settings["connection_timeout"] == 10.0
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), float("-inf"), True, "10", None])
+def test_settings_reject_non_positive_or_non_finite_connection_timeout(timeout: object) -> None:
+    parameters = dict(_request().parameters)
+    parameters["connection_timeout"] = timeout
+
+    with pytest.raises(ValueError, match="verification timeout"):
+        verification_module._settings(parameters)
+
+
+def test_fixed_host_commands_retain_the_three_second_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: 100.0)
+
+    assert verification_module._command_timeout(110.0) == verification_module._MAX_COMMAND_SECONDS
+    assert verification_module._command_timeout(102.5) == 2.5
 
 
 def _host_command_response(argv: tuple[str, ...]) -> tuple[bool, str]:

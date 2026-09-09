@@ -34,6 +34,17 @@ RUN test -n "$SOURCE_REVISION" \
  && mix assets.deploy \
  && mix release --overwrite
 
+RUN --network=none \
+    timeout --kill-after=5s 30s env \
+      RELEASE_TMP=/tmp/taskman-release-boot-check \
+      DATABASE_URL=ecto://taskman:build@127.0.0.1:5432/taskman_build \
+      SECRET_KEY_BASE="$(printf '%064d' 0)" \
+      ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET="$(printf '%064d' 1)" \
+      PHX_HOST=build.example.test \
+      RESEND_API_KEY=build-resend-key \
+      MAIL_FROM=build@example.test \
+      /app/_build/prod/rel/taskman/bin/taskman eval ':ok'
+
 RUN test "$(mix hex.info | sed -n 's/^Hex:[[:space:]]*//p')" = "$HEX_VERSION" \
  && mkdir -p /artifact \
  && cp -a /app/_build/prod/rel/taskman /artifact/taskman \

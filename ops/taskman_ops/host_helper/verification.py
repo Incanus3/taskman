@@ -260,10 +260,15 @@ def _settings(value: Mapping[str, object]) -> dict[str, int | str | float]:
     timeouts: dict[str, float] = {}
     for name in ("readiness_timeout", "connection_timeout"):
         raw = value[name]
-        maximum = _MAX_READINESS_SECONDS if name == "readiness_timeout" else _MAX_COMMAND_SECONDS
-        if type(raw) not in {int, float} or not math.isfinite(float(raw)) or not 0 < float(raw) <= maximum:
+        if type(raw) not in {int, float} or raw <= 0:
             raise ValueError("invalid verification timeout")
-        timeouts[name] = float(raw)
+        try:
+            timeout = float(raw)
+        except (OverflowError, ValueError):
+            raise ValueError("invalid verification timeout") from None
+        if not math.isfinite(timeout) or (name == "readiness_timeout" and timeout > _MAX_READINESS_SECONDS):
+            raise ValueError("invalid verification timeout")
+        timeouts[name] = timeout
     public_ipv4 = _address(value["public_ipv4"], 4)
     public_ipv6 = value["public_ipv6"]
     if public_ipv6 is not None:

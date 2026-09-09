@@ -8,7 +8,7 @@ capabilities provided by the established deployment workflow.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 import os
@@ -176,7 +176,10 @@ def provision(
         raise
 
     if release.exit_status is not ExitStatus.OK:
-        return _close_result(remote, release)
+        return _close_result(
+            remote,
+            replace(release, command="provision", changed=provisioning_changed or release.changed),
+        )
     return _close_result(remote, WorkflowResult(
         command="provision",
         environment=environment_name,

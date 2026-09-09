@@ -102,7 +102,10 @@ case "$before" in
       '') ;;
       'Added user rules '*)
         saved_rules=$(printf '%s\\n' "$saved" | sed '1d' | sed '/^$/d')
-        [ -z "$saved_rules" ] || unsafe
+        case "$saved_rules" in
+          ''|'(None)') ;;
+          *) unsafe ;;
+        esac
         ;;
       *) unsafe ;;
     esac

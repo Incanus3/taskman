@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import json
+import os
 from pathlib import Path
 import stat
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -134,6 +136,48 @@ def test_builder_containerfile_pins_hex_and_rebar_without_live_latest_resolution
     assert '--sha512 "$REBAR3_SHA512"' in source
     assert "mix local.hex --force" not in source
     assert "mix local.rebar --force" not in source
+
+
+def test_builder_containerfile_checks_runtime_configuration_with_a_nonbooted_release_eval(
+    tmp_path: Path,
+) -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "builder" / "Containerfile"
+    ).read_text(encoding="utf-8")
+    gate = source.split("RUN --network=none \\\n", 1)[1].split("\n\nRUN test", 1)[0]
+    command = gate.replace("\\\n", " ")
+    release = tmp_path / "taskman"
+    release.write_text(
+        "#!/bin/sh\n"
+        "test \"$1\" = eval || exit 1\n"
+        "test \"$2\" = :ok || exit 1\n"
+        "test \"$RELEASE_TMP\" = /tmp/taskman-release-boot-check || exit 1\n"
+        "test \"$DATABASE_URL\" = 'ecto://taskman:build@127.0.0.1:5432/taskman_build' || exit 1\n"
+        "test \"${#SECRET_KEY_BASE}\" -ge 64 || exit 1\n"
+        "test \"${#ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET}\" -ge 64 || exit 1\n"
+        "test \"$SECRET_KEY_BASE\" != \"$ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET\" || exit 1\n"
+        "test \"$PHX_HOST\" = build.example.test || exit 1\n"
+        "test \"$MAIL_FROM\" = build@example.test || exit 1\n",
+        encoding="utf-8",
+    )
+    release.chmod(0o755)
+    command = command.replace(
+        "/app/_build/prod/rel/taskman/bin/taskman",
+        str(release),
+    )
+
+    completed = subprocess.run(
+        ("/bin/sh", "-c", command),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": os.environ["PATH"]},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "mix release --overwrite" in source
+    assert source.index("mix release --overwrite") < source.index("RUN --network=none")
+    assert source.index("RUN --network=none") < source.index("mkdir -p /artifact")
 
 
 def test_builder_containerfile_pins_the_readable_ubuntu_base_tag_and_digest() -> None:

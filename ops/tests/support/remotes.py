@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import os
 from pathlib import Path, PurePosixPath
+import subprocess
 from typing import Any
 
 from taskman_ops.remote import CommandResult, UploadReceipt
@@ -83,6 +85,102 @@ class ScriptedRemote:
         if isinstance(response, BaseException):
             raise response
         return response
+
+
+class LocalProtectedRemote:
+    """Execute protected file commands locally while suppressing their output."""
+
+    def __init__(self, destination: Path, workspace: Path, *, failure: str | None = None) -> None:
+        self.destination = destination
+        self.failure = failure
+        self.calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+        self.results: list[tuple[int, bytes, bytes]] = []
+        self._bin = workspace / "protected-command-bin"
+        self._bin.mkdir(parents=True)
+        self._write_install_wrapper()
+        self._write_mktemp_wrapper()
+        self._write_rm_wrapper()
+        self._write_stat_wrapper()
+
+    def run(self, argv: Any, **kwargs: Any) -> CommandResult:
+        command = tuple(argv[:-1]) + (self.destination.as_posix(),)
+        self.calls.append((command, kwargs))
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            input=kwargs.get("stdin"),
+            env={
+                **os.environ,
+                "PATH": f"{self._bin}:{os.environ['PATH']}",
+                "TASKMAN_PROTECTED_STAGE_ROOT": str(self._bin.parent),
+                "TASKMAN_PROTECTED_FAIL_CLEANUP": "1" if self.failure == "cleanup" else "",
+                "TASKMAN_PROTECTED_SEND_TERM": "1" if self.failure == "signal" else "",
+            },
+        )
+        self.results.append((completed.returncode, completed.stdout, completed.stderr))
+        return CommandResult(completed.returncode)
+
+    def _write_install_wrapper(self) -> None:
+        path = self._bin / "install"
+        path.write_text(
+            "#!/bin/sh\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in\n"
+            "    -o|-g) shift 2 ;;\n"
+            "    *) break ;;\n"
+            "  esac\n"
+            "done\n"
+            "/usr/bin/install \"$@\"\n"
+            "status=$?\n"
+            "if [ \"$status\" -eq 0 ] && [ \"${TASKMAN_PROTECTED_SEND_TERM:-}\" = 1 ]; then\n"
+            "  kill -TERM \"$PPID\"\n"
+            "fi\n"
+            "exit \"$status\"\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+
+    def _write_rm_wrapper(self) -> None:
+        path = self._bin / "rm"
+        path.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${TASKMAN_PROTECTED_FAIL_CLEANUP:-}\" = 1 ]; then exit 1; fi\n"
+            "exec /usr/bin/rm \"$@\"\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+
+    def _write_mktemp_wrapper(self) -> None:
+        path = self._bin / "mktemp"
+        path.write_text(
+            "#!/bin/sh\n"
+            "case \"${1:-}\" in\n"
+            "  /tmp/taskman-pgpass.XXXXXX|/tmp/taskman-environment.XXXXXX)\n"
+            "    exec /usr/bin/mktemp \"$TASKMAN_PROTECTED_STAGE_ROOT/${1##*/}\"\n"
+            "    ;;\n"
+            "  *) exec /usr/bin/mktemp \"$@\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+
+    def _write_stat_wrapper(self) -> None:
+        path = self._bin / "stat"
+        path.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *--format=%U:%G:%a*)\n"
+            "    target=\"\"\n"
+            "    for argument in \"$@\"; do target=\"$argument\"; done\n"
+            "    mode=$(/usr/bin/stat --format=%a -- \"$target\") || exit $?\n"
+            "    printf 'root:root:%s\\n' \"$mode\"\n"
+            "    ;;\n"
+            "  *) exec /usr/bin/stat \"$@\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
 
 
 @dataclass
