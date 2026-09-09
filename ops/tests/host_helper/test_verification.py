@@ -276,9 +276,13 @@ def test_authoritative_state_ambiguity_is_not_reported_as_a_timeout_stage(
 
 @pytest.mark.parametrize(
     "listeners",
-    [None, (("0.0.0.0", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432))],
+    [
+        None,
+        (("0.0.0.0", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)),
+        (("127.0.0.1", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432), ("127.0.0.1", 4369)),
+    ],
 )
-def test_malformed_or_public_listener_topology_is_a_release_failure(
+def test_malformed_public_or_epmd_listener_topology_is_a_release_failure(
     monkeypatch: pytest.MonkeyPatch,
     listeners: tuple[tuple[str, int], ...] | None,
 ) -> None:
@@ -292,6 +296,48 @@ def test_malformed_or_public_listener_topology_is_a_release_failure(
     assert report["exit_status"] == 8
     assert report["checks"][3]["name"] == "listener-topology"
     assert report["checks"][3]["status"] == "failed"
+
+
+def test_listener_topology_accepts_scoped_loopback_addresses_from_live_ss_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = """\
+LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*
+LISTEN 0 128 127.0.0.1:4000 0.0.0.0:*
+LISTEN 0 128 [::1%lo]:6789 [::]:*
+LISTEN 0 244 [::1]:5432 [::]:*
+"""
+    monkeypatch.setattr(verification_module, "_successful", lambda *_args: (True, output))
+
+    assert verification_module._listener_topology(4000, 6789, 5432, 1.0)
+
+
+def test_listener_topology_rejects_a_scoped_public_managed_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = """\
+LISTEN 0 128 203.0.113.10%lo:4000 0.0.0.0:*
+LISTEN 0 128 127.0.0.1:6789 0.0.0.0:*
+LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*
+"""
+    monkeypatch.setattr(verification_module, "_successful", lambda *_args: (True, output))
+
+    assert not verification_module._listener_topology(4000, 6789, 5432, 1.0)
+
+
+@pytest.mark.parametrize(
+    "listener",
+    (
+        "127.0.0.53%:53",
+        "127.0.0.53%lo%bad:53",
+        "127.0.0.53%lo/bad:53",
+        "not-an-ip%lo:53",
+        "[::1%]:6789",
+        "[::1%lo%bad]:6789",
+    ),
+)
+def test_listener_rejects_invalid_scoped_address_or_interface_suffix(listener: str) -> None:
+    assert verification_module._listener(listener) is None
 
 
 def test_executable_mismatch_is_a_release_failure(

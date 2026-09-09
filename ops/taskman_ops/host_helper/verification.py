@@ -25,6 +25,7 @@ _CHECKS = (
 _NEXT_ACTION = "inspect the fixed verification summaries and correct the reported host state before retrying"
 _STATUS_RE = re.compile(r"HTTP/(?:1\.[01]|2|3) ([0-9]{3})(?: [^\r\n]+)?\Z")
 _FAILURE_RE = re.compile(r"failed to start|boot failed|application.*(failed|error)|database.*(failed|error)", re.I)
+_INTERFACE_SCOPE_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}\Z")
 _MAX_OUTPUT = 9_216
 _MAX_COMMAND_SECONDS = 3.0
 _MAX_READINESS_SECONDS = 30.0
@@ -471,6 +472,11 @@ def _listener(value: str) -> tuple[str, int] | None:
         if not separator: return None
     if not port.isdecimal() or not 1 <= int(port) <= 65_535: return None
     if address != "*":
+        base, separator, scope = address.partition("%")
+        if separator:
+            if _INTERFACE_SCOPE_RE.fullmatch(scope) is None:
+                return None
+            address = base
         try: ipaddress.ip_address(address)
         except ValueError: return None
     return address, int(port)
