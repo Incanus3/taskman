@@ -39,6 +39,7 @@
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
+- [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment design](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Desired-target deployment reconciliation (proposed)](specs/2026-09-09-deploy-reconciliation-design.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
