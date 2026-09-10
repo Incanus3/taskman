@@ -1,6 +1,6 @@
 # Operations VPS readiness
 
-Status: active. Updated: 2026-09-09. Resume: `$resume ops-vps-readiness`.
+Status: active. Updated: 2026-09-10. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
@@ -21,9 +21,17 @@ under ordinary plan confirmation, without separate resume/redeploy commands or a
 Local artifact loss must not strand deployment. The
 [reconciliation specification](../specs/2026-09-09-deploy-reconciliation-design.md) is written and
 awaits operator review, including exact record formats and scheduled-helper compatibility handling.
-The design sections, including deploy-only `--yes` and independent interactive/flag downgrade
-acknowledgment, are approved. No general replay journal or automatic database restore is proposed.
-The complete specification and implementation plan are not yet approved.
+The design sections, including `--yes` for deploy and provision plus independent deploy-only
+downgrade acknowledgment, are approved. No general replay journal or automatic database restore is
+proposed.
+The operator also approved environment-neutral dirty local builds for `build`, `deploy`, and
+`provision` through `--allow-dirty`, including tracked and non-ignored untracked files. Release
+identity uses exact deployed bytes and a terminal `-dirty` provenance marker, without a
+whole-worktree identity digest. An explicitly selected dirty artifact implies acknowledgment, while
+redundant `--allow-dirty` remains valid for it. Both deploy and provision support unattended ordinary
+confirmation through `--yes`; downgrade acknowledgment remains deploy-only. Provision retains its
+new-installation and exact-genesis-retry admission boundary. The amended written specification and
+implementation plan are not yet approved.
 Administrator/login acceptance completed independently after fresh actual release, database, and
 readiness checks. It does not complete deployment or resolve `tas-sr4b`.
 The operator authorized committing and pushing the current branch before administrator/login

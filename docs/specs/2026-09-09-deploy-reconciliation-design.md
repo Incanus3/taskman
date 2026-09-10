@@ -1,7 +1,7 @@
 # Desired-target deployment reconciliation
 
 Status: proposed specification; design sections approved in conversation, written specification
-awaiting operator review. Updated: 2026-09-09. Tracking: `tas-sr4b`.
+awaiting operator review. Updated: 2026-09-10. Tracking: `tas-sr4b`.
 
 ## Authority and scope
 
@@ -13,10 +13,11 @@ The [runbook](../deployment.md) owns implemented operator instructions; do not d
 options as available until implemented. The [development guide](../development.md) owns checks.
 
 On approval, this specification supersedes the older design's source-only release identity,
-artifact-resolution-before-SSH ordering, exact-attempt-only deployment admission, blanket exclusion
-of pending records, and absence of unattended deployment confirmation. The exception to completed-only
-records is narrowly limited to backup protection. It does not introduce an operation journal.
-Other commands retain their existing consequence and confirmation rules.
+clean-only local release builds, artifact-resolution-before-SSH ordering, exact-attempt-only
+deployment admission, blanket exclusion of pending records, and absence of unattended deployment
+or provisioning confirmation. The exception to completed-only records is narrowly limited to backup
+protection. It does not introduce an operation journal. Other commands retain their existing
+consequence and confirmation rules.
 
 The [CLI UX proposal](2026-09-09-operations-cli-ux-design.md) remains separate. This work includes
 correct deployment failure evidence and the facts needed for reconciliation, coordinated with
@@ -59,26 +60,45 @@ manual symlink/history edits, push, merge, destructive restore, or broader accep
 
 ## Operator contract
 
-There is one command, with these additional deploy-only options:
+Existing-host reconciliation remains one `deploy` command. The affected command interfaces are:
 
 ```text
 taskman deploy ENV [--artifact ARCHIVE] [--migration-policy POLICY]
-                   [--yes] [--allow-downgrade] [--dry-run] [--json]
+                   [--yes] [--allow-dirty] [--allow-downgrade]
+                   [--dry-run] [--json]
+
+taskman provision ENV [--artifact ARCHIVE] [--yes] [--allow-dirty]
+                      [--dry-run] [--json]
+
+taskman build [--allow-dirty]
 ```
 
 Existing options retain their spelling. No `resume`, `redeploy`, generic `--force`, or manual
-adoption mode is introduced. Without an explicit artifact, the clean checkout selects the desired
-source/build inputs. An explicit artifact selects its exact validated bytes, independently of
-checkout cleanliness. A failed existing release need not become healthy before replacement.
+adoption mode is introduced. Without an explicit artifact, the checkout selects the desired
+source/build inputs and remains clean-only by default. `--allow-dirty` permits `build`, `deploy`, or
+`provision` to build a dirty local checkout; it is not restricted by environment name. An explicit
+artifact selects its exact validated bytes independently of checkout cleanliness. Selecting an
+artifact whose manifest records dirty provenance itself acknowledges that provenance;
+`--allow-dirty` is optional and accepted redundantly for such an artifact, but is an argument error
+with an explicitly selected clean artifact. A failed existing release need not become healthy
+before replacement.
 
-`--yes` acknowledges the ordinary deployment plan. `--allow-downgrade` independently acknowledges
-a known downgrade; neither flag substitutes for the other or for a migration-policy declaration.
+`taskman build --allow-dirty` creates a dirty-provenance artifact without installing it. Provisioning
+may instead build and install the dirty checkout directly. Dirty-source permission never substitutes
+for an ordinary deployment or provisioning confirmation, downgrade acknowledgment, or
+migration-policy declaration.
+
+`--yes` acknowledges the ordinary deployment or provisioning plan. `--allow-downgrade` remains
+deploy-only and independently acknowledges a known downgrade; neither flag substitutes for the
+other or for a migration-policy declaration.
 An interactive known downgrade displays both baselines, the target, and the reasons, and requires
 a separate explicit `yes` unless the downgrade flag is present. Ordinary confirmation remains
 required unless `--yes` is present. Interactive refusal cancels without mutation using the existing
 confirmation-cancelled result. Missing required acknowledgment in non-interactive execution is a
-safety refusal, exit 10, before upload or managed mutation; it must not wait for input. Flag use on
-other commands is an argument error, exit 2. `--json` is never confirmation.
+safety refusal, exit 10, before upload or managed mutation; it must not wait for input. `--yes` is
+valid only for deploy and provision, `--allow-dirty` only for build, deploy, and provision, and
+`--allow-downgrade` only for deploy; other uses are argument errors, exit 2. `--json` is never
+confirmation.
 
 Dry-run resolves and validates the target and observes the host, but does not prompt, refresh the
 installed helper, publish records, change services, or mutate the database. It may build a local
@@ -86,27 +106,45 @@ artifact. Missing confirmation flags do not make a dry-run fail; its plan report
 acknowledgments. Incompatible schema or missing required migration policy still refuses.
 
 The plan names physical current, last successful selection, exact desired release and archive
-digest, artifact origin, observed schema, pending migrations, migration policy, downgrade evidence,
-existing recovery points, and whether the scheduled helper needs refreshing. Ordinary confirmation
-binds these material facts. The helper revalidates them under the lifecycle lock. A changed baseline,
-schema, target identity, unresolved protection set, or installed helper identity refuses and requires
-a new plan, even with `--yes`. Unrelated newly scheduled backups do not invalidate the plan.
+digest, artifact origin, clean or dirty source provenance, observed schema, pending migrations,
+migration policy, downgrade evidence, existing recovery points, and whether the scheduled helper
+needs refreshing. Dirty provenance is prominent in human and JSON plans and results. Ordinary
+confirmation authorizes only the displayed material facts. The helper revalidates them under the
+lifecycle lock. A changed baseline, schema, target identity, unresolved protection set, or installed
+helper identity refuses before further consequences and requires a new plan and confirmation, even
+when the previous invocation used `--yes`. Unrelated newly scheduled backups do not invalidate the
+plan.
+
+Provisioning applies the same displayed-plan-only authorization rule to its existing first-install
+or exact-genesis-retry facts. `--yes` removes the interactive prompt; it does not weaken host
+admission, artifact validation, secret handling, or apply-time revalidation.
 
 ## Target resolution and immutable identity
 
-Separate source/build input identity from exact artifact identity. New IDs have this exact form:
+Separate source/build input identity from exact artifact identity. New clean IDs have this exact
+form:
 
 ```text
-<application-version>-<12-hex-source-sha>-ubuntu26.04-amd64-otp<otp-version>-sha256-<64-hex-archive-sha256>
+<application-version>-<12-hex-source-sha>-ubuntu26.04-amd64-otp<otp-version>-<64-hex-archive-sha256>
 ```
 
-The full digest avoids a new truncated-hash collision policy. Full source revision remains in
-metadata. Validate the complete ID and filename/path component bounds before use; reject oversized
-identities rather than truncating. The archive retains its existing `taskman` top-level layout and
-does not embed this external ID. Package to a temporary filename, hash those final bytes, then name
-the final archive, manifest, checksum, and private artifact directory. Renaming must not repackage
-the archive. Identical bytes with identical logical inputs have the same ID; a non-identical rebuild
-gets a different immutable directory. Do not overwrite an installed release.
+Dirty IDs append one literal terminal marker:
+
+```text
+<application-version>-<12-hex-source-sha>-ubuntu26.04-amd64-otp<otp-version>-<64-hex-archive-sha256>-dirty
+```
+
+The full digest avoids a new truncated-hash collision policy. Manifest schema version 3 fixes this
+field to SHA-256, so the ID does not repeat a static algorithm label. Full source revision remains
+in metadata. Validate the complete ID and filename/path component bounds before use; reject
+oversized identities rather than truncating. The archive retains its existing `taskman` top-level
+layout and does not embed this external ID. Package to a temporary filename, hash those final bytes,
+then name the final archive, manifest, checksum, and private artifact directory. Renaming must not
+repackage the archive. Append the literal `-dirty` suffix only when the frozen source snapshot was
+dirty.
+Identical bytes with the same clean-or-dirty provenance have the same ID; a non-identical rebuild
+gets a different immutable directory. Clean and dirty builds intentionally have visibly distinct
+IDs even when their final archive bytes match. Do not overwrite an installed release.
 
 Detached `built_at` is descriptive, not identity or freshness authority. Two valid manifests for
 the same archive may have different build timestamps; compare the archive digest and all source,
@@ -114,26 +152,57 @@ target, toolchain, builder, layout, and migration identity fields, not that time
 installed content. Keep the originally published installed provenance unchanged. Conflicting
 identity fields under the same ID still refuse.
 
+The release ID does not contain a working-tree snapshot digest. The archive digest identifies the
+bytes that can actually run, while the source revision identifies the clean commit on which local
+work was based. Dirty artifacts add only the terminal `-dirty` provenance marker so their risk is
+immediately visible and an explicitly selected dirty artifact can imply `--allow-dirty`. Worktree
+differences in comments, documentation, or unused source do not add another identity dimension;
+only the clean-or-dirty class and packaged bytes matter. Differences that affect the deployed
+release produce a different archive digest and therefore a different ID.
+
 New artifact manifests use schema version 3: the existing exact version-2 field set plus
-`artifact_sha256`. Validate agreement between this field, the ID suffix, the detached checksum, and
-the actual archive. Version-2 artifacts and historical IDs remain readable, with their existing
-strict runtime allowlist and checksum rules. Do not rewrite or rename historical artifacts.
+`artifact_sha256` and the strict boolean `source_dirty`. Validate agreement between the artifact
+digest field, the digest portion of the ID, the detached checksum, and the actual archive.
+`source_dirty` records whether the captured source contained tracked or non-ignored untracked
+changes relative to `source_revision` and must agree exactly with the presence of the terminal
+`-dirty` suffix. `built_at` may differ between manifests for the same exact release identity. All
+fields that describe source class, archive, target, toolchain, builder, layout, and migrations must
+still agree. Preserve the originally installed manifest when reusing an identical installed
+release rather than overwriting its provenance. Version-2 artifacts and historical IDs remain
+readable and imply clean source, with their existing strict runtime allowlist and checksum rules.
+Do not rewrite or rename historical artifacts.
 
 New installed release records use schema version 2: the existing `release_id`, `source_revision`,
 `artifact_sha256`, and `migrations`, plus `schema_version: 2` and `artifact_manifest` containing the
-full validated detached manifest. All duplicated provenance must agree. Publish it with the
-immutable release, never retrofit it into a historical directory. Existing four-field records remain
-readable and retain their exact historical serialization.
+full validated detached manifest. All duplicated identity fields must agree. Publish it with the
+immutable release, never retrofit it into a historical directory. Existing four-field records
+remain readable and retain their exact historical serialization.
 
-Without `--artifact`, validate the clean checkout and derive exact source, application version,
-target, runtime/toolchain, builder tag/digest, and migration fingerprints. Then perform read-only
-host observation and resolve in this order:
+Without `--artifact` or `--allow-dirty`, validate the clean checkout and derive exact source,
+application version, target, runtime/toolchain, builder tag/digest, and migration fingerprints.
+Then perform read-only host observation and resolve in this order:
 
 1. Matching physical installed release with sufficient validated provenance.
 2. Matching last-successful installed release with sufficient provenance.
 3. Another exact-input installed release, deterministically ordered by full release ID.
 4. Verified exact-input local cache artifact, deterministically ordered by full ID and path.
 5. A normal fresh build from the identified clean source.
+
+With `--allow-dirty`, require an identified Git checkout with a valid `HEAD`, then capture a private,
+stable build snapshot containing tracked files plus non-ignored untracked files, while honoring
+tracked deletions. Git-ignored files, repository metadata, controller state, and secrets remain
+excluded. Apply the clean exporter's path, member-type, and bounds checks; refuse submodules,
+symlinks, unsupported file types, unsafe paths, or relevant worktree changes during capture. Build
+from that frozen snapshot rather than the changing checkout. No whole-snapshot digest is persisted
+or used for identity.
+
+A dirty automatic deployment or provisioning run must build its frozen snapshot before it can know
+the exact artifact identity; it cannot reuse host or local artifacts merely because they share its
+base revision. Once the archive is built and hashed, ordinary exact-identity reuse applies within
+the dirty provenance class, including reuse of an identical installed dirty release where the
+command's existing admission rules permit it. The frozen artifact, not a later worktree read, is
+the target bound into the plan. A clean checkout passed with
+`--allow-dirty` follows the normal clean resolution path and records clean provenance.
 
 Do not infer full builder provenance from a historical four-field installed record. Such a record
 can be reused with an explicit verified matching artifact; otherwise skip it for automatic
@@ -146,10 +215,15 @@ Host reuse requires no local archive or upload. It validates the exact installed
 tree/launcher authority, and retained provenance; it does not claim to reconstruct an archive hash
 from extracted files. Explicit artifacts remain authoritative and may reuse a matching installed
 record without re-extraction after local validation. Revalidate the clean source identity before
-confirming an automatically resolved target; source drift requires resolution again.
+confirming an automatically resolved clean target; source drift requires resolution again. Dirty
+targets are already fixed by their private frozen snapshot and exact artifact digest.
 
-`build` remains host-independent. Provisioning shares the new build and reader formats but does not
-gain existing-host reconciliation, unattended confirmation, or broader first-install admission.
+`build` remains host-independent. Provisioning shares the new build and reader formats, may build a
+dirty checkout or accept an explicitly selected dirty artifact, and supports unattended ordinary
+confirmation through `--yes`. It still admits only a new managed installation or its narrowly
+recognized exact genesis retry. It refuses an already initialized, manually constructed, or
+ambiguous host; a completed managed installation must use `deploy`. These flags do not make
+`provision` a recovery path for interrupted existing-host deployments.
 
 ## Observed state and deployment admission
 
@@ -403,10 +477,11 @@ unproven startup-race fix. A timeout must retain the failed checks.
 
 Expected owners, relative to `ops/taskman_ops/`:
 
-- `cli.py`, `workflows/deploy.py`: flags, target intent, downgrade acknowledgment, plan and result.
+- `cli.py`, `workflows/deploy.py`, `workflows/provision.py`: command-specific flags, target intent,
+  ordinary confirmation, deploy-only downgrade acknowledgment, plans, and results.
 - `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`: exact artifact identity,
-  legacy reads, build-after-hash naming, local and installed resolution; small source-order helper
-  within `releases/` if needed, not host code that runs Git.
+  clean and frozen-dirty source export, legacy reads, build-after-hash naming, local and installed
+  resolution; small source-order helper within `releases/` if needed, not host code that runs Git.
 - `host_protocol/`, `workflows/helper.py`: versioned deploy discovery/request/result integration.
 - `host_helper/records.py`, `state.py`, `paths.py`: dual-format records and coherent authority;
   a focused `host_helper/backup_protection.py` owns protection publication/reference lifecycle.
@@ -428,8 +503,12 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
    one first; history links successful outcomes, not an invented success.
 3. Lose local artifacts: reuse sufficient installed provenance, or rebuild safely with a new ID;
    explicit artifacts remain exact and legacy records are unchanged.
-4. Same-source non-identical archives get distinct IDs; identical bytes reuse identity; reject
-   digest/source/manifest disagreements and unsafe paths. Exercise real clean build and cache reuse.
+4. Same-source non-identical archives get distinct IDs; identical bytes reuse identity within the
+   same clean-or-dirty provenance class even when irrelevant worktree content differs. Clean and
+   dirty artifacts have distinct IDs through the terminal marker. Reject digest/source/manifest
+   disagreements and unsafe paths. Exercise real clean build/cache reuse and dirty snapshots with
+   tracked changes, deletions, and non-ignored untracked files while proving ignored files stay
+   excluded.
 5. Fail after each migration commit prefix, backup publication, protection publication, selection,
    start, verification, successful record, and protection removal. Retry or replace from live schema.
 6. Multiple backups with identical source/schema do not cause guessed attribution; protect exact
@@ -437,8 +516,11 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
    or required releases, including after target replacement and transport loss.
 7. Missing/conflicting provenance, malformed protection, unsafe links, absent history/current,
    incompatible downgrade, and nontransactional/unknown database state refuse without repair.
-8. Interactive, unattended, JSON, and dry-run confirmation matrix, known/unknown source ordering,
-   lower SemVer, divergent revisions, same-source rebuilds, and drift after `--yes`.
+8. Deploy and provision interactive, unattended, JSON, and dry-run confirmation matrices, including
+   dirty local builds, implicit acknowledgment from an explicit dirty artifact, redundant
+   `--allow-dirty` for a dirty artifact, refusal for a clean artifact, and apply-time drift after
+   `--yes`. Deploy coverage also includes known/unknown source ordering, lower SemVer, divergent
+   revisions, and same-source rebuilds.
 9. Legacy and new artifacts/records mixed through verification, scheduled backup, listings,
    rollback, restore, and cleanup. No in-place legacy rewrite or generic adoption.
 10. Isolated `-I -S` execution of both packages; dependency refresh/no-op/failure/interruption and
@@ -449,8 +531,9 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
 Run the development guide's operations suite, compileall, shell syntax, help/confirmation checks,
 and `mix precommit`; check Markdown links, whitespace, and planning-term leakage. Independent scoped
 review must inspect migration ordering, reference retention, legacy readers, and the actual public
-retry path. Build/packaging changes require a clean identified release build plus manifest/hash/cache
-and packaged-runtime validation. Local tests do not establish real systemd, backup, or restore safety.
+retry path. Build/packaging changes require clean and dirty identified release builds plus
+manifest/hash/cache and packaged-runtime validation. Local tests do not establish real systemd,
+backup, or restore safety.
 
 ## Rejected alternatives and caveats
 
@@ -458,6 +541,9 @@ and packaged-runtime validation. Local tests do not establish real systemd, back
 - Requiring original local bytes or a healthy partial candidate strands otherwise safe replacement.
 - Overwriting source-named immutable directories destroys exact provenance; reproducible builds
   are not assumed and are not required to solve this deployment problem.
+- A whole-worktree digest is not release identity. It would distinguish or duplicate comments,
+  documentation, and unused source that do not affect deployed bytes; the final archive digest is
+  the exact runtime authority.
 - A general operation journal/replay engine is unnecessary. Backup protection records preserve
   recovery material, not execution history or permission to resume an old process.
 - Guessing backup identity from timestamps or choosing one matching dump is not authoritative.
@@ -471,8 +557,9 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
 
 ## Next-session checklist
 
-1. Obtain operator review of this written specification, including the scheduler compatibility
-   consequence and the exact new persisted formats. Resolve review changes here, not in a parallel spec.
+1. Obtain operator review of this written specification, including dirty-source handling, the
+   scheduler compatibility consequence, and the exact new persisted formats. Resolve review changes
+   here, not in a parallel spec.
 2. Write and approve an implementation plan from this complete design, with Beads delivery tasks,
    scoped ownership, tests, and an independent verification task. No implementation has begun.
 3. Update the readiness handoff and start a clean implementation session by default. Refresh actual
@@ -491,6 +578,15 @@ uncertainty. Local relative-link, placeholder, and trailing-whitespace checks pa
 `mix precommit` passed with 805 tests; application source, assets, configuration, tests, `mix.exs`,
 and `mix.lock` were unchanged by that check. Dependency compilation emitted warnings. This verifies
 the unchanged application baseline and documentation hygiene, not the unimplemented reconciliation.
+
+On 2026-09-10, operator-guided review added environment-neutral dirty-source builds. Follow-up
+self-review checked that exact archive bytes and the terminal dirty marker are the only new identity
+dimensions, dirty provenance stays visible without a whole-worktree digest, explicit dirty artifacts
+imply acknowledgment, and tracked deletions plus non-ignored untracked files enter a stable private
+build snapshot while ignored files remain excluded. This amendment is design only; no implementation
+or host action has occurred. Follow-up review extended `--yes` and dirty-checkout building to
+provision while preserving its new-installation and exact-genesis-retry boundary; downgrade
+acknowledgment remains deploy-only.
 
 Evidence sources for this change are repository code and the recorded staging observation in
 `tas-sr4b`, `tas-q5lo`, and `tas-6dkg`; no new external research or host action was performed while
