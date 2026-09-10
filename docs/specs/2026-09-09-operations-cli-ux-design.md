@@ -1,7 +1,7 @@
 # Operations CLI progress and outcome design
 
 Status: proposed specification; command behavior approved, written-spec approval pending.
-Updated: 2026-09-09. Design task: `tas-7ncz`. Related diagnostics: `tas-6dkg`.
+Updated: 2026-09-11. Design task: `tas-7ncz`. Reconciliation-owned diagnostics: `tas-6dkg`.
 
 ## Purpose and authority
 
@@ -15,6 +15,26 @@ safety, immutable release identity, confirmation, recovery, and protocol bounds.
 [runbook](../deployment.md) owns current commands; [development guidance](../development.md) owns
 engineering and verification rules. The [PostgreSQL Python proposal](2026-09-09-postgresql-host-python-design.md)
 remains parked and is not a prerequisite.
+
+The [reconciliation specification](2026-09-09-deploy-reconciliation-design.md) owns the next
+protocol baseline (version 3), artifact identity, dirty-source support, deploy/provision `--yes`,
+independent downgrade acknowledgment for deploy and provision, and failed-verification evidence under `tas-6dkg`.
+It also owns desired-release recovery of an unfinished first installation, including provision's
+migration-policy declaration and null-baseline backup protections.
+Its five-attempt-backup retention policy requires plans to list the exact superseded intermediate
+backups proposed for pruning; presentation must preserve that confirmation scope.
+Restore may also publish the first successful installation from a validated compatible backup;
+its plans must show absent prior history/selection explicitly rather than treating them as errors.
+Reconciliation also owns restore's `--replace-unfinished`: plans identify the old and new backups,
+discarded/rebuilt databases, and protected safety copies, with fresh typed data-loss confirmation.
+An already-successful restore requires cleanup followed by a separately confirmed new restore,
+not unfinished-target replacement.
+Provisioning admission is based on validated resources and plan confirmation; the historical
+provisioning marker is neither required nor sufficient and is no longer written.
+This UX work builds on that baseline. Earlier requirements here to retain protocol version 2,
+clean-only builds, and confirmation exclusively through stdin are superseded for those overlapping
+surfaces. The reconciliation specification still awaits full written approval; this precedence
+decision does not approve either complete specification or describe implemented behavior.
 
 On implementation, this specification supersedes the older design's unconditional build-before-SSH
 ordering for **provision only**, its flat human renderer, and mixed JSON/prompt/error streams.
@@ -73,7 +93,7 @@ helper invocation, and final verification boundaries. First-install and deploy f
 their safe reasons/reports; shared consumers are updated only where the result contract requires it.
 
 Do not add a TUI, event bus, persistent progress records, host agent, new database state, generic
-workflow framework, raw-output debug mode, auto-confirm option, automatic deploy/rollback, or
+workflow framework, raw-output debug mode, additional auto-confirm option, automatic deploy/rollback, or
 PostgreSQL refactor. Do not rename public commands or rebuild a release to change its identity.
 Do not expand into a full-branch review or new host acceptance run.
 
@@ -85,23 +105,23 @@ implicitly, and never turn an early refusal into a successful no-op.
 
 | Observed state and input | Required behavior before building or host convergence |
 | --- | --- |
-| Pristine supported host, no artifact | Admit the host, then build and validate the current clean source; present plan and require confirmation |
+| Pristine supported host, no artifact | Admit the host, then resolve/build under reconciliation's clean or explicitly allowed dirty-source rules; present plan and apply its acknowledgment policy |
 | Pristine supported host, explicit artifact | Validate the artifact and admit the host; present plan and require confirmation |
 | Compatible pre-release partial provisioning, no release/staging identity yet | Permit normal continuation after admission; bare invocation may build |
-| Recognizable unfinished first release, bare invocation | Refuse with status 10 and request its original explicit artifact; do not rebuild or guess from cache |
-| Recognizable unfinished first release, matching explicit artifact | Permit the existing replay after confirmation and fresh authority checks |
+| Validated unfinished first installation, bare invocation | Resolve the desired source using reconciliation's installed/cache/build rules; admit a different target subject to live-schema safety |
+| Validated unfinished first installation, explicit artifact | Permit the exact desired artifact, including replacement, after reconciliation's schema, backup, and acknowledgment checks |
 | Completed first installation, bare invocation | Refuse with status 10 before build, secret decryption, convergence, or prompt; identify selected release and direct updates to deploy |
 | Completed first installation, exact original artifact | Permit the existing explicit convergence/replay path; verify before reporting success |
 | Completed installation, different artifact | Refuse with status 10 before convergence or prompt; direct updates to deploy |
 | Later deployment history, even an artifact matching current | Do not broaden the first-install replay contract; refuse provision and explain the deploy boundary |
 | Missing, foreign, corrupt, conflicting, or unprovable authority | Refuse with the applicable existing safety/preflight/lock status; do not adopt or infer a pristine host |
 
-Where a completed release record exists, matching means its full artifact identity, including
-checksum and migration fingerprints, not just a short source prefix or release ID. A rebuilt
-archive with the same logical ID but different recorded bytes is not a matching retry. Incomplete
-staging without a record proves only candidate attribution through its validated deterministic
-name; require an explicit artifact for that candidate and retain the existing staging verification
-and replay policy. Do not invent a historical checksum. A completed selection proves selection,
+For the exact completed-first-install replay exception, matching means full artifact identity,
+including checksum and migration fingerprints. Before first success, the desired target may differ
+and the original archive is unnecessary. Incomplete staging proves only candidate attribution
+through its validated deterministic name, never migration execution or a historical checksum.
+Use reconciliation's managed-state and live-schema checks for unfinished installations, including
+multiple valid installed candidates and absent physical current. A completed selection proves selection,
 not current service health; early refusals say **selected release**, not **healthy running release**.
 
 `--dry-run` uses the same early classification and refusal rules but performs no managed-state
@@ -115,7 +135,7 @@ as today; announce that work. A completed host's bare dry run must not build.
 2. Connect using existing pinned SSH authority and perform supported-host admission.
 3. Inspect existing release/selection authority before deciding whether a build is appropriate.
 4. On eligible paths only, decrypt/validate secrets and resolve/build the required artifact.
-5. Present the exact redacted plan and read explicit confirmation.
+5. Present the exact redacted plan and apply reconciliation's acknowledgment policy, including `--yes`.
 6. Refresh the early admission decision after a long build/confirmation and before convergence;
    refuse changed material authority. Existing host-side locked revalidation remains decisive.
 7. Execute the existing provisioning and first-release procedures, then render their final result.
@@ -131,22 +151,21 @@ every later schema failure before host convergence.
 
 The request uses the two existing paths, empty expected state, and empty parameters. Successful
 state contains exactly five fields: `classification` (`empty`, `unfinished`, or `completed`),
-`selected_release_id` (validated ID or null), `release` (one validated ReleaseRecord or null),
-`staged_release_id` (one attributable validated staging ID or null), and `first_selection_only`
-(boolean).
-`empty` requires no attributable release/staging/selection evidence; `unfinished` allows one
-attributable first-install identity or recognizable staging; `completed` requires valid selected
-history. Later history can return `completed` but is distinguished by `first_selection_only`,
-true only for exactly one initial
-completed selection and its sole release. Controllers never reconstruct history from this flag.
-Unknown or contradictory state returns the existing bounded refusal, not a success classification.
-For completed history, `release` is its selected record; for an unfinished first installation it
-is the sole attributable record if one exists. Any staging must be attributable to the same
-candidate; competing staging identities refuse. The controller compares explicit artifact identity
-against both the record (when present) and the staging ID before allowing convergence.
+`selected_release_id` (validated ID or null), `releases` (validated ReleaseRecord array),
+`staged_release_ids` (sorted unique validated ID array), and `first_selection_only` (boolean).
+Arrays respect protocol collection and total encoded response bounds; an unrepresentable result
+refuses with a bounded reason rather than truncating authoritative facts.
+`empty` requires no release/staging/selection/protection evidence; `unfinished` allows multiple
+valid installed or staged candidates with no successful history; `completed` requires valid
+selected history. `first_selection_only` is true only for exactly one initial completed selection
+under the existing completed-genesis replay constraints. Controllers never reconstruct history
+from this flag. Unknown or contradictory state refuses. Different candidate identities alone
+are not corruption. Credentialed reconciliation separately validates live migration provenance
+and backup protections before consequences; early metadata classification does not establish
+that a replacement target is compatible.
 
 Use the existing lifecycle lock when it exists. Do not call the lock's current creating path on a
-pristine/marker-only host merely to inspect it: that path creates the installation root. An absent
+host without installation state merely to inspect it: that path creates the installation root. An absent
 lock permits only a read-only proof that no release/selection/staging evidence exists; otherwise
 refuse. Add a narrow non-creating lock acquisition option if needed, preserving every existing
 caller's default. Temporary verified helper transfer infrastructure is allowed, as with existing
@@ -243,10 +262,14 @@ document, ANSI escapes, or child-process output into stdout. CLI-parsed errors u
 `--json` also produce one final error document on stdout; explanatory usage goes to stderr.
 Document the deliberate correction from the previous exception-result stderr behavior.
 
-JSON never implies confirmation. Keep existing ordinary `yes` and typed destructive confirmations;
-write prompts to stderr and read explicit stdin responses. EOF, missing input, or a wrong response
-returns status 10 without the guarded mutation. Explicit piped input retains its existing meaning;
-no flag, environment variable, or output mode supplies an answer automatically.
+JSON never implies confirmation. Apply reconciliation's deploy/provision `--yes` and independent
+downgrade acknowledgment rules for both commands, including unknown ordering against an existing
+baseline. Explain uncertainty instead of claiming a downgrade was detected. A fresh installation
+with no baseline is exempt. Missing required acknowledgment in non-interactive execution refuses
+without waiting for input. Write interactive prompts to stderr; refusal, EOF, or a wrong
+response returns status 10 without the guarded mutation. Other commands retain their existing
+confirmation rules, including typed destructive confirmations. No additional flag, environment
+variable, or output mode supplies acknowledgment.
 Dry runs and commands without confirmation keep their existing policy. Do not open another terminal
 to bypass redirected stdin. `create-admin` retains its stricter real-TTY-only credential bridge and
 its existing restrictions; it is not converted into captured JSON/password output.
@@ -259,21 +282,22 @@ Do not weaken existing process cleanup or transport deadlines in order to draw p
 
 ## Failure evidence and protocol scope
 
-Implement `tas-6dkg` within this increment: retain a failed `VerificationReport` through helper,
-workflow mapping, JSON, and human output. Accept it only through the existing strict report parser.
-Do not fabricate a report for preflight, transport loss, or failures before verification.
+Reconciliation implements `tas-6dkg`, retaining a failed `VerificationReport` through helper,
+workflow mapping, and public results. This increment presents that evidence through the common
+human renderer and preserves it in JSON. Accept reports only through the strict report parser;
+do not fabricate a report for preflight, transport loss, or failures before verification.
 
 The existing helper `message` must reach an appropriate safe controller reason instead of becoming
 only `deployment-incomplete`. Where a generic catch discards an identifiable first-install refusal,
 use finite reason text tied to that actual guard; never expose arbitrary exception messages.
 Report selected and running identity separately when both are proved; otherwise say selected only.
 
-Retain protocol version 2, its exact envelope, 64 KiB bounds, and one request/one result. The narrow
+Build on reconciliation's protocol version 3, its exact envelope, 64 KiB bounds, and one request/one result. The narrow
 inspection operation is an additive vocabulary entry and is packaged with its matching controller;
 operation-specific validation covers its exact fields. Existing deployment result state already
 has a report seam; fix its failure path and validate optional failed evidence without relaxing
 successful-verification requirements. No per-step remote event stream, durable state, protocol
-compatibility fallback, or scheduled-backup capability expansion is introduced.
+compatibility fallback, or additional scheduled-backup capability expansion is introduced by UX.
 
 ## Expected file responsibilities
 
@@ -306,8 +330,9 @@ and early authority classification. Required cases:
 1. Bare completed-host provision refuses before builder, SOPS decryption, confirmation, upload of
    a release, or convergence. A changed checkout reproduces the operator's case. Selected identity
    is shown but health is not invented. Same behavior under dry-run and JSON.
-2. Pristine and pre-release partial installs remain available; exact staged/unfinished/completed
-   first-release retries work. Wrong bytes, foreign state, later history, missing locks with release
+2. Pristine and pre-release partial installs remain available; unfinished installation can use a
+   different desired artifact or recover after archive loss under reconciliation's rules. Exact
+   completed-first-release replay remains constrained. Corrupt bytes, foreign state, later history, missing locks with release
    evidence, and concurrent selection changes refuse without adoption. Inspection creates no
    installation root/lock/marker/record and leaks no credential data.
 3. A synchronized blocking fake proves activity appears before the operation completes. TTY/plain
@@ -324,7 +349,7 @@ and early authority classification. Required cases:
    remain unknown; exact status categories and successful verification requirements are preserved.
 7. Both zipapps execute with `python3 -I -S`; only the transient helper gains inspection capability.
    Deterministic packaging, protocol limits, redaction, and architecture tests remain enforced.
-8. Build tests preserve clean-source identity, isolated release evaluation, archive contents,
+8. Build tests preserve reconciliation's clean/dirty source and artifact identity, isolated release evaluation, archive contents,
    checksum, and artifact cache behavior. If build execution code changes, perform the documented
    clean-checkout build gate, not a VPS deployment, and verify the artifact as required by development
    guidance. Presentation-only output tests must not require external infrastructure.
@@ -351,7 +376,8 @@ Safety refuses ambiguity rather than guessing that a host is new or that a faile
 Before implementation:
 
 1. Obtain written-spec approval and resolve review findings in this document.
-2. Write and review a bounded implementation plan linked to `tas-7ncz` and `tas-6dkg`.
+2. Write and review a bounded implementation plan for `tas-7ncz`, consuming reconciliation's
+   protocol v3 and completed `tas-6dkg` evidence contract.
 3. Update the existing workstream handoff; use the approved-plan clean-session boundary by default.
 4. In the implementation session, reread this specification and current repository guidance,
    refresh actual branch/host assumptions, and use delegated implementation plus independent review.

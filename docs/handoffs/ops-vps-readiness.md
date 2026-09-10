@@ -1,126 +1,99 @@
 # Operations VPS readiness
 
-Status: active. Updated: 2026-09-10. Resume: `$resume ops-vps-readiness`.
+Status: active. Updated: 2026-09-11. Resume: `$resume ops-vps-readiness`.
 
-## Objective and authority
+## Objective
 
-Authorized staging provisioning and readiness now succeed. This workstream owns the remaining
-operator-selected host acceptance. Readiness task: `tas-b7kd`. Initial administrator creation,
-browser login, administrator access, and logout acceptance are complete (`tas-q5lo` closed).
-The separate [CLI UX workstream](operations-cli-ux.md) remains unfinished.
-The [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) owns architecture;
-the [runbook](../deployment.md) owns commands, shell prerequisites, recovery, and acceptance gates.
+Finish the desired-target deployment reconciliation specification, implement it after explicit
+written approval and planning, complete the interrupted staging deployment through the public
+controller, and continue operator-selected VPS readiness acceptance without weakening artifact,
+migration, backup, or host authority.
 
-The original administrator prompt failure was resolved by the non-CI runtime correction, now
-verified locally and through successful real-host administrator creation and browser acceptance.
-The operator authorized backup-helper refresh, runtime deployment, and readiness checks.
-Helper refresh succeeded; deployment selected and started the candidate but failed verification
-before publishing its completed selection. `tas-sr4b` now owns an architectural recovery design:
-one desired-target `deploy` command that reuses matching work or replaces an unfinished release
-under ordinary plan confirmation, without separate resume/redeploy commands or a generic force flag.
-Local artifact loss must not strand deployment. The
-[reconciliation specification](../specs/2026-09-09-deploy-reconciliation-design.md) is written and
-awaits operator review, including exact record formats and scheduled-helper compatibility handling.
-The design sections, including `--yes` for deploy and provision plus independent deploy-only
-downgrade acknowledgment, are approved. No general replay journal or automatic database restore is
-proposed.
-The operator also approved environment-neutral dirty local builds for `build`, `deploy`, and
-`provision` through `--allow-dirty`, including tracked and non-ignored untracked files. Release
-identity uses exact deployed bytes and a terminal `-dirty` provenance marker, without a
-whole-worktree identity digest. An explicitly selected dirty artifact implies acknowledgment, while
-redundant `--allow-dirty` remains valid for it. Both deploy and provision support unattended ordinary
-confirmation through `--yes`; downgrade acknowledgment remains deploy-only. Provision retains its
-new-installation and exact-genesis-retry admission boundary. The amended written specification and
-implementation plan are not yet approved.
-Administrator/login acceptance completed independently after fresh actual release, database, and
-readiness checks. It does not complete deployment or resolve `tas-sr4b`.
-The operator authorized committing and pushing the current branch before administrator/login
-acceptance. No merge, manual history rewrite, or destructive acceptance is authorized.
+## Durable authority
 
-## Completed checkpoint
+- Proposed specification under operator review:
+  [Desired-target deployment reconciliation](../specs/2026-09-09-deploy-reconciliation-design.md)
+- Implemented baseline:
+  [Dedicated-host deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
+- Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
+- Readiness task: `tas-b7kd`; reconciliation implementation: `tas-sr4b`; bounded failed-result
+  diagnostics: `tas-6dkg`
 
-- On 2026-09-09, the operator privately created the administrator and signed in. Browser inspection
-  confirmed the authenticated workspace and `/admin`, with the account active and administrative.
-  Normal sign-out succeeded; fresh `/admin` and `/` navigation required sign-in again. No password
-  or token was captured. The browser is left signed out. See `tas-q5lo` for scoped acceptance evidence.
-- Target: `root@taskman.page:22`, Ubuntu 26.04.1 x86_64/systemd. The operator opened Hetzner
-  TCP 443 and then TCP 80. Caddy obtained a valid certificate after validation and reload.
-  External IPv4 HTTP redirects to HTTPS; `/healthz` returns exact `ready`, no-store, HSTS.
-  Host-side HTTPS works over IPv4 and IPv6; independent external IPv6 remains unverified.
-- Before the runtime deployment, the OTP 27 baseline had all ten migrations, one completed genesis
-  selection, and all eight readiness checks passing. Original-artifact provisioning refreshed the
-  helper with `release.changed=false`. Current partial-deployment state is described below.
-- PostgreSQL 18/main is healthy on loopback. Native HBA is active, parser clean, with no recovery
-  directory. Taskman, PostgreSQL, and Erlang distribution remain loopback-only; no EPMD listener.
-- Previous completed application source: `8266656863adf6f710ab05fc7e8024f7e4a2b126`. Release:
-  `0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6`.
-  SHA-256: `632f2a44ee1e265961e25e226f68751e00cfeabc3d10aa4236a82b80c49e3cf8`.
-  Artifact directory:
-  `/tmp/taskman-artifacts-1000/0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6-z69je_z6`.
-  Archive basename: `taskman-0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6.tar.gz`.
-- Runtime correction checkpoint: `42d019920b7540509ac8fde944d4b979f7178e92` on
-  `dedicated-host-deployment-automation`. Clean verified controller:
-  `/tmp/taskman-runtime-build.DxZfr9`. Older controller clones do not understand the new runtime.
-- Verified candidate: `0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6`, Elixir 1.20.4 / OTP 29.0.6.
-  SHA-256: `9d7e444f37622cf3e9f96d8891082b882999d84ed10457d7539ae9b4018d7225`.
-  Artifact directory:
-  `/tmp/taskman-artifacts-1000/0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6-5xtku563`.
-  Archive basename: `taskman-0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6.tar.gz`.
-  This candidate is physically selected and running (observed MainPID 216429), but deployment is
-  incomplete: only the original OTP 27 genesis selection record exists. Do not equate the running
-  candidate with a completed deployment or manually append the missing record.
-- The scheduled-backup helper refresh succeeded using the original artifact, without changing the
-  selected release at that step. Installed SHA-256:
-  `056bdc6dba387e1b814210a5970dcc3d4d30f29c145ff4b2dd7f7ace84e1b586`.
-  It contains both runtime identities. Do not repeat first-install provisioning in this partial state.
-- The failed `d2a013172234` release and uploaded archive remain recoverably quarantined under
-  `/opt/taskman-retired-d2a013172234-20260909`. Do not retry that archive or repeat completed repairs.
-- Resend sending domain and DNS are verified, sender `no-reply@notify.taskman.page`; actual email
-  delivery is not yet tested. Secrets remain in the protected deployment workflow.
+The separate [Operations CLI UX](operations-cli-ux.md) and parked
+[PostgreSQL host-side Python](postgresql-host-python.md) workstreams remain outside this increment.
 
-## Verification and remaining uncertainty
+## Current checkpoint
 
-On the exact new runtime: 915 operations tests and `mix precommit` 805 tests passed, plus
-compileall, shell syntax, locked dependency sync, and whitespace checks. Independent scoped
-runtime review passed 224 tests with no remaining findings. Clean-source build, isolated release
-startup, archive/manifest/checksum validation, and exact-input cache reuse passed. The new controller
-also validates the original deployed artifact without changing its identity or checksum.
+The operator has approved the reconciliation design sections discussed so far, but has not approved
+the full written specification. Review remains active. No implementation plan or reconciliation code
+exists yet.
 
-The packaged release passed two real-PTY secrecy/restoration tests, including termination. A native
-local `systemd-run --pipe` check accepted synthetic password/confirmation without echo and restored
-visible input. This does not establish native SSH/service-user acceptance on staging. The historical
-OTP 27 release demonstrably fails before confirmation. See `tas-q5lo` for evidence and the disclosed
-workstation Rebar3-cache replacement incident; prior cached bytes were unknown and not guessed.
+Reconciliation now explicitly owns protocol v3 and `tas-6dkg`; the CLI UX proposal consumes that
+baseline, including source and acknowledgment rules. This ownership decision is approved; the
+complete written specification remains under review.
 
-Standalone listings/verification emit `unknown deployment entry: uploads` for the controller's
-existing upload directory; the release inventory remains valid. Failed release verification loses
-its existing bounded check report, forcing separate diagnostics; `tas-6dkg` tracks that correction.
-Neither observation authorizes cleanup or broader refactoring.
+The current proposed contract includes:
 
-The authorized deployment returned status 9 at verification, with stale `changed=false` and the
-previous selected ID. Direct inspection instead found the new current symlink and active new VM.
-Read-only execution of the same individual verification predicates over SSH passed service,
-executable identity, listener topology, journal, local/public readiness, and HSTS. The original
-failed check is unknown; a startup race is not established. Standalone `verify` and exact-candidate
-`deploy --dry-run` now return status 10 because strict discovery refuses the unfinished transition.
-No migrations changed; backup inventory was empty and no deployment backup was required or created.
+- one desired-target `deploy` flow that can retry or replace an unfinished managed release without
+  fabricating successful history or requiring lost local artifact bytes;
+- exact artifact-byte identity, legacy record compatibility, live-schema validation, durable
+  pre-migration backup protection, scheduler-helper compatibility, and truthful failure evidence;
+- attempt retention keeps the original, newest, and three recent intermediates per unfinished
+  sequence, replacing the 64-attempt refusal. Publish a fresh protection before confirmed pruning;
+  independent history/restore references remain protected, and a transient sixth backup is allowed;
+- restore may recover before first success using a validated backup and compatible installed
+  source release, including absent `current`; verified restore then publishes the first success;
+- restore's approved `--replace-unfinished` permits another backup after failed verification;
+  durable replacement intent preserves the original database and safety copies, including possible
+  new writes. Interrupted replacement can normalize safely before accepting a third target;
+- `--yes` for unattended deploy and provision confirmation, plus independent `--allow-downgrade`
+  for both commands, required for known downgrades or unknown ordering against an existing baseline;
+  unfinished candidates can establish a baseline before first success, while no-baseline fresh
+  installs remain exempt;
+- environment-neutral dirty builds for build, deploy, and provision through `--allow-dirty`, using
+  tracked changes and deletions plus non-ignored untracked files while excluding ignored files;
+- clean IDs ending in the schema-defined 64-hex SHA-256 artifact digest and dirty IDs appending a
+  visible terminal `-dirty`; no whole-worktree digest or redundant algorithm label;
+- explicit dirty artifacts imply dirty-source acknowledgment, while redundant `--allow-dirty` is
+  accepted for them. Before first successful selection, provision may retry or replace the desired
+  artifact, including after original archive loss; it validates live schema and protects backups
+  against a null successful-history baseline. Further migrations require explicit policy.
 
-The [PostgreSQL Python workstream](postgresql-host-python.md) remains separately parked. Its design
-and planning state do not belong to host acceptance and are not prerequisites for it.
+Administrator creation, authenticated workspace/admin access, and logout acceptance are complete
+under `tas-q5lo`. They do not complete deployment history. The last recorded host state has the OTP
+29 candidate physically selected and running while successful history still names the OTP 27
+genesis release; no migrations changed during the failed transition. Refresh actual state before
+any host operation and never manually edit `current` or selection history.
+
+The current GitButler stack is `dedicated-host-deployment-automation` with PR 16. The ongoing
+specification review is recorded on this stack. No merge is authorized.
 
 ## Next actions
 
-1. Obtain operator review of the `tas-sr4b` reconciliation specification, then write and approve its
-   implementation plan before the default clean-session boundary. The earlier same-artifact-only fix
-   is superseded by desired-target reconciliation. Preserve failed verification details (`tas-6dkg`).
-   Preserve the running candidate; do not manually edit `current` or selection history. Refresh host
-   state before any resumed operation; runtime deployment itself is already authorized.
-2. After reconciliation implementation and verification, update the canonical dedicated-host design
-   and runbook with the implemented rules, mark superseded guidance explicitly, and refresh indexes.
-   The existing dedicated-host design is the finalized baseline, not unfinished implementation.
-   Complete deployment history and standalone readiness verification independently of login acceptance.
-3. Invitation/email, API key, broader LiveView, backup/off-host-copy, second-release/rollback/restore,
-   controlled failures, reboot, and leakage
-   acceptance remain unperformed; destructive or external effects need their explicit gates.
-4. Do not resume a broad correctness search or merge without operator direction. Failed-result
-   diagnostics (`tas-6dkg`) are coordinated by the separate CLI UX workstream.
+1. Continue the one-at-a-time recovery review. Explicit restore from a failed deployment is now
+   approved and specified, including typed data-loss confirmation and protected recovery references.
+   Interrupted restore admission is also approved and specified: the same backup can resume a
+   validated database swap using a durable restore-target binding; explicitly confirmed target
+   replacement is also specified. Cleanup admission is now approved
+   and specified independently of capacity/database readiness, while preserving recovery references.
+   All three discussed recovery gaps are incorporated; continue full-spec review. Approval of the
+   complete written specification remains pending.
+   Provisioning marker admission has also been replaced with resource/configuration validation
+   and explicit plan confirmation; legacy marker files are ignored and preserved.
+2. After approval, use the writing-plans workflow to create and review a bounded implementation
+   plan. Create scoped Beads delivery tasks, including independent verification.
+3. Update this handoff at the approved-plan boundary and start implementation in a clean session by
+   default.
+4. Implement and verify locally. Then update the canonical deployment design, runbook, and indexes
+   with implemented behavior.
+5. Refresh staging state and continue the already-authorized runtime deployment and readiness checks
+   through the public controller. Preserve the running candidate until reconciliation is ready.
+
+## Constraints and remaining gates
+
+The active human review gate blocks planning. Do not manually repoint releases, synthesize history,
+retry the retired failed artifact, merge, or run destructive recovery. Invitation/email, API key,
+broader LiveView, off-host backup, second-release rollback/restore, controlled-failure, reboot, and
+leakage acceptance still require operator selection or their existing explicit gates. Keep
+`tas-6dkg` coordinated with the CLI UX workstream while preserving its required failure-evidence
+behavior here.

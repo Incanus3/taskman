@@ -1,16 +1,25 @@
 # Operations CLI UX
 
-Status: active. Updated: 2026-09-09. Resume: `$resume operations-cli-ux`.
+Status: active. Updated: 2026-09-10. Resume: `$resume operations-cli-ux`.
 
 ## Objective and authority
 
 Make operations progress, plans, and final outcomes understandable without weakening output
-safety or release authority. Design task: `tas-7ncz`; retained-failure-report follow-up: `tas-6dkg`.
+safety or release authority. Design task: `tas-7ncz`. Reconciliation owns `tas-6dkg`;
+UX consumes its retained failure reports.
 The [proposed specification](../specs/2026-09-09-operations-cli-ux-design.md) owns the design;
 the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) and
 [runbook](../deployment.md) still own implemented behavior.
 
 ## Current checkpoint
+
+- Reconciliation owns protocol v3, artifact/source rules, deploy/provision acknowledgments, and
+  failed-verification evidence. The UX specification now defers to that baseline; full written
+  approval of both specifications remains pending.
+- Before first success, provision may reconcile a different desired artifact and recover from
+  archive loss. Early inspection now accommodates multiple valid candidates; credentialed live
+  schema/protection checks remain decisive. The exact completed-first-install replay exception
+  remains constrained; later replacement uses deploy.
 
 - The operator approved the command/output proposal, including early bare-provision refusal on
   completed installations and preservation of exact original first-install artifact replay.
@@ -34,7 +43,7 @@ the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
    been given.
 2. Ask the operator to review the finished specification, then write and review its bounded plan.
 3. Update this handoff at the approved-plan boundary; continue implementation in a clean session
-   by default. Keep `tas-6dkg` within the agreed failure-diagnostics scope.
+   by default. Consume reconciliation's protocol v3 and `tas-6dkg` results.
 
 No host changes are authorized by this design work. The separate
 [VPS readiness workstream](ops-vps-readiness.md) owns host acceptance and exact artifact context;
