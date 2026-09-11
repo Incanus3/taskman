@@ -2,13 +2,14 @@
 
 set -eu
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: render-caddyfile HOSTNAME CADDYFILE_TEMPLATE" >&2
+if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
+  echo "usage: render-caddyfile HOSTNAME CADDYFILE_TEMPLATE [APPLICATION_PORT]" >&2
   exit 64
 fi
 
 hostname=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
 template=$2
+port=${3-4000}
 
 invalid_hostname() {
   echo "render-caddyfile: enter a valid public DNS hostname, not a reserved example name" >&2
@@ -17,6 +18,23 @@ invalid_hostname() {
 
 if [ "${#hostname}" -gt 253 ]; then
   invalid_hostname
+fi
+
+if [ ! -f "$template" ] || [ ! -r "$template" ]; then
+  echo "render-caddyfile: template is unavailable" >&2
+  exit 66
+fi
+
+case "$port" in
+  ""|*[!0-9]*|0*)
+    echo "render-caddyfile: application port is invalid" >&2
+    exit 64
+    ;;
+esac
+
+if [ "$port" -gt 65535 ]; then
+  echo "render-caddyfile: application port is invalid" >&2
+  exit 64
 fi
 
 case "$hostname" in
@@ -68,10 +86,11 @@ case "$last_label" in
 esac
 
 marker_count=$(grep -Fxc 'taskman.example.com {' "$template" || true)
+port_marker_count=$(grep -Fc 'reverse_proxy 127.0.0.1:{{TASKMAN_APPLICATION_PORT}}' "$template" || true)
 
-if [ "$marker_count" -ne 1 ]; then
+if [ "$marker_count" -ne 1 ] || [ "$port_marker_count" -ne 1 ]; then
   echo "render-caddyfile: expected exactly one taskman.example.com site" >&2
   exit 65
 fi
 
-sed "s/^taskman\\.example\\.com {/${hostname} {/" "$template"
+sed -e "s/^taskman\\.example\\.com {/${hostname} {/" -e "s/{{TASKMAN_APPLICATION_PORT}}/${port}/" "$template"

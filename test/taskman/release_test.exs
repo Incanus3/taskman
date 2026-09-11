@@ -2,6 +2,7 @@ defmodule Taskman.ReleaseTest do
   use Taskman.DataCase, async: false
 
   import ExUnit.CaptureIO
+  import Ecto.Query
 
   alias Taskman.{FakeTerminal, Release, Repo}
   alias Taskman.Accounts.User
@@ -43,6 +44,21 @@ defmodule Taskman.ReleaseTest do
                  SecondRepo -> {:error, :unavailable}
                end
              )
+  end
+
+  test "migrate is idempotent when Ecto runs the complete migration set twice" do
+    options = [
+      app_loader: fn :taskman -> :ok end,
+      repo_provider: fn :taskman -> [Repo] end
+    ]
+
+    assert :ok = Release.migrate(options)
+    assert :ok = Release.migrate(options)
+
+    applied_versions =
+      Repo.all(from migration in "schema_migrations", select: migration.version)
+
+    assert applied_versions == Enum.uniq(applied_versions)
   end
 
   test "create_admin uses the terminal bootstrap boundary without echoing the password" do

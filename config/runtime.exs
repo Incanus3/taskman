@@ -25,17 +25,26 @@ config :taskman, TaskmanWeb.Endpoint,
 
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
+  live_reload_regex_options =
+    if Version.match?(System.version(), ">= 1.19.3"), do: "E", else: ""
+
   config :taskman, TaskmanWeb.Endpoint,
     live_reload: [
       web_console_logger: true,
       patterns: [
         # Static assets, except user uploads
-        ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+        Regex.compile!(
+          ~S"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
+          live_reload_regex_options
+        ),
         # Gettext translations
-        ~r"priv/gettext/.*\.po$"E,
+        Regex.compile!(~S"priv/gettext/.*\.po$", live_reload_regex_options),
         # Router, Controllers, LiveViews and LiveComponents
-        ~r"lib/taskman_web/router\.ex$"E,
-        ~r"lib/taskman_web/(controllers|live|components)/.*\.(ex|heex)$"E
+        Regex.compile!(~S"lib/taskman_web/router\.ex$", live_reload_regex_options),
+        Regex.compile!(
+          ~S"lib/taskman_web/(controllers|live|components)/.*\.(ex|heex)$",
+          live_reload_regex_options
+        )
       ]
     ]
 end

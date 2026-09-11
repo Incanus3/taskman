@@ -1,0 +1,5 @@
+# Public recipient configuration for the operator's Taskman age identity.
+# Private age identities must remain outside the repository.
+creation_rules:
+  - path_regex: 'ops/environments/.*\.secrets\.sops\.yaml$'
+    age: age1pkpt0x8kf3ppxp7autsjz4dphjklzrj6t8a3kj5djxz8pqag39dqnnx8wk

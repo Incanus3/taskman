@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+from io import StringIO
+from pathlib import Path, PurePosixPath
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from taskman_ops.cli import main
+from taskman_ops.config import EnvironmentConfig, load_environment
+from taskman_ops.errors import ExitStatus, OpsError
+
+from tests.support.environments import two_root_environment, valid_environment
+
+
+def test_complete_environment_is_frozen_and_normalizes_architecture_alias() -> None:
+    config = EnvironmentConfig.model_validate(valid_environment())
+
+    assert config.architecture == "amd64"
+    assert config.ssh_port == 2202
+    assert config.public_ipv4 == "203.0.113.10"
+    with pytest.raises(ValidationError):
+        config.application_port = 4001  # type: ignore[misc]
+
+
+def test_two_root_defaults_derive_installation_subordinates_and_current_link() -> None:
+    payload = valid_environment()
+    payload.pop("install_root")
+    payload.pop("backup_root")
+    config = EnvironmentConfig.model_validate(payload)
+
+    assert config.install_root == PurePosixPath("/opt/taskman")
+    assert config.backup_root == PurePosixPath("/var/backups/taskman")
+    assert config.release_root == PurePosixPath("/opt/taskman/releases")
+    assert config.deployment_root == PurePosixPath("/opt/taskman/deployments")
+    assert config.current_link == PurePosixPath("/opt/taskman/current")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("install_root", "/"),
+        ("install_root", "/tmp/taskman"),
+        ("backup_root", "/tmp/backups"),
+        ("install_root", "relative/taskman"),
+        ("backup_root", "/opt/taskman/../outside"),
+        ("backup_root", "/opt/taskman"),
+        ("backup_root", "/opt/taskman/backups"),
+        ("backup_root", "/etc/taskman/backups"),
+        ("install_root", "/run/taskman-ops/helpers"),
+    ],
+)
+def test_two_root_paths_must_be_absolute_normalized_disjoint_and_reserved_free(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(two_root_environment(**{field: value}))
+
+
+def test_two_root_custom_installation_derives_all_subordinate_paths() -> None:
+    config = EnvironmentConfig.model_validate(
+        two_root_environment(install_root="/srv/taskman", backup_root="/srv/taskman-backups")
+    )
+
+    assert config.install_root == PurePosixPath("/srv/taskman")
+    assert config.release_root == PurePosixPath("/srv/taskman/releases")
+    assert config.deployment_root == PurePosixPath("/srv/taskman/deployments")
+    assert config.current_link == PurePosixPath("/srv/taskman/current")
+
+
+@pytest.mark.parametrize("name", ["../production", "/tmp", "production/name", "Production", ""])
+def test_path_like_or_invalid_environment_names_are_refused(name: str) -> None:
+    with pytest.raises(OpsError) as raised:
+        load_environment(name)
+
+    assert raised.value.status is ExitStatus.INVALID
+
+
+@pytest.mark.parametrize("field", ["ssh_host", "public_hostname"])
+@pytest.mark.parametrize("hostname", ["localhost", "localhost.localdomain", "127.0.0.1", "::1", "foo.local"])
+def test_reserved_or_local_hostnames_are_refused(field: str, hostname: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**{field: hostname}))
+
+
+@pytest.mark.parametrize("field,value", [("target_os", "ubuntu24.04"), ("target_os", "debian12"), ("architecture", "arm64")])
+def test_unsupported_target_is_refused(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**{field: value}))
+
+
+@pytest.mark.parametrize("target_os", ["ubuntu-26.04", "Ubuntu 26.04", "ubuntu26.04lts", "ubuntu2604"])
+def test_target_os_requires_the_exact_supported_value(target_os: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(target_os=target_os))
+
+
+@pytest.mark.parametrize("field", ["ssh_port", "application_port", "distribution_port"])
+@pytest.mark.parametrize("port", [0, -1, 65536, "4000", True])
+def test_invalid_ports_are_refused(field: str, port: object) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**{field: port}))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"application_port": 2202},
+        {"distribution_port": 2202},
+        {"distribution_port": 4000},
+        {"application_port": 5432},
+    ],
+)
+def test_service_ports_must_not_overlap(overrides: dict[str, int]) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**overrides))
+
+
+@pytest.mark.parametrize("field", ["database_name", "database_role"])
+@pytest.mark.parametrize("identifier", ["1taskman", "task-man", "task.man", "", "a" * 64])
+def test_database_identifiers_use_the_postgresql_allowlist(field: str, identifier: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**{field: identifier}))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"backup_root": "/opt/taskman"},
+        {"backup_root": "/opt/taskman/backups"},
+        {"backup_root": "/opt/taskman/current"},
+        {"backup_root": "/opt/taskman/releases/backups"},
+        {"install_root": "/var/lib/taskman"},
+        {"backup_root": "/var/lock/taskman/backups"},
+    ],
+)
+def test_install_root_topology_rejects_overlap_and_reserved_path_collisions(
+    overrides: dict[str, str],
+) -> None:
+    """Conflicting roots would apply incompatible owners/modes or delete authority."""
+
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**overrides))
+
+
+def test_non_default_disjoint_roots_remain_supported() -> None:
+    """Topology hardening must retain the documented configurable-root contract."""
+
+    config = EnvironmentConfig.model_validate(
+        valid_environment(
+            install_root="/srv/taskman",
+            backup_root="/srv/taskman-backups",
+        )
+    )
+
+    assert config.install_root.as_posix() == "/srv/taskman"
+    assert config.release_root.as_posix() == "/srv/taskman/releases"
+    assert config.deployment_root.as_posix() == "/srv/taskman/deployments"
+    assert config.backup_root.as_posix() == "/srv/taskman-backups"
+
+
+@pytest.mark.parametrize(
+    "install_root",
+    [
+        "/srv/taskman\nExecStart=/bin/attacker",
+        "/srv/taskman%N",
+        "/srv/task man",
+        "/srv/task\tman",
+        "/srv/taskman'quoted",
+        '/srv/taskman"quoted',
+        "/srv/taskman\x01control",
+        "/srv/taskman\x7fdel",
+    ],
+)
+def test_systemd_rendered_roots_reject_unsafe_exec_path_characters(install_root: str) -> None:
+    """An executable path must satisfy systemd's native safety contract."""
+
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(
+            valid_environment(
+                install_root=install_root,
+            )
+        )
+
+
+@pytest.mark.parametrize("install_root", ["/srv/taskman$(printf${IFS}CANARY)", "/srv/taskman;:"])
+def test_systemd_rendered_roots_keep_supported_shell_metacharacters(
+    install_root: str,
+) -> None:
+    """Characters that systemd accepts must remain available as managed roots."""
+
+    config = EnvironmentConfig.model_validate(
+        valid_environment(install_root=install_root, backup_root="/srv/taskman-backups")
+    )
+
+    assert config.install_root.as_posix() == install_root
+
+
+@pytest.mark.parametrize("overrides", [
+    {"install_root": "/srv/taskman'quoted"},
+    {"backup_retention": 65},
+    {"release_retention": 65},
+])
+def test_cli_rejects_invalid_configuration_without_connecting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+) -> None:
+    """Invalid configuration fails at the public CLI boundary before SSH can run."""
+
+    payload = valid_environment(**overrides)
+    (tmp_path / "production.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.setattr("taskman_ops.config.ENVIRONMENTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        "taskman_ops.remote.connect",
+        lambda *_: pytest.fail("invalid configuration must not connect to SSH"),
+    )
+
+    stderr = StringIO()
+    assert main(["create-admin", "production"], stdout=StringIO(), stderr=stderr) == ExitStatus.INVALID
+    assert "error (2)" in stderr.getvalue()
+
+
+@pytest.mark.parametrize("field", ["backup_retention", "release_retention", "readiness_timeout", "connection_timeout", "pool_size"])
+def test_retention_timeouts_and_pool_size_must_be_positive(field: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(**{field: 0}))
+
+
+@pytest.mark.parametrize("field", ["backup_retention", "release_retention"])
+@pytest.mark.parametrize("value", [1, 64])
+def test_retention_accepts_the_supported_range_boundaries(field: str, value: int) -> None:
+    config = EnvironmentConfig.model_validate(valid_environment(**{field: value}))
+
+    assert getattr(config, field) == value
+
+
+def test_readiness_timeout_leaves_the_helper_end_to_end_budget_for_public_checks() -> None:
+    """Readiness cannot consume the runner's complete invocation allowance."""
+
+    with pytest.raises(ValidationError, match="readiness timeout"):
+        EnvironmentConfig.model_validate(valid_environment(readiness_timeout=31))
+
+
+@pytest.mark.parametrize("fingerprint", ["", "SHA256:short", "MD5:aa:bb", "SHA256:abc def", "not-a-fingerprint"])
+def test_pinned_host_key_fingerprint_has_the_expected_shape(fingerprint: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(host_key_fingerprint=fingerprint))
+
+
+def test_unknown_environment_fields_are_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate(valid_environment(unexpected="value"))
+
+
+def test_load_environment_injects_name_and_wraps_yaml_validation_as_status_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "staging.yaml"
+    payload = valid_environment(name=None)
+    payload.pop("name")
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.setattr("taskman_ops.config.ENVIRONMENTS_DIR", tmp_path)
+
+    config = load_environment("staging")
+    assert config.name == "staging"
+
+    (tmp_path / "broken.yaml").write_text("not: [valid", encoding="utf-8")
+    with pytest.raises(OpsError) as raised:
+        load_environment("broken")
+    assert raised.value.status is ExitStatus.INVALID

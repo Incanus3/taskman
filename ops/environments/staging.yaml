@@ -1,0 +1,25 @@
+ssh_host: taskman.page
+ssh_port: 22
+ssh_user: root
+host_key_fingerprint: SHA256:qhI6HVlQLtoguTGn08iYjVtZdiofrXU8LDP8px9+oUU
+public_hostname: taskman.page
+public_ipv4: 2.29.47.77
+public_ipv6: 2a01:4f9:c015:6045::1
+target_os: ubuntu26.04
+architecture: amd64
+application_port: 4000
+distribution_port: 6789
+database_name: taskman_prod
+database_role: taskman
+database_host: 127.0.0.1
+database_port: 5432
+pool_size: 10
+mail_from: no-reply@notify.taskman.page
+install_root: /opt/taskman
+backup_root: /var/backups/taskman
+backup_schedule: '*-*-* 02:15:00'
+backup_retention: 14
+release_retention: 3
+readiness_timeout: 30
+connection_timeout: 10
+postgres_package_track: null

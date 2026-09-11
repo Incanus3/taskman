@@ -39,6 +39,10 @@
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
+- [Dedicated-host deployment design](specs/2026-09-09-dedicated-host-deployment-design.md)
+- [Desired-target deployment reconciliation (proposed)](specs/2026-09-09-deploy-reconciliation-design.md)
+- [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
+- [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
 ## Active implementation plans
 
@@ -47,7 +51,7 @@
 ## Development
 
 - [Development guide](development.md)
-- [Dedicated-host deployment runbook](deployment.md)
+- [Dedicated-host deployment automation runbook](deployment.md)
 
 ## Research
 
