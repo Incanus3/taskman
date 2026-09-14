@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
+from dataclasses import replace
 import re
 from typing import Callable
 
@@ -11,9 +12,18 @@ from ..config import EnvironmentConfig
 from ..errors import ExitStatus, HelperTransportError, OpsError
 from ..helper_client.package import HelperPackage, temporary_helper_package
 from ..helper_client.runner import invoke_helper, new_correlation_id
-from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from ..host_protocol import (
+    MUTATION_OPERATIONS,
+    MUTATION_STATES,
+    HostRequest,
+    HostResult,
+    PROTOCOL_VERSION,
+    unavailable_observations,
+    validate_mutation_state,
+)
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
+from ..releases.identifiers import validate_release_id
 from ..releases.manifests import VerifiedArtifact
 from ..remote import Remote, UploadReceipt
 from .verification_results import VerificationReport
@@ -113,32 +123,99 @@ def run_request(
     *,
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
+    prior_mutation_state: str = "unchanged",
+    completed_targets: tuple[Mapping[str, object], ...] = (),
 ) -> HostResult:
     """Invoke once and enforce final protocol/version/operation/correlation."""
 
+    aggregate_mutation_state(prior_mutation_state)
     manager = temporary_helper_package() if package is None else nullcontext(package)
-    with manager as selected:
-        result = invoker(remote, selected, request)
     try:
-        return validate_result_for_request(request, result)
+        with manager as selected:
+            result = invoker(remote, selected, request)
+    except HelperTransportError as error:
+        if (
+            error.helper_entry_dispatched and _mutating_request(request)
+        ) or prior_mutation_state != "unchanged":
+            raise _mutation_transport_error(
+                request,
+                error,
+                prior_mutation_state=prior_mutation_state,
+                completed_targets=completed_targets,
+            ) from None
+        raise
+
+    try:
+        result = validate_result_for_request(request, result)
     except ProtocolError:
         warnings = (
             ("transient helper cleanup was incomplete",)
             if isinstance(result, HostResult) and result.local_cleanup_incomplete
             else ()
         )
+        if _mutating_request(request):
+            raise _mutation_protocol_error(
+                request,
+                warnings=warnings,
+                prior_mutation_state=prior_mutation_state,
+                completed_targets=completed_targets,
+            ) from None
         raise _safety(
             request.operation,
             "host helper result does not match its request",
             warnings=warnings,
         )
+    if _mutation_result_required(request, result):
+        try:
+            validated = validate_mutation_state(result.operation, result.outcome, result.state)
+            if request.operation == "cleanup":
+                _validate_cleanup_completion(request, result.outcome, validated)
+        except ProtocolError:
+            if _mutating_request(request):
+                raise _mutation_protocol_error(
+                    request,
+                    warnings=result.warnings,
+                    prior_mutation_state=prior_mutation_state,
+                    completed_targets=completed_targets,
+                ) from None
+            raise _safety(
+                request.operation,
+                "host helper returned invalid mutation evidence",
+                warnings=result.warnings,
+            ) from None
+        result = replace(result, state=validated)
+    return result
 
 
-def result_error(result: HostResult) -> OpsError:
+def result_error(
+    result: HostResult,
+    *,
+    starting_state: Mapping[str, object] | None = None,
+    prior_mutation_state: str = "unchanged",
+    completed_targets: tuple[Mapping[str, object], ...] = (),
+) -> OpsError:
     """Map a final helper outcome without reconstructing private stages."""
 
     if not isinstance(result, HostResult) or result.outcome == "succeeded":
         raise ValueError("result_error requires a final unsuccessful result")
+    if result.operation in MUTATION_OPERATIONS:
+        state = mutation_result_facts(
+            result,
+            starting_state=starting_state,
+            prior_mutation_state=prior_mutation_state,
+            completed_targets=completed_targets,
+        )
+        status = ExitStatus(int(state["exit_code"]))
+        return OpsError(
+            status,
+            str(state["failed_boundary"]),
+            result.message,
+            state["mutation_state"] != "unchanged",
+            next_action="inspect the observed host state before retrying",
+            state=state,
+            warnings=result.warnings,
+        )
+
     state = result.state
     boundary = state.get("failed_boundary")
     if state.get("invalid_request") is True:
@@ -171,6 +248,63 @@ def result_error(result: HostResult) -> OpsError:
         warnings=result.warnings,
     )
     return error
+
+
+def aggregate_mutation_state(*states: str) -> str:
+    """Combine command-local mutation evidence without weakening proof."""
+
+    if any(type(state) is not str or state not in MUTATION_STATES for state in states):
+        raise ValueError("invalid mutation state")
+    if "changed" in states:
+        return "changed"
+    if "unknown" in states:
+        return "unknown"
+    return "unchanged"
+
+
+def mutation_result_facts(
+    result: HostResult,
+    *,
+    starting_state: Mapping[str, object] | None = None,
+    prior_mutation_state: str = "unchanged",
+    completed_targets: tuple[Mapping[str, object], ...] = (),
+) -> dict[str, object]:
+    """Map validated invocation evidence into exact command-level public facts."""
+
+    if not isinstance(result, HostResult) or result.operation not in MUTATION_OPERATIONS:
+        raise ValueError("mutation facts require a mutation helper result")
+    try:
+        state = validate_mutation_state(result.operation, result.outcome, result.state)
+    except ProtocolError:
+        raise ValueError("helper mutation evidence is invalid") from None
+    aggregate = aggregate_mutation_state(prior_mutation_state, str(state["mutation_state"]))
+    facts: dict[str, object] = {
+        "starting_state": None if starting_state is None else mutable(starting_state),
+        "mutation_state": aggregate,
+        "exit_code": state["exit_code"],
+        "failed_boundary": state["failed_boundary"],
+        "observations": mutable(state["observations"]),
+        "unavailable_fields": list(state["unavailable_fields"]),
+        "inspection_error": state["inspection_error"],
+        "report": mutable(state["report"]),
+    }
+    if result.operation in {"deploy", "genesis"}:
+        facts.update(
+            desired_release_id=state["desired_release_id"],
+            backup_id=state["backup_id"],
+        )
+    elif result.operation == "restore":
+        facts.update(
+            desired_release_id=state["desired_release_id"],
+            backup_id=state["backup_id"],
+            pre_restore_backup_id=state["pre_restore_backup_id"],
+        )
+    else:
+        facts["completed_targets"] = _merge_completed_targets(
+            completed_targets,
+            state["completed_targets"],
+        )
+    return facts
 
 
 def successful_verification(value: object, expected_release_id: str) -> dict[str, object]:
@@ -291,6 +425,171 @@ def run_deployment_request(
         raise
 
 
+def _mutation_result_required(request_value: HostRequest, result: HostResult) -> bool:
+    if request_value.operation not in MUTATION_OPERATIONS:
+        return False
+    if request_value.operation != "cleanup":
+        return True
+    return result.outcome != "succeeded" or request_value.parameters.get("action") == "execute"
+
+
+def _mutating_request(request_value: HostRequest) -> bool:
+    if request_value.operation in {"deploy", "genesis", "restore"}:
+        return True
+    return (
+        request_value.operation == "cleanup"
+        and request_value.parameters.get("action") == "execute"
+    )
+
+
+def _mutation_protocol_error(
+    request_value: HostRequest,
+    *,
+    warnings: tuple[str, ...],
+    prior_mutation_state: str,
+    completed_targets: tuple[Mapping[str, object], ...],
+) -> OpsError:
+    facts = _unavailable_mutation_facts(
+        request_value,
+        prior_mutation_state=prior_mutation_state,
+        dispatch_state="unknown",
+        completed_targets=completed_targets,
+    )
+    return OpsError(
+        ExitStatus.SAFETY,
+        "helper",
+        "host helper returned invalid mutation evidence",
+        changed=facts["mutation_state"] != "unchanged",
+        next_action="inspect the observed host state before retrying",
+        state=facts,
+        warnings=warnings,
+    )
+
+
+def _mutation_transport_error(
+    request_value: HostRequest,
+    error: HelperTransportError,
+    *,
+    prior_mutation_state: str,
+    completed_targets: tuple[Mapping[str, object], ...],
+) -> HelperTransportError:
+    facts = _unavailable_mutation_facts(
+        request_value,
+        prior_mutation_state=prior_mutation_state,
+        dispatch_state="unknown" if error.helper_entry_dispatched and _mutating_request(request_value) else "unchanged",
+        completed_targets=completed_targets,
+    )
+    mapped = OpsError(
+        error.status,
+        error.stage,
+        error.message,
+        changed=facts["mutation_state"] != "unchanged",
+        next_action=error.next_action,
+        state=facts,
+        warnings=error.warnings,
+    )
+    return HelperTransportError(
+        mapped,
+        helper_entry_dispatched=error.helper_entry_dispatched,
+    )
+
+
+def _unavailable_mutation_facts(
+    request_value: HostRequest,
+    *,
+    prior_mutation_state: str,
+    dispatch_state: str,
+    completed_targets: tuple[Mapping[str, object], ...],
+) -> dict[str, object]:
+    observations, unavailable = unavailable_observations(request_value.operation)
+    facts: dict[str, object] = {
+        "starting_state": mutable(request_value.expected_state),
+        "mutation_state": aggregate_mutation_state(prior_mutation_state, dispatch_state),
+        "observations": observations,
+        "unavailable_fields": unavailable,
+        "failed_boundary": "helper",
+        "inspection_error": None,
+        "report": None,
+    }
+    if request_value.operation in {"deploy", "genesis"}:
+        facts.update(desired_release_id=_request_target_release(request_value), backup_id=None)
+    elif request_value.operation == "restore":
+        facts.update(
+            desired_release_id=None,
+            backup_id=_request_backup_id(request_value),
+            pre_restore_backup_id=None,
+        )
+    elif request_value.operation == "cleanup":
+        facts["completed_targets"] = _merge_completed_targets(completed_targets, ())
+    return facts
+
+
+def _request_target_release(request_value: HostRequest) -> str | None:
+    release_id = request_value.parameters.get("candidate_release_id")
+    if type(release_id) is not str:
+        return None
+    try:
+        return validate_release_id(release_id)
+    except ValueError:
+        return None
+
+
+def _request_backup_id(request_value: HostRequest) -> str | None:
+    backup_id = request_value.parameters.get("backup_id")
+    return (
+        backup_id
+        if type(backup_id) is str and _BACKUP_ID_RE.fullmatch(backup_id) is not None
+        else None
+    )
+
+
+def _merge_completed_targets(
+    earlier: object,
+    current: object,
+) -> list[dict[str, object]]:
+    if not isinstance(earlier, (list, tuple)) or not isinstance(current, (list, tuple)):
+        raise ValueError("completed cleanup targets must be collections")
+    combined: dict[tuple[str, str, str], dict[str, object]] = {}
+    for item in (*earlier, *current):
+        if not isinstance(item, Mapping) or set(item) != {"kind", "identifier", "path"}:
+            raise ValueError("completed cleanup target is invalid")
+        identity = tuple(item[key] for key in ("kind", "identifier", "path"))
+        if not all(type(value) is str for value in identity):
+            raise ValueError("completed cleanup target is invalid")
+        combined[identity] = dict(item)
+    return [combined[identity] for identity in sorted(combined)]
+
+
+def _validate_cleanup_completion(
+    request_value: HostRequest,
+    outcome: str,
+    state: Mapping[str, object],
+) -> None:
+    raw_targets = request_value.parameters.get("targets")
+    if not isinstance(raw_targets, (list, tuple)):
+        raise ProtocolError("cleanup request targets are invalid")
+    requested = {
+        tuple(item.get(key) for key in ("kind", "identifier", "path"))
+        for item in raw_targets
+        if isinstance(item, Mapping)
+    }
+    if len(requested) != len(raw_targets):
+        raise ProtocolError("cleanup request targets are invalid")
+    completed = {
+        tuple(item[key] for key in ("kind", "identifier", "path"))
+        for item in state["completed_targets"]  # type: ignore[union-attr]
+    }
+    action = request_value.parameters.get("action")
+    if action == "inspect" and (
+        completed or state["mutation_state"] != "unchanged"
+    ):
+        raise ProtocolError("cleanup inspection cannot claim mutation completion")
+    if not completed <= requested:
+        raise ProtocolError("cleanup completion exceeds confirmed targets")
+    if outcome == "succeeded" and completed != requested:
+        raise ProtocolError("cleanup success does not account for its batch")
+
+
 def _safety(operation: str, message: str, *, warnings: tuple[str, ...] = ()) -> OpsError:
     return OpsError(
         ExitStatus.SAFETY,
@@ -303,11 +602,13 @@ def _safety(operation: str, message: str, *, warnings: tuple[str, ...] = ()) -> 
 
 
 __all__ = [
+    "aggregate_mutation_state",
     "database_settings",
     "discovery_request",
     "helper_paths",
     "merge_warnings",
     "mutable",
+    "mutation_result_facts",
     "request",
     "result_error",
     "run_request",

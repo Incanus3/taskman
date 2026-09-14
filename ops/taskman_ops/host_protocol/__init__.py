@@ -20,6 +20,13 @@ from .envelope import (
     encode_result,
 )
 from .identifiers import MAX_STRING_BYTES, ProtocolError, validate_correlation_id
+from .mutation_results import (
+    MUTATION_OPERATIONS,
+    MUTATION_STATES,
+    unavailable_observations,
+    validate_mutation_state,
+    validate_verification_report,
+)
 from .operations import OPERATION_NAMES
 
 
@@ -35,12 +42,17 @@ __all__ = [
     "MAX_RECORD_BYTES",
     "MAX_RELEASE_RECORD_BYTES",
     "MAX_STRING_BYTES",
+    "MUTATION_OPERATIONS",
+    "MUTATION_STATES",
     "OPERATION_NAMES",
     "PROTOCOL_VERSION",
     "HostRequest",
     "HostResult",
     "ProtocolError",
     "validate_correlation_id",
+    "unavailable_observations",
+    "validate_mutation_state",
+    "validate_verification_report",
     "decode_request",
     "decode_result",
     "encode_request",

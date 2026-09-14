@@ -197,6 +197,16 @@ _RESULT_VERSION_PATHS = frozenset(
         ("state", "applied_migrations"),
         ("state", "observations", "applied_migrations"),
         ("state", "records", "[]", "record", "migration_versions"),
+        *(
+            (
+                "state",
+                "observations",
+                "restore_database_state",
+                database,
+                "applied_migrations",
+            )
+            for database in ("canonical", "temporary", "retired")
+        ),
     }
 )
 _RESULT_MIGRATION_PATHS = frozenset(
@@ -222,11 +232,7 @@ def _result_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]
     def collection_limit(path: tuple[str, ...]) -> int:
         if operation == "discover" and path == ("state", "applied_migrations"):
             return MAX_MIGRATION_VERSIONS
-        if operation in {"deploy", "genesis", "restore"} and path == (
-            "state",
-            "observations",
-            "applied_migrations",
-        ):
+        if operation in {"deploy", "genesis", "restore"} and path in _RESULT_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         if operation == "list_releases" and path in _RESULT_MIGRATION_PATHS:
             return MAX_MIGRATION_FINGERPRINTS

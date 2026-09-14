@@ -110,6 +110,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     backup: BackupRecord | None = None
     changed = False
     database_changed = False
+    report: object | None = None
     try:
         inputs = _inputs(request, first_release=first_release)
         _validate_request_operation(request, first_release)
@@ -117,7 +118,14 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
         _safe_artifact(inputs)
         authority = host_preflight(inputs.paths, inputs.verification)
         if authority is not None:
-            return _result(request, "refused", "host deployment prerequisites are unsafe", state)
+            return _result(
+                request,
+                "refused",
+                "host deployment prerequisites are unsafe",
+                state,
+                changed=changed,
+                report=report,
+            )
 
         with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             _prepare_release_roots(inputs.paths)
@@ -195,16 +203,33 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             except CommandError as error:
                 raise _RetryableError("start") from error
             verification = _verify(request, inputs)
+            report = verification.state.get("report") or None
             if verification.outcome != "succeeded":
                 raise _RetryableError("verification")
-            report = verification.state.get("report", {})
             state = _observe(inputs)
             state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
             changed = changed or recorded_selection
     except LifecycleLockContention:
-        return _result(request, "retryable", "lifecycle lock is unavailable", state, locked=True)
+        return _result(
+            request,
+            "retryable",
+            "lifecycle lock is unavailable",
+            state,
+            locked=True,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+        )
     except DeploymentManualError:
-        return _result(request, "manual", "deployment state is contradictory", state)
+        return _result(
+            request,
+            "manual",
+            "deployment state is contradictory",
+            state,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+        )
     except _RetryableError as error:
         return _result(
             request,
@@ -212,9 +237,20 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             "deployment did not complete; rerun to converge",
             state,
             boundary=error.boundary,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
         )
     except StateAmbiguityError:
-        return _result(request, "manual", "deployment authority is contradictory", state)
+        return _result(
+            request,
+            "manual",
+            "deployment authority is contradictory",
+            state,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+        )
     except CommandError:
         return _result(
             request,
@@ -222,11 +258,30 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             "deployment observation did not complete; rerun to converge",
             state,
             boundary="observation",
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
         )
     except (PathAuthorityError, TypeError, ValueError):
-        return _result(request, "refused", "deployment request is unsafe", state)
+        return _result(
+            request,
+            "refused",
+            "deployment request is unsafe",
+            state,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+        )
     except (OSError, tarfile.TarError, RecordError):
-        return _result(request, "manual", "deployment authority is contradictory", state)
+        return _result(
+            request,
+            "manual",
+            "deployment authority is contradictory",
+            state,
+            changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+        )
 
     return _result(
         request,

@@ -8,6 +8,7 @@ from enum import Enum
 from typing import ClassVar
 
 from ..errors import ExitStatus
+from ..host_protocol import ProtocolError, validate_verification_report
 from ..releases.identifiers import validate_release_id
 
 
@@ -149,40 +150,20 @@ class VerificationReport:
 
     @classmethod
     def from_mapping(cls, value: object) -> "VerificationReport":
-        expected = {
-            "schema_version",
-            "status",
-            "exit_status",
-            "release_id",
-            "expected_release_id",
-            "checks",
-            "next_action",
-        }
-        if (
-            not isinstance(value, Mapping)
-            or set(value) != expected
-            or value.get("schema_version") != cls.schema_version
-        ):
-            raise ValueError("verification report must use the exact schema")
-        if type(value.get("exit_status")) is not int:
-            raise TypeError("verification report exit status must be an integer")
         try:
-            exit_status = ExitStatus(value["exit_status"])
-        except (TypeError, ValueError):
-            raise ValueError("verification report exit status is invalid") from None
-        expected_status = "ok" if exit_status is ExitStatus.OK else "failed"
-        if value.get("status") != expected_status:
-            raise ValueError("verification report status conflicts with its exit status")
-        checks_value = value.get("checks")
-        if not isinstance(checks_value, list):
-            raise TypeError("verification report checks must be a list")
-        checks = tuple(VerificationCheck.from_mapping(check) for check in checks_value)
+            validated = validate_verification_report(value)
+        except ProtocolError:
+            raise ValueError("verification report is invalid") from None
+        exit_status = ExitStatus(validated["exit_status"])
+        checks = tuple(
+            VerificationCheck.from_mapping(check) for check in validated["checks"]
+        )
         return cls(
             exit_status,
-            value.get("release_id"),  # type: ignore[arg-type]
-            value.get("expected_release_id"),  # type: ignore[arg-type]
+            validated["release_id"],  # type: ignore[arg-type]
+            validated["expected_release_id"],  # type: ignore[arg-type]
             checks,
-            value.get("next_action"),  # type: ignore[arg-type]
+            validated["next_action"],  # type: ignore[arg-type]
         )
 
 

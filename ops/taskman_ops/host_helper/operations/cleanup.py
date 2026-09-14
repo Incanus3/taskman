@@ -32,6 +32,9 @@ def cleanup(request: HostRequest) -> HostResult:
     """Inspect or delete only targets derived from one coherent host state."""
 
     state: HostState | None = None
+    action: str | None = None
+    changed = False
+    completed_targets: list[dict[str, object]] = []
     try:
         action, requested, release_retention, backup_retention, expected_selected = _inputs(request)
         paths = ManagedPaths.from_mapping(request.paths)
@@ -68,29 +71,62 @@ def cleanup(request: HostRequest) -> HostResult:
                     _state_projection(state),
                     state.warnings,
                 )
-            changed = False
             for target in active:
                 changed = _delete_target(target, state, paths) or changed
+                completed_targets.append(target)
             final_state = observe_host_state(paths)
     except LifecycleLockContention:
-        return HostResult.for_request(request, "retryable", "lifecycle lock is unavailable", {"locked": True})
+        return HostResult.for_request(
+            request,
+            "retryable",
+            "lifecycle lock is unavailable",
+            {"locked": True, "changed": changed, "completed_targets": completed_targets},
+        )
     except (BackupAuthorityError, StateAmbiguityError):
-        return HostResult.for_request(request, "manual", "cleanup authority is ambiguous", _state_projection(state))
+        return HostResult.for_request(
+            request,
+            "manual",
+            "cleanup authority is ambiguous",
+            {
+                **_state_projection(state),
+                "changed": changed,
+                "failed_boundary": "authority",
+                "completed_targets": completed_targets,
+            },
+        )
     except (PathAuthorityError, TypeError, ValueError):
-        return HostResult.for_request(request, "refused", "cleanup request is unsafe", _state_projection(state))
+        return HostResult.for_request(
+            request,
+            "refused",
+            "cleanup request is unsafe",
+            {
+                **_state_projection(state),
+                "changed": changed,
+                "completed_targets": completed_targets,
+            },
+        )
     except OSError:
         return HostResult.for_request(
             request,
             "retryable",
             "cleanup did not complete; rerun to converge",
-            _state_projection(state),
+            {
+                **_state_projection(state),
+                "changed": changed,
+                "failed_boundary": "cleanup",
+                "completed_targets": completed_targets,
+            },
         )
 
     return HostResult.for_request(
         request,
         "succeeded",
         "cleanup completed" if changed else "nothing remains to clean",
-        {**_state_projection(final_state), "changed": changed},
+        {
+            **_state_projection(final_state),
+            "changed": changed,
+            "completed_targets": completed_targets,
+        },
         final_state.warnings,
     )
 

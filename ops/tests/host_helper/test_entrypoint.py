@@ -18,11 +18,60 @@ from taskman_ops.host_protocol import (
     ProtocolError,
     decode_result,
     encode_request,
+    validate_mutation_state,
 )
 from taskman_ops.host_helper import __main__ as entrypoint
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
+RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+SELECTION = "selection-" + "c" * 64 + ".json"
+
+
+def mutation_observations() -> dict[str, object]:
+    return {
+        "selected_release_id": RELEASE,
+        "last_successful_selection_id": SELECTION,
+        "applied_migrations": (),
+        "protected_backup_ids": (),
+        "backup_protection_sha256": "d" * 64,
+        "restore_target_sha256": None,
+        "database_state": "ready",
+        "service_state": "running",
+        "scheduled_backup_sha256": "e" * 64,
+        "backup_timer_enabled": True,
+        "backup_timer_state": "active",
+    }
+
+
+def passing_report() -> dict[str, object]:
+    names = (
+        "taskman-service",
+        "release-identity",
+        "caddy-service",
+        "listener-topology",
+        "startup-journal",
+        "local-readiness",
+        "public-readiness",
+        "public-hsts",
+    )
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "exit_status": 0,
+        "release_id": RELEASE,
+        "expected_release_id": RELEASE,
+        "checks": [
+            {
+                "schema_version": 1,
+                "name": name,
+                "status": "passed",
+                "summary": "checked",
+            }
+            for name in names
+        ],
+        "next_action": None,
+    }
 
 
 def request_bytes(
@@ -194,3 +243,108 @@ def test_entrypoint_replaces_an_invalid_final_handler_result_with_small_final_re
     assert result.outcome == "retryable"
     assert result.message == "helper internal failure"
     assert result.correlation_id == CORRELATION
+
+
+def test_mutation_exception_emits_exact_unknown_evidence_after_one_final_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def observe(request: HostRequest):
+        calls.append(request.operation)
+        return mutation_observations(), (), None
+
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", observe)
+
+    def fail(_request: object) -> object:
+        raise RuntimeError("secret failure")
+
+    with invoke_entrypoint(request_bytes(operation="deploy"), fail, operation="deploy") as stdout:
+        assert entrypoint.main() == 0
+
+    result = decode_result(stdout.buffer.getvalue())
+    state = validate_mutation_state("deploy", result.outcome, result.state)
+    assert calls == ["deploy"]
+    assert state["mutation_state"] == "unknown"
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "inspection"
+    assert state["desired_release_id"] is None
+    assert state["observations"]["selected_release_id"] == RELEASE
+    assert state["report"] is None
+    assert result.message == "helper internal failure"
+
+
+def test_entrypoint_preserves_verification_report_on_later_history_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        entrypoint,
+        "_observe_final_mutation",
+        lambda _request: (mutation_observations(), (), None),
+    )
+
+    def history_failure(request: HostRequest) -> HostResult:
+        return HostResult.for_request(
+            request,
+            "retryable",
+            "deployment history publication failed",
+            {
+                "changed": True,
+                "failed_boundary": "history",
+                "backup_id": None,
+                "report": passing_report(),
+            },
+        )
+
+    with invoke_entrypoint(
+        request_bytes(operation="deploy"), history_failure, operation="deploy"
+    ) as stdout:
+        assert entrypoint.main() == 0
+
+    result = decode_result(stdout.buffer.getvalue())
+    state = validate_mutation_state("deploy", result.outcome, result.state)
+    assert state["mutation_state"] == "changed"
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "history"
+    assert state["report"] == passing_report()
+
+
+def test_failed_cleanup_inspection_is_exact_and_cannot_claim_a_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations = {
+        key: mutation_observations()[key]
+        for key in (
+            "selected_release_id",
+            "last_successful_selection_id",
+            "backup_protection_sha256",
+            "restore_target_sha256",
+        )
+    }
+    monkeypatch.setattr(
+        entrypoint,
+        "_observe_final_mutation",
+        lambda _request: (observations, (), None),
+    )
+    request = HostRequest(
+        3,
+        "cleanup",
+        CORRELATION,
+        {"selected_release_id": RELEASE},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {"action": "inspect", "targets": (), "release_retention": 3, "backup_retention": 7},
+    )
+
+    with invoke_entrypoint(
+        encode_request(request),
+        lambda _request: (_ for _ in ()).throw(OSError("failed")),
+        operation="cleanup",
+    ) as stdout:
+        assert entrypoint.main() == 0
+
+    result = decode_result(stdout.buffer.getvalue())
+    state = validate_mutation_state("cleanup", result.outcome, result.state)
+    assert state["mutation_state"] == "unchanged"
+    assert state["completed_targets"] == []
+    assert state["exit_code"] == 10
+    assert state["failed_boundary"] == "inspection"

@@ -56,6 +56,7 @@ ARCHIVE_MEMBERS = (
     "taskman_ops/host_protocol/__init__.py",
     "taskman_ops/host_protocol/envelope.py",
     "taskman_ops/host_protocol/identifiers.py",
+    "taskman_ops/host_protocol/mutation_results.py",
     "taskman_ops/host_protocol/operations.py",
     "taskman_ops/migrations.py",
     "taskman_ops/releases/__init__.py",
@@ -124,6 +125,7 @@ _SOURCE_MEMBERS = {
     "taskman_ops/host_protocol/__init__.py": _SOURCE_ROOT / "host_protocol" / "__init__.py",
     "taskman_ops/host_protocol/envelope.py": _SOURCE_ROOT / "host_protocol" / "envelope.py",
     "taskman_ops/host_protocol/identifiers.py": _SOURCE_ROOT / "host_protocol" / "identifiers.py",
+    "taskman_ops/host_protocol/mutation_results.py": _SOURCE_ROOT / "host_protocol" / "mutation_results.py",
     "taskman_ops/host_protocol/operations.py": _SOURCE_ROOT / "host_protocol" / "operations.py",
 }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -27,7 +28,7 @@ from .records import (
     SelectionRecord,
     selection_filename,
 )
-from .restore_target import RestoreTarget
+from .restore_target import RestoreTarget, restore_target_sha256
 
 
 MAX_WARNINGS = 64
@@ -180,6 +181,82 @@ class HostState:
             "backup_protections": [item.to_mapping() for item in self.backup_protections],
             "restore_target": None if self.restore_target is None else self.restore_target.to_mapping(),
         }
+
+
+def mutation_observations(
+    state: HostState,
+    operation: str,
+    *,
+    scheduler: Mapping[str, object] | None = None,
+    restore_database_state: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Project one post-mutation locked snapshot into the exact wire facts."""
+
+    if not isinstance(state, HostState) or operation not in {
+        "deploy",
+        "genesis",
+        "restore",
+        "cleanup",
+    }:
+        raise ValueError("mutation observation request is invalid")
+    protections = tuple(
+        sorted(
+            (*state.backup_protections, *state.retiring_backup_protections),
+            key=lambda item: item.backup_id,
+        )
+    )
+    protection_rows = tuple(item.to_mapping() for item in protections)
+    observations: dict[str, object] = {
+        "selected_release_id": state.selected_release_id,
+        "last_successful_selection_id": state.latest_successful_selection_filename,
+        "backup_protection_sha256": hashlib.sha256(
+            json.dumps(
+                protection_rows,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+        ).hexdigest(),
+        "restore_target_sha256": (
+            None
+            if state.restore_target is None
+            else restore_target_sha256(state.restore_target)
+        ),
+    }
+    if operation == "cleanup":
+        return observations
+    if not isinstance(scheduler, Mapping) or set(scheduler) != {
+        "scheduled_backup_sha256",
+        "backup_timer_enabled",
+        "backup_timer_state",
+    }:
+        raise ValueError("mutation scheduler observation is invalid")
+    protected = {item.backup_id for item in protections}
+    if state.restore_target is not None:
+        protected.update(
+            str(item["backup_id"])
+            for item in state.restore_target.safety_backup_attempts
+        )
+        protected.update(
+            {
+                state.restore_target.backup_id,
+                state.restore_target.safety_backup_id,
+            }
+        )
+        if state.restore_target.replacement is not None:
+            protected.add(str(state.restore_target.replacement["backup_id"]))
+    observations.update(
+        {
+            "applied_migrations": state.applied_migrations,
+            "protected_backup_ids": tuple(sorted(protected)),
+            "database_state": state.database_state,
+            "service_state": state.service_state,
+            **scheduler,
+        }
+    )
+    if operation == "restore":
+        observations["restore_database_state"] = restore_database_state
+    return observations
 
 
 @dataclass

@@ -85,7 +85,7 @@ def restore(request: HostRequest) -> HostResult:
     inputs: _Inputs | None = None
     source: BackupRecord | None = None
     safety_backup: BackupRecord | None = None
-    report: object = {}
+    report: object | None = None
     changed = False
     try:
         inputs = _inputs(request)
@@ -104,9 +104,9 @@ def restore(request: HostRequest) -> HostResult:
                 except CommandError as error:
                     raise _Retryable("start") from error
                 verification = _verify(request, inputs, source.source_release_id)
+                report = verification.state.get("report") or None
                 if verification.outcome != "succeeded":
                     raise _Retryable("verification")
-                report = verification.state.get("report", {})
                 if arrangement == frozenset({str(inputs.database["name"]), inputs.retired_database}):
                     _drop_database(inputs, inputs.retired_database)
                     changed = True
@@ -152,9 +152,9 @@ def restore(request: HostRequest) -> HostResult:
                 except CommandError as error:
                     raise _Retryable("start") from error
                 verification = _verify(request, inputs, source.source_release_id)
+                report = verification.state.get("report") or None
                 if verification.outcome != "succeeded":
                     raise _Retryable("verification")
-                report = verification.state.get("report", {})
 
                 safety_backup = _published_safety_backup(state, inputs, safety_backup)
                 if _selection_status(state, inputs, source) != "same":
@@ -163,11 +163,42 @@ def restore(request: HostRequest) -> HostResult:
                 _drop_database(inputs, inputs.retired_database)
                 state = _observe(inputs, allow_selection_transition=False)
     except LifecycleLockContention:
-        return _result(request, "retryable", "lifecycle lock is unavailable", state, inputs, source, locked=True)
+        return _result(
+            request,
+            "retryable",
+            "lifecycle lock is unavailable",
+            state,
+            inputs,
+            source,
+            locked=True,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
     except RestoreRefused:
-        return _result(request, "refused", "restore source is not safe", state, inputs, source)
+        return _result(
+            request,
+            "refused",
+            "restore source is not safe",
+            state,
+            inputs,
+            source,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
     except RestoreManual:
-        return _result(request, "manual", "restore state is contradictory", state, inputs, source)
+        return _result(
+            request,
+            "manual",
+            "restore state is contradictory",
+            state,
+            inputs,
+            source,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
     except _Retryable as error:
         return _result(
             request,
@@ -177,9 +208,22 @@ def restore(request: HostRequest) -> HostResult:
             inputs,
             source,
             boundary=error.boundary,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
         )
     except StateAmbiguityError:
-        return _result(request, "manual", "restore authority is contradictory", state, inputs, source)
+        return _result(
+            request,
+            "manual",
+            "restore authority is contradictory",
+            state,
+            inputs,
+            source,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
     except CommandError:
         return _result(
             request,
@@ -189,11 +233,34 @@ def restore(request: HostRequest) -> HostResult:
             inputs,
             source,
             boundary="observation",
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
         )
     except (PathAuthorityError, RecordError, TypeError, ValueError):
-        return _result(request, "refused", "restore request is unsafe", state, inputs, source)
+        return _result(
+            request,
+            "refused",
+            "restore request is unsafe",
+            state,
+            inputs,
+            source,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
     except OSError:
-        return _result(request, "manual", "restore authority is contradictory", state, inputs, source)
+        return _result(
+            request,
+            "manual",
+            "restore authority is contradictory",
+            state,
+            inputs,
+            source,
+            changed=changed,
+            safety_backup=safety_backup,
+            report=report,
+        )
 
     return _result(
         request,
