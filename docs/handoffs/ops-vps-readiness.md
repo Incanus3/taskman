@@ -4,8 +4,8 @@ Status: active. Updated: 2026-09-14. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Implement the approved desired-target deployment reconciliation, then establish clean staging
-through separately authorized host recreation and fresh public-controller provisioning/readiness.
+Implement the approved desired-target deployment reconciliation locally, then prepare separately
+authorized clean staging recreation and fresh provisioning/readiness.
 
 - Approved specification:
   [Desired-target deployment reconciliation](../specs/2026-09-09-deploy-reconciliation-design.md)
@@ -14,78 +14,50 @@ through separately authorized host recreation and fresh public-controller provis
 - Implemented baseline:
   [Dedicated-host deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
 - Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Readiness: `tas-b7kd`; reconciliation: `tas-sr4b`; failed-result diagnostics: `tas-6dkg`.
-
-The separate [Operations CLI UX](operations-cli-ux.md) specification is not approved by this
-decision. The [PostgreSQL host-side Python](postgresql-host-python.md) refactor remains parked.
+- Parent reconciliation issue: `tas-sr4b`; next task: `tas-sr4b.3`.
 
 ## Current checkpoint
 
-The operator approved the complete reconciliation design on 2026-09-14, including its
-simplicity/non-adversarial reliability scope, Python-first workflow policy, and removal of the
-unused proposed selection-history listing operation. The operator also approved the reviewed
-implementation plan on 2026-09-14. Both approval gates are satisfied; no reconciliation code exists yet.
+Tasks 1 and 2 of the approved plan are complete on GitButler branch
+`dedicated-host-deployment-automation`. Both passed independent task review and scoped fix
+re-reviews.
 
-The operator subsequently approved a one-time compatibility break from the previous unmerged
-design and existing unfinished staging installation. The specification and plan now require only
-the new record formats/current runtime; future upgrade compatibility and recovery remain in scope.
-Do not implement an old-staging migration or in-place recovery path.
+- `tas-sr4b.1` is closed. Commits `f22ed1a` and `e1c7bf5` implement exact supported release,
+  selection, backup-protection, and restore-target records, strict `0600` authority, and both
+  helper-package reader closures.
+- `tas-sr4b.2` is closed. Commits `3cf8a9f`, `5c9fa30`, and `a2ae001` implement final-byte artifact
+  identity, bounded frozen dirty snapshots, `DeploymentTarget`, immutable clean-input capture and
+  revalidation, deterministic installed/cache resolution, and bounded local source ordering.
+- Baseline documentation and prior Beads changes were committed as `5af43ced`; the Task 1 tracking
+  transition was committed as `01e0a80`.
 
-Reconciliation owns protocol v3 and `tas-6dkg`; CLI UX consumes that baseline. Read the complete
-specification for exact recovery, provenance, retention, pagination, and result contracts.
-Delivery tasks `tas-sr4b.1` through `tas-sr4b.11` are created with dependencies; the last owns
-independent verification. Follow the plan's reader-before-writer and local-only integration
-constraints. Task 1 now owns single-format readers and old-format rejection, not dual readers.
+Task 6 still owns public workflow migration to `DeploymentTarget` and the clean-input
+re-identify/discover/re-resolve loop. Task 11 still owns real Docker clean/dirty build acceptance.
+These are planned dependencies, not Task 2 blockers.
 
-Administrator creation, authenticated workspace/admin access, and logout acceptance are complete
-under `tas-q5lo`, separately from deployment completion. Last recorded staging state has the OTP 29
-candidate selected and running while successful history still names the OTP 27 genesis release;
-no migrations changed during that failed transition. These are historical acceptance observations,
-not proof of a future fresh installation. The operator reports no real application data. Preserve
-the existing host until its exact recreation/reset is separately authorized; do not repair history.
-
-Work belongs to `dedicated-host-deployment-automation` (PR 16), including the Projects design
-commit previously moved there at the operator's request. The approved pre-amendment checkpoint was
-committed as `df3e47b304161e251a65e0b642fa743f80679c70` at the operator's request. Compatibility
-amendments remain uncommitted; no push, merge, or host action was requested.
+The old staging installation remains historical evidence outside the supported record/runtime
+boundary. Do not migrate, repair, or invoke the new controller against it. No host action, push, or
+merge has occurred or is authorized.
 
 ## Next actions
 
-1. In a fresh session, read the complete approved specification and plan, refresh repository/task
-   state, and begin `tas-sr4b.1` (single-format exact record readers and package closure).
-2. Follow the approved dependency order through `tas-sr4b.11`, with delegated implementation and
-   distinct independent verification under repository policy.
-3. Implement and verify locally, then update the canonical deployment design/runbook/indexes with
-   actual implemented behavior.
-4. Prepare exact clean staging recreation and fresh provisioning actions for operator authorization.
-   Prior in-place deployment authorization does not authorize the reset; never use the new
-   controller against old-format host authority to attempt automatic migration.
+1. Refresh GitButler and Beads state, read the complete approved specification and plan, and move
+   `tas-sr4b.3` to `in_progress`.
+2. Execute plan Task 3 with delegated implementation and distinct independent review: coherent
+   history/reference validation, live migration provenance, backup-source selection, protection
+   publication/pruning, and successful-reference transfer.
+3. Continue in dependency order through `tas-sr4b.11`; update this handoff at the next clean session
+   boundary.
 
 ## Verification and remaining gates
 
-Final fresh-context Sol review on 2026-09-14 found no critical issues and confirmed the design's
-compatibility/recovery boundary. Both important plan gaps are corrected: Task 8 now explicitly
-integrates and tests scheduler convergence before initial/reapply restore binding publication;
-Tasks 2/6 identify clean source inputs before discovery and revalidate before confirmation, with
-re-resolution and drift tests. Sol's scoped follow-up closed both findings with no new issues.
-Affected task acceptance criteria are synchronized; evidence is recorded in `tas-sr4b`.
-The design is unchanged; no implementation or host action occurred.
+- Task 1 controller gate: 167 focused tests passed; `compileall` exited 0.
+- Task 2 controller gate: 69 focused tests passed; `compileall` exited 0.
+- The Task 2 implementer also ran `mix precommit` after its production fix round; the final change
+  after that run added only the complete clean-input test matrix.
+- Integrated failures in consumers assigned to Tasks 3–10 remain expected until their planned
+  cutovers land. Full local/build/package/documentation verification belongs to Task 11.
 
-Compatibility-amendment verification on 2026-09-14: nine affected documents passed local links,
-anchors and whitespace checks; `mix precommit` passed 805 tests. Independent scoped review found
-only a stale checkpoint paragraph, now corrected. The marker simplification was also reviewed;
-future upgrade/recovery guarantees remain intact. Evidence is in `tas-sr4b`, comment 212.
-
-Planning verification on 2026-09-14: relative links, anchors, whitespace and placeholder checks
-passed; `mix precommit` passed 805 tests. The scoped plan review found a manual-backup admission
-gap; the plan now explicitly opens that public path for validated unfinished deployment and
-requires focused public backup tests. Independent focused follow-up closed the finding with no
-new blocker. Review evidence is recorded in `tas-sr4b`.
-These establish documentation hygiene and the existing application baseline, not correctness
-of unimplemented reconciliation. Independent design reviews were read-only; no host action
-occurred during review or approval.
-
-Design and plan approval are complete. Broader invitation/email, API key,
-LiveView, off-host backup, rollback/restore, controlled-failure, reboot, and leakage acceptance
-retain their existing operator-selection gates. No destructive recovery or manual history repair
-is authorized.
+Clean staging recreation, provisioning, deployment, push, and merge require separate operator
+authorization. Administrator login acceptance is already complete on its separate track and does
+not establish deployment reconciliation success.
