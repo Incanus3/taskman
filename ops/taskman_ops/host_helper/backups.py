@@ -184,6 +184,18 @@ def retained_backup_ids(state: HostState, retention: int) -> frozenset[str]:
     if type(retention) is not int or not 1 <= retention <= 64:
         raise ValueError("backup retention is invalid")
     protected = {selection.backup_id for selection in state.selections if selection.backup_id}
+    protected.update(
+        backup_id
+        for selection in state.selections
+        for backup_id in selection.recovery_backup_ids
+    )
+    protected.update(protection.backup_id for protection in state.backup_protections)
+    if state.restore_target is not None:
+        protected.add(state.restore_target.backup_id)
+        protected.add(state.restore_target.safety_backup_id)
+        protected.update(str(item["backup_id"]) for item in state.restore_target.safety_backup_attempts)
+        if state.restore_target.replacement is not None:
+            protected.add(str(state.restore_target.replacement["backup_id"]))
     unprotected = [record for record in state.backups if record.backup_id not in protected]
     newest = sorted(unprotected, key=lambda record: (record.created_at, record.backup_id), reverse=True)
     protected.update(record.backup_id for record in newest[:retention])

@@ -85,6 +85,25 @@ def test_backup_uses_protected_target_provenance_for_partial_live_schema() -> No
     assert state.selected_release_id == selected.release_id
 
 
+def test_retention_keeps_backups_held_by_unresolved_protections() -> None:
+    """Pruning a migration-attempt dump referenced by its protection loses recovery."""
+
+    protected_id = "backup-" + "d" * 32
+    ordinary_id = "backup-" + "e" * 32
+    newest_id = "backup-" + "f" * 32
+    records = (
+        BackupRecord(protected_id, datetime(2026, 9, 7, 11, 0, tzinfo=UTC), "a" * 64, RELEASE, (MIGRATION_VERSION,), 1),
+        BackupRecord(ordinary_id, datetime(2026, 9, 7, 12, 0, tzinfo=UTC), "b" * 64, RELEASE, (MIGRATION_VERSION,), 1),
+        BackupRecord(newest_id, datetime(2026, 9, 7, 13, 0, tzinfo=UTC), "c" * 64, RELEASE, (MIGRATION_VERSION,), 1),
+    )
+    state = HostState(
+        RELEASE, (_release_record(),), records, (), (MIGRATION_VERSION,), "running", "ready", (), (),
+        (BackupProtection(1, protected_id, None, RELEASE, 0, datetime(2026, 9, 7, 11, 0, tzinfo=UTC)),),
+    )
+
+    assert backup_capability.retained_backup_ids(state, 1) == frozenset({protected_id, newest_id})
+
+
 def _credentials(tmp_path: Path) -> Path:
     credentials = tmp_path / "pgpass"
     credentials.write_text("127.0.0.1:5432:taskman:taskman:database-password-canary\n", encoding="utf-8")
