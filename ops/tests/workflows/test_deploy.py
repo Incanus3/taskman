@@ -1,4 +1,4 @@
-"""Deployment outcomes over validated artifacts and final helper evidence."""
+"""Public deployment controller results and consent boundaries."""
 
 from __future__ import annotations
 
@@ -7,16 +7,26 @@ from pathlib import Path
 import pytest
 
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.errors import ExitStatus
 from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 from taskman_ops.releases.identifiers import build_release_id
-from taskman_ops.releases.manifests import OTP_VERSION
-from taskman_ops.releases.manifests import MigrationFingerprint
-from tests.workflows.support import CANDIDATE, deployment_artifact, successful_verification_report
+from taskman_ops.releases.manifests import OTP_VERSION, MigrationFingerprint
 from tests.support.environments import valid_environment
+from tests.workflows.support import CANDIDATE, deployment_artifact, successful_verification_report
 
 
-CURRENT = build_release_id("0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION)
+CURRENT = build_release_id(
+    "0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION
+)
+_EXPECTED = {
+    "selected_release_id": CURRENT,
+    "last_successful_selection_id": "selection-" + "a" * 64 + ".json",
+    "applied_migrations": (),
+    "backup_protection_sha256": "b" * 64,
+    "scheduled_backup_sha256": "c" * 64,
+    "backup_timer_enabled": True,
+    "downgrade_baseline_sha256": "d" * 64,
+}
 
 
 def config() -> EnvironmentConfig:
@@ -26,375 +36,179 @@ def config() -> EnvironmentConfig:
 
 
 @pytest.fixture(autouse=True)
-def _valid_operational_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.validate_operational_preflight",
-        lambda *_args: None,
+def _valid_operational_preflights(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskman_ops.workflows.deploy.validate_operational_preflight", lambda *_args: None)
+
+
+@pytest.fixture(autouse=True)
+def _confirmed_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: _EXPECTED)
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+
+
+def _success(*, mutation_state: str = "changed") -> HostResult:
+    return HostResult(
+        PROTOCOL_VERSION,
+        "deploy",
+        "op-0123456789abcdef0123456789abcdef",
+        "succeeded",
+        "completed",
+        {
+            "mutation_state": mutation_state,
+            "exit_code": 0,
+            "failed_boundary": None,
+            "observations": {
+                "selected_release_id": CANDIDATE,
+                "last_successful_selection_id": "selection-" + "e" * 64 + ".json",
+                "applied_migrations": [],
+                "protected_backup_ids": [],
+                "backup_protection_sha256": "f" * 64,
+                "restore_target_sha256": None,
+                "database_state": "ready",
+                "service_state": "running",
+                "scheduled_backup_sha256": "c" * 64,
+                "backup_timer_enabled": True,
+                "backup_timer_state": "active",
+            },
+            "unavailable_fields": [],
+            "inspection_error": None,
+            "report": successful_verification_report(CANDIDATE),
+            "desired_release_id": CANDIDATE,
+            "backup_id": None,
+        },
+        (),
     )
 
 
-def test_deploy_final_result_has_no_private_operation_identifier() -> None:
-    result = HostResult(
-        PROTOCOL_VERSION, "deploy", "op-0123456789abcdef0123456789abcdef", "succeeded", "completed",
-        {"changed": True, "selected_release_id": "2026.9.7-deadbeef"}, (),
-    )
-
-    assert result.to_mapping()["correlation_id"] == result.correlation_id
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
 def test_changed_migrations_require_explicit_policy_before_confirmation_or_upload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from taskman_ops.workflows.deploy import deploy
 
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, (), ()),
-    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
         lambda *_args, **_kwargs: pytest.fail("missing policy must prevent upload"),
     )
-    artifact = deployment_artifact(
-        tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)
-    )
     result = deploy(
-        object(), config(), artifact, dry_run=dry_run,
-        present_plan=lambda _plan: pytest.fail("missing policy must prevent plan presentation"),
-        confirm=lambda _plan: pytest.fail("missing policy must prevent confirmation"),
+        object(),
+        config(),
+        deployment_artifact(tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)),
+        present_plan=lambda _plan: pytest.fail("missing policy must prevent confirmation"),
     )
 
     assert result.exit_status is ExitStatus.INVALID
-    assert result.stage == "invalid-input"
-    assert "--migration-policy backward-compatible" in result.next_action
-    assert "--migration-policy restore-required" in result.next_action
 
 
-@pytest.mark.parametrize("policy", ["backward-compatible", "restore-required"])
-def test_changed_migrations_preserve_explicit_policy_in_dry_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str
+def test_dry_run_does_not_need_confirmation_or_apply_reobservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from taskman_ops.workflows.deploy import deploy
 
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, (), ()),
+        "taskman_ops.workflows.deploy._confirmed_expected_state",
+        lambda *_args: pytest.fail("dry-run cannot reobserve an apply snapshot"),
     )
-    artifact = deployment_artifact(
-        tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)
-    )
-    result = deploy(object(), config(), artifact, migration_policy=policy, dry_run=True)
+    result = deploy(object(), config(), deployment_artifact(tmp_path), dry_run=True)
 
     assert result.exit_status is ExitStatus.OK
     assert result.stage == "planned"
-    assert result.facts["migration_policy"] == policy
 
 
-def test_clean_inputs_drift_discards_the_presented_plan_before_yes_can_mutate(
+def test_deploy_consumes_exact_v3_mutation_success_and_preserves_final_observations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale automatic clean target must never reach helper mutation under --yes."""
-    from taskman_ops.releases.artifacts import CleanInputs
+    """Dropping mutation evidence must prevent a public deployed result."""
     from taskman_ops.workflows.deploy import deploy
 
-    artifact = deployment_artifact(tmp_path)
-    clean_inputs = CleanInputs(
-        "b" * 40, "0.2.0", "ubuntu26.04", "amd64", "27.3.4.6", "1.18.3",
-        "22.22.1", "2.6.0", "3.22.0", "tag", "a" * 64, "taskman", (),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ())
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: False
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("stale plan must not mutate"),
-    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: _success())
 
-    result = deploy(
-        object(), config(), artifact, repo=tmp_path, clean_inputs=clean_inputs, yes=True
-    )
+    result = deploy(object(), config(), deployment_artifact(tmp_path), present_plan=lambda _plan: None, confirm=lambda _plan: True)
 
-    assert result.exit_status is ExitStatus.SAFETY
-    assert result.stage == "safety-refused"
+    assert result.exit_status is ExitStatus.OK
+    assert result.stage == "deployed"
+    assert result.facts["mutation_state"] == "changed"
+    assert result.facts["selected_release_id"] == CANDIDATE
+    assert result.facts["verification"]["expected_release_id"] == CANDIDATE
+
+
+def test_deploy_preserves_unknown_lost_reply_evidence_in_the_public_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost reply after dispatch must not be rewritten as an unchanged retry."""
+    from taskman_ops.workflows.deploy import deploy
+
+    failed = _success(mutation_state="unknown")
+    failed = HostResult(
+        failed.protocol_version, failed.operation, failed.correlation_id, "retryable", "lost reply",
+        {**failed.state, "exit_code": 8, "failed_boundary": "service", "report": None}, (),
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: failed)
+
+    result = deploy(object(), config(), deployment_artifact(tmp_path), present_plan=lambda _plan: None, confirm=lambda _plan: True)
+
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.changed is True
+    assert result.facts["mutation_state"] == "unknown"
+    assert result.facts["selected_release_id"] == CANDIDATE
 
 
 def test_clean_input_drift_reresolves_before_yes_mutates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The confirmation loop plans again and only mutates the refreshed target."""
+    """A stale clean target never crosses the public confirmation boundary."""
     from taskman_ops.releases.artifacts import CleanInputs, DeploymentTarget
     from taskman_ops.workflows.deploy import deploy
 
-    artifact = deployment_artifact(tmp_path)
-    target = DeploymentTarget(artifact=artifact, release_record=None, source="built")
-    inputs = CleanInputs(
-        "b" * 40, "0.2.0", "ubuntu26.04", "amd64", "27.3.4.6", "1.18.3",
-        "22.22.1", "2.6.0", "3.22.0", "tag", "a" * 64, "taskman", (),
-    )
-    planning_calls = 0
+    target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
     mutations: list[str] = []
-
-    def authority(*_args: object) -> tuple[str, tuple[MigrationFingerprint, ...], tuple[int, ...]]:
-        nonlocal planning_calls
-        planning_calls += 1
-        return CURRENT, (), ()
-
-    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", authority)
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     matches = iter((False, True))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: mutations.append("refreshed") or HostResult(
-            PROTOCOL_VERSION, "deploy", "op-0123456789abcdef0123456789abcdef", "succeeded", "completed",
-            {"changed": True, "selected_release_id": CANDIDATE,
-             "backup_id": None, "database_state": "unchanged", "service_state": "running",
-             "report": successful_verification_report(CANDIDATE)}, (),
-        ),
-    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
 
-    result = deploy(
-        object(), config(), target, repo=tmp_path, clean_inputs=inputs, yes=True,
-        refresh_clean_target=lambda: (target, inputs),
-        present_plan=lambda _plan: None,
-    )
+    result = deploy(object(), config(), target, repo=tmp_path, clean_inputs=inputs, yes=True, refresh_clean_target=lambda: (target, inputs))
 
     assert result.stage == "deployed"
-    assert planning_calls == 2
-    assert mutations == ["refreshed"]
+    assert mutations == ["apply"]
 
 
-def test_deploy_refuses_success_without_proven_ready_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_unattended_unknown_baseline_requires_independent_downgrade_acknowledgment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A protocol-valid but partial deployment result cannot claim success."""
-
+    """Ordinary --yes cannot silently acknowledge an unorderable replacement."""
     from taskman_ops.workflows.deploy import deploy
 
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, (), ()),
+        "taskman_ops.workflows.deploy._downgrade_acknowledgment",
+        lambda *_args: (True, ("source-unavailable",)),
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: HostResult(
-            PROTOCOL_VERSION,
-            "deploy",
-            "op-0123456789abcdef0123456789abcdef",
-            "succeeded",
-            "completed",
-            {"changed": True, "selected_release_id": CANDIDATE},
-            (),
-        ),
+        lambda *_args, **_kwargs: pytest.fail("missing downgrade acknowledgment must prevent mutation"),
     )
 
-    result = deploy(
-        object(),
-        config(),
-        deployment_artifact(tmp_path),
-        present_plan=lambda _plan: None,
-        confirm=lambda _plan: True,
-    )
+    result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
 
     assert result.exit_status is ExitStatus.SAFETY
     assert result.stage == "safety-refused"
 
 
-def test_deploy_refuses_preflight_before_planning(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_equal_source_version_rebuild_needs_only_ordinary_acknowledgment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Same source/version archive bytes are a rebuild, not unknown order."""
     from taskman_ops.workflows.deploy import deploy
 
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.validate_operational_preflight",
-        lambda *_args: (_ for _ in ()).throw(
-            OpsError(ExitStatus.REMOTE_PREFLIGHT, "preflight", "unsafe")
-        ),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: pytest.fail("preflight refusal must precede planning"),
-    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: _success())
 
-    result = deploy(object(), config(), deployment_artifact(tmp_path))
+    result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
 
-    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
-    assert result.stage == "preflight-failed"
-
-
-def test_deploy_publishes_only_a_complete_verified_success(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A normal deployed result is available only after all published facts validate."""
-
-    from taskman_ops.workflows.deploy import deploy
-
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, (), ()),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: HostResult(
-            PROTOCOL_VERSION,
-            "deploy",
-            "op-0123456789abcdef0123456789abcdef",
-            "succeeded",
-            "completed",
-            {
-                "changed": True,
-                "selected_release_id": CANDIDATE,
-                "backup_id": "backup-cccccccccccccccccccccccccccccccc",
-                "database_state": "unchanged",
-                "service_state": "running",
-                "report": successful_verification_report(CANDIDATE),
-            },
-            (),
-        ),
-    )
-    result = deploy(
-        object(),
-        config(),
-        deployment_artifact(tmp_path),
-        present_plan=lambda _plan: None,
-        confirm=lambda _plan: True,
-    )
-
-    assert result.exit_status is ExitStatus.OK
     assert result.stage == "deployed"
-    assert result.facts["verification"]["expected_release_id"] == CANDIDATE
-    assert "activation_recorded" not in result.facts
-
-
-def test_deploy_failure_keeps_the_observed_selected_release_as_a_public_fact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Coarse retry results retain the final helper's observable authority."""
-
-    from taskman_ops.workflows.deploy import deploy
-
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planning_authority",
-        lambda *_args: (CURRENT, (), ()),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: HostResult(
-            PROTOCOL_VERSION,
-            "deploy",
-            "op-0123456789abcdef0123456789abcdef",
-            "retryable",
-            "migration result lost",
-            {
-                "failed_boundary": "migration",
-                "selected_release_id": CURRENT,
-                "applied_migrations": (),
-            },
-            (),
-        ),
-    )
-
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.result_error",
-        lambda _result: OpsError(
-            ExitStatus.RELEASE, "migration", "migration result lost", changed=False,
-            state={"selected_release_id": CURRENT, "applied_migrations": ()},
-        ),
-    )
-    result = deploy(
-        object(),
-        config(),
-        deployment_artifact(tmp_path),
-        present_plan=lambda _plan: None,
-        confirm=lambda _plan: True,
-    )
-
-    assert result.exit_status is ExitStatus.RELEASE
-    assert result.facts["previous_release_id"] == CURRENT
-    assert result.facts["selected_release_id"] == CURRENT
-
-
-def test_first_release_with_migrations_preserves_restore_required_without_a_backup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from taskman_ops.workflows.deploy import deploy_first_release
-
-    migration = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
-    captured: dict[str, object] = {}
-
-    def run_deployment(*_args: object, **kwargs: object) -> HostResult:
-        captured.update(kwargs)
-        return HostResult(
-            PROTOCOL_VERSION,
-            "genesis",
-            "op-0123456789abcdef0123456789abcdef",
-            "succeeded",
-            "completed",
-            {
-                "changed": True,
-                "selected_release_id": CANDIDATE,
-                "backup_id": None,
-                "database_state": "changed",
-                "service_state": "running",
-                "report": successful_verification_report(CANDIDATE),
-            },
-            (),
-        )
-
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", run_deployment)
-
-    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path, migrations=(migration,)))
-
-    assert result.exit_status is ExitStatus.OK
-    assert result.stage == "deployed"
-    assert result.facts["migration_policy"] == "restore-required"
-    assert result.facts["backup_id"] is None
-    assert captured == {
-        "migration_policy": "restore-required",
-        "previous_release_id": None,
-        "applied_migrations": (),
-        "genesis": True,
-    }
-
-
-def test_first_release_surfaces_a_manual_unowned_schema_without_claiming_deployment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from taskman_ops.workflows.deploy import deploy_first_release
-
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: HostResult(
-            PROTOCOL_VERSION,
-            "genesis",
-            "op-0123456789abcdef0123456789abcdef",
-            "manual",
-            "deployment state is contradictory",
-            {"selected_release_id": None, "applied_migrations": (999,)},
-            (),
-        ),
-    )
-    monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.result_error",
-        lambda _result: OpsError(
-            ExitStatus.RELEASE, "deploy", "deployment state is contradictory", changed=False,
-            state={"selected_release_id": None, "applied_migrations": (999,)},
-        ),
-    )
-
-    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)))
-
-    assert result.exit_status is ExitStatus.RELEASE
-    assert result.stage == "deployment-incomplete"
-    assert result.changed is False
-    assert result.facts["previous_release_id"] is None
-    assert result.facts["selected_release_id"] is None

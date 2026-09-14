@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import hashlib
+import json
 import time
 import re
 
@@ -14,6 +16,8 @@ from ..host_protocol import HostResult
 from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
 from ..host_helper.records import ReleaseRecord, SelectionRecord
+from ..host_helper.backup_protection import BackupProtection
+from ..releases.source_order import compare_sources
 from ..migrations import validate_migration_versions
 from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
@@ -21,10 +25,12 @@ from ..releases.identifiers import validate_release_id
 from .helper import (
     discovery_request,
     mutable,
+    mutation_result_facts,
     result_error,
     run_deployment_request,
     run_request,
     successful_verification,
+    temporary_scheduled_backup_helper_package,
 )
 from .operational_preflight import validate_operational_preflight
 
@@ -117,9 +123,13 @@ def deploy(
                 )
             policy = migration_policy or "no-change"
             _validate_migration_policy(current_migrations, deployment_target.manifest.migrations, policy)
+            downgrade_required, downgrade_reasons = _downgrade_acknowledgment(
+                remote, config, deployment_target, repo
+            )
             plan = _redacted_plan(_plan(config, deployment_target, previous, policy))
             plan["source_dirty"] = deployment_target.source_dirty
-            plan["requires_downgrade_acknowledgment"] = False
+            plan["requires_downgrade_acknowledgment"] = downgrade_required
+            plan["downgrade_reasons"] = downgrade_reasons
             if dry_run:
                 return WorkflowResult(
                     "deploy", config.name or "", False, "planned",
@@ -140,20 +150,35 @@ def deploy(
                      "database_state": "unchanged", "service_state": "unknown"},
                     next_action="review the exact deployment plan and confirm a later run when ready",
                 )
+            if downgrade_required and not allow_downgrade:
+                if yes:
+                    raise _safety("deployment ordering requires --allow-downgrade acknowledgement")
+                if not _confirm_downgrade(plan):
+                    return WorkflowResult(
+                        "deploy", config.name or "", False, "downgrade-acknowledgment-cancelled",
+                        {**plan, "previous_release_id": previous, "selected_release_id": previous},
+                        next_action="review the downgrade or unknown-order evidence before retrying",
+                    )
+            expected_state = _confirmed_expected_state(remote, config)
             break
-        artifact = deployment_target.artifact
-        if artifact is None:
-            raise _safety("installed release target requires host-side reconciliation support")
-        result = run_deployment_request(
-            remote,
-            config,
-            artifact,
-            migration_policy=policy,
-            previous_release_id=previous,
-            applied_migrations=applied_versions,
-        )
+        with temporary_scheduled_backup_helper_package() as scheduler_package:
+            scheduler_upload = (
+                None
+                if expected_state["scheduled_backup_sha256"] == scheduler_package.sha256
+                else "pending-controller-upload"
+            )
+            result = run_deployment_request(
+                remote,
+                config,
+                deployment_target,
+                expected_state=expected_state,
+                migration_policy=policy,
+                backup_helper={"sha256": scheduler_package.sha256, "upload_path": scheduler_upload},
+                prune_backup_ids=(),
+                backup_helper_package=scheduler_package,
+            )
         if result.outcome != "succeeded":
-            raise result_error(result)
+            raise result_error(result, starting_state=expected_state)
         return _payload_result(config, candidate, policy, result, previous_release_id=previous)
     except OpsError as error:
         return _failure_result(config, error, candidate=candidate)
@@ -166,15 +191,27 @@ def deploy_first_release(remote: Remote, config: EnvironmentConfig, artifact: Ve
         raise TypeError("first release requires validated configuration and artifact")
     policy = "no-change" if not artifact.manifest.migrations else "restore-required"
     try:
-        result = run_deployment_request(
-            remote,
-            config,
-            artifact,
-            migration_policy=policy,
-            previous_release_id=None,
-            applied_migrations=(),
-            genesis=True,
-        )
+        target = DeploymentTarget(artifact=artifact, release_record=None, source="explicit")
+        expected_state = _confirmed_expected_state(remote, config)
+        with temporary_scheduled_backup_helper_package() as scheduler_package:
+            result = run_deployment_request(
+                remote,
+                config,
+                target,
+                expected_state=expected_state,
+                migration_policy=policy,
+                backup_helper={
+                    "sha256": scheduler_package.sha256,
+                    "upload_path": (
+                        None
+                        if expected_state["scheduled_backup_sha256"] == scheduler_package.sha256
+                        else "pending-controller-upload"
+                    ),
+                },
+                prune_backup_ids=(),
+                backup_helper_package=scheduler_package,
+                genesis=True,
+            )
         if result.outcome != "succeeded":
             raise result_error(result)
         return _payload_result(
@@ -228,6 +265,112 @@ def _planning_authority(
     return previous, migrations, applied
 
 
+def _confirmed_expected_state(remote: Remote, config: EnvironmentConfig) -> dict[str, object]:
+    """Reobserve exactly the material deploy facts immediately before apply."""
+
+    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+        raise _safety("deployment apply helper refused host state")
+    state = mutable(result.state)
+    required = {
+        "selected_release_id",
+        "last_successful_selection_id",
+        "applied_migrations",
+        "backup_protection_sha256",
+        "scheduled_backup_sha256",
+        "backup_timer_enabled",
+        "downgrade_baseline_sha256",
+    }
+    if not isinstance(state, Mapping) or set(state) < required:
+        raise _safety("deployment apply helper returned incomplete expected state")
+    expected = {key: state[key] for key in required}
+    try:
+        if expected["selected_release_id"] is not None:
+            validate_release_id(expected["selected_release_id"])
+        if expected["last_successful_selection_id"] is not None and not isinstance(expected["last_successful_selection_id"], str):
+            raise ValueError
+        validate_migration_versions(expected["applied_migrations"])
+        if expected["scheduled_backup_sha256"] is not None and not isinstance(expected["scheduled_backup_sha256"], str):
+            raise ValueError
+        if type(expected["backup_timer_enabled"]) is not bool:
+            raise ValueError
+        for key in ("backup_protection_sha256", "downgrade_baseline_sha256"):
+            value = expected[key]
+            if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError
+    except (TypeError, ValueError):
+        raise _safety("deployment apply helper returned invalid expected state") from None
+    return expected
+
+
+def _downgrade_acknowledgment(
+    remote: Remote,
+    config: EnvironmentConfig,
+    target: DeploymentTarget,
+    repo: Path | None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Classify every validated deploy baseline without treating uncertainty as forward."""
+
+    from .inventory import collect_inventory
+
+    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+        raise _safety("deployment planning helper refused downgrade authority")
+    state = mutable(result.state)
+    try:
+        selected = state["selected_release_id"]
+        selected = None if selected is None else validate_release_id(selected)
+        latest = state["last_successful_selection"]
+        latest_record = None if latest is None else SelectionRecord.from_mapping(latest)
+        latest_id = state["last_successful_selection_id"]
+        if (
+            (latest_record is None and latest_id is not None)
+            or (
+                latest_record is not None
+                and (type(latest_id) is not str or re.fullmatch(r"selection-[0-9a-f]{64}\.json", latest_id) is None)
+            )
+        ):
+            raise ValueError
+        protections = tuple(BackupProtection.from_mapping(item) for item in state["backup_protections"])
+        baseline_ids = set()
+        if selected is not None:
+            baseline_ids.add(selected)
+        if latest_record is not None:
+            baseline_ids.add(latest_record.release_id)
+        baseline_ids.update(item.target_release_id for item in protections)
+        expected_digest = hashlib.sha256(
+            json.dumps(sorted(baseline_ids), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        if state["downgrade_baseline_sha256"] != expected_digest:
+            raise ValueError
+        records = {
+            record.release_id: record
+            for record in (
+                ReleaseRecord.from_mapping(value)
+                for value in collect_inventory(
+                    remote, config, "list_releases", deadline=time.monotonic() + 660.0
+                )
+            )
+        }
+        baselines = tuple(records[release_id] for release_id in sorted(baseline_ids))
+    except (KeyError, TypeError, ValueError):
+        raise _safety("deployment planning helper returned invalid downgrade authority") from None
+
+    orders = tuple(
+        compare_sources(
+            repo or Path.cwd(),
+            target_version=target.manifest.application_version,
+            target_revision=target.source_revision,
+            baseline_version=baseline.artifact_manifest.application_version,
+            baseline_revision=baseline.source_revision,
+        )
+        for baseline in baselines
+    )
+    required = any(order.needs_acknowledgment for order in orders)
+    reasons = tuple(sorted({reason for order in orders for reason in order.reasons}))
+    return required, reasons
+
+
 def _payload_result(
     config: EnvironmentConfig,
     candidate: str,
@@ -237,7 +380,7 @@ def _payload_result(
     previous_release_id: str | None,
     genesis: bool = False,
 ) -> WorkflowResult:
-    facts = _facts(result.state, candidate, policy, previous_release_id=previous_release_id, genesis=genesis)
+    facts = _facts(result, candidate, policy, previous_release_id=previous_release_id, genesis=genesis)
     changed = facts["changed"]
     assert isinstance(changed, bool)
     if not changed:
@@ -252,46 +395,47 @@ def _payload_result(
 
 
 def _facts(
-    state: Mapping[str, object],
+    result: HostResult,
     candidate: str,
     policy: str,
     *,
     previous_release_id: str | None,
     genesis: bool,
 ) -> dict[str, object]:
-    required = {"changed", "selected_release_id", "backup_id", "database_state", "service_state", "report"}
-    if not isinstance(state, Mapping) or not required <= set(state):
-        raise _safety("deployment helper returned incomplete success evidence")
-    changed, backup_id, database = state["changed"], state["backup_id"], state["database_state"]
-    if (
-        type(changed) is not bool
-        or state["selected_release_id"] != candidate
-        or state["service_state"] != "running"
-        or database not in {"changed", "unchanged"}
-        or (
-            changed
-            and database == "changed"
-            and not genesis
-            and (type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None)
-        )
-        or (genesis and backup_id is not None)
-        or (not changed and backup_id is not None)
-    ):
-        raise _safety("deployment helper returned invalid success evidence")
     try:
-        verification = successful_verification(state["report"], candidate)
-    except ValueError:
+        evidence = mutation_result_facts(result)
+        observations = evidence["observations"]
+        verification = successful_verification(evidence["report"], candidate)
+    except (TypeError, ValueError):
+        raise _safety("deployment helper returned invalid success evidence")
+    if (
+        not isinstance(observations, Mapping)
+        or evidence["desired_release_id"] != candidate
+        or observations["selected_release_id"] != candidate
+        or observations["service_state"] != "running"
+    ):
         raise _safety("deployment helper returned invalid success evidence") from None
+    changed = evidence["mutation_state"] != "unchanged"
     return {
         "changed": changed,
         "previous_release_id": None if genesis else previous_release_id,
         "candidate_release_id": candidate,
         "selected_release_id": candidate,
-        "backup_id": backup_id,
+        "backup_id": evidence["backup_id"],
         "migration_policy": policy,
-        "database_changed": database == "changed",
-        "database_state": database,
-        "service_state": "running",
+        "database_changed": evidence["mutation_state"] == "changed",
+        "database_state": observations["database_state"],
+        "service_state": observations["service_state"],
+        "mutation_state": evidence["mutation_state"],
+        "last_successful_selection_id": observations["last_successful_selection_id"],
+        "applied_migrations": observations["applied_migrations"],
+        "protected_backup_ids": observations["protected_backup_ids"],
+        "backup_protection_sha256": observations["backup_protection_sha256"],
+        "scheduled_backup_sha256": observations["scheduled_backup_sha256"],
+        "backup_timer_enabled": observations["backup_timer_enabled"],
+        "backup_timer_state": observations["backup_timer_state"],
+        "unavailable_fields": evidence["unavailable_fields"],
+        "inspection_error": evidence["inspection_error"],
         "verification": verification,
     }
 
@@ -315,17 +459,30 @@ def _failure_result(
         ExitStatus.LOCKED: "lock-contended",
         ExitStatus.INVALID: "invalid-input",
     }.get(error.status, f"{error.stage}-failed")
+    observations = state.get("observations", {})
+    if not isinstance(observations, Mapping):
+        observations = {}
     return WorkflowResult(
         "deploy", config.name or "", error.changed, stage,
         {
-            "previous_release_id": None if genesis else state.get("selected_release_id"),
+            "previous_release_id": None if genesis else observations.get("selected_release_id"),
             "candidate_release_id": candidate,
-            "selected_release_id": state.get("selected_release_id"),
+            "selected_release_id": observations.get("selected_release_id"),
             "backup_id": state.get("backup_id"),
-            "database_state": state.get("database_state", "unknown"),
-            "service_state": state.get("service_state", "unknown"),
+            "database_state": observations.get("database_state", "unknown"),
+            "service_state": observations.get("service_state", "unknown"),
             "failure_boundary": state.get("failed_boundary", error.stage),
             "verification": state.get("report"),
+            "mutation_state": state.get("mutation_state", "unknown"),
+            "last_successful_selection_id": observations.get("last_successful_selection_id"),
+            "applied_migrations": observations.get("applied_migrations"),
+            "protected_backup_ids": observations.get("protected_backup_ids"),
+            "backup_protection_sha256": observations.get("backup_protection_sha256"),
+            "scheduled_backup_sha256": observations.get("scheduled_backup_sha256"),
+            "backup_timer_enabled": observations.get("backup_timer_enabled"),
+            "backup_timer_state": observations.get("backup_timer_state"),
+            "unavailable_fields": state.get("unavailable_fields", []),
+            "inspection_error": state.get("inspection_error"),
         },
         tuple(getattr(error, "warnings", ())),
         error.next_action or "inspect the observed host state and rerun when it is safe",
@@ -370,6 +527,10 @@ def _present_plan(plan: Mapping[str, object]) -> None:
 
 def _confirm(_plan: Mapping[str, object]) -> bool:
     return input("Apply this redacted deployment plan? Type yes to continue: ").strip().lower() == "yes"
+
+
+def _confirm_downgrade(_plan: Mapping[str, object]) -> bool:
+    return input("Acknowledge the downgrade or unknown ordering? Type yes to continue: ").strip().lower() == "yes"
 
 
 def _safety(message: str) -> OpsError:

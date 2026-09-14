@@ -86,29 +86,14 @@ def test_deploy_dry_run_reads_completed_authority_without_uploading_or_deploying
     from taskman_ops.workflows.deploy import deploy
     from tests.workflows.support import deployment_artifact
 
+    config = EnvironmentConfig.model_validate(valid_environment(name="production"))
     current_release = build_release_id(
         "0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION
     )
-    config = EnvironmentConfig.model_validate(valid_environment(name="production"))
-    requests: list[HostRequest] = []
-
-    def invoke(_remote: object, request: HostRequest) -> HostResult:
-        requests.append(request)
-        return HostResult(
-            PROTOCOL_VERSION,
-            request.operation,
-            request.correlation_id,
-            "succeeded",
-            "observed",
-            {
-                "selected_release_id": current_release,
-                "applied_migrations": (),
-                "releases": ({"release_id": current_release, "migrations": ()},),
-            },
-            (),
-        )
-
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_request", invoke)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planning_authority", lambda *_args: (current_release, (), ())
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
         lambda *_args, **_kwargs: pytest.fail("dry-run must not upload or deploy"),
@@ -118,4 +103,3 @@ def test_deploy_dry_run_reads_completed_authority_without_uploading_or_deploying
 
     assert outcome.stage == "planned"
     assert outcome.changed is False
-    assert [request.operation for request in requests] == ["discover"]

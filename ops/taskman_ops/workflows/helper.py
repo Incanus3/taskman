@@ -26,7 +26,7 @@ from ..host_protocol import (
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
 from ..releases.identifiers import validate_release_id
-from ..releases.manifests import VerifiedArtifact
+from ..releases.artifacts import DeploymentTarget
 from ..remote import Remote, UploadReceipt
 from ..services.backups import scheduled_backup_helper
 from .verification_results import VerificationReport
@@ -35,6 +35,7 @@ from .verification_results import VerificationReport
 _MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_SELECTION_ID_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _PGPASS = "/etc/taskman/pgpass"
 _DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
 
@@ -374,52 +375,96 @@ def mutable(value: object) -> object:
 def run_deployment_request(
     remote: Remote,
     config: EnvironmentConfig,
-    artifact: VerifiedArtifact,
+    target: DeploymentTarget,
     *,
-    previous_release_id: str | None,
-    applied_migrations: tuple[int, ...],
+    expected_state: Mapping[str, object],
     migration_policy: str,
+    backup_helper: Mapping[str, object],
+    prune_backup_ids: tuple[str, ...],
+    backup_helper_package: HelperPackage | None = None,
     genesis: bool = False,
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
 ) -> HostResult:
-    """Upload one verified archive, then invoke the final deployment envelope."""
+    """Dispatch one exact confirmed deploy/genesis request.
 
-    if migration_policy not in {"no-change", "backward-compatible", "restore-required"}:
+    Consent belongs exclusively to the public controller.  The helper receives
+    only the material state that the confirmed plan bound, plus a target and
+    the scheduler package facts it must revalidate under its lifecycle lock.
+    """
+
+    if (
+        not isinstance(target, DeploymentTarget)
+        or migration_policy not in {"no-change", "backward-compatible", "restore-required"}
+        or not _valid_deployment_expected_state(expected_state)
+        or not isinstance(backup_helper, Mapping)
+        or set(backup_helper) != {"sha256", "upload_path"}
+        or not isinstance(prune_backup_ids, tuple)
+        or prune_backup_ids != tuple(sorted(set(prune_backup_ids)))
+        or any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in prune_backup_ids)
+    ):
         raise ValueError("helper deployment requires a migration policy")
     correlation_id = new_correlation_id()
     upload_root = config.deployment_root / "uploads"
-    upload = upload_root / f".upload-{artifact.manifest.release_id}-{correlation_id}.tar.gz"
-    prepared = remote.run(
-        ("install", "-d", "-o", "root", "-g", "root", "-m", "700", "--", upload_root.as_posix()),
-        sudo=True,
-        stdin=None,
-        sensitive=True,
-    )
-    if not prepared.succeeded:
-        raise OpsError(ExitStatus.RELEASE, "release", "unable to prepare private release upload", False)
+    artifact = target.artifact
+    upload: Path | None = None
+    scheduler_upload: Path | None = None
+    helper_value = dict(backup_helper)
+    if artifact is not None:
+        upload = upload_root / f".upload-{artifact.manifest.release_id}-{correlation_id}.tar.gz"
+        prepared = remote.run(
+            ("install", "-d", "-o", "root", "-g", "root", "-m", "700", "--", upload_root.as_posix()),
+            sudo=True,
+            stdin=None,
+            sensitive=True,
+        )
+        if not prepared.succeeded:
+            raise OpsError(ExitStatus.RELEASE, "release", "unable to prepare private release upload", False)
     try:
-        receipt = remote.put(artifact.archive, upload, mode=0o600, sensitive=True)
-        if not isinstance(receipt, UploadReceipt):
-            raise _safety("deploy", "release upload returned an invalid receipt")
+        receipt = UploadReceipt()
+        if artifact is not None:
+            assert upload is not None
+            receipt = remote.put(artifact.archive, upload, mode=0o600, sensitive=True)
+            if not isinstance(receipt, UploadReceipt):
+                raise _safety("deploy", "release upload returned an invalid receipt")
+            target_value: dict[str, object] = {
+                "kind": "upload",
+                "manifest": artifact.manifest.to_mapping(),
+                "artifact_sha256": artifact.sha256,
+                "artifact_path": upload.as_posix(),
+            }
+        else:
+            assert target.release_record is not None
+            target_value = {
+                "kind": "installed",
+                "release_record": target.release_record.to_mapping(),
+            }
+        if helper_value["upload_path"] is not None:
+            if backup_helper_package is None:
+                raise ValueError("scheduler upload requires its verified package")
+            if helper_value["sha256"] != backup_helper_package.sha256:
+                raise ValueError("scheduler package checksum does not match its payload")
+            scheduler_upload = upload_root / f".backup-helper-{correlation_id}.pyz"
+            scheduler_receipt = remote.put(
+                backup_helper_package.path, scheduler_upload, mode=0o600, sensitive=True
+            )
+            if not isinstance(scheduler_receipt, UploadReceipt):
+                raise _safety("deploy", "scheduler helper upload returned an invalid receipt")
+            helper_value["upload_path"] = scheduler_upload.as_posix()
         request_value = HostRequest(
             protocol_version=PROTOCOL_VERSION,
             operation="genesis" if genesis else "deploy",
             correlation_id=correlation_id,
-            expected_state={
-                "selected_release_id": previous_release_id,
-                "applied_migrations": applied_migrations,
-            },
+            expected_state=expected_state,
             paths=helper_paths(config),
             parameters={
-                "candidate_release_id": artifact.manifest.release_id,
-                "artifact_sha256": artifact.sha256,
-                "artifact_path": upload.as_posix(),
-                "manifest": artifact.manifest.to_mapping(),
+                "target": target_value,
                 "migration_policy": migration_policy,
                 "credentials_path": "/etc/taskman/pgpass",
                 "database": database_settings(config),
                 "verification": verification_settings(config),
+                "backup_helper": helper_value,
+                "prune_backup_ids": list(prune_backup_ids),
             },
         )
         result = run_request(remote, request_value, package=package, invoker=invoker)
@@ -432,12 +477,51 @@ def run_deployment_request(
         # The uploaded archive is only removed when the runner proves helper
         # entry never started.  No residue path or recovery command crosses
         # the final result boundary.
-        if error.helper_entry_dispatched is False:
+        if error.helper_entry_dispatched is False and upload is not None:
             try:
                 remote.run(("rm", "-f", "--", upload.as_posix()), sudo=True, sensitive=True)
             except Exception:
                 pass
+            if scheduler_upload is not None:
+                try:
+                    remote.run(("rm", "-f", "--", scheduler_upload.as_posix()), sudo=True, sensitive=True)
+                except Exception:
+                    pass
         raise
+
+
+def _valid_deployment_expected_state(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "selected_release_id",
+        "last_successful_selection_id",
+        "applied_migrations",
+        "backup_protection_sha256",
+        "scheduled_backup_sha256",
+        "backup_timer_enabled",
+        "downgrade_baseline_sha256",
+    }:
+        return False
+    try:
+        if value["selected_release_id"] is not None:
+            validate_release_id(value["selected_release_id"])
+        selection = value["last_successful_selection_id"]
+        if selection is not None and (type(selection) is not str or _SELECTION_ID_RE.fullmatch(selection) is None):
+            return False
+        migrations = value["applied_migrations"]
+        if (
+            not isinstance(migrations, (list, tuple))
+            or any(type(item) is not int or item < 0 for item in migrations)
+            or tuple(migrations) != tuple(sorted(set(migrations)))
+            or type(value["backup_timer_enabled"]) is not bool
+        ):
+            return False
+        for key in ("backup_protection_sha256", "downgrade_baseline_sha256"):
+            if type(value[key]) is not str or _SHA256_RE.fullmatch(value[key]) is None:
+                return False
+        scheduler = value["scheduled_backup_sha256"]
+        return scheduler is None or (type(scheduler) is str and _SHA256_RE.fullmatch(scheduler) is not None)
+    except (TypeError, ValueError):
+        return False
 
 
 def _mutation_result_required(request_value: HostRequest, result: HostResult) -> bool:
