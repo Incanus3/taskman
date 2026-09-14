@@ -9,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import tempfile
+import time
 
 from .commands import CommandError, run_command
 from .filesystem import fsync_directory
@@ -47,22 +48,22 @@ class BackupHelperError(RuntimeError):
         self.restoration_failed = restoration_failed
 
 
-def observe_backup_timer() -> tuple[bool, str]:
+def observe_backup_timer(*, timeout_seconds: float = 60.0) -> tuple[bool, str]:
     """Read the persistent enablement and active state of the managed timer."""
 
-    enabled = _systemd_property("UnitFileState")
-    active = _systemd_property("ActiveState")
+    enabled = _systemd_property("UnitFileState", timeout_seconds=timeout_seconds)
+    active = _systemd_property("ActiveState", timeout_seconds=timeout_seconds)
     if enabled not in {"enabled", "disabled"} or active not in {"active", "inactive"}:
         raise BackupHelperError("backup timer state is ambiguous", BackupHelperMutation())
     return enabled == "enabled", active
 
 
-def stop_backup_timer() -> None:
-    run_command(("systemctl", "stop", _BACKUP_TIMER), timeout_seconds=60.0)
+def stop_backup_timer(*, timeout_seconds: float = 60.0) -> None:
+    run_command(("systemctl", "stop", _BACKUP_TIMER), timeout_seconds=timeout_seconds)
 
 
-def start_backup_timer() -> None:
-    run_command(("systemctl", "start", _BACKUP_TIMER), timeout_seconds=60.0)
+def start_backup_timer(*, timeout_seconds: float = 60.0) -> None:
+    run_command(("systemctl", "start", _BACKUP_TIMER), timeout_seconds=timeout_seconds)
 
 
 def converge_backup_helper(
@@ -73,6 +74,7 @@ def converge_backup_helper(
     confirmed_enabled: bool,
     revalidate: Callable[[], None],
     timeout_seconds: float,
+    lock: LifecycleLock | None = None,
 ) -> BackupHelperConvergence:
     """Pause, quiesce, replace, and restore the compatible executable.
 
@@ -81,54 +83,53 @@ def converge_backup_helper(
     """
 
     desired_sha256, upload = _input(paths, backup_helper, confirmed_checksum, confirmed_enabled, revalidate, timeout_seconds)
+    deadline = time.monotonic() + timeout_seconds
     mutation = BackupHelperMutation()
-    lock: LifecycleLock | None = None
+    if lock is not None and not lock.held:
+        raise ValueError("backup helper requires a held lifecycle lock")
+    owned_lock = lock is None
     timer_was_enabled = False
     try:
-        lock = acquire_lifecycle_lock(paths, timeout_seconds)
-        revalidate()
-        timer_was_enabled, timer_state = observe_backup_timer()
+        if lock is None:
+            lock = acquire_lifecycle_lock(paths, _remaining(deadline))
+        timer_was_enabled, timer_state = observe_backup_timer(timeout_seconds=_remaining(deadline))
         _ensure_confirmed_timer(timer_was_enabled, timer_state, confirmed_enabled, mutation)
         installed = _verified_executable_checksum()
         if installed != confirmed_checksum:
             raise BackupHelperError("scheduled backup executable identity changed", mutation)
         if installed == desired_sha256:
             if timer_was_enabled and timer_state == "inactive":
-                start_backup_timer()
+                start_backup_timer(timeout_seconds=_remaining(deadline))
                 mutation = BackupHelperMutation(restarted=True)
             return BackupHelperConvergence(lock, mutation)
 
         _validate_upload(paths, upload, desired_sha256)
-        stop_backup_timer()
+        stop_backup_timer(timeout_seconds=_remaining(deadline))
         mutation = BackupHelperMutation(paused=True)
         lock.release()
-        lock = None
-        _wait_for_backup_service(timeout_seconds)
-        lock = acquire_lifecycle_lock(paths, timeout_seconds)
+        _wait_for_backup_service(_remaining(deadline))
+        lock.reacquire(paths, _remaining(deadline))
         revalidate()
-        enabled_after_wait, state_after_wait = observe_backup_timer()
+        enabled_after_wait, state_after_wait = observe_backup_timer(timeout_seconds=_remaining(deadline))
         _ensure_confirmed_timer(enabled_after_wait, state_after_wait, confirmed_enabled, mutation)
-        _replace_executable(upload, desired_sha256)
         mutation = BackupHelperMutation(paused=True, replaced=True)
+        _replace_executable(upload, desired_sha256)
         if enabled_after_wait:
-            start_backup_timer()
+            start_backup_timer(timeout_seconds=_remaining(deadline))
             mutation = BackupHelperMutation(paused=True, replaced=True, restarted=True)
         return BackupHelperConvergence(lock, mutation)
-    except (CommandError, LifecycleLockContention, OSError, PathAuthorityError, ValueError) as error:
-        restoration_failed = False
-        if timer_was_enabled and mutation.paused and _verified_executable_checksum() in {confirmed_checksum, desired_sha256}:
-            try:
-                start_backup_timer()
-                mutation = BackupHelperMutation(mutation.paused, mutation.replaced, True)
-            except (CommandError, OSError):
-                restoration_failed = True
-        if lock is not None:
+    except (BackupHelperError, CommandError, LifecycleLockContention, OSError, PathAuthorityError, ValueError) as error:
+        mutation, restoration_failed = _restore_enabled_timer(
+            timer_was_enabled,
+            mutation,
+            confirmed_checksum,
+            desired_sha256,
+            deadline,
+        )
+        if owned_lock and lock is not None:
             lock.release()
-        raise BackupHelperError("scheduled backup helper did not converge", mutation, restoration_failed=restoration_failed) from error
-    except BackupHelperError:
-        if lock is not None:
-            lock.release()
-        raise
+        message = str(error) if isinstance(error, BackupHelperError) else "scheduled backup helper did not converge"
+        raise BackupHelperError(message, mutation, restoration_failed=restoration_failed) from error
 
 
 def _input(
@@ -169,14 +170,12 @@ def _ensure_confirmed_timer(enabled: bool, state: str, confirmed_enabled: bool, 
         raise BackupHelperError("backup timer is active while disabled", mutation)
 
 
-def _systemd_property(name: str) -> str:
-    result = run_command(("systemctl", "show", f"--property={name}", "--value", _BACKUP_TIMER), timeout_seconds=60.0, output_limit=64)
+def _systemd_property(name: str, *, timeout_seconds: float) -> str:
+    result = run_command(("systemctl", "show", f"--property={name}", "--value", _BACKUP_TIMER), timeout_seconds=timeout_seconds, output_limit=64)
     return result.stdout.decode("ascii", "strict").strip()
 
 
 def _wait_for_backup_service(timeout_seconds: float) -> None:
-    import time
-
     deadline = time.monotonic() + timeout_seconds
     while True:
         result = run_command(("systemctl", "show", "--property=ActiveState", "--value", _BACKUP_SERVICE), timeout_seconds=max(0.001, deadline - time.monotonic()), output_limit=64)
@@ -185,6 +184,31 @@ def _wait_for_backup_service(timeout_seconds: float) -> None:
         if time.monotonic() >= deadline:
             raise CommandError("scheduled backup did not quiesce")
         time.sleep(min(0.05, deadline - time.monotonic()))
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise CommandError("scheduled backup helper timed out")
+    return remaining
+
+
+def _restore_enabled_timer(
+    timer_was_enabled: bool,
+    mutation: BackupHelperMutation,
+    confirmed_checksum: str | None,
+    desired_sha256: str,
+    deadline: float,
+) -> tuple[BackupHelperMutation, bool]:
+    if not timer_was_enabled or not mutation.paused:
+        return mutation, False
+    try:
+        if _verified_executable_checksum() not in {confirmed_checksum, desired_sha256}:
+            return mutation, True
+        start_backup_timer(timeout_seconds=_remaining(deadline))
+    except (CommandError, OSError, ValueError):
+        return mutation, True
+    return BackupHelperMutation(mutation.paused, mutation.replaced, True), False
 
 
 def _validate_upload(paths: ManagedPaths, upload: Path | None, digest: str) -> None:

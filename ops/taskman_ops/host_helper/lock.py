@@ -38,6 +38,14 @@ class LifecycleLock:
         finally:
             os.close(descriptor)
 
+    def reacquire(self, paths: ManagedPaths, timeout_seconds: float) -> None:
+        """Replace this released acquisition without changing its explicit owner."""
+
+        if self.held:
+            raise RuntimeError("lifecycle lock is already held")
+        replacement = acquire_lifecycle_lock(paths, timeout_seconds)
+        self._descriptor, replacement._descriptor = replacement._descriptor, -1
+
     def __enter__(self) -> "LifecycleLock":
         return self
 
@@ -63,7 +71,7 @@ def _safe_directory(path: Path, owner_uid: int) -> None:
 
 
 @contextmanager
-def lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> Iterator[None]:
+def lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> Iterator[LifecycleLock]:
     """Acquire the one exclusive lifecycle lock for a bounded duration.
 
     The lock file is derived from ``install_root`` and contains no operation
@@ -77,7 +85,7 @@ def lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> Iterator[None
         raise ValueError("invalid lifecycle lock timeout")
     lock = acquire_lifecycle_lock(paths, timeout_seconds)
     try:
-        yield
+        yield lock
     finally:
         lock.release()
 
