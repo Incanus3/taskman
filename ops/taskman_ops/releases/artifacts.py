@@ -149,8 +149,13 @@ def identify_clean_inputs(repo: Path) -> CleanInputs:
         raise _resolution_error("source checkout must be clean and identified")
     try:
         revision = validate_source_revision(state.revision)
+    except ValueError:
+        raise _resolution_error("source checkout has invalid release inputs") from None
+    try:
         migrations = fingerprint_migrations(repo / "priv" / "repo" / "migrations")
-    except (ValueError, OpsError):
+    except OpsError as error:
+        if error.status is ExitStatus.INVALID:
+            raise
         raise _resolution_error("source checkout has invalid release inputs") from None
     return CleanInputs(
         revision, read_application_version(repo / "mix.exs"), TARGET_OS, ARCHITECTURE, OTP_VERSION,

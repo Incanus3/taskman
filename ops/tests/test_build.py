@@ -16,6 +16,7 @@ from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, MigrationFingerprint
 from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases import build as build_module
 
 
 REVISION = "c" * 40
@@ -67,6 +68,71 @@ def export_source(repo: Path, _revision: str, destination: Path) -> None:
     for source in source_migrations.iterdir():
         if source.is_file():
             (destination_migrations / source.name).write_bytes(source.read_bytes())
+
+
+def _dirty_git_repository(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "dirty-repository"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(repo)), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "initial"), check=True)
+    revision = subprocess.run(("git", "-C", str(repo), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    return repo, revision
+
+
+@pytest.mark.parametrize("name", ("tracked.txt", "untracked.txt"))
+def test_dirty_snapshot_rejects_each_file_changed_during_its_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A status-only check misses a torn copy when a dirty file changes but stays dirty."""
+    repo, revision = _dirty_git_repository(tmp_path)
+    (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+    if name == "untracked.txt":
+        (repo / name).write_text("before\n", encoding="utf-8")
+    original_copyfile = build_module.shutil.copyfile
+
+    def mutate_after_copy(source: Path, destination: Path, *args: object, **kwargs: object) -> str:
+        result = original_copyfile(source, destination, *args, **kwargs)
+        if source.name == name:
+            source.write_text("after\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(build_module.shutil, "copyfile", mutate_after_copy)
+    with pytest.raises(OpsError) as raised:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "snapshot")
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_dirty_snapshot_rejects_links_submodules_and_member_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Accepting unsafe entries or unbounded inventories can leak paths or exhaust the builder."""
+    repo, revision = _dirty_git_repository(tmp_path)
+    (repo / "unsafe-link").symlink_to("tracked.txt")
+    with pytest.raises(OpsError) as link_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "link-snapshot")
+    assert link_error.value.status is ExitStatus.INVALID
+
+    (repo / "unsafe-link").unlink()
+    (repo / "tracked.txt").unlink()
+    os.mkfifo(repo / "tracked.txt")
+    with pytest.raises(OpsError) as member_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "member-snapshot")
+    assert member_error.value.status is ExitStatus.INVALID
+
+    (repo / "tracked.txt").unlink()
+    (repo / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(repo), "update-index", "--add", "--cacheinfo", "160000," + "a" * 40 + ",nested"), check=True)
+    with pytest.raises(OpsError) as submodule_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "submodule-snapshot")
+    assert submodule_error.value.status is ExitStatus.INVALID
+
+    subprocess.run(("git", "-C", str(repo), "reset", "--", "nested"), check=True)
+    monkeypatch.setattr(build_module, "MAX_SOURCE_MEMBERS", 0)
+    with pytest.raises(OpsError) as bound_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "bounded-snapshot")
+    assert bound_error.value.status is ExitStatus.INVALID
 
 
 def test_build_refuses_dirty_or_unidentified_source_before_creating_an_artifact(tmp_path: Path) -> None:

@@ -318,6 +318,17 @@ def _tracked_snapshot_paths(repo: Path) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def _source_file_identity(details: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_size,
+        details.st_mode,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+    )
+
+
 def _copy_dirty_source(repo: Path, revision: str, destination: Path) -> None:
     """Freeze supported checkout bytes, then prove the relevant Git view held still."""
 
@@ -351,6 +362,7 @@ def _copy_dirty_source(repo: Path, revision: str, destination: Path) -> None:
             raise _source_input_error("unable to inspect source snapshot member") from None
         if not stat.S_ISREG(details.st_mode):
             raise _source_input_error("source snapshot contains an unsupported member")
+        identity = _source_file_identity(details)
         if details.st_size > MAX_SOURCE_MEMBER_BYTES:
             raise _source_input_error("source snapshot member exceeds supported size")
         copied += 1
@@ -362,6 +374,12 @@ def _copy_dirty_source(repo: Path, revision: str, destination: Path) -> None:
             os.chmod(target, stat.S_IMODE(details.st_mode) & 0o777)
         except OSError:
             raise _source_input_error("unable to materialize source snapshot") from None
+        try:
+            after_copy = source.lstat()
+        except OSError:
+            raise _source_input_error("source changed during snapshot capture") from None
+        if not stat.S_ISREG(after_copy.st_mode) or _source_file_identity(after_copy) != identity:
+            raise _source_input_error("source changed during snapshot capture")
 
     after_status = _git_bytes(repo, ("status", "--porcelain=v1", "-z", "--untracked-files=all"))
     after_head = _git_bytes(repo, ("rev-parse", "--verify", "HEAD")).strip()

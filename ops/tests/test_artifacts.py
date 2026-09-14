@@ -167,3 +167,85 @@ def test_target_resolution_requires_preidentified_clean_inputs_for_automatic_res
         resolve_deploy_target(tmp_path / "repo", None, installed_records=(), selected_release_id=None,
                               last_successful_release_id=None, clean_inputs=None)
     assert raised.value.status is ExitStatus.INVALID
+
+
+def test_target_resolution_prefers_matching_successful_record_after_a_nonmatching_selected_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping successful history after a changed physical selection loses a valid no-upload target."""
+    selected = _artifact(tmp_path / "artifacts", payload="selected", revision="b" * 40)
+    successful = _artifact(tmp_path / "artifacts", payload="successful")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(
+        tmp_path / "repo", None, installed_records=(_record(selected), _record(successful)),
+        selected_release_id=selected.manifest.release_id, last_successful_release_id=successful.manifest.release_id,
+        clean_inputs=_inputs(successful), artifact_root=tmp_path / "cache",
+    )
+    assert target.source == "installed"
+    assert target.release_id == successful.manifest.release_id
+
+
+def test_target_resolution_does_not_match_a_record_when_any_clean_provenance_input_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source-only reuse can select an artifact built with a different builder or layout contract."""
+    artifact = _artifact(tmp_path / "artifacts")
+    _clean_checkout(monkeypatch)
+    inputs = CleanInputs(**{**_inputs(artifact).__dict__, "builder_base_tag": "different-builder"})
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo", None, installed_records=(_record(artifact),),
+            selected_release_id=artifact.manifest.release_id, last_successful_release_id=None,
+            clean_inputs=inputs, artifact_root=tmp_path / "cache", builder=lambda _repo, _root: artifact,
+        )
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_invalid_cache_is_preserved_while_a_fresh_target_is_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting rejected cache bytes destroys operator evidence and can hide a malformed artifact."""
+    valid = _artifact(tmp_path / "built")
+    cache = tmp_path / "cache"
+    invalid = cache / "broken"
+    invalid.mkdir(mode=0o700, parents=True)
+    cache.chmod(0o700)
+    (invalid / "taskman-broken.tar.gz").write_bytes(b"not an archive")
+    (invalid / "taskman-broken.manifest.json").write_text("{}", encoding="utf-8")
+    (invalid / "taskman-broken.tar.gz.sha256").write_text("0" * 64 + "  taskman-broken.tar.gz\n", encoding="ascii")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(
+        tmp_path / "repo", None, installed_records=(), selected_release_id=None, last_successful_release_id=None,
+        clean_inputs=_inputs(valid), artifact_root=cache, builder=lambda _repo, _root: valid,
+    )
+    assert target.source == "built"
+    assert invalid.exists()
+
+
+def test_clean_inputs_match_revalidates_every_identity_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A partial equality check can confirm a plan after source or build provenance drift."""
+    artifact = _artifact(tmp_path / "artifact")
+    inputs = _inputs(artifact)
+    variants = (
+        CleanInputs(**{**inputs.__dict__, "source_revision": "b" * 40}),
+        CleanInputs(**{**inputs.__dict__, "application_version": "0.2.1"}),
+        CleanInputs(**{**inputs.__dict__, "builder_base_digest": "sha256:" + "0" * 64}),
+    )
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: inputs)
+    assert clean_inputs_match(tmp_path / "repo", inputs) is True
+    for changed in variants:
+        monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo, changed=changed: changed)
+        assert clean_inputs_match(tmp_path / "repo", inputs) is False
+    dirty = OpsError(ExitStatus.LOCAL_PREREQUISITE, "artifact", "checkout is dirty")
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: (_ for _ in ()).throw(dirty))
+    assert clean_inputs_match(tmp_path / "repo", inputs) is False
+
+
+def test_identify_clean_inputs_preserves_invalid_input_contract_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Downgrading a bounds refusal to a build prerequisite assigns the wrong operator recovery path."""
+    from taskman_ops.releases.artifacts import identify_clean_inputs
+    from taskman_ops.releases.build import SourceState
+    monkeypatch.setattr("taskman_ops.releases.artifacts.read_repository_state", lambda _repo: SourceState(REVISION, True))
+    expected = OpsError(ExitStatus.INVALID, "artifact", "too many migrations")
+    monkeypatch.setattr("taskman_ops.releases.artifacts.fingerprint_migrations", lambda _path: (_ for _ in ()).throw(expected))
+    with pytest.raises(OpsError) as raised:
+        identify_clean_inputs(tmp_path)
+    assert raised.value.status is ExitStatus.INVALID

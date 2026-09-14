@@ -43,7 +43,12 @@ def _run_git(repo: Path, argv: tuple[str, ...]) -> int:
 def _version_order(target: str, baseline: str) -> tuple[Literal["downgrade", "forward", "equal", "unknown"], str | None]:
     target_match = _SEMVER.fullmatch(target)
     baseline_match = _SEMVER.fullmatch(baseline)
-    if target_match is None or baseline_match is None:
+    if (
+        target_match is None
+        or baseline_match is None
+        or not _valid_prerelease(target_match.group("prerelease"))
+        or not _valid_prerelease(baseline_match.group("prerelease"))
+    ):
         return "unknown", "version-unorderable"
     target_core = tuple(int(target_match.group(part)) for part in ("major", "minor", "patch"))
     baseline_core = tuple(int(baseline_match.group(part)) for part in ("major", "minor", "patch"))
@@ -52,6 +57,12 @@ def _version_order(target: str, baseline: str) -> tuple[Literal["downgrade", "fo
     if target_core > baseline_core:
         return "forward", None
     return _prerelease_order(target_match.group("prerelease"), baseline_match.group("prerelease"))
+
+
+def _valid_prerelease(value: str | None) -> bool:
+    if value is None:
+        return True
+    return all(not (item.isdecimal() and len(item) > 1 and item.startswith("0")) for item in value.split("."))
 
 
 def _prerelease_order(target: str | None, baseline: str | None) -> tuple[Literal["downgrade", "forward", "equal"], str | None]:
@@ -83,6 +94,8 @@ def _source_order(repo: Path, target: str, baseline: str, git_runner: GitRunner)
         return "equal", None
     target_ancestor = git_runner(repo, ("merge-base", "--is-ancestor", target, baseline))
     baseline_ancestor = git_runner(repo, ("merge-base", "--is-ancestor", baseline, target))
+    if target_ancestor == 0 and baseline_ancestor == 0:
+        return "unknown", "source-conflicting"
     if target_ancestor == 0:
         return "downgrade", "source-ancestor"
     if baseline_ancestor == 0:
@@ -110,6 +123,8 @@ def compare_sources(
     version_kind, version_reason = _version_order(target_version, baseline_version)
     source_kind, source_reason = _source_order(Path(repo), target_revision, baseline_revision, git_runner)
     reasons = tuple(reason for reason in (version_reason, source_reason) if reason is not None)
+    if source_reason == "source-conflicting":
+        return SourceOrder("unknown", reasons)
     if "downgrade" in {version_kind, source_kind}:
         return SourceOrder("downgrade", reasons)
     if "unknown" in {version_kind, source_kind}:
