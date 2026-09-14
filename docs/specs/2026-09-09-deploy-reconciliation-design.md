@@ -1,7 +1,7 @@
 # Desired-target deployment reconciliation
 
 Status: proposed specification; design sections approved in conversation, written specification
-under operator review. Updated: 2026-09-11. Tracking: `tas-sr4b`.
+under operator review. Updated: 2026-09-14. Tracking: `tas-sr4b`.
 
 ## Authority and scope
 
@@ -32,6 +32,10 @@ not reintroduce protocol version 2 or the superseded confirmation/build restrict
 progress UI and early provisioning inspection remain separate work.
 
 ## Problem and observed baseline
+
+Evidence comes from repository code and staging observations recorded in `tas-sr4b`, `tas-q5lo`,
+and `tas-6dkg`. The dedicated-host design retains technical mechanism references. Specification
+preparation introduces no new external research or host acceptance evidence.
 
 An authorized staging deployment selected and started the OTP 29 release, then failed verification
 before publishing successful-selection history. The controller returned exit 9 with stale
@@ -81,7 +85,7 @@ taskman provision ENV [--artifact ARCHIVE] [--migration-policy POLICY]
 
 taskman build [--allow-dirty]
 
-taskman restore ENV BACKUP_ID [--replace-unfinished] [--dry-run] [--json]
+taskman restore ENV BACKUP_ID [--replace-unfinished | --reapply] [--dry-run] [--json]
 ```
 
 Existing options retain their spelling. No `resume`, `redeploy`, generic `--force`, or manual
@@ -115,14 +119,28 @@ confirmation.
 
 `--replace-unfinished` is restore-only (other commands reject it with exit 2). It permits
 replacing an unfinished restore's selected backup, not bypassing validation or typed data-loss
-confirmation. Without it, requesting a different backup while a restore is unfinished refuses
+confirmation. Without it, executing a different backup while a restore is unfinished refuses
 with exit 10 and explains this repair command. The flag is harmless when no unfinished restore
 exists or the requested backup already matches; neither case authorizes extra database deletion.
+
+`--reapply` is restore-only and requests a fresh restore of a backup that was already restored
+successfully. It is mutually exclusive with `--replace-unfinished`; using both or passing it to
+another command is an argument error, exit 2. It does not acknowledge data loss or bypass validation.
+An unfinished restore refuses `--reapply` with exit 10 and directs the operator to ordinary retry
+or `--replace-unfinished`. With no unfinished restore, it permits a fresh restore even when the
+requested backup matches the latest completed restore; for a different backup it is redundant.
 
 Dry-run resolves and validates the target and observes the host, but does not prompt, refresh the
 installed helper, publish records, change services, or mutate the database. It may build a local
 artifact. Missing confirmation flags do not make a dry-run fail; its plan reports required
 acknowledgments. Incompatible schema or missing required migration policy still refuses.
+
+For an unfinished restore, requesting a different backup with `--dry-run` previews replacement
+even without `--replace-unfinished`. The plan explicitly states that execution requires that flag
+and fresh typed confirmation. Do not normalize databases, change the binding, or prune backups
+while previewing. All replacement safety checks still apply. In contrast, `--reapply` selects a
+fresh same-backup restore rather than a completed-outcome check and must be supplied to preview
+that operation; dry-run does not infer it. Mutually exclusive flags remain an argument error.
 
 The plan names physical current, last successful selection, exact desired release and archive
 digest, artifact origin, clean or dirty source provenance, observed schema, pending migrations,
@@ -616,7 +634,7 @@ if `current` was also absent, `observed_previous_release_id` is null. This verif
 the first successful selection, resolves the retained null-baseline backup protections through its
 recovery references, and makes future release replacement a deploy operation. `backup_id` retains restore's existing pre-restore safety-backup
 meaning. `recovery_backup_ids` contains the sorted unique union of unresolved deployment backup IDs
-and the chosen restore backup ID, plus the binding's retained replacement recovery backup IDs.
+and the chosen restore backup ID, plus the binding's retained safety-backup attempt IDs.
 Validate representability before destructive consequences.
 Only after durable publication may resolved protection files be removed; history retains their
 backup references. A restored release may equal its successful predecessor. No synthetic success
@@ -627,7 +645,9 @@ procedure without passing strict completed-deployment discovery first. For proto
 discovery exposes the same physical/history/schema/protection/scheduler facts as deploy. Restore's
 `expected_state` uses deploy's keys except `downgrade_baseline_sha256`, plus `backup_id`, `restore_target_sha256`, and
 `restore_database_state`; its `parameters` are exactly `backup_id`,
-`credentials_path`, `database`, `verification`, `backup_helper`, and boolean `replace_unfinished`.
+`credentials_path`, `database`, `verification`, `backup_helper`, `prune_backup_ids`, and booleans `replace_unfinished`
+and `reapply`. The helper rejects conflicting flags and enforces the same unfinished/completed
+admission rules as the controller.
 The selected backup's immutable
 record and dump authority remain independently validated. Before writing new-format host records,
 ensure the compatible scheduled helper through the same confirmed sequence: pause scheduled
@@ -658,17 +678,24 @@ of these databases and the canonical database. Recognize these arrangements only
 | Canonical only | Begin a new restore, or finish cleanup of a durably completed restore |
 | Canonical and temporary | Original remains available; rebuild/validate the temporary from the bound backup before swapping |
 | Temporary and retired | Original has been renamed; validate the retired original, rebuild/validate temporary from the bound backup, then rename temporary to canonical |
+| Retired only | With a valid unfinished restore binding and matching original OID, recreate/load/validate temporary from the bound backup, then rename temporary to canonical |
 | Canonical and retired | Swap has completed; finish release selection, verification, and successful history before removing retired |
 
 Do not infer backup identity from a schema match. Before creating a temporary database, atomically
 publish root-owned mode-`0600` `deployments/restore-target.json` with exactly `schema_version: 1`,
 `backup_id`, `dump_sha256`, `source_release_id`, `base_selection_id`,
 `observed_previous_release_id`, `original_database_oid`, `safety_backup_id`,
-`replacement` (initially null), and `replacement_recovery_backup_ids` (initially empty).
+`replacement` (initially null), and `safety_backup_attempts`. The latter is an array of exact
+`backup_id`/`attempt_number` mappings, initially containing the first safety backup with attempt
+number zero, ordered by attempt number. IDs and non-negative attempt numbers must be unique;
+allocate each new number as one greater than the highest retained number under the lifecycle lock.
+The first entry remains the original safety backup throughout this unfinished restore sequence.
 The selection ID is the full validated filename, or null when the restore starts before first
 successful selection. `observed_previous_release_id` is null only when `current` was proven absent
 at that start. The database OID is a positive integer.
-All references are validated; the safety backup is already complete and verified. Use the existing
+All referenced metadata and identities are validated; the input being loaded and required safety
+backups must also pass full dump validation. The abandoned-input exception below applies only
+when replacing a target, not when loading that input. Use the existing
 non-link directory, create-once initial publication, atomic replacement, and directory-fsync rules.
 Only the explicitly described safety-backup and target-replacement updates may change this record.
 This record binds
@@ -685,6 +712,19 @@ interruption during dump loading must not promote an incomplete database merely 
 migration table already looks complete. Validate the full restored database through the existing
 restore validation before proceeding. Preserve the original/retired database throughout.
 
+An ordinary retry may be interrupted after dropping a temporary database for rebuilding but before
+recreating it. If only the retired original remains, validate its OID against the unfinished
+binding, keep the application and background workers stopped, and recreate the temporary database
+from the same bound backup. This does not require `--replace-unfinished`. Never drop or rename the
+preserved original as part of that rebuild; unrelated databases remain untouched.
+
+A restore-owned temporary database may be empty or partially loaded, including having no migration
+table yet. Inspect and report that incomplete state explicitly rather than treating it as the live
+application schema or refusing solely because loading is incomplete. Rebuild it from the bound
+dump; do not infer successful loading from migration versions alone. Path/database ownership,
+binding, original identity, and unrelated-state checks still apply. An unavailable database
+observation is not proof of an empty or incomplete temporary database.
+
 The plan reports each database's role and existence, the bound backup, completed selection, retained
 safety backup, and remaining consequences. Fresh typed confirmation acknowledges the current plan.
 Apply-time revalidation binds the observed OIDs, ownership, migrations, target-record digest, and
@@ -694,21 +734,46 @@ swap already completed does not require free space for another full restore when
 target; replacing it does require capacity for the new load and any additional safety backups. The completed safety
 backup can be reused while its bound original is retained and the application has remained stopped;
 if fresh writes cannot be excluded before the swap, take and validate a fresh safety backup and
-atomically update only that binding field before further destructive consequences.
+atomically update that binding field before further destructive consequences.
+Also register each new safety backup in `safety_backup_attempts` in that atomic update, using
+the bounded retention procedure below; do not leave the previous copy protected indefinitely.
 
-The target binding protects its input backup, safety backup, all replacement recovery backups and
+The target binding protects its input backup, safety backup, all retained safety-backup attempts and
 their source releases, any pending replacement input, and base/observed
 release references from cleanup and scheduled retention. Ensure the compatible scheduled package
 before publishing the binding. After verification and durable successful selection, remove the
 retired database, then remove the binding with directory fsync. Successful history must retain the
 bound backup and safety-backup references. A crash between these steps is recognized through the
-binding and exact successful selection references: finish verification/cleanup without restoring
-the dump again or adding duplicate success. Do not classify a same-release restore as already
+binding and exact successful selection references: finish only the remaining cleanup without
+restoring the dump again or adding duplicate success. Durable success establishes that the restore
+completed; current application readiness is not a prerequisite for this cleanup. Validate the
+successful record, database identities, binding, and retained backup references before deleting
+the retired database or binding. Missing or contradictory authority still refuses. Report current
+application health separately, including unknown health when it cannot be observed, without
+blocking safe completion cleanup or claiming that cleanup repaired the application. Once the
+binding is removed, a separately confirmed deploy or restore may repair the application.
+Do not classify a same-release restore as already
 completed merely because the release ID matches; backup references must match as well.
 The success record uses the binding's original base and observed release identities, even if a
 retry starts after physical selection has changed. After binding removal, a rerun matching that
 latest successful restore and physical/schema state verifies the completed outcome without
 reapplying the dump. It must not silently discard application writes made after completed restore.
+
+To intentionally restore that same backup again, the operator uses `taskman restore ENV BACKUP_ID
+--reapply`. If a completed restore still has a binding, first finish its authority-validated cleanup
+without requiring readiness. Then inspect the resulting state and present a new restore plan,
+explicitly warning that the same backup will be loaded again and later database changes discarded.
+Require fresh typed environment-and-backup confirmation and take a fresh verified safety backup;
+do not reuse the previous restore's safety copy as protection for the new attempt. Bind the new
+restore to the latest successful selection and currently observed database identity. After verified
+completion, publish a new successful selection even if the source release and chosen backup are
+unchanged. Ordinary completed-restore deduplication must not suppress this explicitly requested
+new attempt. Dry-run reports the fresh restore and required confirmation without cleanup or writes.
+
+Once a reapply attempt has published its binding, it is an ordinary unfinished restore. If it
+fails, the next invocation resumes without `--reapply`, or changes target with
+`--replace-unfinished`; diagnostics show the appropriate command. Repeating `--reapply` after a
+completed attempt requests another fresh restore and therefore always requires fresh confirmation.
 
 Restore-specific discovery takes the requested `backup_id` in addition to the normal discover
 parameters, and returns `restore_target_sha256` (null only when absent) and `restore_database_state`.
@@ -736,7 +801,8 @@ original database, and safety backups. Require fresh typed environment-and-new-b
 the flag alone is not confirmation. Dry-run reports this plan without changing the binding.
 
 First distinguish an unfinished attempt from a restore with durable successful history. For the
-latter, finish only its verification/cleanup without reapplying a dump; then inspect and confirm a
+latter, finish only its remaining cleanup, without requiring current application readiness or
+reapplying a dump; then inspect and confirm a
 normal new restore with the resulting state as its baseline. Never erase or reinterpret a success
 record as an unfinished attempt. If cleanup cannot complete, report that failure without switching.
 
@@ -752,15 +818,16 @@ caveat as other pre-restore safety backups. Backup or provenance failure refuses
 Before any database deletion or rename, atomically update and fsync the binding with a `replacement`
 object containing exactly the new `backup_id`, `dump_sha256`, `source_release_id`, and
 `discard_database_oid` (null when there is no temporary or failed restored database to discard).
-In the same update, protect the former input backup and all additional safety backups through the
-sorted unique `replacement_recovery_backup_ids`. Preserve the original base/observed selection
-identities and original database OID. Enforce the existing record and successful-history
-representability limits before consequences; never silently omit a recovery reference.
+In the same update, register all additional safety backups in `safety_backup_attempts`. The old
+input remains protected by the binding's input fields, and the new input by `replacement`; do not
+accumulate abandoned input IDs in a recovery list. Preserve the original base/observed selection
+identities and original database OID. Apply the bounded retention procedure below before database
+consequences; never silently omit a required recovery reference.
 
 This durable replacement intent authorizes only the exact confirmed non-original database OID:
 drop the temporary database when the original is canonical or retired; after a failed completed
 swap, drop the failed restored canonical database, never the retired original. If the original is
-retired, rename it back to canonical. A replacement in progress additionally permits a retired-only
+retired, rename it back to canonical. A replacement in progress also permits a retired-only
 arrangement, or original-canonical-only after the discard/rename. Validate OIDs and ownership on
 every retry; absence of the recorded discard OID is an already-completed step, not permission to
 drop another database. Keep the application and its background workers stopped while preparing
@@ -773,7 +840,9 @@ Then run readiness verification before recording success.
 Once the preserved original database is back under its normal name and this restore's temporary
 and retired database names are absent, update the binding as follows. Leave all unrelated databases
 untouched. Atomically replace the binding's input fields
-with the pending target and clear `replacement`, retaining all safety/recovery references. Then
+with the pending target and clear `replacement`, retaining the safety references required below.
+This releases only the abandoned input's protection from this restore; independent references
+and ordinary backup retention still apply. Target switching itself never deletes that input. Then
 rebuild a fresh temporary database from that target and follow the normal validation/swap flow.
 No intermediate database loaded from the old backup is reused for the new target.
 
@@ -786,6 +855,66 @@ the abandoned input dump to remain usable or its release to pass readiness. Both
 helper enforce this sequence. Discovery's binding digest covers the
 pending intent and recovery references; its database map remains the same three named databases.
 Retention protects these references until verified success transfers them to successful history.
+
+When replacing an unfinished target, distinguish trusted recorded identity from usable dump contents.
+The new input must pass full backup-record, source-release, checksum, and dump validation before it
+can be loaded. The abandoned input's backup metadata, source identity, and binding must remain
+valid and mutually consistent, but its dump may be missing, unreadable, or fail checksum or dump
+validation. These content failures must not block replacement or the preceding normalization of
+an interrupted replacement. Report them explicitly; do not load the abandoned dump or delete its
+remaining files as part of replacement.
+
+Apply this distinction in controller preflight, restore discovery, binding/reference readers, and
+helper admission, so a generic full-reference check cannot reject the abandoned dump before the
+replacement path is reached. Ordinary retry using that backup still requires full dump validation.
+This exception does not allow missing or corrupt binding/backup metadata, conflicting identities,
+unsafe paths or links, an unvalidated preserved original database, or invalid required safety
+backups. If an abandoned input also serves as a required safety backup, that independent role still
+requires full validation. Releasing its input reference does not erase another protection or
+authorize deletion of damaged or unknown files under ordinary retention.
+
+### Retention during restore retries and target replacement
+
+Protect the active input backup and any pending replacement input, without accumulating abandoned
+inputs. Previously existing input backups are not safety backups created by this restore merely
+because they were selected. Releasing an abandoned input reference does not authorize its deletion;
+ordinary retention and independent references determine its subsequent eligibility.
+
+For safety backups created during this unfinished restore, retain the original (attempt zero),
+newest, and up to three most recent eligible intermediate copies, ordered by `attempt_number`,
+not timestamps. Retry or target replacement does not reset that sequence. Independently referenced
+backups remain protected outside the allowance and do not consume intermediate slots. In particular,
+the binding's `safety_backup_id` must continue to protect the current safety copy of the preserved
+original database, even when a newer safety copy was taken from a failed restored database.
+Neither input references nor this required original-database safety reference may be pruned.
+Retire a superseded intermediate's attempt entry even when another reference protects its backup;
+retain the backup under that independent reference instead. Independent references must not cause
+the attempt array itself to grow without bound.
+
+The restore plan lists exact eligible intermediate safety-backup IDs and explains their deletion.
+Typed confirmation covers only that list. Restore's `prune_backup_ids` is a sorted unique list of
+those IDs; empty authorizes no retirement. Under the lock, revalidate identity, checksum, ownership,
+inode, retention order, and every independent reference before retirement or deletion. Never treat
+scheduled/manual backups or abandoned inputs as disposable safety attempts. Only restore may
+retire these safety-attempt references; generic cleanup cannot alter the binding.
+
+Create and validate each fresh safety backup, then atomically register it in the binding and fsync
+before pruning any older intermediate. Finish previously interrupted, newly confirmed pruning
+before creating another fresh copy. Process multiple required safety backups one at a time, pruning
+after each durable registration, so the allowance may temporarily reach six but never becomes a
+retry-count limit. A failed new backup cannot authorize retirement. The plan must anticipate the
+exact existing intermediates made eligible by all planned fresh safety copies; apply-time checks
+must never broaden its list.
+
+Atomically remove eligible intermediate attempt entries and fsync the binding before deleting any
+unreferenced backup pair, using the existing manifest-before-dump ordering and deletion checks.
+A crash can leave a completed unreferenced backup for ordinary retention/cleanup; it must not leave
+a binding referring to a deliberately deleted copy. Pruning failure stops before further database
+consequences and remains retryable. Retained safety attempts, the selected input, the required
+original-database safety copy, and unresolved migration protections fit the existing successful
+history limits; historical abandoned inputs and superseded attempts must not accumulate until
+those limits block recovery. On success transfer only retained references to history before
+removing the binding. Existing independently protected backups retain their own protection.
 
 ## Cleanup while recovery is unfinished or disk space is low
 
@@ -985,7 +1114,8 @@ must explain possible changes. This follows the separate CLI UX proposal's retai
 
 Preserve exit categories: 2 invalid input/missing migration declaration, 3 local build prerequisite,
 5 SSH/preflight, 6 backup, 7 migration, 8 staging/selection/service lifecycle, 9 verification,
-10 unsafe/incompatible state or missing unattended acknowledgment, and 12 lock contention.
+10 unsafe/incompatible state or missing unattended acknowledgment, 11 restore or restored-database
+validation failure, and 12 lock contention.
 Scheduler dependency refresh failures use 8 once its mutation begins; prior unsafe identity uses 10.
 Transport loss keeps its transport status and unknown consequence evidence, not an invented
 migration failure. Success requires a complete passing report and durable successful history.
@@ -1082,6 +1212,11 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
     migration versions, OID/ownership drift, and unknown arrangements. Verify temporary rebuild
     after partial load, preserved original/safety material, retention protection, accurate dry-run,
     capacity checks for remaining work, and no duplicate restore after durable completion.
+    For ordinary same-backup retries, interrupt after dropping temporary and before recreating it
+    while the original is retired; accept retired-only state with the validated binding and original
+    OID, rebuild temporary, and finish without target replacement. Also interrupt immediately after
+    temporary creation and before its migration table is loaded. Missing/corrupt binding, wrong
+    original OID, or failed observation must still refuse; preserve original and unrelated databases.
     Exercise `--replace-unfinished` before loading, during partial loading, between renames, and
     after failed application verification. Preserve the original OID and safety copies, including
     possible new writes to a failed restored database. Interrupt every replacement binding update,
@@ -1089,6 +1224,34 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
     abandoned target to run. Cover retired-only inspection, exact discard-OID checks, backup failure
     before deletion, typed confirmation, dry-run, helper/controller parity, retention references,
     and already-successful restores requiring cleanup followed by a separately confirmed new plan.
+    After durable restore success, interrupt before retired-database deletion and before binding
+    removal, then make readiness fail or become unobservable. A retry must validate authority and
+    finish cleanup without requiring readiness, reloading the dump, or adding success history;
+    report health separately and allow a subsequent separately confirmed deploy or restore.
+    Wrong database identities, conflicting success references, and unsafe backup authority still
+    refuse cleanup. Cover both controller and helper admission, not only the cleanup body.
+    Restore a backup successfully, make later data changes, and verify an ordinary rerun does not
+    reload it. With `--reapply`, require a new plan, typed confirmation, fresh safety backup, and new
+    binding baseline; restore the data and append exactly one new successful selection. Cover
+    completed binding cleanup, dry-run without writes, failure and ordinary retry after binding
+    publication, rejection during an unfinished restore, mutually exclusive flags, and helper parity.
+    Exercise more than 64 restore replacements with fresh safety copies and different input backups.
+    Preserve original/newest/three recent eligible safety attempts and all independent references;
+    release abandoned input references without treating those inputs as disposable attempts.
+    Include multiple safety copies in one replacement, identical timestamps, clock rollback,
+    interruption after registration/reference retirement/each backup-file deletion, and a transient
+    sixth attempt. Confirm exact prune IDs, no deletion before fresh protection, no accumulation
+    refusal, and bounded successful-history publication after recovery.
+    Replace an input whose metadata remains valid but whose dump is missing, unreadable, corrupt,
+    or fails checksum validation. Reach replacement through public preflight/discovery, normalize
+    any pending replacement, and load only the fully validated new input. Preserve remaining old
+    files and report their condition. Ordinary retry of the unusable input must still refuse;
+    corrupt binding/backup metadata, unsafe paths, conflicting identities, and an invalid required
+    safety copy remain refusals, including when the abandoned input has that independent role.
+    Preview a different backup during an unfinished restore without `--replace-unfinished`: show
+    the validated replacement plan and missing execution acknowledgment, with no writes. Execution
+    without the flag still refuses. After completed restore, same-backup dry-run without `--reapply`
+    previews completion checking, while adding it previews a fresh restore and safety backup.
 15. Through the public cleanup command, exercise low backup capacity, an unavailable canonical
     database during restore, mismatched physical/successful selection, and unfinished first install.
     Eligible unreferenced artifacts can be removed after typed confirmation; all required release
@@ -1162,62 +1325,5 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
    repository and host state before relying on the recorded baseline.
 4. Implement and verify locally; only then continue the already-authorized staging deployment and
    readiness. Do not manually append selection records or repoint current to bypass the controller.
-5. Independently, authorized private administrator creation and login acceptance may proceed after
-   fresh checks of the release selected by `current`, the running service's executable, database
-   identity, and readiness; reconciliation is not their prerequisite. Keep
-   deployment completion and login acceptance as separate outcomes in the readiness handoff.
-
-## Specification verification
-
-On 2026-09-09, self-review checked authority, identity-versus-timestamp semantics, live-schema
-admission, backup publication/reference ordering, pausing scheduled backups and waiting for running
-backups before replacing the backup program, confirmation, and failure
-uncertainty. Local relative-link, placeholder, and trailing-whitespace checks passed. Repository
-`mix precommit` passed with 805 tests; application source, assets, configuration, tests, `mix.exs`,
-and `mix.lock` were unchanged by that check. Dependency compilation emitted warnings. This verifies
-the unchanged application baseline and documentation hygiene, not the unimplemented reconciliation.
-
-On 2026-09-10, operator-guided review added environment-neutral dirty-source builds. Follow-up
-self-review checked that exact archive bytes and the terminal dirty marker are the only new identity
-dimensions, dirty provenance stays visible without a whole-worktree digest, explicit dirty artifacts
-imply acknowledgment, and tracked deletions plus non-ignored untracked files enter a stable private
-build snapshot while ignored files remain excluded. This amendment is design only; no implementation
-or host action has occurred. Follow-up review extended `--yes` and dirty-checkout building to
-provision while preserving its then-proposed new-installation and exact-genesis-retry boundary; downgrade
-acknowledgment was then deploy-only, superseded by the 2026-09-11 decision below.
-
-Subsequent operator review superseded the exact-artifact restriction before first success:
-provision may reconcile an unfinished first installation to a different desired release. The
-amendment includes null-baseline backup protection, migration-policy acknowledgment on provision,
-missing-current admission with independent installed migration provenance, and the first durable
-selection as the command boundary. Full written-spec approval remains pending.
-
-Evidence sources for this change are repository code and the recorded staging observation in
-`tas-sr4b`, `tas-q5lo`, and `tas-6dkg`; no new external research or host action was performed while
-writing this specification. The dedicated-host design retains technical mechanism references.
-
-On 2026-09-11, operator review extended independent downgrade acknowledgment and
-`--allow-downgrade` to provision. An unfinished candidate may have run or changed the database
-without successful history. Both commands compare selected/successful releases and protected
-migration targets; missing-current first-install recovery also considers installed migration
-provenance. This supersedes the earlier deploy-only restriction. Fresh installation without a
-baseline needs no downgrade acknowledgment. Full written-spec approval remains pending.
-
-Further operator review on 2026-09-11 requires the same acknowledgment for unknown ordering
-against an existing baseline. This supersedes the earlier unknown-ordering exemption. The plan
-distinguishes uncertainty from a detected downgrade; fresh installations with no baseline remain
-exempt. Ordinary confirmation and migration safety remain independent.
-
-Operator review replaced the 64-unresolved-attempt refusal with bounded attempt retention:
-the original recovery backup, the newest, and three recent intermediates per unfinished sequence.
-This supersedes blanket retention of every failed-attempt protection. A new backup must be valid
-and durably protected before confirmed intermediate pruning; independently referenced backups are
-preserved. A temporary sixth backup and interrupted pruning must remain recoverable. Attempt order
-is recorded explicitly rather than inferred from timestamps. Full-spec approval remains pending.
-
-Further operator review permits explicit restore before first successful installation when the
-backup and installed source release provide validated compatible provenance. This supersedes
-restore's successful-history prerequisite. The restore binding permits an absent original
-selection/history, and a verified restore may publish the first successful selection. Partial-schema
-backups without a compatible source release remain excluded from automatic restore. Full written
-approval remains pending.
+5. Administrator/login acceptance and deployment completion are separate outcomes. Track their
+   current acceptance status in the readiness handoff; neither establishes the other.

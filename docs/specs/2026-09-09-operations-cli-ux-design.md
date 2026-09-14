@@ -1,7 +1,7 @@
 # Operations CLI progress and outcome design
 
 Status: proposed specification; command behavior approved, written-spec approval pending.
-Updated: 2026-09-11. Design task: `tas-7ncz`. Reconciliation-owned diagnostics: `tas-6dkg`.
+Updated: 2026-09-14. Design task: `tas-7ncz`. Reconciliation-owned diagnostics: `tas-6dkg`.
 
 ## Purpose and authority
 
@@ -28,7 +28,22 @@ its plans must show absent prior history/selection explicitly rather than treati
 Reconciliation also owns restore's `--replace-unfinished`: plans identify the old and new backups,
 discarded/rebuilt databases, and protected safety copies, with fresh typed data-loss confirmation.
 An already-successful restore requires cleanup followed by a separately confirmed new restore,
-not unfinished-target replacement.
+not unfinished-target replacement. Completion cleanup validates database identities and recovery
+references but does not require current application readiness; report cleanup outcome and current
+health separately rather than implying that cleanup repaired an unhealthy application.
+Restore's `--reapply` explicitly requests a fresh restore of an already-restored backup. Its plan
+must distinguish this from a completion retry, warn about discarding later data changes, and require
+fresh typed confirmation and a fresh safety backup. It cannot replace or restart an unfinished
+restore and is mutually exclusive with `--replace-unfinished`.
+Restore plans also list exact intermediate safety backups proposed for pruning under the original,
+newest, and three-recent-intermediates policy. Abandoned input backups lose only the restore's input
+reference; they are not classified as disposable safety attempts. Independent references remain protected.
+During target replacement, report an abandoned input's missing or damaged dump without treating
+that alone as a refusal. Its metadata/binding must remain valid; the new input and required safety
+backups still require full validation. This is not permission to load or delete the damaged input.
+Dry-run may preview a different unfinished target without `--replace-unfinished`, but must state
+that execution requires the flag and typed confirmation. Previewing a fresh same-backup restore
+requires `--reapply`, since it selects a different operation rather than merely acknowledging it.
 Provisioning admission is based on validated resources and plan confirmation; the historical
 provisioning marker is neither required nor sufficient and is no longer written.
 This UX work builds on that baseline. Earlier requirements here to retain protocol version 2,
@@ -99,9 +114,10 @@ Do not expand into a full-branch review or new host acceptance run.
 
 ## Provisioning command contract
 
-Provision means first installation and recognizable replay of that installation. Deploy remains
-the operation for changing application releases on an initialized host. Never switch between them
-implicitly, and never turn an early refusal into a successful no-op.
+Provision creates an installation or reconciles an unfinished first installation, including to a
+different desired release. After the first successful selection, release changes use deploy.
+Provision retains only the explicitly supported exact replay of the completed first installation.
+Never switch between the commands implicitly, and never turn an early refusal into a successful no-op.
 
 | Observed state and input | Required behavior before building or host convergence |
 | --- | --- |

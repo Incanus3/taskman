@@ -1,6 +1,6 @@
 # Operations VPS readiness
 
-Status: active. Updated: 2026-09-11. Resume: `$resume ops-vps-readiness`.
+Status: active. Updated: 2026-09-14. Resume: `$resume ops-vps-readiness`.
 
 ## Objective
 
@@ -32,32 +32,33 @@ Reconciliation now explicitly owns protocol v3 and `tas-6dkg`; the CLI UX propos
 baseline, including source and acknowledgment rules. This ownership decision is approved; the
 complete written specification remains under review.
 
-The current proposed contract includes:
+The design contains the agreed deploy/provision, dirty-artifact, downgrade, bounded migration-backup,
+restore-before-first-success, and explicit restore-target-replacement rules. Generic cleanup remains
+filesystem-only; database deletion stays in restore paths with the required context.
 
-- one desired-target `deploy` flow that can retry or replace an unfinished managed release without
-  fabricating successful history or requiring lost local artifact bytes;
-- exact artifact-byte identity, legacy record compatibility, live-schema validation, durable
-  pre-migration backup protection, scheduler-helper compatibility, and truthful failure evidence;
-- attempt retention keeps the original, newest, and three recent intermediates per unfinished
-  sequence, replacing the 64-attempt refusal. Publish a fresh protection before confirmed pruning;
-  independent history/restore references remain protected, and a transient sixth backup is allowed;
-- restore may recover before first success using a validated backup and compatible installed
-  source release, including absent `current`; verified restore then publishes the first success;
-- restore's approved `--replace-unfinished` permits another backup after failed verification;
-  durable replacement intent preserves the original database and safety copies, including possible
-  new writes. Interrupted replacement can normalize safely before accepting a third target;
-- `--yes` for unattended deploy and provision confirmation, plus independent `--allow-downgrade`
-  for both commands, required for known downgrades or unknown ordering against an existing baseline;
-  unfinished candidates can establish a baseline before first success, while no-baseline fresh
-  installs remain exempt;
-- environment-neutral dirty builds for build, deploy, and provision through `--allow-dirty`, using
-  tracked changes and deletions plus non-ignored untracked files while excluding ignored files;
-- clean IDs ending in the schema-defined 64-hex SHA-256 artifact digest and dirty IDs appending a
-  visible terminal `-dirty`; no whole-worktree digest or redundant algorithm label;
-- explicit dirty artifacts imply dirty-source acknowledgment, while redundant `--allow-dirty` is
-  accepted for them. Before first successful selection, provision may retry or replace the desired
-  artifact, including after original archive loss; it validates live schema and protects backups
-  against a null successful-history baseline. Further migrations require explicit policy.
+The 2026-09-14 consistency review found five remaining restore gaps and four smaller clarifications.
+The original findings and their approved resolutions are recorded in dated `tas-sr4b` comments.
+The operator requested one-by-one discussion. Finding 1 is approved and incorporated: ordinary
+same-backup restore retries accept a validated retired-only original and rebuild incomplete temporary
+databases, including those without a migration table. Finding 2 is also approved and incorporated:
+post-success restore cleanup validates authority without requiring current application readiness;
+health is reported separately. Finding 3 is approved and incorporated as restore-only `--reapply`:
+fresh plan, typed confirmation, safety backup, and successful selection; unfinished attempts still
+use ordinary retry or `--replace-unfinished`. Finding 4 is approved and incorporated: restore
+safety attempts have bounded original/newest/three-intermediate retention with confirmed pruning;
+abandoned inputs lose only their input reference, and independent protection remains intact.
+Finding 5 is approved and incorporated: replacement validates abandoned input metadata/identity
+without demanding usable dump contents, while new inputs and required safety copies remain fully
+validated. Dry-run replacement acknowledgment is also clarified: preview may omit
+`--replace-unfinished`, but a fresh same-backup restore preview requires `--reapply`.
+Exit 11 is included in the consolidated status list. The stale administrator-acceptance checklist
+item now states the lasting separation from deployment completion. The UX opening definition of
+provision now includes unfinished-target replacement. All findings from this review are addressed;
+full written-spec approval remains pending. Individual repair approvals do not approve the complete
+specification.
+
+The design's dated verification recap has been removed; requirements remain in their owning sections,
+evidence sources are beside the observed baseline, and verification status is recorded here.
 
 Administrator creation, authenticated workspace/admin access, and logout acceptance are complete
 under `tas-q5lo`. They do not complete deployment history. The last recorded host state has the OTP
@@ -70,16 +71,10 @@ specification review is recorded on this stack. No merge is authorized.
 
 ## Next actions
 
-1. Continue the one-at-a-time recovery review. Explicit restore from a failed deployment is now
-   approved and specified, including typed data-loss confirmation and protected recovery references.
-   Interrupted restore admission is also approved and specified: the same backup can resume a
-   validated database swap using a durable restore-target binding; explicitly confirmed target
-   replacement is also specified. Cleanup admission is now approved
-   and specified independently of capacity/database readiness, while preserving recovery references.
-   All three discussed recovery gaps are incorporated; continue full-spec review. Approval of the
-   complete written specification remains pending.
-   Provisioning marker admission has also been replaced with resource/configuration validation
-   and explicit plan confirmation; legacy marker files are ignored and preserved.
+1. Obtain operator review and explicit approval of the complete amended specification. All five
+   restore findings and four smaller consistency clarifications from the 2026-09-14 review have
+   approved resolutions incorporated in the design and related UX contract. No implementation plan
+   or code is authorized by those individual approvals.
 2. After approval, use the writing-plans workflow to create and review a bounded implementation
    plan. Create scoped Beads delivery tasks, including independent verification.
 3. Update this handoff at the approved-plan boundary and start implementation in a clean session by
@@ -88,6 +83,16 @@ specification review is recorded on this stack. No merge is authorized.
    with implemented behavior.
 5. Refresh staging state and continue the already-authorized runtime deployment and readiness checks
    through the public controller. Preserve the running candidate until reconciliation is ready.
+
+## Verification baseline
+
+On 2026-09-14, the documentation wording changes passed relative-link and whitespace checks, and
+`mix precommit` passed with 805 tests. These checks establish documentation hygiene and the existing
+application baseline, not correctness of the unimplemented reconciliation behavior. The design's
+acceptance criteria retain the required implementation and independent review gates. No host
+operation was performed during this review.
+The consistency review was read-only; application tests do not establish the proposed restore
+state machine's correctness. Full written-spec approval remains pending the findings above.
 
 ## Constraints and remaining gates
 
