@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+import time
 import re
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..host_protocol import HostResult
+from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
+from ..host_helper.records import ReleaseRecord, SelectionRecord
 from ..migrations import validate_migration_versions
 from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
@@ -28,64 +33,117 @@ _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 
 
+@dataclass(frozen=True)
+class DeploymentAdmissionAuthority:
+    """Validated host facts used to resolve one public desired target."""
+
+    installed_records: tuple[ReleaseRecord, ...]
+    selected_release_id: str | None
+    last_successful_release_id: str | None
+
+
+def deployment_admission_authority(
+    remote: Remote, config: EnvironmentConfig
+) -> DeploymentAdmissionAuthority:
+    """Collect complete release authority before resolving an automatic target."""
+
+    from .inventory import collect_inventory
+
+    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+        raise _safety("deployment planning helper refused host state")
+    state = mutable(result.state)
+    try:
+        selected = state["selected_release_id"]
+        selected = None if selected is None else validate_release_id(selected)
+        last = state["last_successful_selection"]
+        last_id = None if last is None else SelectionRecord.from_mapping(last).release_id
+        records = tuple(
+            ReleaseRecord.from_mapping(record)
+            for record in collect_inventory(
+                remote, config, "list_releases", deadline=time.monotonic() + 660.0
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        raise _safety("deployment planning helper returned incomplete release authority") from None
+    return DeploymentAdmissionAuthority(records, selected, last_id)
+
+
 def deploy(
     remote: Remote,
     config: EnvironmentConfig,
-    artifact: VerifiedArtifact,
+    target: DeploymentTarget | VerifiedArtifact,
     *,
     migration_policy: str | None = None,
     manual_adoption_confirmed: bool = False,
     present_plan: Callable[[Mapping[str, object]], None] | None = None,
     confirm: Callable[[Mapping[str, object]], bool] | None = None,
+    yes: bool = False,
+    allow_downgrade: bool = False,
+    repo: Path | None = None,
+    clean_inputs: CleanInputs | None = None,
+    refresh_clean_target: Callable[[], tuple[DeploymentTarget, CleanInputs]] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
     """Present, confirm, and invoke one replayable host deployment."""
 
-    if not isinstance(config, EnvironmentConfig) or not isinstance(artifact, VerifiedArtifact):
+    if not isinstance(config, EnvironmentConfig) or not isinstance(target, (DeploymentTarget, VerifiedArtifact)):
         raise TypeError("deployment requires validated configuration and artifact")
-    if not isinstance(dry_run, bool) or not isinstance(manual_adoption_confirmed, bool):
+    if not all(type(value) is bool for value in (dry_run, manual_adoption_confirmed, yes, allow_downgrade)):
         raise TypeError("deployment flags must be boolean")
     if migration_policy is not None and migration_policy not in _POLICIES:
         raise ValueError("deployment requires a valid migration policy")
-    candidate = artifact.manifest.release_id
+    deployment_target = (
+        target if isinstance(target, DeploymentTarget)
+        else DeploymentTarget(artifact=target, release_record=None, source="explicit")
+    )
+    candidate = deployment_target.release_id
     try:
         if manual_adoption_confirmed:
             raise _safety("manual lifecycle adoption is not part of replayable deployment")
         validate_operational_preflight(remote, config)
-        previous, current_migrations, applied_versions = _planning_authority(remote, config)
-        if migration_policy is None and current_migrations != artifact.manifest.migrations:
-            raise OpsError(
-                ExitStatus.SAFETY,
-                "deploy",
-                "changed migrations require an explicit --migration-policy",
-                changed=False,
-                next_action=(
-                    "review the changed migrations and rerun with --migration-policy "
-                    "backward-compatible or --migration-policy restore-required"
-                ),
-            )
-        policy = migration_policy or "no-change"
-        _validate_migration_policy(current_migrations, artifact.manifest.migrations, policy)
-        plan = _redacted_plan(_plan(config, artifact, previous, policy))
-        if dry_run:
-            return WorkflowResult(
-                "deploy", config.name or "", False, "planned",
-                {**plan, "previous_release_id": previous, "selected_release_id": previous},
-                next_action="review the redacted deployment plan and rerun without --dry-run only after confirmation",
-            )
-        (present_plan or _present_plan)(plan)
-        if not (confirm or _confirm)(plan):
-            return WorkflowResult(
-                "deploy", config.name or "", False, "confirmation-cancelled",
-                {
-                    **plan,
-                    "previous_release_id": previous,
-                    "selected_release_id": previous,
-                    "database_state": "unchanged",
-                    "service_state": "unknown",
-                },
-                next_action="review the exact deployment plan and confirm a later run when ready",
-            )
+        while True:
+            previous, current_migrations, applied_versions = _planning_authority(remote, config)
+            if migration_policy is None and current_migrations != deployment_target.manifest.migrations:
+                raise OpsError(
+                    ExitStatus.INVALID,
+                    "deploy",
+                    "changed migrations require an explicit --migration-policy",
+                    changed=False,
+                    next_action=(
+                        "review the changed migrations and rerun with --migration-policy "
+                        "backward-compatible or --migration-policy restore-required"
+                    ),
+                )
+            policy = migration_policy or "no-change"
+            _validate_migration_policy(current_migrations, deployment_target.manifest.migrations, policy)
+            plan = _redacted_plan(_plan(config, deployment_target, previous, policy))
+            plan["source_dirty"] = deployment_target.source_dirty
+            plan["requires_downgrade_acknowledgment"] = False
+            if dry_run:
+                return WorkflowResult(
+                    "deploy", config.name or "", False, "planned",
+                    {**plan, "previous_release_id": previous, "selected_release_id": previous},
+                    next_action="review the redacted deployment plan and rerun without --dry-run only after confirmation",
+                )
+            (present_plan or _present_plan)(plan)
+            if clean_inputs is not None and repo is not None and not clean_inputs_match(repo, clean_inputs):
+                if refresh_clean_target is None:
+                    raise _safety("automatic clean source inputs changed before confirmation")
+                deployment_target, clean_inputs = refresh_clean_target()
+                candidate = deployment_target.release_id
+                continue
+            if not yes and not (confirm or _confirm)(plan):
+                return WorkflowResult(
+                    "deploy", config.name or "", False, "confirmation-cancelled",
+                    {**plan, "previous_release_id": previous, "selected_release_id": previous,
+                     "database_state": "unchanged", "service_state": "unknown"},
+                    next_action="review the exact deployment plan and confirm a later run when ready",
+                )
+            break
+        artifact = deployment_target.artifact
+        if artifact is None:
+            raise _safety("installed release target requires host-side reconciliation support")
         result = run_deployment_request(
             remote,
             config,
@@ -137,7 +195,7 @@ def _planning_authority(
 ) -> tuple[str, tuple[MigrationFingerprint, ...], tuple[int, ...]]:
     """Read only the completed selection and its observed schema authority."""
 
-    result = run_request(remote, discovery_request(config))
+    result = run_request(remote, discovery_request(config, mode="deploy"))
     if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused host state")
     state = mutable(result.state)
@@ -145,15 +203,25 @@ def _planning_authority(
         raise _safety("deployment planning helper returned invalid host state")
     try:
         previous = validate_release_id(state["selected_release_id"])
-        releases = state["releases"]
-        if not isinstance(releases, list):
-            raise ValueError
-        release = next(
-            item
-            for item in releases
-            if isinstance(item, Mapping) and item.get("release_id") == previous
-        )
-        migrations = _migration_fingerprints(release.get("migrations"))
+        releases = state.get("releases")
+        if isinstance(releases, list):
+            release = next(
+                item
+                for item in releases
+                if isinstance(item, Mapping) and item.get("release_id") == previous
+            )
+            migrations = _migration_fingerprints(release.get("migrations"))
+        else:
+            from .inventory import collect_inventory
+
+            records = tuple(
+                ReleaseRecord.from_mapping(record)
+                for record in collect_inventory(
+                    remote, config, "list_releases", deadline=time.monotonic() + 660.0
+                )
+            )
+            record = next(record for record in records if record.release_id == previous)
+            migrations = _migration_fingerprints(record.migrations)
         applied = validate_migration_versions(state["applied_migrations"])
     except (KeyError, StopIteration, TypeError, ValueError):
         raise _safety("deployment planning helper returned incomplete selection authority") from None
@@ -245,6 +313,7 @@ def _failure_result(
         ExitStatus.READINESS: "verification-failed",
         ExitStatus.SAFETY: "safety-refused",
         ExitStatus.LOCKED: "lock-contended",
+        ExitStatus.INVALID: "invalid-input",
     }.get(error.status, f"{error.stage}-failed")
     return WorkflowResult(
         "deploy", config.name or "", error.changed, stage,
@@ -264,15 +333,16 @@ def _failure_result(
     )
 
 
-def _plan(config: EnvironmentConfig, artifact: VerifiedArtifact, previous: str, policy: str) -> dict[str, object]:
+def _plan(config: EnvironmentConfig, target: DeploymentTarget, previous: str, policy: str) -> dict[str, object]:
     return {
         "environment": config.name or "",
         "ssh_destination": f"{config.ssh_user}@{config.ssh_host}:{config.ssh_port}",
         "public_hostname": config.public_hostname,
         "current_release_id": previous,
-        "candidate_release_id": artifact.manifest.release_id,
-        "source_revision": artifact.manifest.source_revision,
-        "artifact_sha256": artifact.sha256,
+        "candidate_release_id": target.release_id,
+        "source_revision": target.source_revision,
+        "artifact_sha256": target.artifact_sha256,
+        "artifact_source": target.source,
         "migration_policy": policy,
         "planned_backup": policy != "no-change",
         "services_affected": ("taskman.service",),
@@ -335,4 +405,4 @@ def _validate_migration_policy(
     raise _safety("confirmed migration policy does not match completed release authority")
 
 
-__all__ = ["deploy", "deploy_first_release"]
+__all__ = ["DeploymentAdmissionAuthority", "deploy", "deploy_first_release", "deployment_admission_authority"]

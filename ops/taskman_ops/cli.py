@@ -75,6 +75,9 @@ class Invocation:
     artifact: Path | None = None
     migration_policy: str | None = None
     manual_adoption_confirmed: bool = False
+    yes: bool = False
+    allow_dirty: bool = False
+    allow_downgrade: bool = False
     json: bool = False
     dry_run: bool = False
 
@@ -122,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     build = subparsers.add_parser("build", help=_COMMAND_HELP["build"])
     _add_common_options(build)
+    build.add_argument("--allow-dirty", action="store_true", help="allow a frozen dirty source snapshot")
 
     for command in (
         command for command in APPROVED_COMMANDS if command in _ENVIRONMENT_COMMANDS
@@ -131,7 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
         _add_common_options(subparser)
         if command in {"provision", "deploy"}:
             subparser.add_argument("--artifact", type=Path, metavar="ARCHIVE")
-        if command == "deploy":
+            subparser.add_argument("--yes", action="store_true", help="confirm the displayed plan")
+            subparser.add_argument(
+                "--allow-dirty", action="store_true", help="allow a frozen dirty source snapshot"
+            )
+            subparser.add_argument(
+                "--allow-downgrade", action="store_true", help="acknowledge a downgrade or unknown source order"
+            )
+        if command in {"provision", "deploy"}:
             subparser.add_argument(
                 "--migration-policy",
                 choices=("backward-compatible", "restore-required"),
@@ -180,6 +191,9 @@ def parse_invocation(argv: Sequence[str] | None = None) -> Invocation:
         artifact=artifact,
         migration_policy=migration_policy,
         manual_adoption_confirmed=manual_adoption_confirmed,
+        yes=bool(getattr(namespace, "yes", False)),
+        allow_dirty=bool(getattr(namespace, "allow_dirty", False)),
+        allow_downgrade=bool(getattr(namespace, "allow_downgrade", False)),
         json=bool(getattr(namespace, "json", False)),
         dry_run=bool(getattr(namespace, "dry_run", False)),
     )
@@ -222,7 +236,7 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
 
         repo = Path(__file__).resolve().parents[2]
         artifact_root = default_artifact_root()
-        artifact = build_release(repo, artifact_root)
+        artifact = build_release(repo, artifact_root, allow_dirty=invocation.allow_dirty)
         return WorkflowResult(
             command="build",
             environment="",
@@ -285,7 +299,7 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             dry_run=invocation.dry_run,
         )
     if invocation.command == "deploy":
-        from .releases.artifacts import resolve_deploy_artifact
+        from .releases.artifacts import identify_clean_inputs, resolve_deploy_target
         from .config import load_environment
         from .remote import connect
         from .workflows.deploy import deploy
@@ -294,18 +308,79 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             raise ValueError("deploy requires an environment")
         environment = load_environment(invocation.environment)
         repo = Path(__file__).resolve().parents[2]
-        resolution = resolve_deploy_artifact(repo, invocation.artifact)
-        artifact = resolution.artifact
+        if invocation.artifact is not None:
+            target = resolve_deploy_target(
+                repo,
+                invocation.artifact,
+                installed_records=(),
+                selected_release_id=None,
+                last_successful_release_id=None,
+            )
+            if invocation.allow_dirty and not target.source_dirty:
+                raise OpsError(
+                    ExitStatus.INVALID,
+                    "arguments",
+                    "--allow-dirty is not valid with an explicitly selected clean artifact",
+                    changed=False,
+                    next_action="omit --allow-dirty or select a dirty-provenance artifact",
+                )
+            remote = connect(environment)
+            result = deploy(
+                remote, environment, target,
+                migration_policy=invocation.migration_policy,
+                manual_adoption_confirmed=invocation.manual_adoption_confirmed,
+                yes=invocation.yes,
+                allow_downgrade=invocation.allow_downgrade,
+                dry_run=invocation.dry_run,
+            )
+            return replace(result, facts={**result.facts, "artifact_source": target.source})
         remote = connect(environment)
+        clean_inputs = None
+        if invocation.artifact is None:
+            try:
+                clean_inputs = identify_clean_inputs(repo)
+            except OpsError:
+                if not invocation.allow_dirty:
+                    raise
+
+        def resolve_current():
+            from .workflows.deploy import deployment_admission_authority
+
+            authority = deployment_admission_authority(remote, environment)
+            return (
+                resolve_deploy_target(
+                    repo,
+                    invocation.artifact,
+                    installed_records=authority.installed_records,
+                    selected_release_id=authority.selected_release_id,
+                    last_successful_release_id=authority.last_successful_release_id,
+                    allow_dirty=invocation.allow_dirty,
+                    clean_inputs=clean_inputs,
+                ),
+                authority,
+            )
+
+        target, _authority = resolve_current()
+
+        def refresh_clean_target():
+            nonlocal clean_inputs
+            clean_inputs = identify_clean_inputs(repo)
+            return resolve_current()[0], clean_inputs
+
         result = deploy(
             remote,
             environment,
-            artifact,
+            target,
             migration_policy=invocation.migration_policy,
             manual_adoption_confirmed=invocation.manual_adoption_confirmed,
+            yes=invocation.yes,
+            allow_downgrade=invocation.allow_downgrade,
+            repo=repo if clean_inputs is not None else None,
+            clean_inputs=clean_inputs,
+            refresh_clean_target=refresh_clean_target if clean_inputs is not None else None,
             dry_run=invocation.dry_run,
         )
-        return replace(result, facts={**result.facts, "artifact_source": resolution.source})
+        return replace(result, facts={**result.facts, "artifact_source": target.source})
     if invocation.command == "rollback":
         from .config import load_environment
         from .remote import connect

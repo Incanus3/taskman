@@ -235,9 +235,9 @@ def resolve_deploy_target(
 ) -> DeploymentTarget:
     """Resolve a target using validated host records only; this performs no SSH."""
 
-    records = _validated_records(installed_records, selected_release_id, last_successful_release_id)
     if supplied is not None:
         return _explicit_artifact(Path(supplied))
+    records = _validated_records(installed_records, selected_release_id, last_successful_release_id)
     repo = Path(repo)
     state = read_repository_state(repo)
     if state.revision is None:

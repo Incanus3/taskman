@@ -4,8 +4,10 @@ import pytest
 
 from taskman_ops.cli import parse_invocation
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.host_protocol import HostRequest, HostResult
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.output import WorkflowResult
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import OTP_VERSION
 from taskman_ops.workflows.backup import run_backup
 from tests.support.environments import valid_environment
 
@@ -57,7 +59,7 @@ def test_backup_dry_run_reads_only_discovery_and_never_requests_a_backup(
     def invoke(_remote: object, request: HostRequest) -> HostResult:
         requests.append(request)
         return HostResult(
-            2,
+            PROTOCOL_VERSION,
             request.operation,
             request.correlation_id,
             "succeeded",
@@ -84,14 +86,16 @@ def test_deploy_dry_run_reads_completed_authority_without_uploading_or_deploying
     from taskman_ops.workflows.deploy import deploy
     from tests.workflows.support import deployment_artifact
 
-    current_release = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+    current_release = build_release_id(
+        "0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION
+    )
     config = EnvironmentConfig.model_validate(valid_environment(name="production"))
     requests: list[HostRequest] = []
 
     def invoke(_remote: object, request: HostRequest) -> HostResult:
         requests.append(request)
         return HostResult(
-            2,
+            PROTOCOL_VERSION,
             request.operation,
             request.correlation_id,
             "succeeded",

@@ -5,7 +5,9 @@ import json
 
 import pytest
 
-from taskman_ops.releases.artifacts import ArtifactResolution
+from taskman_ops.releases.artifacts import DeploymentTarget
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import OTP_VERSION
 from taskman_ops.cli import APPROVED_COMMANDS, Invocation, build_parser, dispatch, main, parse_invocation
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.output import WorkflowResult, register_secret
@@ -126,6 +128,40 @@ def test_artifact_option_is_typed_for_artifact_commands() -> None:
         assert invocation.artifact == Path("tmp/release.tar")
 
 
+@pytest.mark.parametrize("command", ("deploy", "provision"))
+def test_deployment_flags_are_scoped_to_deploy_and_provision(command: str) -> None:
+    invocation = parse_invocation(
+        [command, "production", "--yes", "--allow-dirty", "--allow-downgrade"]
+    )
+
+    assert invocation.yes is True
+    assert invocation.allow_dirty is True
+    assert invocation.allow_downgrade is True
+
+
+def test_build_allows_only_dirty_source_permission() -> None:
+    invocation = parse_invocation(["build", "--allow-dirty"])
+
+    assert invocation.allow_dirty is True
+    assert invocation.yes is False
+    assert invocation.allow_downgrade is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["build", "--yes"],
+        ["verify", "production", "--allow-dirty"],
+        ["backup", "production", "--allow-downgrade"],
+    ),
+)
+def test_deployment_consent_flags_are_rejected_outside_their_command_scope(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv) == ExitStatus.INVALID
+    assert "usage:" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("command,listing", [("rollback", "releases"), ("restore", "backups")])
 @pytest.mark.parametrize("identifier", ["not-an-id", "../secret-input", "", "backup-" + "a" * 32 + "\n"])
 @pytest.mark.parametrize("json_output", [False, True])
@@ -153,7 +189,7 @@ def test_invalid_recovery_id_is_rejected_before_configuration_or_ssh(
 
 
 @pytest.mark.parametrize("command,identifier", [
-    ("rollback", "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"),
+    ("rollback", build_release_id("0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION)),
     ("restore", "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 ])
 def test_dispatch_routes_valid_recovery_ids_to_the_gated_workflow(
@@ -278,38 +314,40 @@ def test_public_verify_dispatch_uses_optional_current_release_authority(
 
 
 def test_deploy_resolves_the_artifact_before_connecting_and_reports_its_source(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.workflows.support import deployment_artifact
+
     environment = object()
     remote = object()
-    artifact = object()
+    artifact = deployment_artifact(tmp_path)
     events: list[str] = []
 
     def load(_name: str) -> object:
         events.append("load")
         return environment
 
-    def resolve(_repo: Path, supplied: Path | None) -> ArtifactResolution:
+    def resolve(_repo: Path, supplied: Path | None, **_kwargs: object) -> DeploymentTarget:
         events.append(f"resolve:{supplied}")
-        return ArtifactResolution(artifact=artifact, source="cached")  # type: ignore[arg-type]
+        return DeploymentTarget(artifact=artifact, release_record=None, source="cached")  # type: ignore[arg-type]
 
     def connect(_environment: object) -> object:
         events.append("connect")
         return remote
 
-    def run_deploy(actual_remote: object, actual_environment: object, actual_artifact: object, **_kwargs: object) -> WorkflowResult:
+    def run_deploy(actual_remote: object, actual_environment: object, actual_target: object, **_kwargs: object) -> WorkflowResult:
         events.append("deploy")
-        assert (actual_remote, actual_environment, actual_artifact) == (remote, environment, artifact)
+        assert (actual_remote, actual_environment, actual_target.release_id) == (remote, environment, artifact.manifest.release_id)
         return WorkflowResult("deploy", "production", False, "planned", {"candidate_release_id": "candidate"})
 
     monkeypatch.setattr("taskman_ops.config.load_environment", load)
-    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_artifact", resolve)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_target", resolve)
     monkeypatch.setattr("taskman_ops.remote.connect", connect)
     monkeypatch.setattr("taskman_ops.workflows.deploy.deploy", run_deploy)
 
-    result = dispatch(Invocation(command="deploy", environment="production"))
+    result = dispatch(Invocation(command="deploy", environment="production", artifact=Path("release.tar.gz")))
 
-    assert events == ["load", "resolve:None", "connect", "deploy"]
+    assert events == ["load", "resolve:release.tar.gz", "connect", "deploy"]
     assert result.facts["artifact_source"] == "cached"
 
 
@@ -324,11 +362,11 @@ def test_deploy_does_not_connect_when_artifact_resolution_fails(
         "artifact resolution failed",
         changed=False,
     )
-    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_artifact", lambda *_args: (_ for _ in ()).throw(error))
+    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_target", lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
     monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: pytest.fail("SSH must wait for artifact resolution"))
 
     with pytest.raises(OpsError) as raised:
-        dispatch(Invocation(command="deploy", environment="production"))
+        dispatch(Invocation(command="deploy", environment="production", artifact=Path("bad.tar.gz")))
 
     assert raised.value is error
 
