@@ -133,6 +133,38 @@ def _install_current(
     append_selection(paths, SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC), 2, None, ()))
 
 
+def _install_selected_candidate(request: HostRequest) -> None:
+    """Install the request target as both physical and completed authority."""
+
+    target = request.parameters["target"]
+    assert isinstance(target, Mapping)
+    manifest_mapping = target["manifest"]
+    assert isinstance(manifest_mapping, Mapping)
+    manifest = ArtifactManifest.from_mapping(deploy_module._mutable(manifest_mapping))
+    artifact_sha256 = target["artifact_sha256"]
+    assert isinstance(artifact_sha256, str)
+    record = ReleaseRecord(
+        manifest.release_id,
+        manifest.source_revision,
+        artifact_sha256,
+        tuple(item.to_mapping() for item in manifest.migrations),
+        2,
+        manifest,
+    )
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    release = Path(paths.local(paths.release_root / record.release_id))
+    _release_tree(release)
+    Path(paths.local(paths.backup_root)).mkdir(parents=True)
+    write_release_manifest(paths, record)
+    install = Path(paths.local(paths.install_root))
+    install.mkdir(parents=True, exist_ok=True)
+    (install / "current").symlink_to(release)
+    append_selection(
+        paths,
+        SelectionRecord(record.release_id, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC), 2, None, ()),
+    )
+
+
 def _request(
     tmp_path: Path,
     *,
@@ -204,6 +236,7 @@ class _Runtime:
         self.migration_result = migration_result
         self.events: list[str] = []
         self.backup_calls = 0
+        self.service_running = False
 
     def observe_database(self, *_args: object, **_kwargs: object) -> dict[str, object]:
         return {"state": "ready", "applied_migrations": self.migrations}
@@ -229,11 +262,13 @@ class _Runtime:
     def command(self, argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         if argv[:2] == ("systemctl", "stop"):
             self.events.append("stop")
+            self.service_running = False
         elif argv[0] == "systemd-run":
             self.events.append("migration")
             self.migrations = self.migration_result
         elif argv[:2] == ("systemctl", "start"):
             self.events.append("start")
+            self.service_running = True
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
     def verify(self, request: HostRequest, **_kwargs: object) -> HostResult:
@@ -251,6 +286,10 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None
     monkeypatch.setattr(deploy_module, "verify", runtime.verify, raising=False)
     monkeypatch.setattr(deploy_module, "host_preflight", lambda *_args: None, raising=False)
     monkeypatch.setattr(deploy_module, "_taskman_gid", os.getegid, raising=False)
+    monkeypatch.setattr(
+        "taskman_ops.host_helper.state._service_state",
+        lambda include_runtime: "running" if include_runtime and runtime.service_running else "stopped",
+    )
     monkeypatch.setattr(
         deploy_module,
         "converge_backup_helper",
@@ -460,7 +499,25 @@ def test_deploy_does_not_migrate_when_its_pre_deploy_backup_is_interrupted(
     assert runtime.migrations == ()
 
 
-def test_deploy_rerun_is_a_noop_when_the_candidate_is_already_selected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_stops_the_selected_candidate_before_its_missing_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping this stop would migrate a database beneath the running app."""
+
+    request = _request(tmp_path)
+    _install_selected_candidate(request)
+    runtime = _Runtime()
+    runtime.service_running = True
+    _install_runtime(monkeypatch, runtime)
+
+    result = deploy(_replanned_request(request, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.events == ["backup", "stop", "migration", "start", "verify"]
+
+
+def test_deploy_rerun_keeps_a_healthy_complete_candidate_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing the no-op guard would restart a verified completed release."""
     request = _request(tmp_path)
     _install_current(dict(request.paths))
     runtime = _Runtime()
@@ -471,7 +528,101 @@ def test_deploy_rerun_is_a_noop_when_the_candidate_is_already_selected(tmp_path:
 
     assert result.outcome == "succeeded"
     assert result.state["mutation_state"] == "unchanged"
-    assert runtime.events == ["backup", "stop", "migration", "start", "verify", "start", "verify"]
+    assert runtime.events == ["backup", "stop", "migration", "start", "verify", "verify"]
+
+
+def test_deploy_reuses_an_installed_target_after_its_uploaded_archive_is_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An installed immutable record, not a vanished upload, is retry authority."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    assert deploy(request).outcome == "succeeded"
+
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    candidate = next(
+        release
+        for release in deploy_module.observe_host_state(paths).releases
+        if release.release_id == _candidate_id(request)
+    )
+    upload = Path(request.parameters["target"]["artifact_path"])
+    upload.unlink()
+    replanned = _replanned_request(request, runtime)
+    parameters = dict(replanned.parameters)
+    parameters["target"] = {"kind": "installed", "release_record": candidate.to_mapping()}
+
+    result = deploy(replace(replanned, parameters=parameters))
+
+    assert result.outcome == "succeeded"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == ["backup", "stop", "migration", "start", "verify", "verify"]
+
+
+@pytest.mark.parametrize("boundary", ("selection", "service", "verification"))
+def test_interrupted_late_deploy_replans_from_its_fresh_final_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """A stale pre-selection snapshot would strand a retry after late work."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    candidate_id = _candidate_id(request)
+
+    with monkeypatch.context() as interrupted:
+        if boundary == "selection":
+            original_selection = deploy_module.select_current
+
+            def lose_selection(*args: object, **kwargs: object) -> None:
+                original_selection(*args, **kwargs)
+                raise OSError("selection reply lost after atomic switch")
+
+            interrupted.setattr(deploy_module, "select_current", lose_selection)
+        elif boundary == "service":
+            original_command = runtime.command
+
+            def lose_start(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                result = original_command(argv, **kwargs)
+                if argv[:2] == ("systemctl", "start"):
+                    raise deploy_module.CommandError("service reply lost after start")
+                return result
+
+            interrupted.setattr(service_capability, "run_command", lose_start)
+        else:
+            def fail_verification(
+                verify_request: HostRequest, **_kwargs: object,
+            ) -> HostResult:
+                return HostResult(
+                    PROTOCOL_VERSION,
+                    "verify",
+                    verify_request.correlation_id,
+                    "retryable",
+                    "not ready",
+                    {"report": {"ok": False}},
+                    (),
+                )
+
+            interrupted.setattr(deploy_module, "verify", fail_verification)
+
+        first = deploy(request)
+
+    assert first.outcome == "retryable"
+    assert first.state["mutation_state"] == "changed"
+    assert first.state["observations"]["selected_release_id"] == candidate_id
+    assert first.state["observations"]["applied_migrations"] == (20260905120000,)
+
+    retry = deploy(_replanned_request(request, runtime))
+
+    assert retry.outcome == "succeeded", retry.message
+    assert retry.state["observations"]["selected_release_id"] == candidate_id
+    state = deploy_module.observe_host_state(deploy_module.ManagedPaths.from_mapping(dict(request.paths)))
+    assert [selection.release_id for selection in state.selections] == [CURRENT, candidate_id]
 
 
 def test_genesis_is_the_same_procedure_with_an_empty_host_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -601,7 +752,7 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_current_
 
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
-    assert "selected_release_id" in result.state["unavailable_fields"]
+    assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
     assert runtime.events == []
 
 
@@ -864,8 +1015,9 @@ def test_selection_record_lost_after_atomic_switch_converges_on_rerun(
     result = deploy(_replanned_request(request, runtime))
 
     assert first.outcome == "retryable"
-    assert result.outcome == "manual"
-    assert result.state["failed_boundary"] == "authority"
+    assert result.outcome == "succeeded"
+    state = deploy_module.observe_host_state(deploy_module.ManagedPaths.from_mapping(dict(request.paths)))
+    assert [selection.release_id for selection in state.selections] == [CURRENT, _candidate_id(request)]
 
 
 def test_lost_migration_result_with_multiple_matching_backups_requires_manual_intervention(
@@ -955,7 +1107,7 @@ def test_contradictory_release_schema_identity_requires_manual_intervention(
     result = deploy(request)
 
     assert result.outcome == "manual"
-    assert "selected_release_id" in result.state["unavailable_fields"]
+    assert result.state["observations"]["selected_release_id"] == CURRENT
     assert runtime.events == []
 
 

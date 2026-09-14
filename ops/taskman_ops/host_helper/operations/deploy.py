@@ -84,9 +84,10 @@ class DeploymentManualError(RuntimeError):
 
 
 class _RetryableError(RuntimeError):
-    def __init__(self, boundary: str) -> None:
+    def __init__(self, boundary: str, *, may_have_mutated: bool = True) -> None:
         super().__init__(boundary)
         self.boundary = boundary
+        self.may_have_mutated = may_have_mutated
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     deterministic release staging directory, then repeats only still-safe work.
     """
 
+    inputs: _Inputs | None = None
     state: HostState | None = None
     backup: BackupRecord | None = None
     changed = False
@@ -217,7 +219,10 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             # The previous release is never restarted after its schema may
             # have advanced.  Stop before the candidate migration and before
             # any atomic selection, including no-schema release updates.
-            if not first_release and state.selected_release_id != inputs.candidate.release_id:
+            if not first_release and (
+                (migration_needed and not migration_done)
+                or state.selected_release_id != inputs.candidate.release_id
+            ):
                 try:
                     change_service("stop")
                 except CommandError as error:
@@ -254,16 +259,19 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                     raise _RetryableError("selection") from error
                 changed = True
 
-            # Starting again and verifying again are intentionally safe on a
-            # rerun after either call lost its result.
-            try:
-                change_service("start")
-            except CommandError as error:
-                raise _RetryableError("start") from error
+            # Verification is required before publication, but a fresh
+            # runtime observation avoids needlessly restarting an already
+            # healthy completed target on an ordinary retry.
+            state = _observe(inputs, include_runtime=True)
+            if state.service_state != "running":
+                try:
+                    change_service("start")
+                except CommandError as error:
+                    raise _RetryableError("start") from error
             verification = _verify(request, inputs)
             report = verification.state.get("report") or None
             if verification.outcome != "succeeded":
-                raise _RetryableError("verification")
+                raise _RetryableError("verification", may_have_mutated=False)
             state = _observe(inputs)
             state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
             changed = changed or recorded_selection
@@ -295,45 +303,25 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             report=report,
         )
     except DeploymentManualError:
-        return _result(
-            request,
-            "manual",
-            "deployment state is contradictory",
-            state,
-            changed=changed,
-            backup_id=None if backup is None else backup.backup_id,
-            report=report,
+        return _failure_result(
+            request, "manual", "deployment state is contradictory", state, inputs,
+            changed=changed, backup_id=None if backup is None else backup.backup_id, report=report,
         )
     except _RetryableError as error:
-        return _result(
-            request,
-            "retryable",
-            "deployment did not complete; rerun to converge",
-            state,
-            boundary=error.boundary,
-            changed=changed,
-            backup_id=None if backup is None else backup.backup_id,
-            report=report,
+        return _failure_result(
+            request, "retryable", "deployment did not complete; rerun to converge", state, inputs,
+            boundary=error.boundary, changed=changed, possibly_changed=error.may_have_mutated,
+            backup_id=None if backup is None else backup.backup_id, report=report,
         )
     except StateAmbiguityError:
-        return _result(
-            request,
-            "manual",
-            "deployment authority is contradictory",
-            state,
-            changed=changed,
-            backup_id=None if backup is None else backup.backup_id,
-            report=report,
+        return _failure_result(
+            request, "manual", "deployment authority is contradictory", state, inputs,
+            changed=changed, backup_id=None if backup is None else backup.backup_id, report=report,
         )
     except CommandError:
-        return _result(
-            request,
-            "retryable",
-            "deployment observation did not complete; rerun to converge",
-            state,
-            boundary="observation",
-            changed=changed,
-            backup_id=None if backup is None else backup.backup_id,
+        return _failure_result(
+            request, "retryable", "deployment observation did not complete; rerun to converge", state, inputs,
+            boundary="observation", changed=changed, backup_id=None if backup is None else backup.backup_id,
             report=report,
         )
     except (PathAuthorityError, TypeError, ValueError):
@@ -652,7 +640,11 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
     selected = state.selected_release_id
     if recorded == selected:
         return state, False
-    allowed = {inputs.previous_release_id, inputs.candidate.release_id}
+    allowed = {
+        inputs.previous_release_id,
+        inputs.candidate.release_id,
+        *( () if state.latest_successful_selection is None else (state.latest_successful_selection.release_id,) ),
+    }
     if recorded not in allowed or selected not in allowed:
         raise DeploymentManualError("selection transition is not attributable to this deployment")
     if selected == inputs.candidate.release_id and recorded != inputs.candidate.release_id:
@@ -698,8 +690,6 @@ def _record_successful_selection(
             False,
             _selection_backup(inputs, state, selection.backup_id, backup),
         )
-    if recorded != inputs.previous_release_id:
-        raise DeploymentManualError("selection history is not attributable to this deployment")
     selection_backup = _selection_backup(inputs, state, None, backup)
     try:
         _append_selection_with_previous(
@@ -738,13 +728,21 @@ def _selection_backup(
     """
 
     migration_needed = inputs.expected_migrations != inputs.candidate_versions
-    if not migration_needed or inputs.previous_release_id is None:
+    if not migration_needed:
+        return None
+
+    predecessor = (
+        state.latest_successful_selection.release_id
+        if state.latest_successful_selection is not None
+        else inputs.previous_release_id
+    )
+    if predecessor is None:
         return None
 
     candidates = tuple(
         item
         for item in state.backups
-        if item.source_release_id == inputs.previous_release_id
+        if item.source_release_id == predecessor
         and item.migration_versions == inputs.expected_migrations
     )
     by_id = {item.backup_id: item for item in candidates}
@@ -970,6 +968,79 @@ def _normalize_release_tree(path: Path, owner_uid: int, owner_gid: int) -> None:
         os.chmod(item, 0o750 if stat.S_ISDIR(details.st_mode) or details.st_mode & 0o111 else 0o640)
 
 
+def _failure_result(
+    request: HostRequest,
+    outcome: str,
+    message: str,
+    state: HostState | None,
+    inputs: _Inputs | None,
+    *,
+    boundary: str | None = None,
+    changed: bool = False,
+    possibly_changed: bool = False,
+    backup_id: str | None = None,
+    report: object | None = None,
+) -> HostResult:
+    """Return one fresh final observation without treating a retry as success."""
+
+    final_state, observations, unavailable, inspection_error = _final_failure_observation(
+        request, inputs, state
+    )
+    return _result(
+        request,
+        outcome,
+        message,
+        final_state,
+        boundary=boundary,
+        changed=changed,
+        possibly_changed=possibly_changed,
+        backup_id=backup_id,
+        report=report,
+        final_observations=observations,
+        final_unavailable=unavailable,
+        final_inspection_error=inspection_error,
+    )
+
+
+def _final_failure_observation(
+    request: HostRequest,
+    inputs: _Inputs | None,
+    state: HostState | None,
+) -> tuple[HostState | None, Mapping[str, object] | None, tuple[str, ...], str | None]:
+    """Observe physical authority once after failure, never using the plan as fact."""
+
+    if inputs is None:
+        return state, None, (), None
+    try:
+        with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
+            observed = _observe(inputs, include_runtime=True)
+            try:
+                scheduler = _scheduler_facts(inputs.paths)
+            except (CommandError, OSError, StateAmbiguityError):
+                scheduler = {
+                    "scheduled_backup_sha256": None,
+                    "backup_timer_enabled": None,
+                    "backup_timer_state": "unknown",
+                }
+            observations = mutation_observations(observed, request.operation, scheduler=scheduler)
+            unavailable, inspection_error = mutation_observation_availability(
+                request.operation, observations
+            )
+            return observed, observations, unavailable, inspection_error
+    except (
+        LifecycleLockContention,
+        CommandError,
+        DatabaseObservationError,
+        DeploymentManualError,
+        OSError,
+        PathAuthorityError,
+        RecordError,
+        StateAmbiguityError,
+        ValueError,
+    ):
+        return state, None, (), None
+
+
 def _result(
     request: HostRequest,
     outcome: str,
@@ -979,6 +1050,7 @@ def _result(
     boundary: str | None = None,
     locked: bool = False,
     changed: bool | None = None,
+    possibly_changed: bool = False,
     backup_id: str | None = None,
     database_state: str | None = None,
     service_state: str | None = None,
@@ -1019,7 +1091,7 @@ def _result(
         observations = dict(final_observations)
         unavailable = list(final_unavailable)
         inspection_error = final_inspection_error
-    mutation_state = "changed" if changed else "unchanged"
+    mutation_state = "changed" if changed else ("unknown" if possibly_changed else "unchanged")
     desired = _requested_release_id(request)
     facts: dict[str, object] = {
         "mutation_state": mutation_state,
