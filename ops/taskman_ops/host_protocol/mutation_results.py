@@ -8,12 +8,11 @@ completion, failure, or public mutation evidence.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import PurePosixPath
 import re
 
 from taskman_ops.releases.identifiers import validate_release_id
 
-from .identifiers import ProtocolError, validate_string
+from .identifiers import ProtocolError, validate_absolute_path, validate_string
 
 
 MUTATION_OPERATIONS = frozenset({"deploy", "genesis", "restore", "cleanup"})
@@ -208,6 +207,9 @@ def validate_mutation_state(
     if boundary == "verification":
         if verification_report is None or verification_report["exit_status"] != 9:
             raise ProtocolError("verification failure requires its failed report")
+    if verification_report is not None and verification_report["status"] == "failed":
+        if boundary != "verification" or exit_code != verification_report["exit_status"]:
+            raise ProtocolError("failed verification report contradicts the failure boundary")
     if outcome == "succeeded":
         _validate_success_authority(operation, mapping, observations, unavailable, verification_report)
 
@@ -564,17 +566,15 @@ def _cleanup_target(value: object) -> dict[str, object]:
         raise ProtocolError("invalid cleanup target kind")
     if type(identifier) is not str or not identifier:
         raise ProtocolError("invalid cleanup target identifier")
-    if type(path) is not str:
-        raise ProtocolError("invalid cleanup target path")
-    candidate = PurePosixPath(path)
-    if not candidate.is_absolute() or str(candidate) != path or ".." in candidate.parts:
-        raise ProtocolError("invalid cleanup target path")
+    path = validate_absolute_path(path)
     if kind == "release":
         _release_id(identifier, nullable=False)
     elif kind == "backup":
         _backup_id(identifier, nullable=False)
-    elif "/" in identifier or candidate.name != identifier:
-        raise ProtocolError("invalid temporary cleanup target")
+    else:
+        validate_string(identifier, maximum=255)
+        if "/" in identifier or path.rsplit("/", 1)[-1] != identifier:
+            raise ProtocolError("invalid temporary cleanup target")
     return {"kind": kind, "identifier": identifier, "path": path}
 
 

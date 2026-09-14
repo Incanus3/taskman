@@ -57,7 +57,7 @@ def test_collect_inventory_returns_complete_records_only_after_all_pages_succeed
     digest = _digest(entries)
     requests: list[HostRequest] = []
 
-    def run(_remote: object, request: HostRequest) -> HostResult:
+    def run(_remote: object, request: HostRequest, *, deadline: float) -> HostResult:
         requests.append(request)
         if len(requests) == 1:
             return _result(
@@ -94,7 +94,7 @@ def test_collect_inventory_never_returns_partial_records_after_a_later_failure(
     digest = _digest([first])
     calls = 0
 
-    def run(_remote: object, request: HostRequest) -> HostResult:
+    def run(_remote: object, request: HostRequest, *, deadline: float) -> HostResult:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -139,7 +139,7 @@ def test_collect_inventory_rejects_malformed_digest_order_or_cursor(
     """Malformed page evidence must not become a public inventory."""
     monkeypatch.setattr(
         "taskman_ops.workflows.inventory.run_request",
-        lambda _remote, request: _result(request, state),
+        lambda _remote, request, *, deadline: _result(request, state),
     )
 
     with pytest.raises(OpsError) as caught:
@@ -154,7 +154,7 @@ def test_collect_inventory_restarts_once_for_drift_then_reports_continuing_drift
     """An unbounded restart loop could outlive the command deadline under churn."""
     calls = 0
 
-    def run(_remote: object, request: HostRequest) -> HostResult:
+    def run(_remote: object, request: HostRequest, *, deadline: float) -> HostResult:
         nonlocal calls
         calls += 1
         return _result(request, {}, outcome="refused", message="inventory-changed")
@@ -173,7 +173,7 @@ def test_collect_inventory_restarts_only_for_the_exact_drift_refusal(
     """A coincidental message on another outcome must not trigger a restart."""
     calls = 0
 
-    def run(_remote: object, request: HostRequest) -> HostResult:
+    def run(_remote: object, request: HostRequest, *, deadline: float) -> HostResult:
         nonlocal calls
         calls += 1
         return _result(request, {}, outcome="retryable", message="inventory-changed")
@@ -198,3 +198,25 @@ def test_collect_inventory_refuses_before_dispatch_after_command_deadline(
 
     with pytest.raises(OpsError, match="deadline"):
         collect_inventory(object(), environment_config(), "list_backups", deadline=4.0)
+
+
+def test_collect_inventory_passes_the_shared_absolute_deadline_to_every_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_deadlines: list[float] = []
+    entry = {"id": BACKUP_A, "record": _record(BACKUP_A)}
+    digest = _digest([entry])
+
+    def run(_remote: object, request: HostRequest, *, deadline: float) -> HostResult:
+        seen_deadlines.append(deadline)
+        return _result(
+            request,
+            {"records": (entry,), "inventory_sha256": digest, "next_cursor": None},
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.inventory.run_request", run)
+    monkeypatch.setattr("taskman_ops.workflows.inventory.time.monotonic", lambda: 100.0)
+
+    collect_inventory(object(), environment_config(), "list_backups", deadline=123.5)
+
+    assert seen_deadlines == [123.5]

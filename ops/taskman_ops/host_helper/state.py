@@ -259,6 +259,34 @@ def mutation_observations(
     return observations
 
 
+def mutation_observation_availability(
+    operation: str,
+    observations: Mapping[str, object],
+) -> tuple[tuple[str, ...], str | None]:
+    """Describe only domains that the final locked observation could not prove."""
+
+    if operation not in {"deploy", "genesis", "restore", "cleanup"}:
+        raise ValueError("mutation observation operation is invalid")
+    unavailable = {
+        field
+        for field in ("database_state", "service_state", "backup_timer_state")
+        if observations.get(field) == "unknown"
+    }
+    unavailable.update(
+        field
+        for field in (
+            "applied_migrations",
+            "protected_backup_ids",
+            "backup_protection_sha256",
+            "backup_timer_enabled",
+            "restore_database_state",
+        )
+        if field in observations and observations[field] is None
+    )
+    result = tuple(sorted(unavailable))
+    return result, "unsafe-observation" if result else None
+
+
 @dataclass
 class _SuccessfulHistory:
     """Disk-backed complete history with only bounded facts retained in memory."""

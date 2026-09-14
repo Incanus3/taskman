@@ -103,6 +103,23 @@ def test_invoke_helper_keeps_correlation_transport_only(tmp_path: Path) -> None:
     assert value.correlation_id.encode() in helper_call["stdin"]
 
 
+def test_invoke_helper_caps_each_remote_command_to_the_shared_remaining_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskman_ops.helper_client.runner import invoke_helper
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    monkeypatch.setattr(helper_runner_module.time, "monotonic", lambda: 100.0)
+
+    invoke_helper(remote, helper, value, deadline=107.9)
+
+    assert all(kwargs["timeout"] <= 7 for _command, kwargs in remote.calls)
+    assert remote.uploads[0][2]["timeout"] <= 7
+
+
 def test_invoke_helper_returns_one_result_with_one_cleanup_warning(tmp_path: Path) -> None:
     """Returning a wrapper or duplicate warning would split the final result boundary."""
 

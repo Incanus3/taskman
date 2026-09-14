@@ -141,6 +141,97 @@ def test_v3_rejects_513_observed_migration_versions_only_at_the_exact_state_path
         HostResult(3, "discover", CORRELATION, "succeeded", "observed", {"applied_migrations": list(range(513))}, ())
 
 
+def test_v3_restore_request_accepts_512_expected_migration_versions() -> None:
+    request = HostRequest(
+        3,
+        "restore",
+        CORRELATION,
+        {"applied_migrations": list(range(512))},
+        {"install_root": "/opt/taskman"},
+        {},
+    )
+
+    assert len(request.expected_state["applied_migrations"]) == 512
+
+
+def test_v3_restore_discovery_accepts_all_exact_database_migration_arrays() -> None:
+    database = {
+        "oid": 42,
+        "owner": "taskman",
+        "migration_table_present": True,
+        "applied_migrations": list(range(512)),
+    }
+    result = HostResult(
+        3,
+        "discover",
+        CORRELATION,
+        "succeeded",
+        "observed",
+        {
+            "applied_migrations": list(range(512)),
+            "restore_database_state": {
+                "canonical": database,
+                "temporary": database,
+                "retired": database,
+            },
+        },
+        (),
+    )
+
+    assert len(result.state["restore_database_state"]["retired"]["applied_migrations"]) == 512
+
+
+def test_v3_deploy_result_does_not_inherit_restore_database_array_allowances() -> None:
+    with pytest.raises(ProtocolError):
+        HostResult(
+            3,
+            "deploy",
+            CORRELATION,
+            "retryable",
+            "failed",
+            {
+                "observations": {
+                    "restore_database_state": {
+                        "canonical": {"applied_migrations": list(range(65))}
+                    }
+                }
+            },
+            (),
+        )
+
+
+def test_v3_restore_request_does_not_inherit_deploy_target_array_allowances() -> None:
+    with pytest.raises(ProtocolError):
+        HostRequest(
+            3,
+            "restore",
+            CORRELATION,
+            {"applied_migrations": []},
+            {"install_root": "/opt/taskman"},
+            {"target": {"manifest": {"migrations": _fingerprints(65)}}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "state"),
+    (
+        (
+            "discover",
+            {"observations": {"restore_database_state": {"canonical": {"applied_migrations": list(range(65))}}}},
+        ),
+        (
+            "restore",
+            {"restore_database_state": {"canonical": {"applied_migrations": list(range(65))}}},
+        ),
+    ),
+)
+def test_v3_restore_database_allowance_is_limited_to_each_operation_exact_path(
+    operation: str, state: dict[str, object]
+) -> None:
+    with pytest.raises(ProtocolError):
+        HostResult(3, operation, CORRELATION, "retryable", "failed", state, ())
+
+
 def _mapping_at_exact_size(size: int) -> dict[str, object]:
     value_count = (size + 4096 - 1) // 4096
     mapping: dict[str, object] = {"blocks": ["x" * 4096 for _ in range(value_count)]}

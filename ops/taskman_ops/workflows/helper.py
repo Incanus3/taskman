@@ -122,9 +122,10 @@ def run_request(
     request: HostRequest,
     *,
     package: HelperPackage | None = None,
-    invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
+    invoker: Callable[..., HostResult] = invoke_helper,
     prior_mutation_state: str = "unchanged",
     completed_targets: tuple[Mapping[str, object], ...] = (),
+    deadline: float | None = None,
 ) -> HostResult:
     """Invoke once and enforce final protocol/version/operation/correlation."""
 
@@ -132,7 +133,10 @@ def run_request(
     manager = temporary_helper_package() if package is None else nullcontext(package)
     try:
         with manager as selected:
-            result = invoker(remote, selected, request)
+            if deadline is None:
+                result = invoker(remote, selected, request)
+            else:
+                result = invoker(remote, selected, request, deadline=deadline)
     except HelperTransportError as error:
         if (
             error.helper_entry_dispatched and _mutating_request(request)

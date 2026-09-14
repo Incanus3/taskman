@@ -50,7 +50,7 @@ def collect_inventory(
                 config,
                 parameters={"cursor": cursor},
             )
-            result = run_request(remote, request)
+            result = run_request(remote, request, deadline=deadline)
             if result.outcome != "succeeded":
                 if (
                     result.outcome == "refused"

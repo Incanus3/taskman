@@ -18,7 +18,7 @@ from ..backups import BackupAuthorityError, delete_completed_backup, retained_ba
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import BACKUP_ID_RE
-from ..state import HostState, StateAmbiguityError, observe_host_state
+from ..state import HostState, StateAmbiguityError, mutation_observations, observe_host_state
 
 
 _PARAMETER_KEYS = frozenset({"action", "targets", "release_retention", "backup_retention"})
@@ -126,6 +126,9 @@ def cleanup(request: HostRequest) -> HostResult:
             **_state_projection(final_state),
             "changed": changed,
             "completed_targets": completed_targets,
+            "final_observations": mutation_observations(final_state, "cleanup"),
+            "final_unavailable_fields": (),
+            "final_inspection_error": None,
         },
         final_state.warnings,
     )

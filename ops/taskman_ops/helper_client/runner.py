@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import PurePosixPath
 import re
 import secrets
+import time
 from typing import Sequence
 
 from ..errors import ExitStatus, HelperTransportError, OpsError
@@ -36,7 +37,13 @@ def new_correlation_id() -> str:
     return validate_correlation_id(f"op-{secrets.token_hex(16)}")
 
 
-def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) -> HostResult:
+def invoke_helper(
+    remote: Remote,
+    package: HelperPackage,
+    request: HostRequest,
+    *,
+    deadline: float | None = None,
+) -> HostResult:
     """Transfer, verify, execute, decode, and best-effort remove one helper.
 
     The runner owns only strict SSH transport and archive authority.  It never
@@ -45,6 +52,10 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
     """
 
     _validate_inputs(package, request)
+    if deadline is not None:
+        if type(deadline) not in {int, float}:
+            raise TypeError("helper invocation deadline is invalid")
+        remote = _DeadlineRemote(remote, float(deadline))
     correlation = request.correlation_id
     transfer_directory = _TRANSFER_ROOT / correlation
     transfer_path = transfer_directory / _HELPER_NAME
@@ -124,6 +135,33 @@ def invoke_helper(remote: Remote, package: HelperPackage, request: HostRequest) 
             local_cleanup_incomplete=True,
         )
     return result
+
+
+class _DeadlineRemote:
+    """Cap every transport step to one caller-owned absolute deadline."""
+
+    def __init__(self, remote: Remote, deadline: float) -> None:
+        self._remote = remote
+        self._deadline = deadline
+
+    def run(self, argv: Sequence[str], **kwargs: object) -> CommandResult:
+        kwargs["timeout"] = self._timeout(kwargs.get("timeout"))
+        return self._remote.run(argv, **kwargs)  # type: ignore[arg-type]
+
+    def put(self, source: object, destination: object, **kwargs: object) -> UploadReceipt:
+        kwargs["timeout"] = self._timeout(kwargs.get("timeout"))
+        return self._remote.put(source, destination, **kwargs)  # type: ignore[arg-type]
+
+    def _timeout(self, requested: object) -> int:
+        remaining = self._deadline - time.monotonic()
+        if remaining < 1:
+            raise _safety_error("helper invocation deadline expired")
+        available = int(remaining)
+        if requested is None:
+            return available
+        if type(requested) is not int or requested <= 0:
+            raise _safety_error("helper invocation timeout is invalid")
+        return min(requested, available)
 
 
 def _cleanup_failure(

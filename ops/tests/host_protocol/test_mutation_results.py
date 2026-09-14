@@ -148,6 +148,17 @@ def test_passing_report_survives_a_later_history_failure() -> None:
     assert validated["failed_boundary"] == "history"
 
 
+def test_failed_report_cannot_masquerade_as_a_later_history_failure() -> None:
+    state = deploy_state(
+        exit_code=8,
+        failed_boundary="history",
+        verification_report=report(successful=False),
+    )
+
+    with pytest.raises(ProtocolError):
+        validate_mutation_state("deploy", "retryable", state)
+
+
 @pytest.mark.parametrize(
     ("outcome", "exit_code", "boundary"),
     (
@@ -356,6 +367,41 @@ def test_cleanup_completions_are_exact_sorted_unique_targets() -> None:
                 "succeeded",
                 cleanup_state(completed_targets=malformed_targets),
             )
+
+
+def test_cleanup_target_accepts_exact_1024_byte_path_and_255_byte_component() -> None:
+    identifier = "e" * 255
+    path = "/" + "/".join(("a" * 255, "b" * 255, "c" * 255, identifier))
+    state = cleanup_state(
+        completed_targets=[{"kind": "temporary", "identifier": identifier, "path": path}]
+    )
+
+    assert len(path.encode("utf-8")) == 1024
+    assert validate_mutation_state("cleanup", "succeeded", state)["completed_targets"]
+
+
+@pytest.mark.parametrize(
+    ("identifier", "path"),
+    (
+        ("e" * 256, "/tmp/" + "e" * 256),
+        (
+            "e" * 204,
+            "/" + "/".join(("a" * 204, "b" * 204, "c" * 204, "d" * 204, "e" * 204)),
+        ),
+    ),
+)
+def test_cleanup_target_rejects_oversized_component_or_path(identifier: str, path: str) -> None:
+    assert len(identifier.encode("utf-8")) == (256 if len(identifier) == 256 else 204)
+    with pytest.raises(ProtocolError):
+        validate_mutation_state(
+            "cleanup",
+            "succeeded",
+            cleanup_state(
+                completed_targets=[
+                    {"kind": "temporary", "identifier": identifier, "path": path}
+                ]
+            ),
+        )
 
 
 def test_protocol_collection_limits_apply_to_exact_mutation_paths() -> None:

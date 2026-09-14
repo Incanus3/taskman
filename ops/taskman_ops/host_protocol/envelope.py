@@ -184,29 +184,33 @@ def _canonical_json(value: object) -> bytes:
         raise ProtocolError("protocol value cannot be encoded") from error
 
 
-_MIGRATION_PATHS = frozenset(
+_MUTATION_REQUEST_MIGRATION_PATHS = frozenset(
     {
         ("parameters", "target", "manifest", "migrations"),
         ("parameters", "target", "release_record", "migrations"),
         ("parameters", "target", "release_record", "artifact_manifest", "migrations"),
     }
 )
-_REQUEST_VERSION_PATHS = frozenset({("expected_state", "applied_migrations")})
-_RESULT_VERSION_PATHS = frozenset(
+_MUTATION_REQUEST_VERSION_PATHS = frozenset({("expected_state", "applied_migrations")})
+_MUTATION_RESULT_VERSION_PATHS = frozenset(
+    {("state", "observations", "applied_migrations")}
+)
+_DISCOVERY_RESTORE_DATABASE_VERSION_PATHS = frozenset(
     {
-        ("state", "applied_migrations"),
-        ("state", "observations", "applied_migrations"),
-        ("state", "records", "[]", "record", "migration_versions"),
-        *(
-            (
-                "state",
-                "observations",
-                "restore_database_state",
-                database,
-                "applied_migrations",
-            )
-            for database in ("canonical", "temporary", "retired")
-        ),
+        ("state", "restore_database_state", database, "applied_migrations")
+        for database in ("canonical", "temporary", "retired")
+    }
+)
+_MUTATION_RESTORE_DATABASE_VERSION_PATHS = frozenset(
+    {
+        (
+            "state",
+            "observations",
+            "restore_database_state",
+            database,
+            "applied_migrations",
+        )
+        for database in ("canonical", "temporary", "retired")
     }
 )
 _RESULT_MIGRATION_PATHS = frozenset(
@@ -215,13 +219,14 @@ _RESULT_MIGRATION_PATHS = frozenset(
         ("state", "records", "[]", "record", "artifact_manifest", "migrations"),
     }
 )
+_MIGRATION_PATHS = _MUTATION_REQUEST_MIGRATION_PATHS | _RESULT_MIGRATION_PATHS
 
 
 def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
     def collection_limit(path: tuple[str, ...]) -> int:
-        if operation in {"deploy", "genesis"} and path in _MIGRATION_PATHS:
+        if operation in {"deploy", "genesis"} and path in _MUTATION_REQUEST_MIGRATION_PATHS:
             return MAX_MIGRATION_FINGERPRINTS
-        if operation in {"deploy", "genesis"} and path in _REQUEST_VERSION_PATHS:
+        if operation in {"deploy", "genesis", "restore"} and path in _MUTATION_REQUEST_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         return MAX_COLLECTION_ITEMS
 
@@ -230,9 +235,14 @@ def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int
 
 def _result_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
     def collection_limit(path: tuple[str, ...]) -> int:
-        if operation == "discover" and path == ("state", "applied_migrations"):
+        if operation == "discover" and path in {
+            ("state", "applied_migrations"),
+            *_DISCOVERY_RESTORE_DATABASE_VERSION_PATHS,
+        }:
             return MAX_MIGRATION_VERSIONS
-        if operation in {"deploy", "genesis", "restore"} and path in _RESULT_VERSION_PATHS:
+        if operation in {"deploy", "genesis", "restore"} and path in _MUTATION_RESULT_VERSION_PATHS:
+            return MAX_MIGRATION_VERSIONS
+        if operation == "restore" and path in _MUTATION_RESTORE_DATABASE_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         if operation == "list_releases" and path in _RESULT_MIGRATION_PATHS:
             return MAX_MIGRATION_FINGERPRINTS

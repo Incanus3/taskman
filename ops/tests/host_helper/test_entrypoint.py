@@ -348,3 +348,54 @@ def test_failed_cleanup_inspection_is_exact_and_cannot_claim_a_mutation(
     assert state["completed_targets"] == []
     assert state["exit_code"] == 10
     assert state["failed_boundary"] == "inspection"
+
+
+def test_unknown_observation_domains_are_marked_without_discarding_independent_facts() -> None:
+    observed = mutation_observations()
+    observed.update(
+        database_state="unknown",
+        service_state="unknown",
+        backup_timer_state="unknown",
+    )
+
+    unavailable, inspection_error = entrypoint._observation_unavailable("deploy", observed)
+
+    assert unavailable == ("backup_timer_state", "database_state", "service_state")
+    assert inspection_error == "unsafe-observation"
+    assert observed["selected_release_id"] == RELEASE
+
+
+def test_translator_reuses_operation_owned_final_observation_without_reacquiring_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        entrypoint,
+        "_observe_final_mutation",
+        lambda _request: pytest.fail("translator must reuse the operation observation"),
+    )
+
+    def operation_result(request: HostRequest) -> HostResult:
+        return HostResult.for_request(
+            request,
+            "retryable",
+            "history failed",
+            {
+                "changed": True,
+                "failed_boundary": "history",
+                "backup_id": None,
+                "report": passing_report(),
+                "final_observations": mutation_observations(),
+                "final_unavailable_fields": (),
+                "final_inspection_error": None,
+            },
+        )
+
+    with invoke_entrypoint(
+        request_bytes(operation="deploy"), operation_result, operation="deploy"
+    ) as stdout:
+        assert entrypoint.main() == 0
+
+    state = validate_mutation_state(
+        "deploy", "retryable", decode_result(stdout.buffer.getvalue()).state
+    )
+    assert state["observations"]["selected_release_id"] == RELEASE

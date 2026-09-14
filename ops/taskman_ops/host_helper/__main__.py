@@ -37,7 +37,11 @@ from taskman_ops.host_helper.operations.discover import (
 from taskman_ops.host_helper.operations.rollback import rollback
 from taskman_ops.host_helper.operations.restore import restore
 from taskman_ops.host_helper.paths import ManagedPaths
-from taskman_ops.host_helper.state import mutation_observations, observe_host_state
+from taskman_ops.host_helper.state import (
+    mutation_observation_availability,
+    mutation_observations,
+    observe_host_state,
+)
 from taskman_ops.host_helper.verification import verify
 from taskman_ops.releases.identifiers import validate_release_id
 
@@ -126,7 +130,11 @@ def _observe_final_mutation(
     with lifecycle_lock(paths, timeout_seconds=5.0):
         if request.operation == "cleanup":
             state = observe_host_state(paths, allow_selection_transition=True)
-            return mutation_observations(state, request.operation), (), None
+            observations = mutation_observations(state, request.operation)
+            unavailable, inspection_error = _observation_unavailable(
+                request.operation, observations
+            )
+            return observations, unavailable, inspection_error
         credentials_value = request.parameters["credentials_path"]
         if type(credentials_value) is not str or not credentials_value.startswith("/"):
             raise ValueError("mutation credentials path is invalid")
@@ -147,9 +155,17 @@ def _observe_final_mutation(
             scheduler=scheduler,
             restore_database_state=None,
         )
-        if request.operation == "restore":
-            return observations, ("restore_database_state",), "unsafe-observation"
-        return observations, (), None
+        unavailable, inspection_error = _observation_unavailable(
+            request.operation, observations
+        )
+        return observations, unavailable, inspection_error
+
+
+def _observation_unavailable(
+    operation: str,
+    observations: Mapping[str, object],
+) -> tuple[tuple[str, ...], str | None]:
+    return mutation_observation_availability(operation, observations)
 
 
 def _requested_release(request: HostRequest) -> str | None:
@@ -206,7 +222,16 @@ def _legacy_mutation_result(request: HostRequest, result: HostResult) -> HostRes
         boundary = "lock"
     elif boundary is None:
         boundary = "input" if result.outcome == "refused" and not state else "authority"
-    observations, unavailable, inspection_error = _observe_final_mutation_safely(request)
+    if {
+        "final_observations",
+        "final_unavailable_fields",
+        "final_inspection_error",
+    } <= set(state):
+        observations = state["final_observations"]
+        unavailable = state["final_unavailable_fields"]
+        inspection_error = state["final_inspection_error"]
+    else:
+        observations, unavailable, inspection_error = _observe_final_mutation_safely(request)
     changed_value = state.get("changed")
     if changed_value is True:
         mutation_state = "changed"

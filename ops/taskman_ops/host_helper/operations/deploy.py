@@ -30,11 +30,18 @@ from ...checksums import sha256_file
 from ..filesystem import fsync_directory
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..operations.backup import create_validated_backup
+from ..operations.discover import _scheduler_facts
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
 from ..selection import SelectionAmbiguityError, select_current
 from ..services import change_service
-from ..state import HostState, StateAmbiguityError, observe_host_state
+from ..state import (
+    HostState,
+    StateAmbiguityError,
+    mutation_observation_availability,
+    mutation_observations,
+    observe_host_state,
+)
 from ..verification import host_preflight, verification_request, verify
 
 
@@ -111,6 +118,9 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     changed = False
     database_changed = False
     report: object | None = None
+    final_observations: Mapping[str, object] | None = None
+    final_unavailable: tuple[str, ...] = ()
+    final_inspection_error: str | None = None
     try:
         inputs = _inputs(request, first_release=first_release)
         _validate_request_operation(request, first_release)
@@ -209,6 +219,22 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             state = _observe(inputs)
             state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
             changed = changed or recorded_selection
+            try:
+                scheduler = _scheduler_facts(inputs.paths)
+            except (CommandError, OSError, StateAmbiguityError):
+                scheduler = {
+                    "scheduled_backup_sha256": None,
+                    "backup_timer_enabled": None,
+                    "backup_timer_state": "unknown",
+                }
+            final_observations = mutation_observations(
+                state,
+                request.operation,
+                scheduler=scheduler,
+            )
+            final_unavailable, final_inspection_error = mutation_observation_availability(
+                request.operation, final_observations
+            )
     except LifecycleLockContention:
         return _result(
             request,
@@ -293,6 +319,9 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
         database_state="changed" if database_changed else "unchanged",
         service_state="running",
         report=report,
+        final_observations=final_observations,
+        final_unavailable=final_unavailable,
+        final_inspection_error=final_inspection_error,
     )
 
 
@@ -795,6 +824,9 @@ def _result(
     database_state: str | None = None,
     service_state: str | None = None,
     report: object | None = None,
+    final_observations: Mapping[str, object] | None = None,
+    final_unavailable: tuple[str, ...] = (),
+    final_inspection_error: str | None = None,
 ) -> HostResult:
     facts: dict[str, object] = {
         "selected_release_id": None if state is None else state.selected_release_id,
@@ -813,6 +845,12 @@ def _result(
                 "service_state": service_state,
                 "report": {} if report is None else report,
             }
+        )
+    if final_observations is not None:
+        facts.update(
+            final_observations=final_observations,
+            final_unavailable_fields=final_unavailable,
+            final_inspection_error=final_inspection_error,
         )
     return HostResult(
         PROTOCOL_VERSION,
