@@ -15,6 +15,7 @@ import stat
 import tarfile
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol.mutation_results import unavailable_observations
 from taskman_ops.releases.manifests import ArtifactManifest
 from taskman_ops.releases.identifiers import validate_release_id
 
@@ -31,6 +32,12 @@ from ..filesystem import fsync_directory
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..operations.backup import create_validated_backup
 from ..operations.discover import _scheduler_facts
+from ..backup_helper import BackupHelperError, converge_backup_helper
+from ..backup_protection import (
+    complete_successful_selection,
+    register_backup_protection,
+    retire_protection_attempts,
+)
 from ..paths import ManagedPaths, PathAuthorityError
 from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
 from ..selection import SelectionAmbiguityError, select_current
@@ -48,18 +55,22 @@ from ..verification import host_preflight, verification_request, verify
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
 _PARAMETERS = frozenset(
     {
-        "candidate_release_id",
-        "artifact_sha256",
-        "artifact_path",
-        "manifest",
+        "target",
         "migration_policy",
         "credentials_path",
         "database",
         "verification",
+        "backup_helper",
+        "prune_backup_ids",
     }
 )
-_EXPECTED_STATE = frozenset({"selected_release_id", "applied_migrations"})
+_EXPECTED_STATE = frozenset({
+    "selected_release_id", "last_successful_selection_id", "applied_migrations",
+    "backup_protection_sha256", "scheduled_backup_sha256", "backup_timer_enabled",
+    "downgrade_baseline_sha256",
+})
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_SELECTION_FILENAME_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_EXPANDED_ARCHIVE_BYTES = 10 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 16_384
@@ -81,16 +92,19 @@ class _RetryableError(RuntimeError):
 @dataclass(frozen=True)
 class _Inputs:
     paths: ManagedPaths
+    expected_state: Mapping[str, object]
     previous_release_id: str | None
     expected_migrations: tuple[int, ...]
     candidate: ReleaseRecord
     candidate_versions: tuple[int, ...]
-    artifact_path: Path
-    artifact_sha256: str
+    artifact_path: Path | None
+    artifact_sha256: str | None
     migration_policy: str
     credentials: Path
     database: Mapping[str, object]
     verification: Mapping[str, object]
+    backup_helper: Mapping[str, object]
+    prune_backup_ids: tuple[str, ...]
 
 
 def deploy(request: HostRequest) -> HostResult:
@@ -137,8 +151,24 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 report=report,
             )
 
-        with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
+        with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS) as lock:
             _prepare_release_roots(inputs.paths)
+            state = _observe(inputs)
+            _validate_expected_state(state, inputs, first_release=first_release)
+            try:
+                scheduler = converge_backup_helper(
+                    inputs.paths,
+                    inputs.backup_helper,
+                    confirmed_checksum=request.expected_state["scheduled_backup_sha256"],
+                    confirmed_enabled=request.expected_state["backup_timer_enabled"],
+                    revalidate=lambda: _validate_expected_state(_observe(inputs), inputs),
+                    timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+                    lock=lock,
+                )
+            except BackupHelperError as error:
+                changed = changed or any((error.mutation.paused, error.mutation.replaced, error.mutation.restarted))
+                raise _RetryableError("backup_helper") from error
+            changed = changed or any((scheduler.mutation.paused, scheduler.mutation.replaced, scheduler.mutation.restarted))
             state = _observe(inputs)
             state, repaired_selection = _repair_recorded_selection(inputs, state)
             changed = changed or repaired_selection
@@ -165,6 +195,24 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 except (CommandError, RecordError, OSError, ValueError) as error:
                     raise _RetryableError("backup") from error
                 changed = True
+                try:
+                    register_backup_protection(
+                        inputs.paths,
+                        state.backup_protections,
+                        backup_id=backup.backup_id,
+                        base_selection_id=state.latest_successful_selection_filename,
+                        target_release_id=inputs.candidate.release_id,
+                    )
+                    state = _observe(inputs)
+                    retire_protection_attempts(
+                        inputs.paths,
+                        state,
+                        state.latest_successful_selection_filename,
+                        inputs.prune_backup_ids,
+                    )
+                    state = _observe(inputs)
+                except (RecordError, OSError, ValueError) as error:
+                    raise _RetryableError("protection") from error
 
             # The previous release is never restarted after its schema may
             # have advanced.  Stop before the candidate migration and before
@@ -334,6 +382,19 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     if previous is not None:
         previous = validate_release_id(previous)
     expected_migrations = migration_versions(request.expected_state["applied_migrations"])
+    last_selection = request.expected_state["last_successful_selection_id"]
+    if last_selection is not None and (
+        type(last_selection) is not str or _SELECTION_FILENAME_RE.fullmatch(last_selection) is None
+    ):
+        raise ValueError("invalid successful selection authority")
+    for key in ("backup_protection_sha256", "downgrade_baseline_sha256"):
+        value = request.expected_state[key]
+        if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+            raise ValueError("invalid expected deployment digest")
+    if type(request.expected_state["scheduled_backup_sha256"]) is not str or _SHA256_RE.fullmatch(
+        request.expected_state["scheduled_backup_sha256"]
+    ) is None or type(request.expected_state["backup_timer_enabled"]) is not bool:
+        raise ValueError("invalid expected backup scheduler state")
     if first_release:
         if previous is not None or expected_migrations:
             raise ValueError("first release requires an empty confirmed host")
@@ -341,21 +402,35 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
         raise ValueError("deploy requires a selected release")
 
     paths = ManagedPaths.from_mapping(request.paths)
-    candidate = request.parameters["candidate_release_id"]
-    if type(candidate) is not str:
-        raise ValueError("invalid candidate release")
-    manifest = ArtifactManifest.from_mapping(_mutable(request.parameters["manifest"]))
-    if candidate != manifest.release_id:
-        raise ValueError("artifact manifest does not match candidate release")
-    artifact_sha256 = request.parameters["artifact_sha256"]
-    if type(artifact_sha256) is not str or _SHA256_RE.fullmatch(artifact_sha256) is None:
-        raise ValueError("invalid artifact checksum")
-    artifact_path = request.parameters["artifact_path"]
-    if type(artifact_path) is not str:
-        raise ValueError("invalid artifact path")
-    upload = PurePosixPath(artifact_path)
-    if not upload.is_absolute() or not upload.is_relative_to(paths.deployment_root / "uploads"):
-        raise ValueError("artifact is outside the derived upload authority")
+    target = request.parameters["target"]
+    if not isinstance(target, Mapping):
+        raise ValueError("invalid deployment target")
+    kind = target.get("kind")
+    artifact_path: Path | None
+    artifact_sha256: str | None
+    if kind == "upload" and set(target) == {"kind", "manifest", "artifact_sha256", "artifact_path"}:
+        manifest = ArtifactManifest.from_mapping(_mutable(target["manifest"]))
+        artifact_sha256 = target["artifact_sha256"]
+        artifact_path_value = target["artifact_path"]
+        if type(artifact_sha256) is not str or _SHA256_RE.fullmatch(artifact_sha256) is None:
+            raise ValueError("invalid artifact checksum")
+        if type(artifact_path_value) is not str:
+            raise ValueError("invalid artifact path")
+        upload = PurePosixPath(artifact_path_value)
+        if not upload.is_absolute() or not upload.is_relative_to(paths.deployment_root / "uploads"):
+            raise ValueError("artifact is outside the derived upload authority")
+        artifact_path = Path(artifact_path_value)
+        record = ReleaseRecord(
+            manifest.release_id, manifest.source_revision, artifact_sha256,
+            tuple(item.to_mapping() for item in manifest.migrations), 2, manifest,
+        )
+    elif kind == "installed" and set(target) == {"kind", "release_record"}:
+        record = ReleaseRecord.from_mapping(_mutable(target["release_record"]))
+        manifest = record.artifact_manifest
+        artifact_path = None
+        artifact_sha256 = None
+    else:
+        raise ValueError("invalid deployment target")
     policy = request.parameters["migration_policy"]
     if type(policy) is not str or policy not in _POLICIES:
         raise ValueError("invalid migration policy")
@@ -368,24 +443,36 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     verification = request.parameters["verification"]
     if not isinstance(verification, Mapping):
         raise ValueError("invalid verification settings")
-    record = ReleaseRecord(
-        manifest.release_id,
-        manifest.source_revision,
-        artifact_sha256,
-        tuple(item.to_mapping() for item in manifest.migrations),
-    )
+    helper = request.parameters["backup_helper"]
+    prune = request.parameters["prune_backup_ids"]
+    if (
+        not isinstance(helper, Mapping) or set(helper) != {"sha256", "upload_path"}
+        or type(helper["sha256"]) is not str or _SHA256_RE.fullmatch(helper["sha256"]) is None
+        or helper["upload_path"] is not None and type(helper["upload_path"]) is not str
+        or not isinstance(prune, (tuple, list))
+    ):
+        raise ValueError("invalid scheduler or backup-pruning authority")
+    prune_ids = tuple(prune)
+    if (
+        prune_ids != tuple(sorted(set(prune_ids)))
+        or any(type(item) is not str or not re.fullmatch(r"backup-[0-9a-f]{32}", item) for item in prune_ids)
+    ):
+        raise ValueError("invalid backup-pruning authority")
     return _Inputs(
         paths=paths,
+        expected_state=dict(request.expected_state),
         previous_release_id=previous,
         expected_migrations=expected_migrations,
         candidate=record,
         candidate_versions=candidate_versions,
-        artifact_path=Path(artifact_path),
+        artifact_path=artifact_path,
         artifact_sha256=artifact_sha256,
         migration_policy=policy,
         credentials=Path(credentials),
         database=database,
         verification=verification,
+        backup_helper=dict(helper),
+        prune_backup_ids=prune_ids,
     )
 
 
@@ -431,6 +518,56 @@ def _validate_starting_state(state: HostState, inputs: _Inputs, *, first_release
     existing = next((item for item in state.releases if item.release_id == candidate), None)
     if existing is not None and existing != inputs.candidate:
         raise DeploymentManualError("installed candidate identity contradicts the artifact")
+
+
+def _validate_expected_state(state: HostState, inputs: _Inputs, *, first_release: bool) -> None:
+    """Bind every material deploy fact again under the lifecycle lock."""
+
+    protections = tuple(
+        sorted((*state.backup_protections, *state.retiring_backup_protections), key=lambda item: item.backup_id)
+    )
+    protection_digest = __import__("hashlib").sha256(
+        json.dumps(
+            [item.to_mapping() for item in protections],
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    baseline_ids = {
+        *(() if state.selected_release_id is None else (state.selected_release_id,)),
+        *(
+            ()
+            if state.latest_successful_selection is None
+            else (state.latest_successful_selection.release_id,)
+        ),
+        *(item.target_release_id for item in protections),
+    }
+    downgrade_baseline_digest = __import__("hashlib").sha256(
+        json.dumps(
+            sorted(baseline_ids),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    scheduler = _scheduler_facts(inputs.paths)
+    expected = inputs.expected_state
+    replaying_genesis = (
+        first_release
+        and state.selected_release_id in {None, inputs.candidate.release_id}
+        and state.applied_migrations in {inputs.expected_migrations, inputs.candidate_versions}
+    )
+    if (
+        (not replaying_genesis and state.selected_release_id != expected["selected_release_id"])
+        or (not replaying_genesis and state.latest_successful_selection_filename != expected["last_successful_selection_id"])
+        or (not replaying_genesis and state.applied_migrations != inputs.expected_migrations)
+        or protection_digest != expected["backup_protection_sha256"]
+        or (not replaying_genesis and downgrade_baseline_digest != expected["downgrade_baseline_sha256"])
+        or scheduler["scheduled_backup_sha256"] != expected["scheduled_backup_sha256"]
+        or scheduler["backup_timer_enabled"] != expected["backup_timer_enabled"]
+    ):
+        raise DeploymentManualError("confirmed deployment state changed")
 
 
 def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
@@ -602,8 +739,6 @@ def _selection_backup(
 
     migration_needed = inputs.expected_migrations != inputs.candidate_versions
     if not migration_needed or inputs.previous_release_id is None:
-        if recorded_backup_id is not None:
-            raise DeploymentManualError("selection backup conflicts with the deployment transition")
         return None
 
     candidates = tuple(
@@ -666,6 +801,8 @@ def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
         if existing != inputs.candidate:
             raise DeploymentManualError("installed candidate identity contradicts the artifact")
         return False
+    if inputs.artifact_path is None:
+        raise DeploymentManualError("requested installed release is unavailable")
     root = Path(inputs.paths.local(inputs.paths.release_root))
     target = root / inputs.candidate.release_id
     if target.exists() or target.is_symlink():
@@ -702,17 +839,19 @@ def _taskman_gid() -> int:
 def _write_release_manifest(directory: Path, record: ReleaseRecord, *, owner_uid: int, owner_gid: int) -> None:
     target = directory / ".taskman-release.json"
     payload = json.dumps(record.to_mapping(), sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.write(descriptor, payload)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
     os.chown(target, owner_uid, owner_gid)
-    os.chmod(target, 0o640)
+    os.chmod(target, 0o600)
 
 
 def _safe_artifact(inputs: _Inputs) -> None:
+    if inputs.artifact_path is None:
+        return
     try:
         details = inputs.artifact_path.lstat()
         inputs.artifact_path.relative_to(Path(inputs.paths.local(inputs.paths.deployment_root / "uploads")))
@@ -753,12 +892,14 @@ def _append_selection_with_previous(
     previous: str | None,
     backup: BackupRecord | None = None,
 ) -> None:
-    if previous is None:
-        selected_at = datetime.now(UTC).replace(microsecond=0)
-    else:
-        latest = state.selections[-1].selected_at if state.selections else datetime.now(UTC).replace(microsecond=0)
-        selected_at = max(datetime.now(UTC).replace(microsecond=0), latest + timedelta(seconds=1))
-    append_selection(paths, SelectionRecord(candidate, previous, None if backup is None else backup.backup_id, selected_at))
+    complete_successful_selection(
+        paths,
+        state,
+        release_id=candidate,
+        observed_previous_release_id=previous,
+        backup_id=None if backup is None else backup.backup_id,
+        recovery_backup_ids=() if backup is None else (backup.backup_id,),
+    )
 
 
 def _verify(request: HostRequest, inputs: _Inputs) -> HostResult:
@@ -846,30 +987,51 @@ def _result(
     final_unavailable: tuple[str, ...] = (),
     final_inspection_error: str | None = None,
 ) -> HostResult:
+    if outcome == "succeeded":
+        exit_code, failed_boundary = 0, None
+    elif locked:
+        exit_code, failed_boundary = 12, "lock"
+    else:
+        failed_boundary = boundary or ("authority" if outcome == "manual" else "input")
+        exit_code = {
+            "input": 2,
+            "authority": 10,
+            "expected_state": 10,
+            "backup_helper": 8,
+            "staging": 8,
+            "backup": 6,
+            "protection": 8,
+            "migration": 7,
+            "selection": 8,
+            "start": 8,
+            "service": 8,
+            "verification": 9,
+            "history": 8,
+            "observation": 5,
+            "inspection": 5,
+        }.get(failed_boundary, 10)
+        if failed_boundary == "start":
+            failed_boundary = "service"
+    if final_observations is None:
+        observations, unavailable = unavailable_observations(request.operation)
+        inspection_error = "unsafe-observation"
+    else:
+        observations = dict(final_observations)
+        unavailable = list(final_unavailable)
+        inspection_error = final_inspection_error
+    mutation_state = "changed" if changed else "unchanged"
+    desired = _requested_release_id(request)
     facts: dict[str, object] = {
-        "selected_release_id": None if state is None else state.selected_release_id,
-        "applied_migrations": () if state is None else state.applied_migrations,
+        "mutation_state": mutation_state,
+        "exit_code": exit_code,
+        "failed_boundary": failed_boundary,
+        "observations": observations,
+        "unavailable_fields": unavailable,
+        "inspection_error": inspection_error,
+        "report": report,
+        "desired_release_id": desired,
+        "backup_id": backup_id,
     }
-    if boundary is not None:
-        facts["failed_boundary"] = boundary
-    if locked:
-        facts["locked"] = True
-    if changed is not None:
-        facts.update(
-            {
-                "changed": changed,
-                "backup_id": backup_id,
-                "database_state": database_state,
-                "service_state": service_state,
-                "report": {} if report is None else report,
-            }
-        )
-    if final_observations is not None:
-        facts.update(
-            final_observations=final_observations,
-            final_unavailable_fields=final_unavailable,
-            final_inspection_error=final_inspection_error,
-        )
     return HostResult(
         PROTOCOL_VERSION,
         request.operation,
@@ -879,6 +1041,22 @@ def _result(
         facts,
         () if state is None else state.warnings,
     )
+
+
+def _requested_release_id(request: HostRequest) -> str | None:
+    """Best-effort identity for a result emitted after request parsing fails."""
+
+    try:
+        target = request.parameters["target"]
+        if not isinstance(target, Mapping):
+            return None
+        if target.get("kind") == "upload":
+            return ArtifactManifest.from_mapping(_mutable(target["manifest"])).release_id
+        if target.get("kind") == "installed":
+            return ReleaseRecord.from_mapping(_mutable(target["release_record"])).release_id
+    except (KeyError, TypeError, ValueError, RecordError):
+        pass
+    return None
 
 
 def _mutable(value: object) -> object:

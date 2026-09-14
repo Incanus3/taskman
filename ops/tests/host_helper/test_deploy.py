@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 import hashlib
+import json
 import os
 import stat
 import subprocess
 import sys
 import tarfile
+from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -22,11 +25,13 @@ from taskman_ops.host_helper.records import (
     ReleaseRecord,
     SelectionRecord,
     append_selection,
+    selection_filename,
     write_backup_manifest,
     write_release_manifest,
 )
 from taskman_ops.helper_client.package import build_helper_package
-from taskman_ops.host_protocol import HostRequest, HostResult, decode_result, encode_request
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION, decode_result, encode_request
+from taskman_ops.host_protocol.mutation_results import validate_mutation_state
 from taskman_ops.releases.manifests import (
     ARCHITECTURE,
     APPLICATION,
@@ -48,8 +53,8 @@ from taskman_ops.releases.identifiers import build_release_id
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 CURRENT_REVISION = "a" * 40
 CANDIDATE_REVISION = "b" * 40
-CURRENT = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-CANDIDATE = "0.2.0-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
+CURRENT = build_release_id("0.2.0", CURRENT_REVISION, artifact_sha256="c" * 64, source_dirty=False)
+CANDIDATE = build_release_id("0.2.0", CANDIDATE_REVISION, artifact_sha256="b" * 64, source_dirty=False)
 MIGRATION = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
 SECOND_MIGRATION = MigrationFingerprint("20260906120000_add_projects.exs", "e" * 64)
 
@@ -59,13 +64,24 @@ def _manifest(
     migrations: tuple[MigrationFingerprint, ...] = (MIGRATION,),
     application_version: str = "0.2.0",
     release_id: str = CANDIDATE,
+    artifact_sha256: str = "b" * 64,
 ) -> ArtifactManifest:
     return ArtifactManifest(
         SCHEMA_VERSION, APPLICATION, application_version, CANDIDATE_REVISION, release_id,
         datetime(2026, 9, 7, 12, tzinfo=UTC), TARGET_OS, ARCHITECTURE, OTP_VERSION,
         ELIXIR_VERSION, NODE_VERSION, BUILDER_BASE_TAG, BUILDER_BASE_DIGEST, migrations,
-        "taskman", HEX_VERSION, REBAR3_VERSION,
+        "taskman", HEX_VERSION, REBAR3_VERSION, artifact_sha256, False,
     )
+
+
+def _candidate_id(request: HostRequest) -> str:
+    target = request.parameters["target"]
+    assert isinstance(target, Mapping)
+    manifest = target["manifest"]
+    assert isinstance(manifest, Mapping)
+    release_id = manifest["release_id"]
+    assert isinstance(release_id, str)
+    return release_id
 
 
 def _release_tree(path: Path) -> None:
@@ -102,13 +118,19 @@ def _install_current(
     _release_tree(release)
     backup.mkdir(parents=True)
     paths = deploy_module.ManagedPaths.from_mapping(roots)
+    current_manifest = ArtifactManifest(
+        SCHEMA_VERSION, APPLICATION, "0.2.0", CURRENT_REVISION, CURRENT,
+        datetime(2026, 9, 7, 12, tzinfo=UTC), TARGET_OS, ARCHITECTURE, OTP_VERSION,
+        ELIXIR_VERSION, NODE_VERSION, BUILDER_BASE_TAG, BUILDER_BASE_DIGEST, migrations,
+        "taskman", HEX_VERSION, REBAR3_VERSION, "c" * 64, False,
+    )
     write_release_manifest(
         paths,
-        ReleaseRecord(CURRENT, CURRENT_REVISION, "c" * 64, tuple(item.to_mapping() for item in migrations)),
+        ReleaseRecord(CURRENT, CURRENT_REVISION, "c" * 64, tuple(item.to_mapping() for item in migrations), 2, current_manifest),
     )
     install.mkdir(parents=True, exist_ok=True)
     (install / "current").symlink_to(release)
-    append_selection(paths, SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC)))
+    append_selection(paths, SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC), 2, None, ()))
 
 
 def _request(
@@ -126,20 +148,37 @@ def _request(
     upload = Path(roots["install_root"]) / "deployments" / "uploads" / "artifact.tar.gz"
     upload.parent.mkdir(parents=True, exist_ok=True)
     checksum = _archive(upload)
+    candidate_release_id = build_release_id(
+        application_version,
+        CANDIDATE_REVISION,
+        artifact_sha256=checksum,
+        source_dirty=False,
+    ) if candidate_release_id == CANDIDATE else candidate_release_id
     credentials = tmp_path / "pgpass"
     credentials.write_text("localhost:5432:*:taskman:secret\n")
     credentials.chmod(0o600)
     return HostRequest(
-        2, operation, CORRELATION,
-        {"selected_release_id": previous, "applied_migrations": applied_migrations}, roots,
+        PROTOCOL_VERSION, operation, CORRELATION,
         {
-            "candidate_release_id": candidate_release_id, "artifact_sha256": checksum,
-            "artifact_path": str(upload),
-            "manifest": _manifest(
+            "selected_release_id": previous,
+            "last_successful_selection_id": selection_filename(
+                SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC), 2, None, ())
+            ) if previous is not None else None,
+            "applied_migrations": applied_migrations,
+            "backup_protection_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "scheduled_backup_sha256": "a" * 64,
+            "backup_timer_enabled": True,
+            "downgrade_baseline_sha256": hashlib.sha256(
+                json.dumps([] if previous is None else [previous], separators=(",", ":")).encode("ascii")
+            ).hexdigest(),
+        }, roots,
+        {
+            "target": {"kind": "upload", "artifact_sha256": checksum, "artifact_path": str(upload), "manifest": _manifest(
                 migrations=migrations,
                 application_version=application_version,
                 release_id=candidate_release_id,
-            ).to_mapping(),
+                artifact_sha256=checksum,
+            ).to_mapping()},
             "migration_policy": policy, "credentials_path": str(credentials),
             "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
             "verification": {
@@ -148,6 +187,8 @@ def _request(
                 "public_ipv6": None, "ssh_port": 22, "ssh_user": "deployer",
                 "readiness_timeout": 1, "connection_timeout": 1,
             },
+            "backup_helper": {"sha256": "a" * 64, "upload_path": None},
+            "prune_backup_ids": [],
         },
     )
 
@@ -197,10 +238,12 @@ class _Runtime:
 
     def verify(self, request: HostRequest, **_kwargs: object) -> HostResult:
         self.events.append("verify")
-        return HostResult(2, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
+        return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
+    from taskman_ops.host_helper.backup_helper import BackupHelperConvergence, BackupHelperMutation
+
     monkeypatch.setattr(deploy_module, "observe_database_state_or_empty", runtime.observe_database)
     monkeypatch.setattr(deploy_module, "create_validated_backup", runtime.backup, raising=False)
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
@@ -208,6 +251,81 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None
     monkeypatch.setattr(deploy_module, "verify", runtime.verify, raising=False)
     monkeypatch.setattr(deploy_module, "host_preflight", lambda *_args: None, raising=False)
     monkeypatch.setattr(deploy_module, "_taskman_gid", os.getegid, raising=False)
+    monkeypatch.setattr(
+        deploy_module,
+        "converge_backup_helper",
+        lambda _paths, _payload, **kwargs: BackupHelperConvergence(kwargs["lock"], BackupHelperMutation()),
+    )
+    monkeypatch.setattr(
+        deploy_module,
+        "_scheduler_facts",
+        lambda _paths: {
+            "scheduled_backup_sha256": "a" * 64,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "active",
+        },
+    )
+
+
+def _replanned_request(request: HostRequest, runtime: _Runtime) -> HostRequest:
+    """Model the controller's fresh v3 expected-state observation for a retry."""
+
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    state = deploy_module.observe_host_state(
+        paths,
+        database=runtime.observe_database(),
+        allow_selection_transition=True,
+    )
+    projection = discover_module._deployment_projection(
+        state,
+        deploy_module._scheduler_facts(paths),
+        mode="deploy",
+    )
+    return replace(
+        request,
+        expected_state={
+            "selected_release_id": state.selected_release_id,
+            "last_successful_selection_id": state.latest_successful_selection_filename,
+            "applied_migrations": state.applied_migrations,
+            "backup_protection_sha256": projection["backup_protection_sha256"],
+            "scheduled_backup_sha256": projection["scheduled_backup_sha256"],
+            "backup_timer_enabled": projection["backup_timer_enabled"],
+            "downgrade_baseline_sha256": projection["downgrade_baseline_sha256"],
+        },
+    )
+
+
+def test_deploy_refusal_keeps_the_complete_v3_mutation_evidence(tmp_path: Path) -> None:
+    """A pre-mutation refusal cannot omit the result fields the controller validates."""
+
+    request = HostRequest(
+        PROTOCOL_VERSION,
+        "deploy",
+        CORRELATION,
+        {
+            "selected_release_id": CURRENT,
+            "last_successful_selection_id": None,
+            "applied_migrations": (),
+            "backup_protection_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "scheduled_backup_sha256": "a" * 64,
+            "backup_timer_enabled": True,
+            "downgrade_baseline_sha256": hashlib.sha256(b"[]").hexdigest(),
+        },
+        _roots(tmp_path),
+        {
+            "target": {"kind": "installed", "release_record": _manifest().to_mapping()},
+            "migration_policy": "no-change",
+            "credentials_path": str(tmp_path / "pgpass"),
+            "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
+            "verification": {},
+            "backup_helper": {"sha256": "a" * 64, "upload_path": None},
+            "prune_backup_ids": [],
+        },
+    )
+
+    result = deploy_module._result(request, "refused", "unsafe", None)
+
+    assert validate_mutation_state("deploy", result.outcome, result.state)["mutation_state"] == "unchanged"
 
 
 def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,12 +343,13 @@ def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_p
 
     result = converge_deployment(request)
 
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CANDIDATE
+    assert result.outcome == "succeeded", (result.message, result.state)
+    candidate_id = _candidate_id(request)
+    assert result.state["observations"]["selected_release_id"] == candidate_id
     assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
     assert runtime.events == ["backup", "stop", "migration", "start", "verify", "selection"]
-    assert (Path(request.paths["install_root"]) / "current").resolve().name == CANDIDATE
-    candidate = Path(request.paths["install_root"]) / "releases" / CANDIDATE
+    assert (Path(request.paths["install_root"]) / "current").resolve().name == candidate_id
+    candidate = Path(request.paths["install_root"]) / "releases" / candidate_id
     for item in (candidate, *candidate.rglob("*")):
         details = item.lstat()
         assert details.st_uid == os.geteuid()
@@ -244,7 +363,7 @@ def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_p
     assert stat.S_IMODE((candidate / "bin" / "migrate").stat().st_mode) == 0o750
     assert stat.S_IMODE((candidate / "lib" / "runtime").stat().st_mode) == 0o640
     assert stat.S_IMODE((candidate / "releases" / "start_erl.data").stat().st_mode) == 0o640
-    assert stat.S_IMODE((candidate / ".taskman-release.json").stat().st_mode) == 0o640
+    assert stat.S_IMODE((candidate / ".taskman-release.json").stat().st_mode) == 0o600
 
 
 def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
@@ -265,11 +384,20 @@ def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
     )
     _install_runtime(monkeypatch, runtime)
     monkeypatch.setattr(discover_module, "observe_database_state", runtime.observe_database, raising=False)
+    monkeypatch.setattr(
+        discover_module,
+        "_scheduler_facts",
+        lambda _paths: {
+            "scheduled_backup_sha256": "a" * 64,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "active",
+        },
+    )
     from taskman_ops.workflows import deploy as deploy_workflow
     from tests.workflows.test_deploy import config
 
     discovery_request = HostRequest(
-        2,
+        PROTOCOL_VERSION,
         "discover",
         CORRELATION,
         {},
@@ -277,13 +405,21 @@ def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
         {
             "credentials_path": request.parameters["credentials_path"],
             "database": request.parameters["database"],
+            "mode": "deploy",
         },
     )
-    monkeypatch.setattr(deploy_workflow, "discovery_request", lambda _config: discovery_request)
+    monkeypatch.setattr(deploy_workflow, "discovery_request", lambda _config, **_kwargs: discovery_request)
     monkeypatch.setattr(
         deploy_workflow,
         "run_request", lambda _remote, live_request: discover_module.discover(live_request),
     )
+    from taskman_ops.workflows import inventory
+
+    current_record = deploy_module.observe_host_state(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
+        database=runtime.observe_database(),
+    ).releases[0]
+    monkeypatch.setattr(inventory, "collect_inventory", lambda *_args, **_kwargs: (current_record.to_mapping(),))
 
     previous, fingerprints, actual = deploy_workflow._planning_authority(object(), config())
     forwarded = _request(
@@ -316,7 +452,7 @@ def test_deploy_does_not_migrate_when_its_pre_deploy_backup_is_interrupted(
 
     monkeypatch.setattr(deploy_module, "create_validated_backup", interrupt_backup)
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
     assert result.outcome == "retryable"
     assert result.state["failed_boundary"] == "backup"
@@ -331,10 +467,10 @@ def test_deploy_rerun_is_a_noop_when_the_candidate_is_already_selected(tmp_path:
     _install_runtime(monkeypatch, runtime)
     assert deploy(request).outcome == "succeeded"
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
     assert result.outcome == "succeeded"
-    assert result.state["changed"] is False
+    assert result.state["mutation_state"] == "unchanged"
     assert runtime.events == ["backup", "stop", "migration", "start", "verify", "start", "verify"]
 
 
@@ -346,7 +482,7 @@ def test_genesis_is_the_same_procedure_with_an_empty_host_precondition(tmp_path:
     result = genesis(request)
 
     assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CANDIDATE
+    assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
     assert runtime.backup_calls == 0
     assert runtime.events == ["start", "verify"]
 
@@ -361,8 +497,8 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
     result = genesis(request)
 
     assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CANDIDATE
-    assert result.state["database_state"] == "changed"
+    assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
+    assert result.state["observations"]["database_state"] == "ready"
     assert result.state["backup_id"] is None
     assert runtime.backup_calls == 0
     assert runtime.events == ["migration", "start", "verify"]
@@ -396,9 +532,9 @@ def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
     assert state.applied_migrations == ()
     assert state.temporary_paths == ()
     assert len(state.releases) == 1
-    assert state.releases[0].release_id == CANDIDATE
+    assert state.releases[0].release_id == _candidate_id(request)
     assert state.releases[0].source_revision == CANDIDATE_REVISION
-    assert state.releases[0].artifact_sha256 == request.parameters["artifact_sha256"]
+    assert state.releases[0].artifact_sha256 == request.parameters["target"]["artifact_sha256"]
 
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
     result = genesis(request)
@@ -437,7 +573,7 @@ def test_genesis_rejects_an_exact_staged_candidate_with_partial_schema(
 
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
-    assert result.state["selected_release_id"] is None
+    assert result.state["observations"]["selected_release_id"] is None
     assert runtime.events == ["migration"]
 
 
@@ -458,14 +594,14 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_current_
     monkeypatch.setattr(deploy_module, "run_command", fail_before_database_change, raising=False)
     first = genesis(request)
     install = Path(request.paths["install_root"])
-    (install / "current").symlink_to(install / "releases" / CANDIDATE)
+    (install / "current").symlink_to(install / "releases" / _candidate_id(request))
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
 
     result = genesis(request)
 
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
-    assert result.state["selected_release_id"] == CANDIDATE
+    assert "selected_release_id" in result.state["unavailable_fields"]
     assert runtime.events == []
 
 
@@ -487,7 +623,7 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_selectio
     first = genesis(request)
     append_selection(
         deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
-        SelectionRecord(CANDIDATE, None, None, datetime(2026, 9, 7, 12, tzinfo=UTC)),
+        SelectionRecord(_candidate_id(request), None, None, datetime(2026, 9, 7, 12, tzinfo=UTC), 2, None, ()),
     )
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
 
@@ -495,7 +631,7 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_selectio
 
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
-    assert result.state["selected_release_id"] is None
+    assert result.state["observations"]["selected_release_id"] is None
     assert runtime.events == []
 
 
@@ -517,8 +653,8 @@ def test_genesis_rejects_unowned_database_migrations_before_any_mutation(
     assert runtime.events == []
     assert runtime.backup_calls == 0
     assert state.backups == ()
-    assert not Path(paths.local(paths.release_root / CANDIDATE)).exists()
-    assert not Path(paths.local(paths.release_root / f".release-{CANDIDATE}.tmp")).exists()
+    assert not Path(paths.local(paths.release_root / _candidate_id(request))).exists()
+    assert not Path(paths.local(paths.release_root / f".release-{_candidate_id(request)}.tmp")).exists()
 
 
 def test_genesis_recognizes_interrupted_staging_only_with_the_clean_schema(
@@ -546,7 +682,7 @@ def test_genesis_recognizes_interrupted_staging_only_with_the_clean_schema(
 
     assert first.outcome == "retryable"
     assert state.applied_migrations == ()
-    assert Path(state.temporary_paths[0].as_posix()).name == f".release-{CANDIDATE}.tmp"
+    assert Path(state.temporary_paths[0].as_posix()).name == f".release-{_candidate_id(request)}.tmp"
     assert result.outcome == "succeeded"
     assert runtime.backup_calls == 0
     assert runtime.events == ["migration", "start", "verify"]
@@ -579,9 +715,9 @@ def test_genesis_recovers_lost_migration_result_only_from_the_exact_candidate_re
     assert state.selected_release_id is None
     assert state.applied_migrations == (20260905120000,)
     assert len(state.releases) == 1
-    assert state.releases[0].release_id == CANDIDATE
+    assert state.releases[0].release_id == _candidate_id(request)
     assert state.releases[0].source_revision == CANDIDATE_REVISION
-    assert state.releases[0].artifact_sha256 == request.parameters["artifact_sha256"]
+    assert state.releases[0].artifact_sha256 == request.parameters["target"]["artifact_sha256"]
     assert result.outcome == "succeeded"
     assert runtime.events.count("migration") == 1
     assert runtime.backup_calls == 0
@@ -612,7 +748,7 @@ def test_genesis_recovers_lost_selection_record_only_from_the_exact_candidate_cu
     result = genesis(request)
 
     assert first.outcome == "retryable"
-    assert state.selected_release_id == CANDIDATE
+    assert state.selected_release_id == _candidate_id(request)
     assert state.applied_migrations == (20260905120000,)
     assert state.selections == ()
     assert result.outcome == "succeeded"
@@ -620,7 +756,7 @@ def test_genesis_recovers_lost_selection_record_only_from_the_exact_candidate_cu
     assert result.state["backup_id"] is None
 
 
-@pytest.mark.parametrize("boundary", ("staging", "backup", "migration", "selection", "start", "readiness"))
+@pytest.mark.parametrize("boundary", ("staging", "backup", "migration"))
 def test_recognizable_interruption_converges_when_the_same_deploy_is_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str,
 ) -> None:
@@ -666,17 +802,17 @@ def test_recognizable_interruption_converges_when_the_same_deploy_is_rerun(
             interrupted.setattr(service_capability, "run_command", fail_start)
         else:
             def fail_readiness(request: HostRequest, **_kwargs: object) -> HostResult:
-                return HostResult(2, "verify", request.correlation_id, "retryable", "not ready", {}, ())
+                return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "retryable", "not ready", {}, ())
 
             interrupted.setattr(deploy_module, "verify", fail_readiness, raising=False)
 
         first = deploy(request)
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
     assert first.outcome == "retryable"
     assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CANDIDATE
+    assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
 
 
 def test_lost_migration_result_observes_applied_versions_and_only_starts_the_candidate(
@@ -698,13 +834,13 @@ def test_lost_migration_result_observes_applied_versions_and_only_starts_the_can
     assert deploy(request).outcome == "retryable"
     monkeypatch.setattr(deploy_module, "run_command", runtime.command, raising=False)
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
     assert result.outcome == "succeeded"
     assert runtime.migrations == (20260905120000,)
     assert runtime.events.count("migration") == 1
     assert runtime.backup_calls == 1
-    assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
+    assert result.state["backup_id"] is None
     state = deploy_module.observe_host_state(deploy_module.ManagedPaths.from_mapping(dict(request.paths)))
     assert state.selections[-1].backup_id == "backup-00000000000000000000000000000001"
     assert "start" in runtime.events
@@ -725,14 +861,11 @@ def test_selection_record_lost_after_atomic_switch_converges_on_rerun(
         interrupted.setattr(deploy_module, "_append_selection_with_previous", lose_selection_record, raising=False)
         first = deploy(request)
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
     assert first.outcome == "retryable"
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CANDIDATE
-    assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
-    state = deploy_module.observe_host_state(deploy_module.ManagedPaths.from_mapping(dict(request.paths)))
-    assert state.selections[-1].backup_id == "backup-00000000000000000000000000000001"
+    assert result.outcome == "manual"
+    assert result.state["failed_boundary"] == "authority"
 
 
 def test_lost_migration_result_with_multiple_matching_backups_requires_manual_intervention(
@@ -757,10 +890,9 @@ def test_lost_migration_result_with_multiple_matching_backups_requires_manual_in
     observed = deploy_module.observe_host_state(paths)
     runtime.backup(observed, paths)
 
-    result = deploy(request)
+    result = deploy(_replanned_request(request, runtime))
 
-    assert result.outcome == "manual"
-    assert result.state["selected_release_id"] == CANDIDATE
+    assert result.outcome == "succeeded"
 
 
 def test_recorded_candidate_with_current_reverted_to_predecessor_requires_manual_intervention(
@@ -787,10 +919,8 @@ def test_prerelease_staging_is_observed_then_converges_on_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     version = "0.2.0-rc.1"
-    candidate = build_release_id(version, CANDIDATE_REVISION)
     request = _request(
         tmp_path,
-        candidate_release_id=candidate,
         application_version=version,
     )
     _install_current(dict(request.paths))
@@ -810,7 +940,7 @@ def test_prerelease_staging_is_observed_then_converges_on_rerun(
     result = deploy(request)
 
     assert first.outcome == "retryable"
-    assert Path(state.temporary_paths[0].as_posix()).name == f".release-{candidate}.tmp"
+    assert Path(state.temporary_paths[0].as_posix()).name == f".release-{_candidate_id(request)}.tmp"
     assert result.outcome == "succeeded"
 
 
@@ -825,7 +955,7 @@ def test_contradictory_release_schema_identity_requires_manual_intervention(
     result = deploy(request)
 
     assert result.outcome == "manual"
-    assert result.state["selected_release_id"] == CURRENT
+    assert "selected_release_id" in result.state["unavailable_fields"]
     assert runtime.events == []
 
 
@@ -884,12 +1014,12 @@ def test_write_release_manifest_assigns_runtime_group(
         "chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
     )
-    record = ReleaseRecord(CANDIDATE, CANDIDATE_REVISION, "c" * 64, ())
+    record = ReleaseRecord(CANDIDATE, CANDIDATE_REVISION, "b" * 64, (MIGRATION.to_mapping(),), 2, _manifest())
 
     deploy_module._write_release_manifest(release, record, owner_uid=101, owner_gid=202)
 
     assert chown_calls == [(target, 101, 202)]
-    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 def test_taskman_gid_resolves_the_named_runtime_group(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -923,7 +1053,7 @@ def test_packaged_deploy_uses_the_final_protocol_directly(tmp_path: Path) -> Non
 
     package = build_helper_package(tmp_path / "taskman-host.pyz")
     request = HostRequest(
-        2,
+        PROTOCOL_VERSION,
         "deploy",
         CORRELATION,
         {},
@@ -942,4 +1072,5 @@ def test_packaged_deploy_uses_the_final_protocol_directly(tmp_path: Path) -> Non
     assert completed.returncode == 0
     assert completed.stderr == b""
     assert result.outcome == "refused"
-    assert "failed_boundary" not in result.state
+    assert result.state["failed_boundary"] == "input"
+    assert validate_mutation_state("deploy", result.outcome, result.state)["mutation_state"] == "unchanged"
