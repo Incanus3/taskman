@@ -60,6 +60,20 @@ specification.
 The design's dated verification recap has been removed; requirements remain in their owning sections,
 evidence sources are beside the observed baseline, and verification status is recorded here.
 
+A subsequent integrated restore/protocol review identified three additional gaps, recorded in the
+`tas-sr4b` comment headed "Integrated restore/protocol review": discovery lacks the binding data
+needed for planning; incomplete/absent migration observations lack explicit wire representations;
+and ordinary retries lack persisted temporary/restored database identity. The discovery fix is
+approved and incorporated: a flat `restore_target` object contains binding fields plus `sha256`,
+or null for proven absence. Hash excludes the added digest, which is not persisted; apply still
+echoes `expected_state.restore_target_sha256`. No nested `record` key. The observation schema is
+also approved and specified: database null means proven absence; existing entries distinguish
+missing migration table (false/null) from present-empty (true/[]) and populated history. Restore's
+top-level migrations describe canonical only; failed inspection refuses. Restored-database identity
+is also approved and specified: persist restored OID before loading, preserve it through renames,
+and use durable creation intent plus verified-empty registration for creation interruptions.
+All three integrated-review findings have approved resolutions; full written approval remains pending.
+
 Administrator creation, authenticated workspace/admin access, and logout acceptance are complete
 under `tas-q5lo`. They do not complete deployment history. The last recorded host state has the OTP
 29 candidate physically selected and running while successful history still names the OTP 27
@@ -67,14 +81,16 @@ genesis release; no migrations changed during the failed transition. Refresh act
 any host operation and never manually edit `current` or selection history.
 
 The current GitButler stack is `dedicated-host-deployment-automation` with PR 16. The ongoing
-specification review is recorded on this stack. No merge is authorized.
+specification review is recorded on this stack. Both the Projects design commit and reconciliation
+review commit `38f6597c` now belong to that branch; their former single-commit local branches were
+removed at the operator's request. No push or merge is authorized.
 
 ## Next actions
 
-1. Obtain operator review and explicit approval of the complete amended specification. All five
-   restore findings and four smaller consistency clarifications from the 2026-09-14 review have
-   approved resolutions incorporated in the design and related UX contract. No implementation plan
-   or code is authorized by those individual approvals.
+1. Resolve the three integrated-review gaps one at a time: discovery planning payload, incomplete
+   database observation schema, then persisted restored-database identity and creation interruptions.
+   All three fixes are approved and specified. Obtain explicit approval of the complete amended
+   specification. No implementation plan or code is authorized by individual repair approvals.
 2. After approval, use the writing-plans workflow to create and review a bounded implementation
    plan. Create scoped Beads delivery tasks, including independent verification.
 3. Update this handoff at the approved-plan boundary and start implementation in a clean session by

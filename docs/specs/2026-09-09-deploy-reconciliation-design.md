@@ -684,7 +684,8 @@ of these databases and the canonical database. Recognize these arrangements only
 Do not infer backup identity from a schema match. Before creating a temporary database, atomically
 publish root-owned mode-`0600` `deployments/restore-target.json` with exactly `schema_version: 1`,
 `backup_id`, `dump_sha256`, `source_release_id`, `base_selection_id`,
-`observed_previous_release_id`, `original_database_oid`, `safety_backup_id`,
+`observed_previous_release_id`, `original_database_oid`, `restored_database_oid`,
+`temporary_creation_pending`, `safety_backup_id`,
 `replacement` (initially null), and `safety_backup_attempts`. The latter is an array of exact
 `backup_id`/`attempt_number` mappings, initially containing the first safety backup with attempt
 number zero, ordered by attempt number. IDs and non-negative attempt numbers must be unique;
@@ -692,15 +693,46 @@ allocate each new number as one greater than the highest retained number under t
 The first entry remains the original safety backup throughout this unfinished restore sequence.
 The selection ID is the full validated filename, or null when the restore starts before first
 successful selection. `observed_previous_release_id` is null only when `current` was proven absent
-at that start. The database OID is a positive integer.
+at that start. Database OIDs are positive integers. `restored_database_oid` is initially null and
+`temporary_creation_pending` is initially true, recording intent to create the derived temporary
+database. After registration, the restored OID identifies the same database under either its
+temporary or canonical name; renaming never changes the recorded OID.
 All referenced metadata and identities are validated; the input being loaded and required safety
 backups must also pass full dump validation. The abandoned-input exception below applies only
 when replacing a target, not when loading that input. Use the existing
 non-link directory, create-once initial publication, atomic replacement, and directory-fsync rules.
-Only the explicitly described safety-backup and target-replacement updates may change this record.
+Only the explicitly described database-identity, safety-backup, and target-replacement updates may
+change this record.
 This record binds
 the selected input and original database; it is not a phase counter or permission to resume without
 confirmation. There can be only one unfinished restore per installation.
+
+Under the lifecycle lock and renewed plan confirmation, validate the preserved original's identity
+and the durable creation intent before creating the derived temporary database. Observe the new
+database's OID and expected ownership, then atomically register `restored_database_oid` and set
+`temporary_creation_pending` to false, with directory fsync. Do not load any dump contents until
+this registration is durable. Before promotion, and on retries after the swap or durable success,
+require the temporary/restored canonical database to match that registered OID. The original and
+restored OIDs must differ. A name, owner, or schema match cannot replace this identity check.
+
+If creation was interrupted before registration, an existing unregistered temporary database may
+be registered only with valid pending creation intent, a validated original, the exact derived
+temporary name, expected owner, and independently verified empty contents consistent with a fresh
+managed database. Empty migration history alone is insufficient. Check actual schema objects and
+data against the controlled empty template used for creation; refuse unexpected contents, active
+writers, failed observation, or contradictory identities. This narrowly supports the creation-to-
+registration interruption, not adoption of a populated database. If temporary is absent, create it
+and register its OID through the same procedure. Never delete an unregistered database to make it fit.
+
+For an ordinary temporary rebuild, first durably set `temporary_creation_pending` to true while
+retaining its registered OID. Drop only that exact temporary database, never canonical or original,
+and prove the former OID absent before creating its replacement. Preserve the old recorded OID
+until atomic registration of the replacement OID clears the pending flag. A retry can therefore
+distinguish the old registered temporary still awaiting deletion, its proven absence, and a newly
+created but still empty unregistered temporary. Apply the same empty-registration checks in the
+last case; do not interpret a different populated OID as a completed rebuild. Rebuilding a
+registered partial load may discard its contents because it has never been promoted or served
+application writes. Keep the application and background workers stopped throughout.
 
 On an ordinary rerun, require the requested backup and its digest/source to match that binding.
 A different backup requires the explicit replacement procedure below; it must never be substituted
@@ -776,9 +808,33 @@ fails, the next invocation resumes without `--reapply`, or changes target with
 completed attempt requests another fresh restore and therefore always requires fresh confirmation.
 
 Restore-specific discovery takes the requested `backup_id` in addition to the normal discover
-parameters, and returns `restore_target_sha256` (null only when absent) and `restore_database_state`.
-The latter contains exactly `canonical`, `temporary`, and `retired`; each is null when proven absent
-or has exactly `oid`, `owner`, and `applied_migrations` from direct observation. Use the existing
+parameters, and returns `restore_target` and `restore_database_state` from the same locked observation.
+`restore_target` is null only when the binding is proven absent; otherwise it is a flat object
+containing exactly the validated binding fields plus `sha256`. There is no nested `record` key
+or separate top-level discovery `restore_target_sha256`. Compute `sha256` over the canonical
+sorted-key ASCII JSON of the binding fields, excluding the added `sha256` field, with no whitespace
+or trailing newline. The digest is response metadata and is not stored in the binding file.
+The controller validates the fields and digest and uses them to display active/pending targets,
+retained safety attempts, and proposed pruning. The apply request still carries only
+`expected_state.restore_target_sha256`, copied from `restore_target.sha256` or null when absent;
+the helper revalidates the binding and independently enforces safety under the lock.
+`restore_database_state` contains exactly `canonical`, `temporary`, and `retired`; each is null only
+when that database is proven absent. An existing database has exactly `oid`, `owner`,
+`migration_table_present` (a strict boolean), and `applied_migrations` from direct observation.
+When the migration table is proven absent, `migration_table_present` is false and
+`applied_migrations` is null. When present, it is true and `applied_migrations` is the validated
+sorted version array, including `[]` for a present but empty table. Failed inspection refuses;
+it must never be represented as database absence, table absence, or an empty version array.
+
+In restore discovery and restore's expected state, top-level `applied_migrations` describes only
+the canonical database: copy its observed version array, or use null when the canonical database
+or its migration table is proven absent. The per-database map distinguishes those two cases;
+never substitute the temporary or retired database's versions for the canonical database's field.
+Other operations retain their existing migration-field contracts. These representations do not
+broaden admission: absent migration tables are accepted only in explicitly supported recovery
+states, including an incomplete restore-owned temporary database, not as permission to adopt an
+unproven application database. Controller and helper validate the conditional field shapes and
+the agreement between canonical and top-level observations. Use the existing
 migration bounds and a SHA-256 of canonical sorted-key ASCII JSON without whitespace/newline for
 the validated target binding. These facts are echoed in restore's expected state and revalidated
 under the lock. Deploy, provision, and unrelated mutation commands refuse an unresolved binding;
@@ -841,6 +897,11 @@ Once the preserved original database is back under its normal name and this rest
 and retired database names are absent, update the binding as follows. Leave all unrelated databases
 untouched. Atomically replace the binding's input fields
 with the pending target and clear `replacement`, retaining the safety references required below.
+In that same atomic update, clear `restored_database_oid` and set `temporary_creation_pending` to
+true, after proving the previously registered restored/discard OID absent. Any unregistered empty
+temporary from an interrupted creation must first pass the registration procedure before it can
+be selected as a replacement discard target. A non-null `discard_database_oid` must match the
+registered restored OID, never the original OID. Register the next temporary before loading it.
 This releases only the abandoned input's protection from this restore; independent references
 and ordinary backup retention still apply. Target switching itself never deletes that input. Then
 rebuild a fresh temporary database from that target and follow the normal validation/swap flow.
@@ -1252,6 +1313,21 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
     the validated replacement plan and missing execution acknowledgment, with no writes. Execution
     without the flag still refuses. After completed restore, same-backup dry-run without `--reapply`
     previews completion checking, while adding it previews a fresh restore and safety backup.
+    Verify flat discovery `restore_target` contains the complete validated binding plus its digest,
+    with null only for proven absence. Reject malformed fields and mismatched digests; hash only
+    binding fields and never persist the response digest. Build target/pruning plans from this
+    response and bind apply-time drift checks through `expected_state.restore_target_sha256`.
+    Distinguish absent database, existing database without a migration table, present-empty table,
+    and populated table in restore discovery and expected state. Check canonical/top-level agreement
+    and reject contradictory boolean/null/array combinations. Failed connection, permission, or
+    query observations refuse rather than producing absence or emptiness. Only supported incomplete
+    recovery states admit missing tables; ordinary application-database authority remains mandatory.
+    Interrupt after durable creation intent, database creation, OID registration, rebuild intent,
+    temporary deletion, replacement creation, and each rename. Register only a verified empty
+    unregistered temporary with valid creation intent; never load before durable OID registration.
+    Reject populated unregistered databases, wrong owner, unexpected writers, failed emptiness
+    observation, or mismatched restored OID after promotion. Verify post-success cleanup validates
+    the registered restored canonical OID while tolerating an already-deleted retired original.
 15. Through the public cleanup command, exercise low backup capacity, an unavailable canonical
     database during restore, mismatched physical/successful selection, and unfinished first install.
     Eligible unreferenced artifacts can be removed after typed confirmation; all required release
