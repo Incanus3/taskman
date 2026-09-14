@@ -363,7 +363,7 @@ or execution. A deploy-specific discovery mode exposes this distinction; do not 
 admission for unrelated mutation commands by globally disabling history checks.
 
 Existing-host reconciliation requires a non-empty valid successful history, a valid installed
-release selected by the `current` symlink, valid credentials/database authority, safe paths, and
+release selected by the `current` symlink, valid database credentials and database authority, safe paths, and
 compatible schema.
 Missing current, unmanaged directories, unsafe links, malformed authoritative records, conflicting
 fingerprints, unobservable database state, and unrelated schemas refuse. Initial provisioning keeps
@@ -566,7 +566,7 @@ database is incompatible with A and physical current names B. Deploy does not pe
 implicitly, and neither `--yes` nor `--allow-downgrade` substitutes for restore's existing typed
 environment-and-backup confirmation.
 
-Restore planning and execution require valid successful history when present, credentials and
+Restore planning and execution require valid successful history when present, database credentials and
 database identity, observable migration state with consistent installed/protected provenance,
 safe paths, and sufficient restore capacity. History may be empty before first success. In that
 case `current` may also be absent; if present it must select a valid installed release. After a
@@ -583,7 +583,7 @@ refusing unknown or conflicting authority, corrupt dumps, and partial-schema bac
 run with their recorded source release. Thus an unfinished first installation with a valid backup
 compatible with an installed release can recover through restore before any deployment succeeds.
 Restore still needs an existing managed database (or a recognized interrupted swap), the required
-service/credential infrastructure, and a safety backup; it does not provision missing host services.
+services and database credentials, and a safety backup; it does not provision missing host services.
 During an interrupted database swap, observe the validated
 original/retired and restored databases as described below instead of requiring the canonical
 database name to exist.
@@ -644,7 +644,7 @@ recognize the completed restore through its exact backup references and null ori
 
 Rerunning `taskman restore ENV BACKUP_ID` with the same backup must reach restore-specific inspection
 even when the canonical database name is temporarily absent. Initial preflight verifies PostgreSQL
-cluster/admin access through its maintenance database, credentials, filesystem and installed-release
+cluster/admin access through its maintenance database, database credentials, filesystem and installed-release
 authority. It must not require application readiness, a connection to the canonical application
 database, or successful-selection equality before inspecting the restore arrangement. This applies
 to both dry-run and execution. Permission to inspect is not permission to rename or delete databases.
@@ -877,17 +877,24 @@ obsolete executable by a trusted administrator are outside the normal scheduler 
 
 ## Reconciliation procedure and transport
 
-Keep controller orchestration and host mutation as separate owners; add no generic workflow engine.
+Keep orchestration in the controller and host mutation in the host-side helper; add no generic workflow engine.
 Use host protocol version 3 for the coordinated transient controller/helper change. Retain envelope,
 correlation, redaction, collection, and size rules. Old transient protocol requests refuse; the
 controller always transfers its matching helper. Persisted legacy readers are not wire-version
 compatibility shims.
 
-Version-3 `discover` parameters are exactly `credentials_path`, `database`, and `mode`, with mode
-`strict`, `deploy`, `provision`, or `restore`; expected state remains empty. The provision view admits the
-unfinished-installation state described above, with nullable current and successful selection;
-unknown observations must never be substituted with null. Mode `restore` additionally requires
-`backup_id` and uses the database-arrangement observations above. The deploy, provision, and restore views add
+`credentials_path` identifies the host's PostgreSQL password file, `/etc/taskman/pgpass`, not an
+operator login or SSH key. Existing private-file ownership, permission, and non-symlink checks apply.
+
+Extend the existing read-only `discover` operation with four inspection modes: `strict`, `deploy`,
+`provision`, and `restore`. Mode `strict` retains the existing completed-installation checks;
+the other modes support the unfinished states admitted by their respective commands.
+In protocol version 3, parameters are exactly `credentials_path`, `database`, and `mode`, except
+that `restore` additionally requires `backup_id`; expected state remains empty. In `provision` mode,
+discovery accepts and reports the unfinished-installation state described above, with nullable
+current and successful selection;
+unknown observations must never be substituted with null. Mode `restore` uses the database-arrangement
+observations above. The deploy, provision, and restore views add
 `last_successful_selection_id`, `backup_protections`, `backup_protection_sha256`,
 `scheduled_backup_sha256`, `backup_timer_enabled`, and `backup_timer_state` to existing discovery
 facts. `selected_release_id` means physical current, not successful history. Timer state is
@@ -961,7 +968,8 @@ loopback topology, journal, readiness, and HSTS checks as uploaded artifacts.
 ## Failures and reporting
 
 Preserve the bounded verification report on exit 9, including checks actually attempted; do not
-replace it with an empty report. Keep the original failure primary if follow-up observation fails.
+replace it with an empty report. If follow-up inspection also fails, keep the original failure as
+the main reported error and report the inspection failure separately.
 Attempt one bounded safe reobservation under the lock after a partial mutation where possible.
 Report physical current, last successful selection, desired target, actual migration versions,
 protected backup IDs, database/service/scheduler state, and failed boundary. Distinguish final
