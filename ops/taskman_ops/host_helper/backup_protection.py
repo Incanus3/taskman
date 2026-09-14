@@ -360,22 +360,19 @@ def backup_protection_retirement_path(paths: ManagedPaths, backup_id: str) -> Pa
 def _prepare_retirement_root(paths: ManagedPaths) -> tuple[int, Path]:
     _paths, owner_uid, _active_root = _prepare_paths(paths)
     root = backup_protection_retirement_root(paths)
-    created = False
     try:
         root.mkdir(mode=0o750)
-        created = True
     except FileExistsError:
         pass
     except OSError as error:
         raise RecordError("unable to prepare backup-protection retirement directory") from error
     _safe_directory(root, owner_uid=owner_uid)
-    if created:
-        try:
-            fsync_directory(Path(paths.local(paths.deployment_root)))
-        except OSError as error:
-            raise RecordError(
-                "unable to persist backup-protection retirement directory"
-            ) from error
+    try:
+        fsync_directory(Path(paths.local(paths.deployment_root)))
+    except OSError as error:
+        raise RecordError(
+            "unable to persist backup-protection retirement directory"
+        ) from error
     return owner_uid, root
 
 

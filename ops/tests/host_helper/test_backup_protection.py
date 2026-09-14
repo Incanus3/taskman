@@ -277,7 +277,7 @@ def test_pending_retirement_marker_requires_private_nonlink_authority(
         )
 
 
-def test_first_retirement_directory_is_fsynced_before_reference_move_only_once(
+def test_retirement_directory_parent_fsync_failure_is_retried_before_reference_move(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = managed_paths(tmp_path)
@@ -287,9 +287,14 @@ def test_first_retirement_directory_is_fsynced_before_reference_move_only_once(
     events: list[tuple[str, Path]] = []
     original_fsync = protection_module.fsync_directory
     original_replace = protection_module.os.replace
+    failed_parent_fsync = False
 
     def record_fsync(path: Path) -> None:
+        nonlocal failed_parent_fsync
         events.append(("fsync", path))
+        if path == deployment_root and not failed_parent_fsync:
+            failed_parent_fsync = True
+            raise OSError("simulated parent fsync failure")
         original_fsync(path)
 
     def record_replace(source: Path, target: Path) -> None:
@@ -299,13 +304,17 @@ def test_first_retirement_directory_is_fsynced_before_reference_move_only_once(
     monkeypatch.setattr(protection_module, "fsync_directory", record_fsync)
     monkeypatch.setattr(protection_module.os, "replace", record_replace)
 
+    with pytest.raises(RecordError, match="persist.*retirement directory"):
+        protection_module._mark_retiring_protections(paths, (protection,))
+
+    assert protection_module.backup_protection_retirement_root(paths).is_dir()
+    assert Path(paths.local(paths.backup_protection(BACKUP))).is_file()
+    assert events == [("fsync", deployment_root)]
+
     protection_module._mark_retiring_protections(paths, (protection,))
 
-    assert events[0] == ("fsync", deployment_root)
-    assert events[1][0] == "replace"
-    deployment_fsyncs = events.count(("fsync", deployment_root))
-    protection_module._prepare_retirement_root(paths)
-    assert events.count(("fsync", deployment_root)) == deployment_fsyncs == 1
+    assert events[1] == ("fsync", deployment_root)
+    assert events[2][0] == "replace"
 
 
 @pytest.mark.parametrize("failure_name", ("manifest", "dump"))
