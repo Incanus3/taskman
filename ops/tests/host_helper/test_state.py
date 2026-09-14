@@ -149,6 +149,19 @@ def test_observe_selected_release_and_database_projection(tmp_path: Path) -> Non
     assert state.service_state == "unknown"
 
 
+@pytest.mark.parametrize("mode", (0o644, 0o700))
+def test_observe_refuses_authoritative_records_without_exact_private_mode(
+    tmp_path: Path, mode: int
+) -> None:
+    paths = managed_paths(tmp_path)
+    release = _release()
+    _publish_release(paths, release)
+    Path(paths.local(paths.release_manifest(release.release_id))).chmod(mode)
+
+    with pytest.raises(StateAmbiguityError, match="mode|private"):
+        observe_host_state(paths)
+
+
 def test_observe_refuses_conflicting_duplicate_database_facts(tmp_path: Path) -> None:
     """Accepting aliases with divergent migrations could select the wrong completed state."""
 
@@ -358,9 +371,11 @@ def test_observe_refuses_manifest_identity_mismatch_at_canonical_backup_path(
         (1,),
         1024,
     )
-    (backup_root / f"{BACKUP}.json").write_text(
+    manifest_path = backup_root / f"{BACKUP}.json"
+    manifest_path.write_text(
         json.dumps(mismatched.to_mapping()), encoding="utf-8"
     )
+    manifest_path.chmod(0o600)
 
     with pytest.raises(StateAmbiguityError, match="identity|path"):
         observe_host_state(paths)
@@ -375,9 +390,11 @@ def test_observe_refuses_selection_filename_identity_mismatch(
     selection_root = Path(paths.local(paths.selection_root))
     selection_root.mkdir(parents=True)
     selection = _selection()
-    (selection_root / ("selection-" + "0" * 64 + ".json")).write_text(
+    selection_path = selection_root / ("selection-" + "0" * 64 + ".json")
+    selection_path.write_text(
         json.dumps(selection.to_mapping()), encoding="utf-8"
     )
+    selection_path.chmod(0o600)
     current = Path(paths.local(paths.current_link))
     current.parent.mkdir(parents=True, exist_ok=True)
     current.symlink_to(Path(paths.local(paths.release_root / RELEASE)))

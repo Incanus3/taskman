@@ -497,8 +497,8 @@ def _read_record(
     details = _lstat(path, label)
     if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
         raise StateAmbiguityError(f"authoritative {label} is not a regular file")
-    if details.st_uid != owner_uid or details.st_mode & 0o7022:
-        raise StateAmbiguityError(f"authoritative {label} is writable by group or other")
+    if details.st_uid != owner_uid or stat.S_IMODE(details.st_mode) != 0o600:
+        raise StateAmbiguityError(f"authoritative {label} has unsafe owner or mode")
     try:
         raw = path.read_bytes()
     except OSError as error:

@@ -414,7 +414,7 @@ def _safe_file(path: Path, *, owner_uid: int) -> os.stat_result:
         stat.S_ISLNK(details.st_mode)
         or not stat.S_ISREG(details.st_mode)
         or details.st_uid != owner_uid
-        or details.st_mode & 0o7022
+        or stat.S_IMODE(details.st_mode) != 0o600
     ):
         raise RecordError("managed file is unsafe")
     return details

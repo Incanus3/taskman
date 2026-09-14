@@ -114,6 +114,24 @@ def test_backup_protection_can_be_replaced_atomically_after_initial_publication(
     assert not list(target.parent.glob(".*.tmp"))
 
 
+@pytest.mark.parametrize("mode", (0o644, 0o700))
+def test_backup_protection_replacement_refuses_nonprivate_existing_authority(
+    tmp_path: Path, mode: int
+) -> None:
+    paths = managed_paths(tmp_path)
+    first = _protection()
+    replacement = _protection(
+        base_selection_id=None,
+        attempt_number=1,
+        created_at=datetime(2026, 9, 7, 13, 0, tzinfo=UTC),
+    )
+    write_backup_protection(paths, first)
+    Path(paths.local(paths.backup_protection(BACKUP))).chmod(mode)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        replace_backup_protection(paths, replacement)
+
+
 def test_backup_protection_serializer_enforces_the_other_record_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
