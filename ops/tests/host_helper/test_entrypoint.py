@@ -393,6 +393,40 @@ def test_scheduler_failure_marks_its_checksum_unavailable_without_erasing_indepe
     assert observed["selected_release_id"] == RELEASE
 
 
+def test_cleanup_observation_round_trips_without_scheduler_unavailable_fields() -> None:
+    final_state = HostState(
+        selected_release_id=None,
+        releases=(),
+        backups=(),
+        selections=(),
+        applied_migrations=(),
+        service_state="unknown",
+        database_state="unknown",
+        temporary_paths=(),
+        warnings=(),
+    )
+    observations = project_mutation_observations(final_state, "cleanup")
+    unavailable, inspection_error = mutation_observation_availability(
+        "cleanup", observations
+    )
+    mutation_state = {
+        "mutation_state": "unchanged",
+        "exit_code": 0,
+        "failed_boundary": None,
+        "observations": observations,
+        "unavailable_fields": unavailable,
+        "inspection_error": inspection_error,
+        "report": None,
+        "completed_targets": (),
+    }
+
+    assert "scheduled_backup_sha256" not in observations
+    assert unavailable == ()
+    assert validate_mutation_state("cleanup", "succeeded", mutation_state)[
+        "observations"
+    ] == observations
+
+
 def test_deploy_post_history_observation_proves_success_without_entrypoint_reinspection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
