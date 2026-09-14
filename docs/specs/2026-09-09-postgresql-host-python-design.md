@@ -19,7 +19,10 @@ The [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md) rema
 deployment architecture. This document specifies a bounded extension to its helper vocabulary
 and the implementation of its PostgreSQL custom operation. Until implemented and verified, it
 does not describe the running product. The [runbook](../deployment.md) owns operator recovery;
-the [development guide](../development.md) owns verification commands.
+the [development guide](../development.md) owns verification commands and the general
+[ops development policy](../development.md#operations-development). Python-first workflows now
+apply to future ops work generally; this proposal remains the bounded, separately scheduled
+refactor of the existing PostgreSQL workflow, not a prerequisite for adopting that policy.
 
 The operator approved PostgreSQL-first extraction, reuse of the existing transient helper and
 authenticated connection, two narrow inspect/configure operations, unchanged protected password

@@ -48,8 +48,8 @@ Provisioning admission is based on validated resources and plan confirmation; th
 provisioning marker is neither required nor sufficient and is no longer written.
 This UX work builds on that baseline. Earlier requirements here to retain protocol version 2,
 clean-only builds, and confirmation exclusively through stdin are superseded for those overlapping
-surfaces. The reconciliation specification still awaits full written approval; this precedence
-decision does not approve either complete specification or describe implemented behavior.
+surfaces. The complete reconciliation specification was approved on 2026-09-14 but is not yet
+implemented. This does not approve the separate CLI UX specification.
 
 On implementation, this specification supersedes the older design's unconditional build-before-SSH
 ordering for **provision only**, its flat human renderer, and mixed JSON/prompt/error streams.
@@ -167,10 +167,12 @@ every later schema failure before host convergence.
 
 The request uses the two existing paths, empty expected state, and empty parameters. Successful
 state contains exactly five fields: `classification` (`empty`, `unfinished`, or `completed`),
-`selected_release_id` (validated ID or null), `releases` (validated ReleaseRecord array),
-`staged_release_ids` (sorted unique validated ID array), and `first_selection_only` (boolean).
-Arrays respect protocol collection and total encoded response bounds; an unrepresentable result
-refuses with a bounded reason rather than truncating authoritative facts.
+`selected_release_id` (validated ID or null), `release_count` (nonnegative integer),
+`staged_release_count` (nonnegative integer), and `first_selection_only` (boolean).
+The helper validates the full underlying inventories before returning these bounded summary facts;
+it never truncates inspection or infers absence from records omitted from the response. Historical
+selection count must not impose a lifetime installation limit. Later record enumeration uses the
+reconciliation design's paginated inventory operations, not expanding this early response.
 `empty` requires no release/staging/selection/protection evidence; `unfinished` allows multiple
 valid installed or staged candidates with no successful history; `completed` requires valid
 selected history. `first_selection_only` is true only for exactly one initial completed selection
@@ -303,12 +305,21 @@ workflow mapping, and public results. This increment presents that evidence thro
 human renderer and preserves it in JSON. Accept reports only through the strict report parser;
 do not fabricate a report for preflight, transport loss, or failures before verification.
 
+Consume reconciliation's exact mutation-result contract, including `mutation_state`, explicit
+status/boundary, final `observations`/`unavailable_fields`, and separate `inspection_error`.
+Keep the confirmed `facts.starting_state` separate from final observations. Missing evidence is
+never unchanged success; lost transport makes the affected dispatch uncertain while preserving
+earlier proved command-level mutations. Present completion-only restore cleanup without inventing
+a new passing readiness report, and preserve cleanup batch completions when later work fails.
+
 The existing helper `message` must reach an appropriate safe controller reason instead of becoming
 only `deployment-incomplete`. Where a generic catch discards an identifiable first-install refusal,
 use finite reason text tied to that actual guard; never expose arbitrary exception messages.
 Report selected and running identity separately when both are proved; otherwise say selected only.
 
-Build on reconciliation's protocol version 3, its exact envelope, 64 KiB bounds, and one request/one result. The narrow
+Build on reconciliation's protocol version 3, its exact envelope, 1-MiB message budget,
+schema-specific migration collection limits, and one request/one result per internal page.
+Public listings collect snapshot-consistent pages before emitting their single final result. The narrow
 inspection operation is an additive vocabulary entry and is packaged with its matching controller;
 operation-specific validation covers its exact fields. Existing deployment result state already
 has a report seam; fix its failure path and validate optional failed evidence without relaxing

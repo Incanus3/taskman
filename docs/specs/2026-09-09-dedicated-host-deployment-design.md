@@ -9,8 +9,9 @@ and external acceptance. The [development guide](../development.md#operations-ve
 the runnable local verification recipe. Neither this design nor passing local checks authorizes
 deployment, publication, or changes to an external host.
 
-The proposed [desired-target deployment reconciliation design](2026-09-09-deploy-reconciliation-design.md)
-is awaiting operator review. It identifies changes to deployment recovery, artifact identity, backup
+The approved [desired-target deployment reconciliation design](2026-09-09-deploy-reconciliation-design.md)
+has an [approved implementation plan](../plans/2026-09-14-deploy-reconciliation.md), approved on 2026-09-14.
+It specifies changes to deployment recovery, artifact identity, backup
 protection, and confirmation; those changes are not yet implemented or a replacement for this baseline.
 
 ## Purpose and supported scope
@@ -532,6 +533,10 @@ Reports direct the operator toward inspection/rerun or manual action, without ra
 generated recovery commands. The runbook supplies the state-specific manual recovery guidance.
 
 ## Simplicity and maintenance
+
+Future ops changes also follow the [operations development guidelines](../development.md#operations-development):
+prefer simple reliable procedures under a non-adversarial operator model, and Python over
+substantial shell workflows. This does not retroactively rewrite the implemented baseline below.
 
 The accepted design favors the smallest coherent owner that preserves functionality, safety,
 readability, diagnosability, and testability. Physical line counts are diagnostic evidence, not a

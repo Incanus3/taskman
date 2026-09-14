@@ -41,17 +41,19 @@
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment design](specs/2026-09-09-dedicated-host-deployment-design.md)
-- [Desired-target deployment reconciliation (proposed)](specs/2026-09-09-deploy-reconciliation-design.md)
+- [Desired-target deployment reconciliation (approved; not yet implemented)](specs/2026-09-09-deploy-reconciliation-design.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 - [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
 ## Active implementation plans
 
+- [Desired-target deployment reconciliation (approved; implementation next)](plans/2026-09-14-deploy-reconciliation.md)
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
 
 ## Development
 
 - [Development guide](development.md)
+- [Operations development guidelines](development.md#operations-development)
 - [Dedicated-host deployment automation runbook](deployment.md)
 
 ## Research

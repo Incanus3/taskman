@@ -1,7 +1,7 @@
 # Desired-target deployment reconciliation
 
-Status: proposed specification; design sections approved in conversation, written specification
-under operator review. Updated: 2026-09-14. Tracking: `tas-sr4b`.
+Status: approved specification; complete written design approved on 2026-09-14, including the
+ops development constraints. Not yet implemented. Updated: 2026-09-14. Tracking: `tas-sr4b`.
 
 ## Authority and scope
 
@@ -12,7 +12,7 @@ host topology, credentials, archive safety, locking, provisioning, rollback, and
 The [runbook](../deployment.md) owns implemented operator instructions; do not document these new
 options as available until implemented. The [development guide](../development.md) owns checks.
 
-On approval, this specification supersedes the older design's source-only release identity,
+For implementation planning, this approved specification supersedes the older design's source-only release identity,
 clean-only local release builds, artifact-resolution-before-SSH ordering, exact-attempt-only
 deployment admission, blanket exclusion of pending records, and absence of unattended deployment
 or provisioning confirmation, exact-artifact-only recovery of an unfinished first installation,
@@ -30,6 +30,40 @@ version 3, artifact/source rules, and deploy/provision acknowledgments. Reconcil
 results, alongside truthful mutation evidence. CLI UX consumes and presents that evidence; it must
 not reintroduce protocol version 2 or the superseded confirmation/build restrictions. Its general
 progress UI and early provisioning inspection remain separate work.
+
+## Development constraints and reliability scope
+
+Follow the [operations development guidelines](../development.md#operations-development), including
+their simplicity preference and Python-first workflow policy. These constrain this specification's
+implementation and its upcoming plan; they do not authorize dropping the operator behavior below.
+
+Assume trusted operators and no deliberately hostile interference with managed host state.
+Support ordinary interruption, lost replies, concurrent cooperating commands, scheduled backups,
+and accidental plan-to-execution drift. The existing lifecycle lock, checks at confirmation/apply
+and lock-reacquisition boundaries, atomic publication, and bounded native subprocesses are the
+coordination mechanisms. Do not layer a hostile-tampering defense or generic transaction/recovery
+engine on top. Retain existing scoped path, permission, checksum, and destructive-target checks;
+their role here is preventing mistakes and preserving known recovery material, not resisting a
+malicious administrator. Do not repeat an unchanged validation inside one locked phase without a
+specific intervening action that can invalidate it.
+
+The restore binding, backup protections, database identities, and publication ordering below remain
+necessary for the explicitly supported interrupted operations. Unknown or contradictory state may
+refuse safely; no automatic repair of arbitrary manual corruption, unrecorded migration effects,
+or combinations outside the supported state model is required. Additional recovery branches need
+a concrete supported failure and a demonstrated benefit, not merely a conceivable timing sequence.
+
+Implement orchestration and host-side multi-step work in focused Python procedures, using existing
+transport/packaging and bounded argv calls to native tools. Short shell remains acceptable when
+clearly simpler. Do not add substantial shell for scheduler refresh, restore normalization,
+protection pruning, or result assembly. The parked PostgreSQL refactor is not a prerequisite.
+
+Keep the plan organized around behavior and consequence boundaries, with the smallest useful
+owners and actual shared consumers. The acceptance scenarios describe distinct states and
+guarantees, not an exhaustive Cartesian product of interruption timings and command options.
+Exercise each distinct durable recovery state and the real public entry paths; reuse focused
+coverage for equivalent transitions. If a simplification would remove an accepted repair path or
+weaken a core guarantee, identify that trade-off for operator approval before changing the design.
 
 ## Problem and observed baseline
 
@@ -345,11 +379,9 @@ selected automatically for first initialization, without a backup of a nonexiste
 Empty migration history alone is not proof of an empty database. Once any migrations
 have committed, further versions require explicit `--migration-policy backward-compatible`, also
 on provision; the deploy policy/refusal rules apply. Before those additional migrations, create a
-fresh validated backup and protection with no successful-selection baseline. For this backup of an
-already partially migrated database, if physical current is absent, select the backup's source
-release from previously installed records that prove the
-entire live prefix, ordered by full release ID. This is backup provenance, not application selection
-or proof of a healthy release. If no such record exists, refuse. This requirement does not apply
+fresh validated backup and protection with no successful-selection baseline. Select this backup's
+source using the shared backup-source rule below, whether physical current is present or absent.
+The requirement for existing migration provenance does not apply
 to a proven empty initial database, which needs neither a previous release record nor `current`.
 This narrowly extends backup
 creation to an unfinished installation without physical current; the backup record format remains
@@ -403,6 +435,32 @@ claiming deployment success. The shared backup capability and scheduled backup p
 the validated selected release, observed database migration state, and new protection records,
 because they may run during an unfinished deployment. This does not authorize those paths to
 select or repair releases.
+
+### Shared backup-source selection
+
+Every caller of the shared backup capability uses the same source-selection rule, including
+deployment/provisioning retries, scheduled and manual backups, and restore safety copies.
+Under the lifecycle lock, validate the observed database's live migration prefix and its installed
+provenance using the calling operation's admission rules. All relevant records containing an
+applied version must agree on its filename and fingerprint; a preferred source never overrides
+conflicting provenance.
+
+Prefer physical current only when its validated installed record proves the entire live prefix:
+the observed versions are an exact prefix of that record's migration sequence, with matching
+fingerprints for every applied version. If current is absent or does not cover that prefix, choose
+the first qualifying record in ascending full release-ID order from the installed releases already
+accepted as migration provenance. On an existing installation, these are the physical and last
+successful releases and installed targets named by unresolved migration protections; before first
+success, apply the unfinished-installation provenance rules above. Do not expand this set merely
+because another installed release or the newly requested artifact contains matching versions.
+If no single eligible record proves the entire prefix, or relevant fingerprints conflict, refuse
+backup creation. This rule does not relax the caller's current/history/database admission rules.
+
+Persist the chosen ID as `source_release_id` and the actual observed versions as
+`migration_versions`; the backup record format is unchanged. The source identifies migration
+provenance, not physical application selection or a successful/healthy release. A dump whose
+versions are only a partial prefix of its source release remains a safety copy that may require
+manual recovery; automatic restore still requires the source release's complete schema.
 
 ## Database and downgrade safety
 
@@ -520,7 +578,7 @@ prevent safe replacement and must not be introduced. Discovery and planning must
 this interrupted pre-pruning state. Before another backup is created, complete any previously
 authorized pruning through a newly confirmed plan using the already validated newest protection.
 Repeated attempts must not accumulate protections until an arbitrary count blocks migration.
-Keep the existing 64-KiB message/record bounds as serialization limits, not a 64-attempt recovery
+Keep the format-specific byte bounds below as serialization limits, not a 64-attempt recovery
 budget. Five retained attempt references and the transient replacement fit within that allowance;
 independent history/restore references remain governed by their existing bounded record schemas.
 
@@ -616,9 +674,9 @@ failures exit 11, and verification failures exit 9 under the existing status cat
 
 Use the existing safety-backup, stop, temporary-database restore/validation, database swap,
 release selection, start, and verification procedure. The safety backup must support the observed
-live migration prefix of an unfinished deployment through the shared backup capability. It must
-also support an unfinished first installation without `current`, using the same validated installed
-migration-provenance rules as provisioning. This pre-restore safety backup preserves the database
+live migration prefix of an unfinished deployment through the shared backup-source selection rule,
+including when current exists but no longer covers the live prefix. It must also support an
+unfinished first installation without `current`. This pre-restore safety backup preserves the database
 being replaced, even if its migrations are incomplete. Unlike the chosen restore backup, this
 safety copy may require manual recovery to extract data or make it runnable if its migration prefix
 does not match its source release's complete schema. This limitation applies to the safety copy,
@@ -1019,12 +1077,13 @@ existing idempotent behavior. Backup pairs retain manifest-before-dump deletion 
 deletion or transport failure reports known/possible mutation accurately so the operator can
 reinspect and retry. Cleanup must not refresh the scheduler helper merely to remove old files.
 
-Protocol v3 cleanup keeps its existing exact parameters (`action`, `targets`, `release_retention`,
-`backup_retention`) and target mappings (`kind`, `identifier`, `path`). Its expected state is exactly
+Protocol v3 cleanup uses exactly the parameters `action`, `targets`, `release_retention`,
+`backup_retention`, and `cursor`, retaining target mappings (`kind`, `identifier`, `path`). Its expected state is exactly
 `selected_release_id`, `last_successful_selection_id`, `backup_protection_sha256`, and
 `restore_target_sha256`. An `inspect` request uses empty expected state and an empty target list;
 its response supplies those confirmation facts and exact eligible targets from one locked
-observation. An `execute` request echoes them; reference changes require replanning, while unrelated
+observation, with pagination as specified below. An `execute` request echoes the confirmation facts
+and a confirmed target batch, with null cursor; reference changes require replanning, while unrelated
 new scheduled backups do not invalidate otherwise safe confirmed targets. Nullable selections
 mean proven absence under valid managed authority. The controller calls cleanup inspection
 directly, bypassing generic discovery and its database requirement. Shared filesystem/record
@@ -1069,12 +1128,48 @@ obsolete executable by a trusted administrator are outside the normal scheduler 
 
 Keep orchestration in the controller and host mutation in the host-side helper; add no generic workflow engine.
 Use host protocol version 3 for the coordinated transient controller/helper change. Retain envelope,
-correlation, redaction, collection, and size rules. Old transient protocol requests refuse; the
+correlation and redaction rules; use the explicit collection and byte budgets below. Old transient protocol requests refuse; the
 controller always transfers its matching helper. Persisted legacy readers are not wire-version
 compatibility shims.
 
 `credentials_path` identifies the host's PostgreSQL password file, `/etc/taskman/pgpass`, not an
 operator login or SSH key. Existing private-file ownership, permission, and non-symlink checks apply.
+
+### Artifact, record, and transport budgets
+
+Protocol v3 permits up to 256 migration fingerprints in schema-defined manifest/release-record
+`migrations` arrays, including embedded manifests, and up to 512 versions in schema-defined
+observed/backup `applied_migrations` or migration-version arrays. These preserve the existing
+record-domain limits. Other arrays and object mappings retain the generic 64-item limit. Apply
+exceptions only at validated schema locations, not to arbitrary fields sharing a name; generic
+JSON decoding must not reject these supported arrays before operation-specific validation runs.
+Retain string/path checks and nesting limits, with coverage for every supported nested record form.
+
+The exact serialized UTF-8 byte budgets are:
+
+- New schema-3 artifact manifest: 128 KiB.
+- New schema-2 installed release record, including the embedded manifest and duplicated fields:
+  256 KiB.
+- Every complete protocol-v3 request or result, including its envelope: 1 MiB.
+- Other persisted records and legacy installed records: their existing 64-KiB limit.
+
+These are aggregate budgets, not independent allowances for each nested component. New migration
+filenames must fit the supported filesystem component bound of 255 UTF-8 bytes as well as the
+existing filename grammar. Validate the actual complete encoded manifest and prospective installed
+record during build/artifact validation before publishing a reusable artifact. Validate both
+uploaded-target and installed-target request representations, including enclosing metadata, and
+check the exact environment-specific request again before upload or host mutation. Oversized local
+artifacts fail with exit 2 and a bounded explanation of the violated limit, never after staging.
+The host validates the same record budgets before publication and enforces message bounds at its
+input/output boundary. No truncation of migration or identity data is allowed.
+
+Legacy formats remain unchanged on disk. A valid legacy installed record within its existing
+64-KiB and migration-count limits must be transportable through v3, including records with more
+than 64 migration fingerprints. Explicit legacy artifacts undergo the aggregate transport and
+prospective-record checks before use; local input outside those supported budgets refuses before
+host mutation, without rewriting installed legacy records. Invalid or oversized persisted legacy
+records remain authority failures, not silently skipped data. Inventory/history growth is a
+separate discovery/listing concern; larger messages are not a substitute for bounded projections.
 
 Extend the existing read-only `discover` operation with four inspection modes: `strict`, `deploy`,
 `provision`, and `restore`. Mode `strict` retains the existing completed-installation checks;
@@ -1084,12 +1179,85 @@ that `restore` additionally requires `backup_id`; expected state remains empty. 
 discovery accepts and reports the unfinished-installation state described above, with nullable
 current and successful selection;
 unknown observations must never be substituted with null. Mode `restore` uses the database-arrangement
-observations above. The deploy, provision, and restore views add
-`last_successful_selection_id`, `backup_protections`, `backup_protection_sha256`,
-`scheduled_backup_sha256`, `backup_timer_enabled`, and `backup_timer_state` to existing discovery
-facts. `selected_release_id` means physical current, not successful history. Timer state is
+observations above. Discovery no longer returns the full `releases`, `backups`, `selections`, or
+`release_migrations` inventories. Its common state fields are exactly `selected_release_id`,
+`last_successful_selection_id`, `last_successful_selection`, `previous_successful_selection`,
+`applied_migrations`, `service_state`, and `database_state`. The two selection objects are the
+validated latest and immediately preceding successful records, or null for proven absence;
+the latest ID is its full selection filename. Mode-specific absence/admission rules still apply.
+The deploy, provision, and restore modes additionally return
+`backup_protections`, `backup_protection_sha256`,
+`scheduled_backup_sha256`, `backup_timer_enabled`, and `backup_timer_state`.
+Restore additionally returns
+the flat `restore_target` and `restore_database_state` described above.
+`selected_release_id` means physical current, not successful history. Timer state is
 `active`, `inactive`, or `unknown`; enabled is a strict boolean, and unknown enablement refuses.
 Deploy and provision views additionally include `downgrade_baseline_sha256` as defined above.
+
+### Bounded discovery and paginated inventories
+
+Validate full successful history, installed migration provenance, and backup/reference relationships
+on the host before constructing an operational projection. Do not send every historical record to
+the controller to perform those safety checks. Do not silently ignore old references or delete
+history to fit a response. History retention, rollback predecessor semantics, and reference-based
+backup protection remain unchanged. In particular, the existing 4096-entry implementation guard
+must not become a lifetime successful-selection limit: scan valid history incrementally under the
+lock, with per-record validation and the normal bounded operation timeout, not a fixed record-count
+refusal. A timeout is reported as incomplete inspection, never a truncated successful history.
+
+Protocol-v3 `list_releases` and `list_backups` use exactly `cursor` in parameters and empty expected
+state. The first cursor is null;
+later cursors are exact objects with `inventory_sha256` and `after_id`. Responses contain exactly
+`records`, `inventory_sha256`, and `next_cursor`. Each record entry has exactly `id` and `record`;
+IDs are full release IDs or backup IDs, respectively. Records retain their
+validated persisted schemas. Order by full ID ascending and continue strictly after `after_id`.
+`next_cursor` is null only at the end, otherwise it identifies the last returned ID and the same
+inventory digest. Do not add a selection-history listing operation: no supported controller action
+needs it. History remains fully validated on the host; discovery's latest/predecessor projections
+supply the required controller facts without exporting the complete history.
+
+Each page contains at most 64 records and must fit the complete 1-MiB response budget. Choose page
+size by encoded bytes as well as count; never split, truncate, or omit a record. A valid supported
+individual record fits a page. Reject malformed cursors with exit 2.
+Under the lifecycle lock, validate the inventory and compute its SHA-256 by incrementally hashing
+the canonical sorted-key ASCII JSON of `{operation, records}`, with records in the defined order
+and no whitespace/newline. The full array is hashed incrementally, not sent as a protocol message.
+The digest binds record contents as well as identities and is specific to that inventory operation.
+On later pages, changed inventory returns exit 10 with `inventory-changed`; never join pages from
+different snapshots. Cursors are continuation positions, not authority to skip validation.
+Check the snapshot digest before continuation-ID membership: a removed record is inventory drift,
+not an invalid cursor. An unknown continuation ID against a matching snapshot returns exit 2.
+
+Public release/backup listings collect pages within the command timeout, validate order/digests,
+and return the complete existing logical listing only after every page succeeds. Preserve the
+single final JSON document; internal wire-page limits do not cap the public listing at 64 records.
+Partial enumeration is a failure, not a successful partial listing. The controller may restart
+enumeration only within the existing timeout and must report continuing drift rather than loop
+indefinitely. New ordinary backups invalidate backup pages, not release pages.
+
+Automatic target resolution enumerates release pages and applies the existing selected/latest/
+exact-input ordering without requiring a full inventory in discovery. Revalidate material planning
+facts after enumeration and before confirmation. Immutable record lookups needed for restore and
+rollback may be resolved through these pages. For downgrade classification, derive the applicable
+baseline records from the validated release pages and discovery's current/history/protection/schema
+facts; require their sorted-ID digest to match the host's `downgrade_baseline_sha256` before using
+the classification. Host-side admission remains authoritative. Do not treat missing pages or a
+digest mismatch as an empty baseline. No new acknowledgment or host mutation occurs during paging.
+
+Cleanup inspection also pages its eligible targets: add `cursor` to its exact parameters (null for
+execute), and return `inventory_sha256`/`next_cursor` alongside its existing confirmation facts and
+target list. Apply the same count/byte budget, deterministic ordering by `(kind, identifier, path)`,
+and snapshot-change refusal; the cursor's `after_id` is the canonical JSON encoding of that target
+tuple. Its inventory digest covers the full ordered eligible target set and confirmation facts.
+Collect all pages before typed confirmation. Execute the confirmed set in byte-bounded batches
+of at most 64 targets, freshly revalidating protection facts and each target under the lock for
+every batch. Internal batching never authorizes a target absent from the confirmed plan; failure
+reports partial changes and requires a new inspection/confirmation for remaining work. Cleanup
+does not require generic operational discovery or export full history to validate protection.
+
+The UX proposal's credential-free provisioning inspection uses inventory counts and eligibility
+facts rather than full release/staging arrays. It still validates the underlying records on the
+host and does not infer a pristine installation from omitted or uninspected records.
 
 Version-3 existing-host deploy has this exact operation-specific shape:
 
@@ -1116,7 +1284,8 @@ helper bytes until their transferred checksum, root ownership, and fixed destina
 The protection-set digest is SHA-256 of a canonical JSON array of unresolved protection mappings
 sorted by backup ID, using sorted object keys, ASCII encoding, no whitespace, and no trailing newline.
 An empty set hashes the literal bytes `[]`. Existing database, credential, verification, hash, path,
-and migration-version validators retain their bounds. Timer activation may drift through a normal
+and migration-version validators retain their bounds except for the explicitly coordinated
+serialization budgets above. Timer activation may drift through a normal
 oneshot; enablement must not change after confirmation. After provisioning has converged the
 required database and scheduler infrastructure, its `genesis` request uses the same exact
 parameter and expected-state keys as deploy. For unfinished installation,
@@ -1168,7 +1337,8 @@ observations from the confirmed starting snapshot; never present an old snapshot
 Keep public JSON schema 1 and its existing conservative boolean `changed` meaning: true when a
 managed mutation is known or may have occurred, false only when no managed mutation occurred or
 could have occurred. Add `facts.mutation_state` with `unchanged`, `changed`, or `unknown`; transport
-loss after mutation dispatch yields `unknown`, not a claim that a particular mutation completed.
+loss makes the affected dispatch `unknown`, not a claim that a particular mutation completed.
+Earlier proved mutations remain part of command-level evidence, as specified below.
 Unavailable final identity/schema/state fields are null or the existing explicit unknown enum,
 never empty collections or previous identities masquerading as fresh observations. Human output
 must explain possible changes. This follows the separate CLI UX proposal's retained semantics.
@@ -1179,11 +1349,158 @@ Preserve exit categories: 2 invalid input/missing migration declaration, 3 local
 validation failure, and 12 lock contention.
 Scheduler dependency refresh failures use 8 once its mutation begins; prior unsafe identity uses 10.
 Transport loss keeps its transport status and unknown consequence evidence, not an invented
-migration failure. Success requires a complete passing report and durable successful history.
+migration failure. Completing deployment or a newly restored release requires a complete passing
+report and durable successful history. Cleanup-only restore retries retain their explicit exception:
+they validate durable completion and recovery authority, not current application readiness.
 Transient service/readiness polling retains a finite budget; do not expand this work into an
 unproven startup-race fix. A timeout must retain the failed checks.
 
-## File boundaries and verification
+### Exact protocol-v3 mutation results
+
+Keep the existing result envelope keys: `protocol_version`, `operation`, `correlation_id`,
+`outcome`, `message`, `state`, and `warnings`. Outcomes remain `succeeded`, `refused`, `retryable`,
+and `manual`. Validate correlation, operation, and the complete operation-specific state before
+consuming any result. The following replaces the older optional success-only `changed`/report
+fields for `deploy`, `genesis`, `restore`, and cleanup execution. Failed cleanup inspection also
+uses this failure shape; successful inspection retains its separately specified paginated response.
+Other read-only operation results retain their own contracts.
+
+Every affected result's `state` contains these exact common fields, plus only the operation-specific
+fields in the following table. Required fields are never omitted on an error path.
+
+| Common field | Type and meaning |
+| --- | --- |
+| `mutation_state` | `unchanged`, `changed`, or `unknown`, for this helper invocation |
+| `exit_code` | Integer status from the categories above; 0 exactly when `outcome` is `succeeded`; local-build status 3 is not a helper result |
+| `failed_boundary` | Null on success; otherwise one of `input`, `lock`, `authority`, `expected_state`, `backup_helper`, `staging`, `backup`, `protection`, `migration`, `selection`, `service`, `verification`, `history`, `restore`, `cleanup`, or `inspection` |
+| `observations` | Exact final-observation mapping for the operation, defined below |
+| `unavailable_fields` | Sorted unique array of keys in `observations` whose final values could not be established |
+| `inspection_error` | Null, or a safe code: `lock-unavailable`, `inspection-failed`, `inspection-timed-out`, or `unsafe-observation`; follow-up observation trouble, never a replacement for the primary failure |
+| `report` | Null when no validated report is available from this invocation, otherwise the existing strictly parsed `VerificationReport` mapping |
+
+| Operation | Exact additional state fields |
+| --- | --- |
+| `deploy`, `genesis` | `desired_release_id`, `backup_id` |
+| `restore` | `desired_release_id`, `backup_id`, `pre_restore_backup_id` |
+| `cleanup` | `completed_targets` |
+
+`desired_release_id` is the validated requested target, or null if validation failed before its
+identity was established; it is not an observation of current. For restore it names the requested
+backup's validated source release. Restore's `backup_id` identifies that validated input, while
+`pre_restore_backup_id` identifies the binding's validated `safety_backup_id` for the original
+database, not an arbitrary newer copy of a failed restored database. Deploy/genesis
+`backup_id` identifies the validated pre-migration backup used by this invocation. These backup
+fields are null when no such validated identity was established; do not guess a completed backup
+from a temporary dump name. Their presence alone does not prove publication or a final reference.
+
+Cleanup's `completed_targets` is a sorted, duplicate-free subset of the current request's confirmed
+targets, using the existing exact `(kind, identifier, path)` mappings and ordering. Include a target
+only after its complete deletion or validated safe absence is established. A partly deleted backup
+pair is not complete, even though its deletion has changed the host. Successful execution accounts
+for every target in its batch; failed inspection returns an empty list. The list never authorizes
+further deletion. Across batches, retain earlier completions and mutation evidence on later failure.
+
+### Final observations and unavailable values
+
+Deploy, genesis, and restore `observations` contain exactly:
+
+`selected_release_id`, `last_successful_selection_id`, `applied_migrations`,
+`protected_backup_ids`, `backup_protection_sha256`, `restore_target_sha256`, `database_state`,
+`service_state`, `scheduled_backup_sha256`, `backup_timer_enabled`, and `backup_timer_state`.
+
+Restore additionally contains `restore_database_state`, with the same exact canonical/temporary/
+retired database mapping as discovery. Cleanup observations contain only `selected_release_id`,
+`last_successful_selection_id`, `backup_protection_sha256`, and `restore_target_sha256`;
+cleanup does not inspect the database, service, or scheduler to produce its result.
+
+Identifiers, hashes, booleans, migration arrays, and restore-database mappings use their discovery
+validators and absence semantics. `database_state` is `ready`, `absent`, or `unknown`;
+`service_state` is `running`, `stopped`, `failed`, or `unknown`; timer state is `active`, `inactive`,
+or `unknown`. `ready` means the managed database was observable and validated for this operation,
+not that its schema matches current or that application readiness passed. Restore's top-level
+migration observation still refers only to canonical, not an original database temporarily retired.
+`protected_backup_ids` is the sorted unique union held by unresolved deployment protections and
+the active restore binding, including its pending input and safety copies; it is not an unbounded
+list of every backup retained by historical selections. Full historical references are still
+validated on the host. Apply the existing recovery-set and aggregate response bounds.
+
+For unavailable observations, use the explicit `unknown` enum where defined and null otherwise,
+and include that field in `unavailable_fields`. For proved absence, use the discovery-defined
+null/absence value without marking the field unavailable. Thus null current with no unavailable
+marker means proved absent, while null current with the marker means not established. Empty
+migration/protection arrays always mean a successfully observed empty set. If the restore database
+arrangement cannot be validated as a whole, return null for `restore_database_state` and mark it
+unavailable; do not fabricate a partly validated arrangement. Unknown enum values must be marked
+unavailable. Reject unknown field names, inconsistent markers, and malformed value combinations.
+
+Only observations made under the lifecycle lock after the last possible managed mutation in this
+invocation may populate final fields. Never fill them from pre-mutation state merely because an
+exception prevented refresh. Independently successful final observations may survive another
+domain's inspection failure, but dependent authority must be validated together. On lock failure,
+all final fields are unavailable. On a pre-mutation refusal, a fresh locked observation may still
+be reported. If reobservation is unsafe, skip it and mark its fields unavailable; it must not
+normalize state, mutate the host, or replace the original error.
+
+The controller retains the confirmed plan's exact operation-specific `expected_state` mapping
+locally as `facts.starting_state`; it does
+not require the helper to echo or trust that snapshot as an observation. If no plan was confirmed,
+this field is null. Provisioning must not replace its confirmed pre-convergence facts with later
+genesis observations, and batching must not replace the initial confirmation with later snapshots.
+Public `facts.observations` and `facts.unavailable_fields` preserve the helper's
+final mapping and markers. Any existing top-level selected identity is sourced from final
+observations only, never from `desired_release_id` or `facts.starting_state`.
+
+### Outcome validation and public-result mapping
+
+`unchanged` requires proof that no managed mutation occurred or could have occurred. Before each
+potentially mutating action, preserve uncertainty until its consequence is known. A confirmed
+mutation makes the invocation `changed`, even if subsequent work fails or reverses that change;
+later uncertainty is still reflected in unavailable final observations. If some action may have
+mutated but none is proved to have done so, report `unknown`. Preserve this evidence through every
+exception, including helper refresh, backup/protection publication, temporary cleanup, service
+actions, database changes, and successful-history publication. Inspect-only requests remain
+`unchanged`. This is invocation-local evidence, not a new persistent journal.
+
+| Result case | Required evidence |
+| --- | --- |
+| Deploy/genesis success, or restore that installs/reapplies a backup | Exit 0, null failed boundary, complete passing report, and fresh observations proving the required durable successful selection and resolved recovery state |
+| Restore completion/cleanup-only success | Exit 0 and null failed boundary; fresh selection/reference/database-identity evidence proves completion, without requiring service readiness; report is null unless verification was actually attempted |
+| Cleanup execution success | Exit 0 and null failed boundary; all batch targets accounted for, valid final filesystem/reference facts, null report |
+| Verification failure | Exit 9, boundary `verification`, and the validated report of checks actually attempted; never replace an available report with null or an empty mapping |
+| Other helper failure | Nonzero matching category and failed boundary; retain any report produced earlier in this invocation and all accumulated mutation evidence |
+| Pre-mutation input, authority, or lock refusal | Corresponding exit 2, 10, or 12; unchanged only when no earlier action may have mutated; lock contention has boundary `lock` |
+
+If verification cannot produce any report, null means unavailable, not passed; report that failure
+without fabricating checks. Conversely, a passing report followed by history/publication failure
+is a failed command with a passing report, not a successful deployment. Cleanup-only restore health
+may be unknown without blocking otherwise proven completion. Required completion authority may
+not be unavailable on success. These exceptions do not relax ordinary deploy/restore verification.
+
+For a valid helper response, the controller maps `exit_code` to the existing public status and
+copies `failed_boundary`, `inspection_error`, `report`, and operation-specific evidence into
+public facts without reinterpretation. Public `changed` is false exactly for `unchanged` and true
+for `changed` or `unknown`; public `facts.mutation_state` preserves that classification. Safe
+`message`/warnings retain the primary reason and separate follow-up trouble. Reject contradictory
+outcome/status combinations rather than inferring success from a report or missing fields.
+
+Public mutation evidence covers the entire command, including controller-owned host convergence,
+helper refresh, earlier cleanup batches, and known managed temporary-file changes. Across completed
+stages, any proved mutation establishes `changed`; otherwise any possible mutation establishes
+`unknown`, and only all-proved-unchanged permits `unchanged`. A lost, malformed, mismatched, or
+oversized reply after mutation dispatch makes that dispatch `unknown` and retains its transport/
+protocol failure status. Earlier proved mutations still make the aggregate command `changed`;
+the unavailable reply never establishes final observations or completion. Null all unavailable
+final fields with their markers, preserve the locally confirmed starting snapshot, and never
+substitute an earlier batch's observations or an invented verification report. If no mutating
+dispatch or other managed mutation occurred, transport failure alone does not imply a change.
+
+All result variants fit the complete 1-MiB envelope budget, including reports, null/unavailable
+markers, and the largest cleanup batch or migration arrays. The existing report, string,
+collection, and nesting validators apply at their exact schema locations. Required failure
+evidence cannot be silently dropped to fit; cover worst-case result serialization during local
+contract verification before publishing the matching helper package.
+
+## File boundaries
 
 Expected owners, relative to `ops/taskman_ops/`:
 
@@ -1192,7 +1509,10 @@ Expected owners, relative to `ops/taskman_ops/`:
 - `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`: exact artifact identity,
   clean and frozen-dirty source export, legacy reads, build-after-hash naming, local and installed
   resolution; small source-order helper within `releases/` if needed, not host code that runs Git.
-- `host_protocol/`, `workflows/helper.py`: versioned deploy discovery/request/result integration.
+- `host_protocol/`, `workflows/helper.py`: versioned discovery/request/result integration,
+  schema-specific budgets, and validated page collection within command timeouts.
+- Host listing/discovery operations and their controller consumers: compact operational facts,
+  paginated release/backup inventories, snapshot validation, and complete public listings.
 - `host_helper/records.py`, `state.py`, `paths.py`: dual-format records and coherent authority;
   a focused `host_helper/backup_protection.py` owns protection publication/reference lifecycle.
 - `host_helper/operations/deploy.py`: explicit reconciliation consequence order.
@@ -1200,7 +1520,8 @@ Expected owners, relative to `ops/taskman_ops/`:
   unfinished deployment or database swap, typed data-loss confirmation, restore-target binding,
   and verified history/protection resolution.
 - `workflows/cleanup.py`, `host_helper/operations/cleanup.py`: capacity-independent cleanup admission,
-  read-only inspection, recovery-aware protected targets, and exact confirmed deletion.
+  paginated read-only inspection, recovery-aware protected targets, and exact confirmed deletion
+  in bounded batches.
 - `host/facts.py`, `host/acceptance.py`, `host/baseline.py`: resource-based provisioning admission,
   removal of marker reads/writes from the active workflow, and safe partial-resource classification.
 - `host_helper/backups.py`, scheduled adapter, cleanup/rollback/restore consumers: new reference
@@ -1212,156 +1533,311 @@ Expected owners, relative to `ops/taskman_ops/`:
 - `ops/tests/` mirrors these trust boundaries; update package-isolation and public CLI coverage.
   Update the runbook, canonical design, and documentation index when the behavior is implemented.
 
+## Acceptance scenarios
+
 Acceptance requires focused controller-to-helper scenarios, not helper-only retry tests:
 
-1. Select target, fail verification, rerun the public controller with the same target, and complete
-   only after verification; expose the original failed report and real selection on failure.
-2. Replace an unhealthy partial target with another target, without starting/verifying the failed
-   one first; history links successful outcomes, not an invented success.
-3. Lose local artifacts: reuse sufficient installed provenance, or rebuild safely with a new ID;
-   explicit artifacts remain exact and legacy records are unchanged.
-4. Same-source non-identical archives get distinct IDs; identical bytes reuse identity within the
-   same clean-or-dirty provenance class even when irrelevant worktree content differs. Clean and
-   dirty artifacts have distinct IDs through the terminal marker. Reject digest/source/manifest
-   disagreements and unsafe paths. Exercise real clean build/cache reuse and dirty snapshots with
-   tracked changes, deletions, and non-ignored untracked files while proving ignored files stay
-   excluded.
-5. Fail after each migration commit prefix, backup publication, protection publication, selection,
-   start, verification, successful record, and protection removal. Retry or replace from live schema.
-6. Multiple backups with identical source/schema do not cause guessed attribution; protect exact
-   referenced IDs. Scheduled retention and cleanup cannot delete retained unresolved or history-held backups
-   or required releases, including after target replacement and transport loss.
-7. Missing/conflicting provenance, malformed protection, unsafe links, absent history/current,
-   incompatible downgrade, and nontransactional/unknown database state refuse without repair.
-8. Deploy and provision interactive, unattended, JSON, and dry-run confirmation matrices, including
-   dirty local builds, implicit acknowledgment from an explicit dirty artifact, redundant
-   `--allow-dirty` for a dirty artifact, refusal for a clean artifact, and apply-time drift after
-   `--yes`. Both commands cover known/unknown source ordering, lower SemVer, divergent revisions,
-   same-source rebuilds, and baseline drift. Provision also covers older replacement after failed
-   startup or committed migrations, protected migration targets without current, legacy installed
-   provenance before first success, no-baseline fresh installation, and independent ordinary and
-   downgrade prompts/flags. Non-interactive known downgrades or unknown ordering against an existing
-   baseline without acknowledgment refuse exit 10, including under `--yes` or `--json`. Cover
-   missing commit objects, divergent histories, unorderable versions, mixed known/unknown signals,
-   identical-source/version rebuilds, and distinct known-downgrade versus uncertainty prompt text.
-   Dry-run reports required acknowledgment without demanding it.
-9. Legacy and new artifacts/records mixed through verification, scheduled backup, listings,
-   rollback, restore, and cleanup. No in-place legacy rewrite or generic adoption.
-10. Isolated `-I -S` execution of both packages; dependency refresh/no-op/failure/interruption and
-    an already-started old scheduled process cannot execute unsafe retention after new records.
-11. Transport loss and failed reobservation preserve uncertainty and the primary failed boundary;
-    never report stale unchanged success or leak raw remote output, credentials, or release cookies.
-12. Interrupt provisioning during staging, partial migration, selection, start, verification,
-    first successful selection publication, and protection removal. Rerun the public provision
-    command with changed clean source, dirty source, and different explicit artifacts; lose the
-    original archive. Validate reuse or new immutable builds, missing-current recovery, multiple
-    installed candidates, fresh protected backups with a null baseline, migration-policy refusal,
-    and successful first-history publication. Existing data must survive; incompatible targets
-    refuse. Once the first selection is durable, replacement requires deploy, including after
-    transport loss. Exercise pausing scheduled backups and waiting for running backups to finish
-    before replacing the backup program during provisioning recovery.
-13. Through the public controller, deploy from verified A to B, apply migrations, select B, then
-    fail startup/verification. Restore the validated pre-deployment backup and A directly, without
-    first completing B. Also cover failure before selection with a partial committed migration
-    prefix. Assert typed data-loss confirmation, dry-run, unchanged or differing physical/history
-    identities, safety backup, corrupt/incompatible backup refusal, apply-time drift, preserved
-    protections on failure, verified restored schema, and durable reference transfer on success.
-14. Interrupt restore before/after binding publication, during dump loading, after each database
-    rename, after release selection, verification, successful history, retired-database deletion,
-    and binding removal. Rerun the public command with the same backup, including when canonical
-    is absent; complete after renewed confirmation. Reject an unacknowledged different backup with identical
-    migration versions, OID/ownership drift, and unknown arrangements. Verify temporary rebuild
-    after partial load, preserved original/safety material, retention protection, accurate dry-run,
-    capacity checks for remaining work, and no duplicate restore after durable completion.
-    For ordinary same-backup retries, interrupt after dropping temporary and before recreating it
-    while the original is retired; accept retired-only state with the validated binding and original
-    OID, rebuild temporary, and finish without target replacement. Also interrupt immediately after
-    temporary creation and before its migration table is loaded. Missing/corrupt binding, wrong
-    original OID, or failed observation must still refuse; preserve original and unrelated databases.
-    Exercise `--replace-unfinished` before loading, during partial loading, between renames, and
-    after failed application verification. Preserve the original OID and safety copies, including
-    possible new writes to a failed restored database. Interrupt every replacement binding update,
-    discard, and rename; resume the pending target or select a third target without requiring the
-    abandoned target to run. Cover retired-only inspection, exact discard-OID checks, backup failure
-    before deletion, typed confirmation, dry-run, helper/controller parity, retention references,
-    and already-successful restores requiring cleanup followed by a separately confirmed new plan.
-    After durable restore success, interrupt before retired-database deletion and before binding
-    removal, then make readiness fail or become unobservable. A retry must validate authority and
-    finish cleanup without requiring readiness, reloading the dump, or adding success history;
-    report health separately and allow a subsequent separately confirmed deploy or restore.
-    Wrong database identities, conflicting success references, and unsafe backup authority still
-    refuse cleanup. Cover both controller and helper admission, not only the cleanup body.
-    Restore a backup successfully, make later data changes, and verify an ordinary rerun does not
-    reload it. With `--reapply`, require a new plan, typed confirmation, fresh safety backup, and new
-    binding baseline; restore the data and append exactly one new successful selection. Cover
-    completed binding cleanup, dry-run without writes, failure and ordinary retry after binding
-    publication, rejection during an unfinished restore, mutually exclusive flags, and helper parity.
-    Exercise more than 64 restore replacements with fresh safety copies and different input backups.
-    Preserve original/newest/three recent eligible safety attempts and all independent references;
-    release abandoned input references without treating those inputs as disposable attempts.
-    Include multiple safety copies in one replacement, identical timestamps, clock rollback,
-    interruption after registration/reference retirement/each backup-file deletion, and a transient
-    sixth attempt. Confirm exact prune IDs, no deletion before fresh protection, no accumulation
-    refusal, and bounded successful-history publication after recovery.
-    Replace an input whose metadata remains valid but whose dump is missing, unreadable, corrupt,
-    or fails checksum validation. Reach replacement through public preflight/discovery, normalize
-    any pending replacement, and load only the fully validated new input. Preserve remaining old
-    files and report their condition. Ordinary retry of the unusable input must still refuse;
-    corrupt binding/backup metadata, unsafe paths, conflicting identities, and an invalid required
-    safety copy remain refusals, including when the abandoned input has that independent role.
-    Preview a different backup during an unfinished restore without `--replace-unfinished`: show
-    the validated replacement plan and missing execution acknowledgment, with no writes. Execution
-    without the flag still refuses. After completed restore, same-backup dry-run without `--reapply`
-    previews completion checking, while adding it previews a fresh restore and safety backup.
-    Verify flat discovery `restore_target` contains the complete validated binding plus its digest,
-    with null only for proven absence. Reject malformed fields and mismatched digests; hash only
-    binding fields and never persist the response digest. Build target/pruning plans from this
-    response and bind apply-time drift checks through `expected_state.restore_target_sha256`.
-    Distinguish absent database, existing database without a migration table, present-empty table,
-    and populated table in restore discovery and expected state. Check canonical/top-level agreement
-    and reject contradictory boolean/null/array combinations. Failed connection, permission, or
-    query observations refuse rather than producing absence or emptiness. Only supported incomplete
-    recovery states admit missing tables; ordinary application-database authority remains mandatory.
-    Interrupt after durable creation intent, database creation, OID registration, rebuild intent,
-    temporary deletion, replacement creation, and each rename. Register only a verified empty
-    unregistered temporary with valid creation intent; never load before durable OID registration.
-    Reject populated unregistered databases, wrong owner, unexpected writers, failed emptiness
-    observation, or mismatched restored OID after promotion. Verify post-success cleanup validates
-    the registered restored canonical OID while tolerating an already-deleted retired original.
-15. Through the public cleanup command, exercise low backup capacity, an unavailable canonical
-    database during restore, mismatched physical/successful selection, and unfinished first install.
-    Eligible unreferenced artifacts can be removed after typed confirmation; all required release
-    provenance, backup protections, restore bindings, and their referenced material survive.
-    Inspect/dry-run performs no normalization or managed writes. Cover no eligible targets,
-    malformed references, target becoming protected after confirmation, interrupted deletion,
-    and transport uncertainty without invoking database-health or backup-capacity preflight.
-16. Provisioning admission is identical with an absent, historical valid, malformed, or symlinked
-    marker at the retired path; it neither follows nor modifies that path. Interrupt before the
-    first resource mutation and at supported partial-convergence boundaries, then rerun through
-    resource inspection and confirmation. Compatible partial state is reusable without a marker;
-    a valid marker cannot admit a foreign database, conflicting service/configuration, unsafe
-    path, or unrecorded release. Plans identify reused resources and initial database emptiness
-    is verified independently of migration-history emptiness.
-    Missing accounts, directories, unit files, or credentials in an otherwise safe partial install
-    do not by themselves block admission; they are created and validated before use. Missing
-    migration provenance for existing populated data still refuses.
-17. Exercise more than 64 failed migration attempts and target replacements under one baseline:
-    retain the original, newest, and three most recent eligible intermediates, without a retry-count
-    refusal. Include null-baseline first-install recovery, identical timestamps, clock rollback,
-    independently history/restore-held backups, and unrelated scheduled/manual backups. Interrupt
-    after new dump publication, protection publication, each retired protection removal, manifest
-    deletion, and dump deletion. Prove that a transient sixth backup can be inspected and pruned,
-    failed replacement creation never prunes, original/newest and migration provenance survive,
-    independent references remain intact, and success records reference only retained protections.
-    Plans and apply-time checks must bind the exact proposed intermediate deletions.
-18. Before any successful selection, interrupt provisioning after a complete migration schema,
-    capture a validated backup, and exercise a subsequent failed transition. Through the public
-    restore command, restore that backup with and without `current` present, using installed
-    migration metadata rather than successful history as provenance. Verify safety-backup creation,
-    typed data-loss confirmation, null-baseline binding, first-success publication and protection
-    transfer, and retry after interrupted swaps or lost completion output. Reject a partial-schema
-    backup incompatible with its source release, corrupt/missing metadata, and missing required
-    restore infrastructure. Future release replacement must use deploy.
+### Artifact identity and compatibility
+
+#### Recovery without local artifacts
+
+Lose local artifacts: reuse sufficient installed provenance, or rebuild safely with a new ID;
+explicit artifacts remain exact and legacy records are unchanged.
+
+#### Archive identity and source snapshots
+
+Same-source non-identical archives get distinct IDs; identical bytes reuse identity within the
+same clean-or-dirty provenance class even when irrelevant worktree content differs. Clean and
+dirty artifacts have distinct IDs through the terminal marker. Reject digest/source/manifest
+disagreements and unsafe paths. Exercise real clean build/cache reuse and dirty snapshots with
+tracked changes, deletions, and non-ignored untracked files while proving ignored files stay
+excluded.
+
+#### Legacy and new formats
+
+Legacy and new artifacts/records mixed through verification, scheduled backup, listings,
+rollback, restore, and cleanup. No in-place legacy rewrite or generic adoption.
+
+### Protocol budgets and inventory pagination
+
+#### Artifact, record, and message limits
+
+Budget coverage must exercise 64, 65, and 256 fingerprints through new/legacy parsing, uploaded and
+installed targets, embedded manifests, and helper dispatch; reject 257 fingerprints. Exercise
+512 observed versions and reject 513 at their schema boundary. Keep unrelated collections capped
+at 64. Test maximum-length filenames, complete serialized manifests/records/requests/results at
+and beyond each byte limit, and actual nested codec round trips. Local budget failure must precede
+artifact publication or host mutation; valid legacy records must remain usable without rewriting.
+
+#### Growing inventories and bounded responses
+
+Exercise more than 64 and more than 4096 successful selections without rewriting or dropping
+history: public deploy/restore discovery must remain representable and validate all protection and
+rollback relationships. Cover byte-driven pages below 64 entries, complete public listings,
+invalid cursors, inventory drift between pages, bounded retries, and no partial-success output.
+Exercise automatic target resolution and downgrade classification across multiple release pages,
+and cleanup plans/execution spanning multiple byte-bounded batches with interruption and newly
+protected targets. Verify that early provisioning inspection also remains bounded as inventories grow.
+
+### Deployment reconciliation and acknowledgment
+
+#### Retry after failed verification
+
+Select target, fail verification, rerun the public controller with the same target, and complete
+only after verification; expose the original failed report and real selection on failure.
+
+#### Replace an unhealthy partial target
+
+Replace an unhealthy partial target with another target, without starting/verifying the failed
+one first; history links successful outcomes, not an invented success.
+
+#### Interruptions at deployment boundaries
+
+Fail after each migration commit prefix, backup publication, protection publication, selection,
+start, verification, successful record, and protection removal. Retry or replace from live schema.
+
+#### Unsafe or unprovable state
+
+Missing/conflicting provenance, malformed protection, unsafe links, absent history/current,
+incompatible downgrade, and nontransactional/unknown database state refuse without repair.
+
+#### Confirmation and downgrade policy
+
+Deploy and provision interactive, unattended, JSON, and dry-run confirmation matrices, including
+dirty local builds, implicit acknowledgment from an explicit dirty artifact, redundant
+`--allow-dirty` for a dirty artifact, refusal for a clean artifact, and apply-time drift after
+`--yes`.
+
+Both commands cover known/unknown source ordering, lower SemVer, divergent revisions,
+same-source rebuilds, and baseline drift. Provision also covers older replacement after failed
+startup or committed migrations, protected migration targets without current, legacy installed
+provenance before first success, no-baseline fresh installation, and independent ordinary and
+downgrade prompts/flags.
+
+Non-interactive known downgrades or unknown ordering against an existing
+baseline without acknowledgment refuse exit 10, including under `--yes` or `--json`. Cover
+missing commit objects, divergent histories, unorderable versions, mixed known/unknown signals,
+identical-source/version rebuilds, and distinct known-downgrade versus uncertainty prompt text.
+Dry-run reports required acknowledgment without demanding it.
+
+### Provisioning and first-installation recovery
+
+#### Interrupted provisioning with a changed target
+
+Interrupt provisioning during staging, partial migration, selection, start, verification,
+first successful selection publication, and protection removal. Rerun the public provision
+command with changed clean source, dirty source, and different explicit artifacts; lose the
+original archive. Validate reuse or new immutable builds, missing-current recovery, multiple
+installed candidates, fresh protected backups with a null baseline, migration-policy refusal,
+and successful first-history publication. Existing data must survive; incompatible targets
+refuse. Once the first selection is durable, replacement requires deploy, including after
+transport loss. Exercise pausing scheduled backups and waiting for running backups to finish
+before replacing the backup program during provisioning recovery.
+
+#### Resource-based admission without a marker
+
+Provisioning admission is identical with an absent, historical valid, malformed, or symlinked
+marker at the retired path; it neither follows nor modifies that path. Interrupt before the
+first resource mutation and at supported partial-convergence boundaries, then rerun through
+resource inspection and confirmation. Compatible partial state is reusable without a marker;
+a valid marker cannot admit a foreign database, conflicting service/configuration, unsafe
+path, or unrecorded release. Plans identify reused resources and initial database emptiness
+is verified independently of migration-history emptiness.
+Missing accounts, directories, unit files, or credentials in an otherwise safe partial install
+do not by themselves block admission; they are created and validated before use. Missing
+migration provenance for existing populated data still refuses.
+
+#### Restore before the first successful selection
+
+Before any successful selection, interrupt provisioning after a complete migration schema,
+capture a validated backup, and exercise a subsequent failed transition. Through the public
+restore command, restore that backup with and without `current` present, using installed
+migration metadata rather than successful history as provenance. Verify safety-backup creation,
+typed data-loss confirmation, null-baseline binding, first-success publication and protection
+transfer, and retry after interrupted swaps or lost completion output. Reject a partial-schema
+backup incompatible with its source release, corrupt/missing metadata, and missing required
+restore infrastructure. Future release replacement must use deploy.
+
+### Restore recovery
+
+#### Restore after a failed deployment
+
+Through the public controller, deploy from verified A to B, apply migrations, select B, then
+fail startup/verification. Restore the validated pre-deployment backup and A directly, without
+first completing B. Also cover failure before selection with a partial committed migration
+prefix. Assert typed data-loss confirmation, dry-run, unchanged or differing physical/history
+identities, safety backup, corrupt/incompatible backup refusal, apply-time drift, preserved
+protections on failure, verified restored schema, and durable reference transfer on success.
+
+#### Interrupted restore and same-backup retry
+
+Interrupt restore before/after binding publication, during dump loading, after each database
+rename, after release selection, verification, successful history, retired-database deletion,
+and binding removal. Rerun the public command with the same backup, including when canonical
+is absent; complete after renewed confirmation. Reject an unacknowledged different backup with identical
+migration versions, OID/ownership drift, and unknown arrangements. Verify temporary rebuild
+after partial load, preserved original/safety material, retention protection, accurate dry-run,
+capacity checks for remaining work, and no duplicate restore after durable completion.
+
+#### Rebuilding incomplete temporary databases
+
+For ordinary same-backup retries, interrupt after dropping temporary and before recreating it
+while the original is retired; accept retired-only state with the validated binding and original
+OID, rebuild temporary, and finish without target replacement. Also interrupt immediately after
+temporary creation and before its migration table is loaded. Missing/corrupt binding, wrong
+original OID, or failed observation must still refuse; preserve original and unrelated databases.
+
+#### Replacing an unfinished restore
+
+Exercise `--replace-unfinished` before loading, during partial loading, between renames, and
+after failed application verification. Preserve the original OID and safety copies, including
+possible new writes to a failed restored database. Interrupt every replacement binding update,
+discard, and rename; resume the pending target or select a third target without requiring the
+abandoned target to run. Cover retired-only inspection, exact discard-OID checks, backup failure
+before deletion, typed confirmation, dry-run, helper/controller parity, retention references,
+and already-successful restores requiring cleanup followed by a separately confirmed new plan.
+
+#### Cleanup after durable restore success
+
+After durable restore success, interrupt before retired-database deletion and before binding
+removal, then make readiness fail or become unobservable. A retry must validate authority and
+finish cleanup without requiring readiness, reloading the dump, or adding success history;
+report health separately and allow a subsequent separately confirmed deploy or restore.
+Wrong database identities, conflicting success references, and unsafe backup authority still
+refuse cleanup. Cover both controller and helper admission, not only the cleanup body.
+
+#### Explicitly reapplying a completed restore
+
+Restore a backup successfully, make later data changes, and verify an ordinary rerun does not
+reload it. With `--reapply`, require a new plan, typed confirmation, fresh safety backup, and new
+binding baseline; restore the data and append exactly one new successful selection. Cover
+completed binding cleanup, dry-run without writes, failure and ordinary retry after binding
+publication, rejection during an unfinished restore, mutually exclusive flags, and helper parity.
+
+#### Bounded restore safety backups
+
+Exercise more than 64 restore replacements with fresh safety copies and different input backups.
+Preserve original/newest/three recent eligible safety attempts and all independent references;
+release abandoned input references without treating those inputs as disposable attempts.
+Include multiple safety copies in one replacement, identical timestamps, clock rollback,
+interruption after registration/reference retirement/each backup-file deletion, and a transient
+sixth attempt. Confirm exact prune IDs, no deletion before fresh protection, no accumulation
+refusal, and bounded successful-history publication after recovery.
+
+#### Replacing an unusable backup input
+
+Replace an input whose metadata remains valid but whose dump is missing, unreadable, corrupt,
+or fails checksum validation. Reach replacement through public preflight/discovery, normalize
+any pending replacement, and load only the fully validated new input. Preserve remaining old
+files and report their condition. Ordinary retry of the unusable input must still refuse;
+corrupt binding/backup metadata, unsafe paths, conflicting identities, and an invalid required
+safety copy remain refusals, including when the abandoned input has that independent role.
+
+#### Restore previews and acknowledgments
+
+Preview a different backup during an unfinished restore without `--replace-unfinished`: show
+the validated replacement plan and missing execution acknowledgment, with no writes. Execution
+without the flag still refuses. After completed restore, same-backup dry-run without `--reapply`
+previews completion checking, while adding it previews a fresh restore and safety backup.
+
+#### Restore binding discovery and digest
+
+Verify flat discovery `restore_target` contains the complete validated binding plus its digest,
+with null only for proven absence. Reject malformed fields and mismatched digests; hash only
+binding fields and never persist the response digest. Build target/pruning plans from this
+response and bind apply-time drift checks through `expected_state.restore_target_sha256`.
+
+#### Database and migration-table observations
+
+Distinguish absent database, existing database without a migration table, present-empty table,
+and populated table in restore discovery and expected state. Check canonical/top-level agreement
+and reject contradictory boolean/null/array combinations. Failed connection, permission, or
+query observations refuse rather than producing absence or emptiness. Only supported incomplete
+recovery states admit missing tables; ordinary application-database authority remains mandatory.
+
+#### Database creation intent and OID registration
+
+Interrupt after durable creation intent, database creation, OID registration, rebuild intent,
+temporary deletion, replacement creation, and each rename. Register only a verified empty
+unregistered temporary with valid creation intent; never load before durable OID registration.
+Reject populated unregistered databases, wrong owner, unexpected writers, failed emptiness
+observation, or mismatched restored OID after promotion. Verify post-success cleanup validates
+the registered restored canonical OID while tolerating an already-deleted retired original.
+
+### Backup retention and cleanup
+
+#### Backup provenance after partial migration
+
+Start with selected successful A containing migration 1. Deploy B containing migrations 1, 2, and 3;
+commit migration 2, fail migration 3, and leave current at A. Through public deploy retry, scheduled
+backup, and restore safety-backup paths, select B's protected installed provenance for the live
+prefix rather than attributing migration 2 to A. Verify the stored source ID and actual versions,
+and that a partial-prefix backup is not advertised as automatically restorable.
+Cover multiple qualifying protected targets in different enumeration orders, preference for a
+qualifying current, absent-current first-install recovery, conflicting fingerprints, and no single
+eligible record covering the entire prefix. Source choice must be deterministic, must not use an
+unrelated installed or newly supplied artifact, and must not change current or successful history.
+
+#### Exact backup attribution and protected references
+
+Multiple backups with identical source/schema do not cause guessed attribution; protect exact
+referenced IDs. Scheduled retention and cleanup cannot delete retained unresolved or history-held backups
+or required releases, including after target replacement and transport loss.
+
+#### Bounded migration-attempt backups
+
+Exercise more than 64 failed migration attempts and target replacements under one baseline:
+retain the original, newest, and three most recent eligible intermediates, without a retry-count
+refusal. Include null-baseline first-install recovery, identical timestamps, clock rollback,
+independently history/restore-held backups, and unrelated scheduled/manual backups. Interrupt
+after new dump publication, protection publication, each retired protection removal, manifest
+deletion, and dump deletion. Prove that a transient sixth backup can be inspected and pruned,
+failed replacement creation never prunes, original/newest and migration provenance survive,
+independent references remain intact, and success records reference only retained protections.
+Plans and apply-time checks must bind the exact proposed intermediate deletions.
+
+#### Cleanup while recovery is unfinished
+
+Through the public cleanup command, exercise low backup capacity, an unavailable canonical
+database during restore, mismatched physical/successful selection, and unfinished first install.
+Eligible unreferenced artifacts can be removed after typed confirmation; all required release
+provenance, backup protections, restore bindings, and their referenced material survive.
+Inspect/dry-run performs no normalization or managed writes. Cover no eligible targets,
+malformed references, target becoming protected after confirmation, interrupted deletion,
+and transport uncertainty without invoking database-health or backup-capacity preflight.
+
+### Packaging and failure reporting
+
+#### Isolated packages and scheduled-helper compatibility
+
+Isolated `-I -S` execution of both packages; dependency refresh/no-op/failure/interruption and
+an already-started old scheduled process cannot execute unsafe retention after new records.
+
+#### Transport uncertainty and sensitive output
+
+Transport loss and failed reobservation preserve uncertainty and the primary failed boundary;
+never report stale unchanged success or leak raw remote output, credentials, or release cookies.
+
+#### Mutation-result contracts and final observations
+
+Round-trip every exact deploy/genesis/restore/cleanup result variant through the packaged helper
+and public controller. Reject missing/extra fields, mismatched correlation/operation, invalid
+outcome/status pairs, malformed reports, and contradictory unavailable markers. Cover successful
+deployment, healthy no-op, pre-mutation refusal, lock contention, partial mutation, failed
+verification with its report, and passing verification followed by failed history publication.
+Exercise successful and failed final observation, including proved absence versus unavailable
+current and empty versus unavailable migrations/protections. No failure may fall back to old
+selection/schema facts or default missing mutation evidence to false.
+
+Cover scheduler refresh before failure, provisioning convergence before genesis failure, partial
+backup-pair deletion, and multiple cleanup batches followed by refusal or lost transport. Preserve
+earlier proved changes and completed targets without claiming unknown later work completed.
+Restore cleanup-only success must carry validated completion authority without requiring a new
+passing report; cleanup must not inspect database health. Lost/malformed/oversized replies must
+not fabricate observations, reports, or completion. Exercise result byte/count/nesting limits with
+maximum migration arrays, recovery references, cleanup batches, and bounded verification reports.
+
+## Verification gates
 
 Run the development guide's operations suite, compileall, shell syntax, help/confirmation checks,
 and `mix precommit`; check Markdown links, whitespace, and planning-term leakage. Independent scoped
@@ -1393,10 +1869,14 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
 
 ## Next-session checklist
 
-1. Complete operator review of this written specification. Resolve review changes here and obtain
-   explicit approval of the full amended document before planning.
-2. Write and approve an implementation plan from the complete design, with Beads delivery tasks,
-   scoped ownership, tests, and an independent verification task. No implementation has begun.
+1. Read this complete approved specification and its referenced development constraints before
+   implementation; approval does not mean the proposed behavior is already implemented.
+2. Read the [approved implementation plan](../plans/2026-09-14-deploy-reconciliation.md)
+   (operator approval: 2026-09-14) using the complete design and the development guide's
+   ops-specific simplicity/reliability and Python-first rules, with Beads delivery tasks, scoped
+   ownership, tests, and an independent verification task. Identify concrete safety reasons for
+   nontrivial coordination or persistent state; avoid speculative branches and substantial shell.
+   No implementation has begun.
 3. Update the readiness handoff and start a clean implementation session by default. Refresh actual
    repository and host state before relying on the recorded baseline.
 4. Implement and verify locally; only then continue the already-authorized staging deployment and

@@ -118,6 +118,59 @@ context immediately before the relevant feature.
 - Treat product documents as the source of truth for current behavior. Research and prototypes
   provide evidence and guidance, but do not silently change the product contract.
 
+## Operations development
+
+These rules apply to all future work in the repository's operations tooling, including controller
+code, provisioning, host helpers, scheduled tasks, designs, and implementation plans.
+
+### Prefer simplicity within the supported reliability boundary
+
+Prefer the simplest understandable implementation that preserves the desired operator behavior,
+data safety, and core reliability guarantees. Reasonable reliability does not require automatic
+recovery from every theoretically possible sequence. Do not accumulate state, recovery branches,
+abstractions, or repeated checks solely to handle extremely unlikely combinations. State unsupported
+cases and a safe refusal/manual-recovery boundary explicitly instead of silently promising recovery.
+Changing an already accepted behavior or safety guarantee requires an explicit design decision.
+
+The ops threat model assumes trusted operators and no malicious actor deliberately interfering
+with managed operations. Handle unintended clashes: overlapping commands, scheduled jobs,
+interrupted processes, ordinary input mistakes, and changes between planning and execution.
+Use the lifecycle lock, fresh checks at meaningful consequence boundaries, and native atomic
+operations where appropriate. Do not add race/TOCTOU defenses, repeated identity checks, or elaborate
+coordination solely to resist intentional concurrent tampering or a compromised administrator.
+
+This does not waive protections against accidental data loss or secret exposure. Preserve scoped
+destructive targets, explicit destructive confirmation, backup/reference safety, migration
+compatibility, truthful failure reporting, and ordinary path/input/permission/checksum validation.
+It does not weaken public application authentication, the network boundary, or SSH verification.
+Evaluate each additional mechanism against a concrete supported failure and its cost. Prefer a
+small shared capability with actual consumers over a generic workflow or recovery framework.
+
+Tests should cover distinct state transitions and consequential failure boundaries. Do not multiply
+every interruption by every command, flag, and timing permutation when they exercise the same
+invariant. Keep focused public-boundary coverage and direct tests for the distinct recovery states.
+Code-size measurements are a signal to review complexity, not a target that justifies hiding it.
+
+### Prefer Python for workflows
+
+Use Python for nontrivial operations logic: branching workflows, structured parsing, filesystem
+state management, subprocess coordination, retries, and recovery. This applies to new code and
+substantial changes to existing workflows, whether local or host-side. Host helpers retain their
+standard-library-only packaging boundary; reuse the existing helper transport rather than adding
+a second remote execution mechanism merely to run Python.
+
+One-line shell calls, or a few lines where demonstrably simpler, remain appropriate when they
+improve clarity or have a concrete advantage. Keep native tools such as `systemctl`, `psql`, and
+`pg_dump`; invoke them through bounded argv-based subprocess calls from Python where possible.
+Do not replace a native tool with a Python reimplementation, or turn a multi-step shell script into
+one long embedded string to satisfy a size check. Explain a substantial-shell exception where it
+is introduced.
+
+This is not a prerequisite to rewrite all existing shell code. The
+[PostgreSQL host-side Python proposal](specs/2026-09-09-postgresql-host-python-design.md) remains the
+separately scoped refactor of its existing workflow; its parked status does not limit this general
+preference for future ops work.
+
 ## Verification expectations
 
 Every implementation slice should have a clear user-visible or technical outcome and a small,
