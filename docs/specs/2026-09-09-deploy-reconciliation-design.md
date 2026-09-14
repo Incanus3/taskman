@@ -3,6 +3,10 @@
 Status: approved specification; complete written design approved on 2026-09-14, including the
 ops development constraints. Not yet implemented. Updated: 2026-09-14. Tracking: `tas-sr4b`.
 
+The operator approved the one-time compatibility break below on 2026-09-14 after design and plan
+approval. It supersedes the earlier requirement to preserve pre-reconciliation artifacts and
+staging records. Future upgrade compatibility and the recovery guarantees remain required.
+
 ## Authority and scope
 
 This specification changes existing-host `taskman deploy` from exact-attempt recovery to
@@ -30,6 +34,38 @@ version 3, artifact/source rules, and deploy/provision acknowledgments. Reconcil
 results, alongside truthful mutation evidence. CLI UX consumes and presents that evidence; it must
 not reintroduce protocol version 2 or the superseded confirmation/build restrictions. Its general
 progress UI and early provisioning inspection remain separate work.
+
+## One-time compatibility boundary
+
+The deployment branch has not been merged. The only existing installation is the unfinished
+staging VPS, with no real application data according to the operator. Preserve its observations
+as failure evidence, but do not build an upgrade, adoption, metadata conversion, or recovery path
+for that installation. After local implementation verification, establish staging through fresh
+provisioning on a clean host. Recreating/resetting the existing VPS requires separate authorization;
+this specification does not authorize deleting its data, changing DNS, or creating provider resources.
+
+The first supported baseline is the model defined here: digest-bearing release IDs, manifest schema
+3, installed-release and successful-selection schema 2, the specified backup/protection/restore
+records, and OTP 29.0.6 / Elixir 1.20.4. Keep these explicit version numbers; renumbering them adds
+no simplification. Only these formats/runtime are accepted by this implementation. Remove readers,
+constructors, fallback paths, and positive compatibility fixtures for source-only IDs, manifest 2,
+unversioned release/selection records, and OTP 27 / Elixir 1.18. Explicit old artifacts fail local
+validation with exit 2. Old host authority fails with exit 10 before release/scheduled-helper payload
+upload or managed mutation; transient read-only inspection transport remains available.
+Do not convert or delete it automatically. Unsupported local cache entries are ignored and preserved.
+Old backups are not supported recovery inputs: their source releases are outside this baseline.
+
+This is a single transition exemption, not permission to break installations on every upgrade.
+Releases and backups created under the new baseline remain usable across subsequent supported
+deployments. Future format/runtime changes must preserve their supported readers and recovery
+paths or provide an explicitly designed, verified migration and retirement policy. Never silently
+invalidate retained rollback/restore material. Keep scheduled-helper refresh, old-process quiescence,
+atomic publication, and supported-version tests for future upgrades. No speculative multi-version
+framework is needed now. The transient controller still ships its matching wire-protocol helper.
+
+The retained record fields below remain the exact contract; this amendment removes dual-format
+handling without introducing a second record redesign. `backup_id` and `recovery_backup_ids` have
+different operational meanings and remain. Every installed record has full artifact provenance.
 
 ## Development constraints and reliability scope
 
@@ -100,9 +136,10 @@ Relevant recorded environment, to be refreshed before external action:
 - Runtime baseline passed 915 operations tests, 805 Elixir tests, clean release build/cache and
   packaged terminal checks; these are historical evidence, not verification of this proposal.
 
-The [readiness handoff](../handoffs/ops-vps-readiness.md) owns temporary artifact locations and
-the next authorized host acceptance. Runtime deployment and readiness remain authorized, but no
-manual symlink/history edits, push, merge, destructive restore, or broader acceptance is implied.
+These pre-reconciliation staging facts are historical diagnostic evidence, not an installation
+the new controller must recover. The [readiness handoff](../handoffs/ops-vps-readiness.md) owns the
+next acceptance action. The former in-place deployment continuation is superseded by fresh staging
+provisioning after separately authorized host recreation; no host change is authorized here.
 
 ## Operator contract
 
@@ -232,23 +269,23 @@ differences in comments, documentation, or unused source do not add another iden
 only the clean-or-dirty class and packaged bytes matter. Differences that affect the deployed
 release produce a different archive digest and therefore a different ID.
 
-New artifact manifests use schema version 3: the existing exact version-2 field set plus
-`artifact_sha256` and the strict boolean `source_dirty`. Validate agreement between the artifact
+Artifact manifests use only schema version 3, with exactly `schema_version`, `application`,
+`application_version`, `source_revision`, `release_id`, `built_at`, `target_os`, `architecture`,
+`otp_version`, `elixir_version`, `node_version`, `hex_version`, `rebar3_version`, `builder_base_tag`,
+`builder_base_digest`, `migrations`, `top_level`, `artifact_sha256`, and strict boolean `source_dirty`. Validate agreement between the artifact
 digest field, the digest portion of the ID, the detached checksum, and the actual archive.
 `source_dirty` records whether the captured source contained tracked or non-ignored untracked
 changes relative to `source_revision` and must agree exactly with the presence of the terminal
 `-dirty` suffix. `built_at` may differ between manifests for the same exact release identity. All
 fields that describe source class, archive, target, toolchain, builder, layout, and migrations must
 still agree. Preserve the originally installed manifest when reusing an identical installed
-release rather than overwriting its provenance. Version-2 artifacts and historical IDs remain
-readable and imply clean source, with their existing strict runtime allowlist and checksum rules.
-Do not rewrite or rename historical artifacts.
+release rather than overwriting its provenance. Old manifests, source-only IDs, and unsupported
+runtime pairs refuse; no implicit clean provenance or historical artifact exception remains.
 
-New installed release records use schema version 2: the existing `release_id`, `source_revision`,
-`artifact_sha256`, and `migrations`, plus `schema_version: 2` and `artifact_manifest` containing the
+Installed release records use only schema version 2: exactly `release_id`, `source_revision`,
+`artifact_sha256`, `migrations`, `schema_version: 2`, and `artifact_manifest` containing the
 full validated detached manifest. All duplicated identity fields must agree. Publish it with the
-immutable release, never retrofit it into a historical directory. Existing four-field records
-remain readable and retain their exact historical serialization.
+immutable release. Unversioned records refuse; there is no in-place retrofit or alternate reader.
 
 Without `--artifact` or `--allow-dirty`, validate the clean checkout and derive exact source,
 application version, target, runtime/toolchain, builder tag/digest, and migration fingerprints.
@@ -276,12 +313,10 @@ command's existing admission rules permit it. The frozen artifact, not a later w
 the target bound into the plan. A clean checkout passed with
 `--allow-dirty` follows the normal clean resolution path and records clean provenance.
 
-Do not infer full builder provenance from a historical four-field installed record. Such a record
-can be reused with an explicit verified matching artifact; otherwise skip it for automatic
-host-side matching and obtain/build a new artifact. This is not a failure or a reason to demand
-the missing historical archive. Corrupt authoritative installed metadata still refuses; a merely
-incomplete historical provenance format does not. Invalid local cache entries remain ignored and
-preserved under current rules. Arbitrary retained upload files are not a new automatic artifact cache.
+Every accepted installed record contains full validated provenance. Missing, corrupt, or unsupported
+authoritative metadata refuses; an explicit artifact cannot bypass it. Invalid or unsupported local
+cache entries remain ignored and preserved. Arbitrary retained upload files are not a new automatic
+artifact cache.
 
 Host reuse requires no local archive or upload. It validates the exact installed record, managed
 tree/launcher authority, and retained provenance; it does not claim to reconstruct an archive hash
@@ -294,8 +329,7 @@ targets are already fixed by their private frozen snapshot and exact artifact di
 including Docker/BuildKit capable of building the pinned `linux/amd64` target; this does not imply
 offline operation or verified support for every workstation CPU architecture.
 
-Provisioning shares the updated build process and support for reading legacy and new artifact
-manifests and release records. It may build a dirty checkout or accept an explicitly selected dirty
+Provisioning shares the updated build process and the single supported artifact/record formats. It may build a dirty checkout or accept an explicitly selected dirty
 artifact, and supports unattended ordinary confirmation through `--yes`.
 It admits a new managed installation or a validated unfinished first installation, including a
 different desired artifact. Once a successful selection exists, release changes use `deploy`.
@@ -312,8 +346,7 @@ on the completed-installation side of the boundary, even if the controller lost 
 
 Local changes do not require the original artifact. A bare rerun resolves the current clean source
 using the same installed-release, cache, and build ordering as deploy; `--allow-dirty` and explicit
-artifacts retain their normal meanings. Historical installed records without full provenance are
-skipped for automatic reuse, allowing a new build with a distinct immutable identity. The failed
+artifacts retain their normal meanings. All accepted installed records have full provenance. The failed
 candidate need not be healthy. Multiple valid installed candidates from interrupted attempts are
 permitted; their presence alone is not conflicting authority. Preserve unrelated staged content
 unless existing exact-path temporary cleanup rules prove it safe to remove.
@@ -352,10 +385,10 @@ existing resources that will be reused or converged before confirmation. Existin
 databases require installed migration provenance; a newly initialized empty database must be
 proved empty and have the expected role/ownership. No marker can substitute for these checks.
 
-Remove the provisioning marker from new writes and admission decisions. An existing
-`/var/lib/taskman-provisioning.state`, whether valid, malformed, or absent, neither permits nor
-blocks provisioning. Leave historical marker files untouched and do not follow links at that
-retired path. No replacement flag file or provenance token is introduced. Before the first
+Remove the provisioning marker's fields, probes, writes, and admission branches. The retired path
+`/var/lib/taskman-provisioning.state` is not consulted, followed, or modified. No old-marker
+classification or compatibility fixtures are needed, and no replacement flag file or provenance
+token is introduced. Before the first
 resource change, a failure leaves the host eligible for the same resource-based inspection;
 after partial convergence, inspect the resources actually present. Reuse the concrete validators
 in `host/facts.py`, `host/acceptance.py`, and helper path/credential/record modules, replacing their
@@ -604,15 +637,15 @@ ordinary cleanup and scheduled retention. Only the confirmed deploy/provision pr
 superseded attempt protections; other commands cannot unpin them merely to meet a retention count.
 An active restore retains its existing exclusive recovery rules and does not run attempt pruning.
 
-New successful selections use schema version 2 with exactly the legacy fields plus
-`schema_version: 2`, `observed_previous_release_id`, and `recovery_backup_ids` (sorted, unique, at
+Successful selections use only schema version 2 with exactly `release_id`, `previous_release_id`,
+`backup_id`, `selected_at`, `schema_version: 2`, `observed_previous_release_id`, and `recovery_backup_ids` (sorted, unique, at
 most 64 IDs). `previous_release_id` names the last successful release, never an unverified physical
 candidate. `observed_previous_release_id` names physical current at the confirmed start (null only
 when no release was selected before first success, including a first successful restore).
 `recovery_backup_ids` includes all unresolved protections being resolved. `backup_id`
 continues, for deploy/provision, to identify the most recent pre-migration backup for this reconciliation, or null if the
 set is empty; choose the highest protection `attempt_number`, not by dump or protection timestamps.
-Readers preserve legacy four-field selections and their original filename hashes unchanged.
+Selection filenames hash the canonical supported record; unversioned selections refuse.
 
 After verification, append the new selection durably before removing any resolved protection files.
 Its references preserve protection if cleanup is interrupted. A remaining protection already covered
@@ -623,7 +656,7 @@ when reconciling a different physical selection or resolving outstanding protect
 a freshly verified outcome, not a synthetic intermediate success. An already verified matching
 selection with no unresolved protection does not append duplicate history.
 
-Retained selections protect all recovery backup IDs as well as legacy `backup_id`. Ordinary
+Retained selections protect all recovery backup IDs as well as `backup_id`. Ordinary
 retention only becomes applicable when those history references are no longer retained under the
 existing rules; successful deployment itself never deletes a recovery dump. Rollback continues to
 select the immediately preceding successful release and requires exact live-schema compatibility;
@@ -707,7 +740,7 @@ discovery exposes the same physical/history/schema/protection/scheduler facts as
 and `reapply`. The helper rejects conflicting flags and enforces the same unfinished/completed
 admission rules as the controller.
 The selected backup's immutable
-record and dump authority remain independently validated. Before writing new-format host records,
+record and dump authority remain independently validated. Before writing supported-format host records,
 ensure the compatible scheduled helper through the same confirmed sequence: pause scheduled
 backups, wait for any running backup to finish, replace and checksum-verify the backup program,
 then restart the timer if enabled, following the locking rules in Scheduled helper compatibility.
@@ -900,8 +933,8 @@ cleanup is the exception described below, and listings expose it safely. This pr
 new deployment over an unfinished restore.
 
 Unexpected arrangements, unrelated OIDs, missing original material before verified completion,
-or intermediate databases without a valid binding refuse with a bounded explanation. Legacy
-interrupted restores without this new binding remain manual; do not invent their backup identity.
+or intermediate databases without a valid binding refuse with a bounded explanation. Unsupported
+interrupted restores without this binding refuse; do not invent their backup identity or adopt them.
 The new public path must be tested from every interruption produced by the updated restore
 procedure, including lost transport, rather than only by invoking the helper directly.
 
@@ -1091,8 +1124,10 @@ readers enforce the full protection graph, without a second controller-owned aut
 
 ## Scheduled helper compatibility
 
-Both transient and persistent scheduled packages must read legacy and new installed/selection
-records and apply protection-aware retention. Before deploy publishes any new-format host record,
+Both transient and persistent scheduled packages must read the supported installed/selection
+records and apply protection-aware retention. This coordination remains required for future package
+upgrades within the supported baseline; it does not add a transition path from the old staging
+installation. Before deploy publishes any supported host record,
 its confirmed plan must ensure `/usr/local/lib/taskman/taskman-backup.pyz` is the exact compatible
 package built by the controller. If different, atomically refresh that executable only, preserving
 its fixed ownership/mode and verifying its checksum. Do not converge packages, timer configuration,
@@ -1114,7 +1149,7 @@ install and checksum-verify the compatible package; restart the timer if enabled
 the lock lets an old backup process already waiting for that lock finish without deadlock. Newly
 created ordinary backups are irrelevant plan drift. Never kill a running backup to expedite refresh.
 Failure to quiesce, changed timer enablement, or unsafe package identity refuses further deployment
-consequences. Do not publish new-format records before this sequence succeeds. Retain the lock for
+consequences. Do not publish supported-format records before this sequence succeeds. Retain the lock for
 subsequent deployment steps; a restarted compatible scheduled process may wait normally.
 
 If refresh fails, restore the enabled timer only when the installed executable is verified as
@@ -1129,8 +1164,8 @@ obsolete executable by a trusted administrator are outside the normal scheduler 
 Keep orchestration in the controller and host mutation in the host-side helper; add no generic workflow engine.
 Use host protocol version 3 for the coordinated transient controller/helper change. Retain envelope,
 correlation and redaction rules; use the explicit collection and byte budgets below. Old transient protocol requests refuse; the
-controller always transfers its matching helper. Persisted legacy readers are not wire-version
-compatibility shims.
+controller always transfers its matching helper. Future persisted-format compatibility is a
+separate lifecycle obligation, not a requirement to accept old transient wire requests.
 
 `credentials_path` identifies the host's PostgreSQL password file, `/etc/taskman/pgpass`, not an
 operator login or SSH key. Existing private-file ownership, permission, and non-symlink checks apply.
@@ -1151,7 +1186,7 @@ The exact serialized UTF-8 byte budgets are:
 - New schema-2 installed release record, including the embedded manifest and duplicated fields:
   256 KiB.
 - Every complete protocol-v3 request or result, including its envelope: 1 MiB.
-- Other persisted records and legacy installed records: their existing 64-KiB limit.
+- Other persisted records: 64 KiB.
 
 These are aggregate budgets, not independent allowances for each nested component. New migration
 filenames must fit the supported filesystem component bound of 255 UTF-8 bytes as well as the
@@ -1163,13 +1198,11 @@ artifacts fail with exit 2 and a bounded explanation of the violated limit, neve
 The host validates the same record budgets before publication and enforces message bounds at its
 input/output boundary. No truncation of migration or identity data is allowed.
 
-Legacy formats remain unchanged on disk. A valid legacy installed record within its existing
-64-KiB and migration-count limits must be transportable through v3, including records with more
-than 64 migration fingerprints. Explicit legacy artifacts undergo the aggregate transport and
-prospective-record checks before use; local input outside those supported budgets refuses before
-host mutation, without rewriting installed legacy records. Invalid or oversized persisted legacy
-records remain authority failures, not silently skipped data. Inventory/history growth is a
-separate discovery/listing concern; larger messages are not a substitute for bounded projections.
+Only supported-format records are transportable. Unsupported old artifacts fail local validation;
+unsupported persisted authority refuses rather than being skipped or rewritten. Supported records
+with more than 64 migration fingerprints still require the schema-specific codec path. Inventory
+and history growth is a separate discovery/listing concern; larger messages are not a substitute
+for bounded projections.
 
 Extend the existing read-only `discover` operation with four inspection modes: `strict`, `deploy`,
 `provision`, and `restore`. Mode `strict` retains the existing completed-installation checks;
@@ -1507,13 +1540,13 @@ Expected owners, relative to `ops/taskman_ops/`:
 - `cli.py`, `workflows/deploy.py`, `workflows/provision.py`: command-specific flags, target intent,
   ordinary confirmation, independent downgrade acknowledgment for deploy/provision, plans, and results.
 - `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`: exact artifact identity,
-  clean and frozen-dirty source export, legacy reads, build-after-hash naming, local and installed
+  clean and frozen-dirty source export, supported-format reads, build-after-hash naming, local and installed
   resolution; small source-order helper within `releases/` if needed, not host code that runs Git.
 - `host_protocol/`, `workflows/helper.py`: versioned discovery/request/result integration,
   schema-specific budgets, and validated page collection within command timeouts.
 - Host listing/discovery operations and their controller consumers: compact operational facts,
   paginated release/backup inventories, snapshot validation, and complete public listings.
-- `host_helper/records.py`, `state.py`, `paths.py`: dual-format records and coherent authority;
+- `host_helper/records.py`, `state.py`, `paths.py`: single supported record formats and coherent authority;
   a focused `host_helper/backup_protection.py` owns protection publication/reference lifecycle.
 - `host_helper/operations/deploy.py`: explicit reconciliation consequence order.
 - `workflows/restore.py`, `host_helper/operations/restore.py`: restore-specific admission from an
@@ -1542,7 +1575,7 @@ Acceptance requires focused controller-to-helper scenarios, not helper-only retr
 #### Recovery without local artifacts
 
 Lose local artifacts: reuse sufficient installed provenance, or rebuild safely with a new ID;
-explicit artifacts remain exact and legacy records are unchanged.
+explicit supported artifacts remain exact; unsupported old host records refuse without mutation.
 
 #### Archive identity and source snapshots
 
@@ -1553,21 +1586,24 @@ disagreements and unsafe paths. Exercise real clean build/cache reuse and dirty 
 tracked changes, deletions, and non-ignored untracked files while proving ignored files stay
 excluded.
 
-#### Legacy and new formats
+#### Supported baseline and rejected old formats
 
-Legacy and new artifacts/records mixed through verification, scheduled backup, listings,
-rollback, restore, and cleanup. No in-place legacy rewrite or generic adoption.
+Supported artifacts/records work through verification, scheduled backup, listings, rollback,
+restore, and cleanup, including retained releases/backups across subsequent deployments. Old IDs,
+manifests, installed/selection records, and OTP 27 artifacts refuse at their input/authority boundary.
+No old-format conversion, mixed-format success fixture, or generic adoption. Future package refresh
+tests use earlier and replacement packages that both implement the supported baseline.
 
 ### Protocol budgets and inventory pagination
 
 #### Artifact, record, and message limits
 
-Budget coverage must exercise 64, 65, and 256 fingerprints through new/legacy parsing, uploaded and
+Budget coverage must exercise 64, 65, and 256 fingerprints through supported parsing, uploaded and
 installed targets, embedded manifests, and helper dispatch; reject 257 fingerprints. Exercise
 512 observed versions and reject 513 at their schema boundary. Keep unrelated collections capped
 at 64. Test maximum-length filenames, complete serialized manifests/records/requests/results at
 and beyond each byte limit, and actual nested codec round trips. Local budget failure must precede
-artifact publication or host mutation; valid legacy records must remain usable without rewriting.
+artifact publication or host mutation; unsupported formats must not gain a compatibility bypass.
 
 #### Growing inventories and bounded responses
 
@@ -1610,7 +1646,7 @@ dirty local builds, implicit acknowledgment from an explicit dirty artifact, red
 
 Both commands cover known/unknown source ordering, lower SemVer, divergent revisions,
 same-source rebuilds, and baseline drift. Provision also covers older replacement after failed
-startup or committed migrations, protected migration targets without current, legacy installed
+startup or committed migrations, protected migration targets without current, supported installed
 provenance before first success, no-baseline fresh installation, and independent ordinary and
 downgrade prompts/flags.
 
@@ -1636,8 +1672,8 @@ before replacing the backup program during provisioning recovery.
 
 #### Resource-based admission without a marker
 
-Provisioning admission is identical with an absent, historical valid, malformed, or symlinked
-marker at the retired path; it neither follows nor modifies that path. Interrupt before the
+Verify the active workflow no longer probes, writes, or classifies the retired marker path.
+Interrupt before the
 first resource mutation and at supported partial-convergence boundaries, then rerun through
 resource inspection and confirmation. Compatible partial state is reusable without a marker;
 a valid marker cannot admit a foreign database, conflicting service/configuration, unsafe
@@ -1841,7 +1877,7 @@ maximum migration arrays, recovery references, cleanup batches, and bounded veri
 
 Run the development guide's operations suite, compileall, shell syntax, help/confirmation checks,
 and `mix precommit`; check Markdown links, whitespace, and planning-term leakage. Independent scoped
-review must inspect migration ordering, reference retention, legacy readers, and the actual public
+review must inspect migration ordering, reference retention, supported-format readers, and the actual public
 retry path. Build/packaging changes require clean and dirty identified release builds plus
 manifest/hash/cache and packaged-runtime validation. Local tests do not establish real systemd,
 backup, or restore safety.
@@ -1863,8 +1899,9 @@ backup, or restore safety.
   data or bypass migration fingerprints.
 
 This model cannot repair arbitrary manual corruption or infer unrecorded database side effects.
-Historical interrupted migrations without sufficient fingerprint/protection evidence remain manual;
-the observed no-schema-change staging failure does not need fabricated backup records. Local dumps
+Interrupted migrations without sufficient fingerprint/protection evidence remain manual;
+the old staging installation is outside the compatibility boundary and will not be repaired by this
+controller. Local dumps
 do not survive host loss. Full destructive recovery acceptance remains separately authorized.
 
 ## Next-session checklist
@@ -1879,7 +1916,8 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
    No implementation has begun.
 3. Update the readiness handoff and start a clean implementation session by default. Refresh actual
    repository and host state before relying on the recorded baseline.
-4. Implement and verify locally; only then continue the already-authorized staging deployment and
-   readiness. Do not manually append selection records or repoint current to bypass the controller.
+4. Implement and verify locally; then obtain exact authorization for clean staging recreation and
+   fresh provisioning/readiness acceptance. Do not recover the old installation, manually append
+   selection records, or repoint current to bypass the controller.
 5. Administrator/login acceptance and deployment completion are separate outcomes. Track their
    current acceptance status in the readiness handoff; neither establishes the other.

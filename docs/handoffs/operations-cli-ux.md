@@ -16,7 +16,8 @@ the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
 - Reconciliation owns protocol v3, artifact/source rules, deploy/provision acknowledgments, and
   failed-verification evidence. The UX specification now defers to that baseline; full written
   approval of the CLI UX specification remains pending. The complete reconciliation specification
-  was approved on 2026-09-14 and awaits implementation planning.
+  and implementation plan were approved on 2026-09-14, including the subsequent one-time break
+  from old staging formats. Future upgrade support remains; do not add old-installation conversion.
 - Before first success, provision may reconcile a different desired artifact and recover from
   archive loss. Early inspection now accommodates multiple valid candidates; credentialed live
   schema/protection checks remain decisive. The exact completed-first-install replay exception

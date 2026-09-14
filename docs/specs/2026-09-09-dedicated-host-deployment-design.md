@@ -14,6 +14,12 @@ has an [approved implementation plan](../plans/2026-09-14-deploy-reconciliation.
 It specifies changes to deployment recovery, artifact identity, backup
 protection, and confirmation; those changes are not yet implemented or a replacement for this baseline.
 
+The operator's 2026-09-14 [one-time compatibility decision](2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
+supersedes this baseline's historical-format/runtime compatibility requirements for implementation
+of reconciliation. The old staging installation will not be upgraded or repaired by the new
+controller. The descriptions below remain evidence of currently implemented behavior until that
+implementation lands; future supported upgrades still require compatibility and recovery support.
+
 ## Purpose and supported scope
 
 One workstation-driven controller builds, provisions, deploys, inspects, backs up, and recovers one

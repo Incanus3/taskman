@@ -1,6 +1,7 @@
 # Desired-target deployment reconciliation implementation plan
 
-Status: approved by the operator on 2026-09-14; implementation not started. Created: 2026-09-14.
+Status: approved by the operator on 2026-09-14, including the subsequently approved one-time
+compatibility break; implementation not started. Created: 2026-09-14.
 
 Scoped independent review and focused amendment review completed on 2026-09-14. The manual-backup
 admission finding is resolved; no outstanding review blocker. Evidence is recorded in `tas-sr4b`.
@@ -22,10 +23,36 @@ before executing any task, together with the [baseline design](../specs/2026-09-
 and [development guide](../development.md). The specification owns exact schemas and accepted
 recovery semantics; this plan assigns their implementation and verification.
 
+## One-time compatibility amendment
+
+The operator clarified that compatibility is waived only for the previous unmerged design and
+its existing unfinished staging installation, not for future supported deployments. The approved
+pre-amendment checkpoint is commit `df3e47b304161e251a65e0b642fa743f80679c70`.
+
+Implement only digest-bearing IDs, manifest 3, installed/selection records 2, and the current
+OTP 29.0.6 / Elixir 1.20.4 pair. Remove old-format readers, old-runtime allowlists, incomplete
+provenance fallbacks, and mixed old/new positive tests. Keep concise rejection tests for unsupported
+local artifacts (exit 2) and old host authority (exit 10 before release/scheduled-helper payload upload or
+managed mutation); normal transient inspection transport remains available. Do not migrate old
+records, accept old backups through their unsupported source releases, or recover the existing VPS.
+
+Keep explicit schema versions and the specified record fields. Future supported releases and
+backups remain usable across upgrades; future format/runtime evolution needs compatible readers
+or a designed, verified migration/retirement policy. Keep task 5, including running-process
+quiescence, and all future interruption, retention, rollback/restore, and pagination guarantees.
+Use two packages implementing this supported baseline for upgrade tests, not an old staging package.
+The eleven task boundaries and dependencies remain useful; tasks 1, 2, 4 and 11 lose compatibility
+branches and test combinations rather than entire behavior owners.
+
+After local verification, staging acceptance starts with separately authorized clean host recreation
+and fresh provisioning. The previous in-place staging continuation is superseded. No reset, data
+deletion, provider action, or new provisioning is authorized by this documentation amendment.
+
 ## Checkpoint, scope, and execution
 
-Planning inspected the GitButler branch `dedicated-host-deployment-automation`, local tip
-`0a0c598808b98d8271617263655785b6d65404f2`, with approved documentation changes still uncommitted.
+The approved design/plan checkpoint on GitButler branch `dedicated-host-deployment-automation`
+is committed as `df3e47b304161e251a65e0b642fa743f80679c70`. Only the subsequent compatibility
+amendment and its task/reference updates remain uncommitted.
 Reconciliation is unimplemented. Specification approval is recorded in `tas-sr4b`, comment 208.
 The parent issue's stale approval-pending description/notes were reconciled during resumption.
 The [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation state.
@@ -53,12 +80,12 @@ intermediate controller on staging.
 ## Global constraints
 
 - Ubuntu `26.04`, `amd64`; new releases use OTP `29.0.6`, Elixir `1.20.4`, Node `22.22.1`,
-  Hex `2.5.1`, Rebar3 `3.24.0`. Preserve the exact historical OTP `27.3.4.6` / Elixir `1.18.3`
-  reader allowlist and current pinned builder tag/digest. No dependency or runtime upgrades.
-- Protocol version `3`; public JSON schema `1`. Legacy persisted records remain byte-stable.
+  Hex `2.5.1`, Rebar3 `3.24.0`. Remove OTP `27.3.4.6` / Elixir `1.18.3` support and preserve
+  the current pinned builder tag/digest. No new dependency or runtime upgrades.
+- Protocol version `3`; public JSON schema `1`. Accept only the specified supported record formats.
   No old transient wire-version support and no selection-history listing operation.
 - Maximum serialized manifest: 128 KiB; new installed record: 256 KiB; complete request/result:
-  1 MiB. Other records and legacy installed records keep 64 KiB. Fingerprints: 256; observed
+  1 MiB. Other records keep 64 KiB. Fingerprints: 256; observed
   versions: 512; unrelated collections: 64; filename components: 255 UTF-8 bytes. Preserve
   existing string/path/nesting rules while admitting each specified nested schema.
 - Only two configured roots. Derive backup protections and restore binding beneath deployments.
@@ -79,7 +106,7 @@ intermediate controller on staging.
 
 | Task | Bead | Depends on | Reviewable outcome |
 | --- | --- | --- | --- |
-| 1 | `tas-sr4b.1` | — | Compatible exact record readers and package closure |
+| 1 | `tas-sr4b.1` | — | Single-format exact record readers and package closure |
 | 2 | `tas-sr4b.2` | 1 | Frozen builds and target resolution |
 | 3 | `tas-sr4b.3` | 1 | Provenance and recovery reference lifecycle |
 | 4 | `tas-sr4b.4` | 1, 3 | Bounded wire protocol, discovery, and result contracts |
@@ -99,9 +126,9 @@ Paths below are repository-relative. Extend existing test support only where it 
 keep operation-specific fixtures beside their tests. Each task starts with the listed regression,
 observes its expected failure, implements the narrow behavior, and reruns the focused group.
 
-## Task 1: Exact artifacts and compatible persisted readers
+## Task 1: Exact artifacts and supported persisted readers
 
-Files: modify `ops/taskman_ops/releases/{identifiers,manifests}.py`,
+Files: modify `ops/taskman_ops/releases/{identifiers,manifests,toolchains}.py`,
 `ops/taskman_ops/host_helper/{records,paths,state}.py`, and
 `ops/taskman_ops/helper_client/package.py`. Create
 `ops/taskman_ops/host_helper/backup_protection.py` and
@@ -115,9 +142,9 @@ Interfaces: preserve `ArtifactManifest.from_mapping`, `ReleaseRecord.from_mappin
 `BackupProtection.from_mapping(value)` and `RestoreTarget.from_mapping(value)` with `to_mapping()`.
 These types validate exact specification fields and serialize only persisted fields. Discovery
 adds binding `sha256` separately. Add keyword-only `artifact_sha256` and `source_dirty` to
-`build_release_id`; legacy parsing remains available, while new build callers supply the digest.
+`build_release_id`; the digest is required for construction and old ID parsing is removed.
 
-- [ ] Add identity/legacy tests, including this new-construction contract:
+- [ ] Add supported-identity and old-format rejection tests, including this construction contract:
 
   ```python
   clean = build_release_id("0.2.0", "a" * 40, artifact_sha256="b" * 64, source_dirty=False)
@@ -127,11 +154,14 @@ adds binding `sha256` separately. Add keyword-only `artifact_sha256` and `source
   assert validate_release_id(clean) == clean
   ```
 
-- [ ] Run those tests red; retain fixtures of actual legacy serialization and selection filename
+- [ ] Run those tests red; replace old-format positive fixtures with supported records and keep
+  only focused old-format/runtime rejection cases. Verify canonical supported selection filename
   hashes. Add strict booleans, duplicate/reference mismatches, digest disagreement, path-length,
   256/257 fingerprints, and per-format byte-limit cases.
-- [ ] Implement manifest v3 and installed/selection v2 exactly. Accept differing `built_at` only
-  when all identity fields agree; preserve original installed provenance. Add exact protection and
+- [ ] Implement only manifest v3 and installed/selection v2 exactly. Remove old-runtime readers,
+  unversioned serializers and compatibility constructor defaults. Update existing consumer/test
+  fixtures to the supported baseline rather than maintaining alternate constructors. Accept differing
+  `built_at` only when all identity fields agree; preserve original installed provenance. Add exact protection and
   restore-binding parsing, OID/creation intent validation, safe atomic create/replace/fsync methods,
   and derived paths. No record writer is enabled in operations yet.
 - [ ] Update both explicit zipapp allowlists and source mappings for the complete dependency closure.
@@ -159,8 +189,17 @@ Exactly one target representation is present; properties expose validated releas
 manifest/provenance. Origins are `explicit`, `installed`, `cached`, `built`. Installed is the
 wire target kind only when its validated record is used; never fabricate a local archive path.
 `resolve_deploy_target(repo, supplied, *, installed_records, selected_release_id,
-last_successful_release_id, allow_dirty=False, artifact_root=None)` returns this target.
-The controller supplies already validated pages; resolution does not open SSH itself.
+last_successful_release_id, allow_dirty=False, artifact_root=None, clean_inputs=None)` returns this target.
+For automatic clean resolution, `clean_inputs` is required: an immutable value returned by
+`identify_clean_inputs(repo)` in `releases/artifacts.py`, captured before host discovery. It contains
+the exact clean source revision, application version, target, runtime/toolchain, builder tag/digest,
+layout and migration fingerprints used for matching and building. Resolution uses that value, not
+a newly inferred checkout identity. `clean_inputs_match(repo, clean_inputs)` freshly validates
+cleanliness and equality of those inputs before confirmation. On mismatch, discard the target and
+plan and repeat identification, discovery and resolution before presenting a new confirmation;
+do not silently substitute a different source or build it under stale provenance. Explicit artifacts
+and frozen dirty targets do not use this clean-input gate. The controller supplies already validated
+pages; resolution does not open SSH itself.
 
 - [ ] Add failing build tests using existing builder doubles: final bytes are hashed before naming,
   changed archive bytes yield changed IDs, identical bytes/provenance reuse identity, and timestamp
@@ -173,10 +212,15 @@ The controller supplies already validated pages; resolution does not open SSH it
   record, and both target request representations before publishing a reusable artifact. Bounds
   failures are exit 2, not a late staging error. Keep local prerequisites/build failures at exit 3.
 - [ ] Implement selected, successful, sorted installed, sorted cache, build resolution. Compare exact
-  source/toolchain/builder/layout/migration inputs, not source-only ID or age. Skip incomplete legacy
-  provenance for automatic reuse; explicit matching legacy bytes remain valid. Dirty automatic work
+  source/toolchain/builder/layout/migration inputs, not source-only ID or age. Every accepted installed
+  record must contain full provenance; an explicit artifact cannot excuse unsupported host metadata.
+  Unsupported cache entries remain ignored and preserved. Dirty automatic work
   builds before exact-identity reuse; clean `--allow-dirty` follows clean resolution.
-- [ ] Add source-order tests for SemVer prereleases/build metadata, invalid legacy versions, ancestor,
+- [ ] Test that automatic clean matching/building consumes the supplied pre-discovery identity and
+  refuses stale inputs rather than relabelling changed source. Test the fresh clean-input equality
+  check for changed revision, newly dirty files, and changed build-input fingerprints; unchanged
+  inputs remain reusable. Task 6 owns the public re-resolution and confirmation loop.
+- [ ] Add source-order tests for SemVer prereleases/build metadata, unorderable version inputs, ancestor,
   missing/divergent objects, equal full revisions without lookup, conflicting signals, and no baseline.
   Use bounded local ancestry checks only. Return explicit known-downgrade and unknown reasons;
   either requires independent acknowledgment against any applicable baseline.
@@ -318,13 +362,15 @@ exit cannot unlock a different acquisition. No timer enablement or unit/schedule
 - [ ] Implement that sequence in Python with a single finite command deadline. Validate root-owned
   upload bytes and fixed destination before installation. Never kill the running backup. Enabled
   but inactive timers recover; disabled/inactive remain so; active/disabled refuses refresh.
-- [ ] Fail before new-format publication when quiescence, identity, or enablement fails. Restore an
+- [ ] Fail before supported-format publication when quiescence, identity, or enablement fails. Restore an
   enabled timer only with a verified old/new executable and preserve restoration failure separately.
   Track pause, replacement, and restart as known/possible managed changes.
 - [ ] Run `uv run --project ops pytest ops/tests/host_helper/test_backup_helper.py
   ops/tests/services/test_backups.py ops/tests/host_helper/test_package.py` for no-op, refresh,
   lock reacquisition drift, timeout, interrupted replacement, and restoration failure. Confirm the
-  persistent package reads both formats and honors protections without importing mutation workflows.
+  persistent package reads the supported formats and honors protections without importing mutation
+  workflows. Earlier/replacement package fixtures both support the new baseline; retain this test
+  for future package upgrades without importing compatibility with the old staging executable.
 
 ## Task 6: Public desired-target deployment
 
@@ -335,7 +381,12 @@ Tests: `ops/tests/{test_cli,test_dry_run,test_end_to_end}.py`,
 `ops/tests/workflows/{test_deploy,test_deploy_transaction,test_helper_deploy_transaction}.py`,
 `ops/tests/host_helper/test_deploy.py`.
 
-Interfaces: public deploy resolves `DeploymentTarget` after read-only host discovery. The workflow
+Interfaces: public automatic clean deploy calls Task 2's `identify_clean_inputs(repo)` before
+read-only host discovery, then resolves `DeploymentTarget` using those inputs and validated host
+pages. Before confirming the plan (including with `--yes`), call `clean_inputs_match`; on drift,
+discard the old target/plan and repeat identification, discovery and resolution, then confirm only
+the refreshed plan. Explicit artifacts retain their validated identity; dirty automatic targets
+retain their frozen-snapshot identity rather than being rebound to later checkout contents. The workflow
 accepts `yes` and `allow_downgrade` keyword booleans, with `allow_dirty` passed to source resolution.
 `run_deployment_request` accepts the target and exact confirmed expected state, scheduler payload,
 and prune IDs. Helper `converge_deployment` retains explicit `first_release` specialization.
@@ -350,6 +401,10 @@ booleans are added to host requests.
   reobservation, target/policy validation, prominent dirty provenance, exact prune plan, and separate
   ordinary/downgrade acknowledgments. Dry-run needs no prompt/ack flags and performs no managed writes.
   Missing policy is exit 2; incompatible policy/schema or missing unattended acknowledgment is 10.
+- [ ] Add public tests that change clean source/build inputs during host discovery and before
+  confirmation, including `--yes`: no stale target is confirmed or mutated, resolution repeats with
+  fresh inputs and discovery, and any changed plan receives its required acknowledgments. Include
+  unchanged-clean and frozen-dirty controls so the clean gate does not retarget a dirty snapshot.
 - [ ] Add parser scope tests for all commands. Explicit dirty artifacts imply dirty permission and
   accept redundant `--allow-dirty`; explicit clean artifacts reject it. JSON never supplies consent.
   Equal source/version rebuilds need no downgrade acknowledgment; unknown against any baseline does.
@@ -380,9 +435,10 @@ target/expected-state schema as deploy, but null history/current is permitted on
 specified unfinished-installation rules. Preserve the original confirmed pre-convergence state in
 public results; fresh infrastructure observations do not authorize changed release/schema/protections.
 
-- [ ] Add admission tests with identical resources and marker absent/valid/malformed/symlinked; all
-  must make the same decision and perform no read/write/follow at the retired path. Remove active
-  marker fields, probes, and writes; leave historical files untouched.
+- [ ] Remove marker fields, probes, writes, and admission branches. Verify generated fact/convergence
+  operations do not access the retired path and exercise resource-based admission directly; remove
+  old marker-state positive fixtures rather than retaining a compatibility matrix. No cleanup or
+  migration of historical marker files is part of this operation.
 - [ ] Validate existing accounts, units, directories, Caddy/listeners, database and credentials
   individually. Missing prerequisites may be created before use; names alone cannot admit foreign
   resources. Add direct schema-object/data emptiness checks: absent migration table is not emptiness.
@@ -413,10 +469,19 @@ digest and exact canonical/temporary/retired mappings. `observe_restore_database
 credentials)` returns that validated mapping; no failed observation becomes null. The operation
 uses exact specification parameters including `replace_unfinished`/`reapply` booleans, even before
 task 9 enables replacement execution. No generic deployment discovery precedes restore inspection.
+Restore consumes Task 5's scheduled-helper convergence sequence, including its lock coordination,
+before publishing supported-format records or an initial/reapply restore binding; the existing
+dependency chain already makes Task 5 available. Supply the confirmed scheduler payload through
+the restore request's specified `backup_helper` parameter rather than introducing another protocol.
 
 - [ ] Add public tests from failed A-to-B deployment and before first success, with/without current.
   Assert backup-source compatibility and typed environment/backup confirmation; failed B need not run.
   Inspect cluster/admin authority via maintenance DB when canonical is absent.
+- [ ] Integrate Task 5's confirmed pause/wait/replace/checksum/restart sequence before initial or
+  reapply binding publication and other supported-format writes. Preserve its lock ordering and
+  mutation evidence; failed or interrupted convergence must not publish a new binding. Add public
+  restore/reapply tests with a running earlier supported-baseline scheduled package, verifying it
+  finishes before replacement/publication and that retries after refresh interruptions remain safe.
 - [ ] Implement five recognized arrangements, OID/ownership authority, canonical-only top-level
   migrations, absent/table-missing/table-empty distinctions, and remaining-work capacity checks.
   Bind exact input/digest/source, original OID, safety copy, original baseline/current before temporary
@@ -538,8 +603,9 @@ belong in the design/runbook. Do not create a second architecture narrative.
   exact implementation revision/content identity and commands, not an inherited historical pass.
 - [ ] Update operator examples and superseded baseline sections for source resolution/identity,
   provision resources, discovery/protocol, confirmations, recovery/pruning, restore retry/replacement/
-  reapply, cleanup availability, and failure observations. Keep partial-schema and manual legacy
-  restore caveats explicit. Preserve remaining external acceptance gates and dated staging evidence.
+  reapply, cleanup availability, and failure observations. Keep partial-schema and unsupported-state
+  refusal caveats explicit. Mark prior staging upgrade instructions superseded for this transition;
+  fresh staging provisioning follows separately authorized host recreation. Preserve remaining external acceptance gates and dated staging evidence.
 - [ ] Check local Markdown links/anchors, whitespace, and planning terminology in changed production,
   tests, command output/help, and user-facing docs. Review canonical references for contradictions.
   Close child tasks and `tas-6dkg` only with evidence; retain readiness parent/handoff for the next
@@ -549,7 +615,7 @@ belong in the design/runbook. Do not create a second architecture narrative.
 
 | Specification acceptance family | Owning task(s) | Required evidence |
 | --- | --- | --- |
-| Artifact loss, exact bytes, dirty snapshots, legacy formats | 1, 2, 6 | Real build plus resolution and isolated mixed-record tests |
+| Artifact loss, exact bytes, dirty snapshots, supported/rejected formats | 1, 2, 6 | Real build, resolution, supported package tests and old-format refusal |
 | 64/65/256/257 fingerprints, 512/513 versions, aggregate bytes | 1, 2, 4 | Real nested codec/record/target boundary tests before publication |
 | 4096+ history, pages, byte-driven batches, drift | 3, 4, 10 | Complete public listing/discovery/cleanup tests; no partial success |
 | Retry/replace failed target, each migration/publication state | 3, 5, 6 | Public controller through real helper procedure, native boundary doubles |
@@ -563,12 +629,13 @@ belong in the design/runbook. Do not create a second architecture narrative.
 | 65+ restore safety and migration backup attempts | 3, 9 | Original/newest/recent bounds; independent refs; interruption ordering |
 | Partial-prefix backup attribution and exact reference protection | 3, 4, 6–9 | Public manual backup, deploy retry, scheduled backup, and restore safety paths |
 | Low-space/unavailable-DB cleanup | 10 | No operational DB/capacity preflight; exact protected deletion |
-| Scheduler compatibility and old running process | 1, 3, 5 | Deterministic lock coordination and both isolated package executions |
+| Scheduler compatibility and old running process | 1, 3, 5, 8 | Deterministic lock coordination, both isolated packages, and restore/reapply refresh before binding publication |
+| Clean automatic target identity across discovery/confirmation | 2, 6 | Pre-discovery input identity, fresh equality gate, re-resolution on drift including `--yes`, and frozen-dirty control |
 | Exact mutation results, redaction, failed report, transport loss | 4, 6–10 | Packaged round trips and command-level aggregation across prior mutations |
 
 ## Approval and remaining uncertainty
 
-This plan does not alter the approved behavior. The main implementation risks are the coordinated
+This plan incorporates the approved one-time compatibility break. Future recovery behavior is retained. The main implementation risks are the coordinated
 protocol consumer cutover, full reference validation without lifetime inventory limits, and restore
 OID/backup ordering across interruption. The task gates above address those boundaries directly.
 Native PostgreSQL/systemd behavior and full destructive restore still need separately authorized

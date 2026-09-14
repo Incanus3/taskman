@@ -8,6 +8,13 @@ Manual recovery remains documented below for use when the controller is unavaila
 The [deployment design](specs/2026-09-09-dedicated-host-deployment-design.md) defines the architecture,
 authority boundaries, and rationale behind these procedures.
 
+The approved [reconciliation compatibility boundary](specs/2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
+defines a one-time break from this pre-reconciliation implementation. Its old-format staging
+installation will be replaced through separately authorized clean provisioning, not upgraded with
+the future controller. The commands below still document the current implementation; earlier
+in-place runtime upgrade instructions are not the transition procedure for the new baseline.
+Do not reset or delete staging based on this note. Future supported upgrades remain in scope.
+
 The supported topology is deliberately narrow. The paths below are the defaults; alternate
 absolute roots are supported only when they pass the configuration topology checks described
 below:
@@ -671,6 +678,11 @@ That shell has application authority and may expose secrets or mutate state. Pre
 output before sharing it.
 
 ## Current staging external state
+
+The observations below predate the approved one-time compatibility break. Preserve them as
+diagnostic/acceptance evidence; continuation now requires separately authorized host recreation
+and fresh provisioning after local reconciliation implementation. Do not attempt to migrate the
+old records or resume its failed deployment using the new controller.
 
 The staging hostname is `taskman.page`. The domain is registered through Cloudflare Registrar
 through 2027-09-05 with WHOIS redaction and registrar lock enabled. Auto-renew is disabled, so
