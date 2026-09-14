@@ -1,219 +1,229 @@
-"""Final-protocol controller behavior for deployment requests."""
+"""Exact controller-to-helper deployment request contracts."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.host_protocol import HostResult, MAX_COLLECTION_ITEMS
+from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 from taskman_ops.remote import CommandResult, UploadReceipt
+from taskman_ops.releases.artifacts import DeploymentTarget
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import OTP_VERSION
 from tests.support.environments import valid_environment
+from tests.workflows.support import deployment_artifact
 
 
-CURRENT = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT = build_release_id(
+    "0.2.0", "a" * 40, artifact_sha256="a" * 64, source_dirty=False, otp_version=OTP_VERSION
+)
+EXPECTED = {
+    "selected_release_id": CURRENT,
+    "last_successful_selection_id": "selection-" + "a" * 64 + ".json",
+    "applied_migrations": (20260905120000,),
+    "backup_protection_sha256": "b" * 64,
+    "scheduled_backup_sha256": "c" * 64,
+    "backup_timer_enabled": True,
+    "downgrade_baseline_sha256": "d" * 64,
+}
 
 
-def test_deployment_planning_reads_completed_host_state_without_legacy_adoption(
-    monkeypatch,
-) -> None:
-    from taskman_ops.workflows import deploy as workflow
+class Remote:
+    def __init__(self) -> None:
+        self.uploads: list[object] = []
+        self.commands: list[tuple[object, object]] = []
+        self.cleanup_fails = False
 
-    observed = HostResult(
-        2,
-        "discover",
-        "op-0123456789abcdef0123456789abcdef",
-        "succeeded",
-        "observed",
-        {
-            "selected_release_id": CURRENT,
-            "applied_migrations": (20260905120000,),
-            "releases": (
-                {
-                    "release_id": CURRENT,
-                    "source_revision": "a" * 40,
-                    "artifact_sha256": "b" * 64,
-                    "migrations": (
-                        {"filename": "20260905120000_create_tasks.exs", "sha256": "c" * 64},
-                    ),
-                },
-            ),
-        },
-        (),
-    )
-    requests = []
+    def run(self, args, **kwargs):
+        self.commands.append((args, kwargs))
+        if self.cleanup_fails and args[:2] == ("rm", "-f"):
+            return CommandResult(1)
+        return CommandResult(0)
 
-    def run(_remote, request):
-        requests.append(request)
-        return HostResult(
-            observed.protocol_version,
-            observed.operation,
-            request.correlation_id,
-            observed.outcome,
-            observed.message,
-            observed.state,
-            observed.warnings,
-        )
-
-    monkeypatch.setattr(workflow, "run_request", run)
-
-    config = EnvironmentConfig.model_validate(valid_environment())
-    previous, fingerprints, versions = workflow._planning_authority(object(), config)
-
-    assert previous == CURRENT
-    assert versions == (20260905120000,)
-    assert fingerprints[0].filename == "20260905120000_create_tasks.exs"
-    assert requests[0].parameters == {
-        "credentials_path": "/etc/taskman/pgpass",
-        "database": {
-            "host": "127.0.0.1",
-            "port": 5432,
-            "role": "taskman",
-            "name": "taskman_prod",
-        },
-    }
+    def put(self, source, *_args, **_kwargs):
+        self.uploads.append(source)
+        return UploadReceipt()
 
 
-def test_deployment_result_uses_final_correlation_not_a_legacy_operation_id() -> None:
-    result = HostResult(
-        2,
-        "deploy",
-        "op-0123456789abcdef0123456789abcdef",
-        "succeeded",
-        "completed",
-        {"changed": True, "selected_release_id": CURRENT},
-        (),
-    )
-
-    assert result.to_mapping()["correlation_id"] == result.correlation_id
-    assert "operation_id" not in repr(result.to_mapping())
+def _config() -> EnvironmentConfig:
+    return EnvironmentConfig.model_validate(valid_environment())
 
 
-def test_uploaded_deploy_request_carries_only_final_protocol_authority(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from tests.workflows.support import deployment_artifact
+def test_deployment_request_carries_exact_v3_authority_without_consent_fields(tmp_path, monkeypatch) -> None:
+    """A host request cannot gain authority from public confirmation flags."""
     from taskman_ops.workflows import helper
 
-    class Remote:
-        def run(self, *_args, **_kwargs):
-            return CommandResult(0)
-
-        def put(self, *_args, **_kwargs):
-            return UploadReceipt()
-
+    remote = Remote()
     captured = []
 
     def invoke(_remote, request, **_kwargs):
         captured.append(request)
-        return HostResult(
-            2, request.operation, request.correlation_id, "succeeded", "completed", {}, (),
-        )
+        return HostResult(PROTOCOL_VERSION, request.operation, request.correlation_id, "succeeded", "completed", {}, ())
 
     monkeypatch.setattr(helper, "run_request", invoke)
-    config = EnvironmentConfig.model_validate(valid_environment())
+    artifact = deployment_artifact(tmp_path)
     helper.run_deployment_request(
-        Remote(),
-        config,
-        deployment_artifact(tmp_path),
-        previous_release_id=CURRENT,
-        applied_migrations=(20260905120000,),
+        remote,
+        _config(),
+        DeploymentTarget(artifact=artifact, release_record=None, source="built"),
+        expected_state=EXPECTED,
         migration_policy="backward-compatible",
+        backup_helper={"sha256": "e" * 64, "upload_path": None},
+        prune_backup_ids=("backup-00000000000000000000000000000001",),
     )
 
     request = captured[0]
-    assert request.expected_state == {
-        "selected_release_id": CURRENT,
-        "applied_migrations": (20260905120000,),
-    }
+    assert request.protocol_version == PROTOCOL_VERSION
+    assert request.expected_state == EXPECTED
     assert set(request.parameters) == {
-        "candidate_release_id", "artifact_sha256", "artifact_path", "manifest",
-        "migration_policy", "credentials_path", "database", "verification",
+        "target", "migration_policy", "credentials_path", "database", "verification", "backup_helper", "prune_backup_ids",
     }
-    assert "manual_adoption" not in request.parameters
+    assert helper.mutable(request.parameters["target"]) == {
+        "kind": "upload",
+        "manifest": artifact.manifest.to_mapping(),
+        "artifact_sha256": artifact.sha256,
+        "artifact_path": request.parameters["target"]["artifact_path"],
+    }
+    assert helper.mutable(request.parameters["prune_backup_ids"]) == ["backup-00000000000000000000000000000001"]
+    assert "yes" not in request.parameters
+    assert "allow_downgrade" not in request.parameters
+    assert "force" not in request.parameters
 
 
-def test_uploaded_deploy_result_keeps_cleanup_warning_when_result_is_full(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """Upload cleanup evidence survives the protocol's fixed warning capacity."""
-
-    from tests.workflows.support import deployment_artifact
+def test_deployment_request_rejects_unsorted_or_nonexact_confirmed_authority(tmp_path) -> None:
+    """The controller cannot silently widen a prune set or omit an apply-time fact."""
     from taskman_ops.workflows import helper
 
-    class Remote:
-        def run(self, *_args, **_kwargs):
-            return CommandResult(0)
-
-        def put(self, *_args, **_kwargs):
-            return UploadReceipt(cleanup_warning=True)
-
-    warnings = tuple(f"warning-{index}" for index in range(MAX_COLLECTION_ITEMS))
-
-    def invoke(_remote, request, **_kwargs):
-        return HostResult(
-            2,
-            request.operation,
-            request.correlation_id,
-            "succeeded",
-            "completed",
-            {},
-            warnings,
-            local_cleanup_incomplete=True,
+    target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
+    with pytest.raises(ValueError):
+        helper.run_deployment_request(
+            Remote(), _config(), target,
+            expected_state={key: value for key, value in EXPECTED.items() if key != "backup_timer_enabled"},
+            migration_policy="no-change",
+            backup_helper={"sha256": "e" * 64, "upload_path": None},
+            prune_backup_ids=(),
+        )
+    with pytest.raises(ValueError):
+        helper.run_deployment_request(
+            Remote(), _config(), target,
+            expected_state=EXPECTED,
+            migration_policy="no-change",
+            backup_helper={"sha256": "e" * 64, "upload_path": None},
+            prune_backup_ids=("backup-00000000000000000000000000000002", "backup-00000000000000000000000000000001"),
         )
 
-    monkeypatch.setattr(helper, "run_request", invoke)
-    config = EnvironmentConfig.model_validate(valid_environment())
 
-    result = helper.run_deployment_request(
-        Remote(),
-        config,
-        deployment_artifact(tmp_path),
-        previous_release_id=CURRENT,
-        applied_migrations=(20260905120000,),
-        migration_policy="backward-compatible",
-    )
-
-    assert result.warnings == (*warnings[1:], "transient upload cleanup was incomplete")
-    assert result.local_cleanup_incomplete is True
-
-
-def test_uploaded_genesis_request_keeps_restore_required_migration_authority(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from taskman_ops.releases.manifests import MigrationFingerprint
-    from tests.workflows.support import deployment_artifact
+def test_deployment_request_rejects_invalid_confirmed_state_values_before_upload(tmp_path) -> None:
+    """A malformed final observation cannot be sent as host expected state."""
     from taskman_ops.workflows import helper
 
-    class Remote:
-        def run(self, *_args, **_kwargs):
-            return CommandResult(0)
+    target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
+    with pytest.raises(ValueError):
+        helper.run_deployment_request(
+            Remote(), _config(), target,
+            expected_state={**EXPECTED, "scheduled_backup_sha256": "not-a-checksum"},
+            migration_policy="no-change",
+            backup_helper={"sha256": "e" * 64, "upload_path": None},
+            prune_backup_ids=(),
+        )
 
-        def put(self, *_args, **_kwargs):
-            return UploadReceipt()
 
+@pytest.mark.parametrize("outcome", ("succeeded", "retryable"))
+def test_deployment_uploads_are_removed_after_each_valid_helper_result(
+    tmp_path, monkeypatch, outcome
+) -> None:
+    """A response, including a valid failed one, cannot retain private release bytes."""
+    from taskman_ops.workflows import helper
+
+    remote = Remote()
     captured = []
 
     def invoke(_remote, request, **_kwargs):
         captured.append(request)
-        return HostResult(2, request.operation, request.correlation_id, "succeeded", "completed", {}, ())
+        return HostResult(PROTOCOL_VERSION, request.operation, request.correlation_id, outcome, "final", {}, ())
 
     monkeypatch.setattr(helper, "run_request", invoke)
-    config = EnvironmentConfig.model_validate(valid_environment())
-    helper.run_deployment_request(
-        Remote(),
-        config,
-        deployment_artifact(tmp_path, migrations=(MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),)),
-        previous_release_id=None,
-        applied_migrations=(),
-        migration_policy="restore-required",
-        genesis=True,
+    artifact = deployment_artifact(tmp_path)
+    result = helper.run_deployment_request(
+        remote,
+        _config(),
+        DeploymentTarget(artifact=artifact, release_record=None, source="built"),
+        expected_state=EXPECTED,
+        migration_policy="no-change",
+        backup_helper={"sha256": "e" * 64, "upload_path": None},
+        prune_backup_ids=(),
     )
 
-    request = captured[0]
-    assert request.operation == "genesis"
-    assert request.expected_state == {"selected_release_id": None, "applied_migrations": ()}
-    assert request.parameters["migration_policy"] == "restore-required"
-    assert request.parameters["manifest"]["migrations"] == (
-        {"filename": "20260905120000_create_tasks.exs", "sha256": "d" * 64},
+    uploaded = captured[0].parameters["target"]["artifact_path"]
+    cleanup = [argv for argv, _kwargs in remote.commands if argv[:2] == ("rm", "-f")]
+    assert cleanup == [("rm", "-f", "--", uploaded)]
+    assert result.outcome == outcome
+
+
+def test_deployment_upload_cleanup_warning_preserves_the_helper_result(tmp_path, monkeypatch) -> None:
+    """Cleanup trouble is a generic warning, never a replacement result or archive path leak."""
+    from taskman_ops.workflows import helper
+
+    remote = Remote()
+    remote.cleanup_fails = True
+
+    monkeypatch.setattr(
+        helper,
+        "run_request",
+        lambda _remote, request, **_kwargs: HostResult(
+            PROTOCOL_VERSION, request.operation, request.correlation_id, "retryable", "final", {}, ()
+        ),
     )
+    result = helper.run_deployment_request(
+        remote,
+        _config(),
+        DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built"),
+        expected_state=EXPECTED,
+        migration_policy="no-change",
+        backup_helper={"sha256": "e" * 64, "upload_path": None},
+        prune_backup_ids=(),
+    )
+
+    assert result.outcome == "retryable"
+    assert result.warnings == ("transient upload cleanup was incomplete",)
+
+
+def test_restore_scheduler_upload_is_removed_after_a_valid_helper_response(tmp_path, monkeypatch) -> None:
+    """Restore refreshes scheduler code without retaining its cookie-bearing package."""
+    from taskman_ops.workflows import helper
+
+    remote = Remote()
+    scheduler = SimpleNamespace(path=tmp_path / "taskman-backup.pyz", sha256="e" * 64)
+    request = helper.request(
+        "restore",
+        _config(),
+        expected_state={},
+        parameters={
+            "backup_id": "backup-" + "a" * 32,
+            "credentials_path": "/etc/taskman/pgpass",
+            "database": helper.database_settings(_config()),
+            "verification": helper.verification_settings(_config()),
+            "backup_helper": {"sha256": scheduler.sha256, "upload_path": "pending-controller-upload"},
+            "prune_backup_ids": [],
+            "replace_unfinished": False,
+            "reapply": False,
+        },
+    )
+    captured = []
+
+    def invoke(_remote, dispatched, **_kwargs):
+        captured.append(dispatched)
+        return HostResult(PROTOCOL_VERSION, dispatched.operation, dispatched.correlation_id, "retryable", "final", {}, ())
+
+    monkeypatch.setattr(helper, "run_request", invoke)
+
+    result = helper.run_restore_request(
+        remote, _config(), request=request, backup_helper_package=scheduler
+    )
+
+    uploaded = captured[0].parameters["backup_helper"]["upload_path"]
+    cleanup = [argv for argv, _kwargs in remote.commands if argv[:2] == ("rm", "-f")]
+    assert cleanup == [("rm", "-f", "--", uploaded)]
+    assert result.outcome == "retryable"

@@ -2,457 +2,328 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
-import json
 from pathlib import Path
-import stat
 import tarfile
 
 import pytest
 
-from taskman_ops.releases.artifacts import ArtifactResolution, resolve_deploy_artifact
-from taskman_ops.releases.build import SourceState
-from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
-from taskman_ops.releases.manifests import (
-    ArtifactManifest,
-    BUILDER_BASE_DIGEST,
-    BUILDER_BASE_TAG,
-    VerifiedArtifact,
-    manifest_to_json,
+from taskman_ops.host_helper.records import ReleaseRecord
+from taskman_ops.releases.artifacts import (
+    CleanInputs,
+    DeploymentTarget,
+    clean_inputs_drifted,
+    clean_inputs_match,
+    resolve_deploy_target,
 )
+from taskman_ops.releases.build import SourceState
 from taskman_ops.releases.identifiers import build_release_id
-
+from taskman_ops.releases.manifests import (
+    APPLICATION, ARCHITECTURE, BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ELIXIR_VERSION,
+    HEX_VERSION, NODE_VERSION, OTP_VERSION, REBAR3_VERSION, SCHEMA_VERSION, TARGET_OS,
+    TOP_LEVEL, ArtifactManifest, MigrationFingerprint, VerifiedArtifact, manifest_to_json, verify_artifact,
+)
 
 REVISION = "a" * 40
-OTHER_REVISION = "b" * 40
-VERSION = "0.2.0"
-OTHER_VERSION = "0.2.1"
 
 
-def _manifest(
-    *,
-    revision: str = REVISION,
-    version: str = VERSION,
-    built_at: datetime = datetime(2026, 1, 1, tzinfo=UTC),
-) -> ArtifactManifest:
-    return ArtifactManifest(
-        2,
-        "taskman",
-        version,
-        revision,
-        build_release_id(version, revision),
-        built_at,
-        "ubuntu26.04",
-        "amd64",
-        "29.0.6",
-        "1.20.4",
-        "22.22.1",
-        BUILDER_BASE_TAG,
-        BUILDER_BASE_DIGEST,
-        (),
-        "taskman",
-    )
-
-
-def _write_release_archive(path: Path) -> None:
-    source = path.parent / "release-tree"
+def _archive(path: Path, payload: str) -> None:
+    root = path.parent / "tree"
     for directory in ("bin", "lib", "releases", "erts-16.0"):
-        (source / "taskman" / directory).mkdir(parents=True, exist_ok=True)
+        (root / TOP_LEVEL / directory).mkdir(parents=True, exist_ok=True)
     for launcher in ("taskman", "server", "migrate", "create-admin"):
-        file = source / "taskman" / "bin" / launcher
-        file.write_text("#!/bin/sh\n", encoding="utf-8")
-        file.chmod(0o755)
-    with tarfile.open(path, "w:gz") as archive:
-        archive.add(source / "taskman", arcname="taskman")
+        item = root / TOP_LEVEL / "bin" / launcher
+        item.write_text(f"#!/bin/sh\n# {payload}\n", encoding="utf-8")
+        item.chmod(0o755)
+    with tarfile.open(path, "w:gz") as value:
+        value.add(root / TOP_LEVEL, arcname=TOP_LEVEL)
 
 
-def _write_artifact(
-    root: Path,
-    *,
-    revision: str = REVISION,
-    version: str = VERSION,
-    built_at: datetime = datetime(2026, 1, 1, tzinfo=UTC),
-    directory_name: str | None = None,
-) -> VerifiedArtifact:
-    manifest = _manifest(revision=revision, version=version, built_at=built_at)
-    if not root.exists():
-        root.mkdir(mode=0o700, parents=True)
-    else:
-        root.chmod(0o700)
-    directory = root / (directory_name or f"{manifest.release_id}-cached")
-    directory.mkdir(parents=True)
-    archive = directory / f"taskman-{manifest.release_id}.tar.gz"
-    _write_release_archive(archive)
-    manifest_path = directory / f"taskman-{manifest.release_id}.manifest.json"
+def _artifact(root: Path, *, revision: str = REVISION, payload: str = "one", built_at: datetime | None = None) -> VerifiedArtifact:
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    working = root / f"payload-{payload}.tar.gz"
+    _archive(working, payload)
+    digest = hashlib.sha256(working.read_bytes()).hexdigest()
+    release_id = build_release_id("0.2.0", revision, artifact_sha256=digest, source_dirty=False)
+    directory = root / f"{release_id}-{payload}"
+    directory.mkdir()
+    archive = directory / f"taskman-{release_id}.tar.gz"
+    working.rename(archive)
+    manifest = ArtifactManifest.from_mapping(
+        {
+            "schema_version": SCHEMA_VERSION, "application": APPLICATION, "application_version": "0.2.0",
+            "source_revision": revision, "release_id": release_id,
+            "built_at": (built_at or datetime(2026, 1, 1, tzinfo=UTC)).isoformat().replace("+00:00", "Z"),
+            "target_os": TARGET_OS, "architecture": ARCHITECTURE, "otp_version": OTP_VERSION,
+            "elixir_version": ELIXIR_VERSION, "node_version": NODE_VERSION, "hex_version": HEX_VERSION,
+            "rebar3_version": REBAR3_VERSION, "builder_base_tag": BUILDER_BASE_TAG,
+            "builder_base_digest": BUILDER_BASE_DIGEST, "migrations": [], "top_level": TOP_LEVEL,
+            "artifact_sha256": digest, "source_dirty": False,
+        }
+    )
+    manifest_path = directory / f"taskman-{release_id}.manifest.json"
     manifest_path.write_text(manifest_to_json(manifest), encoding="utf-8")
-    checksum = directory / f"taskman-{manifest.release_id}.tar.gz.sha256"
-    checksum.write_text(
-        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
-        encoding="ascii",
-    )
-    return VerifiedArtifact(archive, manifest_path, checksum, hashlib.sha256(archive.read_bytes()).hexdigest(), manifest)
+    checksum = directory / f"{archive.name}.sha256"
+    checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+    return verify_artifact(archive, manifest_path, checksum)
 
 
-def _write_manifest_override(path: Path, manifest: ArtifactManifest, **overrides: object) -> None:
-    mapping = manifest.to_mapping()
-    mapping.update(overrides)
-    path.write_text(json.dumps(mapping, sort_keys=True), encoding="utf-8")
+def _record(artifact: VerifiedArtifact) -> ReleaseRecord:
+    return ReleaseRecord(artifact.manifest.release_id, artifact.manifest.source_revision, artifact.sha256, (), 2, artifact.manifest)
 
 
-def _repository(repo: Path) -> None:
-    repo.mkdir()
-    (repo / "mix.exs").write_text(
-        'def project do\n  [app: :taskman, version: "0.2.0"]\nend\n', encoding="utf-8"
-    )
+def _inputs(artifact: VerifiedArtifact) -> CleanInputs:
+    manifest = artifact.manifest
+    return CleanInputs(manifest.source_revision, manifest.application_version, manifest.target_os, manifest.architecture,
+                       manifest.otp_version, manifest.elixir_version, manifest.node_version, manifest.hex_version,
+                       manifest.rebar3_version, manifest.builder_base_tag, manifest.builder_base_digest,
+                       manifest.top_level, manifest.migrations)
 
 
-def _identified_checkout(monkeypatch: pytest.MonkeyPatch, revision: str = REVISION, *, clean: bool = True) -> None:
-    monkeypatch.setattr(
-        "taskman_ops.releases.artifacts.read_repository_state",
-        lambda _repo: SourceState(revision=revision, clean=clean),
-    )
+def _clean_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskman_ops.releases.artifacts.read_repository_state", lambda _repo: SourceState(REVISION, True))
 
 
-def test_implicit_resolution_reuses_verified_exact_input_without_building(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    cached = _write_artifact(artifact_root)
-    _identified_checkout(monkeypatch)
-
-    def unexpected_builder(_repo: Path, _root: Path) -> VerifiedArtifact:
-        raise AssertionError("exact cached input should be reused")
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        artifact_root=artifact_root,
-        builder=unexpected_builder,
-    )
-
-    assert isinstance(resolution, ArtifactResolution)
-    assert resolution.source == "cached"
-    assert resolution.artifact.archive == cached.archive
-    assert resolution.artifact.manifest.source_revision == REVISION
+def test_target_resolution_prefers_matching_selected_record_without_an_archive_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacing an installed record with a fabricated archive would force an unnecessary upload."""
+    artifact = _artifact(tmp_path / "artifacts")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(tmp_path / "repo", None, installed_records=(_record(artifact),),
+                                   selected_release_id=artifact.manifest.release_id, last_successful_release_id=None,
+                                   clean_inputs=_inputs(artifact), artifact_root=tmp_path / "cache")
+    assert isinstance(target, DeploymentTarget)
+    assert target.source == "installed"
+    assert target.artifact is None
+    assert target.release_record == _record(artifact)
 
 
-def test_implicit_resolution_builds_after_cache_miss_and_shares_artifact_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    _identified_checkout(monkeypatch)
-    seen: list[tuple[Path, Path]] = []
-
-    def builder(actual_repo: Path, actual_root: Path) -> VerifiedArtifact:
-        seen.append((actual_repo, actual_root))
-        return _write_artifact(actual_root, directory_name="built")
-
-    resolution = resolve_deploy_artifact(repo, None, artifact_root=artifact_root, builder=builder)
-
-    assert resolution.source == "built"
-    assert seen == [(repo, artifact_root)]
+def test_target_resolution_orders_other_matching_installed_records_by_full_release_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing deterministic ordering would make equivalent host inventories choose differently."""
+    first = _artifact(tmp_path / "artifacts", payload="first")
+    second = _artifact(tmp_path / "artifacts", payload="second")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(tmp_path / "repo", None, installed_records=(_record(second), _record(first)),
+                                   selected_release_id=None, last_successful_release_id=None, clean_inputs=_inputs(first),
+                                   artifact_root=tmp_path / "cache")
+    assert target.source == "installed"
+    assert target.release_id == min(first.manifest.release_id, second.manifest.release_id)
 
 
-@pytest.mark.parametrize(
-    ("revision", "version"),
-    [(OTHER_REVISION, VERSION), (REVISION, OTHER_VERSION)],
-)
-def test_implicit_resolution_builds_when_cached_source_inputs_do_not_match(
+def test_target_resolution_uses_deterministically_sorted_verified_cache_after_host_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ignoring cache path ordering can change a desired target when archives differ."""
+    first = _artifact(tmp_path / "cache", payload="first")
+    second = _artifact(tmp_path / "cache", payload="second")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(tmp_path / "repo", None, installed_records=(), selected_release_id=None,
+                                   last_successful_release_id=None, clean_inputs=_inputs(first), artifact_root=tmp_path / "cache")
+    assert target.source == "cached"
+    assert target.release_id == min(first.manifest.release_id, second.manifest.release_id)
+
+
+def test_explicit_artifact_does_not_bypass_invalid_installed_authority(tmp_path: Path) -> None:
+    """Skipping host-authority validation for explicit bytes would hide unsupported host metadata."""
+    artifact = _artifact(tmp_path / "supplied")
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(tmp_path / "repo", artifact.archive, installed_records=(object(),),
+                              selected_release_id=None, last_successful_release_id=None)
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_explicit_artifact_does_not_bypass_incomplete_installed_authority(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    revision: str,
-    version: str,
 ) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    _write_artifact(artifact_root, revision=revision, version=version)
-    _identified_checkout(monkeypatch)
-    built = _write_artifact(tmp_path / "built", directory_name="replacement")
-    calls: list[tuple[Path, Path]] = []
-
-    def builder(actual_repo: Path, actual_root: Path) -> VerifiedArtifact:
-        calls.append((actual_repo, actual_root))
-        return built
-
-    resolution = resolve_deploy_artifact(repo, None, artifact_root=artifact_root, builder=builder)
-
-    assert resolution.source == "built"
-    assert resolution.artifact is built
-    assert calls == [(repo, artifact_root)]
+    artifact = _artifact(tmp_path / "supplied")
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo",
+            artifact.archive,
+            installed_records=(),
+            selected_release_id=artifact.manifest.release_id,
+            last_successful_release_id=None,
+        )
+    assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_invalid_cache_candidates_are_ignored_without_being_deleted(
+def test_dirty_automatic_resolution_builds_before_reusing_an_exact_installed_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Checking installed records before freezing dirty bytes can deploy a different checkout."""
+    artifact = _artifact(tmp_path / "built")
+    monkeypatch.setattr("taskman_ops.releases.artifacts.read_repository_state", lambda _repo: SourceState(REVISION, False))
+    calls: list[bool] = []
+    def builder(_repo: Path, _root: Path) -> VerifiedArtifact:
+        calls.append(True)
+        return artifact
+    target = resolve_deploy_target(tmp_path / "repo", None, installed_records=(_record(artifact),),
+                                   selected_release_id=artifact.manifest.release_id, last_successful_release_id=None,
+                                   allow_dirty=True, artifact_root=tmp_path / "cache", builder=builder)
+    assert calls == [True]
+    assert target.source == "installed"
+
+
+def test_clean_allow_dirty_uses_the_clean_resolution_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treating a clean checkout as dirty loses installed/cache reuse without cause."""
+    artifact = _artifact(tmp_path / "artifacts")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(tmp_path / "repo", None, installed_records=(_record(artifact),),
+                                   selected_release_id=artifact.manifest.release_id, last_successful_release_id=None,
+                                   allow_dirty=True, clean_inputs=_inputs(artifact), artifact_root=tmp_path / "cache")
+    assert target.source == "installed"
+
+
+def test_clean_input_equality_refuses_a_changed_checkout_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Accepting changed fingerprints after discovery would confirm stale source provenance."""
+    artifact = _artifact(tmp_path / "artifacts")
+    _clean_checkout(monkeypatch)
+    inputs = _inputs(artifact)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: CleanInputs(
+        **{**inputs.__dict__, "source_revision": "b" * 40}
+    ))
+    assert clean_inputs_match(tmp_path / "repo", inputs) is False
+
+
+def test_target_resolution_requires_preidentified_clean_inputs_for_automatic_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A controller must not infer a replacement checkout identity after discovery."""
+    _clean_checkout(monkeypatch)
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(tmp_path / "repo", None, installed_records=(), selected_release_id=None,
+                              last_successful_release_id=None, clean_inputs=None)
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_target_resolution_prefers_matching_successful_record_after_a_nonmatching_selected_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    invalid = artifact_root / "invalid"
+    """Skipping successful history after a changed physical selection loses a valid no-upload target."""
+    selected = _artifact(tmp_path / "artifacts", payload="selected", revision="b" * 40)
+    successful = _artifact(tmp_path / "artifacts", payload="successful")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(
+        tmp_path / "repo", None, installed_records=(_record(selected), _record(successful)),
+        selected_release_id=selected.manifest.release_id, last_successful_release_id=successful.manifest.release_id,
+        clean_inputs=_inputs(successful), artifact_root=tmp_path / "cache",
+    )
+    assert target.source == "installed"
+    assert target.release_id == successful.manifest.release_id
+
+
+def test_target_resolution_does_not_match_a_record_when_any_clean_provenance_input_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source-only reuse can select an artifact built with a different builder or layout contract."""
+    artifact = _artifact(tmp_path / "artifacts")
+    _clean_checkout(monkeypatch)
+    inputs = CleanInputs(**{**_inputs(artifact).__dict__, "builder_base_tag": "different-builder"})
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo", None, installed_records=(_record(artifact),),
+            selected_release_id=artifact.manifest.release_id, last_successful_release_id=None,
+            clean_inputs=inputs, artifact_root=tmp_path / "cache", builder=lambda _repo, _root: artifact,
+        )
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_clean_input_drift_classifier_accepts_only_the_actual_fresh_build_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrying ordinary artifact failures could hide a broken local build behind source churn."""
+    expected = _artifact(tmp_path / "expected")
+    changed = _artifact(tmp_path / "changed", revision="b" * 40)
+    _clean_checkout(monkeypatch)
+
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo",
+            None,
+            installed_records=(),
+            selected_release_id=None,
+            last_successful_release_id=None,
+            clean_inputs=_inputs(expected),
+            artifact_root=tmp_path / "cache",
+            builder=lambda _repo, _root: changed,
+        )
+
+    assert clean_inputs_drifted(raised.value) is True
+
+    unrelated = OpsError(
+        ExitStatus.INVALID,
+        "artifact",
+        "automatic clean resolution needs preidentified clean inputs",
+        changed=False,
+    )
+    failed_build = OpsError(ExitStatus.LOCAL_PREREQUISITE, "artifact", "release builder failed")
+
+    assert clean_inputs_drifted(unrelated) is False
+    assert clean_inputs_drifted(failed_build) is False
+
+
+def test_invalid_cache_is_preserved_while_a_fresh_target_is_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting rejected cache bytes destroys operator evidence and can hide a malformed artifact."""
+    valid = _artifact(tmp_path / "built")
+    cache = tmp_path / "cache"
+    invalid = cache / "broken"
     invalid.mkdir(mode=0o700, parents=True)
-    archive = invalid / "taskman-broken.tar.gz"
-    archive.write_bytes(b"not-a-tar")
-    (invalid / "taskman-broken.manifest.json").write_text(
-        manifest_to_json(_manifest()), encoding="utf-8"
+    cache.chmod(0o700)
+    (invalid / "taskman-broken.tar.gz").write_bytes(b"not an archive")
+    (invalid / "taskman-broken.manifest.json").write_text("{}", encoding="utf-8")
+    (invalid / "taskman-broken.tar.gz.sha256").write_text("0" * 64 + "  taskman-broken.tar.gz\n", encoding="ascii")
+    _clean_checkout(monkeypatch)
+    target = resolve_deploy_target(
+        tmp_path / "repo", None, installed_records=(), selected_release_id=None, last_successful_release_id=None,
+        clean_inputs=_inputs(valid), artifact_root=cache, builder=lambda _repo, _root: valid,
     )
-    (invalid / "taskman-broken.tar.gz.sha256").write_text(
-        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
-        encoding="ascii",
-    )
-    valid = _write_artifact(artifact_root)
-    _identified_checkout(monkeypatch)
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        artifact_root=artifact_root,
-        builder=lambda *_args: pytest.fail("must not build when a valid cache entry follows corruption"),
-    )
-
-    assert resolution.source == "cached"
-    assert resolution.artifact.archive == valid.archive
+    assert target.source == "built"
     assert invalid.exists()
 
 
-def test_old_verified_artifacts_remain_reusable_regardless_of_age(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    cached = _write_artifact(artifact_root, built_at=datetime(1970, 1, 1, tzinfo=UTC))
-    _identified_checkout(monkeypatch)
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        artifact_root=artifact_root,
-        builder=lambda *_args: pytest.fail("artifact age must not force a build"),
-    )
-
-    assert resolution.source == "cached"
-    assert resolution.artifact.archive == cached.archive
-
-
-def test_explicit_artifact_is_authoritative_over_cached_artifact_and_checkout_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    _write_artifact(artifact_root)
-    supplied_root = tmp_path / "supplied"
-    supplied = _write_artifact(supplied_root, revision=OTHER_REVISION, directory_name="explicit")
-    monkeypatch.setattr(
-        "taskman_ops.releases.artifacts.read_repository_state",
-        lambda _repo: pytest.fail("explicit artifacts must not inspect the checkout"),
-    )
-
-    resolution = resolve_deploy_artifact(repo, supplied.archive, artifact_root=artifact_root)
-
-    assert resolution.source == "explicit"
-    assert resolution.artifact.archive == supplied.archive
-
-
-@pytest.mark.parametrize("state", [SourceState(revision=REVISION, clean=False), SourceState(revision=None, clean=True)])
-def test_implicit_resolution_refuses_unclean_or_unidentified_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: SourceState
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    monkeypatch.setattr("taskman_ops.releases.artifacts.read_repository_state", lambda _repo: state)
-    built = False
-
-    def builder(_repo: Path, _root: Path) -> VerifiedArtifact:
-        nonlocal built
-        built = True
-        raise AssertionError("invalid checkout must not build")
-
-    with pytest.raises(OpsError) as raised:
-        resolve_deploy_artifact(repo, None, artifact_root=tmp_path / "artifacts", builder=builder)
-
-    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
-    assert built is False
-
-
-def test_nested_artifact_directories_are_not_considered_managed_cache_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    nested_root = artifact_root / "nested"
-    nested_root.mkdir(mode=0o700, parents=True)
-    artifact_root.chmod(0o700)
-    nested = _write_artifact(nested_root)
-    _identified_checkout(monkeypatch)
-    built = _write_artifact(tmp_path / "built", directory_name="replacement")
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        artifact_root=artifact_root,
-        builder=lambda *_args: built,
-    )
-
-    assert resolution.source == "built"
-    assert resolution.artifact.archive == built.archive
-    assert nested.archive.exists()
-
-
 @pytest.mark.parametrize(
-    "field_value",
-    [
-        {"target_os": "ubuntu24.04"},
-        {"otp_version": "27.3.4.5"},
-        {"builder_base_digest": "sha256:" + "0" * 64},
-    ],
+    ("field", "changed_value"),
+    (
+        ("source_revision", "b" * 40),
+        ("application_version", "0.2.1"),
+        ("target_os", "different-target-os"),
+        ("architecture", "different-architecture"),
+        ("otp_version", "0.0.0"),
+        ("elixir_version", "0.0.0"),
+        ("node_version", "0.0.0"),
+        ("hex_version", "0.0.0"),
+        ("rebar3_version", "0.0.0"),
+        ("builder_base_tag", "different-builder"),
+        ("builder_base_digest", "sha256:" + "0" * 64),
+        ("top_level", "different-top-level"),
+        ("migrations", (MigrationFingerprint("20260101000000_changed.exs", "0" * 64),)),
+    ),
 )
-def test_verified_cache_candidates_with_pinned_identity_mismatches_trigger_a_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    field_value: dict[str, str],
+def test_clean_inputs_match_rejects_each_identity_component_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, changed_value: object
 ) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    cached = _write_artifact(artifact_root, directory_name="mismatched")
-    _write_manifest_override(cached.manifest_path, cached.manifest, **field_value)
-    _identified_checkout(monkeypatch)
-    built = _write_artifact(tmp_path / "built", directory_name="replacement")
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        artifact_root=artifact_root,
-        builder=lambda *_args: built,
-    )
-
-    assert resolution.source == "built"
-    assert resolution.artifact is built
-    assert cached.archive.exists()
+    """Each captured source/build identity field must invalidate a stale deployment plan."""
+    artifact = _artifact(tmp_path / "artifact")
+    inputs = _inputs(artifact)
+    changed = CleanInputs(**{**inputs.__dict__, field: changed_value})
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: changed)
+    assert clean_inputs_match(tmp_path / "repo", inputs) is False
 
 
-@pytest.mark.parametrize("mode", [0o755, 0o750])
-def test_implicit_resolution_rejects_a_cache_root_with_nonrestrictive_permissions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mode: int,
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    _write_artifact(artifact_root)
-    artifact_root.chmod(mode)
-    _identified_checkout(monkeypatch)
-
-    with pytest.raises(OpsError) as raised:
-        resolve_deploy_artifact(
-            repo,
-            None,
-            artifact_root=artifact_root,
-            builder=lambda *_args: pytest.fail("insecure cache root must not build"),
-        )
-
-    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
-
-
-def test_implicit_resolution_rejects_a_symlinked_cache_root(
+def test_clean_inputs_match_accepts_unchanged_inputs_and_refuses_newly_dirty_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    target = tmp_path / "target"
-    _write_artifact(target)
-    artifact_root = tmp_path / "artifacts"
-    artifact_root.symlink_to(target, target_is_directory=True)
-    _identified_checkout(monkeypatch)
+    """A plan remains valid only while its source is clean and exactly unchanged."""
+    artifact = _artifact(tmp_path / "artifact")
+    inputs = _inputs(artifact)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: inputs)
+    assert clean_inputs_match(tmp_path / "repo", inputs) is True
+    dirty = OpsError(ExitStatus.LOCAL_PREREQUISITE, "artifact", "checkout is dirty")
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: (_ for _ in ()).throw(dirty))
+    assert clean_inputs_match(tmp_path / "repo", inputs) is False
 
+
+def test_identify_clean_inputs_preserves_invalid_input_contract_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Downgrading a bounds refusal to a build prerequisite assigns the wrong operator recovery path."""
+    from taskman_ops.releases.artifacts import identify_clean_inputs
+    from taskman_ops.releases.build import SourceState
+    monkeypatch.setattr("taskman_ops.releases.artifacts.read_repository_state", lambda _repo: SourceState(REVISION, True))
+    expected = OpsError(ExitStatus.INVALID, "artifact", "too many migrations")
+    monkeypatch.setattr("taskman_ops.releases.artifacts.fingerprint_migrations", lambda _path: (_ for _ in ()).throw(expected))
     with pytest.raises(OpsError) as raised:
-        resolve_deploy_artifact(
-            repo,
-            None,
-            artifact_root=artifact_root,
-            builder=lambda *_args: pytest.fail("symlinked cache root must not build"),
-        )
-
-    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
-
-
-def test_implicit_resolution_rejects_a_cache_root_not_owned_by_the_controller_user(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    _write_artifact(artifact_root)
-    monkeypatch.setattr("taskman_ops.releases.build.os.getuid", lambda: 2**31)
-    _identified_checkout(monkeypatch)
-
-    with pytest.raises(OpsError) as raised:
-        resolve_deploy_artifact(
-            repo,
-            None,
-            artifact_root=artifact_root,
-            builder=lambda *_args: pytest.fail("foreign cache root must not build"),
-        )
-
-    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
-
-
-def test_build_rejects_an_existing_insecure_artifact_root_before_exporting_source(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "artifacts"
-    artifact_root.mkdir(mode=0o755)
-
-    def unexpected_export(*_args: object) -> None:
-        pytest.fail("source export must wait for secure artifact-root validation")
-
-    with pytest.raises(OpsError) as raised:
-        from taskman_ops.releases.build import build_release
-
-        build_release(
-            repo,
-            artifact_root,
-            source_reader=lambda _repo: SourceState(revision=REVISION, clean=True),
-            source_exporter=unexpected_export,
-        )
-
-    assert raised.value.status is ExitStatus.LOCAL_PREREQUISITE
-    assert stat.S_IMODE(artifact_root.stat().st_mode) == 0o755
-
-
-def test_build_output_is_discoverable_by_implicit_resolution_at_the_default_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "repo"
-    _repository(repo)
-    artifact_root = tmp_path / "shared-artifacts"
-    monkeypatch.setattr("taskman_ops.releases.build.default_artifact_root", lambda: artifact_root)
-    monkeypatch.setattr("taskman_ops.releases.artifacts.default_artifact_root", lambda: artifact_root)
-    _identified_checkout(monkeypatch)
-    built = _write_artifact(tmp_path / "built", directory_name="replacement")
-
-    def build_for_public_command(_repo: Path, output: Path) -> VerifiedArtifact:
-        cached = _write_artifact(output)
-        return cached
-
-    monkeypatch.setattr("taskman_ops.releases.build.build_release", build_for_public_command)
-    build_result = dispatch(Invocation(command="build"))
-
-    resolution = resolve_deploy_artifact(
-        repo,
-        None,
-        builder=lambda *_args: built,
-    )
-
-    assert build_result.stage == "built"
-    assert resolution.source == "cached"
-    assert resolution.artifact.manifest.source_revision == REVISION
+        identify_clean_inputs(tmp_path)
+    assert raised.value.status is ExitStatus.INVALID

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import re
+import time
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -22,10 +23,12 @@ from .helper import (
     verification_settings,
 )
 from .operational_preflight import validate_operational_preflight
+from .inventory import collect_inventory
 
 
 _PGPASS = "/etc/taskman/pgpass"
 _BACKUP_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_INVENTORY_TIMEOUT_SECONDS = 660.0
 _SUCCESS_FACTS = frozenset(
     {
         "changed",
@@ -57,6 +60,7 @@ def rollback(
     target = validate_release_id(release_id)
     current: str | None = None
     warnings: tuple[str, ...] = ()
+    deadline = time.monotonic() + _INVENTORY_TIMEOUT_SECONDS
     try:
         validate_operational_preflight(remote, config)
         discovered = run_request(remote, discovery_request(config))
@@ -64,7 +68,13 @@ def rollback(
             raise result_error(discovered)
         current = _selected_release(discovered.state)
         warnings = discovered.warnings
-        _target_is_installed(discovered.state, target)
+        releases = collect_inventory(
+            remote,
+            config,
+            "list_releases",
+            deadline=deadline,
+        )
+        _target_is_installed(releases, target)
         if current == target:
             raise _safety("rollback target is already selected")
         plan = {
@@ -161,9 +171,7 @@ def _selected_release(value: object) -> str:
 
 
 def _target_is_installed(value: object, target: str) -> None:
-    if not isinstance(value, Mapping):
-        raise _safety("rollback planning helper returned invalid host state")
-    rows = mutable(value.get("releases"))
+    rows = mutable(value)
     if not isinstance(rows, list):
         raise _safety("rollback planning helper returned invalid host state")
     for row in rows:

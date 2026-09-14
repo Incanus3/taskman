@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+
 from tests.support.environments import environment_config
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
@@ -14,6 +16,10 @@ from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from taskman_ops.workflows.provision import ProvisionCapabilities, _present_plan, provision
+from taskman_ops.workflows.deploy import (
+    _matches_confirmed_preconvergence,
+    _starting_expected_state,
+)
 
 
 def artifact(*, migrations: tuple[object, ...] = ()) -> object:
@@ -71,8 +77,8 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
     assert host.closed == 2
 
 
-def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -> None:
-    """Host admission must precede every operator-controlled consequence."""
+def test_provision_builds_the_material_plan_after_all_preconvergence_authority() -> None:
+    """Confirmed material facts must come from the admitted starting authority."""
 
     host = Host()
     capabilities = _capabilities(
@@ -80,11 +86,157 @@ def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -
         present_plan=lambda _plan: host.events.append("present-plan"),
         confirm=lambda _plan: host.events.append("confirm") or True,
     )
+    capabilities = ProvisionCapabilities(
+        **{
+            **capabilities.__dict__,
+            "preflight": lambda _remote, _inputs: host.events.append("preflight"),
+        }
+    )
 
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.stage == "provisioned"
-    assert host.events == ["plan", "discovery", "present-plan", "confirm", "provisioning"]
+    assert host.events == [
+        "discovery",
+        "preflight",
+        "plan",
+        "present-plan",
+        "confirm",
+        "discovery",
+        "preflight",
+        "provisioning",
+    ]
+
+
+def test_provision_retains_admission_cleanup_warning_without_plan_drift() -> None:
+    host = Host()
+
+    class Authority(dict):
+        warnings = ("transient helper cleanup was incomplete",)
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(
+        **{**capabilities.__dict__, "preflight": lambda *_args: Authority()}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", dry_run=True),
+        capabilities=capabilities,
+    )
+
+    assert result.stage == "planned"
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+
+
+def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation() -> None:
+    """A conflicting recovered secret must never reach the convergence writer."""
+
+    host = Host()
+
+    def preflight(_remote: object, _inputs: object) -> None:
+        host.events.append("credential-preflight")
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "credential-preflight",
+            "existing credentials disagree with the supplied authority",
+            changed=False,
+            next_action="resolve the credential authority deliberately",
+        )
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "preflight": preflight})
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["discovery", "credential-preflight"]
+    assert "provisioning" not in host.events
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ("current", "release-record", "selection-record", "backup-protection", "restore-record", "postgresql"),
+)
+def test_each_preconvergence_authority_refusal_stops_before_pyinfra_mutation(authority: str) -> None:
+    """Every existing authority class is a read-only admission boundary."""
+
+    host = Host()
+
+    def preflight(_remote: object, _inputs: object) -> None:
+        host.events.append(authority)
+        raise OpsError(ExitStatus.SAFETY, "authority-preflight", "unsafe authority", changed=False)
+
+    capabilities = ProvisionCapabilities(**{**_capabilities(host).__dict__, "preflight": preflight})
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["discovery", authority]
+    assert "provisioning" not in host.events
+
+
+def test_default_preflight_checks_packaged_resources_before_the_secret_writers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact resource admission must precede both protected credential writes."""
+
+    from taskman_ops import provisioning as provisioning_module
+
+    host = Host()
+    checks: list[str] = []
+
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_preconvergence_authority",
+        lambda *_args: checks.append("observer"),
+    )
+
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_credential_authority",
+        lambda *_args: checks.append("credentials"),
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=ProvisionCapabilities(
+            **{**_capabilities(host).__dict__, "preflight": provisioning_module.validate_existing_authority}
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert checks == ["observer", "credentials"] * 2
+
+
+def test_default_preflight_observes_record_and_postgresql_authority_before_local_reuse_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No existing record or database authority may reach pyinfra unobserved."""
+
+    from taskman_ops import provisioning as provisioning_module
+
+    host = Host()
+    checks: list[str] = []
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_preconvergence_authority",
+        lambda *_args: checks.append("observer"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_credential_authority",
+        lambda *_args: checks.append("credentials"),
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=ProvisionCapabilities(
+            **{**_capabilities(host).__dict__, "preflight": provisioning_module.validate_existing_authority}
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert checks == ["observer", "credentials"] * 2
 
 
 def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() -> None:
@@ -114,7 +266,7 @@ def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() 
     assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
     assert result.stage == "provisioning-incomplete"
     assert result.facts == {"failed_boundary": "host-admission", "release_started": False}
-    assert host.events == ["plan", "discovery"]
+    assert host.events == ["discovery"]
     assert host.closed == 1
 
 
@@ -157,6 +309,52 @@ def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability(
     assert result.facts["release"]["backup_id"] is None
 
 
+def test_provision_passes_migration_and_acknowledgement_authority_to_genesis() -> None:
+    host = Host()
+    observed: dict[str, object] = {}
+
+    def genesis(_remote: object, _config: EnvironmentConfig, supplied: object, **kwargs: object) -> WorkflowResult:
+        observed.update(kwargs)
+        return WorkflowResult(
+            command="deploy", environment="production", changed=False, stage="already-current", facts={}
+        )
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "genesis": genesis})
+    result = provision(
+        Invocation(
+            command="provision",
+            environment="production",
+            migration_policy="backward-compatible",
+            yes=True,
+            allow_downgrade=True,
+        ),
+        capabilities=capabilities,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert {key: value for key, value in observed.items() if key != "starting_state"} == {
+        "migration_policy": "backward-compatible",
+        "yes": True,
+        "allow_downgrade": True,
+        "dry_run": False,
+    }
+    assert observed["starting_state"]["authority"] == "validated"
+
+
+def test_provision_yes_acknowledges_the_confirmed_resource_plan_without_prompting() -> None:
+    host = Host()
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True),
+        capabilities=_capabilities(
+            host,
+            confirm=lambda _plan: pytest.fail("--yes must not request another confirmation"),
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+
+
 def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() -> None:
     host = Host()
 
@@ -184,7 +382,7 @@ def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() ->
     assert result.facts["applied_migrations"] == (999,)
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect the release state before retrying"
-    assert host.events == ["plan", "discovery", "provisioning"]
+    assert host.events == ["discovery", "plan", "discovery", "provisioning"]
 
 
 def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_change() -> None:
@@ -215,7 +413,9 @@ def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_cha
     assert result.changed is False
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-refused"
-    assert result.facts == {"failure": "not-ready"}
+    assert result.facts["failure"] == "not-ready"
+    assert result.facts["mutation_state"] == "unchanged"
+    assert result.facts["starting_state"]["authority"] == "validated"
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect release state before retrying"
 
@@ -248,9 +448,463 @@ def test_provision_release_failure_retains_release_change_evidence() -> None:
     assert result.changed is True
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-incomplete"
-    assert result.facts == {"failure": "started"}
+    assert result.facts["failure"] == "started"
+    assert result.facts["mutation_state"] == "changed"
+    assert result.facts["starting_state"]["authority"] == "validated"
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect the partially deployed release before retrying"
+
+
+def test_provision_aggregates_convergence_mutation_before_unknown_genesis_result() -> None:
+    """A lost genesis reply must not erase an earlier proved host convergence."""
+
+    host = Host()
+
+    def release(_remote: object, _config: EnvironmentConfig, _artifact: object) -> WorkflowResult:
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="deployment-incomplete",
+            facts={
+                "mutation_state": "unknown",
+                "starting_state": {"selected_release_id": None},
+            },
+            exit_status=ExitStatus.RELEASE,
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, release=release),
+    )
+
+    assert result.changed is True
+    assert result.facts["mutation_state"] == "changed"
+    assert result.facts["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+
+
+def test_provision_preserves_the_confirmed_preconvergence_snapshot_through_genesis() -> None:
+    """Later genesis observations must never replace the confirmed starting authority."""
+
+    host = Host()
+    received: dict[str, object] = {}
+
+    def genesis(_remote: object, _config: EnvironmentConfig, _artifact: object, **kwargs: object) -> WorkflowResult:
+        received.update(kwargs)
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="deployed",
+            facts={"starting_state": {"selected_release_id": "post-convergence"}},
+        )
+
+    capabilities = ProvisionCapabilities(**{**_capabilities(host).__dict__, "genesis": genesis})
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert received["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+    assert result.facts["starting_state"] == received["starting_state"]
+
+
+@dataclass(frozen=True)
+class _ObservedProvisionResources:
+    reused: tuple[str, ...]
+    converged: tuple[str, ...]
+    database_state: str
+
+
+def test_provision_binds_dataclass_resource_authority_and_full_host_snapshot_into_plan() -> None:
+    """The confirmed transaction must not lose real discovery dataclass facts."""
+
+    host = Host()
+    presented: list[dict[str, object]] = []
+    authority = {
+        "authority": "validated",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "last_successful_selection": None,
+        "previous_successful_selection": None,
+        "applied_migrations": (),
+        "service_state": "stopped",
+        "database_state": "ready",
+        "backup_protections": (),
+        "independently_held_backup_ids": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "backup_timer_state": "inactive",
+        "downgrade_baseline_sha256": "b" * 64,
+        "installed_release_count": 0,
+        "installed_release_sha256": "c" * 64,
+    }
+    resources = _ObservedProvisionResources(("/etc/taskman",), ("taskman.service",), "empty")
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda *_args, **_kwargs: resources,
+            "preflight": lambda *_args: authority,
+            "present_plan": lambda plan: presented.append(dict(plan)),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert presented[0]["starting_state"]["host_authority"] == authority
+    assert presented[0]["starting_state"]["resource_authority"] == {
+        "reused": ("/etc/taskman",),
+        "converged": ("taskman.service",),
+        "database_state": "empty",
+    }
+    assert result.facts["starting_state"] == presented[0]["starting_state"]
+
+
+def test_provision_passes_only_confirmed_absent_scheduler_resources_to_pyinfra_and_genesis() -> None:
+    """Existing scheduler files are not generic writes; absent ones are explicit deltas."""
+
+    host = Host()
+    observed_inputs: list[object] = []
+    genesis_kwargs: dict[str, object] = {}
+    authority = {
+        "authority": "validated",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "last_successful_selection": None,
+        "previous_successful_selection": None,
+        "applied_migrations": (),
+        "service_state": "stopped",
+        "database_state": "ready",
+        "backup_protections": (),
+        "independently_held_backup_ids": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": "b" * 64,
+        "backup_timer_enabled": True,
+        "backup_timer_state": "inactive",
+        "downgrade_baseline_sha256": "c" * 64,
+        "installed_release_count": 0,
+        "installed_release_sha256": "d" * 64,
+        "scheduler_resources": {"helper": True, "service": True, "timer": False, "environment": True},
+        "scheduler_create": ("/etc/systemd/system/taskman-backup.timer",),
+    }
+
+    def provisioning(_remote: object, inputs: object) -> ChangeSet:
+        observed_inputs.append(inputs)
+        return ChangeSet(changed=False)
+
+    def genesis(_remote: object, _config: object, _target: object, **kwargs: object) -> WorkflowResult:
+        genesis_kwargs.update(kwargs)
+        return WorkflowResult("deploy", "production", False, "already-current", {})
+
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "preflight": lambda *_args: authority,
+            "provisioning": provisioning,
+            "genesis": genesis,
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert observed_inputs[0].scheduler_create == frozenset({"/etc/systemd/system/taskman-backup.timer"})
+    assert genesis_kwargs["scheduler_create"] == ("/etc/systemd/system/taskman-backup.timer",)
+
+
+def test_post_pyinfra_authority_accepts_only_the_confirmed_absent_scheduler_delta() -> None:
+    """A create delta cannot excuse concurrent release or existing-scheduler drift."""
+
+    confirmed = {
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "applied_migrations": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "downgrade_baseline_sha256": "b" * 64,
+    }
+    created = {
+        **confirmed,
+        "scheduled_backup_sha256": "c" * 64,
+        "backup_timer_enabled": True,
+    }
+
+    assert _matches_confirmed_preconvergence(
+        created,
+        confirmed,
+        ("/usr/local/lib/taskman/taskman-backup.pyz", "/etc/systemd/system/taskman-backup.timer"),
+    )
+    assert not _matches_confirmed_preconvergence(
+        {**created, "applied_migrations": (20260905120000,)},
+        confirmed,
+        ("/usr/local/lib/taskman/taskman-backup.pyz", "/etc/systemd/system/taskman-backup.timer"),
+    )
+    assert not _matches_confirmed_preconvergence(
+        {**confirmed, "scheduled_backup_sha256": "c" * 64}, confirmed, ()
+    )
+
+
+def test_absent_database_keeps_non_database_confirmation_authority() -> None:
+    """Database creation is a delta, not a waiver for release-state drift."""
+
+    authority = {
+        "database_state": "absent",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "applied_migrations": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "downgrade_baseline_sha256": "b" * 64,
+    }
+
+    assert _starting_expected_state({"host_authority": authority}) == {
+        key: value for key, value in authority.items() if key != "database_state"
+    }
+
+
+def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_before_release() -> None:
+    """A post-confirmation provisioning error cannot erase the authorized plan."""
+
+    host = Host()
+
+    def refuse(*_args: object) -> ChangeSet:
+        raise OpsError(ExitStatus.SAFETY, "pyinfra", "resource drift", changed=False)
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, provisioning=refuse),
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.facts["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+
+
+def test_provision_refuses_authority_drift_after_interactive_confirmation() -> None:
+    """Interactive consent cannot be reused after the displayed host authority changes."""
+
+    host = Host()
+    discoveries = iter(("first", "changed", "changed", "changed"))
+    presented: list[object] = []
+
+    capabilities = _capabilities(
+        host,
+        present_plan=lambda plan: presented.append(plan),
+        confirm=lambda _plan: True,
+    )
+    capabilities = ProvisionCapabilities(
+        **{
+            **capabilities.__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert len(presented) == 1
+    assert host.events == ["plan"]
+
+
+def test_provision_yes_refuses_material_drift_after_confirmation_before_pyinfra() -> None:
+    """`--yes` confirms one plan, not a later resource snapshot."""
+
+    host = Host()
+    discoveries = iter(("first", "changed"))
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan"]
+
+
+def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed clean checkout cannot reuse its pre-discovery identity."""
+
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    old_inputs = object()
+    fresh_inputs = object()
+    identified = iter((old_inputs, fresh_inputs))
+    matches = iter((False, True, True))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "target_resolution": lambda _remote, _config, _invocation, inputs: resolved.append(inputs) or artifact(),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
+    assert host.events.count("plan") == 1
+    assert host.events.count("provisioning") == 1
+
+
+def test_provision_refuses_clean_input_drift_after_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any post-confirmation clean-source change requires a new invocation."""
+
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    inputs = iter((object(), object()))
+    matches = iter((True, False))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(inputs))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "target_resolution": lambda *_args: resolved.append(_args[-1]) or artifact(),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert resolved == [resolved[0], resolved[0]]
+    assert host.events == ["discovery", "plan", "discovery"]
+
+
+def test_provision_refuses_clean_build_drift_during_post_confirmation_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build-time source mismatch after consent cannot become an invalid-input result."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    inputs = object()
+    resolutions = 0
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: inputs)
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: True, raising=False)
+
+    def resolve(*_args: object) -> object:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions == 2:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return artifact()
+
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "provisioning-incomplete"
+    assert host.events == ["discovery", "plan", "discovery"]
+
+
+def test_provision_retries_clean_build_drift_during_target_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build-time mismatch restarts provision's clean discovery and resolution cycle."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    old_inputs = object()
+    fresh_inputs = object()
+    identified = iter((old_inputs, fresh_inputs))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: True, raising=False)
+
+    def resolve(_remote: object, _config: EnvironmentConfig, _invocation: object, inputs: object) -> object:
+        resolved.append(inputs)
+        if len(resolved) == 1:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return artifact()
+
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
+    assert host.events == ["discovery", "discovery", "plan", "discovery", "provisioning"]
+
+
+def test_provision_refuses_after_exhausting_clean_resolution_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing provision's exhaustion guard would keep rediscovering an unstable checkout."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    identified = 0
+    resolutions = 0
+
+    def identify(_repo: Path) -> object:
+        nonlocal identified
+        identified += 1
+        return object()
+
+    def resolve(*_args: object) -> object:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions > 4:
+            pytest.fail("provision resolution retried beyond its bounded attempt budget")
+        raise OpsError(
+            ExitStatus.INVALID,
+            "artifact",
+            "source inputs changed before the fresh build completed",
+            changed=False,
+        )
+
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", identify)
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "provisioning-incomplete"
+    assert resolutions == 4
+    assert identified == 4
+    assert host.events == ["discovery"] * 4
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:
@@ -266,7 +920,7 @@ def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -
 
     assert result.stage == "planned"
     assert result.changed is False
-    assert host.events == ["plan", "discovery"]
+    assert host.events == ["discovery", "plan"]
     assert host.closed == 1
 
 
@@ -337,8 +991,11 @@ def _capabilities(
             ("caddy",),
             "taskman.acme.tld {\n}\n",
         ),
-        release_deployment=release
-        or (lambda _remote, _config, _artifact: WorkflowResult(
+        genesis=(
+            (lambda remote, config, supplied, **_kwargs: release(remote, config, supplied))
+            if release is not None
+            else lambda _remote, _config, _artifact, **_kwargs: WorkflowResult(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
-        )),
+            )
+        ),
     )

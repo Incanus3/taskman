@@ -8,6 +8,12 @@ Manual recovery remains documented below for use when the controller is unavaila
 The [deployment design](specs/2026-09-09-dedicated-host-deployment-design.md) defines the architecture,
 authority boundaries, and rationale behind these procedures.
 
+The [reconciliation compatibility boundary](specs/2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
+sets a new supported artifact and record baseline. Old-format staging will be replaced through
+separately authorized clean provisioning; it cannot be upgraded or repaired with this controller.
+The dated staging observations below remain historical evidence. Do not reset or delete staging
+based on this runbook. Future supported upgrades retain the recovery guarantees described here.
+
 The supported topology is deliberately narrow. The paths below are the defaults; alternate
 absolute roots are supported only when they pass the configuration topology checks described
 below:
@@ -194,7 +200,8 @@ Scheduled backups use a different least-authority boundary. Provisioning install
 `/usr/local/lib/taskman/taskman-backup.pyz` as `root:root` mode `0750`. The zipapp persists so
 systemd can execute it later, but each `Type=oneshot` timer invocation is a short-lived process.
 It contains only the standard-library code needed to read its fixed non-secret environment, take
-the shared host lock, observe completed state, create and validate a backup, apply retention, print
+the shared host lock, observe validated release/migration/recovery authority, create and validate
+a backup, apply retention, print
 one fixed journal message, and exit. It contains no deploy, rollback, restore, SSH,
 secrets-decryption, or interactive-controller code.
 
@@ -217,14 +224,13 @@ Every mutating command accepts `--dry-run`:
 ./ops/taskman cleanup production --dry-run
 ```
 
-A dry run still performs applicable local schema, secret, and artifact validation; strict SSH and
-supported-platform fact discovery; runtime-environment ownership, mode, and key checks without
-printing values; database access and capacity checks; completed release, backup, and selection
-discovery; and operation planning. Restore dry-run validates the completed backup identity used for
-the plan; the mutating invocation freshly validates the dump bytes and custom format under the
-shared lock before changing the database. A dry run performs no remote, service, or database
-mutation and asks for no confirmation. When no artifact is supplied, `provision` or `deploy` may
-resolve a local artifact so compatibility and migration planning are complete.
+A dry run performs the validation and observation required by that command, without managed
+application, service or database mutation or confirmation. Deploy/provision resolve a target and
+report migration and acknowledgment requirements. Restore validates the backup and recovery
+arrangement, and checks capacity only when the planned action needs it. Completed restore cleanup
+can be inspected without application readiness or backup capacity. Cleanup uses filesystem and
+record authority and does not require database health, capacity or completed deployment state.
+Temporary helper transport infrastructure is still required by read-only commands and dry runs.
 
 `build` is local and may create its artifact even with `--dry-run`. `verify`, `releases`, and
 `backups` are read-only; adding `--dry-run` does not weaken or change those commands.
@@ -261,35 +267,34 @@ the pinned VM using synthetic values. It does not start Taskman or test database
 its temporary configuration stays outside the release tree. A successful build still requires
 real-host readiness and acceptance checks.
 
-The older Ubuntu build tuple, Elixir `1.18.3` / OTP `27.3.4.6`, remains accepted for existing
-artifacts, release records, backups, and rollback. New builds use only the current tuple. The
-controller does not rewrite historical identities or accept arbitrary OTP versions. Alpine CI
-retains its separate temporary Elixir `1.19.5` / OTP `26.2.5.21` pin; see the
-[documented CI restriction](specs/2026-08-10-alpine-elixir-ci-design.md).
+Only the current supported runtime and record formats are accepted. The historical OTP 27
+artifacts and digestless IDs are not a transition path to this baseline. The separate
+[Alpine CI restriction](specs/2026-08-10-alpine-elixir-ci-design.md) remains documented independently.
 
-For the existing first-install staging baseline, an eventual authorized runtime deployment must
-first converge the host using the new controller and the **exact original OTP 27 artifact**. This
-updates the persistent scheduled-backup executable so it understands both release identities.
-Then deploy the new OTP 29 artifact through the ordinary reviewed deployment command. Merely
-uploading the transient deploy helper does not update the scheduled executable. After authorization,
-substitute the verified archive paths in this sequence:
+Release IDs include the full archive SHA-256 after the source/target/runtime fields. A dirty
+snapshot adds a terminal `-dirty` marker. Rebuilding the same revision may produce different bytes
+and a different ID; an installed release is never overwritten in place.
 
-```sh
-./ops/taskman provision staging --artifact /secure/artifacts/EXACT_ORIGINAL_OTP27_RELEASE.tar.gz
-./ops/taskman deploy staging --artifact /secure/artifacts/EXACT_NEW_OTP29_RELEASE.tar.gz
-```
+Without an explicit artifact, deploy and provision identify clean source inputs before host
+observation. They prefer matching physical installed content, then matching last-successful
+content, another exact-input installed release, verified local cache, and finally a new build.
+All installed choices require complete validated provenance. A missing local archive therefore
+does not strand a retry of an already installed exact target. Invalid cache entries are ignored
+and preserved. Results identify whether the target was installed, cached, built or explicit.
 
-Do not omit `--artifact` from the first command: that would build the new runtime instead of
-replaying the original installation. Do not use this sequence on a host with later release
-history; its existing replay restrictions still apply. No package or runtime upgrade requires
-editing an installed release in place.
+For deliberate local changes, use `build --allow-dirty`, `deploy --allow-dirty`, or
+`provision --allow-dirty`. The controller freezes tracked files and nonignored untracked files in
+private storage, honoring tracked deletions and excluding ignored files, repository metadata and
+controller state. It refuses unsafe member types and changes during capture. Dirty automatic
+resolution builds before identity can be known; it does not reuse a base revision as if it proved
+identical bytes. Explicitly choosing a dirty artifact implies dirty-source allowance; adding
+`--allow-dirty` to an explicitly selected clean artifact is invalid.
 
-`provision` builds by default. When `deploy` is invoked without `--artifact`, it first requires a
-clean, identified checkout, then reuses a locally cached artifact only when the archive, manifest,
-and checksum verify and the release ID, source revision, and application version exactly match the
-current inputs. Invalid or incomplete cache entries are preserved for inspection and ignored. If
-there is no exact verified match, `deploy` builds a new artifact. Its result reports the source as
-`cached`, `built`, or `explicit`.
+Automatic clean source inputs are rechecked before confirmation and execution. Before confirmation,
+drift discards the stale target and repeats clean-input identification, host discovery, resolution,
+and planning (including with `--yes`); repeated instability refuses. After a plan has been
+confirmed, any source or host-authority drift refuses and requires a new invocation, including
+under `--yes`. An already frozen dirty artifact remains the exact target of its plan.
 
 To retry exact bytes after a failure, pass the archive reported by that attempt:
 
@@ -333,12 +338,16 @@ restart or verification failure retains the recovery copy for inspection rather 
 changing disk configuration back underneath the running process. An isolated validation
 instance is not part of this workflow.
 
-The transient helper then converges the first immutable release from an empty completed host state.
-It stages and verifies the release, applies the declared initial migration policy, atomically
-selects and starts the release, verifies readiness, and publishes create-once `ReleaseRecord` and
-`SelectionRecord` facts. A rerun reads the installed release, current link, applied migrations,
-deterministic staging directory, and completed records; it repeats only a recognizable unfinished
-step. A completed first selection is a verified no-op.
+The transient helper reconciles the desired first release from validated resources, records and
+live migrations. Before the first durable successful selection, a rerun may retry or replace the
+target while preserving compatible partial state. Missing managed resources can be created after
+confirmation; conflicting present resources refuse. Resource inspection and confirmed convergence
+do not adopt an unknown installation or invent provenance for applied migrations.
+
+The first successful selection is the command boundary. Once it exists, release replacement uses
+`deploy`, even if the controller lost the successful response. Replaying the exact completed first
+installation remains available only under its existing first-install constraints. Compatible
+scheduler code is refreshed under the lifecycle lock before publishing dependent recovery state.
 
 Installed releases are `root:taskman`: directories/executables are `0750`, regular data and
 the completed manifest are `0640`. The service account can read and execute but cannot modify
@@ -356,11 +365,10 @@ generated secrets.
 Provisioning deliberately does not perform the interactive administrator step. Do it after
 readiness succeeds as described below.
 
-After successful admission and confirmation, provisioning installs its private ownership
-marker before package, account, or directory changes. This lets a later run recognize a
-compatible partial installation. A failed convergence after execution begins can report
-`changed=true` conservatively: inspect the partial host state before retrying. Do not
-create an ownership marker to adopt an unknown existing installation.
+After successful admission and confirmation, provisioning converges only the validated managed
+resources. A failed convergence after execution begins can report `changed=true` conservatively:
+inspect the partial host state before retrying. A later rerun again uses resource inspection and
+confirmed convergence; it does not adopt unknown existing resources.
 
 ## Deploy an existing host
 
@@ -379,33 +387,37 @@ Then preview and deploy:
 ./ops/taskman deploy production
 ```
 
-An actual deployment first verifies supported OS/architecture, DNS, capacity, database access, and
-the exact root-owned mode-`0600` runtime environment with every required key present and nonempty;
-values are never returned. It then displays the exact redacted environment, destination, current
-and candidate release, artifact, migration policy, backup, affected-service, and
-maintenance-window facts. Type `yes` only after reviewing that plan. The locked deployment
-procedure revalidates the confirmed current release before any release mutation; `--dry-run`
-returns the same planning facts without prompting.
+Deployment validates supported host and runtime authority, database access and applicable capacity,
+then plans from physical selection, complete installed provenance, successful history, live
+migrations and recovery protections. Physical selection may be ahead of successful history after a
+failed verification. A recognized state supports retrying the desired target or selecting a
+different compatible target; it does not require the failed target to be healthy.
 
-The deployment scope is limited to release staging, a validated pre-deploy backup when migrations
-will change the database, Taskman service stop/start, migrations, atomic selection, readiness, and
-completed release/selection records. It does not upgrade packages, change UFW, rewrite PostgreSQL,
-or reconverge Caddy.
+Review the redacted plan and type `yes`, or supply `--yes` for unattended ordinary confirmation.
+Downgrade or unknown source ordering needs a separate acknowledgment or `--allow-downgrade`.
+`--yes` does not supply that acknowledgment, and JSON output supplies neither. Dry-run reports the
+requirements without prompting. Changed confirmation authority requires replanning or a refused
+unattended run.
 
-When migration fingerprints differ, review the migrations and explicitly declare
-one policy. Omitting it is a safety refusal before plan confirmation or upload,
-including during dry-run; compatibility is never inferred from changed migrations:
+Pending migrations require an explicit policy, including dry-run; omission is an argument error:
 
 ```sh
 ./ops/taskman deploy production --migration-policy backward-compatible
 ./ops/taskman deploy production --migration-policy restore-required
 ```
 
-This declaration is a human compatibility decision, not proof derived from migration syntax.
-The selected declaration is reported in the bounded deployment result. Rollback does not rely on
-that declaration: it independently requires the immediately preceding completed selection and
-migration compatibility with the live database. Use `restore-required` when the prior code should
-not be selected against the new schema.
+The declaration is a human compatibility decision. The target must cover every applied migration
+with consistent fingerprints. Partial-prefix provenance can support a safety backup without
+making that backup automatically restorable; unsupported or contradictory schema refuses.
+Rollback independently requires the immediately preceding successful selection and exact live
+migration compatibility. It never reverses migrations.
+
+Deployment stages or reuses immutable target content, refreshes compatible scheduled-backup code
+under the lifecycle lock, creates required protected safety backups, stops Taskman, applies
+remaining forward migrations, selects atomically, starts and verifies, then publishes success.
+Caddy remains running. Deploy does not upgrade host packages, change UFW, rewrite PostgreSQL
+configuration or reconverge Caddy. Required recovery backups survive interrupted attempts and
+later target replacement. Pruning names exact eligible intermediate backups in the confirmed plan.
 
 Manual adoption is not part of replayable deployment. `deploy` requires a current release proven
 by completed Taskman records, and `provision` requires an unambiguous clean host. The retained
@@ -413,13 +425,12 @@ by completed Taskman records, and `provision` requires an unambiguous clean host
 Bring an existing manually managed installation into automation only through a separately reviewed
 procedure.
 
-Taskman stops before migration or atomic selection while Caddy remains running. The helper has four
-fixed outcomes: `succeeded`, `refused`, `retryable`, and `manual`. Recognizable interruption states
-return `retryable`; rerun the same confirmed release and inputs so the procedure can converge from
-completed facts. Contradictory selection, migration, database, path, or record authority returns
-`manual` instead of guessing. A failed result reports bounded final facts such as the selected
-release, database/service state, backup identifier, and failed boundary; it does not emit a stage
-journal or generated recovery program.
+The helper has four fixed outcomes: `succeeded`, `refused`, `retryable`, and `manual`.
+Recognizable interrupted state can be reconciled by another reviewed deployment of the desired
+compatible target. Contradictory migration, database, path or record authority requires inspection.
+Automation does not roll back committed migrations, restart incompatible old code or manufacture
+successful history to hide an earlier failure. Read the final mutation evidence and observations
+before selecting a rerun.
 
 ## Inspect releases and backups
 
@@ -430,13 +441,16 @@ Do not infer rollback or restore identifiers from filenames or directory listing
 ./ops/taskman backups production
 ```
 
-Both commands take the shared host-operation lock and read only validated root-owned completed
-metadata. `releases` reports each exact `ReleaseRecord`: release ID, source revision, artifact
-SHA-256, and sorted migration fingerprints. `backups` reports each exact `BackupRecord`: backup ID,
-whole-second UTC creation time, dump SHA-256, source release ID, observed migration versions, and
-source database size. There are no pending, provisional, activation, adoption, or checksum-less
-compatibility records. Contradictory completed metadata returns a safety refusal; unrecognized
-storage is preserved and reported as a warning.
+Both commands take the shared host-operation lock and read validated metadata. Releases include
+complete source, artifact, runtime and migration provenance; backups include exact ID, timestamp,
+dump digest, source release, observed migrations and recorded database size. Listings collect all
+count/byte-bounded pages before reporting success. Drift between pages refuses or restarts the
+bounded observation; a partial inventory is not presented as complete.
+
+Old-format or contradictory authoritative metadata refuses. Unknown storage is preserved with
+warnings. Backup listings do not validate every dump body; a damaged unreferenced remainder may
+be listed with a warning while remaining ineligible for automatic deletion. Restore performs the
+stronger content and required-safety validation before destructive work.
 
 Create an extra validated local dump without changing Taskman:
 
@@ -454,13 +468,17 @@ maps outcomes to fixed process statuses: `0` for completed backup/retention, `2`
 installed configuration, `6` for a recognizable retryable backup failure, `10` for unsafe or
 ambiguous state requiring manual attention, and `12` when the shared lock is unavailable.
 
-Retention protects every backup referenced by any completed `SelectionRecord`, then retains the
-configured number of newest unprotected completed backups sorted deterministically by creation
-time and backup ID. Referenced backups do not consume that ordinary retention count. Before
-unlinking a pair, it revalidates canonical regular-file identity, ownership, private modes,
-manifest identity, size, and SHA-256; it removes the manifest before the dump. Malformed,
-conflicting, redirected, checksum-mismatched, or otherwise unknown storage is preserved, and
-ambiguous authority returns `manual` rather than deleting an unproved backup.
+Retention protects exact backups referenced by complete successful history, active or retiring
+migration protections, and restore bindings, then keeps the configured number of newest eligible
+unprotected completed backups. Independent references do not consume ordinary retention slots.
+Recovery attempts keep original and newest plus three eligible recent intermediates; successful
+new safety publication precedes confirmed pruning. Clock rollback does not weaken these references.
+
+Before unlinking a pair, retention revalidates path/type/ownership/mode, manifest, size, SHA-256 and
+file identity; manifest deletion precedes dump deletion. Unknown or damaged storage is preserved,
+and conflicting authority refuses. A backup after a partial migration is attributed only to a
+validated installed release covering the observed prefix, which need not be the physical current
+release.
 
 ## Roll back, restore, and clean up
 
@@ -487,17 +505,42 @@ Restore replaces database state and requires the exact ID from `backups`:
 ./ops/taskman restore production BACKUP_ID
 ```
 
-Before a dry-run result or typed prompt, restore requires a completed backup record with a
-root-owned regular non-link dump and uses its recorded source release and database size in the
-plan. After confirmation and under the shared lock, it compares the dump bytes to the mandatory
-`dump_sha256`, freshly runs `pg_restore --list`, checks database storage capacity, and revalidates
-the completed record against its source release and migration versions. It then
-makes a pre-restore backup, restores into the deterministic temporary database, validates schema
-state, retains the prior canonical database under the deterministic old-database name during the
-swap, starts the intended release, verifies it, and publishes a completed selection before
-removing the retired database. A corrupt or replaced dump is refused. Recognizable interruption
-arrangements converge when the exact request is rerun; any different or contradictory arrangement
-returns status 10 for manual inspection rather than attempting an unsafe automatic correction.
+Restore validates the exact input, compatible source release, required safety copies and recognized
+database arrangement. Before destructive work it rechecks dump SHA-256, custom format, source/schema
+compatibility and capacity under the lifecycle lock. It records database OIDs and durable creation
+intent so temporary and retired names cannot substitute for identity. The original database is
+preserved while a new temporary database is loaded and validated; success is recorded only after
+selection and verification, before retired-database cleanup.
+
+Retry the same backup to continue a recognized unfinished restore. If success is already durable
+and only cleanup remains, ordinary retry finishes that cleanup without reloading the backup or
+requiring new readiness. This preserves writes made after successful restore. To intentionally
+load a completed backup again, review and run:
+
+```sh
+./ops/taskman restore production BACKUP_ID --reapply --dry-run
+./ops/taskman restore production BACKUP_ID --reapply
+```
+
+To choose a different backup while a restore is unfinished:
+
+```sh
+./ops/taskman restore production NEW_BACKUP_ID --replace-unfinished --dry-run
+./ops/taskman restore production NEW_BACKUP_ID --replace-unfinished
+```
+
+Replacement captures required fresh safety copies of possible writes and may discard only the
+exact registered failed-restored database, never the original database. Required safety copies
+must validate. An abandoned input dump may be unusable only when it is not independently required
+for safety; metadata, source and path authority remain mandatory. Damaged unreferenced remainders
+are preserved rather than automatically deleted.
+
+If a previous replacement is pending and a third target is chosen, the first confirmation only
+normalizes that pending replacement. The controller then rediscovers and asks for fresh confirmation
+of the new target. Cancellation preserves already completed normalization and reports its changes.
+Unknown identity, an unregistered loaded database or contradictory records requires manual
+inspection. `--reapply` and `--replace-unfinished` are mutually exclusive; neither bypasses typed
+confirmation.
 
 Cleanup computes exact eligible targets from validated records:
 
@@ -506,11 +549,22 @@ Cleanup computes exact eligible targets from validated records:
 ./ops/taskman cleanup production
 ```
 
-Its typed confirmation names the environment and exact target identifiers; the confirmed target
-set is revalidated before deletion. Cleanup cannot remove the
-current or previous release, rollback-required releases, protected backups, unknown storage,
-unresolved paths, or out-of-root targets. Revalidation under the exclusive lock prevents a stale
-plan from deleting a target that became protected.
+Cleanup works from filesystem and record authority even when database health or capacity is
+unavailable, selections disagree, or restore/first installation is unfinished. Inspect and dry-run
+do not normalize incomplete files. Required release provenance, complete history references,
+backup protections, restore bindings and their material remain protected. During an unfinished
+transition, releases are conservatively retained when migration irrelevance cannot be proved.
+
+The controller collects the entire paged eligible inventory before typed environment/target-list
+confirmation. It then executes only that set in bounded batches, freshly validating reference
+facts, paths, file identities, checksums and eligibility under the lock for every batch. A newly
+protected target refuses; unrelated newly eligible files do not broaden the plan. Manifest deletion
+precedes dump deletion, and safe absence is idempotent.
+
+Cleanup cannot drop/rename databases or remove recovery authority records, and does not refresh the
+scheduler. If no target is eligible, add capacity or inspect unrelated storage instead of weakening
+protection. Partial deletion or transport loss preserves known completions and possible mutation;
+reinspect and reconfirm remaining work.
 
 ## Create the first administrator
 
@@ -570,13 +624,23 @@ opened the session.
 Existing-host runtime-environment and database/capacity preflight failures identify the
 failed prerequisite group in `next_action`, without including remote output.
 
-Use the fixed status and bounded final facts, not an assumed rollback or a
-stage journal, to choose the next action:
+`facts.mutation_state` distinguishes `unchanged`, proved `changed`, and possible `unknown`
+mutation. The public `changed` boolean is true for changed or unknown. Proved changes survive later
+uncertainty, but final observations may still be unavailable. `facts.starting_state` is the first
+accepted plan's exact authority, or null before any confirmation; it is not the final host state.
+
+`facts.observations` and `facts.unavailable_fields` distinguish proved absence from observation
+failure. Lost or invalid replies do not reuse earlier final observations or the desired target as
+proof. Failed verification retains its bounded report when one was produced, including failing
+checks, without raw command output or credentials. Completed restore cleanup can succeed without
+a new readiness report; this does not claim the application is currently healthy.
+
+Use those facts and the failed boundary to choose the next action:
 
 | Reported state | Safe next step |
 | --- | --- |
-| Validation, SSH, capacity, or backup failed before stop | Keep the selected release running; correct the prerequisite and retry the exact artifact. |
-| Upload or staging interrupted | Keep the current release and database, then retry the same exact artifact. Deterministic staging and completed records distinguish reusable work from ambiguity. |
+| Validation, SSH, capacity, or backup failed before stop | Keep the selected release running; correct the prerequisite and review the desired target again. |
+| Upload or staging interrupted | Keep the current release and database, then retry the desired exact target. Deterministic staging and completed records distinguish reusable work from ambiguity. |
 | Migration failed | Keep Taskman stopped. Preserve the pre-deploy backup and determine whether committed migrations allow forward repair or require restore. |
 | Selection or startup failed | Do not automatically select old code. Inspect `current`, completed selections, service state, the fresh backup, and live migrations. Rerun only when those facts describe a recognized transition. |
 | Local readiness failed | Keep the unhealthy service stopped and inspect the fixed verification summaries and journal. |
@@ -671,6 +735,11 @@ That shell has application authority and may expose secrets or mutate state. Pre
 output before sharing it.
 
 ## Current staging external state
+
+The observations below predate the approved one-time compatibility break. Preserve them as
+diagnostic/acceptance evidence; continuation now requires separately authorized host recreation
+and fresh provisioning after local reconciliation implementation. Do not attempt to migrate the
+old records or resume its failed deployment using the new controller.
 
 The staging hostname is `taskman.page`. The domain is registered through Cloudflare Registrar
 through 2027-09-05 with WHOIS redaction and registrar lock enabled. Auto-renew is disabled, so

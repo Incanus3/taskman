@@ -13,13 +13,37 @@ from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
+from taskman_ops.host_protocol.identifiers import ProtocolError
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import (
+    APPLICATION,
+    ARCHITECTURE,
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
+    ELIXIR_VERSION,
+    HEX_VERSION,
+    NODE_VERSION,
+    OTP_VERSION,
+    REBAR3_VERSION,
+    SCHEMA_VERSION,
+    TARGET_OS,
+    TOP_LEVEL,
+    ArtifactManifest,
+)
 from taskman_ops.workflows.helper import verification_settings
 from tests.support.environments import environment_config
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
-RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-CURRENT_RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6"
+REVISION = "a" * 40
+ARTIFACT_SHA256 = "d" * 64
+RELEASE_ID = build_release_id(
+    "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=False
+)
+OLD_DIGESTLESS_RELEASE_IDS = (
+    "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6",
+    "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6",
+)
 CHECK_NAMES = (
     "taskman-service",
     "release-identity",
@@ -34,7 +58,7 @@ CHECK_NAMES = (
 
 def _request(*, expected_release_id: str | None = None) -> HostRequest:
     return HostRequest(
-        2,
+        3,
         "verify",
         CORRELATION,
         {"expected_release_id": expected_release_id},
@@ -55,8 +79,39 @@ def _request(*, expected_release_id: str | None = None) -> HostRequest:
 
 
 def _state(*, selected_release_id: str | None = RELEASE_ID) -> HostState:
-    release = ReleaseRecord(RELEASE_ID, "a" * 40, "d" * 64, ())
-    selection = SelectionRecord(RELEASE_ID, None, None, datetime(2026, 9, 5, tzinfo=UTC))
+    manifest = ArtifactManifest.from_mapping(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "application": APPLICATION,
+            "application_version": "0.2.0",
+            "source_revision": REVISION,
+            "release_id": RELEASE_ID,
+            "built_at": "2026-09-05T00:00:00Z",
+            "target_os": TARGET_OS,
+            "architecture": ARCHITECTURE,
+            "otp_version": OTP_VERSION,
+            "elixir_version": ELIXIR_VERSION,
+            "node_version": NODE_VERSION,
+            "hex_version": HEX_VERSION,
+            "rebar3_version": REBAR3_VERSION,
+            "builder_base_tag": BUILDER_BASE_TAG,
+            "builder_base_digest": BUILDER_BASE_DIGEST,
+            "migrations": [],
+            "top_level": TOP_LEVEL,
+            "artifact_sha256": ARTIFACT_SHA256,
+            "source_dirty": False,
+        }
+    )
+    release = ReleaseRecord(RELEASE_ID, REVISION, ARTIFACT_SHA256, (), 2, manifest)
+    selection = SelectionRecord(
+        RELEASE_ID,
+        None,
+        None,
+        datetime(2026, 9, 5, tzinfo=UTC),
+        2,
+        None,
+        (),
+    )
     return HostState(
         selected_release_id=selected_release_id,
         releases=(release,) if selected_release_id is not None else (),
@@ -102,11 +157,28 @@ def test_environment_verification_settings_accept_connection_timeout_above_comma
     assert settings["connection_timeout"] == 10.0
 
 
-@pytest.mark.parametrize("release_id", (RELEASE_ID, CURRENT_RELEASE_ID))
-def test_verification_expected_state_accepts_each_supported_release_runtime(release_id: str) -> None:
-    """Verification must inspect a selected legacy release as well as a new build."""
+def test_verification_expected_state_accepts_the_current_release_format() -> None:
+    assert verification_module._expected_release({"expected_release_id": RELEASE_ID}) == RELEASE_ID
 
-    assert verification_module._expected_release({"expected_release_id": release_id}) == release_id
+
+@pytest.mark.parametrize("release_id", OLD_DIGESTLESS_RELEASE_IDS)
+def test_verification_expected_state_rejects_digestless_release_formats(
+    release_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="invalid expected release"):
+        verification_module._expected_release({"expected_release_id": release_id})
+
+
+def test_host_request_rejects_protocol_two() -> None:
+    with pytest.raises(ProtocolError, match="unsupported protocol version"):
+        HostRequest(
+            2,
+            "verify",
+            CORRELATION,
+            {"expected_release_id": None},
+            {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+            {},
+        )
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), float("-inf"), True, "10", None])

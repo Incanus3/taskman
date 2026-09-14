@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -14,10 +15,15 @@ from taskman_ops.releases.build import CommandResult, SourceState, build_release
 from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, MigrationFingerprint
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases import build as build_module
 
 
 REVISION = "c" * 40
-RELEASE_ID = "0.2.0-cccccccccccc-ubuntu26.04-amd64-otp29.0.6"
+ARTIFACT_SHA256 = "a" * 64
+RELEASE_ID = build_release_id(
+    "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=True
+)
 
 
 def write_release_tree(destination: Path, *, source_revision: str = REVISION) -> None:
@@ -67,6 +73,71 @@ def export_source(repo: Path, _revision: str, destination: Path) -> None:
             (destination_migrations / source.name).write_bytes(source.read_bytes())
 
 
+def _dirty_git_repository(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "dirty-repository"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(repo)), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "initial"), check=True)
+    revision = subprocess.run(("git", "-C", str(repo), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    return repo, revision
+
+
+@pytest.mark.parametrize("name", ("tracked.txt", "untracked.txt"))
+def test_dirty_snapshot_rejects_each_file_changed_during_its_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A status-only check misses a torn copy when a dirty file changes but stays dirty."""
+    repo, revision = _dirty_git_repository(tmp_path)
+    (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+    if name == "untracked.txt":
+        (repo / name).write_text("before\n", encoding="utf-8")
+    original_copyfile = build_module.shutil.copyfile
+
+    def mutate_after_copy(source: Path, destination: Path, *args: object, **kwargs: object) -> str:
+        result = original_copyfile(source, destination, *args, **kwargs)
+        if source.name == name:
+            source.write_text("after\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(build_module.shutil, "copyfile", mutate_after_copy)
+    with pytest.raises(OpsError) as raised:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "snapshot")
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_dirty_snapshot_rejects_links_submodules_and_member_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Accepting unsafe entries or unbounded inventories can leak paths or exhaust the builder."""
+    repo, revision = _dirty_git_repository(tmp_path)
+    (repo / "unsafe-link").symlink_to("tracked.txt")
+    with pytest.raises(OpsError) as link_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "link-snapshot")
+    assert link_error.value.status is ExitStatus.INVALID
+
+    (repo / "unsafe-link").unlink()
+    (repo / "tracked.txt").unlink()
+    os.mkfifo(repo / "tracked.txt")
+    with pytest.raises(OpsError) as member_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "member-snapshot")
+    assert member_error.value.status is ExitStatus.INVALID
+
+    (repo / "tracked.txt").unlink()
+    (repo / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(repo), "update-index", "--add", "--cacheinfo", "160000," + "a" * 40 + ",nested"), check=True)
+    with pytest.raises(OpsError) as submodule_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "submodule-snapshot")
+    assert submodule_error.value.status is ExitStatus.INVALID
+
+    subprocess.run(("git", "-C", str(repo), "reset", "--", "nested"), check=True)
+    monkeypatch.setattr(build_module, "MAX_SOURCE_MEMBERS", 0)
+    with pytest.raises(OpsError) as bound_error:
+        build_module._copy_dirty_source(repo, revision, tmp_path / "bounded-snapshot")
+    assert bound_error.value.status is ExitStatus.INVALID
+
+
 def test_build_refuses_dirty_or_unidentified_source_before_creating_an_artifact(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -106,12 +177,14 @@ def test_build_passes_the_exact_clean_revision_to_an_amd64_buildkit_invocation(t
     assert command[:5] == ("docker", "buildx", "build", "--platform", "linux/amd64")
     assert ("--build-arg", f"SOURCE_REVISION={REVISION}") == (command[5], command[6])
     assert "--output" in command
-    assert artifact.manifest.release_id == RELEASE_ID
+    assert artifact.manifest.release_id == build_release_id(
+        "0.2.0", REVISION, artifact_sha256=artifact.sha256, source_dirty=False
+    )
     assert artifact.manifest.hex_version == "2.5.1"
     assert artifact.manifest.rebar3_version == "3.24.0"
     assert artifact.manifest.builder_base_tag == BUILDER_BASE_TAG
     assert artifact.manifest.builder_base_digest == BUILDER_BASE_DIGEST
-    assert artifact.archive.name == f"taskman-{RELEASE_ID}.tar.gz"
+    assert artifact.archive.name == f"taskman-{artifact.manifest.release_id}.tar.gz"
     assert stat.S_IMODE(artifact.archive.stat().st_mode) == 0o600
     assert stat.S_IMODE(artifact.manifest_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(artifact.checksum.stat().st_mode) == 0o600
@@ -213,7 +286,7 @@ def test_failed_build_retains_one_private_artifact_directory_for_an_exact_retry(
     assert raised.value.next_action is not None
     retained = Path(raised.value.next_action.removeprefix("inspect retained artifact directory: "))
     assert retained.parent == output
-    assert retained.name.startswith(f"{RELEASE_ID}-")
+    assert retained.name.startswith("snapshot-")
     assert stat.S_IMODE(retained.stat().st_mode) == 0o700
     assert len(list(output.iterdir())) == 1
 
@@ -276,13 +349,96 @@ def test_build_manifest_uses_only_the_exported_revision_snapshot(tmp_path: Path)
     )
 
     assert artifact.manifest.application_version == "0.2.0"
-    assert artifact.manifest.release_id == RELEASE_ID
+    assert artifact.manifest.release_id == build_release_id(
+        "0.2.0", REVISION, artifact_sha256=artifact.sha256, source_dirty=False
+    )
     assert artifact.manifest.migrations == (
         MigrationFingerprint(
             filename="20260904065131_example.exs",
             sha256="358bad621702445615ae95547bb3d2304c109495ea043174222f1886b4d384bb",
         ),
     )
+
+
+def test_final_archive_bytes_choose_release_identity_before_artifact_naming(tmp_path: Path) -> None:
+    """Naming before hashing lets changed release bytes overwrite one immutable identity."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination)
+        (destination / "taskman" / "lib" / "payload").write_text("changed", encoding="utf-8")
+        return CommandResult(0, "", "")
+
+    artifact = build_release(repo, tmp_path / "artifacts", source_reader=lambda _repo: SourceState(REVISION, True),
+                             source_exporter=export_source, command_runner=runner)
+
+    assert artifact.manifest.artifact_sha256 == artifact.sha256
+    assert artifact.manifest.release_id.endswith(artifact.sha256)
+    assert artifact.archive.name == f"taskman-{artifact.manifest.release_id}.tar.gz"
+
+
+def test_identical_final_bytes_keep_identity_when_only_manifest_timestamp_changes(tmp_path: Path) -> None:
+    """Including descriptive build time in identity would prevent exact installed reuse."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination)
+        return CommandResult(0, "", "")
+
+    first = build_release(repo, tmp_path / "first", source_reader=lambda _repo: SourceState(REVISION, True),
+                          source_exporter=export_source, command_runner=runner,
+                          clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    second = build_release(repo, tmp_path / "second", source_reader=lambda _repo: SourceState(REVISION, True),
+                           source_exporter=export_source, command_runner=runner,
+                           clock=lambda: datetime(2026, 1, 2, tzinfo=UTC))
+
+    assert first.sha256 == second.sha256
+    assert first.manifest.release_id == second.manifest.release_id
+    assert first.manifest.built_at != second.manifest.built_at
+
+
+def test_dirty_build_uses_a_frozen_safe_snapshot_instead_of_later_checkout_bytes(tmp_path: Path) -> None:
+    """Reading the checkout in the builder after capture can deploy a later unreviewed edit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+    (repo / "ops" / "builder").mkdir(parents=True)
+    (repo / "ops" / "builder" / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(repo)), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "initial"), check=True)
+    (repo / "mix.exs").write_text('def project do\n  [app: :taskman, version: "0.2.1"]\nend\n', encoding="utf-8")
+    (repo / "priv" / "repo" / "migrations" / "20260904065131_example.exs").unlink()
+    (repo / "new.txt").write_text("captured\n", encoding="utf-8")
+    (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+    (repo / "secret.agekey").write_text("private\n", encoding="utf-8")
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        source = Path(argv[-1])
+        assert "0.2.1" in (source / "mix.exs").read_text(encoding="utf-8")
+        assert not (source / "priv" / "repo" / "migrations" / "20260904065131_example.exs").exists()
+        assert (source / "new.txt").read_text(encoding="utf-8") == "captured\n"
+        assert not (source / "ignored.txt").exists()
+        assert not (source / "secret.agekey").exists()
+        (repo / "mix.exs").write_text('def project do\n  [app: :taskman, version: "9.9.9"]\nend\n', encoding="utf-8")
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination, source_revision=subprocess.run(
+            ("git", "-C", str(repo), "rev-parse", "HEAD"), check=True, capture_output=True, text=True
+        ).stdout.strip())
+        return CommandResult(0, "", "")
+
+    artifact = build_release(repo, tmp_path / "artifacts", allow_dirty=True, command_runner=runner)
+    assert artifact.manifest.source_dirty is True
+    assert artifact.manifest.application_version == "0.2.1"
 
 
 def test_application_version_is_read_as_a_literal_without_evaluating_mix_code(tmp_path: Path) -> None:
@@ -339,30 +495,38 @@ def test_build_command_reports_the_verified_artifact_paths(
     manifest = tmp_path / "taskman.manifest.json"
     checksum = tmp_path / "taskman.tar.gz.sha256"
     artifact = SimpleNamespace(
-        manifest=SimpleNamespace(release_id=RELEASE_ID, source_revision=REVISION),
-        sha256="a" * 64,
+        manifest=SimpleNamespace(
+            release_id=RELEASE_ID,
+            source_revision=REVISION,
+            artifact_sha256=ARTIFACT_SHA256,
+            source_dirty=True,
+        ),
+        sha256=ARTIFACT_SHA256,
         archive=archive,
         manifest_path=manifest,
         checksum=checksum,
     )
     output = tmp_path / "shared-artifacts"
-    seen: list[Path] = []
+    seen: list[tuple[Path, bool]] = []
     monkeypatch.setattr("taskman_ops.releases.build.default_artifact_root", lambda: output)
     monkeypatch.setattr(
         "taskman_ops.releases.build.build_release",
-        lambda _repo, actual_output: seen.append(actual_output) or artifact,
+        lambda _repo, actual_output, *, allow_dirty: seen.append(
+            (actual_output, allow_dirty)
+        )
+        or artifact,
     )
 
-    result = dispatch(Invocation(command="build"))
+    result = dispatch(Invocation(command="build", allow_dirty=True))
 
-    assert seen == [output]
+    assert seen == [(output, True)]
     assert result.command == "build"
     assert result.changed is True
     assert result.stage == "built"
     assert result.facts == {
         "release_id": RELEASE_ID,
         "source_revision": REVISION,
-        "artifact_sha256": "a" * 64,
+        "artifact_sha256": ARTIFACT_SHA256,
         "archive": str(archive),
         "manifest": str(manifest),
         "checksum": str(checksum),

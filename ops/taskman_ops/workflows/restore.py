@@ -1,44 +1,88 @@
-"""Controller planning and final-result translation for restore."""
+"""Restore-specific controller admission, confirmation, and result translation."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+import hashlib
+import json
 import re
+import time
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
+from ..host_helper.backup_protection import BackupProtection
+from ..host_helper.database import release_migration_versions
+from ..host_helper.records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, selection_filename
+from ..host_helper.restore_database import RestoreDatabaseError, validate_restore_database_state
+from ..host_helper.restore_target import (
+    REPLACEMENT_RECONFIRM_MESSAGE,
+    RestoreTarget,
+    append_safety_attempt,
+    restore_target_sha256,
+    safety_attempt_prune_ids,
+)
+from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from ..output import WorkflowResult
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
 from .helper import (
+    aggregate_mutation_state,
     database_settings,
     discovery_request,
+    helper_paths,
     merge_warnings,
     mutable,
-    request as helper_request,
+    mutation_result_facts,
     result_error,
     run_request,
+    run_restore_request,
     successful_verification,
+    temporary_scheduled_backup_helper_package,
     verification_settings,
 )
-from .operational_preflight import validate_operational_preflight
+from .inventory import collect_inventory
+from .operational_preflight import (
+    validate_restore_inspection_preflight,
+    validate_restore_preflight,
+)
 
 
 _PGPASS = "/etc/taskman/pgpass"
 _BACKUP_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
-_SUCCESS_FACTS = frozenset(
-    {
-        "changed",
-        "backup_id",
-        "pre_restore_backup_id",
-        "current_release_id",
-        "intended_release_id",
-        "selected_release_id",
-        "service_state",
-        "database_state",
-        "report",
-    }
-)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_DISCOVERY_KEYS = frozenset({
+    "selected_release_id", "last_successful_selection_id", "last_successful_selection",
+    "previous_successful_selection", "applied_migrations", "service_state", "database_state",
+    "backup_protections", "backup_protection_sha256", "scheduled_backup_sha256",
+    "backup_timer_enabled", "backup_timer_state", "independently_held_backup_ids",
+    "restore_target", "restore_database_state",
+})
+_EXPECTED_KEYS = frozenset({
+    "selected_release_id", "last_successful_selection_id", "applied_migrations",
+    "backup_protection_sha256", "scheduled_backup_sha256", "backup_timer_enabled",
+    "backup_id", "restore_target_sha256", "restore_database_state",
+})
+
+
+@dataclass(frozen=True)
+class _Authority:
+    selected_release_id: str | None
+    latest_selection_id: str | None
+    latest_selection: SelectionRecord | None
+    source: BackupRecord
+    source_release: ReleaseRecord
+    backups: tuple[BackupRecord, ...]
+    releases: tuple[ReleaseRecord, ...]
+    protections: tuple[BackupProtection, ...]
+    independently_held_backup_ids: frozenset[str]
+    target: RestoreTarget | None
+    target_sha256: str | None
+    databases: Mapping[str, object]
+    expected_state: Mapping[str, object]
+    service_state: str
+    timer_state: str
+    warnings: tuple[str, ...]
 
 
 def restore(
@@ -48,191 +92,839 @@ def restore(
     *,
     confirm: Callable[[Mapping[str, object]], bool] | None = None,
     dry_run: bool = False,
+    replace_unfinished: bool = False,
+    reapply: bool = False,
 ) -> WorkflowResult:
-    """Confirm an exact validated backup before invoking the direct procedure."""
+    """Inspect, confirm, and dispatch one exact restore consequence request."""
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("restore requires a validated environment configuration")
     if _BACKUP_RE.fullmatch(backup_id) is None:
         raise ValueError("restore backup identifier is invalid")
-    if not isinstance(dry_run, bool):
-        raise TypeError("restore dry-run flag must be boolean")
-    current: str | None = None
-    intended: str | None = None
+    if not all(type(value) is bool for value in (dry_run, replace_unfinished, reapply)):
+        raise TypeError("restore flags must be boolean")
+    if replace_unfinished and reapply:
+        raise ValueError("restore recovery flags are mutually exclusive")
+
+    starting_state: Mapping[str, object] | None = None
+    plan: Mapping[str, object] | None = None
     warnings: tuple[str, ...] = ()
+    prior_mutation_state = "unchanged"
     try:
-        validate_operational_preflight(remote, config)
-        discovered = run_request(remote, discovery_request(config))
-        if discovered.outcome != "succeeded":
-            raise result_error(discovered)
-        current = _selected_release(discovered.state)
-        source = _source_backup(discovered.state, backup_id)
-        intended = source["source_release_id"]
-        size = source["source_database_size_bytes"]
-        warnings = discovered.warnings
-        plan = {
-            "backup_id": backup_id,
-            "dump_path": (config.backup_root / f"{backup_id}.dump").as_posix(),
-            "source_database_size_bytes": size,
-            "current_release_id": current,
-            "intended_release_id": intended,
-            "planned_pre_restore_backup": True,
-            "services_affected": ("taskman.service",),
-            "typed_confirmation": f"restore {config.name or ''} {backup_id}",
-        }
-        if dry_run:
-            return WorkflowResult(
-                "restore",
-                config.name or "",
-                False,
-                "planned",
-                plan,
-                warnings,
-                "review the exact restore plan and rerun without --dry-run to confirm it",
+        inspection = validate_restore_inspection_preflight(remote, config)
+        warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
+        cleanup_cycles = 0
+        reconfirmation_cycles = 0
+        while True:
+            authority = _collect_authority(remote, config, backup_id)
+            warnings = merge_warnings(warnings, authority.warnings)
+            completed = _durably_completed(authority)
+            completed_without_binding = _completed_same_backup(authority)
+            normalization_only = _pending_third_target(authority, backup_id)
+            unfinished = authority.target is not None and not completed
+            if not dry_run and reapply and unfinished:
+                raise _safety(
+                    "an unfinished restore cannot be reapplied",
+                    "resume with an ordinary retry or use --replace-unfinished for a different backup",
+                )
+            capacity_required = (
+                dry_run and completed and reapply
+                or not completed
+                and not normalization_only
+                and not (completed_without_binding and not reapply)
             )
-        if not (confirm or _confirm)(plan):
-            return WorkflowResult(
-                "restore",
-                config.name or "",
-                False,
-                "confirmation-cancelled",
-                {
-                    **plan,
-                    "pre_restore_backup_id": None,
-                    "selected_release_id": current,
-                    "service_state": "unknown",
-                    "database_state": "unchanged",
-                },
-                warnings,
-                "review the exact restore plan and confirm a later run when ready",
+            preflight = (
+                validate_restore_preflight(remote, config)
+                if capacity_required
+                else None
             )
-        request = helper_request(
-            "restore",
-            config,
-            expected_state={"selected_release_id": current, "backup_id": backup_id},
-            parameters={
-                "backup_id": backup_id,
-                "credentials_path": _PGPASS,
-                "database": database_settings(config),
-                "verification": verification_settings(config),
-            },
-        )
-        result = run_request(remote, request)
-        if result.outcome != "succeeded":
-            raise result_error(result)
-        facts = _success(result, request, intended)
-        return WorkflowResult(
-            "restore",
-            config.name or "",
-            facts["changed"],
-            "restored" if facts["changed"] else "already-restored",
-            facts,
-            merge_warnings(warnings, result.warnings),
-            "inspect restored behavior before any later cleanup",
-        )
+            if preflight is not None:
+                warnings = merge_warnings(warnings, tuple(getattr(preflight, "warnings", ())))
+            with temporary_scheduled_backup_helper_package() as scheduler_package:
+                plan = _plan(
+                    config,
+                    authority,
+                    scheduler_sha256=scheduler_package.sha256,
+                    available_bytes=getattr(
+                        preflight, "database_available_disk_bytes", None
+                    ),
+                    backup_available_bytes=getattr(preflight, "backup_available_disk_bytes", None),
+                    database_size_bytes=getattr(preflight, "database_size_bytes", None),
+                    requested_backup_id=backup_id,
+                    replace_unfinished=replace_unfinished,
+                    reapply=reapply,
+                )
+                # A completed binding is cleanup authority, not permission to
+                # start a fresh restore from stale capacity or confirmation.
+                # Finish it first, then recollect preflight and restore facts.
+                if (
+                    not dry_run
+                    and authority.target is not None
+                    and _durably_completed(authority)
+                    and (
+                        reapply
+                        or authority.target.backup_id != backup_id
+                    )
+                ):
+                    if cleanup_cycles:
+                        raise _safety("completed restore cleanup did not converge")
+                    cleanup_source = _source_for_id(
+                        authority.backups,
+                        authority.releases,
+                        authority.target.backup_id,
+                    )
+                    cleanup_expected = {
+                        **authority.expected_state,
+                        "backup_id": cleanup_source.backup_id,
+                    }
+                    cleanup_request = _request(
+                        config,
+                        cleanup_expected,
+                        cleanup_source.backup_id,
+                        backup_helper={
+                            "sha256": scheduler_package.sha256,
+                            "upload_path": None,
+                        },
+                        prune_backup_ids=(),
+                        replace_unfinished=False,
+                        reapply=False,
+                    )
+                    cleanup_result = run_restore_request(
+                        remote,
+                        config,
+                        request=cleanup_request,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    if cleanup_result.outcome != "succeeded":
+                        raise result_error(
+                            cleanup_result,
+                            starting_state=starting_state,
+                            prior_mutation_state=prior_mutation_state,
+                        )
+                    cleanup_facts = mutation_result_facts(
+                        cleanup_result,
+                        starting_state=starting_state,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    prior_mutation_state = str(cleanup_facts["mutation_state"])
+                    cleanup_cycles += 1
+                    inspection = validate_restore_inspection_preflight(remote, config)
+                    warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
+                    continue
+                if (
+                    plan["remaining_restore_bytes"] != 0
+                    and plan["remaining_capacity_sufficient"] is not True
+                ):
+                    raise _safety(
+                        "remaining restore capacity is insufficient",
+                        "free database volume capacity and rerun restore inspection",
+                    )
+                if (
+                    plan["required_safety_backup_bytes"] != 0
+                    and (
+                        type(plan["required_safety_backup_bytes"]) is not int
+                        or type(plan["available_backup_bytes"]) is not int
+                        or plan["available_backup_bytes"] < plan["required_safety_backup_bytes"]
+                    )
+                ):
+                    raise _safety(
+                        "remaining safety-backup capacity is insufficient",
+                        "free backup capacity and rerun restore inspection",
+                    )
+                different_unfinished = (
+                    authority.target is not None
+                    and authority.target.backup_id != backup_id
+                    and not _durably_completed(authority)
+                )
+                replacement_execution_required = (
+                    different_unfinished
+                    or authority.target is not None
+                    and authority.target.replacement is not None
+                    and not _durably_completed(authority)
+                )
+                if dry_run:
+                    next_action = (
+                        "review this replacement preview; execution requires --replace-unfinished and fresh typed confirmation"
+                        if replacement_execution_required and not replace_unfinished
+                        else "review the exact restore plan and rerun without --dry-run for fresh typed confirmation"
+                    )
+                    return WorkflowResult("restore", config.name or "", False, "planned", plan, warnings, next_action)
+                if replacement_execution_required and not replace_unfinished:
+                    raise _safety(
+                        "a different unfinished restore target is already bound",
+                        "preview it with --dry-run, then use --replace-unfinished with fresh typed confirmation",
+                    )
+
+                if not (confirm or _confirm)(plan):
+                    return WorkflowResult(
+                        "restore", config.name or "", prior_mutation_state != "unchanged",
+                        "confirmation-cancelled",
+                        {**plan, "mutation_state": prior_mutation_state, "starting_state": mutable(starting_state)},
+                        warnings,
+                        "review the exact restore plan and confirm a later run when ready",
+                    )
+                if starting_state is None:
+                    starting_state = authority.expected_state
+                verification_required = reapply or not (
+                    _durably_completed(authority) or _completed_same_backup(authority)
+                )
+                refresh_required = (
+                    verification_required
+                    and authority.expected_state["scheduled_backup_sha256"]
+                    != scheduler_package.sha256
+                )
+                request = _request(
+                    config,
+                    authority.expected_state,
+                    backup_id,
+                    backup_helper={
+                        "sha256": scheduler_package.sha256,
+                        "upload_path": "pending-controller-upload" if refresh_required else None,
+                    },
+                    prune_backup_ids=tuple(plan["prune_backup_ids"]),
+                    replace_unfinished=replace_unfinished,
+                    reapply=reapply,
+                )
+                result = run_restore_request(
+                    remote,
+                    config,
+                    request=request,
+                    backup_helper_package=scheduler_package if refresh_required else None,
+                    prior_mutation_state=prior_mutation_state,
+                )
+                if _replacement_reconfirmation(result):
+                    facts = mutation_result_facts(
+                        result,
+                        starting_state=starting_state,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    prior_mutation_state = str(facts["mutation_state"])
+                    warnings = merge_warnings(warnings, result.warnings)
+                    reconfirmation_cycles += 1
+                    if reconfirmation_cycles > 2:
+                        raise _safety(
+                            "restore replacement normalization did not converge"
+                        )
+                    inspection = validate_restore_inspection_preflight(remote, config)
+                    warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
+                    continue
+                if result.outcome != "succeeded":
+                    raise result_error(
+                        result,
+                        starting_state=starting_state,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                facts = mutation_result_facts(
+                    result,
+                    starting_state=starting_state,
+                    prior_mutation_state=prior_mutation_state,
+                )
+                _validate_success(
+                    facts,
+                    authority.source,
+                    verification_required=verification_required,
+                )
+                changed = facts["mutation_state"] != "unchanged"
+                return WorkflowResult(
+                    "restore",
+                    config.name or "",
+                    changed,
+                    "reapplied" if reapply else "restored" if changed else "already-restored",
+                    facts,
+                    merge_warnings(warnings, result.warnings),
+                    "inspect current health separately when completion did not run readiness",
+                )
     except OpsError as error:
-        state = error.state
+        state = mutable(error.state)
+        state_facts = dict(state) if isinstance(state, Mapping) else {}
+        if prior_mutation_state != "unchanged":
+            state_facts["mutation_state"] = (
+                aggregate_mutation_state(
+                    prior_mutation_state,
+                    str(state_facts.get("mutation_state", "changed")),
+                )
+                if error.changed
+                else prior_mutation_state
+            )
+        facts = {
+            "backup_id": backup_id,
+            "starting_state": None if starting_state is None else mutable(starting_state),
+            "plan": None if plan is None else mutable(plan),
+            **state_facts,
+        }
+        changed = error.changed or prior_mutation_state != "unchanged"
         return WorkflowResult(
             "restore",
             config.name or "",
-            error.changed,
-            "lock-contended"
-            if error.status is ExitStatus.LOCKED
-            else "safety-refused"
-            if error.status is ExitStatus.SAFETY
-            else f"{error.stage}-failed",
-            {
-                "backup_id": state.get("backup_id", backup_id),
-                "pre_restore_backup_id": state.get("pre_restore_backup_id"),
-                "current_release_id": state.get("current_release_id", current),
-                "intended_release_id": state.get("intended_release_id", intended),
-                "selected_release_id": state.get("selected_release_id", current),
-                "service_state": state.get("service_state", "unknown"),
-                "database_state": state.get("database_state", "unknown"),
-                "verification": state.get("report", {}),
-            },
+            changed,
+            "lock-contended" if error.status is ExitStatus.LOCKED else "safety-refused" if error.status is ExitStatus.SAFETY else f"{error.stage}-failed",
+            facts,
             merge_warnings(warnings, tuple(getattr(error, "warnings", ()))),
             error.next_action,
             error.status,
         )
 
 
-def _selected_release(value: object) -> str:
-    if not isinstance(value, Mapping) or type(value.get("selected_release_id")) is not str:
-        raise _safety("restore planning helper returned invalid host state")
+def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str) -> _Authority:
+    result = run_request(remote, discovery_request(config, mode="restore", backup_id=backup_id))
+    if result.outcome != "succeeded":
+        raise result_error(result)
+    if not isinstance(result.state, Mapping) or set(result.state) != _DISCOVERY_KEYS:
+        raise _safety("restore discovery returned invalid fields")
+    state = mutable(result.state)
+    assert isinstance(state, Mapping)
     try:
-        return validate_release_id(value["selected_release_id"])
-    except ValueError:
-        raise _safety("restore planning helper returned invalid host state") from None
+        selected = state["selected_release_id"]
+        if selected is not None:
+            selected = validate_release_id(selected)
+        latest_id = state["last_successful_selection_id"]
+        latest_value = state["last_successful_selection"]
+        if latest_id is None:
+            if latest_value is not None:
+                raise ValueError("successful selection identity is inconsistent")
+            latest = None
+        else:
+            latest = SelectionRecord.from_mapping(latest_value)
+            if selection_filename(latest) != latest_id:
+                raise ValueError("successful selection filename is inconsistent")
+        if state["previous_successful_selection"] is not None:
+            SelectionRecord.from_mapping(state["previous_successful_selection"])
+        databases = validate_restore_database_state(state["restore_database_state"])
+        canonical = databases["canonical"]
+        canonical_migrations = None if canonical is None or not canonical["migration_table_present"] else canonical["applied_migrations"]
+        if (
+            None if state["applied_migrations"] is None else tuple(state["applied_migrations"])
+        ) != canonical_migrations:
+            raise ValueError("canonical migration observations disagree")
+        protections = tuple(BackupProtection.from_mapping(item) for item in state["backup_protections"])
+        protection_rows = [item.to_mapping() for item in protections]
+        if protection_rows != sorted(protection_rows, key=lambda item: item["backup_id"]):
+            raise ValueError("backup protections are not ordered")
+        protection_sha = hashlib.sha256(_canonical_ascii(protection_rows)).hexdigest()
+        if state["backup_protection_sha256"] != protection_sha:
+            raise ValueError("backup protection digest is inconsistent")
+        independent_values = state["independently_held_backup_ids"]
+        if (
+            not isinstance(independent_values, (list, tuple))
+            or tuple(independent_values) != tuple(sorted(set(independent_values)))
+            or any(type(item) is not str or _BACKUP_RE.fullmatch(item) is None for item in independent_values)
+        ):
+            raise ValueError("independent restore backup authority is invalid")
+        independently_held_backup_ids = frozenset(independent_values)
+        target_value = state["restore_target"]
+        if target_value is None:
+            target, target_sha = None, None
+        else:
+            if not isinstance(target_value, Mapping) or "sha256" not in target_value:
+                raise ValueError("restore target fields are invalid")
+            target = RestoreTarget.from_mapping({key: value for key, value in target_value.items() if key != "sha256"})
+            target_sha = target_value["sha256"]
+            if target_sha != restore_target_sha256(target):
+                raise ValueError("restore target digest is inconsistent")
+        scheduler_sha = state["scheduled_backup_sha256"]
+        if scheduler_sha is not None and (type(scheduler_sha) is not str or _SHA256_RE.fullmatch(scheduler_sha) is None):
+            raise ValueError("scheduled backup digest is invalid")
+        if type(state["backup_timer_enabled"]) is not bool or state["backup_timer_state"] not in {"active", "inactive", "unknown"}:
+            raise ValueError("backup timer authority is invalid")
+        if state["service_state"] not in {"running", "stopped", "failed", "unknown"} or state["database_state"] not in {"ready", "absent", "unknown"}:
+            raise ValueError("restore health authority is invalid")
+        deadline = time.monotonic() + 660.0
+        backups = tuple(BackupRecord.from_mapping(item) for item in collect_inventory(remote, config, "list_backups", deadline=deadline))
+        releases = tuple(ReleaseRecord.from_mapping(item) for item in collect_inventory(remote, config, "list_releases", deadline=deadline))
+        source = _source_for_id(backups, releases, backup_id)
+        source_release = next(item for item in releases if item.release_id == source.source_release_id)
+        if target is not None:
+            _validate_target_authority(target, backups, releases)
+            attempt_ids = {
+                str(item["backup_id"]) for item in target.safety_backup_attempts
+            }
+            if not independently_held_backup_ids.issubset(attempt_ids):
+                raise ValueError("independent restore backup authority is unrelated")
+        elif independently_held_backup_ids:
+            raise ValueError("independent restore backup authority lacks a binding")
+        if selected is not None and not any(item.release_id == selected for item in releases):
+            raise ValueError("physical current is not an installed release")
+        if latest is not None and selected is None:
+            raise ValueError("successful restore history requires physical current")
+        if latest is not None and not any(item.release_id == latest.release_id for item in releases):
+            raise ValueError("successful selection release is not installed")
+        expected = {
+            "selected_release_id": selected,
+            "last_successful_selection_id": latest_id,
+            "applied_migrations": canonical_migrations,
+            "backup_protection_sha256": protection_sha,
+            "scheduled_backup_sha256": scheduler_sha,
+            "backup_timer_enabled": state["backup_timer_enabled"],
+            "backup_id": backup_id,
+            "restore_target_sha256": target_sha,
+            "restore_database_state": databases,
+        }
+        if set(expected) != _EXPECTED_KEYS:
+            raise AssertionError("restore expected state changed")
+        authority = _Authority(
+            selected, latest_id, latest, source, source_release, backups, releases, protections,
+            independently_held_backup_ids,
+            target, target_sha, databases, expected, str(state["service_state"]),
+            str(state["backup_timer_state"]), result.warnings,
+        )
+        _validate_arrangement(authority, config.database_role)
+        if (
+            target is not None
+            and not _durably_completed(authority)
+            and target.base_selection_id != latest_id
+        ):
+            raise ValueError("unfinished restore base selection no longer matches authority")
+    except (KeyError, StopIteration, TypeError, ValueError, RecordError, RestoreDatabaseError):
+        raise _safety("restore discovery returned invalid authority") from None
+    return authority
 
 
-def _source_backup(value: object, backup_id: str) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        raise _safety("restore planning helper returned invalid host state")
-    rows = mutable(value.get("backups"))
-    if not isinstance(rows, list):
-        raise _safety("restore planning helper returned invalid backup state")
-    source = next((item for item in rows if isinstance(item, Mapping) and item.get("backup_id") == backup_id), None)
-    if not isinstance(source, Mapping):
-        raise _safety("selected backup is not a completed validated backup")
-    release = source.get("source_release_id")
-    size = source.get("source_database_size_bytes")
-    if type(release) is not str or type(size) is not int or size <= 0:
-        raise _safety("selected backup has invalid restore authority")
-    try:
-        release = validate_release_id(release)
-    except ValueError:
-        raise _safety("selected backup has invalid restore authority") from None
-    return {"source_release_id": release, "source_database_size_bytes": size}
+def _source_for_id(backups: tuple[BackupRecord, ...], releases: tuple[ReleaseRecord, ...], backup_id: str) -> BackupRecord:
+    source = next((item for item in backups if item.backup_id == backup_id), None)
+    if source is None:
+        raise ValueError("selected backup is unavailable")
+    release = next((item for item in releases if item.release_id == source.source_release_id), None)
+    if release is None or release_migration_versions(release.migrations) != source.migration_versions:
+        raise ValueError("selected backup source authority is inconsistent")
+    return source
 
 
-def _success(result: object, request: object, intended: str) -> dict[str, object]:
-    state = getattr(result, "state", None)
-    if (
-        not isinstance(state, Mapping)
-        or not _SUCCESS_FACTS <= set(state)
-        or state["backup_id"] != request.parameters["backup_id"]
-        or state["current_release_id"] != request.expected_state["selected_release_id"]
-        or state["intended_release_id"] != intended
-        or state["selected_release_id"] != intended
-        or _BACKUP_RE.fullmatch(str(state["pre_restore_backup_id"])) is None
-        or state["service_state"] != "running"
-        or state["database_state"] != "restored"
-        or type(state["changed"]) is not bool
+def _validate_target_authority(
+    target: RestoreTarget,
+    backups: tuple[BackupRecord, ...],
+    releases: tuple[ReleaseRecord, ...],
+) -> None:
+    bound = _source_for_id(backups, releases, target.backup_id)
+    if (bound.dump_sha256, bound.source_release_id) != (
+        target.dump_sha256,
+        target.source_release_id,
     ):
-        raise _safety("restore helper returned invalid final state")
-    try:
-        verification = successful_verification(state["report"], intended)
-    except ValueError:
-        raise _safety("restore helper returned invalid final state") from None
-    return {
-        "changed": state["changed"],
-        "backup_id": state["backup_id"],
-        "pre_restore_backup_id": state["pre_restore_backup_id"],
-        "current_release_id": state["current_release_id"],
-        "intended_release_id": state["intended_release_id"],
-        "selected_release_id": state["selected_release_id"],
-        "service_state": state["service_state"],
-        "database_state": state["database_state"],
-        "verification": verification,
+        raise ValueError("restore binding input authority is inconsistent")
+    if target.replacement is not None:
+        pending = _source_for_id(
+            backups, releases, str(target.replacement["backup_id"])
+        )
+        if (pending.dump_sha256, pending.source_release_id) != (
+            target.replacement["dump_sha256"],
+            target.replacement["source_release_id"],
+        ):
+            raise ValueError("restore replacement input authority is inconsistent")
+    required = {
+        target.safety_backup_id,
+        *(str(item["backup_id"]) for item in target.safety_backup_attempts),
     }
+    if not required.issubset({item.backup_id for item in backups}):
+        raise ValueError("restore binding safety authority is incomplete")
+
+
+def _validate_arrangement(authority: _Authority, expected_owner: str) -> None:
+    databases, target = authority.databases, authority.target
+    roles = _roles(databases)
+    for database in databases.values():
+        if isinstance(database, Mapping) and database["owner"] != expected_owner:
+            raise ValueError("restore database owner is inconsistent")
+    if target is None:
+        if roles != frozenset({"canonical"}):
+            raise ValueError("unbound restore database arrangement is invalid")
+        return
+    if roles not in {
+        frozenset({"canonical"}), frozenset({"canonical", "temporary"}),
+        frozenset({"temporary", "retired"}), frozenset({"retired"}),
+        frozenset({"canonical", "retired"}),
+    }:
+        raise ValueError("bound restore database arrangement is invalid")
+    canonical = databases["canonical"]
+    temporary = databases["temporary"]
+    retired = databases["retired"]
+    post_discard_pending = (
+        target.replacement is not None
+        and target.replacement["discard_database_oid"] is not None
+        and target.replacement["discard_database_oid"]
+        == target.restored_database_oid
+    )
+    if roles == frozenset({"canonical"}):
+        expected_oid = (
+            target.restored_database_oid
+            if _durably_completed(authority)
+            else target.original_database_oid
+        )
+        if not isinstance(canonical, Mapping) or canonical["oid"] != expected_oid:
+            raise ValueError("bound canonical database identity is inconsistent")
+        if (
+            not _durably_completed(authority)
+            and not target.temporary_creation_pending
+            and not post_discard_pending
+        ):
+            raise ValueError("registered temporary database disappeared")
+        return
+    if roles in {
+        frozenset({"canonical", "temporary"}),
+        frozenset({"temporary", "retired"}),
+    }:
+        original = canonical if canonical is not None else retired
+        if not isinstance(original, Mapping) or original["oid"] != target.original_database_oid:
+            raise ValueError("bound original database identity is inconsistent")
+        if not isinstance(temporary, Mapping):
+            raise ValueError("bound temporary database is unavailable")
+        if target.restored_database_oid is None:
+            if (
+                not target.temporary_creation_pending
+                or temporary["migration_table_present"] is not False
+                or temporary["applied_migrations"] is not None
+            ):
+                raise ValueError("unregistered temporary database is not proved empty")
+        elif temporary["oid"] != target.restored_database_oid:
+            raise ValueError("bound temporary database identity is inconsistent")
+        return
+    if roles == frozenset({"retired"}):
+        if (
+            not isinstance(retired, Mapping)
+            or retired["oid"] != target.original_database_oid
+            or not (target.temporary_creation_pending or post_discard_pending)
+        ):
+            raise ValueError("retired original database identity is inconsistent")
+        return
+    if (
+        not isinstance(canonical, Mapping)
+        or canonical["oid"] != target.restored_database_oid
+        or not isinstance(retired, Mapping)
+        or retired["oid"] != target.original_database_oid
+        or target.temporary_creation_pending
+    ):
+        raise ValueError("completed restore swap identity is inconsistent")
+
+
+def _durably_completed(authority: _Authority) -> bool:
+    target, latest, canonical = authority.target, authority.latest_selection, authority.databases["canonical"]
+    if target is None or latest is None or not isinstance(canonical, Mapping):
+        return False
+    required = {target.backup_id, *(str(item["backup_id"]) for item in target.safety_backup_attempts)}
+    return (
+        latest.release_id == target.source_release_id
+        and latest.backup_id == target.safety_backup_id
+        and latest.observed_previous_release_id == target.observed_previous_release_id
+        and required.issubset(set(latest.recovery_backup_ids))
+        and canonical["oid"] == target.restored_database_oid
+        and authority.selected_release_id == target.source_release_id
+        and _roles(authority.databases) in {frozenset({"canonical"}), frozenset({"canonical", "retired"})}
+    )
+
+
+def _plan(
+    config: EnvironmentConfig,
+    authority: _Authority,
+    *,
+    scheduler_sha256: str,
+    available_bytes: object,
+    backup_available_bytes: object,
+    database_size_bytes: object,
+    requested_backup_id: str,
+    replace_unfinished: bool,
+    reapply: bool,
+) -> dict[str, object]:
+    roles = sorted(_roles(authority.databases))
+    target, completed = authority.target, _durably_completed(authority)
+    different_unfinished = target is not None and target.backup_id != requested_backup_id and not completed
+    pending_replacement = target is not None and target.replacement is not None and not completed
+    normalization_only = _pending_third_target(authority, requested_backup_id)
+    completed_reapply = target is not None and completed and reapply
+    replacement_mode = different_unfinished or pending_replacement
+    completed_without_binding = target is None and _completed_same_backup(authority)
+    swapped = (
+        target is not None
+        and _roles(authority.databases) == frozenset({"canonical", "retired"})
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.restored_database_oid
+        and isinstance(authority.databases["retired"], Mapping)
+        and authority.databases["retired"]["oid"] == target.original_database_oid
+    )
+    needs_load = completed_reapply or replacement_mode or (reapply and not completed) or (
+        not completed and not completed_without_binding and not swapped
+    )
+    original_safety_copy = (
+        completed_reapply
+        or reapply and not completed
+        or target is None and not completed_without_binding
+        or target is not None
+        and target.replacement is None
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.original_database_oid
+    )
+    failed_restored_safety_copy = (
+        different_unfinished
+        and target is not None
+        and target.replacement is None
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.restored_database_oid
+        and isinstance(authority.databases["retired"], Mapping)
+        and authority.databases["retired"]["oid"] == target.original_database_oid
+    )
+    needs_safety = original_safety_copy or failed_restored_safety_copy
+    prune_backup_ids = _planned_safety_prune_ids(
+        None if completed_reapply else target,
+        authority.independently_held_backup_ids,
+        fresh_safety_copies=(
+            (original_safety_copy and target is not None, True),
+            (failed_restored_safety_copy, False),
+        ),
+    )
+    if normalization_only:
+        needs_load = False
+        needs_safety = False
+        prune_backup_ids = ()
+        consequences = ["normalize-pending-replacement"]
+    elif completed_reapply:
+        consequences = [
+            "cleanup-retired",
+            "cleanup-binding",
+            "refresh-scheduled-backup-helper",
+            "fresh-safety-backup",
+            "publish-restore-binding",
+            "load-temporary",
+            "swap-databases",
+            "select-source-release",
+            "verify",
+            "publish-success",
+            "cleanup-retired",
+            "cleanup-binding",
+        ]
+    elif target is not None and completed:
+        consequences = ["cleanup-retired", "cleanup-binding"]
+    elif completed_without_binding and not reapply:
+        consequences, needs_load = ["completion-check"], False
+    elif replacement_mode:
+        consequences = ["refresh-scheduled-backup-helper"]
+        if pending_replacement:
+            consequences.append("normalize-pending-replacement")
+        if needs_safety:
+            consequences.append("fresh-safety-backup")
+        consequences.extend(
+            [
+                "publish-replacement-intent",
+                "normalize-original-database-name",
+                "switch-restore-input",
+                "load-temporary",
+                "swap-databases",
+                "select-source-release",
+                "verify",
+                "publish-success",
+                "cleanup-retired",
+                "cleanup-binding",
+            ]
+        )
+    else:
+        consequences = ["refresh-scheduled-backup-helper"]
+        if needs_safety:
+            consequences.extend(["fresh-safety-backup", "publish-restore-binding"])
+        if needs_load:
+            consequences.extend(["load-temporary", "swap-databases"])
+        consequences.extend([
+            "select-source-release", "verify", "publish-success",
+            "cleanup-retired", "cleanup-binding",
+        ])
+    remaining_bytes = authority.source.source_database_size_bytes * 2 if needs_load else 0
+    sizes = database_size_bytes if isinstance(database_size_bytes, Mapping) else {}
+    required_safety_bytes = sizes.get("canonical") if needs_safety else 0
+    return {
+        "backup_id": requested_backup_id,
+        "previous_backup_id": None if target is None else target.backup_id,
+        "physical_current_release_id": authority.selected_release_id,
+        "last_successful_selection": None if authority.latest_selection is None else authority.latest_selection.to_mapping(),
+        "canonical_applied_migrations": mutable(authority.expected_state["applied_migrations"]),
+        "requested_backup": authority.source.to_mapping(),
+        "source_release_id": authority.source_release.release_id,
+        "restore_target": None if target is None else {**target.to_mapping(), "sha256": authority.target_sha256},
+        "restore_target_sha256": authority.target_sha256,
+        "restore_database_state": mutable(authority.databases),
+        "physical_database_arrangement": roles,
+        "retained_backup_protections": [item.to_mapping() for item in authority.protections],
+        "retained_safety_material": [] if target is None else [dict(item) for item in target.safety_backup_attempts],
+        "independently_held_safety_backup_ids": sorted(
+            authority.independently_held_backup_ids
+        ),
+        "prune_backup_ids": list(prune_backup_ids),
+        "remaining_restore_bytes": remaining_bytes,
+        "required_safety_backup_bytes": required_safety_bytes,
+        "available_database_bytes": available_bytes,
+        "available_backup_bytes": backup_available_bytes,
+        "remaining_capacity_sufficient": remaining_bytes == 0 or (
+            type(available_bytes) is int and available_bytes >= remaining_bytes
+        ),
+        "remaining_consequences": consequences,
+        "scheduled_backup_sha256": authority.expected_state["scheduled_backup_sha256"],
+        "required_scheduled_backup_sha256": scheduler_sha256,
+        "scheduler_refresh_required": authority.expected_state["scheduled_backup_sha256"] != scheduler_sha256,
+        "backup_timer_enabled": authority.expected_state["backup_timer_enabled"],
+        "backup_timer_state": authority.timer_state,
+        "service_state": authority.service_state,
+        "planned_pre_restore_backup": needs_safety,
+        "replace_unfinished": replace_unfinished,
+        "replace_unfinished_required": replacement_mode,
+        "reapply": reapply,
+        "data_loss_warning": "restoring replaces the database and discards changes made after the selected backup",
+        "typed_confirmation": f"restore {config.name or ''} {requested_backup_id}",
+    }
+
+
+def _completed_same_backup(authority: _Authority) -> bool:
+    latest, canonical = authority.latest_selection, authority.databases["canonical"]
+    return (
+        authority.target is None and latest is not None
+        and latest.release_id == authority.source.source_release_id
+        and authority.source.backup_id in latest.recovery_backup_ids
+        and authority.selected_release_id == authority.source.source_release_id
+        and _roles(authority.databases) == frozenset({"canonical"})
+        and isinstance(canonical, Mapping) and canonical["migration_table_present"] is True
+        and canonical["applied_migrations"] == authority.source.migration_versions
+    )
+
+
+def _pending_third_target(authority: _Authority, requested_backup_id: str) -> bool:
+    target = authority.target
+    return (
+        target is not None
+        and target.replacement is not None
+        and target.replacement["backup_id"] != requested_backup_id
+        and not _durably_completed(authority)
+    )
+
+
+def _planned_safety_prune_ids(
+    target: RestoreTarget | None,
+    independently_held_backup_ids: frozenset[str],
+    *,
+    fresh_safety_copies: tuple[tuple[bool, bool], ...],
+) -> tuple[str, ...]:
+    """Simulate the helper's register-then-prune sequence for one plan."""
+
+    if target is None:
+        return ()
+    planned = target
+    prune_ids: set[str] = set()
+
+    def retire_current(record: RestoreTarget) -> RestoreTarget:
+        eligible = safety_attempt_prune_ids(
+            record,
+            independently_held_backup_ids=independently_held_backup_ids,
+        )
+        prune_ids.update(eligible)
+        if not eligible:
+            return record
+        return replace(
+            record,
+            safety_backup_attempts=tuple(
+                item
+                for item in record.safety_backup_attempts
+                if str(item["backup_id"]) not in set(eligible)
+            ),
+        )
+
+    planned = retire_current(planned)
+    for required, promote_original in fresh_safety_copies:
+        if not required:
+            continue
+        attempt_number = max(
+            int(item["attempt_number"])
+            for item in planned.safety_backup_attempts
+        ) + 1
+        synthetic_id = "backup-" + hashlib.sha256(
+            f"planned-restore-safety-{attempt_number}".encode("ascii")
+        ).hexdigest()[:32]
+        planned = append_safety_attempt(
+            planned,
+            synthetic_id,
+            promote_original=promote_original,
+        )
+        planned = retire_current(planned)
+    return tuple(sorted(prune_ids))
+
+
+def _replacement_reconfirmation(result: HostResult) -> bool:
+    """Recognize only the fixed changed restore continuation contract."""
+
+    state = result.state
+    return (
+        result.operation == "restore"
+        and result.outcome == "retryable"
+        and result.message == REPLACEMENT_RECONFIRM_MESSAGE
+        and isinstance(state, Mapping)
+        and state.get("mutation_state") == "changed"
+        and state.get("exit_code") == int(ExitStatus.RESTORE)
+        and state.get("failed_boundary") == "restore"
+    )
+
+
+def _request(
+    config: EnvironmentConfig,
+    expected_state: Mapping[str, object],
+    backup_id: str,
+    *,
+    backup_helper: Mapping[str, object],
+    prune_backup_ids: tuple[str, ...],
+    replace_unfinished: bool,
+    reapply: bool,
+) -> HostRequest:
+    from ..helper_client.runner import new_correlation_id
+
+    return HostRequest(
+        PROTOCOL_VERSION,
+        "restore",
+        new_correlation_id(),
+        expected_state,
+        helper_paths(config),
+        {
+            "backup_id": backup_id,
+            "credentials_path": _PGPASS,
+            "database": database_settings(config),
+            "verification": verification_settings(config),
+            "backup_helper": backup_helper,
+            "prune_backup_ids": list(prune_backup_ids),
+            "replace_unfinished": replace_unfinished,
+            "reapply": reapply,
+        },
+    )
+
+
+def _validate_success(
+    facts: Mapping[str, object],
+    source: BackupRecord,
+    *,
+    verification_required: bool,
+) -> None:
+    if facts.get("desired_release_id") != source.source_release_id or facts.get("backup_id") != source.backup_id:
+        raise _safety("restore helper returned inconsistent completion authority")
+    report = facts.get("report")
+    if verification_required and report is None:
+        raise _safety("restore helper omitted required verification evidence")
+    if report is not None:
+        try:
+            successful_verification(report, source.source_release_id)
+        except ValueError:
+            raise _safety("restore helper returned invalid verification evidence") from None
+
+
+def _roles(databases: Mapping[str, object]) -> frozenset[str]:
+    return frozenset(key for key, value in databases.items() if value is not None)
+
+
+def _canonical_ascii(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
 
 
 def _confirm(plan: Mapping[str, object]) -> bool:
     expected = str(plan["typed_confirmation"])
     return input(
-        f"Restore {plan['backup_id']} and select {plan['intended_release_id']}? "
-        f"Type '{expected}' to continue: "
+        f"Restore {plan['backup_id']} from {plan['source_release_id']}? Type '{expected}' to continue: "
     ).strip() == expected
 
 
-def _safety(message: str) -> OpsError:
+def _safety(message: str, next_action: str | None = None) -> OpsError:
     return OpsError(
         ExitStatus.SAFETY,
         "restore",
         message,
         False,
-        "inspect the selected backup and observed host state before retrying",
+        next_action=next_action or "inspect the selected backup and restore-specific host authority before retrying",
     )
 
 

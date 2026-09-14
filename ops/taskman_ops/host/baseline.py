@@ -22,10 +22,6 @@ _UNATTENDED_UPDATES = (
     'APT::Periodic::Unattended-Upgrade "1";\n'
     'Unattended-Upgrade::Automatic-Reboot "false";\n'
 )
-_PROVISIONING_MARKER_PATH = "/var/lib/taskman-provisioning.state"
-_PROVISIONING_MARKER_CONTENT = "taskman-provisioning-v1\n"
-
-
 @dataclass(frozen=True)
 class ManagedDirectory:
     path: str
@@ -48,8 +44,6 @@ class BaselinePlan:
     service_account: ServiceAccount
     directories: tuple[ManagedDirectory, ...]
     unattended_updates: str
-    provisioning_marker_path: str
-    provisioning_marker_content: str
 
 
 TASKMAN_DIRECTORIES: tuple[ManagedDirectory, ...] = (
@@ -74,8 +68,6 @@ def build_baseline_plan(config: EnvironmentConfig) -> BaselinePlan:
         service_account=ServiceAccount("taskman", "/var/lib/taskman", "/usr/sbin/nologin", True),
         directories=_taskman_directories(config),
         unattended_updates=_UNATTENDED_UPDATES,
-        provisioning_marker_path=_PROVISIONING_MARKER_PATH,
-        provisioning_marker_content=_PROVISIONING_MARKER_CONTENT,
     )
 
 
@@ -90,15 +82,6 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
     from pyinfra.operations import apt, files, server
 
     plan = build_baseline_plan(config)
-    files.put(
-        StringIO(plan.provisioning_marker_content),
-        plan.provisioning_marker_path,
-        user="root",
-        group="root",
-        mode="600",
-        add_deploy_dir=False,
-        name="Install Taskman provisioning marker",
-    )
     apt.packages(
         packages=list(plan.packages),
         update=True,

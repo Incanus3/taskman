@@ -1,75 +1,50 @@
 # Operations VPS readiness
 
-Status: active. Updated: 2026-09-14. Resume: `$resume ops-vps-readiness`.
+Status: active. Updated: 2026-09-15. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Plan and implement the approved desired-target deployment reconciliation, then complete the
-interrupted staging deployment through the public controller and continue operator-selected
-readiness acceptance.
+If the operator separately authorizes it, complete clean staging recreation, provisioning, and
+real-host readiness acceptance for the locally verified dedicated-host controller. This handoff
+does not authorize a host reset, provider/DNS change, deployment, publication, push, or merge.
 
-- Approved specification:
-  [Desired-target deployment reconciliation](../specs/2026-09-09-deploy-reconciliation-design.md)
-- Approved implementation plan:
-  [Reconciliation delivery](../plans/2026-09-14-deploy-reconciliation.md)
-- Implemented baseline:
-  [Dedicated-host deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
-- Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Readiness: `tas-b7kd`; reconciliation: `tas-sr4b`; failed-result diagnostics: `tas-6dkg`.
-
-The separate [Operations CLI UX](operations-cli-ux.md) specification is not approved by this
-decision. The [PostgreSQL host-side Python](postgresql-host-python.md) refactor remains parked.
+- Canonical behavior: [reconciliation specification](../specs/2026-09-09-deploy-reconciliation-design.md),
+  [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
+  [operator runbook](../deployment.md).
+- Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
+  are closed; the parent remains open for external acceptance.
 
 ## Current checkpoint
 
-The operator approved the complete reconciliation design on 2026-09-14, including its
-simplicity/non-adversarial reliability scope, Python-first workflow policy, and removal of the
-unused proposed selection-history listing operation. The operator also approved the reviewed
-implementation plan on 2026-09-14. Both approval gates are satisfied; no reconciliation code exists yet.
+The locally verified head is `934baff3c282627efb58fd77bde3325807147973` on
+`dedicated-host-deployment-automation`. The final-review corrections preserve failed-verification
+evidence, remove finalized helper uploads, align local/host archive validation, and reconcile
+clean-source drift. Production deploy and provision now retry resolution-time drift through the
+complete pre-confirmation cycle within one shared bound; source or material-host drift after
+confirmation requires a new invocation. A distinct scoped reviewer approved the correction.
 
-Reconciliation owns protocol v3 and `tas-6dkg`; CLI UX consumes that baseline. Read the complete
-specification for exact recovery, provenance, retention, pagination, and result contracts.
-Delivery tasks `tas-sr4b.1` through `tas-sr4b.11` are created with dependencies; the last owns
-independent verification. Follow the plan's reader-before-writer and local-only integration
-constraints. The parent issue's stale approval-pending summary has been reconciled.
+Latest local evidence: compileall and `pytest ops/tests` passed at the reviewed head, with 1,462 tests
+in 344.70 seconds; `mix precommit` passed 805 tests. The preceding final implementation checkpoint
+also passed locked dependency synchronization, shell syntax, and command-help surfaces. Clean and
+controlled-dirty release builds passed there, including exact-input cache
+reuse and ignored-canary exclusion. Both helper packages ran under `python3 -I -S`; the extracted
+release terminal test and systemd diagnostic tests passed.
 
-Sol's full review found two contract gaps; its focused follow-up confirmed both amendments
-closed them without substantive new contradictions. Review evidence is recorded in `tas-sr4b`.
-The subsequent development-policy application received local checks and operator approval.
+The old staging installation is outside the supported format/runtime boundary. Its dated DNS,
+email, administrator, and failed-upgrade observations are historical evidence only. Do not migrate,
+repair, or run the new controller against it.
 
-Administrator creation, authenticated workspace/admin access, and logout acceptance are complete
-under `tas-q5lo`, separately from deployment completion. Last recorded staging state has the OTP 29
-candidate selected and running while successful history still names the OTP 27 genesis release;
-no migrations changed during that failed transition. Refresh actual state before host actions.
-Do not manually edit current or successful history.
+## Next external gate — authorization required
 
-Work belongs to `dedicated-host-deployment-automation` (PR 16), including the Projects design
-commit previously moved there at the operator's request. Documentation changes remain uncommitted;
-approval does not authorize committing, pushing, merging, or deploying.
+Before acting, obtain explicit operator authorization that identifies the disposable target,
+permitted host/provider/DNS changes, access path, and destructive restore scope. Then recreate a
+clean supported staging host and follow the runbook's fresh provisioning/readiness acceptance:
 
-## Next actions
+1. provision twice and inspect HTTPS, HSTS, listeners, firewall, and reboot behavior;
+2. perform administrator/login, invitation email, API key, and LiveView acceptance;
+3. exercise a second release, rollback, forward deployment, controlled migration failure, backup,
+   and destructive restore; and
+4. inspect canary-secret and release-cookie leakage before recording external acceptance.
 
-1. In a fresh session, read the complete approved specification and plan, refresh repository/task
-   state, and begin `tas-sr4b.1` (compatible exact record readers and package closure).
-2. Follow the approved dependency order through `tas-sr4b.11`, with delegated implementation and
-   distinct independent verification under repository policy.
-3. Implement and verify locally, then update the canonical deployment design/runbook/indexes with
-   actual implemented behavior.
-4. Refresh staging state and continue the already-authorized runtime deployment/readiness work
-   through the public controller. Preserve the running candidate until reconciliation is ready.
-
-## Verification and remaining gates
-
-Planning verification on 2026-09-14: relative links, anchors, whitespace and placeholder checks
-passed; `mix precommit` passed 805 tests. The scoped plan review found a manual-backup admission
-gap; the plan now explicitly opens that public path for validated unfinished deployment and
-requires focused public backup tests. Independent focused follow-up closed the finding with no
-new blocker. Review evidence is recorded in `tas-sr4b`.
-These establish documentation hygiene and the existing application baseline, not correctness
-of unimplemented reconciliation. Independent design reviews were read-only; no host action
-occurred during review or approval.
-
-Design and plan approval are complete. Broader invitation/email, API key,
-LiveView, off-host backup, rollback/restore, controlled-failure, reboot, and leakage acceptance
-retain their existing operator-selection gates. No destructive recovery or manual history repair
-is authorized.
+Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot, and destructive restore
+remain unproven by local fakes, packages, or builds. Preserve the explicit external boundary.

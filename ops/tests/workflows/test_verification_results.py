@@ -24,8 +24,8 @@ def test_helper_verification_report_parses_the_complete_success_schema() -> None
             "schema_version": 1,
             "status": "ok",
             "exit_status": 0,
-            "release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6",
-            "expected_release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6",
+            "release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64,
+            "expected_release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64,
             "checks": [
                 {"schema_version": 1, "name": name, "status": "passed", "summary": "passed"}
                 for name in names

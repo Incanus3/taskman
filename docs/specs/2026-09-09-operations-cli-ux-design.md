@@ -51,6 +51,10 @@ clean-only builds, and confirmation exclusively through stdin are superseded for
 surfaces. The complete reconciliation specification was approved on 2026-09-14 but is not yet
 implemented. This does not approve the separate CLI UX specification.
 
+Reconciliation's approved one-time compatibility break also applies: only its supported artifact,
+runtime, and record baseline is a valid UX input. Do not add old-staging adoption or conversion
+paths. Future supported upgrades and their scheduler/recovery guarantees remain required.
+
 On implementation, this specification supersedes the older design's unconditional build-before-SSH
 ordering for **provision only**, its flat human renderer, and mixed JSON/prompt/error streams.
 It does not change deploy artifact resolution, release selection policy, migration compatibility,

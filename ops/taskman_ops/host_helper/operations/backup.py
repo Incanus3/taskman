@@ -39,24 +39,34 @@ def backup(request: HostRequest) -> HostResult:
         _validate_authoritative_paths(paths)
         with lifecycle_lock(paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
             prepare_backup_root(paths)
-            state = observe_host_state(paths)
+            state = observe_host_state(paths, allow_selection_transition=True)
             normalize_temporary_dumps(paths, state)
-            state = observe_host_state(paths)
+            state = observe_host_state(paths, allow_selection_transition=True)
             validate_completed_backups(state, paths)
             validate_credentials(credentials)
             try:
                 facts = observe_database_migrations(database, credentials)
             except DatabaseObservationError as error:
                 raise BackupAuthorityError("database migration evidence is invalid") from error
-            state = observe_host_state(paths, database=facts)
+            state = observe_host_state(
+                paths,
+                database=facts,
+                allow_selection_transition=True,
+            )
             record = create_validated_backup(state, paths, database, credentials, purpose=purpose)
-            final_state = observe_host_state(paths, database=facts)
+            final_state = observe_host_state(
+                paths,
+                database=facts,
+                allow_selection_transition=True,
+            )
             dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
             result_state = {
                 "backup_id": record.backup_id,
                 "dump_path": dump.as_posix(),
                 "size_bytes": dump.stat().st_size,
                 "source_database_size_bytes": record.source_database_size_bytes,
+                "source_release_id": record.source_release_id,
+                "migration_versions": record.migration_versions,
                 "selected_release_id": final_state.selected_release_id,
                 "service_state": final_state.service_state,
                 "database_state": final_state.database_state,

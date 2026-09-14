@@ -228,15 +228,15 @@ def test_existing_host_mutations_admit_the_host_before_planning_or_confirmation(
     """Shared controller admission must not become disconnected safety code."""
 
     workflows = {
-        "backup.py": ("run_backup", "run_request"),
-        "cleanup.py": ("cleanup", "run_request"),
-        "deploy.py": ("deploy", "_planning_authority"),
-        "restore.py": ("restore", "run_request"),
-        "rollback.py": ("rollback", "run_request"),
+        "backup.py": ("run_backup", "run_request", "validate_operational_preflight"),
+        "cleanup.py": ("cleanup", "run_request", "validate_cleanup_preflight"),
+        "deploy.py": ("deploy", "_planning_authority", "validate_operational_preflight"),
+        "restore.py": ("restore", "_collect_authority", "validate_restore_inspection_preflight"),
+        "rollback.py": ("rollback", "run_request", "validate_operational_preflight"),
     }
     root = Path(__file__).resolve().parents[1] / "taskman_ops" / "workflows"
     violations: list[str] = []
-    for filename, (entrypoint, planning_call) in workflows.items():
+    for filename, (entrypoint, planning_call, admission_call) in workflows.items():
         tree = ast.parse((root / filename).read_text(encoding="utf-8"))
         function = next(
             node for node in tree.body
@@ -247,14 +247,14 @@ def test_existing_host_mutations_admit_the_host_before_planning_or_confirmation(
             node.lineno
             for node in calls
             if isinstance(node.func, ast.Name)
-            and node.func.id == "validate_operational_preflight"
+            and node.func.id == admission_call
         )
         planning = tuple(
             node.lineno
             for node in calls
             if isinstance(node.func, ast.Name) and node.func.id == planning_call
         )
-        if len(preflight) != 1 or not planning or preflight[0] >= min(planning):
+        if not preflight or not planning or min(preflight) >= min(planning):
             violations.append(filename)
 
     assert violations == []

@@ -19,7 +19,7 @@ from taskman_ops.workflows.verification_results import (
 from tests.support.secrets import no_registered_secrets_between_tests as clear_output_secrets
 
 
-RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
 CHECK_NAMES = (
     "taskman-service",
     "release-identity",
@@ -160,7 +160,7 @@ def test_verify_accepts_completed_report_with_observation_projection_and_warning
         assert isinstance(request, HostRequest)
         assert request.operation == "verify"
         return HostResult(
-            2,
+            3,
             "verify",
             request.correlation_id,  # type: ignore[attr-defined]
             "succeeded",
@@ -208,7 +208,7 @@ def test_verify_preserves_failed_reports_and_exit_categories(
 
     def invoke(_remote: object, request: HostRequest, **_kwargs: object) -> HostResult:
         return HostResult(
-            2,
+            3,
             request.operation,
             request.correlation_id,
             "retryable",

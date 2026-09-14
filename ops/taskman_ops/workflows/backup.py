@@ -21,6 +21,8 @@ _FACT_KEYS = frozenset(
         "dump_path",
         "size_bytes",
         "source_database_size_bytes",
+        "source_release_id",
+        "migration_versions",
         "selected_release_id",
         "service_state",
         "database_state",
@@ -43,7 +45,7 @@ def run_backup(
     warnings: tuple[str, ...] = ()
     try:
         validate_operational_preflight(remote, config)
-        discovery = run_request(remote, discovery_request(config))
+        discovery = run_request(remote, discovery_request(config, mode="deploy"))
         if discovery.outcome != "succeeded":
             raise result_error(discovery)
         warnings = discovery.warnings
@@ -121,12 +123,19 @@ def _success(result: object) -> dict[str, object]:
         or state["size_bytes"] <= 0
         or type(state["source_database_size_bytes"]) is not int
         or state["source_database_size_bytes"] <= 0
+        or type(state["source_release_id"]) is not str
+        or not isinstance(state["migration_versions"], (list, tuple))
+        or any(type(item) is not int or item < 0 for item in state["migration_versions"])
+        or tuple(state["migration_versions"]) != tuple(sorted(set(state["migration_versions"])))
         or state["selected_release_id"] is not None and type(state["selected_release_id"]) is not str
         or state["service_state"] not in {"running", "stopped", "failed", "unknown"}
         or state["database_state"] not in {"ready", "absent", "unknown"}
     ):
         raise _safety("backup helper returned invalid final state")
-    return {key: state[key] for key in _FACT_KEYS}
+    return {
+        **{key: state[key] for key in _FACT_KEYS},
+        "migration_versions": list(state["migration_versions"]),
+    }
 
 
 def _safety(message: str) -> OpsError:

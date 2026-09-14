@@ -6,10 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import stat
+import re
 
 
 class PathAuthorityError(ValueError):
     """Raised when a request tries to supply derived or unsafe host paths."""
+
+
+_BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_SELECTION_FILE_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 
 
 def _absolute(value: object, label: str) -> PurePosixPath:
@@ -66,6 +71,18 @@ class ManagedPaths:
         return self.deployment_root / "selections"
 
     @property
+    def backup_protection_root(self) -> PurePosixPath:
+        """Directory containing migration-attempt backup protections."""
+
+        return self.deployment_root / "backup-protections"
+
+    @property
+    def restore_target_path(self) -> PurePosixPath:
+        """The one durable binding for an unfinished restore."""
+
+        return self.deployment_root / "restore-target.json"
+
+    @property
     def lifecycle_lock_path(self) -> PurePosixPath:
         """The one exclusive lifecycle lock derived from ``install_root``."""
 
@@ -82,25 +99,21 @@ class ManagedPaths:
     def backup_manifest(self, backup_id: str) -> PurePosixPath:
         """Return the sidecar manifest path below a caller-validated backup ID."""
 
-        if (
-            type(backup_id) is not str
-            or not backup_id.startswith("backup-")
-            or len(backup_id) != len("backup-") + 32
-            or any(character not in "0123456789abcdef" for character in backup_id.removeprefix("backup-"))
-        ):
+        if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
             raise PathAuthorityError("invalid backup identifier")
         return self.backup_root / f"{backup_id}.json"
+
+    def backup_protection(self, backup_id: str) -> PurePosixPath:
+        """Return the derived protection record path for one backup ID."""
+
+        if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
+            raise PathAuthorityError("invalid backup identifier")
+        return self.backup_protection_root / f"{backup_id}.json"
 
     def selection_record(self, filename: str) -> PurePosixPath:
         """Return a selection path below the derived selection directory."""
 
-        if (
-            type(filename) is not str
-            or not filename.startswith("selection-")
-            or not filename.endswith(".json")
-            or len(filename) != len("selection-") + 64 + len(".json")
-            or any(character not in "0123456789abcdef" for character in filename[len("selection-") : -5])
-        ):
+        if type(filename) is not str or _SELECTION_FILE_RE.fullmatch(filename) is None:
             raise PathAuthorityError("invalid selection record filename")
         return self.selection_root / filename
 
@@ -126,6 +139,7 @@ class ManagedPaths:
             ("release root", self.release_root),
             ("deployment root", self.deployment_root),
             ("selection root", self.selection_root),
+            ("backup protection root", self.backup_protection_root),
         ):
             path = self.local(authority)
             try:

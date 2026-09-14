@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 
 import pytest
 
@@ -11,11 +12,11 @@ from taskman_ops.host.acceptance import validate_operational_host
 from taskman_ops.host.facts import (
     CaddyState,
     HostFacts,
-    ProvisioningMarkerState,
 )
 from taskman_ops.output import render_human, render_json
 from taskman_ops.remote import CommandResult
 from taskman_ops.workflows.backup import run_backup
+from taskman_ops.workflows import operational_preflight as preflight_module
 from taskman_ops.workflows.operational_preflight import validate_operational_preflight
 from tests.workflows.test_deploy import config
 
@@ -46,10 +47,11 @@ def _managed_host_facts() -> HostFacts:
         dns_addresses=("203.0.113.10",),
         listeners=(),
         existing_paths=(),
-        provisioning_marker=ProvisioningMarkerState.MANAGED,
+        path_metadata=(),
         caddy_state=CaddyState.ACTIVE,
         existing_units=(),
-        existing_accounts=("taskman", "postgres"),
+        existing_accounts=("taskman",),
+        taskman_account_compatible=True,
         existing_databases=("taskman_prod",),
         failed_checks=(),
     )
@@ -110,6 +112,114 @@ def test_existing_host_preflight_checks_runtime_metadata_keys_database_and_capac
     assert "pg_database_size" in database_argv[2]
     assert "df -B1" in database_argv[2]
     assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+
+
+def _stub_restore_result(monkeypatch, state, *, outcome="succeeded", warnings=()):
+    from taskman_ops.host_protocol import HostResult
+
+    captured = []
+    def run(_remote, request):
+        captured.append(request)
+        return HostResult.for_request(request, outcome, "observed", state, warnings)
+    monkeypatch.setattr("taskman_ops.workflows.helper.run_request", run)
+    return captured
+
+
+def test_restore_preflight_uses_packaged_capacity_projection(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    captured = _stub_restore_result(monkeypatch, {
+        "mode": "capacity", "database_available_bytes": 8589934592,
+        "database_size_bytes": {"canonical": None, "temporary": None, "retired": 4096},
+    }, warnings=("transient helper cleanup was incomplete",))
+
+    facts = preflight_module.validate_restore_preflight(
+        remote, config(), host_validator=lambda *_args: _managed_host_facts()
+    )
+
+    assert captured[0].operation == "restore_preflight"
+    assert captured[0].parameters["mode"] == "capacity"
+    assert captured[0].parameters["credentials_path"] == "/etc/taskman/pgpass"
+    assert facts.database_available_disk_bytes == 8589934592
+    assert facts.database_size_bytes["retired"] == 4096
+    assert facts.warnings == ("transient helper cleanup was incomplete",)
+
+
+def test_restore_inspection_preflight_omits_capacity(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    captured = _stub_restore_result(monkeypatch, {"mode": "inspection"})
+
+    observed = preflight_module.validate_restore_inspection_preflight(
+        remote, config(), host_validator=lambda *_args: _managed_host_facts()
+    )
+
+    assert captured[0].parameters["mode"] == "inspection"
+    assert observed.host_facts == _managed_host_facts()
+
+
+@pytest.mark.parametrize(
+    "facts",
+    (
+        replace(_managed_host_facts(), available_disk_bytes=1, backup_available_disk_bytes=1),
+        replace(
+            _managed_host_facts(), available_disk_bytes=0, backup_available_disk_bytes=0,
+            failed_checks=("install-root disk", "backup-root disk"),
+        ),
+    ),
+)
+def test_restore_inspection_admits_low_or_unobservable_capacity_for_cleanup(facts, monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(monkeypatch, {"mode": "inspection"})
+
+    observed = preflight_module.validate_restore_inspection_preflight(
+        remote, config(), host_validator=lambda *_args: facts
+    )
+
+    assert observed.host_facts is facts
+
+
+def test_cleanup_preflight_uses_host_facts_without_runtime_or_database_commands() -> None:
+    facts = replace(
+        _managed_host_facts(), available_disk_bytes=0, backup_available_disk_bytes=0,
+        failed_checks=("install-root disk", "backup-root disk"),
+    )
+    class FactRemote(RecordingRemote):
+        def facts(self):
+            return facts
+    remote = FactRemote([])
+
+    observed = preflight_module.validate_cleanup_preflight(remote, config())
+
+    assert observed is facts
+    assert remote.calls == []
+
+
+def test_restore_preflight_refuses_invalid_packaged_capacity(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(monkeypatch, {"mode": "capacity", "database_available_bytes": 1})
+
+    with pytest.raises(OpsError) as raised:
+        preflight_module.validate_restore_preflight(
+            remote, config(), host_validator=lambda *_args: _managed_host_facts()
+        )
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert "capacity" in raised.value.next_action
+
+
+def test_restore_preflight_maps_helper_refusal_and_retains_cleanup_warning(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(
+        monkeypatch, {}, outcome="refused",
+        warnings=("transient helper cleanup was incomplete",),
+    )
+
+    with pytest.raises(OpsError) as raised:
+        preflight_module.validate_restore_preflight(
+            remote, config(), host_validator=lambda *_args: _managed_host_facts()
+        )
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert raised.value.warnings == ("transient helper cleanup was incomplete",)
 
 
 @pytest.mark.parametrize("failed_call", (0, 1))
