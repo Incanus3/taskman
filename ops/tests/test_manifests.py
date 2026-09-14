@@ -26,14 +26,16 @@ from taskman_ops.releases.identifiers import build_release_id, managed_release_p
 
 
 REVISION = "a" * 40
-RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-CURRENT_RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6"
-CHECKSUM = "b" * 64
+ARTIFACT_SHA256 = "b" * 64
+RELEASE_ID = build_release_id(
+    "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=False
+)
+CHECKSUM = "c" * 64
 
 
 def manifest_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "application": "taskman",
         "application_version": "0.2.0",
         "source_revision": REVISION,
@@ -41,8 +43,8 @@ def manifest_payload(**overrides: object) -> dict[str, object]:
         "built_at": "2026-09-04T20:15:30Z",
         "target_os": "ubuntu26.04",
         "architecture": "amd64",
-        "otp_version": "27.3.4.6",
-        "elixir_version": "1.18.3",
+        "otp_version": "29.0.6",
+        "elixir_version": "1.20.4",
         "node_version": "22.22.1",
         "builder_base_tag": BUILDER_BASE_TAG,
         "builder_base_digest": BUILDER_BASE_DIGEST,
@@ -55,12 +57,22 @@ def manifest_payload(**overrides: object) -> dict[str, object]:
             }
         ],
         "top_level": "taskman",
+        "artifact_sha256": ARTIFACT_SHA256,
+        "source_dirty": False,
     }
     payload.update(overrides)
     return payload
 
 
 def write_manifest_bundle(tmp_path: Path, archive: Path, **overrides: object) -> tuple[Path, Path]:
+    archive_sha256 = sha256_file(archive)
+    overrides = {
+        "release_id": build_release_id(
+            "0.2.0", REVISION, artifact_sha256=archive_sha256, source_dirty=False
+        ),
+        "artifact_sha256": archive_sha256,
+        **overrides,
+    }
     manifest = tmp_path / "taskman.manifest.json"
     manifest.write_text(json.dumps(manifest_payload(**overrides)), encoding="utf-8")
     checksum = tmp_path / "taskman.tar.gz.sha256"
@@ -121,48 +133,29 @@ def write_release_archive(
     return archive_path
 
 
-def test_release_identity_defaults_to_the_current_runtime_and_keeps_legacy_ids_valid() -> None:
-    release_id = build_release_id("0.2.0", REVISION)
+def test_release_identity_requires_archive_digest_and_tracks_source_provenance() -> None:
+    release_id = build_release_id(
+        "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=False
+    )
 
-    assert release_id == CURRENT_RELEASE_ID
+    assert release_id == RELEASE_ID
     assert validate_release_id(release_id) == release_id
     assert managed_release_path(PurePosixPath("/opt/taskman/releases"), release_id) == PurePosixPath(
-        f"/opt/taskman/releases/{CURRENT_RELEASE_ID}"
+        f"/opt/taskman/releases/{RELEASE_ID}"
     )
     assert validate_release_id(RELEASE_ID) == RELEASE_ID
-
-
-@pytest.mark.parametrize(
-    ("release_id", "otp_version", "elixir_version"),
-    (
-        (RELEASE_ID, "27.3.4.6", "1.18.3"),
-        (CURRENT_RELEASE_ID, "29.0.6", "1.20.4"),
-    ),
-)
-def test_manifest_preserves_each_allowlisted_runtime_tuple(
-    release_id: str, otp_version: str, elixir_version: str
-) -> None:
-    """A new default must not invalidate immutable release provenance."""
-
-    manifest = ArtifactManifest.from_mapping(
-        manifest_payload(
-            release_id=release_id,
-            otp_version=otp_version,
-            elixir_version=elixir_version,
-        )
+    dirty = build_release_id(
+        "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=True
     )
-
-    assert manifest.release_id == release_id
-    assert manifest.otp_version == otp_version
-    assert manifest.elixir_version == elixir_version
+    assert dirty == RELEASE_ID + "-dirty"
 
 
 @pytest.mark.parametrize(
     ("release_id", "otp_version", "elixir_version"),
     (
-        (RELEASE_ID, "29.0.6", "1.20.4"),
-        (CURRENT_RELEASE_ID, "27.3.4.6", "1.18.3"),
-        ("0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp28.0.0", "28.0.0", "1.19.0"),
+        ("0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6-" + "b" * 64, "27.3.4.6", "1.18.3"),
+        ("0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 63 + "c", "29.0.0", "1.20.4"),
+        ("0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp28.0.0-" + "b" * 64, "28.0.0", "1.19.0"),
     ),
 )
 def test_manifest_refuses_an_unsupported_or_mismatched_runtime_tuple(
@@ -174,6 +167,7 @@ def test_manifest_refuses_an_unsupported_or_mismatched_runtime_tuple(
         ArtifactManifest.from_mapping(
             manifest_payload(
                 release_id=release_id,
+                artifact_sha256=release_id.split("-")[-1],
                 otp_version=otp_version,
                 elixir_version=elixir_version,
             )
@@ -183,11 +177,11 @@ def test_manifest_refuses_an_unsupported_or_mismatched_runtime_tuple(
 @pytest.mark.parametrize(
     "value",
     [
-        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6/next",
-        "../0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6",
-        "0.2.0-AAAAAAAAAAAA-ubuntu26.04-amd64-otp27.3.4.6",
-        "0.2.0-aaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6",
-        "0.2.0-aaaaaaaaaaaa-ubuntu24.04-amd64-otp27.3.4.6",
+        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64 + "/next",
+        "../0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64,
+        "0.2.0-AAAAAAAAAAAA-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64,
+        "0.2.0-aaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64,
+        "0.2.0-aaaaaaaaaaaa-ubuntu24.04-amd64-otp29.0.6-" + "b" * 64,
     ],
 )
 def test_release_identity_refuses_path_aliases_and_unsupported_targets(value: str) -> None:
@@ -213,14 +207,14 @@ def test_manifest_round_trip_has_the_exact_schema_and_utc_provenance() -> None:
 
 def test_manifest_records_the_readable_and_immutable_builder_base_identity() -> None:
     payload = manifest_payload(
-        schema_version=2,
+        schema_version=3,
         builder_base_tag=BUILDER_BASE_TAG,
         builder_base_digest=BUILDER_BASE_DIGEST,
     )
 
     manifest = ArtifactManifest.from_mapping(payload)
 
-    assert manifest.schema_version == 2
+    assert manifest.schema_version == 3
     assert manifest.builder_base_tag == BUILDER_BASE_TAG
     assert manifest.builder_base_digest == BUILDER_BASE_DIGEST
     assert manifest_from_json(manifest_to_json(manifest)) == manifest
@@ -236,7 +230,7 @@ def test_manifest_records_the_readable_and_immutable_builder_base_identity() -> 
 )
 def test_manifest_requires_the_exact_builder_base_identity(overrides: dict[str, object]) -> None:
     payload = manifest_payload(
-        schema_version=2,
+        schema_version=3,
         builder_base_tag=BUILDER_BASE_TAG,
         builder_base_digest=BUILDER_BASE_DIGEST,
     )
@@ -256,6 +250,7 @@ def test_manifest_requires_the_exact_builder_base_identity(overrides: dict[str, 
         {"source_revision": "A" * 40},
         {"built_at": "2026-09-04T20:15:30+00:00"},
         {"built_at": "2026-09-04T20:15:30"},
+        {"built_at": "2026-09-04T20:15:30.000Z"},
         {"target_os": "ubuntu24.04"},
         {"architecture": "x86_64"},
         {"otp_version": "27.3.4"},
@@ -306,6 +301,67 @@ def test_migration_fingerprints_ignore_migration_directory_formatting_configurat
     )
 
 
+def test_manifest_accepts_256_fingerprints_and_rejects_257(tmp_path: Path) -> None:
+    filenames = tuple(f"{index:014d}_migration.exs" for index in range(256))
+    migrations = [
+        {"filename": filename, "sha256": CHECKSUM}
+        for filename in filenames
+    ]
+
+    manifest = ArtifactManifest.from_mapping(manifest_payload(migrations=migrations))
+
+    assert len(manifest.migrations) == 256
+    with pytest.raises(ValueError, match="migration|256|supported"):
+        ArtifactManifest.from_mapping(
+            manifest_payload(
+                migrations=[*migrations, {"filename": "99999999999999_last.exs", "sha256": CHECKSUM}]
+            )
+        )
+
+
+def test_manifest_enforces_the_255_byte_migration_filename_bound() -> None:
+    filename = "20260904065131_" + ("a" * 236) + ".exs"
+    assert len(filename.encode("utf-8")) == 255
+    migration = {"filename": filename, "sha256": CHECKSUM}
+
+    assert ArtifactManifest.from_mapping(manifest_payload(migrations=[migration])).migrations[0].filename == filename
+    with pytest.raises(ValueError, match="filename|long|255"):
+        ArtifactManifest.from_mapping(
+            manifest_payload(
+                migrations=[{"filename": filename[:-4] + "aaaa.exs", "sha256": CHECKSUM}]
+            )
+        )
+
+
+def test_manifest_serializer_enforces_its_encoded_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taskman_ops.releases.manifests as manifests_module
+
+    manifest = ArtifactManifest.from_mapping(manifest_payload())
+    encoded_size = len(manifest_to_json(manifest).encode("ascii"))
+    monkeypatch.setattr(manifests_module, "MAX_MANIFEST_BYTES", encoded_size - 1)
+
+    with pytest.raises(ValueError, match="oversized|size|manifest"):
+        manifest_to_json(manifest)
+
+
+def test_manifest_reader_rejects_an_oversized_encoded_input_with_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taskman_ops.releases.manifests as manifests_module
+
+    payload = manifest_payload()
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    canonical_size = len((encoded + "\n").encode("utf-8"))
+    monkeypatch.setattr(manifests_module, "MAX_MANIFEST_BYTES", canonical_size)
+
+    assert manifest_from_json(encoded).application == "taskman"
+
+    with pytest.raises(ValueError, match="oversized|size|manifest"):
+        manifest_from_json(encoded + (" " * 2))
+
+
 @pytest.mark.parametrize("entry_kind", ["file", "directory", "link", "formatter_link"])
 def test_migration_fingerprints_reject_unrecognized_directory_entries(tmp_path: Path, entry_kind: str) -> None:
     migrations = tmp_path / "migrations"
@@ -335,7 +391,7 @@ def test_verify_artifact_returns_the_detached_checksum_for_a_safe_release_layout
     verified = verify_artifact(archive, manifest, checksum)
 
     assert verified.archive == archive
-    assert verified.manifest.release_id == RELEASE_ID
+    assert verified.manifest.artifact_sha256 == verified.sha256
     assert verified.sha256 == sha256_file(archive)
     assert verified.checksum == checksum
 

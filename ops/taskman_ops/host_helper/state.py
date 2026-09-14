@@ -11,11 +11,13 @@ import re
 import stat
 import subprocess
 
-from .paths import ManagedPaths, PathAuthorityError
 from ..migrations import MigrationOrderError, validate_migration_versions
-from taskman_ops.releases.identifiers import RELEASE_ID_RE
+from taskman_ops.releases.identifiers import RELEASE_ID_RE, validate_release_id
+from .backup_protection import BackupProtection
+from .paths import ManagedPaths, PathAuthorityError
 from .records import (
     MAX_RECORD_BYTES,
+    MAX_RELEASE_RECORD_BYTES,
     BACKUP_ID_RE,
     BackupRecord,
     RecordError,
@@ -23,6 +25,7 @@ from .records import (
     SelectionRecord,
     selection_filename,
 )
+from .restore_target import RestoreTarget
 
 
 MAX_WARNINGS = 64
@@ -41,6 +44,18 @@ _BACKUP_TEMP_RE = re.compile(
 _SELECTION_FILE_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _SELECTION_TEMP_RE = re.compile(
     r"\.selection-[0-9a-f]{64}\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"
+)
+_UNSUPPORTED_RELEASE_RE = re.compile(
+    r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?-"
+    r"[0-9a-f]{12}-ubuntu26\.04-amd64-otp[0-9A-Za-z.-]+"
+    r"(?:-[0-9a-f]{64}(?:-dirty)?)?\Z"
+)
+_BACKUP_PROTECTION_FILE_RE = re.compile(r"backup-[0-9a-f]{32}\.json\Z")
+_BACKUP_PROTECTION_TEMP_RE = re.compile(
+    r"\.backup-[0-9a-f]{32}\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"
+)
+_RESTORE_TARGET_TEMP_RE = re.compile(
+    r"\.restore-target\.json\.[0-9]+\.(?:[0-9]|[1-9][0-9])\.tmp\Z"
 )
 
 
@@ -61,6 +76,8 @@ class HostState:
     database_state: str
     temporary_paths: tuple[PurePosixPath, ...]
     warnings: tuple[str, ...]
+    backup_protections: tuple[BackupProtection, ...] = ()
+    restore_target: RestoreTarget | None = None
 
     def __post_init__(self) -> None:
         if self.selected_release_id is not None and not isinstance(self.selected_release_id, str):
@@ -87,6 +104,12 @@ class HostState:
             raise StateAmbiguityError("invalid temporary paths")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
             raise StateAmbiguityError("invalid state warnings")
+        if not isinstance(self.backup_protections, tuple) or not all(
+            isinstance(item, BackupProtection) for item in self.backup_protections
+        ):
+            raise StateAmbiguityError("invalid backup protection state")
+        if self.restore_target is not None and not isinstance(self.restore_target, RestoreTarget):
+            raise StateAmbiguityError("invalid restore target state")
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -99,6 +122,8 @@ class HostState:
             "database_state": self.database_state,
             "temporary_paths": [item.as_posix() for item in self.temporary_paths],
             "warnings": list(self.warnings),
+            "backup_protections": [item.to_mapping() for item in self.backup_protections],
+            "restore_target": None if self.restore_target is None else self.restore_target.to_mapping(),
         }
 
 
@@ -133,16 +158,35 @@ def observe_host_state(
     selection_root = Path(paths.local(paths.selection_root))
 
     _check_or_note_directory(install_root, owner_uid, "install root")
-    _note_unknown_deployment_entries(
-        Path(paths.local(paths.deployment_root)), owner_uid, warnings
-    )
+    deployment_root = Path(paths.local(paths.deployment_root))
+    _note_unknown_deployment_entries(deployment_root, owner_uid, warnings, temporary)
     releases = _read_releases(release_root, owner_uid, temporary, warnings)
     backups = _read_backups(backup_root, owner_uid, temporary, warnings)
     selections = _read_selections(selection_root, owner_uid, warnings, temporary)
+    backup_protection_root = Path(paths.local(paths.backup_protection_root))
+    backup_protections = _read_backup_protections(
+        backup_protection_root, owner_uid, temporary, warnings
+    )
+    restore_target_path = Path(paths.local(paths.restore_target_path))
+    restore_target = _read_restore_target(restore_target_path, owner_uid)
 
     release_by_id = {item.release_id: item for item in releases}
     backup_by_id = {item.backup_id: item for item in backups}
+    selection_by_id = {selection_filename(item): item for item in selections}
+    _validate_backup_sources(backup_by_id, release_by_id)
     _validate_selection_history(selections, release_by_id, backup_by_id)
+    _validate_backup_protections(
+        backup_protections,
+        release_by_id,
+        backup_by_id,
+        selection_by_id,
+    )
+    _validate_restore_target(
+        restore_target,
+        release_by_id,
+        backup_by_id,
+        selection_by_id,
+    )
     selected_from_history = selections[-1].release_id if selections else None
     selected_from_link = _selected_link(paths, release_by_id)
     if selected_from_history != selected_from_link:
@@ -169,6 +213,8 @@ def observe_host_state(
         database_state=database_state,
         temporary_paths=tuple(temporary[:MAX_TEMPORARY_PATHS]),
         warnings=tuple(warnings),
+        backup_protections=tuple(sorted(backup_protections, key=lambda item: item.backup_id)),
+        restore_target=restore_target,
     )
 
 
@@ -192,12 +238,18 @@ def _note_unknown_deployment_entries(
     root: Path,
     owner_uid: int,
     warnings: list[str],
+    temporary: list[PurePosixPath],
 ) -> None:
     """Bound the non-authoritative deployment area without reading old records."""
 
     for entry in _entries(root, owner_uid, "deployment root"):
-        if entry.name != "selections":
-            warnings.append(f"unknown deployment entry: {entry.name}")
+        if entry.name in {"selections", "backup-protections", "restore-target.json"}:
+            continue
+        if _RESTORE_TARGET_TEMP_RE.fullmatch(entry.name):
+            _validate_temporary(entry, owner_uid, "restore target temporary")
+            temporary.append(PurePosixPath(entry.as_posix()))
+            continue
+        warnings.append(f"unknown deployment entry: {entry.name}")
 
 
 def _read_releases(
@@ -222,10 +274,22 @@ def _read_releases(
             warnings.append(f"unknown release temporary entry: {entry.name}")
             continue
         try:
-            from taskman_ops.releases.identifiers import validate_release_id
-
             release_id = validate_release_id(entry.name)
         except (TypeError, ValueError):
+            if _UNSUPPORTED_RELEASE_RE.fullmatch(entry.name) is not None:
+                raise StateAmbiguityError("unsupported release authority")
+            try:
+                entry_details = entry.lstat()
+                if stat.S_ISDIR(entry_details.st_mode):
+                    manifest_details = (entry / ".taskman-release.json").lstat()
+                    if stat.S_ISLNK(manifest_details.st_mode) or stat.S_ISREG(manifest_details.st_mode):
+                        raise StateAmbiguityError("unsupported release authority")
+            except FileNotFoundError:
+                pass
+            except StateAmbiguityError:
+                raise
+            except OSError as error:
+                raise StateAmbiguityError("unable to inspect release authority") from error
             warnings.append(f"unknown release entry: {entry.name}")
             continue
         details = _lstat(entry, "release directory")
@@ -238,7 +302,15 @@ def _read_releases(
             raise StateAmbiguityError("duplicate release identity")
         seen.add(release_id)
         _read_release_manifest_temporaries(entry, owner_uid, temporary)
-        result.append(_read_record(manifest, ReleaseRecord.from_mapping, "release manifest", owner_uid))
+        result.append(
+            _read_record(
+                manifest,
+                ReleaseRecord.from_mapping,
+                "release manifest",
+                owner_uid,
+                maximum=MAX_RELEASE_RECORD_BYTES,
+            )
+        )
         if result[-1].release_id != release_id:
             raise StateAmbiguityError("release manifest identity conflicts with its path")
     return result
@@ -331,6 +403,48 @@ def _read_selections(
     return sorted(result, key=lambda item: item.selected_at)
 
 
+def _read_backup_protections(
+    root: Path,
+    owner_uid: int,
+    temporary: list[PurePosixPath],
+    warnings: list[str],
+) -> list[BackupProtection]:
+    entries = _entries(root, owner_uid, "backup protection root")
+    result: list[BackupProtection] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if _BACKUP_PROTECTION_TEMP_RE.fullmatch(entry.name):
+            _validate_temporary(entry, owner_uid, "backup protection temporary")
+            temporary.append(PurePosixPath(entry.as_posix()))
+            continue
+        if not _BACKUP_PROTECTION_FILE_RE.fullmatch(entry.name):
+            warnings.append(f"unknown backup protection entry: {entry.name}")
+            continue
+        record = _read_record(
+            entry,
+            BackupProtection.from_mapping,
+            "backup protection record",
+            owner_uid,
+        )
+        if record.backup_id in seen:
+            raise StateAmbiguityError("duplicate backup protection identity")
+        if record.backup_id != entry.stem:
+            raise StateAmbiguityError("backup protection identity conflicts with its path")
+        seen.add(record.backup_id)
+        result.append(record)
+    return result
+
+
+def _read_restore_target(path: Path, owner_uid: int) -> RestoreTarget | None:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise StateAmbiguityError("unable to inspect restore target") from error
+    return _read_record(path, RestoreTarget.from_mapping, "restore target", owner_uid)
+
+
 def _read_release_manifest_temporaries(
     release_directory: Path,
     owner_uid: int,
@@ -372,7 +486,14 @@ def _validate_temporary(
         raise StateAmbiguityError(f"{label} is unsafe")
 
 
-def _read_record(path: Path, parser: object, label: str, owner_uid: int):
+def _read_record(
+    path: Path,
+    parser: object,
+    label: str,
+    owner_uid: int,
+    *,
+    maximum: int = MAX_RECORD_BYTES,
+):
     details = _lstat(path, label)
     if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
         raise StateAmbiguityError(f"authoritative {label} is not a regular file")
@@ -382,7 +503,7 @@ def _read_record(path: Path, parser: object, label: str, owner_uid: int):
         raw = path.read_bytes()
     except OSError as error:
         raise StateAmbiguityError(f"unable to read {label}") from error
-    if len(raw) > MAX_RECORD_BYTES:
+    if len(raw) > maximum:
         raise StateAmbiguityError(f"authoritative {label} is oversized")
     try:
         value = json.loads(raw.decode("utf-8"))
@@ -438,11 +559,125 @@ def _validate_selection_history(
             raise StateAmbiguityError("selection references an unknown release")
         if selection.backup_id is not None and selection.backup_id not in backups:
             raise StateAmbiguityError("selection references an unknown backup")
+        if (
+            selection.observed_previous_release_id is not None
+            and selection.observed_previous_release_id not in releases
+        ):
+            raise StateAmbiguityError("selection references an unknown observed release")
+        if any(backup_id not in backups for backup_id in selection.recovery_backup_ids):
+            raise StateAmbiguityError("selection references an unknown recovery backup")
+        if index == 0 and selection.previous_release_id is not None:
+            raise StateAmbiguityError("first selection cannot name a previous successful release")
         if index and selection.previous_release_id != previous:
             raise StateAmbiguityError("selection history is contradictory")
+        if index and selection.observed_previous_release_id is None:
+            raise StateAmbiguityError("later selection must record its observed previous release")
         if index and selection.selected_at <= selections[index - 1].selected_at:
             raise StateAmbiguityError("selection history is not chronological")
         previous = selection.release_id
+
+
+def _validate_backup_sources(
+    backups: Mapping[str, BackupRecord], releases: Mapping[str, ReleaseRecord]
+) -> None:
+    for backup in backups.values():
+        if backup.source_release_id not in releases:
+            raise StateAmbiguityError("backup references an unknown source release")
+
+
+def _release_migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
+    try:
+        versions = tuple(int(item["filename"][:14]) for item in record.migrations)
+        return validate_migration_versions(versions)
+    except (KeyError, TypeError, ValueError):
+        raise StateAmbiguityError("installed release migration provenance is invalid") from None
+
+
+def _validate_backup_protections(
+    protections: list[BackupProtection],
+    releases: Mapping[str, ReleaseRecord],
+    backups: Mapping[str, BackupRecord],
+    selections: Mapping[str, SelectionRecord],
+) -> None:
+    """Validate each protection's references and its attempt ordering."""
+
+    attempts_by_baseline: dict[str | None, set[int]] = {}
+    for protection in protections:
+        backup = backups.get(protection.backup_id)
+        if backup is None:
+            raise StateAmbiguityError("backup protection references an unknown backup")
+        target = releases.get(protection.target_release_id)
+        if target is None:
+            raise StateAmbiguityError("backup protection references an unknown target release")
+        if protection.base_selection_id is None:
+            if selections and not any(
+                protection.backup_id in selection.recovery_backup_ids
+                for selection in selections.values()
+            ):
+                raise StateAmbiguityError(
+                    "null-baseline backup protection is unresolved after successful history"
+                )
+        elif protection.base_selection_id not in selections:
+            raise StateAmbiguityError("backup protection references an unknown selection")
+
+        target_versions = _release_migration_versions(target)
+        if backup.migration_versions != target_versions[: len(backup.migration_versions)]:
+            raise StateAmbiguityError("backup protection migration provenance is contradictory")
+
+        attempts = attempts_by_baseline.setdefault(protection.base_selection_id, set())
+        if protection.attempt_number in attempts:
+            raise StateAmbiguityError("backup protection attempt numbers are duplicated")
+        attempts.add(protection.attempt_number)
+
+    for attempt_numbers in attempts_by_baseline.values():
+        if 0 not in attempt_numbers:
+            raise StateAmbiguityError("backup protection is missing its original attempt")
+
+
+def _validate_restore_target(
+    target: RestoreTarget | None,
+    releases: Mapping[str, ReleaseRecord],
+    backups: Mapping[str, BackupRecord],
+    selections: Mapping[str, SelectionRecord],
+) -> None:
+    if target is None:
+        return
+    source_release = releases.get(target.source_release_id)
+    if source_release is None:
+        raise StateAmbiguityError("restore target references an unknown source release")
+    input_backup = backups.get(target.backup_id)
+    if input_backup is None:
+        raise StateAmbiguityError("restore target references an unknown input backup")
+    if (
+        input_backup.dump_sha256 != target.dump_sha256
+        or input_backup.source_release_id != target.source_release_id
+    ):
+        raise StateAmbiguityError("restore target input backup identity disagrees")
+    if target.base_selection_id is not None and target.base_selection_id not in selections:
+        raise StateAmbiguityError("restore target references an unknown base selection")
+    if (
+        target.observed_previous_release_id is not None
+        and target.observed_previous_release_id not in releases
+    ):
+        raise StateAmbiguityError("restore target references an unknown observed release")
+
+    if backups.get(target.safety_backup_id) is None:
+        raise StateAmbiguityError("restore target references an unknown safety backup")
+    for attempt in target.safety_backup_attempts:
+        backup = backups.get(str(attempt["backup_id"]))
+        if backup is None:
+            raise StateAmbiguityError("restore target references an unknown safety attempt")
+    if target.replacement is not None:
+        replacement_backup = backups.get(str(target.replacement["backup_id"]))
+        if replacement_backup is None:
+            raise StateAmbiguityError("restore target references an unknown replacement backup")
+        if (
+            replacement_backup.dump_sha256 != target.replacement["dump_sha256"]
+            or replacement_backup.source_release_id != target.replacement["source_release_id"]
+        ):
+            raise StateAmbiguityError("restore target replacement backup identity disagrees")
+        if target.replacement["source_release_id"] not in releases:
+            raise StateAmbiguityError("restore target replacement references an unknown source release")
 
 
 def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -> str | None:

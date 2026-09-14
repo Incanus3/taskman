@@ -13,9 +13,8 @@ class RuntimeToolchain:
     elixir_version: str
 
 
-LEGACY_RUNTIME = RuntimeToolchain(otp_version="27.3.4.6", elixir_version="1.18.3")
 CURRENT_RUNTIME = RuntimeToolchain(otp_version="29.0.6", elixir_version="1.20.4")
-SUPPORTED_RUNTIMES = (LEGACY_RUNTIME, CURRENT_RUNTIME)
+SUPPORTED_RUNTIMES = (CURRENT_RUNTIME,)
 _RUNTIMES_BY_OTP = {runtime.otp_version: runtime for runtime in SUPPORTED_RUNTIMES}
 
 
@@ -32,7 +31,6 @@ def runtime_for_otp_version(value: str) -> RuntimeToolchain:
 
 __all__ = [
     "CURRENT_RUNTIME",
-    "LEGACY_RUNTIME",
     "RuntimeToolchain",
     "SUPPORTED_RUNTIMES",
     "runtime_for_otp_version",

@@ -12,6 +12,7 @@ import pytest
 
 from tests.host_helper.support import managed_paths
 
+from taskman_ops.host_helper.backup_protection import BackupProtection, write_backup_protection
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import (
@@ -20,8 +21,16 @@ from taskman_ops.host_helper.records import (
     ReleaseRecord,
     SelectionRecord,
     append_selection,
+    selection_filename,
     write_backup_manifest,
     write_release_manifest,
+)
+from taskman_ops.host_helper.restore_target import RestoreTarget, write_restore_target
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import (
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
+    ArtifactManifest,
 )
 from taskman_ops.host_helper.state import (
     MAX_INVENTORY_ENTRIES,
@@ -31,16 +40,52 @@ from taskman_ops.host_helper.state import (
 )
 
 
-RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-OTHER_RELEASE = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6"
+RELEASE = build_release_id("0.2.0", "a" * 40, artifact_sha256="b" * 64, source_dirty=False)
+OTHER_RELEASE = build_release_id("0.2.1", "c" * 40, artifact_sha256="d" * 64, source_dirty=False)
 BACKUP = "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OTHER_BACKUP = "backup-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 AT = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 
 
-def _release(release_id: str = RELEASE) -> ReleaseRecord:
-    source = "b" * 40 if release_id == OTHER_RELEASE else "a" * 40
-    return ReleaseRecord(release_id, source, "b" * 64, ())
+def _release(
+    release_id: str = RELEASE,
+    *,
+    migrations: tuple[dict[str, str], ...] = (),
+    artifact_manifest: ArtifactManifest | None = None,
+) -> ReleaseRecord:
+    source = "c" * 40 if release_id == OTHER_RELEASE else "a" * 40
+    artifact_sha256 = "d" * 64 if release_id == OTHER_RELEASE else "b" * 64
+    manifest = artifact_manifest or ArtifactManifest.from_mapping(
+        {
+            "schema_version": 3,
+            "application": "taskman",
+            "application_version": "0.2.1" if release_id == OTHER_RELEASE else "0.2.0",
+            "source_revision": source,
+            "release_id": release_id,
+            "built_at": "2026-09-07T12:00:00Z",
+            "target_os": "ubuntu26.04",
+            "architecture": "amd64",
+            "otp_version": "29.0.6",
+            "elixir_version": "1.20.4",
+            "node_version": "22.22.1",
+            "hex_version": "2.5.1",
+            "rebar3_version": "3.24.0",
+            "builder_base_tag": BUILDER_BASE_TAG,
+            "builder_base_digest": BUILDER_BASE_DIGEST,
+            "migrations": list(migrations),
+            "top_level": "taskman",
+            "artifact_sha256": artifact_sha256,
+            "source_dirty": False,
+        }
+    )
+    return ReleaseRecord(
+        schema_version=2,
+        release_id=release_id,
+        source_revision=source,
+        artifact_sha256=artifact_sha256,
+        migrations=tuple(migrations),
+        artifact_manifest=manifest,
+    )
 
 
 def _backup() -> BackupRecord:
@@ -48,7 +93,15 @@ def _backup() -> BackupRecord:
 
 
 def _selection(release_id: str = RELEASE, previous_release_id: str | None = None) -> SelectionRecord:
-    return SelectionRecord(release_id, previous_release_id, None, AT)
+    return SelectionRecord(
+        schema_version=2,
+        release_id=release_id,
+        previous_release_id=previous_release_id,
+        backup_id=None,
+        selected_at=AT,
+        observed_previous_release_id=None,
+        recovery_backup_ids=(),
+    )
 
 
 def _publish_release(paths: ManagedPaths, release: ReleaseRecord) -> None:
@@ -71,6 +124,8 @@ def test_observe_empty_host_returns_one_bounded_state_value(tmp_path: Path) -> N
     assert state.database_state == "unknown"
     assert state.temporary_paths == ()
     assert state.warnings == ()
+    assert state.backup_protections == ()
+    assert state.restore_target is None
 
 
 def test_observe_selected_release_and_database_projection(tmp_path: Path) -> None:
@@ -113,11 +168,31 @@ def test_observed_release_migrations_cannot_be_mutated_through_host_state(
     tmp_path: Path,
 ) -> None:
     paths = managed_paths(tmp_path)
-    release = ReleaseRecord(
-        RELEASE,
-        "a" * 40,
-        "b" * 64,
-        ({"filename": "20260907120000_bootstrap.exs", "sha256": "c" * 64},),
+    migration = {"filename": "20260907120000_bootstrap.exs", "sha256": "c" * 64}
+    release = _release(
+        migrations=(migration,), artifact_manifest=ArtifactManifest.from_mapping(
+            {
+                "schema_version": 3,
+                "application": "taskman",
+                "application_version": "0.2.0",
+                "source_revision": "a" * 40,
+                "release_id": RELEASE,
+                "built_at": "2026-09-07T12:00:00Z",
+                "target_os": "ubuntu26.04",
+                "architecture": "amd64",
+                "otp_version": "29.0.6",
+                "elixir_version": "1.20.4",
+                "node_version": "22.22.1",
+                "hex_version": "2.5.1",
+                "rebar3_version": "3.24.0",
+                "builder_base_tag": BUILDER_BASE_TAG,
+                "builder_base_digest": BUILDER_BASE_DIGEST,
+                "migrations": [migration],
+                "top_level": "taskman",
+                "artifact_sha256": "b" * 64,
+                "source_dirty": False,
+            }
+        )
     )
     _publish_release(paths, release)
 
@@ -143,7 +218,15 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
     append_selection(paths, _selection())
     append_selection(
         paths,
-        SelectionRecord(OTHER_RELEASE, RELEASE, None, AT.replace(minute=1)),
+        SelectionRecord(
+            schema_version=2,
+            release_id=OTHER_RELEASE,
+            previous_release_id=RELEASE,
+            backup_id=None,
+            selected_at=AT.replace(minute=1),
+            observed_previous_release_id=RELEASE,
+            recovery_backup_ids=(),
+        ),
     )
     current = Path(paths.local(paths.current_link))
     current.parent.mkdir(parents=True, exist_ok=True)
@@ -159,10 +242,109 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
     assert state.selected_release_id == OTHER_RELEASE
 
 
+def test_observe_reads_supported_protection_and_restore_bindings(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    release = _release()
+    _publish_release(paths, release)
+    selection = _selection()
+    append_selection(paths, selection)
+    current = Path(paths.local(paths.current_link))
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"restore input")
+    dump.chmod(0o600)
+    backup = BackupRecord(
+        BACKUP,
+        AT,
+        hashlib.sha256(dump.read_bytes()).hexdigest(),
+        RELEASE,
+        (),
+        1024,
+    )
+    write_backup_manifest(paths, backup)
+
+    protection = BackupProtection(
+        schema_version=1,
+        backup_id=BACKUP,
+        base_selection_id=selection_filename(selection),
+        target_release_id=RELEASE,
+        attempt_number=0,
+        created_at=AT,
+    )
+    write_backup_protection(paths, protection)
+    target = RestoreTarget(
+        schema_version=1,
+        backup_id=BACKUP,
+        dump_sha256=backup.dump_sha256,
+        source_release_id=RELEASE,
+        base_selection_id=selection_filename(selection),
+        observed_previous_release_id=RELEASE,
+        original_database_oid=101,
+        restored_database_oid=None,
+        temporary_creation_pending=True,
+        safety_backup_id=BACKUP,
+        replacement=None,
+        safety_backup_attempts=({"backup_id": BACKUP, "attempt_number": 0},),
+    )
+    write_restore_target(paths, target)
+
+    state = observe_host_state(paths)
+
+    assert state.backup_protections == (protection,)
+    assert state.restore_target == target
+
+
+def test_observe_refuses_malformed_supported_protection_record(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    root = Path(paths.local(paths.backup_protection_root))
+    root.mkdir(parents=True)
+    malformed = root / f"{BACKUP}.json"
+    malformed.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    malformed.chmod(0o600)
+
+    with pytest.raises(StateAmbiguityError, match="protection|invalid|authoritative"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_unresolved_null_baseline_after_success(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    selection = _selection()
+    append_selection(paths, selection)
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"protected")
+    dump.chmod(0o600)
+    write_backup_manifest(
+        paths,
+        BackupRecord(
+            BACKUP,
+            AT,
+            hashlib.sha256(dump.read_bytes()).hexdigest(),
+            RELEASE,
+            (),
+            1024,
+        ),
+    )
+    write_backup_protection(
+        paths,
+        BackupProtection(1, BACKUP, None, RELEASE, 0, AT),
+    )
+
+    with pytest.raises(StateAmbiguityError, match="null-baseline|unresolved|protection"):
+        observe_host_state(paths)
+
+
 def test_observe_refuses_manifest_identity_mismatch_at_canonical_backup_path(
     tmp_path: Path,
 ) -> None:
     paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
     backup_root = Path(paths.local(paths.backup_root))
     backup_root.mkdir(parents=True, exist_ok=True)
     dump = backup_root / f"{OTHER_BACKUP}.dump"
@@ -249,7 +431,9 @@ def test_observe_recognizes_exact_release_temporary_with_valid_version_metadata(
     version: str,
 ) -> None:
     paths = managed_paths(tmp_path)
-    release_id = f"{version}-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+    release_id = build_release_id(
+        version, "a" * 40, artifact_sha256="b" * 64, source_dirty=False
+    )
     temporary = Path(paths.local(paths.release_root / f".release-{release_id}.tmp"))
     temporary.mkdir(parents=True)
     temporary.chmod(0o750)
@@ -295,6 +479,61 @@ def test_observe_refuses_contradictory_selection_history(tmp_path: Path) -> None
     append_selection(paths, _selection(RELEASE, OTHER_RELEASE))
 
     with pytest.raises(StateAmbiguityError, match="selection"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_a_first_selection_that_names_a_previous_success(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    append_selection(paths, _selection(previous_release_id=OTHER_RELEASE))
+    current = Path(paths.local(paths.current_link))
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    with pytest.raises(StateAmbiguityError, match="previous|selection"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_a_later_selection_without_an_observed_previous_release(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    _publish_release(paths, _release(OTHER_RELEASE))
+    append_selection(paths, _selection())
+    append_selection(
+        paths,
+        SelectionRecord(
+            schema_version=2,
+            release_id=OTHER_RELEASE,
+            previous_release_id=RELEASE,
+            backup_id=None,
+            selected_at=AT.replace(minute=1),
+            observed_previous_release_id=None,
+            recovery_backup_ids=(),
+        ),
+    )
+    current = Path(paths.local(paths.current_link))
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(Path(paths.local(paths.release_root / OTHER_RELEASE)))
+
+    with pytest.raises(StateAmbiguityError, match="observed|selection"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_an_unsupported_release_directory_with_old_authority(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    old_release = "0.2.0-" + "a" * 12 + "-ubuntu26.04-amd64-otp27.3.4.6"
+    release_path = Path(paths.local(paths.release_root / old_release))
+    release_path.mkdir(parents=True)
+    release_path.chmod(0o750)
+    manifest = release_path / ".taskman-release.json"
+    manifest.write_text("{}", encoding="utf-8")
+    manifest.chmod(0o600)
+
+    with pytest.raises(StateAmbiguityError, match="unsupported|release|authority"):
         observe_host_state(paths)
 
 

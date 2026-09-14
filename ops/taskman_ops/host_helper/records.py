@@ -21,11 +21,14 @@ from types import MappingProxyType
 
 from taskman_ops.releases.identifiers import (
     build_release_id,
+    release_artifact_sha256,
     release_application_version,
     release_otp_version,
+    release_source_dirty,
     validate_release_id,
     validate_source_revision,
 )
+from taskman_ops.releases.manifests import ArtifactManifest
 
 from .paths import ManagedPaths, PathAuthorityError
 from ..checksums import sha256_file
@@ -34,6 +37,7 @@ from .filesystem import fsync_directory
 
 
 MAX_RECORD_BYTES = 64 * 1024
+MAX_RELEASE_RECORD_BYTES = 256 * 1024
 MAX_MIGRATIONS = 256
 MAX_MIGRATION_VERSIONS = 512
 MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
@@ -77,7 +81,13 @@ def _release_for_revision(release_id: str, source_revision: str) -> None:
     try:
         otp_version = release_otp_version(release_id)
         version = release_application_version(release_id)
-        expected = build_release_id(version, source_revision, otp_version=otp_version)
+        expected = build_release_id(
+            version,
+            source_revision,
+            artifact_sha256=release_artifact_sha256(release_id),
+            source_dirty=release_source_dirty(release_id),
+            otp_version=otp_version,
+        )
     except ValueError as error:
         raise RecordError("invalid release identifier or source revision") from error
     if expected != release_id:
@@ -92,6 +102,15 @@ def _backup(value: object, label: str = "backup identifier") -> str:
     if type(value) is not str or BACKUP_ID_RE.fullmatch(value) is None:
         raise RecordError(f"invalid {label}")
     return value
+
+
+def _backup_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)) or len(value) > 64:
+        raise RecordError("invalid recovery backup references")
+    result = tuple(_backup(item, "recovery backup identifier") for item in value)
+    if result != tuple(sorted(result)) or len(set(result)) != len(result):
+        raise RecordError("recovery backup references must be sorted and unique")
+    return result
 
 
 def _timestamp(value: object, label: str) -> datetime:
@@ -147,7 +166,7 @@ def _migration_versions(value: object) -> tuple[int, ...]:
         raise RecordError("invalid migration versions") from None
 
 
-def _record_json(value: Mapping[str, object]) -> bytes:
+def _record_json(value: Mapping[str, object], *, maximum: int | None = None) -> bytes:
     try:
         encoded = json.dumps(
             value,
@@ -159,7 +178,9 @@ def _record_json(value: Mapping[str, object]) -> bytes:
     except (TypeError, ValueError) as error:
         raise RecordError("record is not JSON serializable") from error
     encoded += b"\n"
-    if len(encoded) > MAX_RECORD_BYTES:
+    if maximum is None:
+        maximum = MAX_RECORD_BYTES
+    if len(encoded) > maximum:
         raise RecordError("record is oversized")
     return encoded
 
@@ -172,10 +193,23 @@ class ReleaseRecord:
     source_revision: str
     artifact_sha256: str
     migrations: tuple[Mapping[str, object], ...]
+    schema_version: int
+    artifact_manifest: ArtifactManifest
 
-    _FIELDS = frozenset({"release_id", "source_revision", "artifact_sha256", "migrations"})
+    _FIELDS = frozenset(
+        {
+            "release_id",
+            "source_revision",
+            "artifact_sha256",
+            "migrations",
+            "schema_version",
+            "artifact_manifest",
+        }
+    )
 
     def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise RecordError("unsupported release record schema")
         object.__setattr__(self, "release_id", _release(self.release_id))
         try:
             object.__setattr__(self, "source_revision", validate_source_revision(self.source_revision))
@@ -184,7 +218,23 @@ class ReleaseRecord:
         _release_for_revision(self.release_id, self.source_revision)
         object.__setattr__(self, "artifact_sha256", _sha256(self.artifact_sha256, "artifact checksum"))
         object.__setattr__(self, "migrations", _migrations(self.migrations))
-        _record_json(self.to_mapping())
+        if isinstance(self.artifact_manifest, ArtifactManifest):
+            manifest = self.artifact_manifest
+        else:
+            try:
+                manifest = ArtifactManifest.from_mapping(self.artifact_manifest)
+            except (TypeError, ValueError) as error:
+                raise RecordError("invalid embedded artifact manifest") from error
+        if (
+            manifest.release_id != self.release_id
+            or manifest.source_revision != self.source_revision
+            or manifest.artifact_sha256 != self.artifact_sha256
+            or [item.to_mapping() for item in manifest.migrations]
+            != [dict(item) for item in self.migrations]
+        ):
+            raise RecordError("release record and embedded manifest identity disagree")
+        object.__setattr__(self, "artifact_manifest", manifest)
+        _record_json(self.to_mapping(), maximum=MAX_RELEASE_RECORD_BYTES)
 
     @classmethod
     def from_mapping(cls, value: object) -> "ReleaseRecord":
@@ -194,6 +244,8 @@ class ReleaseRecord:
             data["source_revision"],  # type: ignore[arg-type]
             _sha256(data["artifact_sha256"], "artifact checksum"),
             _migrations(data["migrations"]),
+            data["schema_version"],  # type: ignore[arg-type]
+            data["artifact_manifest"],  # type: ignore[arg-type]
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -202,6 +254,8 @@ class ReleaseRecord:
             "source_revision": self.source_revision,
             "artifact_sha256": self.artifact_sha256,
             "migrations": [dict(item) for item in self.migrations],
+            "schema_version": self.schema_version,
+            "artifact_manifest": self.artifact_manifest.to_mapping(),
         }
 
 
@@ -268,16 +322,35 @@ class SelectionRecord:
     previous_release_id: str | None
     backup_id: str | None
     selected_at: datetime
+    schema_version: int
+    observed_previous_release_id: str | None
+    recovery_backup_ids: tuple[str, ...]
 
-    _FIELDS = frozenset({"release_id", "previous_release_id", "backup_id", "selected_at"})
+    _FIELDS = frozenset(
+        {
+            "release_id",
+            "previous_release_id",
+            "backup_id",
+            "selected_at",
+            "schema_version",
+            "observed_previous_release_id",
+            "recovery_backup_ids",
+        }
+    )
 
     def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise RecordError("unsupported selection record schema")
         object.__setattr__(self, "release_id", _release(self.release_id))
         object.__setattr__(self, "previous_release_id", _optional_release(self.previous_release_id, "previous release identifier"))
         object.__setattr__(self, "backup_id", None if self.backup_id is None else _backup(self.backup_id))
+        object.__setattr__(
+            self,
+            "observed_previous_release_id",
+            _optional_release(self.observed_previous_release_id, "observed previous release identifier"),
+        )
+        object.__setattr__(self, "recovery_backup_ids", _backup_ids(self.recovery_backup_ids))
         _format_timestamp(self.selected_at, "selection time")
-        if self.previous_release_id == self.release_id:
-            raise RecordError("selection must change release")
         _record_json(self.to_mapping())
 
     @classmethod
@@ -288,6 +361,9 @@ class SelectionRecord:
             _optional_release(data["previous_release_id"], "previous release identifier"),
             None if data["backup_id"] is None else _backup(data["backup_id"]),
             _timestamp(data["selected_at"], "selection time"),
+            data["schema_version"],  # type: ignore[arg-type]
+            _optional_release(data["observed_previous_release_id"], "observed previous release identifier"),
+            _backup_ids(data["recovery_backup_ids"]),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -296,6 +372,9 @@ class SelectionRecord:
             "previous_release_id": self.previous_release_id,
             "backup_id": self.backup_id,
             "selected_at": _format_timestamp(self.selected_at, "selection time"),
+            "schema_version": self.schema_version,
+            "observed_previous_release_id": self.observed_previous_release_id,
+            "recovery_backup_ids": list(self.recovery_backup_ids),
         }
 
 
@@ -417,7 +496,11 @@ def write_release_manifest(paths: ManagedPaths, record: ReleaseRecord) -> None:
     target = release_path / ".taskman-release.json"
     if target.exists() or target.is_symlink():
         raise RecordError("completed release manifest already exists")
-    _atomic_create(target, _record_json(record.to_mapping()), owner_uid=owner_uid)
+    _atomic_create(
+        target,
+        _record_json(record.to_mapping(), maximum=MAX_RELEASE_RECORD_BYTES),
+        owner_uid=owner_uid,
+    )
 
 
 def write_backup_manifest(paths: ManagedPaths, record: BackupRecord) -> None:
@@ -460,6 +543,7 @@ __all__ = [
     "BackupRecord",
     "CompletedRecordError",
     "MAX_RECORD_BYTES",
+    "MAX_RELEASE_RECORD_BYTES",
     "RecordError",
     "ReleaseRecord",
     "SelectionRecord",

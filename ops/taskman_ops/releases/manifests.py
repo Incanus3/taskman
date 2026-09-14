@@ -14,7 +14,9 @@ from ..checksums import sha256_file
 from ..errors import ExitStatus, OpsError
 from .identifiers import (
     build_release_id,
+    release_artifact_sha256,
     release_otp_version,
+    release_source_dirty,
     validate_application_version,
     validate_release_id,
     validate_source_revision,
@@ -22,7 +24,7 @@ from .identifiers import (
 from .toolchains import CURRENT_RUNTIME, runtime_for_otp_version
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION = "taskman"
 TARGET_OS = "ubuntu26.04"
 ARCHITECTURE = "amd64"
@@ -35,6 +37,9 @@ BUILDER_BASE_TAG = "ubuntu:resolute-20260811.1"
 BUILDER_BASE_DIGEST = "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b"
 TOP_LEVEL = "taskman"
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+MAX_MANIFEST_BYTES = 128 * 1024
+MAX_MIGRATIONS = 256
+MAX_MIGRATION_FILENAME_BYTES = 255
 MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 _CHECKSUM_LINE_RE = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)\n\Z")
 _ERTS_DIRECTORY_RE = re.compile(r"taskman/erts-[0-9][A-Za-z0-9._-]*\Z")
@@ -57,6 +62,8 @@ _MANIFEST_FIELDS = frozenset(
         "builder_base_digest",
         "migrations",
         "top_level",
+        "artifact_sha256",
+        "source_dirty",
     }
 )
 _MIGRATION_FIELDS = frozenset({"filename", "sha256"})
@@ -102,7 +109,9 @@ def _parse_utc_timestamp(value: object) -> datetime:
         result = datetime.fromisoformat(f"{value[:-1]}+00:00")
     except ValueError as exc:
         raise ValueError("invalid build timestamp") from exc
-    if result.tzinfo != UTC:
+    if result.tzinfo != UTC or result.microsecond:
+        raise ValueError("build timestamp must use whole UTC seconds")
+    if _format_utc_timestamp(result) != value:
         raise ValueError("build timestamp must be UTC")
     return result
 
@@ -124,7 +133,11 @@ class MigrationFingerprint:
     def from_mapping(cls, value: object) -> MigrationFingerprint:
         mapping = _require_exact_keys(value, _MIGRATION_FIELDS, label="migration")
         filename = mapping["filename"]
-        if not isinstance(filename, str) or MIGRATION_FILENAME_RE.fullmatch(filename) is None:
+        if (
+            not isinstance(filename, str)
+            or MIGRATION_FILENAME_RE.fullmatch(filename) is None
+            or len(filename.encode("utf-8")) > MAX_MIGRATION_FILENAME_BYTES
+        ):
             raise ValueError("invalid migration filename")
         return cls(filename=filename, sha256=_parse_sha256(mapping["sha256"], label="migration"))
 
@@ -154,8 +167,10 @@ class ArtifactManifest:
     builder_base_digest: str
     migrations: tuple[MigrationFingerprint, ...]
     top_level: str
-    hex_version: str = HEX_VERSION
-    rebar3_version: str = REBAR3_VERSION
+    hex_version: str
+    rebar3_version: str
+    artifact_sha256: str
+    source_dirty: bool
 
     @classmethod
     def from_mapping(cls, value: object) -> ArtifactManifest:
@@ -169,12 +184,22 @@ class ArtifactManifest:
         source_revision = validate_source_revision(mapping["source_revision"])
         release_id = validate_release_id(mapping["release_id"])
         runtime = runtime_for_otp_version(release_otp_version(release_id))
+        artifact_sha256 = _parse_sha256(mapping["artifact_sha256"], label="artifact")
+        source_dirty = mapping["source_dirty"]
+        if type(source_dirty) is not bool:
+            raise ValueError("source_dirty must be a boolean")
         if release_id != build_release_id(
             application_version,
             source_revision,
+            artifact_sha256=artifact_sha256,
+            source_dirty=source_dirty,
             otp_version=runtime.otp_version,
         ):
             raise ValueError("release identity does not match source provenance")
+        if artifact_sha256 != release_artifact_sha256(release_id):
+            raise ValueError("artifact digest does not match release identity")
+        if source_dirty != release_source_dirty(release_id):
+            raise ValueError("source dirty state does not match release identity")
         if mapping["target_os"] != TARGET_OS or mapping["architecture"] != ARCHITECTURE:
             raise ValueError("unsupported artifact target")
         if (
@@ -190,14 +215,14 @@ class ArtifactManifest:
         if mapping["top_level"] != TOP_LEVEL:
             raise ValueError("unexpected artifact top-level")
         migrations_value = mapping["migrations"]
-        if not isinstance(migrations_value, list):
+        if not isinstance(migrations_value, list) or len(migrations_value) > MAX_MIGRATIONS:
             raise ValueError("migrations must be a list")
         migrations = tuple(MigrationFingerprint.from_mapping(item) for item in migrations_value)
         if tuple(fingerprint.filename for fingerprint in migrations) != tuple(
             sorted(fingerprint.filename for fingerprint in migrations)
         ) or len({fingerprint.filename for fingerprint in migrations}) != len(migrations):
             raise ValueError("migration fingerprints must be unique and sorted")
-        return cls(
+        result = cls(
             schema_version=schema_version,
             application=APPLICATION,
             application_version=application_version,
@@ -215,7 +240,11 @@ class ArtifactManifest:
             top_level=TOP_LEVEL,
             hex_version=HEX_VERSION,
             rebar3_version=REBAR3_VERSION,
+            artifact_sha256=artifact_sha256,
+            source_dirty=source_dirty,
         )
+        _serialized_manifest_bytes(result.to_mapping())
+        return result
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -236,6 +265,8 @@ class ArtifactManifest:
             "rebar3_version": self.rebar3_version,
             "migrations": [fingerprint.to_mapping() for fingerprint in self.migrations],
             "top_level": self.top_level,
+            "artifact_sha256": self.artifact_sha256,
+            "source_dirty": self.source_dirty,
         }
 
 
@@ -265,11 +296,15 @@ def fingerprint_migrations(directory: Path) -> tuple[MigrationFingerprint, ...]:
             continue
         if MIGRATION_FILENAME_RE.fullmatch(path.name) is None:
             raise _artifact_error("invalid migration source")
+        if len(path.name.encode("utf-8")) > MAX_MIGRATION_FILENAME_BYTES:
+            raise _artifact_error("migration filename is too long")
         try:
             digest = sha256_file(path)
         except OSError:
             raise _artifact_error("unable to read migration source") from None
         fingerprints.append(MigrationFingerprint(filename=path.name, sha256=digest))
+        if len(fingerprints) > MAX_MIGRATIONS:
+            raise _artifact_error("migration fingerprints exceed supported bound")
     return tuple(fingerprints)
 
 
@@ -277,17 +312,43 @@ def manifest_to_json(manifest: ArtifactManifest) -> str:
     """Serialize one already validated manifest deterministically."""
 
     validated = ArtifactManifest.from_mapping(manifest.to_mapping())
-    return json.dumps(validated.to_mapping(), sort_keys=True, separators=(",", ":")) + "\n"
+    return _serialized_manifest_bytes(validated.to_mapping()).decode("ascii")
 
 
 def manifest_from_json(value: str) -> ArtifactManifest:
     """Parse one exact manifest JSON document without accepting extra fields."""
 
+    if not isinstance(value, str):
+        raise ValueError("invalid artifact manifest JSON")
+    try:
+        if len(value.encode("utf-8")) > MAX_MANIFEST_BYTES:
+            raise ValueError("artifact manifest is oversized")
+    except UnicodeEncodeError as exc:
+        raise ValueError("invalid artifact manifest JSON") from exc
     try:
         parsed = json.loads(value)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid artifact manifest JSON") from exc
     return ArtifactManifest.from_mapping(parsed)
+
+
+def _serialized_manifest_bytes(mapping: Mapping[str, object]) -> bytes:
+    try:
+        encoded = (
+            json.dumps(
+                mapping,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ValueError("artifact manifest is not JSON serializable") from error
+    if len(encoded) > MAX_MANIFEST_BYTES:
+        raise ValueError("artifact manifest is oversized")
+    return encoded
 
 
 def _read_manifest(path: Path) -> ArtifactManifest:
@@ -405,6 +466,10 @@ def verify_artifact(archive: Path, manifest: Path, checksum: Path) -> VerifiedAr
     if actual_checksum != expected_checksum:
         raise _artifact_error("release archive checksum does not match")
     artifact_manifest = _read_manifest(manifest)
+    if artifact_manifest.artifact_sha256 != expected_checksum:
+        raise _artifact_error("artifact manifest checksum does not match detached checksum")
+    if artifact_manifest.artifact_sha256 != actual_checksum:
+        raise _artifact_error("artifact manifest checksum does not match release archive")
     _inspect_archive(archive)
     return VerifiedArtifact(
         archive=archive,
@@ -424,6 +489,9 @@ __all__ = [
     "ELIXIR_VERSION",
     "HEX_VERSION",
     "MigrationFingerprint",
+    "MAX_MANIFEST_BYTES",
+    "MAX_MIGRATION_FILENAME_BYTES",
+    "MAX_MIGRATIONS",
     "NODE_VERSION",
     "OTP_VERSION",
     "REBAR3_VERSION",
