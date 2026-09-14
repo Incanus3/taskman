@@ -32,7 +32,7 @@ def request_bytes(
 ) -> bytes:
     return encode_request(
         HostRequest(
-            protocol_version=2,
+            protocol_version=3,
             operation=operation,
             correlation_id=CORRELATION,
             expected_state={},
@@ -110,6 +110,23 @@ def test_entrypoint_rejects_oversized_input_without_echoing_it(tmp_path: Path) -
     assert secret not in completed.stdout
 
 
+def test_entrypoint_rejects_a_v2_transient_request() -> None:
+    """Accepting the retired wire version could dispatch a stale helper contract."""
+
+    payload = (
+        b'{"correlation_id":"op-0123456789abcdef0123456789abcdef",'
+        b'"expected_state":{},"operation":"discover","parameters":{},'
+        b'"paths":{"install_root":"/opt/taskman"},"protocol_version":2}'
+    )
+
+    with invoke_entrypoint(payload, lambda request: request) as stdout:
+        assert entrypoint.main() == 0
+
+    result = decode_result(stdout.buffer.getvalue())
+    assert result.outcome == "retryable"
+    assert result.message == "helper protocol failure"
+
+
 def test_entrypoint_dispatches_backup_on_the_final_protocol_without_a_legacy_bridge() -> None:
     """Routing backup through OperationRequest would reintroduce deleted recovery evidence."""
 
@@ -119,7 +136,7 @@ def test_entrypoint_dispatches_backup_on_the_final_protocol_without_a_legacy_bri
         assert isinstance(request, HostRequest)
         received.append(request)
         return HostResult(
-            2,
+            3,
             "backup",
             request.correlation_id,
             "succeeded",
@@ -148,7 +165,7 @@ def test_entrypoint_dispatches_final_rollback_and_restore_without_a_legacy_bridg
     def final_result(request: object) -> HostResult:
         assert isinstance(request, HostRequest)
         received.append(request)
-        return HostResult(2, operation, request.correlation_id, "refused", "unsafe", {}, ())
+        return HostResult(3, operation, request.correlation_id, "refused", "unsafe", {}, ())
 
     with invoke_entrypoint(request_bytes(operation=operation), final_result, operation=operation) as stdout:
         assert entrypoint.main() == 0

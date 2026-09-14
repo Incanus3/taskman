@@ -21,7 +21,9 @@ from .verification_results import VerificationReport
 
 _MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 _PGPASS = "/etc/taskman/pgpass"
+_DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
 
 
 def helper_paths(config: EnvironmentConfig) -> dict[str, str]:
@@ -55,16 +57,34 @@ def verification_settings(config: EnvironmentConfig) -> dict[str, object]:
     }
 
 
-def discovery_request(config: EnvironmentConfig) -> HostRequest:
+def discovery_request(
+    config: EnvironmentConfig,
+    *,
+    mode: str = "strict",
+    backup_id: str | None = None,
+) -> HostRequest:
     """Build credential-safe live host and database discovery authority."""
+
+    if type(mode) is not str or mode not in _DISCOVERY_MODES:
+        raise ValueError("discovery mode is invalid")
+    if mode == "restore":
+        if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
+            raise ValueError("restore discovery requires a valid backup identifier")
+    elif backup_id is not None:
+        raise ValueError("backup identifier is valid only for restore discovery")
+
+    parameters: dict[str, object] = {
+        "credentials_path": _PGPASS,
+        "database": database_settings(config),
+        "mode": mode,
+    }
+    if backup_id is not None:
+        parameters["backup_id"] = backup_id
 
     return request(
         "discover",
         config,
-        parameters={
-            "credentials_path": _PGPASS,
-            "database": database_settings(config),
-        },
+        parameters=parameters,
     )
 
 

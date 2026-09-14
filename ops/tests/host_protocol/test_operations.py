@@ -33,7 +33,7 @@ EXPECTED_OPERATIONS = frozenset(
 
 def request_for(operation: str) -> HostRequest:
     return HostRequest(
-        protocol_version=2,
+        protocol_version=3,
         operation=operation,
         correlation_id="op-0123456789abcdef0123456789abcdef",
         expected_state={},
@@ -44,7 +44,7 @@ def request_for(operation: str) -> HostRequest:
 
 def result_for(operation: str) -> HostResult:
     return HostResult(
-        protocol_version=2,
+        protocol_version=3,
         operation=operation,
         correlation_id="op-0123456789abcdef0123456789abcdef",
         outcome="retryable",
@@ -70,7 +70,7 @@ def test_operation_vocabulary_is_exact_immutable_and_rejects_unknown_commands() 
 
     with pytest.raises(ProtocolError):
         HostRequest(
-            protocol_version=2,
+            protocol_version=3,
             operation="arbitrary-command",
             correlation_id="op-0123456789abcdef0123456789abcdef",
             expected_state={},

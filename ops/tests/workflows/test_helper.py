@@ -38,14 +38,14 @@ def test_run_request_consumes_the_direct_correlated_host_result() -> None:
     """Keeping a transport wrapper would make the workflow reconstruct the final result."""
 
     request = HostRequest(
-        2,
+        3,
         "discover",
         CORRELATION,
         {},
         {"install_root": "/opt/taskman"},
         {},
     )
-    result = HostResult(2, "discover", CORRELATION, "succeeded", "observed", {}, ())
+    result = HostResult(3, "discover", CORRELATION, "succeeded", "observed", {}, ())
 
     returned = run_request(
         object(),
@@ -61,7 +61,7 @@ def test_run_request_refuses_an_unrelated_injected_result() -> None:
     """The workflow is the single consumer that trusts a helper's final result."""
 
     request = HostRequest(
-        2,
+        3,
         "discover",
         CORRELATION,
         {},
@@ -69,7 +69,7 @@ def test_run_request_refuses_an_unrelated_injected_result() -> None:
         {},
     )
     unrelated = HostResult(
-        2,
+        3,
         "verify",
         CORRELATION,
         "succeeded",
@@ -132,7 +132,7 @@ def test_run_request_refuses_an_unrelated_injected_result() -> None:
 def test_result_error_maps_only_final_outcome_and_concise_state(
     operation: str, outcome: str, state: dict[str, object], status: ExitStatus
 ) -> None:
-    result = HostResult(2, operation, CORRELATION, outcome, "not completed", state, ())
+    result = HostResult(3, operation, CORRELATION, outcome, "not completed", state, ())
 
     error = result_error(result)
 
@@ -144,7 +144,7 @@ def test_result_error_does_not_infer_migration_from_an_unobserved_boundary() -> 
     """A legacy stage label alone must not turn a retry into migration exit 7."""
 
     result = HostResult(
-        2,
+        3,
         "deploy",
         CORRELATION,
         "retryable",

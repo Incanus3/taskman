@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import re
 
 from taskman_ops.host_protocol import (
     HostRequest,
@@ -22,7 +23,10 @@ from ..state import HostState, StateAmbiguityError, observe_host_state
 
 
 _SNAPSHOT_TIMEOUT_SECONDS = 5.0
-_DISCOVERY_PARAMETERS = frozenset({"credentials_path", "database"})
+_DISCOVERY_PARAMETERS = frozenset({"credentials_path", "database", "mode"})
+_RESTORE_DISCOVERY_PARAMETERS = _DISCOVERY_PARAMETERS | {"backup_id"}
+_DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
+_BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 
 
 def discover(request: HostRequest) -> HostResult:
@@ -33,6 +37,12 @@ def discover(request: HostRequest) -> HostResult:
     except LifecycleLockContention:
         return _locked(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
+        return _refused(request)
+    mode = request.parameters["mode"]
+    if mode != "strict":
+        # Timer and restore-database authority are not yet observable in this
+        # continuation.  Refuse rather than representing either unknown fact
+        # as a nullable absence in a non-strict projection.
         return _refused(request)
     return _success(request, _discovery_state(state), state.warnings)
 
@@ -69,8 +79,22 @@ def _observe(request: HostRequest) -> HostState:
     # are read.  Health/readiness commands run after this snapshot is released.
     with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
         if request.operation == "discover":
-            if set(request.expected_state) or set(request.parameters) != _DISCOVERY_PARAMETERS:
+            if set(request.expected_state):
                 raise ValueError("discovery request is incomplete")
+            mode = request.parameters.get("mode")
+            if type(mode) is not str or mode not in _DISCOVERY_MODES:
+                raise ValueError("discovery mode is invalid")
+            expected_parameters = (
+                _RESTORE_DISCOVERY_PARAMETERS if mode == "restore" else _DISCOVERY_PARAMETERS
+            )
+            if set(request.parameters) != expected_parameters:
+                raise ValueError("discovery request is incomplete")
+            backup_id = request.parameters.get("backup_id")
+            if mode == "restore":
+                if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
+                    raise ValueError("restore backup identifier is invalid")
+            elif backup_id is not None:
+                raise ValueError("discovery backup identifier is invalid")
             credentials = request.parameters["credentials_path"]
             if type(credentials) is not str or not credentials.startswith("/"):
                 raise ValueError("discovery credentials path is invalid")
@@ -85,21 +109,22 @@ def _observe(request: HostRequest) -> HostState:
 
 
 def _discovery_state(state: HostState) -> dict[str, object]:
-    releases = tuple(record.to_mapping() for record in state.releases)
     return {
         "selected_release_id": state.selected_release_id,
-        "releases": releases,
-        "backups": tuple(record.to_mapping() for record in state.backups),
-        "selections": tuple(record.to_mapping() for record in state.selections),
+        "last_successful_selection_id": state.latest_successful_selection_filename,
+        "last_successful_selection": (
+            None
+            if state.latest_successful_selection is None
+            else state.latest_successful_selection.to_mapping()
+        ),
+        "previous_successful_selection": (
+            None
+            if state.previous_successful_selection is None
+            else state.previous_successful_selection.to_mapping()
+        ),
         "applied_migrations": state.applied_migrations,
         "service_state": state.service_state,
         "database_state": state.database_state,
-        # Restore planning still consumes this bounded migration authority
-        # until its own command slice moves to HostState records.
-        "release_migrations": tuple(
-            {"release_id": record.release_id, "migrations": tuple(record.migrations)}
-            for record in state.releases
-        ),
     }
 
 

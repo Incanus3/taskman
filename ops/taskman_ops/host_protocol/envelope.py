@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
+import re
 from types import MappingProxyType
 
 from .identifiers import (
@@ -17,11 +18,19 @@ from .identifiers import (
 from .operations import validate_operation
 
 
-PROTOCOL_VERSION = 2
-MAX_INPUT_BYTES = 64 * 1024
-MAX_OUTPUT_BYTES = 64 * 1024
+PROTOCOL_VERSION = 3
+MAX_INPUT_BYTES = 1024 * 1024
+MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_COLLECTION_ITEMS = 64
 MAX_NESTING_DEPTH = 8
+MAX_MIGRATION_FINGERPRINTS = 256
+MAX_MIGRATION_VERSIONS = 512
+MAX_MANIFEST_BYTES = 128 * 1024
+MAX_RELEASE_RECORD_BYTES = 256 * 1024
+MAX_RECORD_BYTES = 64 * 1024
+MAX_MIGRATION_FILENAME_BYTES = 255
+
+_MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 
 _REQUEST_KEYS = frozenset(
     {
@@ -59,7 +68,14 @@ def _validate_version(value: object) -> int:
     return value
 
 
-def _freeze_json(value: object, *, depth: int) -> object:
+def _freeze_json(
+    value: object,
+    *,
+    depth: int,
+    path: tuple[str, ...],
+    collection_limit: Callable[[tuple[str, ...]], int],
+    record_budget: Callable[[tuple[str, ...]], int | None],
+) -> object:
     if depth > MAX_NESTING_DEPTH:
         raise ProtocolError("maximum nesting depth exceeded")
     if value is None or type(value) is bool:
@@ -69,15 +85,44 @@ def _freeze_json(value: object, *, depth: int) -> object:
     if type(value) is str:
         return validate_string(value)
     if isinstance(value, Mapping):
-        return _freeze_mapping(value, depth=depth + 1)
+        frozen = _freeze_mapping(
+            value,
+            depth=depth + 1,
+            path=path,
+            collection_limit=collection_limit,
+            record_budget=record_budget,
+        )
+        maximum = record_budget(path)
+        if maximum is not None and len(_canonical_json(_json_value(frozen))) > maximum:
+            raise ProtocolError("schema record exceeds byte limit")
+        return frozen
     if isinstance(value, (list, tuple)):
-        if len(value) > MAX_COLLECTION_ITEMS:
+        if len(value) > collection_limit(path):
             raise ProtocolError("maximum collection size exceeded")
-        return tuple(_freeze_json(item, depth=depth + 1) for item in value)
+        frozen = tuple(
+            _freeze_json(
+                item,
+                depth=depth + 1,
+                path=path + ("[]",),
+                collection_limit=collection_limit,
+                record_budget=record_budget,
+            )
+            for item in value
+        )
+        if path in _MIGRATION_PATHS:
+            _validate_migration_fingerprints(frozen)
+        return frozen
     raise ProtocolError("unsupported JSON value")
 
 
-def _freeze_mapping(value: object, *, depth: int = 1) -> Mapping[str, object]:
+def _freeze_mapping(
+    value: object,
+    *,
+    depth: int = 1,
+    path: tuple[str, ...] = (),
+    collection_limit: Callable[[tuple[str, ...]], int] = lambda _path: MAX_COLLECTION_ITEMS,
+    record_budget: Callable[[tuple[str, ...]], int | None] = lambda _path: None,
+) -> Mapping[str, object]:
     if depth > MAX_NESTING_DEPTH:
         raise ProtocolError("maximum nesting depth exceeded")
     if not isinstance(value, Mapping) or len(value) > MAX_COLLECTION_ITEMS:
@@ -85,7 +130,14 @@ def _freeze_mapping(value: object, *, depth: int = 1) -> Mapping[str, object]:
 
     frozen: dict[str, object] = {}
     for key, item in value.items():
-        frozen[validate_identifier(key)] = _freeze_json(item, depth=depth)
+        key = validate_identifier(key)
+        frozen[key] = _freeze_json(
+            item,
+            depth=depth,
+            path=path + (key,),
+            collection_limit=collection_limit,
+            record_budget=record_budget,
+        )
     return MappingProxyType(frozen)
 
 
@@ -119,6 +171,124 @@ def _json_value(value: object) -> object:
     return value
 
 
+def _canonical_json(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
+        raise ProtocolError("protocol value cannot be encoded") from error
+
+
+_MIGRATION_PATHS = frozenset(
+    {
+        ("parameters", "target", "manifest", "migrations"),
+        ("parameters", "target", "release_record", "migrations"),
+        ("parameters", "target", "release_record", "artifact_manifest", "migrations"),
+    }
+)
+_REQUEST_VERSION_PATHS = frozenset({("expected_state", "applied_migrations")})
+_RESULT_VERSION_PATHS = frozenset(
+    {
+        ("state", "applied_migrations"),
+        ("state", "observations", "applied_migrations"),
+        ("state", "records", "[]", "record", "migration_versions"),
+    }
+)
+_RESULT_MIGRATION_PATHS = frozenset(
+    {
+        ("state", "records", "[]", "record", "migrations"),
+        ("state", "records", "[]", "record", "artifact_manifest", "migrations"),
+    }
+)
+
+
+def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
+    def collection_limit(path: tuple[str, ...]) -> int:
+        if operation in {"deploy", "genesis"} and path in _MIGRATION_PATHS:
+            return MAX_MIGRATION_FINGERPRINTS
+        if operation in {"deploy", "genesis"} and path in _REQUEST_VERSION_PATHS:
+            return MAX_MIGRATION_VERSIONS
+        return MAX_COLLECTION_ITEMS
+
+    return collection_limit
+
+
+def _result_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
+    def collection_limit(path: tuple[str, ...]) -> int:
+        if operation == "discover" and path == ("state", "applied_migrations"):
+            return MAX_MIGRATION_VERSIONS
+        if operation in {"deploy", "genesis", "restore"} and path == (
+            "state",
+            "observations",
+            "applied_migrations",
+        ):
+            return MAX_MIGRATION_VERSIONS
+        if operation == "list_releases" and path in _RESULT_MIGRATION_PATHS:
+            return MAX_MIGRATION_FINGERPRINTS
+        if operation == "list_backups" and path == (
+            "state",
+            "records",
+            "[]",
+            "record",
+            "migration_versions",
+        ):
+            return MAX_MIGRATION_VERSIONS
+        return MAX_COLLECTION_ITEMS
+
+    return collection_limit
+
+
+def _request_record_budget(operation: str) -> Callable[[tuple[str, ...]], int | None]:
+    def record_budget(path: tuple[str, ...]) -> int | None:
+        if operation not in {"deploy", "genesis"}:
+            return None
+        if path in {
+            ("parameters", "target", "manifest"),
+            ("parameters", "target", "release_record", "artifact_manifest"),
+        }:
+            return MAX_MANIFEST_BYTES
+        if path == ("parameters", "target", "release_record"):
+            return MAX_RELEASE_RECORD_BYTES
+        return None
+
+    return record_budget
+
+
+def _result_record_budget(operation: str) -> Callable[[tuple[str, ...]], int | None]:
+    def record_budget(path: tuple[str, ...]) -> int | None:
+        if operation in {"list_releases", "list_backups"} and path == (
+            "state",
+            "records",
+            "[]",
+            "record",
+        ):
+            return MAX_RECORD_BYTES
+        return None
+
+    return record_budget
+
+
+def _validate_migration_fingerprints(value: tuple[object, ...]) -> None:
+    for fingerprint in value:
+        if not isinstance(fingerprint, Mapping) or set(fingerprint) != {"filename", "sha256"}:
+            raise ProtocolError("invalid migration fingerprint")
+        filename = fingerprint["filename"]
+        checksum = fingerprint["sha256"]
+        if (
+            type(filename) is not str
+            or len(filename.encode("utf-8")) > MAX_MIGRATION_FILENAME_BYTES
+            or _MIGRATION_FILENAME_RE.fullmatch(filename) is None
+            or type(checksum) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+        ):
+            raise ProtocolError("invalid migration fingerprint")
+
+
 @dataclass(frozen=True)
 class HostRequest:
     """One bounded controller-to-helper request."""
@@ -134,9 +304,29 @@ class HostRequest:
         object.__setattr__(self, "protocol_version", _validate_version(self.protocol_version))
         object.__setattr__(self, "operation", validate_operation(self.operation))
         object.__setattr__(self, "correlation_id", validate_correlation_id(self.correlation_id))
-        object.__setattr__(self, "expected_state", _freeze_mapping(self.expected_state))
+        collection_limit = _request_collection_limit(self.operation)
+        record_budget = _request_record_budget(self.operation)
+        object.__setattr__(
+            self,
+            "expected_state",
+            _freeze_mapping(
+                self.expected_state,
+                path=("expected_state",),
+                collection_limit=collection_limit,
+                record_budget=record_budget,
+            ),
+        )
         object.__setattr__(self, "paths", _freeze_paths(self.paths))
-        object.__setattr__(self, "parameters", _freeze_mapping(self.parameters))
+        object.__setattr__(
+            self,
+            "parameters",
+            _freeze_mapping(
+                self.parameters,
+                path=("parameters",),
+                collection_limit=collection_limit,
+                record_budget=record_budget,
+            ),
+        )
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -202,7 +392,18 @@ class HostResult:
         object.__setattr__(self, "operation", validate_operation(self.operation))
         object.__setattr__(self, "correlation_id", validate_correlation_id(self.correlation_id))
         object.__setattr__(self, "message", validate_string(self.message))
-        object.__setattr__(self, "state", _freeze_mapping(self.state))
+        collection_limit = _result_collection_limit(self.operation)
+        record_budget = _result_record_budget(self.operation)
+        object.__setattr__(
+            self,
+            "state",
+            _freeze_mapping(
+                self.state,
+                path=("state",),
+                collection_limit=collection_limit,
+                record_budget=record_budget,
+            ),
+        )
         object.__setattr__(self, "warnings", _freeze_string_sequence(self.warnings))
         if type(self.local_cleanup_incomplete) is not bool:
             raise ProtocolError("invalid local cleanup state")
@@ -275,16 +476,7 @@ def _decode_json(payload: object, *, maximum: int) -> object:
 
 
 def _encode_json(mapping: Mapping[str, object], *, maximum: int) -> bytes:
-    try:
-        payload = json.dumps(
-            mapping,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as error:
-        raise ProtocolError("protocol value cannot be encoded") from error
+    payload = _canonical_json(mapping)
     if len(payload) > maximum:
         raise ProtocolError("protocol payload exceeds byte limit")
     return payload
@@ -351,8 +543,14 @@ def merge_result_warning(result: object, warning: object) -> HostResult:
 __all__ = [
     "MAX_COLLECTION_ITEMS",
     "MAX_INPUT_BYTES",
+    "MAX_MANIFEST_BYTES",
+    "MAX_MIGRATION_FILENAME_BYTES",
+    "MAX_MIGRATION_FINGERPRINTS",
+    "MAX_MIGRATION_VERSIONS",
     "MAX_NESTING_DEPTH",
     "MAX_OUTPUT_BYTES",
+    "MAX_RECORD_BYTES",
+    "MAX_RELEASE_RECORD_BYTES",
     "PROTOCOL_VERSION",
     "HostRequest",
     "HostResult",

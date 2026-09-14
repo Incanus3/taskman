@@ -25,7 +25,7 @@ from taskman_ops.remote import CommandResult
 
 def request(correlation_id: str = "op-0123456789abcdef0123456789abcdef") -> HostRequest:
     return HostRequest(
-        protocol_version=2,
+        protocol_version=3,
         operation="discover",
         correlation_id=correlation_id,
         expected_state={"lifecycle": "unknown"},

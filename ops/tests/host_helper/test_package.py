@@ -24,8 +24,8 @@ def test_builder_produces_identical_allowlisted_zipapps(tmp_path: Path) -> None:
     assert first_bytes == second_bytes
     assert first.sha256 == hashlib.sha256(first_bytes).hexdigest()
     assert second.sha256 == first.sha256
-    assert first.protocol_version == 2
-    assert first.identity == f"v2-{first.sha256}"
+    assert first.protocol_version == 3
+    assert first.identity == f"v3-{first.sha256}"
     assert stat.S_IMODE(first.path.stat().st_mode) == 0o600
 
 
