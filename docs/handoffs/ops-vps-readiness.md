@@ -14,11 +14,11 @@ authorized clean staging recreation and fresh provisioning/readiness.
 - Implemented baseline:
   [Dedicated-host deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
 - Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Parent reconciliation issue: `tas-sr4b`; next task: `tas-sr4b.5`.
+- Parent reconciliation issue: `tas-sr4b`; next task: `tas-sr4b.6`.
 
 ## Current checkpoint
 
-Tasks 1–4 of the approved plan are complete on GitButler branch
+Tasks 1–5 of the approved plan are complete on GitButler branch
 `dedicated-host-deployment-automation`. Each passed independent task review and scoped fix
 re-reviews where required.
 
@@ -38,6 +38,10 @@ re-reviews where required.
   and `d48212cf` implement protocol v3, exact schema-path budgets, bounded discovery/inventory,
   deadline propagation, exact mutation-result validation, single final-observation ownership, and
   conservative command-level aggregation.
+- `tas-sr4b.5` is closed. Commits `6c40e1f4`, `82ff95ff`, `d0763c4d`, `569a673c`, and `0f5c11f3`
+  implement compatible scheduled-backup package construction, explicit lifecycle-lock handoff,
+  deadline-bounded executable convergence, conservative mutation/restoration evidence, safe
+  descriptor-based package replacement, and frozen earlier-package compatibility coverage.
 
 Task 6 still owns public workflow migration to `DeploymentTarget` and the clean-input
 re-identify/discover/re-resolve loop. Task 11 still owns real Docker clean/dirty build acceptance.
@@ -49,9 +53,8 @@ merge has occurred or is authorized.
 
 ## Next actions
 
-1. Execute plan Task 5 (`tas-sr4b.5`) with delegated implementation and distinct independent review:
-   safely quiesce earlier scheduled-backup processes and converge the compatible executable before
-   supported-format writes.
+1. Execute plan Task 6 (`tas-sr4b.6`) with delegated implementation and distinct independent review:
+   migrate the public deploy request and controller workflow to exact desired-target reconciliation.
 2. Continue in dependency order through `tas-sr4b.11`.
 
 ## Verification and remaining gates
@@ -64,6 +67,10 @@ merge has occurred or is authorized.
   `compileall` exited 0; `mix precommit` passed 805 tests. Independent review plus three scoped
   re-reviews are clean. Repository-wide Python collection still
   stops at the Task 6-owned removed `ArtifactResolution` import in `ops/tests/test_cli.py`.
+- Task 5 controller gate: 72 focused helper/service/package/workflow tests passed; `compileall`
+  exited 0; `mix precommit` passed 805 tests. Independent review plus two scoped re-reviews are
+  clean. The frozen earlier package and current replacement both execute in isolation against the
+  supported record, protection, retention, and lifecycle-lock baseline.
 - The Task 2 implementer also ran `mix precommit` after its production fix round; the final change
   after that run added only the complete clean-input test matrix.
 - Integrated failures in consumers assigned to Tasks 3–10 remain expected until their planned
