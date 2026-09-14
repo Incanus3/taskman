@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 from ..config import EnvironmentConfig
-from ..helper_client.package import build_scheduled_backup_package
+from ..helper_client.package import HelperPackage, build_scheduled_backup_package
 
 
 BACKUP_COMMAND = PurePosixPath("/usr/local/lib/taskman/taskman-backup.pyz")
@@ -77,7 +77,7 @@ def _scheduled_backup_asset() -> ManagedBackupAsset:
     """Build the persistent package in memory so convergence installs exact bytes."""
 
     with tempfile.TemporaryDirectory(prefix="taskman-scheduled-backup-") as directory:
-        package = build_scheduled_backup_package(Path(directory) / "taskman-backup.pyz")
+        package = scheduled_backup_helper(Path(directory) / "taskman-backup.pyz")
         content = package.path.read_bytes()
     return ManagedBackupAsset(
         source=None,
@@ -86,6 +86,12 @@ def _scheduled_backup_asset() -> ManagedBackupAsset:
         content=content,
         sha256=hashlib.sha256(content).hexdigest(),
     )
+
+
+def scheduled_backup_helper(destination: Path) -> HelperPackage:
+    """Build the exact persistent package a controller may upload for refresh."""
+
+    return build_scheduled_backup_package(destination)
 
 
 def validate_systemd_calendar(
@@ -166,5 +172,6 @@ __all__ = [
     "ManagedBackupAsset",
     "backup_service_contract",
     "render_backup_timer",
+    "scheduled_backup_helper",
     "validate_systemd_calendar",
 ]

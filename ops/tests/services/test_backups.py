@@ -20,6 +20,7 @@ from taskman_ops.host_helper.lock import LifecycleLockContention
 from taskman_ops.services.backups import (
     BACKUP_COMMAND,
     backup_service_contract,
+    scheduled_backup_helper,
     render_backup_timer,
     validate_systemd_calendar,
 )
@@ -128,6 +129,15 @@ def test_backup_service_contract_installs_the_immutable_zipapp_with_only_nonsecr
     }
     assert CANARY not in command.content.decode("utf-8", "ignore")
     assert CANARY not in "\n".join(contract.environment.values())
+
+
+def test_scheduled_helper_materializes_the_same_persistent_package(tmp_path: Path) -> None:
+    """A separate controller package builder could upload bytes unlike the installed timer executable."""
+
+    package = scheduled_backup_helper(tmp_path / "taskman-backup.pyz")
+
+    assert package.path == tmp_path / "taskman-backup.pyz"
+    assert package.sha256 == hashlib.sha256(package.path.read_bytes()).hexdigest()
 
 
 def test_backup_systemd_unit_has_a_fixed_entrypoint_and_exact_writable_paths() -> None:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 import re
+from pathlib import Path
+import tempfile
 from typing import Callable
 
 from ..config import EnvironmentConfig
@@ -26,6 +28,7 @@ from ..host_protocol.identifiers import ProtocolError
 from ..releases.identifiers import validate_release_id
 from ..releases.manifests import VerifiedArtifact
 from ..remote import Remote, UploadReceipt
+from ..services.backups import scheduled_backup_helper
 from .verification_results import VerificationReport
 
 
@@ -34,6 +37,14 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 _PGPASS = "/etc/taskman/pgpass"
 _DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
+
+
+@contextmanager
+def temporary_scheduled_backup_helper_package():
+    """Materialize the exact persistent scheduler package for one upload."""
+
+    with tempfile.TemporaryDirectory(prefix="taskman-scheduled-backup-refresh-") as directory:
+        yield scheduled_backup_helper(Path(directory) / "taskman-backup.pyz")
 
 
 def helper_paths(config: EnvironmentConfig) -> dict[str, str]:

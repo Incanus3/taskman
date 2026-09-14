@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+import hashlib
 
 import pytest
 
@@ -14,12 +15,24 @@ from taskman_ops.workflows.helper import (
     mutation_result_facts,
     result_error,
     run_request,
+    temporary_scheduled_backup_helper_package,
 )
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
 SELECTION = "selection-" + "c" * 64 + ".json"
+
+
+def test_temporary_scheduled_backup_helper_package_is_the_uploadable_persistent_artifact() -> None:
+    """Using the transient helper archive here would replace the timer with the wrong entrypoint."""
+
+    with temporary_scheduled_backup_helper_package() as package:
+        path = package.path
+        assert path.name == "taskman-backup.pyz"
+        assert package.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert not path.exists()
 
 
 def _mutation_observations() -> dict[str, object]:

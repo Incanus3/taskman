@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 
 from taskman_ops.host_helper import backup_helper
+from taskman_ops.host_helper.lock import acquire_lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
 
 
@@ -96,3 +98,70 @@ def test_changed_executable_identity_refuses_before_stopping_timer(tmp_path: Pat
         )
 
     assert calls == []
+
+
+def test_refresh_releases_the_lock_for_an_old_backup_before_revalidating_and_replacing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Holding the lifecycle lock while waiting would deadlock an already-started scheduled backup."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"earlier")
+    executable.chmod(0o750)
+    expected = hashlib.sha256(upload.read_bytes()).hexdigest()
+    first_released = Event()
+    old_waiting = Event()
+    old_complete = Event()
+    calls: list[str] = []
+
+    initial = acquire_lifecycle_lock(paths, 1)
+    original_acquire = acquire_lifecycle_lock
+    acquisitions = iter((initial,))
+
+    def acquire(*_args: object) -> object:
+        try:
+            return next(acquisitions)
+        except StopIteration:
+            return original_acquire(paths, 1)
+
+    def old_backup() -> None:
+        old_waiting.set()
+        with original_acquire(paths, 1):
+            calls.append("old-backup-complete")
+            old_complete.set()
+
+    worker = Thread(target=old_backup)
+    worker.start()
+    assert old_waiting.wait(1)
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "acquire_lifecycle_lock", acquire)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda: (True, "active"))
+    monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda: calls.append("stop-timer"))
+    monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: old_complete.wait(1))
+    monkeypatch.setattr(backup_helper, "_replace_executable", lambda _upload, _digest: calls.append("replace-and-verify"))
+    monkeypatch.setattr(backup_helper, "start_backup_timer", lambda: calls.append("start-timer"))
+
+    result = backup_helper.converge_backup_helper(
+        paths,
+        {"sha256": expected, "upload_path": upload.as_posix()},
+        confirmed_checksum=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        confirmed_enabled=True,
+        revalidate=lambda: calls.append("revalidate"),
+        timeout_seconds=1,
+    )
+    worker.join(1)
+
+    assert result.mutation == backup_helper.BackupHelperMutation(paused=True, replaced=True, restarted=True)
+    assert calls == [
+        "revalidate",
+        "stop-timer",
+        "old-backup-complete",
+        "revalidate",
+        "replace-and-verify",
+        "start-timer",
+    ]
+    result.lock.release()
