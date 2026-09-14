@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import stat
 import subprocess
@@ -16,7 +17,8 @@ from taskman_ops.helper_client.package import BACKUP_ARCHIVE_MEMBERS, build_sche
 from taskman_ops.host_helper import scheduled_backup
 from taskman_ops.host_helper.backups import BackupAuthorityError, BackupCapacityError
 from taskman_ops.host_helper.commands import CommandError
-from taskman_ops.host_helper.lock import LifecycleLockContention
+from taskman_ops.host_helper.lock import LifecycleLockContention, acquire_lifecycle_lock
+from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.services.backups import (
     BACKUP_COMMAND,
     backup_service_contract,
@@ -138,6 +140,98 @@ def test_scheduled_helper_materializes_the_same_persistent_package(tmp_path: Pat
 
     assert package.path == tmp_path / "taskman-backup.pyz"
     assert package.sha256 == hashlib.sha256(package.path.read_bytes()).hexdigest()
+
+
+def test_earlier_and_replacement_packages_keep_supported_records_protections_and_lock_authority_isolated(
+    tmp_path: Path,
+) -> None:
+    """Replacing the timer archive must not require the running earlier archive to import the checkout."""
+
+    earlier = build_scheduled_backup_package(tmp_path / "earlier.pyz")
+    replacement = build_scheduled_backup_package(tmp_path / "replacement.pyz")
+    earlier_bytes = earlier.path.read_bytes()
+    script = """
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from taskman_ops.host_helper.backup_protection import BackupProtection
+from taskman_ops.host_helper.backups import retained_backup_ids
+from taskman_ops.host_helper.lock import lifecycle_lock
+from taskman_ops.host_helper.paths import ManagedPaths
+from taskman_ops.host_helper.records import BackupRecord
+from taskman_ops.host_helper.state import HostState
+from taskman_ops.releases.identifiers import build_release_id
+
+release = build_release_id("0.2.0", "a" * 40, artifact_sha256="b" * 64, source_dirty=False)
+protected = "backup-" + "c" * 32
+ordinary = "backup-" + "d" * 32
+record = BackupRecord.from_mapping({
+    "backup_id": ordinary,
+    "created_at": "2026-09-07T12:00:00Z",
+    "dump_sha256": "e" * 64,
+    "source_release_id": release,
+    "migration_versions": [],
+    "source_database_size_bytes": 1,
+})
+protection = BackupProtection.from_mapping({
+    "schema_version": 1,
+    "backup_id": protected,
+    "base_selection_id": None,
+    "target_release_id": release,
+    "attempt_number": 0,
+    "created_at": "2026-09-07T12:00:00Z",
+})
+state = HostState(None, (), (record,), (), (), "stopped", "ready", (), (), (protection,))
+paths = ManagedPaths.from_mapping({"install_root": sys.argv[2], "backup_root": sys.argv[3]})
+Path(sys.argv[2]).mkdir(mode=0o750, exist_ok=True)
+print("waiting-for-lock", flush=True)
+with lifecycle_lock(paths, 1):
+    retained = retained_backup_ids(state, 1)
+print(json.dumps(sorted(retained)))
+"""
+    install = tmp_path / "isolated-install"
+    backups = tmp_path / "isolated-backups"
+    expected = json.dumps(["backup-" + "c" * 32, "backup-" + "d" * 32])
+
+    invocation = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        script,
+        earlier.path.as_posix(),
+        install.as_posix(),
+        backups.as_posix(),
+    ]
+    paths = ManagedPaths.from_mapping({"install_root": install.as_posix(), "backup_root": backups.as_posix()})
+    with acquire_lifecycle_lock(paths, 1):
+        earlier_process = subprocess.Popen(
+            invocation,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert earlier_process.stdout is not None
+        assert earlier_process.stdout.readline() == "waiting-for-lock\n"
+
+    earlier_stdout, earlier_stderr = earlier_process.communicate(timeout=1)
+    assert earlier_process.returncode == 0, earlier_stderr
+    assert earlier_stdout.strip() == expected
+
+    replacement_process = subprocess.run(
+        [*invocation[:5], replacement.path.as_posix(), *invocation[6:]],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert replacement_process.returncode == 0, replacement_process.stderr
+    assert replacement_process.stdout.splitlines() == ["waiting-for-lock", expected]
+
+    assert earlier.path.read_bytes() == earlier_bytes
+    assert replacement.path.read_bytes() == earlier_bytes
 
 
 def test_backup_systemd_unit_has_a_fixed_entrypoint_and_exact_writable_paths() -> None:

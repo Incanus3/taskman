@@ -114,7 +114,8 @@ def test_changed_executable_identity_refuses_before_stopping_timer(tmp_path: Pat
     executable.chmod(0o750)
     calls: list[str] = []
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
-    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "active"))
+    states = iter(((True, "active"), (True, "inactive")))
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
     monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop"))
 
     with pytest.raises(backup_helper.BackupHelperError, match="identity changed"):
@@ -139,6 +140,7 @@ def test_refresh_releases_the_lock_for_an_old_backup_before_revalidating_and_rep
     upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
     upload.parent.mkdir(parents=True)
     upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
     executable.write_bytes(b"earlier")
     executable.chmod(0o750)
@@ -161,7 +163,8 @@ def test_refresh_releases_the_lock_for_an_old_backup_before_revalidating_and_rep
     worker.start()
     assert old_waiting.wait(1)
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
-    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "active"))
+    states = iter(((True, "active"), (True, "active"), (True, "inactive")))
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
     monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop-timer"))
     monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: old_complete.wait(1))
     monkeypatch.setattr(backup_helper, "_replace_executable", lambda _upload, _digest: calls.append("replace-and-verify"))
@@ -199,6 +202,7 @@ def test_refresh_uses_one_finite_deadline_for_timer_commands(
     upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
     upload.parent.mkdir(parents=True)
     upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
     executable.write_bytes(b"earlier")
     executable.chmod(0o750)
@@ -237,6 +241,7 @@ def test_reacquired_authority_drift_restores_enabled_timer_without_replacing(
     upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
     upload.parent.mkdir(parents=True)
     upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
     executable.write_bytes(b"earlier")
     executable.chmod(0o750)
@@ -244,7 +249,8 @@ def test_reacquired_authority_drift_restores_enabled_timer_without_replacing(
     checks = iter(("revalidate",))
 
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
-    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "active"))
+    states = iter(((True, "active"), (True, "inactive")))
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
     monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop"))
     monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: calls.append("start"))
     monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: calls.append("wait"))
@@ -278,6 +284,7 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
     upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
     upload.parent.mkdir(parents=True)
     upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
     executable.write_bytes(b"earlier")
     executable.chmod(0o750)
@@ -289,7 +296,8 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
         raise OSError("interrupted replacement")
 
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
-    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "active"))
+    states = iter(((True, "active"), (True, "active"), (True, "inactive")))
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
     monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: None)
     monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: (_ for _ in ()).throw(OSError("restart failed")))
     monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: None)
@@ -305,5 +313,281 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
             timeout_seconds=1,
         )
 
-    assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True, replaced=True)
+    assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True, replaced=True, restarted=True)
     assert raised.value.restoration_failed is True
+
+
+def test_stop_timeout_retains_possible_pause_and_restart_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed-out stop may have paused the timer before its result was lost."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"earlier")
+    executable.chmod(0o750)
+    states = iter(((True, "active"), (True, "inactive")))
+    calls: list[str] = []
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
+    monkeypatch.setattr(
+        backup_helper,
+        "stop_backup_timer",
+        lambda **_kwargs: (_ for _ in ()).throw(backup_helper.CommandError("stop timed out")),
+    )
+    monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: calls.append("start"))
+
+    with pytest.raises(backup_helper.BackupHelperError) as raised:
+        backup_helper.converge_backup_helper(
+            paths,
+            {"sha256": hashlib.sha256(upload.read_bytes()).hexdigest(), "upload_path": upload.as_posix()},
+            confirmed_checksum=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            confirmed_enabled=True,
+            revalidate=lambda: None,
+            timeout_seconds=1,
+        )
+
+    assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True, restarted=True)
+    assert calls == ["start"]
+
+
+def test_start_timeout_retains_possible_restart_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timed-out start may have activated the confirmed inactive timer."""
+
+    paths = _paths(tmp_path)
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"matching")
+    executable.chmod(0o750)
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "inactive"))
+    monkeypatch.setattr(
+        backup_helper,
+        "start_backup_timer",
+        lambda **_kwargs: (_ for _ in ()).throw(backup_helper.CommandError("start timed out")),
+    )
+
+    with pytest.raises(backup_helper.BackupHelperError) as raised:
+        backup_helper.converge_backup_helper(
+            paths,
+            {"sha256": digest, "upload_path": None},
+            confirmed_checksum=digest,
+            confirmed_enabled=True,
+            revalidate=lambda: None,
+            timeout_seconds=1,
+        )
+
+    assert raised.value.mutation == backup_helper.BackupHelperMutation(restarted=True)
+
+
+def test_fresh_disabled_enablement_drift_never_restarts_after_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timer disabled while the lock was released must stay inactive on refusal."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"earlier")
+    executable.chmod(0o750)
+    states = iter(((True, "active"), (False, "inactive"), (False, "inactive")))
+    calls: list[str] = []
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
+    monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: calls.append("start"))
+    monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: None)
+
+    with pytest.raises(backup_helper.BackupHelperError, match="enablement changed") as raised:
+        backup_helper.converge_backup_helper(
+            paths,
+            {"sha256": hashlib.sha256(upload.read_bytes()).hexdigest(), "upload_path": upload.as_posix()},
+            confirmed_checksum=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            confirmed_enabled=True,
+            revalidate=lambda: None,
+            timeout_seconds=1,
+        )
+
+    assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True)
+    assert calls == ["stop"]
+
+
+def test_runtime_revalidation_failure_restores_and_releases_an_internally_owned_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary callback exception must not strand the lock or a paused enabled timer."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"earlier")
+    executable.chmod(0o750)
+    states = iter(((True, "active"), (True, "inactive")))
+    calls: list[str] = []
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
+    monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop"))
+    monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: calls.append("start"))
+    monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: None)
+
+    with pytest.raises(backup_helper.BackupHelperError) as raised:
+        backup_helper.converge_backup_helper(
+            paths,
+            {"sha256": hashlib.sha256(upload.read_bytes()).hexdigest(), "upload_path": upload.as_posix()},
+            confirmed_checksum=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            confirmed_enabled=True,
+            revalidate=lambda: (_ for _ in ()).throw(RuntimeError("authority callback failed")),
+            timeout_seconds=1,
+        )
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True, restarted=True)
+    assert calls == ["stop", "start"]
+    with acquire_lifecycle_lock(paths, 0.1):
+        pass
+
+
+def test_revalidation_failure_preserves_primary_and_restoration_causes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed restart must retain its cause without hiding the failed authority callback."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
+    executable = tmp_path / "taskman-backup.pyz"
+    executable.write_bytes(b"earlier")
+    executable.chmod(0o750)
+    states = iter(((True, "active"), (True, "inactive")))
+    restart_failure = OSError("restart failed")
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
+    monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        backup_helper,
+        "start_backup_timer",
+        lambda **_kwargs: (_ for _ in ()).throw(restart_failure),
+    )
+    monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: None)
+
+    with pytest.raises(backup_helper.BackupHelperError) as raised:
+        backup_helper.converge_backup_helper(
+            paths,
+            {"sha256": hashlib.sha256(upload.read_bytes()).hexdigest(), "upload_path": upload.as_posix()},
+            confirmed_checksum=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            confirmed_enabled=True,
+            revalidate=lambda: (_ for _ in ()).throw(RuntimeError("authority callback failed")),
+            timeout_seconds=1,
+        )
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert raised.value.restoration_failed is True
+    assert raised.value.restoration_cause is restart_failure
+    with acquire_lifecycle_lock(paths, 0.1):
+        pass
+
+
+@pytest.mark.parametrize("timeout", (float("inf"), float("nan")))
+def test_nonfinite_timeout_is_refused(timeout: float, tmp_path: Path) -> None:
+    """An unbounded deadline would permit a scheduler refresh to run indefinitely."""
+
+    with pytest.raises(ValueError, match="convergence input"):
+        backup_helper.converge_backup_helper(
+            _paths(tmp_path),
+            {"sha256": "a" * 64, "upload_path": None},
+            confirmed_checksum=None,
+            confirmed_enabled=False,
+            revalidate=lambda: None,
+            timeout_seconds=timeout,
+        )
+
+
+@pytest.mark.parametrize("filename", ("replacement.bin", "nested/../replacement.pyz"))
+def test_upload_path_must_be_normalized_private_pyz(filename: str, tmp_path: Path) -> None:
+    """A non-canonical or non-pyz upload can redirect package authority outside the validated file."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / filename
+    upload.parent.mkdir(parents=True, exist_ok=True)
+    upload.write_bytes(b"replacement")
+
+    with pytest.raises(ValueError, match="upload"):
+        backup_helper._input(
+            paths,
+            {"sha256": hashlib.sha256(upload.read_bytes()).hexdigest(), "upload_path": upload.as_posix()},
+            None,
+            False,
+            lambda: None,
+            1,
+        )
+
+
+def test_upload_requires_private_mode_and_destination_rejects_a_linked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A group-readable upload or linked destination directory can swap executable bytes after validation."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o644)
+    digest = hashlib.sha256(upload.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="unsafe"):
+        backup_helper._validate_upload(paths, upload, digest)
+
+    upload.chmod(0o600)
+    target = tmp_path / "target"
+    target.mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", linked_parent / "taskman-backup.pyz")
+
+    with pytest.raises(ValueError, match="destination"):
+        backup_helper._replace_executable(upload, digest)
+
+
+def test_destination_rejects_a_linked_intermediate_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """O_NOFOLLOW on only the final directory must not permit an earlier link in the destination chain."""
+
+    paths = _paths(tmp_path)
+    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"replacement")
+    upload.chmod(0o600)
+    digest = hashlib.sha256(upload.read_bytes()).hexdigest()
+    target = tmp_path / "target"
+    (target / "nested").mkdir(parents=True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", linked / "nested" / "taskman-backup.pyz")
+
+    with pytest.raises(ValueError, match="destination"):
+        backup_helper._replace_executable(upload, digest)
+
+
+def test_backup_wait_exhausts_a_real_finite_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A continuously active old backup must eventually refuse rather than wait indefinitely."""
+
+    monkeypatch.setattr(
+        backup_helper,
+        "run_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess((), 0, b"active\n", b""),
+    )
+    monkeypatch.setattr(backup_helper.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(backup_helper.CommandError, match="did not quiesce"):
+        backup_helper._wait_for_backup_service(0.001)
