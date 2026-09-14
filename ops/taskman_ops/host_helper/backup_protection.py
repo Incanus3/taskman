@@ -165,6 +165,209 @@ def backup_protection_sha256(value: BackupProtection | Mapping[str, object]) -> 
     return hashlib.sha256(_record_json(record.to_mapping()).rstrip(b"\n")).hexdigest()
 
 
+def allocate_protection_attempt(
+    protections: Iterable[BackupProtection], base_selection_id: str | None
+) -> int:
+    """Allocate the next monotonic migration-attempt number for one baseline.
+
+    Callers hold the lifecycle lock and publish the resulting protection before
+    retiring any older attempt.  The newest retained attempt keeps the sequence
+    durable, so bounded intermediate pruning cannot cause a number to repeat.
+    """
+
+    base_selection_id = _selection_id(base_selection_id)
+    matching = _protections_for_baseline(protections, base_selection_id)
+    if not matching:
+        return 0
+    attempt_numbers = {item.attempt_number for item in matching}
+    if 0 not in attempt_numbers or len(attempt_numbers) != len(matching):
+        raise RecordError("backup protection attempts are contradictory")
+    return max(attempt_numbers) + 1
+
+
+def register_backup_protection(
+    paths: ManagedPaths,
+    protections: Iterable[BackupProtection],
+    *,
+    backup_id: str,
+    base_selection_id: str | None,
+    target_release_id: str,
+    created_at: datetime | None = None,
+) -> BackupProtection:
+    """Publish the fresh migration-attempt reference before any retirement.
+
+    The lifecycle-lock caller must finish a previously confirmed prune before
+    it creates another backup.  This keeps one temporary sixth protection
+    inspectable without turning retries into a count limit.
+    """
+
+    base_selection_id = _selection_id(base_selection_id)
+    backup_id = _backup_id(backup_id)
+    try:
+        target_release_id = validate_release_id(target_release_id)
+    except (TypeError, ValueError) as error:
+        raise RecordError("invalid target release identifier") from error
+    current = _protections_for_baseline(protections, base_selection_id)
+    if protection_prune_ids(current, base_selection_id):
+        raise RecordError("confirmed backup-protection pruning must finish before a fresh attempt")
+    record = BackupProtection(
+        schema_version=1,
+        backup_id=backup_id,
+        base_selection_id=base_selection_id,
+        target_release_id=target_release_id,
+        attempt_number=allocate_protection_attempt(current, base_selection_id),
+        created_at=(created_at or datetime.now(UTC).replace(microsecond=0)),
+    )
+    write_backup_protection(paths, record)
+    return record
+
+
+def protection_prune_ids(
+    protections: Iterable[BackupProtection],
+    base_selection_id: str | None,
+    *,
+    independently_held_backup_ids: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return the exact removable intermediate protections for one baseline.
+
+    Original attempt zero and the newest attempt always remain.  A separately
+    history- or restore-held backup keeps its data but is retired from this
+    bounded attempt set and does not occupy one of its three intermediate
+    slots.  The caller confirms this sorted ID set while holding the lock.
+    """
+
+    base_selection_id = _selection_id(base_selection_id)
+    matching = _protections_for_baseline(protections, base_selection_id)
+    held = _held_backup_ids(independently_held_backup_ids)
+    if not matching:
+        return ()
+    attempt_numbers = {item.attempt_number for item in matching}
+    if 0 not in attempt_numbers or len(attempt_numbers) != len(matching):
+        raise RecordError("backup protection attempts are contradictory")
+    newest = max(attempt_numbers)
+    eligible = [
+        item
+        for item in matching
+        if item.attempt_number not in {0, newest} and item.backup_id not in held
+    ]
+    retained = {
+        item.backup_id
+        for item in sorted(eligible, key=lambda item: item.attempt_number, reverse=True)[:3]
+    }
+    return tuple(
+        sorted(
+            item.backup_id
+            for item in matching
+            if item.attempt_number not in {0, newest} and item.backup_id not in retained
+        )
+    )
+
+
+def _protections_for_baseline(
+    protections: Iterable[BackupProtection], base_selection_id: str | None
+) -> tuple[BackupProtection, ...]:
+    try:
+        values = tuple(protections)
+    except TypeError as error:
+        raise TypeError("backup protections must be iterable") from error
+    if not all(isinstance(item, BackupProtection) for item in values):
+        raise TypeError("backup protections must contain BackupProtection records")
+    return tuple(item for item in values if item.base_selection_id == base_selection_id)
+
+
+def _held_backup_ids(backup_ids: Iterable[str]) -> frozenset[str]:
+    try:
+        values = frozenset(backup_ids)
+    except TypeError as error:
+        raise TypeError("independent backup references must be iterable") from error
+    if any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in values):
+        raise RecordError("independent backup reference is invalid")
+    return values
+
+
+def retire_protection_attempts(
+    paths: ManagedPaths,
+    state: HostState,
+    base_selection_id: str | None,
+    confirmed_prune_ids: Iterable[str],
+) -> None:
+    """Retire exactly confirmed migration-attempt references under the lock.
+
+    Reference removal is fsynced before a completed pair can be deleted.  If
+    another history, restore, or protection reference names that backup, the
+    attempt entry is still retired but the independently held pair remains.
+    """
+
+    try:
+        protections = tuple(state.backup_protections)
+        backups = {item.backup_id: item for item in state.backups}
+    except AttributeError as error:
+        raise TypeError("protection retirement needs observed host state") from error
+    base_selection_id = _selection_id(base_selection_id)
+    independent = _independent_state_backup_ids(state)
+    expected = protection_prune_ids(
+        protections,
+        base_selection_id,
+        independently_held_backup_ids=independent,
+    )
+    confirmed = _confirmed_prune_ids(confirmed_prune_ids)
+    if confirmed != expected:
+        raise RecordError("confirmed backup-protection prune set changed")
+    retiring = tuple(
+        protection
+        for protection in _protections_for_baseline(protections, base_selection_id)
+        if protection.backup_id in confirmed
+    )
+    _remove_resolved_protections(paths, retiring)
+    remaining_protection_ids = {
+        item.backup_id for item in protections if item.backup_id not in confirmed
+    }
+    for backup_id in confirmed:
+        if backup_id in independent or backup_id in remaining_protection_ids:
+            continue
+        record = backups.get(backup_id)
+        if record is None:
+            raise RecordError("backup protection references an unknown completed backup")
+        delete_completed_backup(paths, record)
+
+
+def _independent_state_backup_ids(state: HostState) -> frozenset[str]:
+    try:
+        result = set(state.successful_backup_ids)
+        target = state.restore_target
+    except AttributeError as error:
+        raise TypeError("protection retirement needs observed host state") from error
+    if target is None:
+        return frozenset(result)
+    result.update({target.backup_id, target.safety_backup_id})
+    result.update(str(item["backup_id"]) for item in target.safety_backup_attempts)
+    if target.replacement is not None:
+        result.add(str(target.replacement["backup_id"]))
+    return frozenset(result)
+
+
+def _confirmed_prune_ids(value: Iterable[str]) -> tuple[str, ...]:
+    try:
+        result = tuple(value)
+    except TypeError as error:
+        raise TypeError("confirmed backup-protection prune IDs must be iterable") from error
+    if (
+        any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in result)
+        or result != tuple(sorted(result))
+        or len(set(result)) != len(result)
+    ):
+        raise RecordError("confirmed backup-protection prune IDs must be sorted and unique")
+    return result
+
+
+def delete_completed_backup(paths: ManagedPaths, record: object) -> None:
+    """Import the pair-deletion boundary lazily to keep record readers acyclic."""
+
+    from .backups import delete_completed_backup as delete
+
+    delete(paths, record)  # type: ignore[arg-type]
+
+
 def _prepare_paths(paths: ManagedPaths) -> tuple[ManagedPaths, int, Path]:
     if not isinstance(paths, ManagedPaths):
         raise TypeError("backup protection writes need managed paths")
@@ -365,8 +568,12 @@ def _remove_resolved_protections(
 
 __all__ = [
     "BackupProtection",
+    "allocate_protection_attempt",
     "backup_protection_sha256",
     "complete_successful_selection",
+    "protection_prune_ids",
+    "register_backup_protection",
+    "retire_protection_attempts",
     "replace_backup_protection",
     "write_backup_protection",
 ]

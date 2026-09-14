@@ -13,6 +13,10 @@ from tests.host_helper.support import managed_paths
 import taskman_ops.host_helper.backup_protection as protection_module
 from taskman_ops.host_helper.backup_protection import (
     BackupProtection,
+    allocate_protection_attempt,
+    register_backup_protection,
+    protection_prune_ids,
+    retire_protection_attempts,
     replace_backup_protection,
     write_backup_protection,
 )
@@ -113,6 +117,98 @@ def test_null_baseline_is_a_valid_pre_first_selection_protection() -> None:
 
     assert record.base_selection_id is None
     assert BackupProtection.from_mapping(record.to_mapping()) == record
+
+
+def test_attempts_allocate_by_baseline_and_prune_only_eligible_intermediates() -> None:
+    """Clock order and separately-held copies cannot change protection retention."""
+
+    baseline = SELECTION
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            base_selection_id=baseline,
+            target_release_id=TARGET if index % 2 else OTHER_TARGET,
+            attempt_number=index,
+            created_at=AT.replace(hour=12 - (index % 2)),
+        )
+        for index in range(7)
+    )
+
+    assert allocate_protection_attempt(protections, baseline) == 7
+    assert protection_prune_ids(
+        protections,
+        baseline,
+        independently_held_backup_ids={"backup-00000000000000000000000000000002"},
+    ) == (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    )
+
+
+def test_confirmed_protection_retirement_removes_the_reference_before_backup_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash at deletion leaves a completed pair, never a live reference to it."""
+
+    paths = managed_paths(tmp_path)
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(hour=12 - (index % 2)),
+        )
+        for index in range(7)
+    )
+    for protection in protections:
+        write_backup_protection(paths, protection)
+
+    def interrupted_delete(_paths: ManagedPaths, record: BackupRecord) -> None:
+        assert not Path(paths.local(paths.backup_protection(record.backup_id))).exists()
+        raise RecordError("interrupted manifest deletion")
+
+    monkeypatch.setattr(protection_module, "delete_completed_backup", interrupted_delete, raising=False)
+
+    with pytest.raises(RecordError, match="manifest deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(
+                protections=protections,
+                backups=tuple(_backup(item.backup_id) for item in protections),
+            ),
+            SELECTION,
+            (
+                "backup-00000000000000000000000000000001",
+                "backup-00000000000000000000000000000002",
+            ),
+        )
+
+
+def test_failed_protection_publication_does_not_authorize_attempt_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh attempt exists only after its durable protection publication."""
+
+    paths = managed_paths(tmp_path)
+    original = _protection(base_selection_id=None)
+    write_backup_protection(paths, original)
+
+    def fail_publication(_paths: ManagedPaths, _record: BackupProtection) -> None:
+        raise RecordError("fresh protection publication failed")
+
+    monkeypatch.setattr(protection_module, "write_backup_protection", fail_publication)
+
+    with pytest.raises(RecordError, match="publication failed"):
+        register_backup_protection(
+            paths,
+            (original,),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=None,
+            target_release_id=OTHER_TARGET,
+            created_at=AT.replace(minute=1),
+        )
+
+    assert Path(paths.local(paths.backup_protection(BACKUP))).is_file()
+    assert not Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
 
 
 def test_backup_protection_is_created_once_with_private_atomic_publication(tmp_path: Path) -> None:

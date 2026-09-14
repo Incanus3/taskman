@@ -13,6 +13,10 @@ from tests.host_helper.support import managed_paths
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.restore_target import (
     RestoreTarget,
+    allocate_safety_attempt,
+    append_safety_attempt,
+    retire_safety_attempts,
+    safety_attempt_prune_ids,
     replace_restore_target,
     restore_target_sha256,
     write_restore_target,
@@ -108,7 +112,7 @@ def test_restore_target_requires_distinct_registered_database_oids() -> None:
         _target(restored_database_oid=101, temporary_creation_pending=False)
 
 
-def test_restore_target_accepts_64_safety_attempts_and_rejects_65() -> None:
+def test_restore_target_accepts_more_than_64_safety_attempts_for_bounded_recovery() -> None:
     attempts = tuple(
         {"backup_id": f"backup-{index:032x}", "attempt_number": index}
         for index in range(64)
@@ -118,12 +122,52 @@ def test_restore_target_accepts_64_safety_attempts_and_rejects_65() -> None:
         safety_backup_attempts=attempts,
     )
 
+    extended = _target(
+        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_attempts=(*attempts, {"backup_id": "backup-" + "f" * 32, "attempt_number": 64}),
+    )
+
     assert len(record.safety_backup_attempts) == 64
-    with pytest.raises(ValueError, match="attempt|64|bounded"):
-        _target(
-            safety_backup_id=attempts[0]["backup_id"],
-            safety_backup_attempts=(*attempts, {"backup_id": "backup-" + "f" * 32, "attempt_number": 64}),
-        )
+    assert len(extended.safety_backup_attempts) == 65
+
+
+def test_safety_attempt_retention_uses_attempt_order_and_skips_independent_copies() -> None:
+    """Restore safety attempts retain five references plus one transient fresh copy."""
+
+    attempts = tuple(
+        {"backup_id": f"backup-{index:032x}", "attempt_number": index}
+        for index in range(7)
+    )
+    record = _target(
+        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_attempts=attempts,
+    )
+
+    assert allocate_safety_attempt(record) == 7
+    assert safety_attempt_prune_ids(
+        record,
+        independently_held_backup_ids={"backup-00000000000000000000000000000002"},
+    ) == (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    )
+
+
+def test_safety_attempt_reference_is_published_before_exact_retirement(tmp_path: Path) -> None:
+    """A failed fresh copy cannot remove an older safety attempt."""
+
+    paths = managed_paths(tmp_path)
+    first = _target()
+    write_restore_target(paths, first)
+    fresh = append_safety_attempt(first, "backup-00000000000000000000000000000002")
+
+    updated = retire_safety_attempts(paths, fresh, ())
+
+    persisted = RestoreTarget.from_mapping(
+        json.loads(Path(paths.local(paths.restore_target_path)).read_text(encoding="utf-8"))
+    )
+    assert updated == persisted
+    assert tuple(item["attempt_number"] for item in updated.safety_backup_attempts) == (0, 1)
 
 
 def test_restore_target_replacement_has_an_exact_discard_intent() -> None:

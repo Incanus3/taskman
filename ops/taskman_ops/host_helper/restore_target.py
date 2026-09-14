@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -89,7 +89,7 @@ def _oid(value: object, label: str, *, nullable: bool = False) -> int | None:
 
 
 def _attempts(value: object) -> tuple[Mapping[str, object], ...]:
-    if not isinstance(value, (tuple, list)) or not value or len(value) > 64:
+    if not isinstance(value, (tuple, list)) or not value:
         raise RecordError("invalid restore safety backup attempts")
     result: list[Mapping[str, object]] = []
     seen_backup_ids: set[str] = set()
@@ -273,6 +273,122 @@ def restore_target_sha256(value: RestoreTarget | Mapping[str, object]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def allocate_safety_attempt(record: RestoreTarget) -> int:
+    """Return the next monotonic safety-copy attempt for this restore binding."""
+
+    if not isinstance(record, RestoreTarget):
+        raise TypeError("safety attempt allocation needs a restore target")
+    return max(int(item["attempt_number"]) for item in record.safety_backup_attempts) + 1
+
+
+def append_safety_attempt(record: RestoreTarget, backup_id: str) -> RestoreTarget:
+    """Build the next safety-attempt binding without publishing it yet.
+
+    The restore workflow creates and validates the fresh backup first, then
+    atomically replaces the binding with this result before it retires any
+    older attempt entry.
+    """
+
+    if not isinstance(record, RestoreTarget):
+        raise TypeError("safety attempt registration needs a restore target")
+    backup_id = _backup_id(backup_id, "safety backup identifier")
+    if any(item["backup_id"] == backup_id for item in record.safety_backup_attempts):
+        raise RecordError("safety backup attempt is already registered")
+    attempts = (
+        *record.safety_backup_attempts,
+        MappingProxyType(
+            {"backup_id": backup_id, "attempt_number": allocate_safety_attempt(record)}
+        ),
+    )
+    return replace(record, safety_backup_attempts=attempts)
+
+
+def safety_attempt_prune_ids(
+    record: RestoreTarget,
+    *,
+    independently_held_backup_ids: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return the exact removable safety-attempt entries in durable ID order."""
+
+    if not isinstance(record, RestoreTarget):
+        raise TypeError("safety attempt pruning needs a restore target")
+    try:
+        held = set(independently_held_backup_ids)
+    except TypeError as error:
+        raise TypeError("independent backup references must be iterable") from error
+    if any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in held):
+        raise RecordError("independent backup reference is invalid")
+    held.update({record.backup_id, record.safety_backup_id})
+    if record.replacement is not None:
+        held.add(str(record.replacement["backup_id"]))
+    attempts = tuple(record.safety_backup_attempts)
+    newest = max(int(item["attempt_number"]) for item in attempts)
+    eligible = [
+        item
+        for item in attempts
+        if int(item["attempt_number"]) not in {0, newest} and str(item["backup_id"]) not in held
+    ]
+    retained = {
+        str(item["backup_id"])
+        for item in sorted(eligible, key=lambda item: int(item["attempt_number"]), reverse=True)[:3]
+    }
+    return tuple(
+        sorted(
+            str(item["backup_id"])
+            for item in attempts
+            if int(item["attempt_number"]) not in {0, newest}
+            and str(item["backup_id"]) not in retained
+        )
+    )
+
+
+def retire_safety_attempts(
+    paths: ManagedPaths,
+    record: RestoreTarget,
+    confirmed_prune_ids: Iterable[str],
+    *,
+    independently_held_backup_ids: Iterable[str] = (),
+) -> RestoreTarget:
+    """Durably retire exactly confirmed safety-attempt references.
+
+    This function deliberately updates and fsyncs only the binding.  A caller
+    may consider a retired backup pair for deletion only after a fresh locked
+    observation establishes that no independent history, input, replacement,
+    or protection reference remains.
+    """
+
+    if not isinstance(record, RestoreTarget):
+        raise TypeError("safety attempt retirement needs a restore target")
+    expected = safety_attempt_prune_ids(
+        record, independently_held_backup_ids=independently_held_backup_ids
+    )
+    confirmed = _confirmed_prune_ids(confirmed_prune_ids)
+    if confirmed != expected:
+        raise RecordError("confirmed safety-attempt prune set changed")
+    updated = replace(
+        record,
+        safety_backup_attempts=tuple(
+            item for item in record.safety_backup_attempts if item["backup_id"] not in confirmed
+        ),
+    )
+    replace_restore_target(paths, updated)
+    return updated
+
+
+def _confirmed_prune_ids(value: Iterable[str]) -> tuple[str, ...]:
+    try:
+        result = tuple(value)
+    except TypeError as error:
+        raise TypeError("confirmed safety-attempt prune IDs must be iterable") from error
+    if (
+        any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in result)
+        or result != tuple(sorted(result))
+        or len(set(result)) != len(result)
+    ):
+        raise RecordError("confirmed safety-attempt prune IDs must be sorted and unique")
+    return result
+
+
 def _prepare_paths(paths: ManagedPaths) -> tuple[ManagedPaths, int, Path]:
     if not isinstance(paths, ManagedPaths):
         raise TypeError("restore target writes need managed paths")
@@ -335,7 +451,11 @@ def replace_restore_target(paths: ManagedPaths, record: RestoreTarget) -> None:
 
 __all__ = [
     "RestoreTarget",
+    "allocate_safety_attempt",
+    "append_safety_attempt",
     "replace_restore_target",
+    "retire_safety_attempts",
     "restore_target_sha256",
+    "safety_attempt_prune_ids",
     "write_restore_target",
 ]
