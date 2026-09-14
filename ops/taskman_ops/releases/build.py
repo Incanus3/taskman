@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import fnmatch
+import gzip
 import io
 import json
 import os
@@ -81,6 +83,11 @@ SourceReader = Callable[[Path], SourceState]
 SourceExporter = Callable[[Path, str, Path], None]
 Clock = Callable[[], datetime]
 
+MAX_SOURCE_MEMBERS = 16_384
+MAX_SOURCE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+_SOURCE_EXCLUDED_COMPONENTS = frozenset({".git", ".beads", ".codex", ".superpowers", "__pycache__"})
+
 
 def _build_error(message: str, *, artifact_dir: Path | None = None) -> OpsError:
     next_action = None
@@ -92,6 +99,16 @@ def _build_error(message: str, *, artifact_dir: Path | None = None) -> OpsError:
         message=message,
         changed=False,
         next_action=next_action,
+    )
+
+
+def _source_input_error(message: str) -> OpsError:
+    return OpsError(
+        status=ExitStatus.INVALID,
+        stage="build-input",
+        message=message,
+        changed=False,
+        next_action="correct the source input and retry",
     )
 
 
@@ -247,6 +264,122 @@ def _source_member_parts(name: object) -> tuple[str, ...]:
     return parts
 
 
+def _excluded_source_member(parts: tuple[str, ...]) -> bool:
+    """Keep controller state and common private inputs outside a dirty snapshot."""
+
+    if any(part in _SOURCE_EXCLUDED_COMPONENTS for part in parts):
+        return True
+    name = parts[-1]
+    return (
+        name.endswith(".agekey")
+        or name in {".env", ".envrc"}
+        or (len(parts) >= 3 and parts[:2] == ("ops", "environments") and fnmatch.fnmatch(name, "*.secrets.yaml"))
+        or (len(parts) >= 3 and parts[:2] == ("ops", "environments") and fnmatch.fnmatch(name, "*.decrypted.yaml"))
+    )
+
+
+def _git_bytes(repo: Path, argv: Sequence[str]) -> bytes:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), *argv], check=False, capture_output=True
+        )
+    except OSError:
+        raise _build_error("unable to inspect the source checkout") from None
+    if completed.returncode != 0:
+        raise _build_error("unable to inspect the source checkout")
+    return completed.stdout
+
+
+def _nul_paths(value: bytes) -> tuple[str, ...]:
+    if not value:
+        return ()
+    if not value.endswith(b"\0"):
+        raise _build_error("source checkout returned invalid path data")
+    try:
+        return tuple(item.decode("utf-8", "strict") for item in value[:-1].split(b"\0"))
+    except UnicodeDecodeError:
+        raise _build_error("source checkout returned invalid path data") from None
+
+
+def _tracked_snapshot_paths(repo: Path) -> tuple[str, ...]:
+    entries = _nul_paths(_git_bytes(repo, ("ls-files", "--stage", "-z")))
+    paths: list[str] = []
+    for entry in entries:
+        try:
+            prefix, path = entry.split("\t", 1)
+            mode, _object_id, stage = prefix.split(" ", 2)
+        except ValueError:
+            raise _build_error("source checkout returned invalid tracked-path data") from None
+        if stage != "0":
+            raise _source_input_error("source checkout has unresolved index entries")
+        if mode == "160000":
+            raise _source_input_error("source snapshot contains a submodule")
+        paths.append(path)
+    return tuple(paths)
+
+
+def _copy_dirty_source(repo: Path, revision: str, destination: Path) -> None:
+    """Freeze supported checkout bytes, then prove the relevant Git view held still."""
+
+    before_status = _git_bytes(repo, ("status", "--porcelain=v1", "-z", "--untracked-files=all"))
+    before_head = _git_bytes(repo, ("rev-parse", "--verify", "HEAD")).strip()
+    if before_head.decode("ascii", "ignore") != revision:
+        raise _source_input_error("source revision changed before snapshot capture")
+
+    tracked = _tracked_snapshot_paths(repo)
+    untracked = _nul_paths(_git_bytes(repo, ("ls-files", "--others", "--exclude-standard", "-z")))
+    selected = tuple(dict.fromkeys((*tracked, *untracked)))
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    os.chmod(destination, 0o700)
+    total = 0
+    copied = 0
+    for name in selected:
+        parts = _source_member_parts(name)
+        if _excluded_source_member(parts):
+            continue
+        source = repo.joinpath(*parts)
+        target = destination.joinpath(*parts)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            details = source.lstat()
+        except FileNotFoundError:
+            # A tracked deletion is an intentional part of the frozen view.
+            if name in tracked:
+                continue
+            raise _source_input_error("source changed during snapshot capture") from None
+        except OSError:
+            raise _source_input_error("unable to inspect source snapshot member") from None
+        if not stat.S_ISREG(details.st_mode):
+            raise _source_input_error("source snapshot contains an unsupported member")
+        if details.st_size > MAX_SOURCE_MEMBER_BYTES:
+            raise _source_input_error("source snapshot member exceeds supported size")
+        copied += 1
+        total += details.st_size
+        if copied > MAX_SOURCE_MEMBERS or total > MAX_SOURCE_BYTES:
+            raise _source_input_error("source snapshot exceeds supported bounds")
+        try:
+            shutil.copyfile(source, target)
+            os.chmod(target, stat.S_IMODE(details.st_mode) & 0o777)
+        except OSError:
+            raise _source_input_error("unable to materialize source snapshot") from None
+
+    after_status = _git_bytes(repo, ("status", "--porcelain=v1", "-z", "--untracked-files=all"))
+    after_head = _git_bytes(repo, ("rev-parse", "--verify", "HEAD")).strip()
+    if before_status != after_status or before_head != after_head:
+        raise _source_input_error("source changed during snapshot capture")
+
+
+def _export_source(repo: Path, state: SourceState, destination: Path, source_exporter: SourceExporter) -> None:
+    if state.clean:
+        source_exporter(repo, state.revision or "", destination)
+    elif source_exporter is _export_source_from_git:
+        _copy_dirty_source(repo, state.revision or "", destination)
+    else:
+        # Injectable exporters remain a narrow unit-test seam; production uses
+        # the stable Git-aware snapshotter above.
+        source_exporter(repo, state.revision or "", destination)
+
+
 def _export_source_from_git(repo: Path, revision: str, destination: Path) -> None:
     """Materialize only tracked bytes from the checked source object for Docker.
 
@@ -312,12 +445,22 @@ def _write_private_text(path: Path, value: str) -> None:
     path.chmod(0o600)
 
 
+def _normalized_tarinfo(member: tarfile.TarInfo) -> tarfile.TarInfo:
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.mtime = 0
+    return member
+
+
 def _archive_release(release_root: Path, archive_path: Path) -> None:
     if release_root.is_symlink() or not release_root.is_dir():
         raise _build_error("builder did not produce a release directory")
     try:
-        with tarfile.open(archive_path, mode="w:gz", format=tarfile.PAX_FORMAT, dereference=False) as archive:
-            archive.add(release_root, arcname=TOP_LEVEL, recursive=True)
+        with archive_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT, dereference=False) as archive:
+                archive.add(release_root, arcname=TOP_LEVEL, recursive=True, filter=_normalized_tarinfo)
         archive_path.chmod(0o600)
     except (OSError, tarfile.TarError):
         raise _build_error("unable to package the release archive") from None
@@ -398,16 +541,17 @@ def build_release(
     repo: Path,
     output_dir: Path,
     *,
+    allow_dirty: bool = False,
     command_runner: CommandRunner = _run_command,
     source_reader: SourceReader = read_repository_state,
     source_exporter: SourceExporter = _export_source_from_git,
     clock: Clock = lambda: datetime.now(UTC),
 ) -> VerifiedArtifact:
-    """Build, package, and verify an immutable artifact from one clean Git revision."""
+    """Build one clean source export or a private frozen dirty snapshot."""
 
     repo = Path(repo).resolve()
     state = source_reader(repo)
-    if not state.clean or state.revision is None:
+    if state.revision is None or (not state.clean and not allow_dirty):
         raise _build_error("source checkout must be clean and identified")
     try:
         revision = validate_source_revision(state.revision)
@@ -417,19 +561,30 @@ def build_release(
     source_dir = artifact_dir / "source"
     build_output = artifact_dir / "build-output"
     try:
-        source_exporter(repo, revision, source_dir)
+        _export_source(repo, state, source_dir, source_exporter)
         application_version = read_application_version(source_dir / "mix.exs")
         migration_fingerprints = fingerprint_migrations(source_dir / "priv" / "repo" / "migrations")
-        release_id = build_release_id(application_version, revision)
-        artifact_dir = _name_artifact_root(artifact_dir, release_id)
-        source_dir = artifact_dir / "source"
-        build_output = artifact_dir / "build-output"
         result = command_runner(_build_command(source_dir, build_output, revision), repo)
         if result.returncode != 0:
             raise _build_error("release builder failed", artifact_dir=artifact_dir)
         toolchain = _load_toolchain(build_output / "toolchain.json", revision)
-        archive = artifact_dir / f"taskman-{release_id}.tar.gz"
+        archive = artifact_dir / "taskman.tar.gz"
         _archive_release(build_output / TOP_LEVEL, archive)
+        archive_sha256 = sha256_file(archive)
+        release_id = build_release_id(
+            application_version,
+            revision,
+            artifact_sha256=archive_sha256,
+            source_dirty=not state.clean,
+        )
+        artifact_dir = _name_artifact_root(artifact_dir, release_id)
+        source_dir = artifact_dir / "source"
+        build_output = artifact_dir / "build-output"
+        archive = artifact_dir / f"taskman-{release_id}.tar.gz"
+        try:
+            (artifact_dir / "taskman.tar.gz").rename(archive)
+        except OSError:
+            raise _build_error("unable to name the release archive", artifact_dir=artifact_dir) from None
         timestamp = clock()
         if timestamp.tzinfo is None:
             raise _build_error("build clock did not return UTC provenance", artifact_dir=artifact_dir)
@@ -453,12 +608,26 @@ def build_release(
                 "rebar3_version": toolchain["rebar3_version"],
                 "migrations": [fingerprint.to_mapping() for fingerprint in migration_fingerprints],
                 "top_level": TOP_LEVEL,
+                "artifact_sha256": archive_sha256,
+                "source_dirty": not state.clean,
             }
+        )
+        # This validates the full installed representation before the local
+        # artifact becomes a reusable cache entry.
+        from ..host_helper.records import ReleaseRecord
+
+        ReleaseRecord(
+            release_id,
+            revision,
+            archive_sha256,
+            tuple(item.to_mapping() for item in migration_fingerprints),
+            2,
+            manifest,
         )
         manifest_path = artifact_dir / f"taskman-{release_id}.manifest.json"
         _write_private_text(manifest_path, manifest_to_json(manifest))
         checksum = artifact_dir / f"taskman-{release_id}.tar.gz.sha256"
-        _write_private_text(checksum, f"{sha256_file(archive)}  {archive.name}\n")
+        _write_private_text(checksum, f"{archive_sha256}  {archive.name}\n")
         verified = verify_artifact(archive, manifest_path, checksum)
     except OpsError as error:
         if error.next_action is None:
@@ -478,6 +647,9 @@ def build_release(
 __all__ = [
     "BUILDER_PLATFORM",
     "CommandResult",
+    "MAX_SOURCE_BYTES",
+    "MAX_SOURCE_MEMBER_BYTES",
+    "MAX_SOURCE_MEMBERS",
     "SourceState",
     "build_release",
     "default_artifact_root",

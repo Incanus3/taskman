@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from taskman_ops.releases.build import CommandResult, SourceState, build_release
 from taskman_ops.cli import Invocation, dispatch
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, MigrationFingerprint
+from taskman_ops.releases.identifiers import build_release_id
 
 
 REVISION = "c" * 40
@@ -106,12 +108,14 @@ def test_build_passes_the_exact_clean_revision_to_an_amd64_buildkit_invocation(t
     assert command[:5] == ("docker", "buildx", "build", "--platform", "linux/amd64")
     assert ("--build-arg", f"SOURCE_REVISION={REVISION}") == (command[5], command[6])
     assert "--output" in command
-    assert artifact.manifest.release_id == RELEASE_ID
+    assert artifact.manifest.release_id == build_release_id(
+        "0.2.0", REVISION, artifact_sha256=artifact.sha256, source_dirty=False
+    )
     assert artifact.manifest.hex_version == "2.5.1"
     assert artifact.manifest.rebar3_version == "3.24.0"
     assert artifact.manifest.builder_base_tag == BUILDER_BASE_TAG
     assert artifact.manifest.builder_base_digest == BUILDER_BASE_DIGEST
-    assert artifact.archive.name == f"taskman-{RELEASE_ID}.tar.gz"
+    assert artifact.archive.name == f"taskman-{artifact.manifest.release_id}.tar.gz"
     assert stat.S_IMODE(artifact.archive.stat().st_mode) == 0o600
     assert stat.S_IMODE(artifact.manifest_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(artifact.checksum.stat().st_mode) == 0o600
@@ -213,7 +217,7 @@ def test_failed_build_retains_one_private_artifact_directory_for_an_exact_retry(
     assert raised.value.next_action is not None
     retained = Path(raised.value.next_action.removeprefix("inspect retained artifact directory: "))
     assert retained.parent == output
-    assert retained.name.startswith(f"{RELEASE_ID}-")
+    assert retained.name.startswith("snapshot-")
     assert stat.S_IMODE(retained.stat().st_mode) == 0o700
     assert len(list(output.iterdir())) == 1
 
@@ -276,13 +280,96 @@ def test_build_manifest_uses_only_the_exported_revision_snapshot(tmp_path: Path)
     )
 
     assert artifact.manifest.application_version == "0.2.0"
-    assert artifact.manifest.release_id == RELEASE_ID
+    assert artifact.manifest.release_id == build_release_id(
+        "0.2.0", REVISION, artifact_sha256=artifact.sha256, source_dirty=False
+    )
     assert artifact.manifest.migrations == (
         MigrationFingerprint(
             filename="20260904065131_example.exs",
             sha256="358bad621702445615ae95547bb3d2304c109495ea043174222f1886b4d384bb",
         ),
     )
+
+
+def test_final_archive_bytes_choose_release_identity_before_artifact_naming(tmp_path: Path) -> None:
+    """Naming before hashing lets changed release bytes overwrite one immutable identity."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination)
+        (destination / "taskman" / "lib" / "payload").write_text("changed", encoding="utf-8")
+        return CommandResult(0, "", "")
+
+    artifact = build_release(repo, tmp_path / "artifacts", source_reader=lambda _repo: SourceState(REVISION, True),
+                             source_exporter=export_source, command_runner=runner)
+
+    assert artifact.manifest.artifact_sha256 == artifact.sha256
+    assert artifact.manifest.release_id.endswith(artifact.sha256)
+    assert artifact.archive.name == f"taskman-{artifact.manifest.release_id}.tar.gz"
+
+
+def test_identical_final_bytes_keep_identity_when_only_manifest_timestamp_changes(tmp_path: Path) -> None:
+    """Including descriptive build time in identity would prevent exact installed reuse."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination)
+        return CommandResult(0, "", "")
+
+    first = build_release(repo, tmp_path / "first", source_reader=lambda _repo: SourceState(REVISION, True),
+                          source_exporter=export_source, command_runner=runner,
+                          clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    second = build_release(repo, tmp_path / "second", source_reader=lambda _repo: SourceState(REVISION, True),
+                           source_exporter=export_source, command_runner=runner,
+                           clock=lambda: datetime(2026, 1, 2, tzinfo=UTC))
+
+    assert first.sha256 == second.sha256
+    assert first.manifest.release_id == second.manifest.release_id
+    assert first.manifest.built_at != second.manifest.built_at
+
+
+def test_dirty_build_uses_a_frozen_safe_snapshot_instead_of_later_checkout_bytes(tmp_path: Path) -> None:
+    """Reading the checkout in the builder after capture can deploy a later unreviewed edit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_repository(repo)
+    (repo / "ops" / "builder").mkdir(parents=True)
+    (repo / "ops" / "builder" / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(repo)), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "initial"), check=True)
+    (repo / "mix.exs").write_text('def project do\n  [app: :taskman, version: "0.2.1"]\nend\n', encoding="utf-8")
+    (repo / "priv" / "repo" / "migrations" / "20260904065131_example.exs").unlink()
+    (repo / "new.txt").write_text("captured\n", encoding="utf-8")
+    (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+    (repo / "secret.agekey").write_text("private\n", encoding="utf-8")
+
+    def runner(argv: Sequence[str], _cwd: Path) -> CommandResult:
+        source = Path(argv[-1])
+        assert "0.2.1" in (source / "mix.exs").read_text(encoding="utf-8")
+        assert not (source / "priv" / "repo" / "migrations" / "20260904065131_example.exs").exists()
+        assert (source / "new.txt").read_text(encoding="utf-8") == "captured\n"
+        assert not (source / "ignored.txt").exists()
+        assert not (source / "secret.agekey").exists()
+        (repo / "mix.exs").write_text('def project do\n  [app: :taskman, version: "9.9.9"]\nend\n', encoding="utf-8")
+        destination = Path(next(value.split("=", 2)[2] for value in argv if value.startswith("type=local,dest=")))
+        write_release_tree(destination, source_revision=subprocess.run(
+            ("git", "-C", str(repo), "rev-parse", "HEAD"), check=True, capture_output=True, text=True
+        ).stdout.strip())
+        return CommandResult(0, "", "")
+
+    artifact = build_release(repo, tmp_path / "artifacts", allow_dirty=True, command_runner=runner)
+    assert artifact.manifest.source_dirty is True
+    assert artifact.manifest.application_version == "0.2.1"
 
 
 def test_application_version_is_read_as_a_literal_without_evaluating_mix_code(tmp_path: Path) -> None:
