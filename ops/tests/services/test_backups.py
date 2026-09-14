@@ -31,6 +31,89 @@ from taskman_ops.services.systemd import render_backup_service
 
 ROOT = Path(__file__).resolve().parents[2]
 CANARY = "backup-password-canary-never-print"
+FROZEN_EARLIER_SHA256 = "0b663bd87abfc6004245170f7f849735f7a4ac404ba974637db7a10080b11b1b"
+
+
+def _frozen_earlier_package(destination: Path) -> str:
+    """Build the pinned earlier baseline without reading live package sources."""
+
+    source = ROOT / "tests" / "fixtures" / "scheduled_backup_baseline.py"
+    info = zipfile.ZipInfo("__main__.py", date_time=(2020, 1, 1, 0, 0, 0))
+    info.create_system = 3
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    return hashlib.sha256(destination.read_bytes()).hexdigest()
+
+
+def _supported_baseline_payload(install: Path, backups: Path) -> dict[str, object]:
+    release_id = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+    backup_ids = {letter: f"backup-{letter * 32}" for letter in "abcde"}
+    release = {
+        "schema_version": 2,
+        "release_id": release_id,
+        "source_revision": "a" * 40,
+        "artifact_sha256": "b" * 64,
+        "migrations": [],
+        "artifact_manifest": {
+            "schema_version": 3,
+            "application": "taskman",
+            "application_version": "0.2.0",
+            "source_revision": "a" * 40,
+            "release_id": release_id,
+            "built_at": "2026-09-07T12:00:00Z",
+            "target_os": "ubuntu26.04",
+            "architecture": "amd64",
+            "otp_version": "29.0.6",
+            "elixir_version": "1.20.4",
+            "node_version": "22.22.1",
+            "hex_version": "2.5.1",
+            "rebar3_version": "3.24.0",
+            "builder_base_tag": "ubuntu:resolute-20260811.1",
+            "builder_base_digest": "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b",
+            "migrations": [],
+            "top_level": "taskman",
+            "artifact_sha256": "b" * 64,
+            "source_dirty": False,
+        },
+    }
+    return {
+        "install_root": install.as_posix(),
+        "backup_root": backups.as_posix(),
+        "retention": 1,
+        "release": release,
+        "selection": {
+            "release_id": release_id,
+            "previous_release_id": None,
+            "backup_id": backup_ids["a"],
+            "selected_at": "2026-09-07T12:00:00Z",
+            "schema_version": 2,
+            "observed_previous_release_id": None,
+            "recovery_backup_ids": [backup_ids["b"]],
+        },
+        "backups": [
+            {
+                "backup_id": backup_ids[letter],
+                "created_at": f"2026-09-07T{hour}:00:00Z",
+                "dump_sha256": letter * 64,
+                "source_release_id": release_id,
+                "migration_versions": [],
+                "source_database_size_bytes": 1,
+            }
+            for letter, hour in (("a", "10"), ("b", "11"), ("c", "12"), ("e", "13"), ("d", "14"))
+        ],
+        "protections": [
+            {
+                "schema_version": 1,
+                "backup_id": backup_ids["c"],
+                "base_selection_id": None,
+                "target_release_id": release_id,
+                "attempt_number": 0,
+                "created_at": "2026-09-07T12:00:00Z",
+            }
+        ],
+    }
 
 
 def _config(**overrides: object) -> EnvironmentConfig:
@@ -147,13 +230,15 @@ def test_earlier_and_replacement_packages_keep_supported_records_protections_and
 ) -> None:
     """Replacing the timer archive must not require the running earlier archive to import the checkout."""
 
-    earlier = build_scheduled_backup_package(tmp_path / "earlier.pyz")
+    earlier = tmp_path / "earlier.pyz"
+    earlier_sha256 = _frozen_earlier_package(earlier)
     replacement = build_scheduled_backup_package(tmp_path / "replacement.pyz")
-    earlier_bytes = earlier.path.read_bytes()
+    earlier_bytes = earlier.read_bytes()
+    assert earlier_sha256 == FROZEN_EARLIER_SHA256
+    assert earlier_sha256 != replacement.sha256
     script = """
 import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
@@ -161,51 +246,37 @@ from taskman_ops.host_helper.backup_protection import BackupProtection
 from taskman_ops.host_helper.backups import retained_backup_ids
 from taskman_ops.host_helper.lock import lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
-from taskman_ops.host_helper.records import BackupRecord
+from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState
-from taskman_ops.releases.identifiers import build_release_id
 
-release = build_release_id("0.2.0", "a" * 40, artifact_sha256="b" * 64, source_dirty=False)
-protected = "backup-" + "c" * 32
-ordinary = "backup-" + "d" * 32
-record = BackupRecord.from_mapping({
-    "backup_id": ordinary,
-    "created_at": "2026-09-07T12:00:00Z",
-    "dump_sha256": "e" * 64,
-    "source_release_id": release,
-    "migration_versions": [],
-    "source_database_size_bytes": 1,
-})
-protection = BackupProtection.from_mapping({
-    "schema_version": 1,
-    "backup_id": protected,
-    "base_selection_id": None,
-    "target_release_id": release,
-    "attempt_number": 0,
-    "created_at": "2026-09-07T12:00:00Z",
-})
-state = HostState(None, (), (record,), (), (), "stopped", "ready", (), (), (protection,))
-paths = ManagedPaths.from_mapping({"install_root": sys.argv[2], "backup_root": sys.argv[3]})
-Path(sys.argv[2]).mkdir(mode=0o750, exist_ok=True)
+payload = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+release = ReleaseRecord.from_mapping(payload["release"])
+selection = SelectionRecord.from_mapping(payload["selection"])
+backups = tuple(BackupRecord.from_mapping(item) for item in payload["backups"])
+protections = tuple(BackupProtection.from_mapping(item) for item in payload["protections"])
+paths = ManagedPaths.from_mapping({"install_root": payload["install_root"], "backup_root": payload["backup_root"]})
+Path(payload["install_root"]).mkdir(mode=0o750, exist_ok=True)
 print("waiting-for-lock", flush=True)
 with lifecycle_lock(paths, 1):
-    retained = retained_backup_ids(state, 1)
-print(json.dumps(sorted(retained)))
+    state = HostState(selection.release_id, (release,), backups, (selection,), (), "stopped", "ready", (), (), protections)
+    retained = retained_backup_ids(state, payload["retention"])
+print(json.dumps({"release_id": release.release_id, "selected_release_id": selection.release_id, "retained_backup_ids": sorted(retained)}, sort_keys=True))
 """
     install = tmp_path / "isolated-install"
     backups = tmp_path / "isolated-backups"
-    expected = json.dumps(["backup-" + "c" * 32, "backup-" + "d" * 32])
+    payload = _supported_baseline_payload(install, backups)
+    payload_path = tmp_path / "supported-baseline.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    expected = json.dumps(
+        {
+            "release_id": payload["release"]["release_id"],
+            "selected_release_id": payload["release"]["release_id"],
+            "retained_backup_ids": [f"backup-{letter * 32}" for letter in "abcd"],
+        },
+        sort_keys=True,
+    )
 
-    invocation = [
-        sys.executable,
-        "-I",
-        "-S",
-        "-c",
-        script,
-        earlier.path.as_posix(),
-        install.as_posix(),
-        backups.as_posix(),
-    ]
+    invocation = [sys.executable, "-I", "-S", earlier.as_posix(), payload_path.as_posix()]
     paths = ManagedPaths.from_mapping({"install_root": install.as_posix(), "backup_root": backups.as_posix()})
     with acquire_lifecycle_lock(paths, 1):
         earlier_process = subprocess.Popen(
@@ -222,7 +293,7 @@ print(json.dumps(sorted(retained)))
     assert earlier_stdout.strip() == expected
 
     replacement_process = subprocess.run(
-        [*invocation[:5], replacement.path.as_posix(), *invocation[6:]],
+        [sys.executable, "-I", "-S", "-c", script, replacement.path.as_posix(), payload_path.as_posix()],
         text=True,
         capture_output=True,
         check=False,
@@ -230,8 +301,7 @@ print(json.dumps(sorted(retained)))
     assert replacement_process.returncode == 0, replacement_process.stderr
     assert replacement_process.stdout.splitlines() == ["waiting-for-lock", expected]
 
-    assert earlier.path.read_bytes() == earlier_bytes
-    assert replacement.path.read_bytes() == earlier_bytes
+    assert earlier.read_bytes() == earlier_bytes
 
 
 def test_backup_systemd_unit_has_a_fixed_entrypoint_and_exact_writable_paths() -> None:
