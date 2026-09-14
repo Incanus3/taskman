@@ -15,7 +15,7 @@ from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import (
     APPLICATION, ARCHITECTURE, BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ELIXIR_VERSION,
     HEX_VERSION, NODE_VERSION, OTP_VERSION, REBAR3_VERSION, SCHEMA_VERSION, TARGET_OS,
-    TOP_LEVEL, ArtifactManifest, VerifiedArtifact, manifest_to_json, verify_artifact,
+    TOP_LEVEL, ArtifactManifest, MigrationFingerprint, VerifiedArtifact, manifest_to_json, verify_artifact,
 )
 
 REVISION = "a" * 40
@@ -220,20 +220,43 @@ def test_invalid_cache_is_preserved_while_a_fresh_target_is_built(tmp_path: Path
     assert invalid.exists()
 
 
-def test_clean_inputs_match_revalidates_every_identity_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A partial equality check can confirm a plan after source or build provenance drift."""
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    (
+        ("source_revision", "b" * 40),
+        ("application_version", "0.2.1"),
+        ("target_os", "different-target-os"),
+        ("architecture", "different-architecture"),
+        ("otp_version", "0.0.0"),
+        ("elixir_version", "0.0.0"),
+        ("node_version", "0.0.0"),
+        ("hex_version", "0.0.0"),
+        ("rebar3_version", "0.0.0"),
+        ("builder_base_tag", "different-builder"),
+        ("builder_base_digest", "sha256:" + "0" * 64),
+        ("top_level", "different-top-level"),
+        ("migrations", (MigrationFingerprint("20260101000000_changed.exs", "0" * 64),)),
+    ),
+)
+def test_clean_inputs_match_rejects_each_identity_component_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, changed_value: object
+) -> None:
+    """Each captured source/build identity field must invalidate a stale deployment plan."""
     artifact = _artifact(tmp_path / "artifact")
     inputs = _inputs(artifact)
-    variants = (
-        CleanInputs(**{**inputs.__dict__, "source_revision": "b" * 40}),
-        CleanInputs(**{**inputs.__dict__, "application_version": "0.2.1"}),
-        CleanInputs(**{**inputs.__dict__, "builder_base_digest": "sha256:" + "0" * 64}),
-    )
+    changed = CleanInputs(**{**inputs.__dict__, field: changed_value})
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: changed)
+    assert clean_inputs_match(tmp_path / "repo", inputs) is False
+
+
+def test_clean_inputs_match_accepts_unchanged_inputs_and_refuses_newly_dirty_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan remains valid only while its source is clean and exactly unchanged."""
+    artifact = _artifact(tmp_path / "artifact")
+    inputs = _inputs(artifact)
     monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: inputs)
     assert clean_inputs_match(tmp_path / "repo", inputs) is True
-    for changed in variants:
-        monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo, changed=changed: changed)
-        assert clean_inputs_match(tmp_path / "repo", inputs) is False
     dirty = OpsError(ExitStatus.LOCAL_PREREQUISITE, "artifact", "checkout is dirty")
     monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: (_ for _ in ()).throw(dirty))
     assert clean_inputs_match(tmp_path / "repo", inputs) is False
