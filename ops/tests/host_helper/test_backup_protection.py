@@ -276,6 +276,38 @@ def test_pending_retirement_marker_requires_private_nonlink_authority(
             target_release_id=OTHER_TARGET,
         )
 
+
+def test_first_retirement_directory_is_fsynced_before_reference_move_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = managed_paths(tmp_path)
+    protection = _protection()
+    write_backup_protection(paths, protection)
+    deployment_root = Path(paths.local(paths.deployment_root))
+    events: list[tuple[str, Path]] = []
+    original_fsync = protection_module.fsync_directory
+    original_replace = protection_module.os.replace
+
+    def record_fsync(path: Path) -> None:
+        events.append(("fsync", path))
+        original_fsync(path)
+
+    def record_replace(source: Path, target: Path) -> None:
+        events.append(("replace", target))
+        original_replace(source, target)
+
+    monkeypatch.setattr(protection_module, "fsync_directory", record_fsync)
+    monkeypatch.setattr(protection_module.os, "replace", record_replace)
+
+    protection_module._mark_retiring_protections(paths, (protection,))
+
+    assert events[0] == ("fsync", deployment_root)
+    assert events[1][0] == "replace"
+    deployment_fsyncs = events.count(("fsync", deployment_root))
+    protection_module._prepare_retirement_root(paths)
+    assert events.count(("fsync", deployment_root)) == deployment_fsyncs == 1
+
+
 @pytest.mark.parametrize("failure_name", ("manifest", "dump"))
 def test_interrupted_pair_deletion_resumes_from_retirement_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_name: str
