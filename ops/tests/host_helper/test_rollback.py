@@ -82,7 +82,7 @@ def _seed_history(paths: ManagedPaths, *, include_target_predecessor: bool = Tru
 
 def _request(paths: ManagedPaths, credentials: Path) -> HostRequest:
     return HostRequest(
-        2,
+        3,
         "rollback",
         CORRELATION,
         {"selected_release_id": CURRENT},
@@ -137,7 +137,7 @@ class _Runtime:
 
     def verify(self, request: HostRequest, **_kwargs: object) -> HostResult:
         self.events.append("verify")
-        return HostResult(2, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
+        return HostResult(3, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:

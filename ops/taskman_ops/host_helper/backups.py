@@ -169,6 +169,7 @@ def create_validated_backup(
     final_state = observe_host_state(
         paths,
         database={"state": state.database_state, "applied_migrations": state.applied_migrations},
+        allow_selection_transition=True,
     )
     if record not in final_state.backups:
         raise BackupAuthorityError("completed backup was not re-observed")

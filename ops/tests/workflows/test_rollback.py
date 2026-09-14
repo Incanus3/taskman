@@ -11,8 +11,8 @@ from tests.workflows.support import successful_verification_report
 from tests.support.environments import environment_config
 
 
-CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6"
-TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6-" + "c" * 64
+TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "d" * 64
 BACKUP = "backup-cccccccccccccccccccccccccccccccc"
 
 
@@ -22,20 +22,26 @@ def _valid_operational_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         "taskman_ops.workflows.rollback.validate_operational_preflight",
         lambda *_args: None,
     )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.rollback.collect_inventory",
+        lambda *_args, **_kwargs: (
+            {"release_id": CURRENT},
+            {"release_id": TARGET},
+        ),
+    )
 
 
 def _discovery(request: HostRequest) -> HostResult:
+    assert request.parameters["mode"] == "strict"
     return HostResult(
-        2,
+        3,
         "discover",
         request.correlation_id,
         "succeeded",
         "observed",
         {
             "selected_release_id": CURRENT,
-            "releases": ({"release_id": CURRENT}, {"release_id": TARGET}),
-            "backups": (),
-            "selections": (),
+            "last_successful_selection_id": "selection-" + "e" * 64 + ".json",
         },
         ("discovery warning",),
     )
@@ -62,6 +68,28 @@ def test_rollback_dry_run_presents_the_exact_target_without_a_mutating_helper_re
     assert outcome.facts["target_release_id"] == TARGET
     assert outcome.facts["typed_confirmation"] == f"rollback production {TARGET}"
     assert [request.operation for request in requests] == ["discover"]
+
+
+def test_rollback_resolves_a_target_from_complete_multi_page_inventory_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Controller target resolution must not stop at the first sixty-four releases."""
+    monkeypatch.setattr(
+        "taskman_ops.workflows.rollback.collect_inventory",
+        lambda *_args, **_kwargs: tuple(
+            [{"release_id": f"unrelated-{index}"} for index in range(65)]
+            + [{"release_id": TARGET}]
+        ),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.rollback.run_request",
+        lambda _remote, request: _discovery(request),
+    )
+
+    outcome = rollback(object(), environment_config(), TARGET, dry_run=True)
+
+    assert outcome.stage == "planned"
+    assert outcome.facts["target_release_id"] == TARGET
 
 
 def test_rollback_refuses_preflight_before_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +122,7 @@ def test_rollback_confirms_the_discovered_target_and_exposes_only_final_public_f
         if request.operation == "discover":
             return _discovery(request)
         return HostResult(
-            2,
+            3,
             "rollback",
             request.correlation_id,
             "succeeded",
@@ -147,7 +175,7 @@ def test_rollback_preserves_final_manual_warning_and_release_exit_category(
         if request.operation == "discover":
             return _discovery(request)
         return HostResult(
-            2,
+            3,
             "rollback",
             request.correlation_id,
             "manual",

@@ -261,7 +261,14 @@ def _request_record_budget(operation: str) -> Callable[[tuple[str, ...]], int | 
 
 def _result_record_budget(operation: str) -> Callable[[tuple[str, ...]], int | None]:
     def record_budget(path: tuple[str, ...]) -> int | None:
-        if operation in {"list_releases", "list_backups"} and path == (
+        if operation == "list_releases" and path == (
+            "state",
+            "records",
+            "[]",
+            "record",
+        ):
+            return MAX_RELEASE_RECORD_BYTES
+        if operation == "list_backups" and path == (
             "state",
             "records",
             "[]",

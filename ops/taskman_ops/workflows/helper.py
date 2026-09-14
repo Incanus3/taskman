@@ -141,7 +141,9 @@ def result_error(result: HostResult) -> OpsError:
         raise ValueError("result_error requires a final unsuccessful result")
     state = result.state
     boundary = state.get("failed_boundary")
-    if state.get("locked") is True:
+    if state.get("invalid_request") is True:
+        status = ExitStatus.INVALID
+    elif state.get("locked") is True:
         status = ExitStatus.LOCKED
     elif result.outcome == "refused" or result.operation == "cleanup":
         status = ExitStatus.SAFETY

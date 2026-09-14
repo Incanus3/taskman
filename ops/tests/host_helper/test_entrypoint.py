@@ -37,7 +37,7 @@ def request_bytes(
             correlation_id=CORRELATION,
             expected_state={},
             paths=paths or {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            parameters={},
+            parameters={"cursor": None} if operation in {"list_releases", "list_backups"} else {},
         )
     )
 
@@ -87,7 +87,8 @@ def test_built_zipapp_emits_a_final_read_only_envelope(tmp_path: Path) -> None:
     assert result.operation == "list_releases"
     assert result.correlation_id == CORRELATION
     assert result.outcome == "succeeded"
-    assert result.state["releases"] == ()
+    assert result.state["records"] == ()
+    assert result.state["next_cursor"] is None
     assert set(result.to_mapping()) == {
         "protocol_version", "operation", "correlation_id", "outcome", "message", "state", "warnings"
     }

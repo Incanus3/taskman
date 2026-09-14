@@ -219,7 +219,7 @@ def _publish_selected_release(paths: ManagedPaths) -> None:
 
 def _request(paths: ManagedPaths, credentials: Path) -> HostRequest:
     return HostRequest(
-        2,
+        3,
         "backup",
         "op-0123456789abcdef0123456789abcdef",
         {},
