@@ -24,13 +24,14 @@ from taskman_ops.host_helper.records import (
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_protocol import HostRequest, HostResult
 from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ArtifactManifest
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 TARGET_REVISION = "a" * 40
 CURRENT_REVISION = "b" * 40
-TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
+TARGET = build_release_id("0.2.0", TARGET_REVISION, artifact_sha256="d" * 64, source_dirty=False)
+CURRENT = build_release_id("0.2.1", CURRENT_REVISION, artifact_sha256="e" * 64, source_dirty=False)
 MIGRATION = {"filename": "20260905120000_create_tasks.exs", "sha256": "c" * 64}
 MIGRATION_VERSION = 20260905120000
 
@@ -46,7 +47,20 @@ def _install_release(paths: ManagedPaths, release_id: str, revision: str) -> Non
     path = Path(paths.local(paths.release_root / release_id))
     path.mkdir(parents=True)
     path.chmod(0o750)
-    write_release_manifest(paths, ReleaseRecord(release_id, revision, "d" * 64, (MIGRATION,)))
+    digest = "d" * 64 if release_id == TARGET else "e" * 64
+    manifest = ArtifactManifest.from_mapping({
+        "schema_version": 3, "application": "taskman", "application_version": release_id.split("-", 1)[0],
+        "source_revision": revision, "release_id": release_id, "built_at": "2026-09-07T12:00:00Z",
+        "target_os": "ubuntu26.04", "architecture": "amd64", "otp_version": "29.0.6",
+        "elixir_version": "1.20.4", "node_version": "22.22.1", "hex_version": "2.5.1",
+        "rebar3_version": "3.24.0", "builder_base_tag": BUILDER_BASE_TAG,
+        "builder_base_digest": BUILDER_BASE_DIGEST, "migrations": [MIGRATION], "top_level": "taskman",
+        "artifact_sha256": digest, "source_dirty": False,
+    })
+    write_release_manifest(paths, ReleaseRecord(
+        release_id=release_id, source_revision=revision, artifact_sha256=digest,
+        migrations=(MIGRATION,), schema_version=2, artifact_manifest=manifest,
+    ))
 
 
 def _seed_history(paths: ManagedPaths, *, include_target_predecessor: bool = True) -> None:
@@ -55,14 +69,14 @@ def _seed_history(paths: ManagedPaths, *, include_target_predecessor: bool = Tru
     if include_target_predecessor:
         append_selection(
             paths,
-            SelectionRecord(TARGET, None, None, datetime(2026, 9, 7, 11, 0, tzinfo=UTC)),
+            SelectionRecord(TARGET, None, None, datetime(2026, 9, 7, 11, 0, tzinfo=UTC), 2, None, ()),
         )
         previous = TARGET
         selected_at = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
     else:
         previous = None
         selected_at = datetime(2026, 9, 7, 11, 0, tzinfo=UTC)
-    append_selection(paths, SelectionRecord(CURRENT, previous, None, selected_at))
+    append_selection(paths, SelectionRecord(CURRENT, previous, None, selected_at, 2, previous, ()))
     Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / CURRENT)))
 
 
@@ -145,7 +159,7 @@ def test_rollback_creates_a_safety_backup_before_selecting_a_history_compatible_
 
     result = rollback_module.rollback(_request(paths, _credentials(tmp_path)))
 
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
     assert result.state["selected_release_id"] == TARGET
     assert result.state["target_release_id"] == TARGET
     assert result.state["database_state"] == "unchanged"

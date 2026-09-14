@@ -300,7 +300,15 @@ def _record_selection(state: HostState, inputs: _Inputs, backup: BackupRecord | 
     try:
         append_selection(
             inputs.paths,
-            SelectionRecord(inputs.target_release_id, inputs.current_release_id, backup.backup_id, selected_at),
+            SelectionRecord(
+                inputs.target_release_id,
+                inputs.current_release_id,
+                backup.backup_id,
+                selected_at,
+                2,
+                inputs.current_release_id,
+                (),
+            ),
         )
     except (OSError, RecordError, ValueError) as error:
         raise _Retryable("selection") from error

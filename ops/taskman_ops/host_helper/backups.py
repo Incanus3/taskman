@@ -34,6 +34,33 @@ class BackupCapacityError(ValueError):
     """The backup filesystem cannot retain one validated database dump."""
 
 
+def select_backup_source(state: HostState) -> ReleaseRecord:
+    """Return the installed release whose immutable migrations prove live schema."""
+
+    if not isinstance(state, HostState):
+        raise TypeError("backup source needs observed host state")
+    if state.selected_release_id is None:
+        raise BackupAuthorityError("backup requires a selected release")
+    releases = {record.release_id: record for record in state.releases}
+    selected = releases.get(state.selected_release_id)
+    if selected is None:
+        raise BackupAuthorityError("selected release provenance is unavailable")
+    candidates = [selected]
+    for release_id in sorted({item.target_release_id for item in state.backup_protections} - {selected.release_id}):
+        candidate = releases.get(release_id)
+        if candidate is None:
+            raise BackupAuthorityError("protected backup source provenance is unavailable")
+        candidates.append(candidate)
+    for candidate in candidates:
+        try:
+            versions = tuple(int(item["filename"][:14]) for item in candidate.migrations)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if versions[: len(state.applied_migrations)] == state.applied_migrations:
+            return candidate
+    raise BackupAuthorityError("no eligible release proves the live migration prefix")
+
+
 def create_validated_backup(
     state: HostState,
     paths: ManagedPaths,
@@ -51,8 +78,7 @@ def create_validated_backup(
 
     if not isinstance(state, HostState):
         raise TypeError("backup needs observed host state")
-    if state.selected_release_id is None:
-        raise BackupAuthorityError("backup requires a selected release")
+    source = select_backup_source(state)
     if state.database_state != "ready":
         raise BackupAuthorityError("backup requires an observed ready database")
     database = database_mapping(database)
@@ -104,7 +130,7 @@ def create_validated_backup(
         backup_id=backup_id,
         created_at=datetime.now(UTC).replace(microsecond=0),
         dump_sha256=digest,
-        source_release_id=state.selected_release_id,
+        source_release_id=source.release_id,
         migration_versions=state.applied_migrations,
         source_database_size_bytes=source_size,
     )
@@ -369,6 +395,7 @@ def _require_identity(
 __all__ = [
     "BackupAuthorityError",
     "BackupCapacityError",
+    "select_backup_source",
     "CommandError",
     "create_validated_backup",
     "delete_completed_backup",
