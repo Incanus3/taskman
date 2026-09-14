@@ -47,6 +47,7 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert "taskman_ops/host_helper/filesystem.py" in names
     assert "taskman_ops/host_helper/records.py" in names
     assert "taskman_ops/host_helper/backup_protection.py" in names
+    assert "taskman_ops/host_helper/backup_helper.py" in names
     assert "taskman_ops/host_helper/restore_target.py" in names
     assert "taskman_ops/host_helper/selection.py" in names
     assert "taskman_ops/host_helper/services.py" in names

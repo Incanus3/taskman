@@ -17,6 +17,34 @@ class LifecycleLockContention(TimeoutError):
     """Raised when the lifecycle lock remains held at the caller deadline."""
 
 
+class LifecycleLock:
+    """One acquired lifecycle-lock descriptor with an explicit owner."""
+
+    def __init__(self, descriptor: int) -> None:
+        self._descriptor = descriptor
+
+    @property
+    def held(self) -> bool:
+        return self._descriptor >= 0
+
+    def release(self) -> None:
+        """Release exactly this acquisition, once."""
+
+        if self._descriptor < 0:
+            return
+        descriptor, self._descriptor = self._descriptor, -1
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+    def __enter__(self) -> "LifecycleLock":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.release()
+
+
 def _safe_directory(path: Path, owner_uid: int) -> None:
     try:
         details = path.lstat()
@@ -47,6 +75,16 @@ def lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> Iterator[None
         raise TypeError("lifecycle lock needs managed paths")
     if type(timeout_seconds) not in {int, float} or timeout_seconds < 0:
         raise ValueError("invalid lifecycle lock timeout")
+    lock = acquire_lifecycle_lock(paths, timeout_seconds)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def acquire_lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> LifecycleLock:
+    """Acquire and return an explicitly owned lifecycle lock."""
+
     owner_uid = os.geteuid()
     try:
         paths.validate_existing(owner_uid=owner_uid)
@@ -77,12 +115,10 @@ def lifecycle_lock(paths: ManagedPaths, timeout_seconds: float) -> Iterator[None
                 if time.monotonic() >= deadline:
                     raise LifecycleLockContention("lifecycle lock is held")
                 time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-        try:
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
+        return LifecycleLock(descriptor)
+    except BaseException:
         os.close(descriptor)
+        raise
 
 
-__all__ = ["LifecycleLockContention", "lifecycle_lock"]
+__all__ = ["LifecycleLock", "LifecycleLockContention", "acquire_lifecycle_lock", "lifecycle_lock"]
