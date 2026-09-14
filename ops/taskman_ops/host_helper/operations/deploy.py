@@ -484,7 +484,12 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
     raise DeploymentManualError("genesis selection is not attributable to the candidate")
 
 
-def _observe(inputs: _Inputs, *, allow_selection_transition: bool = True) -> HostState:
+def _observe(
+    inputs: _Inputs,
+    *,
+    allow_selection_transition: bool = True,
+    include_runtime: bool = False,
+) -> HostState:
     try:
         database = observe_database_state_or_empty(inputs.database, inputs.credentials)
     except DatabaseObservationError as error:
@@ -492,6 +497,7 @@ def _observe(inputs: _Inputs, *, allow_selection_transition: bool = True) -> Hos
     return observe_host_state(
         inputs.paths,
         database=database,
+        include_runtime=include_runtime,
         allow_selection_transition=allow_selection_transition,
     )
 
@@ -547,7 +553,11 @@ def _record_successful_selection(
     if recorded == inputs.candidate.release_id:
         selection = state.selections[-1]
         return (
-            _observe(inputs, allow_selection_transition=False),
+            _observe(
+                inputs,
+                allow_selection_transition=False,
+                include_runtime=True,
+            ),
             False,
             _selection_backup(inputs, state, selection.backup_id, backup),
         )
@@ -564,7 +574,15 @@ def _record_successful_selection(
         )
     except (OSError, RecordError, ValueError) as error:
         raise _RetryableError("selection") from error
-    return _observe(inputs, allow_selection_transition=False), True, selection_backup
+    return (
+        _observe(
+            inputs,
+            allow_selection_transition=False,
+            include_runtime=True,
+        ),
+        True,
+        selection_backup,
+    )
 
 
 def _selection_backup(

@@ -283,6 +283,14 @@ def mutation_observation_availability(
         )
         if field in observations and observations[field] is None
     )
+    if (
+        observations.get("scheduled_backup_sha256") is None
+        and (
+            observations.get("backup_timer_enabled") is None
+            or observations.get("backup_timer_state") == "unknown"
+        )
+    ):
+        unavailable.add("scheduled_backup_sha256")
     result = tuple(sorted(unavailable))
     return result, "unsafe-observation" if result else None
 

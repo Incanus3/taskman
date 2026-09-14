@@ -154,6 +154,48 @@ def test_v3_restore_request_accepts_512_expected_migration_versions() -> None:
     assert len(request.expected_state["applied_migrations"]) == 512
 
 
+def test_v3_restore_request_accepts_exact_database_migration_arrays() -> None:
+    database = {"applied_migrations": list(range(512))}
+    request = HostRequest(
+        3,
+        "restore",
+        CORRELATION,
+        {
+            "applied_migrations": [],
+            "restore_database_state": {
+                "canonical": database,
+                "temporary": database,
+                "retired": database,
+            },
+        },
+        {"install_root": "/opt/taskman"},
+        {},
+    )
+
+    assert len(
+        request.expected_state["restore_database_state"]["temporary"]["applied_migrations"]
+    ) == 512
+
+
+@pytest.mark.parametrize("operation", ("deploy", "genesis", "discover"))
+def test_v3_other_requests_do_not_inherit_restore_expected_database_allowances(
+    operation: str,
+) -> None:
+    with pytest.raises(ProtocolError):
+        HostRequest(
+            3,
+            operation,
+            CORRELATION,
+            {
+                "restore_database_state": {
+                    "canonical": {"applied_migrations": list(range(65))}
+                }
+            },
+            {"install_root": "/opt/taskman"},
+            {},
+        )
+
+
 def test_v3_restore_discovery_accepts_all_exact_database_migration_arrays() -> None:
     database = {
         "oid": 42,

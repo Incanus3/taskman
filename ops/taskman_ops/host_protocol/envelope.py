@@ -192,6 +192,17 @@ _MUTATION_REQUEST_MIGRATION_PATHS = frozenset(
     }
 )
 _MUTATION_REQUEST_VERSION_PATHS = frozenset({("expected_state", "applied_migrations")})
+_RESTORE_REQUEST_DATABASE_VERSION_PATHS = frozenset(
+    {
+        (
+            "expected_state",
+            "restore_database_state",
+            database,
+            "applied_migrations",
+        )
+        for database in ("canonical", "temporary", "retired")
+    }
+)
 _MUTATION_RESULT_VERSION_PATHS = frozenset(
     {("state", "observations", "applied_migrations")}
 )
@@ -227,6 +238,8 @@ def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int
         if operation in {"deploy", "genesis"} and path in _MUTATION_REQUEST_MIGRATION_PATHS:
             return MAX_MIGRATION_FINGERPRINTS
         if operation in {"deploy", "genesis", "restore"} and path in _MUTATION_REQUEST_VERSION_PATHS:
+            return MAX_MIGRATION_VERSIONS
+        if operation == "restore" and path in _RESTORE_REQUEST_DATABASE_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         return MAX_COLLECTION_ITEMS
 

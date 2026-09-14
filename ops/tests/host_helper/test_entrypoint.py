@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Callable, Iterator
 
 import pytest
@@ -21,6 +23,13 @@ from taskman_ops.host_protocol import (
     validate_mutation_state,
 )
 from taskman_ops.host_helper import __main__ as entrypoint
+from taskman_ops.host_helper.operations import deploy as deploy_module
+from taskman_ops.host_helper.records import SelectionRecord
+from taskman_ops.host_helper.state import (
+    HostState,
+    mutation_observation_availability,
+    mutation_observations as project_mutation_observations,
+)
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
@@ -363,6 +372,125 @@ def test_unknown_observation_domains_are_marked_without_discarding_independent_f
     assert unavailable == ("backup_timer_state", "database_state", "service_state")
     assert inspection_error == "unsafe-observation"
     assert observed["selected_release_id"] == RELEASE
+
+
+def test_scheduler_failure_marks_its_checksum_unavailable_without_erasing_independent_facts() -> None:
+    observed = mutation_observations()
+    observed.update(
+        scheduled_backup_sha256=None,
+        backup_timer_enabled=None,
+        backup_timer_state="unknown",
+    )
+
+    unavailable, inspection_error = entrypoint._observation_unavailable("deploy", observed)
+
+    assert unavailable == (
+        "backup_timer_enabled",
+        "backup_timer_state",
+        "scheduled_backup_sha256",
+    )
+    assert inspection_error == "unsafe-observation"
+    assert observed["selected_release_id"] == RELEASE
+
+
+def test_deploy_post_history_observation_proves_success_without_entrypoint_reinspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection = SelectionRecord(
+        RELEASE,
+        None,
+        None,
+        datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+        2,
+        None,
+        (),
+    )
+    final_state = HostState(
+        selected_release_id=RELEASE,
+        releases=(),
+        backups=(),
+        selections=(selection,),
+        applied_migrations=(),
+        service_state="running",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+    )
+    inputs = deploy_module._Inputs(
+        paths=object(),
+        previous_release_id=None,
+        expected_migrations=(),
+        candidate=SimpleNamespace(release_id=RELEASE),
+        candidate_versions=(),
+        artifact_path=Path("/tmp/release.tar.gz"),
+        artifact_sha256="a" * 64,
+        migration_policy="no-change",
+        credentials=Path("/etc/taskman/pgpass"),
+        database={},
+        verification={},
+    )
+    observation_calls: list[dict[str, object]] = []
+
+    def observe(_inputs: object, **kwargs: object) -> HostState:
+        observation_calls.append(kwargs)
+        return final_state
+
+    monkeypatch.setattr(deploy_module, "_observe", observe)
+    observed, recorded, backup = deploy_module._record_successful_selection(
+        inputs, final_state, None
+    )
+
+    assert observed is final_state
+    assert recorded is False
+    assert backup is None
+    assert observation_calls == [
+        {"allow_selection_transition": False, "include_runtime": True}
+    ]
+
+    observations = project_mutation_observations(
+        observed,
+        "deploy",
+        scheduler={
+            "scheduled_backup_sha256": "e" * 64,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "active",
+        },
+    )
+    unavailable, inspection_error = mutation_observation_availability(
+        "deploy", observations
+    )
+    request = HostRequest(
+        3,
+        "deploy",
+        CORRELATION,
+        {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {"candidate_release_id": RELEASE},
+    )
+    raw_result = deploy_module._result(
+        request,
+        "succeeded",
+        "deployment converged",
+        observed,
+        changed=False,
+        database_state="unchanged",
+        service_state="running",
+        report=passing_report(),
+        final_observations=observations,
+        final_unavailable=unavailable,
+        final_inspection_error=inspection_error,
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "_observe_final_mutation",
+        lambda _request: pytest.fail("success must reuse the post-history observation"),
+    )
+
+    result = entrypoint._legacy_mutation_result(request, raw_result)
+
+    assert validate_mutation_state("deploy", "succeeded", result.state)[
+        "observations"
+    ]["service_state"] == "running"
 
 
 def test_translator_reuses_operation_owned_final_observation_without_reacquiring_lock(
