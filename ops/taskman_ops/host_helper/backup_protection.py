@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 from taskman_ops.releases.identifiers import validate_release_id
 
@@ -18,11 +19,16 @@ from .paths import ManagedPaths, PathAuthorityError
 from .records import (
     MAX_RECORD_BYTES,
     RecordError,
+    SelectionRecord,
     _atomic_create,
     _open_temporary,
     _safe_directory,
     _safe_file,
+    append_selection,
 )
+
+if TYPE_CHECKING:
+    from .state import HostState
 
 
 _FIELDS = frozenset(
@@ -220,9 +226,147 @@ def replace_backup_protection(paths: ManagedPaths, record: BackupProtection) -> 
             except FileNotFoundError:
                 pass
 
+
+def complete_successful_selection(
+    paths: ManagedPaths,
+    state: HostState,
+    *,
+    release_id: str,
+    observed_previous_release_id: str | None,
+    backup_id: str | None = None,
+    recovery_backup_ids: Iterable[str] = (),
+    selected_at: datetime | None = None,
+) -> tuple[SelectionRecord, bool]:
+    """Publish verified success, then retire protections whose references are durable.
+
+    ``state`` is the already validated locked host observation.  The function
+    deliberately owns both publication and protection retirement so callers
+    cannot reverse their crash-safe ordering.
+    """
+
+    try:
+        selected_release_id = state.selected_release_id
+        latest = state.latest_successful_selection
+        latest_filename = state.latest_successful_selection_filename
+        protections = tuple(state.backup_protections)
+        successful_backup_ids = frozenset(state.successful_backup_ids)
+        backups = {item.backup_id for item in state.backups}
+    except AttributeError as error:
+        raise TypeError("successful selection needs observed host state") from error
+    try:
+        release_id = validate_release_id(release_id)
+        observed_previous_release_id = (
+            None
+            if observed_previous_release_id is None
+            else validate_release_id(observed_previous_release_id)
+        )
+    except (TypeError, ValueError) as error:
+        raise RecordError("successful selection release identity is invalid") from error
+    if selected_release_id != release_id:
+        raise RecordError("successful selection does not match physical current")
+
+    resolved: list[BackupProtection] = []
+    unresolved: list[BackupProtection] = []
+    for protection in protections:
+        if protection.backup_id in successful_backup_ids:
+            resolved.append(protection)
+        elif latest is None and protection.base_selection_id is None:
+            unresolved.append(protection)
+        elif latest is not None and protection.base_selection_id == latest_filename:
+            unresolved.append(protection)
+        elif protection.base_selection_id is None:
+            raise RecordError("null-baseline protection can resolve only into the first success")
+        else:
+            raise RecordError("backup protection baseline is not the latest successful selection")
+
+    try:
+        supplied_recovery_ids = tuple(recovery_backup_ids)
+    except TypeError as error:
+        raise RecordError("successful recovery backup references are invalid") from error
+    referenced_ids = tuple(
+        sorted({*supplied_recovery_ids, *(item.backup_id for item in unresolved)})
+    )
+    if any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in referenced_ids):
+        raise RecordError("successful recovery backup references are invalid")
+    if any(item not in backups for item in referenced_ids):
+        raise RecordError("successful selection references an unknown recovery backup")
+    if backup_id is not None:
+        backup_id = _backup_id(backup_id, "successful backup identifier")
+        if backup_id not in backups:
+            raise RecordError("successful selection references an unknown backup")
+    elif unresolved:
+        backup_id = max(unresolved, key=lambda item: item.attempt_number).backup_id
+
+    generic_no_op = (
+        latest is not None
+        and latest.release_id == release_id
+        and observed_previous_release_id == release_id
+        and backup_id is None
+        and not referenced_ids
+    )
+    exact_completed_retry = (
+        latest is not None
+        and latest.release_id == release_id
+        and not unresolved
+        and latest.observed_previous_release_id == observed_previous_release_id
+        and latest.backup_id == backup_id
+        and latest.recovery_backup_ids == referenced_ids
+    )
+    if generic_no_op or exact_completed_retry:
+        _remove_resolved_protections(paths, resolved)
+        return latest, False
+
+    if latest is None:
+        previous_release_id = None
+    else:
+        if observed_previous_release_id is None:
+            raise RecordError("later success must record its observed previous release")
+        previous_release_id = latest.release_id
+
+    timestamp = selected_at or datetime.now(UTC).replace(microsecond=0)
+    if latest is not None:
+        timestamp = max(timestamp, latest.selected_at + timedelta(seconds=1))
+    record = SelectionRecord(
+        release_id,
+        previous_release_id,
+        backup_id,
+        timestamp,
+        2,
+        observed_previous_release_id,
+        referenced_ids,
+    )
+    append_selection(paths, record)
+    _remove_resolved_protections(paths, (*resolved, *unresolved))
+    return record, True
+
+
+def _remove_resolved_protections(
+    paths: ManagedPaths,
+    protections: Iterable[BackupProtection],
+) -> None:
+    protections = tuple(sorted(protections, key=lambda item: item.backup_id))
+    if not protections:
+        return
+    paths, owner_uid, root = _prepare_paths(paths)
+    try:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as error:
+        raise RecordError("unable to open backup protection directory") from error
+    try:
+        for protection in protections:
+            target = Path(paths.local(paths.backup_protection(protection.backup_id)))
+            _safe_file(target, owner_uid=owner_uid)
+            os.unlink(target.name, dir_fd=descriptor)
+            os.fsync(descriptor)
+    except (OSError, RecordError) as error:
+        raise RecordError("unable to remove resolved backup protection") from error
+    finally:
+        os.close(descriptor)
+
 __all__ = [
     "BackupProtection",
     "backup_protection_sha256",
+    "complete_successful_selection",
     "replace_backup_protection",
     "write_backup_protection",
 ]

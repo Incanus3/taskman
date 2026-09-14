@@ -183,12 +183,7 @@ def retained_backup_ids(state: HostState, retention: int) -> frozenset[str]:
         raise TypeError("backup retention needs observed host state")
     if type(retention) is not int or not 1 <= retention <= 64:
         raise ValueError("backup retention is invalid")
-    protected = {selection.backup_id for selection in state.selections if selection.backup_id}
-    protected.update(
-        backup_id
-        for selection in state.selections
-        for backup_id in selection.recovery_backup_ids
-    )
+    protected = set(state.successful_backup_ids)
     protected.update(protection.backup_id for protection in state.backup_protections)
     if state.restore_target is not None:
         protected.add(state.restore_target.backup_id)

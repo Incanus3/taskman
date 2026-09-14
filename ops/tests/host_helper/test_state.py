@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
@@ -13,6 +13,7 @@ import pytest
 from tests.host_helper.support import managed_paths
 
 from taskman_ops.host_helper.backup_protection import BackupProtection, write_backup_protection
+from taskman_ops.host_helper.backups import retained_backup_ids
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import (
@@ -109,6 +110,34 @@ def _publish_release(paths: ManagedPaths, release: ReleaseRecord) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o750)
     write_release_manifest(paths, release)
+
+
+def _write_large_successful_history(
+    paths: ManagedPaths,
+    *,
+    count: int,
+    first_backup_id: str | None = None,
+) -> tuple[SelectionRecord, SelectionRecord]:
+    root = Path(paths.local(paths.selection_root))
+    root.mkdir(parents=True, exist_ok=True)
+    previous: SelectionRecord | None = None
+    penultimate: SelectionRecord | None = None
+    for index in range(count):
+        record = SelectionRecord(
+            schema_version=2,
+            release_id=RELEASE,
+            previous_release_id=None if index == 0 else RELEASE,
+            backup_id=first_backup_id if index == 0 else None,
+            selected_at=AT + timedelta(seconds=index),
+            observed_previous_release_id=None if index == 0 else RELEASE,
+            recovery_backup_ids=(),
+        )
+        target = root / selection_filename(record)
+        target.write_text(json.dumps(record.to_mapping()), encoding="utf-8")
+        target.chmod(0o600)
+        penultimate, previous = previous, record
+    assert penultimate is not None and previous is not None
+    return penultimate, previous
 
 
 def test_observe_empty_host_returns_one_bounded_state_value(tmp_path: Path) -> None:
@@ -571,3 +600,71 @@ def test_observe_refuses_an_inventory_that_exceeds_the_safe_bound(tmp_path: Path
 
     with pytest.raises(StateAmbiguityError, match="inventory|entries|bounded"):
         observe_host_state(paths)
+
+
+def test_observe_validates_more_than_4096_selections_and_retains_old_references(
+    tmp_path: Path,
+) -> None:
+    """A lifetime count cap or projected-only references would lose valid authority."""
+
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"old history backup")
+    dump.chmod(0o600)
+    backup = BackupRecord(
+        BACKUP,
+        AT,
+        hashlib.sha256(dump.read_bytes()).hexdigest(),
+        RELEASE,
+        (),
+        1024,
+    )
+    write_backup_manifest(paths, backup)
+    penultimate, latest = _write_large_successful_history(
+        paths,
+        count=MAX_INVENTORY_ENTRIES + 1,
+        first_backup_id=BACKUP,
+    )
+    current = Path(paths.local(paths.current_link))
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(Path(paths.local(paths.release_root / RELEASE)))
+
+    state = observe_host_state(paths)
+
+    assert state.selections == (penultimate, latest)
+    assert state.latest_successful_selection == latest
+    assert state.previous_successful_selection == penultimate
+    assert state.latest_successful_selection_filename == selection_filename(latest)
+    assert state.previous_successful_selection_filename == selection_filename(penultimate)
+    assert BACKUP in retained_backup_ids(state, 1)
+    assert state.to_mapping()["selections"] == [
+        penultimate.to_mapping(),
+        latest.to_mapping(),
+    ]
+
+
+def test_observe_validates_authority_beyond_the_4096th_selection(tmp_path: Path) -> None:
+    """Truncating validation would accept a malformed authoritative history tail."""
+
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    _write_large_successful_history(paths, count=MAX_INVENTORY_ENTRIES + 1)
+    root = Path(paths.local(paths.selection_root))
+    malformed = root / ("selection-" + "0" * 64 + ".json")
+    malformed.write_text("{}", encoding="utf-8")
+    malformed.chmod(0o600)
+
+    with pytest.raises(StateAmbiguityError, match="selection record is invalid"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_incomplete_selection_history_inspection_at_deadline(
+    tmp_path: Path,
+) -> None:
+    """An expired operation deadline must not produce a truncated successful state."""
+
+    with pytest.raises(StateAmbiguityError, match="selection history|deadline|timed out"):
+        observe_host_state(managed_paths(tmp_path), deadline=0.0)

@@ -222,3 +222,39 @@ def test_rollback_refuses_a_target_not_proven_by_successful_selection_history(
 
     assert result.outcome == "refused"
     assert runtime.events == []
+
+
+def test_rollback_refuses_a_self_predecessor_during_an_interrupted_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A latest self-transition must not become a rollback target on physical drift."""
+
+    paths = managed_paths(tmp_path)
+    _install_release(paths, TARGET, TARGET_REVISION)
+    _install_release(paths, CURRENT, CURRENT_REVISION)
+    append_selection(
+        paths,
+        SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, 11, tzinfo=UTC), 2, None, ()),
+    )
+    append_selection(
+        paths,
+        SelectionRecord(
+            CURRENT,
+            CURRENT,
+            None,
+            datetime(2026, 9, 7, 12, tzinfo=UTC),
+            2,
+            CURRENT,
+            (),
+        ),
+    )
+    Path(paths.local(paths.current_link)).symlink_to(
+        Path(paths.local(paths.release_root / TARGET))
+    )
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    result = rollback_module.rollback(_request(paths, _credentials(tmp_path)))
+
+    assert result.outcome == "refused"
+    assert runtime.events == []
