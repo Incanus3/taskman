@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,7 @@ from taskman_ops.host_helper.records import (
     SelectionRecord,
     append_selection,
     selection_filename,
+    write_backup_manifest,
 )
 from taskman_ops.host_helper.state import HostState
 
@@ -53,7 +56,29 @@ def _protection(**changes: object) -> BackupProtection:
 
 
 def _backup(backup_id: str) -> BackupRecord:
-    return BackupRecord(backup_id, AT, "2" * 64, TARGET, (), 1024)
+    return BackupRecord(backup_id, AT, hashlib.sha256(b"dump").hexdigest(), TARGET, (), 1024)
+
+
+def _publish_backup(paths: ManagedPaths, backup_id: str) -> BackupRecord:
+    root = Path(paths.local(paths.backup_root))
+    root.mkdir(parents=True, exist_ok=True)
+    dump = root / f"{backup_id}.dump"
+    dump.write_bytes(b"dump")
+    dump.chmod(0o600)
+    record = _backup(backup_id)
+    write_backup_manifest(paths, record)
+    return record
+
+
+def _prunable_protections() -> tuple[BackupProtection, ...]:
+    return tuple(
+        _protection(
+            backup_id=BACKUP if index == 1 else f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(minute=index),
+        )
+        for index in range(6)
+    )
 
 
 def _state(
@@ -61,6 +86,7 @@ def _state(
     selections: tuple[SelectionRecord, ...] = (),
     protections: tuple[BackupProtection, ...] = (),
     backups: tuple[BackupRecord, ...] = (),
+    retiring: tuple[BackupProtection, ...] = (),
 ) -> HostState:
     return HostState(
         selected_release_id=TARGET,
@@ -73,6 +99,7 @@ def _state(
         temporary_paths=(),
         warnings=(),
         backup_protections=protections,
+        retiring_backup_protections=retiring,
     )
 
 
@@ -161,9 +188,19 @@ def test_confirmed_protection_retirement_removes_the_reference_before_backup_del
     )
     for protection in protections:
         write_backup_protection(paths, protection)
+    for backup_id in (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    ):
+        _publish_backup(paths, backup_id)
 
     def interrupted_delete(_paths: ManagedPaths, record: BackupRecord) -> None:
-        assert not Path(paths.local(paths.backup_protection(record.backup_id))).exists()
+        for backup_id in (
+            "backup-00000000000000000000000000000001",
+            "backup-00000000000000000000000000000002",
+        ):
+            assert not Path(paths.local(paths.backup_protection(backup_id))).exists()
+            assert protection_module.backup_protection_retirement_path(paths, backup_id).is_file()
         raise RecordError("interrupted manifest deletion")
 
     monkeypatch.setattr(protection_module, "delete_completed_backup", interrupted_delete, raising=False)
@@ -181,6 +218,112 @@ def test_confirmed_protection_retirement_removes_the_reference_before_backup_del
                 "backup-00000000000000000000000000000002",
             ),
         )
+
+
+def test_pending_retirement_blocks_a_fresh_protection_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = managed_paths(tmp_path)
+    protections = _prunable_protections()
+    protection = protections[1]
+    for item in protections:
+        write_backup_protection(paths, item)
+    _publish_backup(paths, BACKUP)
+    monkeypatch.setattr(
+        protection_module,
+        "delete_completed_backup",
+        lambda *_args: (_ for _ in ()).throw(RecordError("interrupted deletion")),
+    )
+    with pytest.raises(RecordError, match="interrupted deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(protections=protections, backups=tuple(_backup(item.backup_id) for item in protections)),
+            SELECTION,
+            (BACKUP,),
+        )
+    with pytest.raises(RecordError, match="retirement|pruning.*finish"):
+        register_backup_protection(
+            paths,
+            (),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=SELECTION,
+            target_release_id=OTHER_TARGET,
+        )
+
+
+@pytest.mark.parametrize("unsafe_kind", ("mode", "link"))
+def test_pending_retirement_marker_requires_private_nonlink_authority(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    paths = managed_paths(tmp_path)
+    protection = _protection()
+    write_backup_protection(paths, protection)
+    root = protection_module.backup_protection_retirement_root(paths)
+    root.mkdir(mode=0o750)
+    marker = protection_module.backup_protection_retirement_path(paths, BACKUP)
+    if unsafe_kind == "mode":
+        marker.write_text(json.dumps(protection.to_mapping()), encoding="utf-8")
+        marker.chmod(0o644)
+    else:
+        marker.symlink_to(Path(paths.local(paths.backup_protection(BACKUP))))
+
+    with pytest.raises(RecordError, match="unsafe|retirement"):
+        register_backup_protection(
+            paths,
+            (protection,),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=SELECTION,
+            target_release_id=OTHER_TARGET,
+        )
+
+@pytest.mark.parametrize("failure_name", ("manifest", "dump"))
+def test_interrupted_pair_deletion_resumes_from_retirement_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_name: str
+) -> None:
+    paths = managed_paths(tmp_path)
+    protections = _prunable_protections()
+    protection = protections[1]
+    backups = tuple(_publish_backup(paths, item.backup_id) for item in protections)
+    for item in protections:
+        write_backup_protection(paths, item)
+    import taskman_ops.host_helper.backups as backups_module
+
+    original_unlink = backups_module.os.unlink
+    failed = False
+
+    def interrupt_once(name: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        nonlocal failed
+        if not failed and str(name).endswith(f".{ 'json' if failure_name == 'manifest' else 'dump'}"):
+            failed = True
+            raise OSError(f"interrupted {failure_name} deletion")
+        original_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(backups_module.os, "unlink", interrupt_once)
+    with pytest.raises(ValueError, match="deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(protections=protections, backups=backups),
+            SELECTION,
+            (BACKUP,),
+        )
+
+    marker = protection_module.backup_protection_retirement_path(paths, BACKUP)
+    assert marker.is_file()
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    monkeypatch.setattr(backups_module.os, "unlink", original_unlink)
+    manifest = Path(paths.local(paths.backup_root)) / f"{BACKUP}.json"
+    resumed_backups = backups if manifest.exists() else tuple(item for item in backups if item.backup_id != BACKUP)
+    resumed = _state(
+        protections=tuple(item for item in protections if item != protection),
+        backups=resumed_backups,
+        retiring=(protection,),
+    )
+
+    retire_protection_attempts(paths, resumed, SELECTION, (BACKUP,))
+
+    assert not marker.exists()
+    assert not (Path(paths.local(paths.backup_root)) / f"{BACKUP}.json").exists()
+    assert not (Path(paths.local(paths.backup_root)) / f"{BACKUP}.dump").exists()
 
 
 def test_failed_protection_publication_does_not_authorize_attempt_retirement(

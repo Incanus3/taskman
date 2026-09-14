@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 from typing import TYPE_CHECKING
 
 from taskman_ops.releases.identifiers import validate_release_id
@@ -43,6 +44,8 @@ _FIELDS = frozenset(
 )
 _SELECTION_FILE_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_BACKUP_PROTECTION_FILE_RE = re.compile(r"backup-[0-9a-f]{32}\.json\Z")
+_RETIREMENT_DIRECTORY = "backup-protection-retirements"
 
 
 def _exact(value: object, label: str) -> Mapping[str, object]:
@@ -203,6 +206,8 @@ def register_backup_protection(
 
     base_selection_id = _selection_id(base_selection_id)
     backup_id = _backup_id(backup_id)
+    if _read_retirement_protections(paths):
+        raise RecordError("confirmed backup-protection retirement must finish before a fresh attempt")
     try:
         target_release_id = validate_release_id(target_release_id)
     except (TypeError, ValueError) as error:
@@ -300,35 +305,170 @@ def retire_protection_attempts(
 
     try:
         protections = tuple(state.backup_protections)
+        pending = tuple(state.retiring_backup_protections)
         backups = {item.backup_id: item for item in state.backups}
     except AttributeError as error:
         raise TypeError("protection retirement needs observed host state") from error
     base_selection_id = _selection_id(base_selection_id)
     independent = _independent_state_backup_ids(state)
-    expected = protection_prune_ids(
-        protections,
-        base_selection_id,
-        independently_held_backup_ids=independent,
-    )
+    if pending:
+        if any(item.base_selection_id != base_selection_id for item in pending):
+            raise RecordError("pending backup-protection retirement has another baseline")
+        expected = tuple(sorted(item.backup_id for item in pending))
+    else:
+        expected = protection_prune_ids(
+            protections,
+            base_selection_id,
+            independently_held_backup_ids=independent,
+        )
     confirmed = _confirmed_prune_ids(confirmed_prune_ids)
     if confirmed != expected:
         raise RecordError("confirmed backup-protection prune set changed")
-    retiring = tuple(
+    retiring = pending or tuple(
         protection
         for protection in _protections_for_baseline(protections, base_selection_id)
         if protection.backup_id in confirmed
     )
-    _remove_resolved_protections(paths, retiring)
+    if not pending:
+        _mark_retiring_protections(paths, retiring)
     remaining_protection_ids = {
         item.backup_id for item in protections if item.backup_id not in confirmed
     }
     for backup_id in confirmed:
         if backup_id in independent or backup_id in remaining_protection_ids:
+            _remove_retirement_marker(paths, backup_id)
             continue
         record = backups.get(backup_id)
+        _finish_retired_backup(paths, backup_id, record)
+        _remove_retirement_marker(paths, backup_id)
+
+
+def backup_protection_retirement_root(paths: ManagedPaths) -> Path:
+    """Return the fixed host-local directory for pending pair retirements."""
+
+    if not isinstance(paths, ManagedPaths):
+        raise TypeError("backup protection retirement needs managed paths")
+    return Path(paths.local(paths.deployment_root / _RETIREMENT_DIRECTORY))
+
+
+def backup_protection_retirement_path(paths: ManagedPaths, backup_id: str) -> Path:
+    """Return one deterministic pending-retirement marker path."""
+
+    return backup_protection_retirement_root(paths) / f"{_backup_id(backup_id)}.json"
+
+
+def _prepare_retirement_root(paths: ManagedPaths) -> tuple[int, Path]:
+    _paths, owner_uid, _active_root = _prepare_paths(paths)
+    root = backup_protection_retirement_root(paths)
+    try:
+        root.mkdir(mode=0o750, exist_ok=True)
+    except OSError as error:
+        raise RecordError("unable to prepare backup-protection retirement directory") from error
+    _safe_directory(root, owner_uid=owner_uid)
+    return owner_uid, root
+
+
+def _read_retirement_protections(paths: ManagedPaths) -> tuple[BackupProtection, ...]:
+    if not isinstance(paths, ManagedPaths):
+        raise TypeError("backup protection retirement needs managed paths")
+    owner_uid = os.geteuid()
+    try:
+        paths.validate_existing(owner_uid=owner_uid)
+    except PathAuthorityError as error:
+        raise RecordError(str(error)) from error
+    root = backup_protection_retirement_root(paths)
+    try:
+        details = root.lstat()
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        raise RecordError("unable to inspect backup-protection retirement directory") from error
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISDIR(details.st_mode)
+        or details.st_uid != owner_uid
+        or details.st_mode & 0o7022
+    ):
+        raise RecordError("backup-protection retirement directory is unsafe")
+    result: list[BackupProtection] = []
+    try:
+        entries = tuple(sorted(root.iterdir(), key=lambda item: item.name))
+    except OSError as error:
+        raise RecordError("unable to enumerate backup-protection retirements") from error
+    for entry in entries:
+        if _BACKUP_PROTECTION_FILE_RE.fullmatch(entry.name) is None:
+            raise RecordError("unknown backup-protection retirement entry")
+        _safe_file(entry, owner_uid=owner_uid)
+        try:
+            raw = entry.read_bytes()
+            if len(raw) > MAX_RECORD_BYTES:
+                raise RecordError("backup protection is oversized")
+            record = BackupProtection.from_mapping(json.loads(raw.decode("utf-8")))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise RecordError("backup-protection retirement marker is invalid") from error
+        if entry.stem != record.backup_id:
+            raise RecordError("backup-protection retirement identity conflicts with its path")
+        result.append(record)
+    return tuple(result)
+
+
+def _mark_retiring_protections(
+    paths: ManagedPaths, protections: Iterable[BackupProtection]
+) -> None:
+    protections = tuple(sorted(protections, key=lambda item: item.backup_id))
+    if not protections:
+        return
+    owner_uid, retirement_root = _prepare_retirement_root(paths)
+    active_root = Path(paths.local(paths.backup_protection_root))
+    for protection in protections:
+        source = Path(paths.local(paths.backup_protection(protection.backup_id)))
+        target = backup_protection_retirement_path(paths, protection.backup_id)
+        _safe_file(source, owner_uid=owner_uid)
+        if target.exists() or target.is_symlink():
+            raise RecordError("backup-protection retirement marker already exists")
+        try:
+            os.replace(source, target)
+            fsync_directory(active_root)
+            fsync_directory(retirement_root)
+        except OSError as error:
+            raise RecordError("unable to mark backup protection for retirement") from error
+
+
+def _finish_retired_backup(
+    paths: ManagedPaths, backup_id: str, record: object | None
+) -> None:
+    root = Path(paths.local(paths.backup_root))
+    manifest = root / f"{backup_id}.json"
+    dump = root / f"{backup_id}.dump"
+    manifest_exists = manifest.exists() or manifest.is_symlink()
+    dump_exists = dump.exists() or dump.is_symlink()
+    if manifest_exists and dump_exists:
         if record is None:
-            raise RecordError("backup protection references an unknown completed backup")
+            raise RecordError("pending retirement completed backup is not observed")
         delete_completed_backup(paths, record)
+        return
+    if manifest_exists:
+        raise RecordError("pending retirement backup manifest has no dump")
+    if dump_exists:
+        from .backups import validate_dump
+
+        validate_dump(dump)
+        try:
+            dump.unlink()
+            fsync_directory(root)
+        except OSError as error:
+            raise RecordError("completed backup deletion failed") from error
+
+
+def _remove_retirement_marker(paths: ManagedPaths, backup_id: str) -> None:
+    owner_uid, root = _prepare_retirement_root(paths)
+    marker = backup_protection_retirement_path(paths, backup_id)
+    _safe_file(marker, owner_uid=owner_uid)
+    try:
+        marker.unlink()
+        fsync_directory(root)
+    except OSError as error:
+        raise RecordError("unable to remove backup-protection retirement marker") from error
 
 
 def _independent_state_backup_ids(state: HostState) -> frozenset[str]:
@@ -570,6 +710,8 @@ __all__ = [
     "BackupProtection",
     "allocate_protection_attempt",
     "backup_protection_sha256",
+    "backup_protection_retirement_path",
+    "backup_protection_retirement_root",
     "complete_successful_selection",
     "protection_prune_ids",
     "register_backup_protection",

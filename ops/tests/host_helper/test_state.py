@@ -12,7 +12,14 @@ import pytest
 
 from tests.host_helper.support import managed_paths
 
-from taskman_ops.host_helper.backup_protection import BackupProtection, write_backup_protection
+import taskman_ops.host_helper.state as state_module
+
+from taskman_ops.host_helper.backup_protection import (
+    BackupProtection,
+    backup_protection_retirement_path,
+    backup_protection_retirement_root,
+    write_backup_protection,
+)
 from taskman_ops.host_helper.backups import retained_backup_ids
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
@@ -110,6 +117,77 @@ def _publish_release(paths: ManagedPaths, release: ReleaseRecord) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o750)
     write_release_manifest(paths, release)
+
+
+def test_observe_refuses_backup_versions_not_proved_by_declared_source(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    migration = {"filename": "20260907120001_one.exs", "sha256": "1" * 64}
+    _publish_release(paths, _release(migrations=(migration,)))
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"backup")
+    dump.chmod(0o600)
+    write_backup_manifest(
+        paths,
+        BackupRecord(BACKUP, AT, hashlib.sha256(b"backup").hexdigest(), RELEASE, (20260907120002,), 6),
+    )
+
+    with pytest.raises(StateAmbiguityError, match="backup.*source|migration provenance"):
+        observe_host_state(paths)
+
+
+def test_observe_refuses_protection_whose_source_and_target_fingerprints_conflict(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    source_migration = {"filename": "20260907120001_source.exs", "sha256": "1" * 64}
+    target_migration = {"filename": "20260907120001_target.exs", "sha256": "2" * 64}
+    _publish_release(paths, _release(migrations=(source_migration,)))
+    _publish_release(paths, _release(OTHER_RELEASE, migrations=(target_migration,)))
+    backup_root = Path(paths.local(paths.backup_root))
+    dump = backup_root / f"{BACKUP}.dump"
+    dump.write_bytes(b"backup")
+    dump.chmod(0o600)
+    write_backup_manifest(
+        paths,
+        BackupRecord(
+            BACKUP,
+            AT,
+            hashlib.sha256(b"backup").hexdigest(),
+            RELEASE,
+            (20260907120001,),
+            6,
+        ),
+    )
+    write_backup_protection(
+        paths,
+        BackupProtection(1, BACKUP, None, OTHER_RELEASE, 0, AT),
+    )
+
+    with pytest.raises(StateAmbiguityError, match="fingerprint|provenance"):
+        observe_host_state(paths)
+
+
+def test_observe_keeps_a_retiring_orphan_dump_out_of_generic_temporary_cleanup(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    dump = Path(paths.local(paths.backup_root)) / f"{BACKUP}.dump"
+    dump.write_bytes(b"retiring remainder")
+    dump.chmod(0o600)
+    retirement_root = backup_protection_retirement_root(paths)
+    retirement_root.mkdir(parents=True, mode=0o750)
+    protection = BackupProtection(1, BACKUP, None, RELEASE, 0, AT)
+    marker = backup_protection_retirement_path(paths, BACKUP)
+    marker.write_text(json.dumps(protection.to_mapping()), encoding="utf-8")
+    marker.chmod(0o600)
+
+    state = observe_host_state(paths)
+
+    assert state.retiring_backup_protections == (protection,)
+    assert dump.as_posix() not in {item.as_posix() for item in state.temporary_paths}
 
 
 def _write_large_successful_history(
@@ -255,7 +333,7 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
     dump.chmod(0o600)
     write_backup_manifest(
         paths,
-        BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
+            BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (), 1024),
     )
     append_selection(paths, _selection())
     append_selection(
@@ -278,7 +356,7 @@ def test_observe_multiple_completed_records_and_validated_backup(tmp_path: Path)
 
     assert {item.release_id for item in state.releases} == {RELEASE, OTHER_RELEASE}
     assert state.backups == (
-        BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (1,), 1024),
+        BackupRecord(BACKUP, AT, hashlib.sha256(dump.read_bytes()).hexdigest(), RELEASE, (), 1024),
     )
     assert [item.release_id for item in state.selections] == [RELEASE, OTHER_RELEASE]
     assert state.selected_release_id == OTHER_RELEASE
@@ -397,7 +475,7 @@ def test_observe_refuses_manifest_identity_mismatch_at_canonical_backup_path(
         AT,
         hashlib.sha256(b"other backup").hexdigest(),
         RELEASE,
-        (1,),
+        (),
         1024,
     )
     manifest_path = backup_root / f"{BACKUP}.json"
@@ -668,3 +746,19 @@ def test_observe_refuses_incomplete_selection_history_inspection_at_deadline(
 
     with pytest.raises(StateAmbiguityError, match="selection history|deadline|timed out"):
         observe_host_state(managed_paths(tmp_path), deadline=0.0)
+
+
+def test_observe_enforces_deadline_during_history_relationship_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completing enumeration does not suspend the operation's state-loading deadline."""
+
+    class CompletedEnumeration:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(state_module, "_read_selections", lambda *_args: CompletedEnumeration())
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: 2.0)
+
+    with pytest.raises(StateAmbiguityError, match="selection history.*timed out"):
+        observe_host_state(managed_paths(tmp_path), deadline=1.0)

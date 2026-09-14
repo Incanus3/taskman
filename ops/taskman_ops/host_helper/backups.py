@@ -17,7 +17,7 @@ from .database import database_mapping
 from ..checksums import sha256_file
 from .filesystem import fsync_directory
 from .paths import ManagedPaths
-from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, write_backup_manifest
+from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, ReleaseRecord, write_backup_manifest
 from .state import HostState, observe_host_state
 
 
@@ -45,20 +45,50 @@ def select_backup_source(state: HostState) -> ReleaseRecord:
     selected = releases.get(state.selected_release_id)
     if selected is None:
         raise BackupAuthorityError("selected release provenance is unavailable")
-    candidates = [selected]
-    for release_id in sorted({item.target_release_id for item in state.backup_protections} - {selected.release_id}):
+    relevant_ids = {selected.release_id}
+    if state.latest_successful_selection is not None:
+        relevant_ids.add(state.latest_successful_selection.release_id)
+    relevant_ids.update(item.target_release_id for item in state.backup_protections)
+    relevant = []
+    for release_id in sorted(relevant_ids):
         candidate = releases.get(release_id)
         if candidate is None:
             raise BackupAuthorityError("protected backup source provenance is unavailable")
-        candidates.append(candidate)
+        relevant.append(candidate)
+
+    fingerprints: dict[int, tuple[str, str]] = {}
+    migrations_by_release: dict[str, tuple[tuple[int, str, str], ...]] = {}
+    for candidate in relevant:
+        migrations = _release_migration_fingerprints(candidate)
+        migrations_by_release[candidate.release_id] = migrations
+        for version, filename, digest in migrations:
+            if version not in state.applied_migrations:
+                continue
+            previous = fingerprints.setdefault(version, (filename, digest))
+            if previous != (filename, digest):
+                raise BackupAuthorityError("relevant release migration fingerprints conflict")
+
+    candidates = [selected, *(item for item in relevant if item.release_id != selected.release_id)]
     for candidate in candidates:
-        try:
-            versions = tuple(int(item["filename"][:14]) for item in candidate.migrations)
-        except (KeyError, TypeError, ValueError):
-            continue
+        versions = tuple(item[0] for item in migrations_by_release[candidate.release_id])
         if versions[: len(state.applied_migrations)] == state.applied_migrations:
             return candidate
     raise BackupAuthorityError("no eligible release proves the live migration prefix")
+
+
+def _release_migration_fingerprints(
+    record: ReleaseRecord,
+) -> tuple[tuple[int, str, str], ...]:
+    try:
+        result = tuple(
+            (int(item["filename"][:14]), item["filename"], item["sha256"])
+            for item in record.migrations
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise BackupAuthorityError("installed release migration provenance is invalid") from error
+    if tuple(item[0] for item in result) != tuple(sorted({item[0] for item in result})):
+        raise BackupAuthorityError("installed release migration provenance is invalid")
+    return result
 
 
 def create_validated_backup(
@@ -185,6 +215,7 @@ def retained_backup_ids(state: HostState, retention: int) -> frozenset[str]:
         raise ValueError("backup retention is invalid")
     protected = set(state.successful_backup_ids)
     protected.update(protection.backup_id for protection in state.backup_protections)
+    protected.update(protection.backup_id for protection in state.retiring_backup_protections)
     if state.restore_target is not None:
         protected.add(state.restore_target.backup_id)
         protected.add(state.restore_target.safety_backup_id)

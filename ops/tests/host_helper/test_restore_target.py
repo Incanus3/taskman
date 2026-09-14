@@ -170,6 +170,31 @@ def test_safety_attempt_reference_is_published_before_exact_retirement(tmp_path:
     assert tuple(item["attempt_number"] for item in updated.safety_backup_attempts) == (0, 1)
 
 
+def test_sixty_five_safety_attempts_converge_to_original_newest_and_three_recent(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    record = _target()
+    write_restore_target(paths, record)
+
+    for attempt_number in range(1, 66):
+        record = append_safety_attempt(record, f"backup-{attempt_number + 1:032x}")
+        replace_restore_target(paths, record)
+        record = retire_safety_attempts(paths, record, safety_attempt_prune_ids(record))
+
+    assert tuple(item["attempt_number"] for item in record.safety_backup_attempts) == (
+        0,
+        62,
+        63,
+        64,
+        65,
+    )
+    persisted = RestoreTarget.from_mapping(
+        json.loads(Path(paths.local(paths.restore_target_path)).read_text(encoding="utf-8"))
+    )
+    assert persisted == record
+
+
 def test_restore_target_replacement_has_an_exact_discard_intent() -> None:
     replacement = {
         "backup_id": BACKUP,
