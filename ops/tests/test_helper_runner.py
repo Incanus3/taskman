@@ -17,6 +17,7 @@ from taskman_ops.host_protocol import (
     HostRequest,
     HostResult,
     MAX_COLLECTION_ITEMS,
+    MAX_INPUT_BYTES,
     MAX_OUTPUT_BYTES,
     encode_result,
 )
@@ -25,7 +26,7 @@ from taskman_ops.remote import CommandResult
 
 def request(correlation_id: str = "op-0123456789abcdef0123456789abcdef") -> HostRequest:
     return HostRequest(
-        protocol_version=2,
+        protocol_version=3,
         operation="discover",
         correlation_id=correlation_id,
         expected_state={"lifecycle": "unknown"},
@@ -101,6 +102,84 @@ def test_invoke_helper_keeps_correlation_transport_only(tmp_path: Path) -> None:
     assert helper_call["stdout_limit"] == MAX_OUTPUT_BYTES
     assert helper_call["stderr_limit"] == MAX_STDERR_BYTES
     assert value.correlation_id.encode() in helper_call["stdin"]
+
+
+def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path: Path) -> None:
+    from taskman_ops.helper_client.runner import invoke_sensitive_pgpass_authority
+
+    helper = package(tmp_path)
+    value = request()
+    remote = remote_for(value, helper)
+    installed = PurePosixPath("/run/taskman-ops") / value.correlation_id / "taskman-host.pyz"
+    remote.add_response(
+        (
+            "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed.as_posix(),
+            "provision-pgpass-authority", "127.0.0.1", "5432", "taskman", "taskman_prod",
+        ),
+        CommandResult(0, "discarded secret output", "discarded secret error"),
+    )
+    remote.add_response(("rm", "--", installed.as_posix()), CommandResult(1))
+
+    receipt = invoke_sensitive_pgpass_authority(
+        remote, helper, correlation_id=value.correlation_id,
+        host="127.0.0.1", port=5432, role="taskman", database="taskman_prod",
+        pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
+    )
+
+    assert receipt.exit_status == 0
+    assert receipt.warnings == ("transient helper cleanup was incomplete",)
+    assert receipt.local_cleanup_incomplete is True
+    private_call = next(
+        kwargs for command, kwargs in remote.calls
+        if "provision-pgpass-authority" in command
+    )
+    assert private_call["sensitive"] is True
+    assert private_call["stdout_limit"] > 0
+    assert private_call["stderr_limit"] > 0
+
+
+def test_sensitive_pgpass_entry_refuses_oversized_secret_before_remote_dispatch(
+    tmp_path: Path,
+) -> None:
+    from taskman_ops.helper_client.runner import invoke_sensitive_pgpass_authority
+
+    helper = package(tmp_path)
+    remote = remote_for(request(), helper)
+    secret = b"secret-canary-" + (b"x" * MAX_INPUT_BYTES)
+
+    with pytest.raises(TypeError, match="inputs are invalid") as raised:
+        invoke_sensitive_pgpass_authority(
+            remote,
+            helper,
+            correlation_id=request().correlation_id,
+            host="127.0.0.1",
+            port=5432,
+            role="taskman",
+            database="taskman_prod",
+            pgpass=secret,
+        )
+
+    assert remote.calls == []
+    assert remote.uploads == []
+    assert b"secret-canary" not in str(raised.value).encode()
+
+
+
+def test_invoke_helper_caps_each_remote_command_to_the_shared_remaining_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskman_ops.helper_client.runner import invoke_helper
+
+    value = request()
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    monkeypatch.setattr(helper_runner_module.time, "monotonic", lambda: 100.0)
+
+    invoke_helper(remote, helper, value, deadline=107.9)
+
+    assert all(kwargs["timeout"] <= 7 for _command, kwargs in remote.calls)
+    assert remote.uploads[0][2]["timeout"] <= 7
 
 
 def test_invoke_helper_returns_one_result_with_one_cleanup_warning(tmp_path: Path) -> None:

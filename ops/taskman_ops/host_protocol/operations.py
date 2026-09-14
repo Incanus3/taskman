@@ -18,7 +18,9 @@ OPERATION_NAMES = frozenset(
         "genesis",
         "list_backups",
         "list_releases",
+        "provision_authority",
         "restore",
+        "restore_preflight",
         "rollback",
         "verify",
     }

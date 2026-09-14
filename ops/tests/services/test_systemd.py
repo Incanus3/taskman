@@ -293,6 +293,46 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}", "_sudo": True}
 
 
+def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(monkeypatch) -> None:
+    """Only a confirmed absence is a generic systemd write authority."""
+
+    @dataclass
+    class Result:
+        def did_change(self) -> bool:
+            return False
+
+    puts: list[str] = []
+    services: list[tuple[str, dict[str, object]]] = []
+    from pyinfra.operations import files, server, systemd
+
+    monkeypatch.setattr(files, "put", lambda _source, destination, **_kwargs: puts.append(destination) or Result())
+    monkeypatch.setattr(server, "shell", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(systemd, "daemon_reload", lambda **_kwargs: None)
+    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
+    taskman_systemd.declare_systemd(
+        ProvisioningInputs(
+            config=environment_config(),
+            caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/keyring", "deb example"), (), (), ""),
+            runtime_environment=b"runtime",
+            pgpass=b"pgpass",
+            role_password_input=b"password",
+            scheduler_create=frozenset({"/etc/systemd/system/taskman-backup.timer"}),
+        )
+    )
+
+    assert "/etc/systemd/system/taskman-backup.timer" in puts
+    assert "/usr/local/lib/taskman/taskman-backup.pyz" not in puts
+    assert "/etc/systemd/system/taskman-backup.service" not in puts
+    assert "/etc/taskman/taskman-backup.env" not in puts
+    assert services == [
+        ("taskman.service", {"running": None, "enabled": True, "name": "Enable taskman.service"}),
+        (
+            "taskman-backup.timer",
+            {"running": None, "enabled": True, "name": "Enable taskman-backup.timer without starting"},
+        ),
+    ]
+
+
 def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
     tmp_path: Path,
     monkeypatch,

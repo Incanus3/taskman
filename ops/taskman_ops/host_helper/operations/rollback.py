@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
@@ -20,7 +19,8 @@ from ..database import (
 )
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import BackupRecord, RecordError, SelectionRecord, append_selection
+from ..backup_protection import complete_successful_selection
+from ..records import BackupRecord, RecordError
 from ..selection import SelectionAmbiguityError, select_current
 from ..services import change_service
 from ..state import HostState, StateAmbiguityError, observe_host_state
@@ -231,9 +231,11 @@ def _observe(inputs: _Inputs, *, allow_selection_transition: bool) -> HostState:
 
 def _selection_status(state: HostState, inputs: _Inputs) -> str:
     _require_target_schema(state, inputs)
-    if not state.selections:
+    latest = state.latest_successful_selection
+    if latest is None:
         raise RollbackRefused("selection history is absent")
-    latest = state.selections[-1]
+    if latest.previous_release_id == latest.release_id:
+        raise RollbackRefused("latest successful selection has no distinct predecessor")
     if state.selected_release_id == inputs.current_release_id:
         if latest.release_id != inputs.current_release_id or latest.previous_release_id != inputs.target_release_id:
             raise RollbackRefused("selection history does not prove the target")
@@ -275,7 +277,9 @@ def _published_safety_backup(state: HostState, inputs: _Inputs, backup: BackupRe
 
 
 def _recorded_backup(state: HostState, inputs: _Inputs) -> BackupRecord | None:
-    latest = state.selections[-1]
+    latest = state.latest_successful_selection
+    if latest is None:
+        raise RollbackManual("completed rollback lacks successful history")
     if latest.backup_id is None:
         raise RollbackManual("completed rollback lacks its safety backup")
     backup = next((item for item in state.backups if item.backup_id == latest.backup_id), None)
@@ -291,16 +295,18 @@ def _record_selection(state: HostState, inputs: _Inputs, backup: BackupRecord | 
         raise RollbackManual("rollback selection needs its safety backup")
     if state.selected_release_id != inputs.target_release_id:
         raise RollbackManual("rollback verification did not retain the target")
-    latest = state.selections[-1] if state.selections else None
+    latest = state.latest_successful_selection
     if latest is not None and latest.release_id == inputs.target_release_id:
         return _observe(inputs, allow_selection_transition=False)
     if latest is None or latest.release_id != inputs.current_release_id or latest.previous_release_id != inputs.target_release_id:
         raise RollbackManual("rollback history changed before record publication")
-    selected_at = max(datetime.now(UTC).replace(microsecond=0), latest.selected_at + timedelta(seconds=1))
     try:
-        append_selection(
+        complete_successful_selection(
             inputs.paths,
-            SelectionRecord(inputs.target_release_id, inputs.current_release_id, backup.backup_id, selected_at),
+            state,
+            release_id=inputs.target_release_id,
+            observed_previous_release_id=inputs.current_release_id,
+            backup_id=backup.backup_id,
         )
     except (OSError, RecordError, ValueError) as error:
         raise _Retryable("selection") from error

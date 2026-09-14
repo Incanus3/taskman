@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 import json
 import os
@@ -17,7 +17,7 @@ from .database import database_mapping
 from ..checksums import sha256_file
 from .filesystem import fsync_directory
 from .paths import ManagedPaths
-from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, write_backup_manifest
+from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, ReleaseRecord, write_backup_manifest
 from .state import HostState, observe_host_state
 
 
@@ -34,6 +34,77 @@ class BackupCapacityError(ValueError):
     """The backup filesystem cannot retain one validated database dump."""
 
 
+def select_backup_source(
+    state: HostState, *, allowed_release_ids: Iterable[str] | None = None
+) -> ReleaseRecord:
+    """Return the installed release whose immutable migrations prove live schema."""
+
+    if not isinstance(state, HostState):
+        raise TypeError("backup source needs observed host state")
+    releases = {record.release_id: record for record in state.releases}
+    if allowed_release_ids is not None:
+        allowed = frozenset(allowed_release_ids)
+        if not allowed or not allowed.issubset(releases):
+            raise BackupAuthorityError("backup source provenance is unavailable")
+        releases = {release_id: record for release_id, record in releases.items() if release_id in allowed}
+    selected = None if state.selected_release_id is None else releases.get(state.selected_release_id)
+    if state.selected_release_id is not None and selected is None:
+        raise BackupAuthorityError("selected release provenance is unavailable")
+
+    # Before the first durable selection, a recovery backup can be required
+    # even when no physical current link was ever published.  Its source is
+    # still constrained to already validated installed provenance: never let
+    # the requested archive alone establish which migrations were committed.
+    unfinished_genesis = selected is None and state.latest_successful_selection is None
+    if not unfinished_genesis and selected is None:
+        raise BackupAuthorityError("backup requires a selected release")
+
+    relevant_ids = set(releases) if unfinished_genesis else {selected.release_id}
+    if state.latest_successful_selection is not None:
+        relevant_ids.add(state.latest_successful_selection.release_id)
+    relevant_ids.update(item.target_release_id for item in state.backup_protections)
+    relevant = []
+    for release_id in sorted(relevant_ids):
+        candidate = releases.get(release_id)
+        if candidate is None:
+            raise BackupAuthorityError("protected backup source provenance is unavailable")
+        relevant.append(candidate)
+
+    fingerprints: dict[int, tuple[str, str]] = {}
+    migrations_by_release: dict[str, tuple[tuple[int, str, str], ...]] = {}
+    for candidate in relevant:
+        migrations = _release_migration_fingerprints(candidate)
+        migrations_by_release[candidate.release_id] = migrations
+        for version, filename, digest in migrations:
+            if version not in state.applied_migrations:
+                continue
+            previous = fingerprints.setdefault(version, (filename, digest))
+            if previous != (filename, digest):
+                raise BackupAuthorityError("relevant release migration fingerprints conflict")
+
+    candidates = relevant if unfinished_genesis else [selected, *(item for item in relevant if item.release_id != selected.release_id)]
+    for candidate in candidates:
+        versions = tuple(item[0] for item in migrations_by_release[candidate.release_id])
+        if versions[: len(state.applied_migrations)] == state.applied_migrations:
+            return candidate
+    raise BackupAuthorityError("no eligible release proves the live migration prefix")
+
+
+def _release_migration_fingerprints(
+    record: ReleaseRecord,
+) -> tuple[tuple[int, str, str], ...]:
+    try:
+        result = tuple(
+            (int(item["filename"][:14]), item["filename"], item["sha256"])
+            for item in record.migrations
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise BackupAuthorityError("installed release migration provenance is invalid") from error
+    if tuple(item[0] for item in result) != tuple(sorted({item[0] for item in result})):
+        raise BackupAuthorityError("installed release migration provenance is invalid")
+    return result
+
+
 def create_validated_backup(
     state: HostState,
     paths: ManagedPaths,
@@ -41,6 +112,7 @@ def create_validated_backup(
     credentials: Path,
     *,
     purpose: str,
+    allowed_source_release_ids: Iterable[str] | None = None,
 ) -> BackupRecord:
     """Create one completed backup from already-observed selected state.
 
@@ -51,8 +123,7 @@ def create_validated_backup(
 
     if not isinstance(state, HostState):
         raise TypeError("backup needs observed host state")
-    if state.selected_release_id is None:
-        raise BackupAuthorityError("backup requires a selected release")
+    source = select_backup_source(state, allowed_release_ids=allowed_source_release_ids)
     if state.database_state != "ready":
         raise BackupAuthorityError("backup requires an observed ready database")
     database = database_mapping(database)
@@ -104,7 +175,7 @@ def create_validated_backup(
         backup_id=backup_id,
         created_at=datetime.now(UTC).replace(microsecond=0),
         dump_sha256=digest,
-        source_release_id=state.selected_release_id,
+        source_release_id=source.release_id,
         migration_versions=state.applied_migrations,
         source_database_size_bytes=source_size,
     )
@@ -113,6 +184,7 @@ def create_validated_backup(
     final_state = observe_host_state(
         paths,
         database={"state": state.database_state, "applied_migrations": state.applied_migrations},
+        allow_selection_transition=True,
     )
     if record not in final_state.backups:
         raise BackupAuthorityError("completed backup was not re-observed")
@@ -157,7 +229,15 @@ def retained_backup_ids(state: HostState, retention: int) -> frozenset[str]:
         raise TypeError("backup retention needs observed host state")
     if type(retention) is not int or not 1 <= retention <= 64:
         raise ValueError("backup retention is invalid")
-    protected = {selection.backup_id for selection in state.selections if selection.backup_id}
+    protected = set(state.successful_backup_ids)
+    protected.update(protection.backup_id for protection in state.backup_protections)
+    protected.update(protection.backup_id for protection in state.retiring_backup_protections)
+    if state.restore_target is not None:
+        protected.add(state.restore_target.backup_id)
+        protected.add(state.restore_target.safety_backup_id)
+        protected.update(str(item["backup_id"]) for item in state.restore_target.safety_backup_attempts)
+        if state.restore_target.replacement is not None:
+            protected.add(str(state.restore_target.replacement["backup_id"]))
     unprotected = [record for record in state.backups if record.backup_id not in protected]
     newest = sorted(unprotected, key=lambda record: (record.created_at, record.backup_id), reverse=True)
     protected.update(record.backup_id for record in newest[:retention])
@@ -172,7 +252,14 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
         if record.backup_id in keep:
             continue
         delete_completed_backup(paths, record)
-    return observe_host_state(paths, database={"state": state.database_state, "applied_migrations": state.applied_migrations})
+    return observe_host_state(
+        paths,
+        database={
+            "state": state.database_state,
+            "applied_migrations": state.applied_migrations,
+        },
+        allow_selection_transition=True,
+    )
 
 
 def delete_completed_backup(paths: ManagedPaths, record: BackupRecord) -> None:
@@ -369,6 +456,7 @@ def _require_identity(
 __all__ = [
     "BackupAuthorityError",
     "BackupCapacityError",
+    "select_backup_source",
     "CommandError",
     "create_validated_backup",
     "delete_completed_backup",

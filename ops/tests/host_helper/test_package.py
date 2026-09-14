@@ -5,7 +5,12 @@ from pathlib import Path
 import stat
 import zipfile
 
-from taskman_ops.helper_client.package import ARCHIVE_MEMBERS, build_helper_package, temporary_helper_package
+from taskman_ops.helper_client.package import (
+    ARCHIVE_MEMBERS,
+    build_helper_package,
+    build_scheduled_backup_package,
+    temporary_helper_package,
+)
 
 
 def test_builder_produces_identical_allowlisted_zipapps(tmp_path: Path) -> None:
@@ -19,8 +24,8 @@ def test_builder_produces_identical_allowlisted_zipapps(tmp_path: Path) -> None:
     assert first_bytes == second_bytes
     assert first.sha256 == hashlib.sha256(first_bytes).hexdigest()
     assert second.sha256 == first.sha256
-    assert first.protocol_version == 2
-    assert first.identity == f"v2-{first.sha256}"
+    assert first.protocol_version == 3
+    assert first.identity == f"v3-{first.sha256}"
     assert stat.S_IMODE(first.path.stat().st_mode) == 0o600
 
 
@@ -41,9 +46,14 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert "taskman_ops/host_helper/database.py" in names
     assert "taskman_ops/host_helper/filesystem.py" in names
     assert "taskman_ops/host_helper/records.py" in names
+    assert "taskman_ops/host_helper/backup_protection.py" in names
+    assert "taskman_ops/host_helper/backup_helper.py" in names
+    assert "taskman_ops/host_helper/restore_target.py" in names
+    assert "taskman_ops/host_helper/restore_database.py" in names
     assert "taskman_ops/host_helper/selection.py" in names
     assert "taskman_ops/host_helper/services.py" in names
     assert "taskman_ops/host_helper/state.py" in names
+    assert "taskman_ops/releases/manifests.py" in names
     assert not any(
         name in names
         for name in (
@@ -62,6 +72,23 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
         for name in names
         for forbidden in ("config", "secret", "test", "cache", "pyc", ".git", "metadata")
     )
+
+
+def test_generated_packages_execute_without_checkout_or_site_packages(tmp_path: Path) -> None:
+    import subprocess
+
+    transient = build_helper_package(tmp_path / "transient.pyz")
+    scheduled = build_scheduled_backup_package(tmp_path / "scheduled.pyz")
+
+    for package, expected_code in ((transient, 0), (scheduled, 2)):
+        completed = subprocess.run(
+            ["python3", "-I", "-S", str(package.path)],
+            input=b"",
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == expected_code
+        assert completed.stderr == b""
 
 
 def test_temporary_package_is_removed_after_its_invocation_scope() -> None:

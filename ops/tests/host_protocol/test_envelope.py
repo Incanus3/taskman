@@ -29,7 +29,7 @@ def test_result_for_request_preserves_identity_and_explicit_evidence(operation: 
     result = HostResult.for_request(request, "retryable", "try again", state, ("warning",))
 
     assert result.to_mapping() == {
-        "protocol_version": 2,
+        "protocol_version": 3,
         "operation": operation,
         "correlation_id": "op-0123456789abcdef0123456789abcdef",
         "outcome": "retryable",
@@ -60,7 +60,7 @@ def test_result_for_request_keeps_protocol_validation(overrides: dict[str, objec
 
 def request_mapping(**overrides: object) -> dict[str, object]:
     mapping: dict[str, object] = {
-        "protocol_version": 2,
+        "protocol_version": 3,
         "operation": "discover",
         "correlation_id": "op-0123456789abcdef0123456789abcdef",
         "expected_state": {"lifecycle": "unknown"},
@@ -76,7 +76,7 @@ def request_mapping(**overrides: object) -> dict[str, object]:
 
 def result_mapping(**overrides: object) -> dict[str, object]:
     mapping: dict[str, object] = {
-        "protocol_version": 2,
+        "protocol_version": 3,
         "operation": "discover",
         "correlation_id": "op-0123456789abcdef0123456789abcdef",
         "outcome": "succeeded",
@@ -100,7 +100,7 @@ def test_request_round_trip_is_canonical_and_immutable() -> None:
         b'"expected_state":{"lifecycle":"unknown"},"operation":"discover",'
         b'"parameters":{"attempt":1,"dry_run":false},'
         b'"paths":{"backup_root":"/var/backups/taskman",'
-        b'"install_root":"/opt/taskman"},"protocol_version":2}'
+        b'"install_root":"/opt/taskman"},"protocol_version":3}'
     )
     assert decode_request(encoded) == request
     with pytest.raises(FrozenInstanceError):
@@ -194,9 +194,9 @@ def test_merge_result_warning_preserves_trusted_local_cleanup_provenance() -> No
     ("payload", "decoder"),
     [
         (b'\xff', decode_request),
-        (b'{"protocol_version":2', decode_request),
+        (b'{"protocol_version":3', decode_request),
         (encode_request(HostRequest(**request_mapping())) + b"\n", decode_request),
-        (b'{"protocol_version":2,"protocol_version":2}', decode_request),
+        (b'{"protocol_version":3,"protocol_version":3}', decode_request),
         (b'{"outcome":"succeeded"', decode_result),
     ],
 )

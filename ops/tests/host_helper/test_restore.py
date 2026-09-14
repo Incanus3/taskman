@@ -1,505 +1,1271 @@
-"""Observed-state restore convergence contracts."""
+"""Protocol-v3 host restore consequence and interruption contracts."""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
+import json
 from pathlib import Path
-import stat
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from tests.host_helper.support import database_mapping, managed_paths, verification_settings
-
+from taskman_ops.host_helper import backup_protection as protection_module
+from taskman_ops.host_helper.backup_helper import BackupHelperError, BackupHelperMutation
+from taskman_ops.host_helper.backup_protection import BackupProtection, write_backup_protection
 from taskman_ops.host_helper.operations import restore as restore_module
-from taskman_ops.host_helper import services as service_capability
-from taskman_ops.host_helper.records import (
-    BackupRecord,
-    ReleaseRecord,
-    SelectionRecord,
-    append_selection,
-    write_backup_manifest,
-    write_release_manifest,
-)
-from taskman_ops.host_helper.paths import ManagedPaths
-from taskman_ops.host_protocol import HostRequest, HostResult
+from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, SelectionRecord, append_selection, write_backup_manifest, write_release_manifest
+from taskman_ops.host_helper.restore_target import RestoreTarget, replace_restore_target, restore_target_sha256, write_restore_target
+from taskman_ops.host_helper.state import observe_host_state
+from taskman_ops.host_protocol import HostRequest, HostResult, validate_mutation_state
 from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import APPLICATION, ARCHITECTURE, BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ELIXIR_VERSION, HEX_VERSION, NODE_VERSION, OTP_VERSION, REBAR3_VERSION, SCHEMA_VERSION, TARGET_OS, ArtifactManifest, MigrationFingerprint
+from tests.host_helper.support import database_mapping, managed_paths, verification_settings
+from tests.workflows.support import successful_verification_report
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
-TARGET_REVISION = "a" * 40
-CURRENT_REVISION = "b" * 40
-TARGET = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
-CURRENT = "0.2.1-bbbbbbbbbbbb-ubuntu26.04-amd64-otp29.0.6"
-BACKUP = "backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-MIGRATION = {"filename": "20260905120000_create_tasks.exs", "sha256": "c" * 64}
-MIGRATION_VERSION = 20260905120000
-CURRENT_MIGRATION = {"filename": "20260906120000_add_task_notes.exs", "sha256": "e" * 64}
-CURRENT_MIGRATION_VERSION = 20260906120000
-DATABASE = "taskman"
-TEMPORARY = f"{DATABASE}__restore_tmp"
-RETIRED = f"{DATABASE}__restore_old"
+CURRENT_REVISION = "a" * 40
+TARGET_REVISION = "b" * 40
+CURRENT = build_release_id("0.2.0", CURRENT_REVISION, artifact_sha256="c" * 64, source_dirty=False)
+TARGET = build_release_id("0.2.0", TARGET_REVISION, artifact_sha256="d" * 64, source_dirty=False)
+INPUT_BACKUP = "backup-" + "a" * 32
+REPLACEMENT_BACKUP = "backup-" + "9" * 32
+THIRD_BACKUP = "backup-" + "8" * 32
+PROTECTION_BACKUP = "backup-" + "b" * 32
+OLD_HELPER = "1" * 64
+NEW_HELPER = "2" * 64
+MIGRATION = MigrationFingerprint("20260905120000_create_tasks.exs", "e" * 64)
+VERSION = 20260905120000
 
 
-def _credentials(tmp_path: Path) -> Path:
-    path = tmp_path / "pgpass"
-    path.write_text("127.0.0.1:5432:*:taskman:database-password-canary\n", encoding="utf-8")
-    path.chmod(0o600)
-    return path
-
-
-def _install_release(
-    paths: ManagedPaths,
-    release_id: str,
-    revision: str,
-    migrations: tuple[dict[str, str], ...] = (MIGRATION,),
-) -> None:
-    path = Path(paths.local(paths.release_root / release_id))
-    path.mkdir(parents=True)
-    path.chmod(0o750)
-    write_release_manifest(paths, ReleaseRecord(release_id, revision, "d" * 64, migrations))
-
-
-def _seed_state(
-    paths: ManagedPaths,
-    current_migrations: tuple[dict[str, str], ...] = (MIGRATION,),
-) -> None:
-    _install_release(paths, TARGET, TARGET_REVISION)
-    _install_release(paths, CURRENT, CURRENT_REVISION, current_migrations)
-    append_selection(paths, SelectionRecord(TARGET, None, None, datetime(2026, 9, 7, 11, 0, tzinfo=UTC)))
-    append_selection(paths, SelectionRecord(CURRENT, TARGET, None, datetime(2026, 9, 7, 12, 0, tzinfo=UTC)))
-    Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / CURRENT)))
-    _write_source_backup(paths, TARGET, (MIGRATION_VERSION,))
-
-
-def _write_source_backup(
-    paths: ManagedPaths, source_release_id: str, migration_versions: tuple[int, ...]
-) -> None:
-    dump = Path(paths.local(paths.backup_root / f"{BACKUP}.dump"))
-    dump.write_bytes(b"validated source dump")
-    dump.chmod(0o600)
-    manifest = Path(paths.local(paths.backup_root / f"{BACKUP}.json"))
-    if manifest.exists():
-        manifest.unlink()
-    write_backup_manifest(
-        paths,
-        BackupRecord(
-            BACKUP,
-            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
-            hashlib.sha256(dump.read_bytes()).hexdigest(),
-            source_release_id,
-            migration_versions,
-            1024,
-        ),
+def _manifest(release_id: str, revision: str, digest: str) -> ArtifactManifest:
+    return ArtifactManifest(
+        SCHEMA_VERSION, APPLICATION, "0.2.0", revision, release_id,
+        datetime(2026, 9, 14, 10, tzinfo=UTC), TARGET_OS, ARCHITECTURE, OTP_VERSION,
+        ELIXIR_VERSION, NODE_VERSION, BUILDER_BASE_TAG, BUILDER_BASE_DIGEST, (MIGRATION,),
+        "taskman", HEX_VERSION, REBAR3_VERSION, digest, False,
     )
 
 
-def _request(paths: ManagedPaths, credentials: Path) -> HostRequest:
+def _release(paths, release_id: str, revision: str, digest: str) -> None:
+    root = Path(paths.local(paths.release_root / release_id))
+    root.mkdir(parents=True)
+    root.chmod(0o750)
+    manifest = _manifest(release_id, revision, digest)
+    write_release_manifest(paths, ReleaseRecord(release_id, revision, digest, (MIGRATION.to_mapping(),), 2, manifest))
+
+
+def _backup(paths, backup_id: str, release_id: str, contents: bytes) -> BackupRecord:
+    dump = Path(paths.local(paths.backup_root / f"{backup_id}.dump"))
+    dump.parent.mkdir(parents=True, exist_ok=True)
+    dump.write_bytes(contents)
+    dump.chmod(0o600)
+    record = BackupRecord(backup_id, datetime(2026, 9, 14, 11, tzinfo=UTC), hashlib.sha256(contents).hexdigest(), release_id, (VERSION,), 1024)
+    write_backup_manifest(paths, record)
+    return record
+
+
+def _seed(tmp_path: Path, *, protection: bool = False):
+    paths = managed_paths(tmp_path)
+    _release(paths, CURRENT, CURRENT_REVISION, "c" * 64)
+    _release(paths, TARGET, TARGET_REVISION, "d" * 64)
+    append_selection(paths, SelectionRecord(CURRENT, None, None, datetime(2026, 9, 14, 10, tzinfo=UTC), 2, None, ()))
+    Path(paths.local(paths.current_link)).symlink_to(Path(paths.local(paths.release_root / CURRENT)))
+    source = _backup(paths, INPUT_BACKUP, TARGET, b"restore source")
+    if protection:
+        _backup(paths, PROTECTION_BACKUP, CURRENT, b"protected source")
+        write_backup_protection(
+            paths,
+            BackupProtection(1, PROTECTION_BACKUP, observe_host_state(paths).latest_successful_selection_filename, TARGET, 0, datetime(2026, 9, 14, 11, tzinfo=UTC)),
+        )
+    return paths, source
+
+
+def _protection_digest(state) -> str:
+    records = [item.to_mapping() for item in sorted((*state.backup_protections, *state.retiring_backup_protections), key=lambda item: item.backup_id)]
+    return hashlib.sha256(json.dumps(records, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+class Runtime:
+    def __init__(self, arrangement: str = "canonical") -> None:
+        self.events: list[str] = []
+        self.next_oid = 300
+        self.scheduler_sha256 = OLD_HELPER
+        self.scheduler_failure = False
+        self.verification_failure = False
+        self.verification_lost = False
+        self.cleanup_failure: str | None = None
+        self.service_failure: str | None = None
+        self.service_state = "running"
+        self.safety_failure = False
+        self.safety_count = 0
+        self.later_write: str | None = None
+        self.database_capacity = 1_000_000
+        original = {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
+        restored = {"oid": 202, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
+        empty = {"oid": 202, "owner": "taskman", "migration_table_present": False, "applied_migrations": None}
+        self.databases: dict[str, dict[str, object] | None] = {"canonical": original, "temporary": None, "retired": None}
+        if arrangement == "canonical+temporary":
+            self.databases["temporary"] = empty
+        elif arrangement == "temporary+retired":
+            self.databases = {"canonical": None, "temporary": restored, "retired": original}
+        elif arrangement == "retired":
+            self.databases = {"canonical": None, "temporary": None, "retired": original}
+        elif arrangement == "canonical+retired":
+            self.databases = {"canonical": restored, "temporary": None, "retired": original}
+
+    def observe_databases(self, *_args, **_kwargs):
+        return {key: None if value is None else dict(value) for key, value in self.databases.items()}
+
+    def converge_helper(self, paths, helper, *, revalidate, lock, **_kwargs):
+        self.events.append("scheduler")
+        assert helper == {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/deployments/uploads/backup.pyz"}
+        revalidate()
+        if self.scheduler_failure:
+            raise BackupHelperError("interrupted", BackupHelperMutation(paused=True))
+        self.scheduler_sha256 = NEW_HELPER
+        return SimpleNamespace(lock=lock, mutation=BackupHelperMutation(paused=True, replaced=True, restarted=True))
+
+    def safety_backup(self, state, paths, database, *_args, **_kwargs):
+        self.events.append(f"backup:{database['name']}")
+        if self.safety_failure:
+            raise restore_module.BackupAuthorityError("safety backup failed")
+        while True:
+            backup_id = "backup-" + chr(ord("c") + self.safety_count) * 32
+            self.safety_count += 1
+            if not Path(paths.local(paths.backup_root / f"{backup_id}.json")).exists():
+                break
+        return _backup(paths, backup_id, state.selected_release_id or CURRENT, f"safety-{self.safety_count}".encode())
+
+    def create_temporary(self, *_args):
+        self.events.append("create")
+        self.next_oid += 1
+        self.databases["temporary"] = {"oid": self.next_oid, "owner": "taskman", "migration_table_present": False, "applied_migrations": None}
+
+    def register(self, paths, target, *_args):
+        self.events.append("register")
+        temporary = self.databases["temporary"]
+        assert temporary is not None and target.temporary_creation_pending
+        updated = replace(target, restored_database_oid=temporary["oid"], temporary_creation_pending=False)
+        replace_restore_target(paths, updated)
+        return updated
+
+    def begin_rebuild(self, paths, target):
+        self.events.append("pending")
+        updated = replace(target, temporary_creation_pending=True)
+        replace_restore_target(paths, updated)
+        return updated
+
+    def drop_temporary(self, _database, _credentials, oid):
+        self.events.append("drop-temporary")
+        temporary = self.databases["temporary"]
+        if temporary is not None:
+            assert temporary["oid"] == oid
+            self.databases["temporary"] = None
+
+    def drop_restored(self, _database, _credentials, role, oid):
+        self.events.append(f"drop-{role}")
+        value = self.databases[role]
+        if value is not None:
+            assert value["oid"] == oid
+            if role == "canonical":
+                assert self.databases["retired"] is not None
+            self.databases[role] = None
+
+    def load(self, target, *_args):
+        self.events.append("load")
+        self.later_write = None
+        temporary = self.databases["temporary"]
+        assert temporary is not None and temporary["oid"] == target.restored_database_oid and not target.temporary_creation_pending
+        temporary.update(migration_table_present=True, applied_migrations=(VERSION,))
+
+    def rename(self, _database, _credentials, source, destination, oid):
+        self.events.append(f"rename:{source}:{destination}")
+        value = self.databases[source]
+        assert value is not None and value["oid"] == oid and self.databases[destination] is None
+        self.databases[destination], self.databases[source] = value, None
+
+    def drop_retired(self, _database, _credentials, oid):
+        self.events.append("drop-retired")
+        if self.cleanup_failure == "retired":
+            self.cleanup_failure = None
+            raise restore_module.RestoreDatabaseError("interrupted")
+        retired = self.databases["retired"]
+        if retired is not None:
+            assert retired["oid"] == oid
+            self.databases["retired"] = None
+
+    def remove_target(self, paths):
+        self.events.append("remove-binding")
+        if self.cleanup_failure == "binding":
+            self.cleanup_failure = None
+            raise restore_module.RecordError("interrupted")
+        restore_module._remove_restore_target_file(paths)
+
+    def service(self, action: str):
+        self.events.append(action)
+        if self.service_failure == action:
+            raise restore_module.CommandError("service transition interrupted")
+        self.service_state = "stopped" if action == "stop" else "running"
+
+    def verify(self, request, **_kwargs):
+        self.events.append("verify")
+        if self.verification_lost:
+            raise restore_module.CommandError("verification result lost")
+        report = successful_verification_report(TARGET)
+        if self.verification_failure:
+            report = dict(report)
+            checks = [dict(item) for item in report["checks"]]
+            checks[-1]["status"] = "failed"
+            report.update(status="failed", exit_status=9, checks=checks, next_action="inspect the fixed verification summaries and correct the reported host state before retrying")
+            return HostResult.for_request(request, "retryable", "failed", {"report": report})
+        return HostResult.for_request(request, "succeeded", "verified", {"report": report})
+
+
+def _binding(paths, source: BackupRecord, runtime: Runtime) -> RestoreTarget:
+    state = observe_host_state(paths, allow_selection_transition=True)
+    target = RestoreTarget(
+        1, source.backup_id, source.dump_sha256, source.source_release_id,
+        state.latest_successful_selection_filename, CURRENT, 101, None, True,
+        "backup-" + "c" * 32, None,
+        ({"backup_id": "backup-" + "c" * 32, "attempt_number": 0},),
+    )
+    canonical = runtime.databases["canonical"]
+    if runtime.databases["temporary"] is not None or canonical is not None and canonical["oid"] == 202:
+        target = replace(target, restored_database_oid=202, temporary_creation_pending=False)
+    write_restore_target(paths, target)
+    return target
+
+
+def _request(
+    paths,
+    runtime: Runtime,
+    *,
+    backup_id: str = INPUT_BACKUP,
+    replace_unfinished: bool = False,
+    prune_backup_ids: tuple[str, ...] = (),
+) -> HostRequest:
+    state = observe_host_state(paths, allow_selection_transition=True)
+    databases = runtime.observe_databases()
+    canonical = databases["canonical"]
+    expected = {
+        "selected_release_id": state.selected_release_id,
+        "last_successful_selection_id": state.latest_successful_selection_filename,
+        "applied_migrations": None if canonical is None or not canonical["migration_table_present"] else canonical["applied_migrations"],
+        "backup_protection_sha256": _protection_digest(state),
+        "scheduled_backup_sha256": runtime.scheduler_sha256,
+        "backup_timer_enabled": True,
+        "backup_id": backup_id,
+        "restore_target_sha256": None if state.restore_target is None else restore_target_sha256(state.restore_target),
+        "restore_database_state": databases,
+    }
     return HostRequest(
-        2,
-        "restore",
-        CORRELATION,
-        {"selected_release_id": CURRENT, "backup_id": BACKUP},
+        3, "restore", CORRELATION, expected,
         {"install_root": paths.install_root.as_posix(), "backup_root": paths.backup_root.as_posix()},
         {
-            "backup_id": BACKUP,
-            "credentials_path": credentials.as_posix(),
-            "database": database_mapping(name=DATABASE),
+            "backup_id": backup_id,
+            "credentials_path": "/etc/taskman/pgpass",
+            "database": database_mapping(),
             "verification": verification_settings(),
+            "backup_helper": {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/deployments/uploads/backup.pyz"},
+            "prune_backup_ids": list(prune_backup_ids),
+            "replace_unfinished": replace_unfinished,
+            "reapply": False,
         },
     )
 
 
-class _Runtime:
-    def __init__(self, databases: set[str] | None = None, *, fail_start: bool = False) -> None:
-        self.databases = {DATABASE} if databases is None else set(databases)
-        self.events: list[str] = []
-        self.backups = 0
-        self.fail_start = fail_start
-
-    def observe_database(self, *_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"state": "ready", "applied_migrations": (MIGRATION_VERSION,)}
-
-    def backup(self, state: object, paths: ManagedPaths, database: object, *_args: object, **_kwargs: object) -> BackupRecord:
-        self.events.append(f"backup:{database['name']}")
-        self.backups += 1
-        backup_id = f"backup-{self.backups:032x}"
-        dump = Path(paths.local(paths.backup_root / f"{backup_id}.dump"))
-        dump.parent.mkdir(parents=True, exist_ok=True)
-        dump.write_bytes(b"fresh restore safety backup")
-        dump.chmod(0o600)
-        record = BackupRecord(
-            backup_id,
-            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
-            hashlib.sha256(dump.read_bytes()).hexdigest(),
-            state.selected_release_id,
-            state.applied_migrations,
-            1024,
-        )
-        write_backup_manifest(paths, record)
-        return record
-
-    def command(self, argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        rendered = " ".join(argv)
-        if argv[0] == "pg_restore" and "--list" in argv:
-            self.events.append("source-validation")
-        elif argv[0] == "pg_restore":
-            self.events.append("restore")
-        elif argv[:2] == ("systemctl", "stop"):
-            self.events.append("stop")
-        elif argv[:2] == ("systemctl", "start"):
-            self.events.append("start")
-            if self.fail_start:
-                raise restore_module.CommandError("start interrupted")
-        elif "psql" in argv:
-            command = argv[argv.index("--command") + 1]
-            if "FROM pg_database" in command:
-                return subprocess.CompletedProcess(argv, 0, ("\n".join(sorted(self.databases)) + "\n").encode(), b"")
-            if command.startswith("CREATE DATABASE"):
-                self.databases.add(TEMPORARY)
-            elif f'ALTER DATABASE "{DATABASE}" RENAME TO "{RETIRED}"' in command:
-                self.databases.remove(DATABASE)
-                self.databases.add(RETIRED)
-            elif f'ALTER DATABASE "{TEMPORARY}" RENAME TO "{DATABASE}"' in command:
-                self.databases.remove(TEMPORARY)
-                self.databases.add(DATABASE)
-            elif f'DROP DATABASE "{RETIRED}"' in command:
-                self.databases.remove(RETIRED)
-            elif f'DROP DATABASE "{TEMPORARY}"' in command:
-                self.databases.remove(TEMPORARY)
-            elif "schema_migrations" in command and "SELECT 1" in command:
-                return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
-            elif "SELECT version FROM schema_migrations" in command:
-                return subprocess.CompletedProcess(argv, 0, f"{MIGRATION_VERSION}\n".encode(), b"")
-        assert CORRELATION not in rendered
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-    def verify(self, request: HostRequest, **_kwargs: object) -> HostResult:
-        self.events.append("verify")
-        return HostResult(2, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
+def _install(monkeypatch: pytest.MonkeyPatch, runtime: Runtime) -> None:
+    monkeypatch.setattr(restore_module, "validate_credentials", lambda *_args: None)
+    monkeypatch.setattr(restore_module, "observe_restore_databases", runtime.observe_databases)
+    monkeypatch.setattr(restore_module, "_scheduler_facts", lambda *_args: {"scheduled_backup_sha256": runtime.scheduler_sha256, "backup_timer_enabled": True, "backup_timer_state": "active"})
+    monkeypatch.setattr(restore_module, "converge_backup_helper", runtime.converge_helper)
+    monkeypatch.setattr(restore_module, "create_validated_backup", runtime.safety_backup)
+    monkeypatch.setattr(restore_module, "create_temporary_database", runtime.create_temporary)
+    monkeypatch.setattr(restore_module, "register_restored_database", runtime.register)
+    monkeypatch.setattr(restore_module, "begin_temporary_rebuild", runtime.begin_rebuild)
+    monkeypatch.setattr(restore_module, "drop_registered_temporary", runtime.drop_temporary)
+    monkeypatch.setattr(restore_module, "drop_registered_restored", runtime.drop_restored)
+    monkeypatch.setattr(restore_module, "load_registered_temporary", runtime.load)
+    monkeypatch.setattr(restore_module, "rename_registered_database", runtime.rename)
+    monkeypatch.setattr(restore_module, "drop_registered_retired", runtime.drop_retired)
+    monkeypatch.setattr(restore_module, "remove_restore_target", runtime.remove_target)
+    monkeypatch.setattr(restore_module, "change_service", runtime.service)
+    monkeypatch.setattr(restore_module, "verify", runtime.verify)
+    monkeypatch.setattr(restore_module, "run_command", lambda *_args, **_kwargs: SimpleNamespace(stdout=b""))
+    monkeypatch.setattr(restore_module, "_terminate_connections", lambda *_args: None)
+    monkeypatch.setattr(
+        restore_module,
+        "observe_database_available_bytes",
+        lambda *_args: runtime.database_capacity,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        restore_module,
+        "observe_host_state",
+        lambda *args, include_runtime=False, **kwargs: replace(
+            observe_host_state(*args, include_runtime=False, **kwargs),
+            service_state=runtime.service_state if include_runtime else "unknown",
+        ),
+    )
 
 
-class _DifferentSchemaRuntime(_Runtime):
-    """Database facts for restoring an older backup over a newer current database."""
+def test_scheduler_converges_before_any_supported_write_and_failure_publishes_no_binding(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.scheduler_failure = True
+    _install(monkeypatch, runtime)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.schemas = {DATABASE: (MIGRATION_VERSION, CURRENT_MIGRATION_VERSION)}
-        self.created_backups: list[BackupRecord] = []
+    result = restore_module.restore(_request(paths, runtime))
 
-    def observe_database(self, database: object, *_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"state": "ready", "applied_migrations": self.schemas[database["name"]]}
-
-    def backup(self, *args: object, **kwargs: object) -> BackupRecord:
-        record = super().backup(*args, **kwargs)
-        self.created_backups.append(record)
-        return record
-
-    def command(self, argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        completed = super().command(argv, **kwargs)
-        if argv[0] == "pg_restore" and "--list" not in argv:
-            self.schemas[argv[argv.index("--dbname") + 1]] = (MIGRATION_VERSION,)
-        elif "psql" in argv:
-            command = argv[argv.index("--command") + 1]
-            if command.startswith("CREATE DATABASE"):
-                self.schemas[TEMPORARY] = ()
-            elif f'ALTER DATABASE "{DATABASE}" RENAME TO "{RETIRED}"' in command:
-                self.schemas[RETIRED] = self.schemas.pop(DATABASE)
-            elif f'ALTER DATABASE "{TEMPORARY}" RENAME TO "{DATABASE}"' in command:
-                self.schemas[DATABASE] = self.schemas.pop(TEMPORARY)
-            elif f'DROP DATABASE "{RETIRED}"' in command:
-                self.schemas.pop(RETIRED)
-        return completed
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "backup_helper"
+    validate_mutation_state("restore", "retryable", result.state)
+    assert runtime.events == ["scheduler"]
+    assert not Path(paths.local(paths.restore_target_path)).exists()
 
 
-class _IncompleteTemporaryRuntime(_Runtime):
-    """A recognized temporary database left incomplete by an interrupted restore."""
+def test_insufficient_database_volume_refuses_before_scheduler_or_binding(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.database_capacity = 2_047
+    _install(monkeypatch, runtime)
 
-    def __init__(self) -> None:
-        super().__init__({DATABASE, TEMPORARY})
-        self.temporary_valid = False
+    result = restore_module.restore(_request(paths, runtime))
 
-    def observe_database(self, database: object, *_args: object, **_kwargs: object) -> dict[str, object]:
-        if database["name"] == TEMPORARY and not self.temporary_valid:
-            raise restore_module.DatabaseObservationError("temporary migration table is unavailable")
-        return super().observe_database(database)
-
-    def command(self, argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if (
-            "psql" in argv
-            and "--dbname" in argv
-            and argv[argv.index("--dbname") + 1] == TEMPORARY
-            and "schema_migrations" in argv[argv.index("--command") + 1]
-            and "SELECT 1" in argv[argv.index("--command") + 1]
-        ):
-            table = b"1\n" if self.temporary_valid else b""
-            return subprocess.CompletedProcess(argv, 0, table, b"")
-        completed = super().command(argv, **kwargs)
-        if argv[0] == "pg_restore" and "--list" not in argv:
-            self.temporary_valid = True
-        return completed
+    assert result.outcome == "refused"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+    assert not Path(paths.local(paths.restore_target_path)).exists()
 
 
-def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
-    monkeypatch.setattr(restore_module, "observe_database_state", runtime.observe_database)
-    monkeypatch.setattr(restore_module, "create_validated_backup", runtime.backup, raising=False)
-    monkeypatch.setattr(restore_module, "run_command", runtime.command, raising=False)
-    monkeypatch.setattr(service_capability, "run_command", runtime.command)
-    monkeypatch.setattr(restore_module, "verify", runtime.verify, raising=False)
-    monkeypatch.setattr(restore_module, "available_bytes", lambda _path: 10_000, raising=False)
+def test_new_restore_publishes_binding_before_create_and_registers_oid_before_load(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path, protection=True)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
 
-
-def test_restore_validates_source_and_converges_through_a_deterministic_temporary_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The source dump, safety backup, and temporary database are ordered safety boundaries."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    runtime = _Runtime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
+    result = restore_module.restore(_request(paths, runtime))
 
     assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == TARGET
-    assert result.state["database_state"] == "restored"
-    assert result.state["backup_id"] == BACKUP
-    assert result.state["pre_restore_backup_id"] == "backup-00000000000000000000000000000001"
-    assert runtime.events.index("source-validation") < runtime.events.index(f"backup:{DATABASE}") < runtime.events.index("restore")
-    assert runtime.databases == {DATABASE}
-    assert Path(paths.local(paths.current_link)).resolve().name == TARGET
+    validate_mutation_state("restore", "succeeded", result.state)
+    assert result.state["pre_restore_backup_id"] == "backup-" + "c" * 32
+    assert runtime.events.index("scheduler") < runtime.events.index("backup:taskman") < runtime.events.index("create")
+    assert runtime.events.index("register") < runtime.events.index("load")
+    assert runtime.databases["canonical"]["oid"] == 301
+    assert runtime.databases["temporary"] is None and runtime.databases["retired"] is None
+    state = observe_host_state(paths)
+    latest = state.latest_successful_selection
+    assert latest is not None and latest.release_id == TARGET
+    assert latest.backup_id == "backup-" + "c" * 32
+    assert latest.recovery_backup_ids == tuple(sorted({INPUT_BACKUP, PROTECTION_BACKUP, "backup-" + "c" * 32}))
+    assert state.restore_target is None and not state.backup_protections
 
 
-def test_restore_does_not_replace_the_database_when_its_safety_backup_is_interrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Restoring before a fresh safety backup would destroy the only current recovery point."""
+def test_bound_retry_with_writable_original_registers_fresh_safety_before_stop_and_load(
+    tmp_path, monkeypatch
+):
+    """Reusing the old safety ID here would discard writes made after binding publication."""
 
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    runtime = _Runtime()
-    _install_runtime(monkeypatch, runtime)
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    first_safety = _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
 
-    def interrupt_backup(*_args: object, **_kwargs: object) -> BackupRecord:
-        runtime.events.append(f"backup:{DATABASE}")
-        raise restore_module.CommandError("pre-restore backup interrupted")
+    result = restore_module.restore(_request(paths, runtime))
 
-    monkeypatch.setattr(restore_module, "create_validated_backup", interrupt_backup)
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("scheduler") < runtime.events.index("backup:taskman")
+    assert runtime.events.index("backup:taskman") < runtime.events.index("stop")
+    assert runtime.events.index("stop") < runtime.events.index("load")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert latest.backup_id != first_safety.backup_id
+    assert {first_safety.backup_id, latest.backup_id}.issubset(latest.recovery_backup_ids)
 
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
+
+def test_bound_retry_refreshes_original_safety_even_when_service_is_now_stopped(
+    tmp_path, monkeypatch
+):
+    """Current stopped state cannot exclude writes since the binding was published."""
+
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.service_state = "stopped"
+    first_safety = _backup(paths, "backup-" + "c" * 32, CURRENT, b"stale safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("backup:taskman") < runtime.events.index("stop")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None and latest.backup_id != first_safety.backup_id
+    assert {first_safety.backup_id, latest.backup_id}.issubset(latest.recovery_backup_ids)
+
+
+def test_apply_time_dump_mode_drift_refuses_without_repair_or_scheduler(
+    tmp_path, monkeypatch
+):
+    """A post-confirmation mode change must not be silently mutated back to 0600."""
+
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    dump = Path(paths.local(paths.backup_root / f"{source.backup_id}.dump"))
+    dump.chmod(0o640)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "manual"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+    assert dump.stat().st_mode & 0o777 == 0o640
+
+
+def test_expected_state_drift_uses_unsafe_boundary_and_exit_10(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+    runtime.databases["canonical"]["oid"] = 999
+
+    result = restore_module.restore(request)
+
+    assert result.outcome == "refused"
+    assert result.state["failed_boundary"] == "expected_state"
+    assert result.state["exit_code"] == 10
+    assert runtime.events == []
+
+
+def test_lock_refusal_marks_every_observation_unavailable(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+
+    @contextmanager
+    def unavailable(*_args, **_kwargs):
+        raise restore_module.LifecycleLockContention("held")
+        yield
+
+    monkeypatch.setattr(restore_module, "lifecycle_lock", unavailable)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.state["failed_boundary"] == "lock"
+    assert result.state["inspection_error"] == "lock-unavailable"
+    assert set(result.state["unavailable_fields"]) == set(result.state["observations"])
+
+
+def test_failure_reobservation_reacquires_lifecycle_lock(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+    runtime.databases["canonical"]["oid"] = 999
+    active = 0
+    entries = 0
+
+    @contextmanager
+    def tracked(*_args, **_kwargs):
+        nonlocal active, entries
+        entries += 1
+        active += 1
+        try:
+            yield SimpleNamespace()
+        finally:
+            active -= 1
+
+    def observe(*_args, **_kwargs):
+        assert active == 1
+        return runtime.observe_databases()
+
+    monkeypatch.setattr(restore_module, "lifecycle_lock", tracked)
+    monkeypatch.setattr(restore_module, "observe_restore_databases", observe)
+
+    result = restore_module.restore(request)
+
+    assert entries == 2
+    assert result.state["inspection_error"] is None
+    assert result.state["observations"]["restore_database_state"]["canonical"]["oid"] == 999
+
+
+@pytest.mark.parametrize("arrangement", ["canonical+temporary", "temporary+retired", "retired", "canonical+retired"])
+def test_same_backup_recovers_each_bound_arrangement(arrangement, tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime(arrangement)
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.databases["canonical"] is not None and runtime.databases["retired"] is None
+    if arrangement == "canonical+retired":
+        assert "load" not in runtime.events and "verify" in runtime.events
+    else:
+        assert "load" in runtime.events
+
+
+def test_partial_temporary_is_rebuilt_with_pending_intent_and_new_oid(tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    runtime.databases["temporary"].update(migration_table_present=True, applied_migrations=())
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("pending") < runtime.events.index("drop-temporary") < runtime.events.index("create")
+    assert runtime.databases["canonical"]["oid"] == 301
+
+
+@pytest.mark.parametrize(("field", "value"), [("oid", 999), ("owner", "intruder")])
+def test_bound_restore_refuses_wrong_original_identity(field, value, tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+    _binding(paths, source, runtime)
+    runtime.databases["canonical"][field] = value
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome in {"manual", "refused"}
+    assert "load" not in runtime.events and runtime.databases["canonical"] is not None
+
+
+@pytest.mark.parametrize("lost", [False, True])
+def test_failed_or_lost_verification_preserves_original_binding_and_protection(lost, tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path, protection=True)
+    runtime = Runtime()
+    runtime.verification_failure = not lost
+    runtime.verification_lost = lost
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "verification"
+    assert result.state["exit_code"] == 9
+    assert (result.state["report"] is None) is lost
+    validate_mutation_state("restore", "retryable", result.state)
+    state = observe_host_state(paths, allow_selection_transition=True)
+    assert state.restore_target is not None and state.backup_protections
+    assert state.latest_successful_selection.release_id == CURRENT
+    assert runtime.databases["retired"]["oid"] == 101
+
+
+def test_failed_lifecycle_verification_preserves_exit_eight_report(tmp_path, monkeypatch):
+    """The public restore result must preserve the helper's lifecycle exit category."""
+    paths, _source = _seed(tmp_path, protection=True)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+
+    def lifecycle_failure(request, **_kwargs):
+        report = successful_verification_report(TARGET)
+        checks = [dict(item) for item in report["checks"][:5]]
+        checks[0]["status"] = "failed"
+        report.update(
+            status="failed",
+            exit_status=8,
+            checks=checks,
+            next_action="inspect the fixed verification summaries and correct the reported host state before retrying",
+        )
+        return HostResult.for_request(request, "retryable", "failed", {"report": report})
+
+    monkeypatch.setattr(restore_module, "verify", lifecycle_failure)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "verification"
+    assert result.state["exit_code"] == 8
+    assert result.state["report"]["exit_status"] == 8
+    validate_mutation_state("restore", "retryable", result.state)
+
+
+def test_success_publication_interruption_retries_only_protection_and_database_cleanup(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path, protection=True)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    original_remove = protection_module._remove_resolved_protections
+    interrupted = False
+
+    def interrupt_once(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise restore_module.RecordError("protection cleanup interrupted")
+        return original_remove(*args, **kwargs)
+
+    monkeypatch.setattr(protection_module, "_remove_resolved_protections", interrupt_once)
+
+    first = restore_module.restore(_request(paths, runtime))
+
+    assert first.outcome == "retryable"
+    assert observe_host_state(paths, allow_selection_transition=True).latest_successful_selection.release_id == TARGET
+    history_count = len(observe_host_state(paths, allow_selection_transition=True).selections)
+    runtime.events.clear()
+    second = restore_module.restore(_request(paths, runtime))
+
+    assert second.outcome == "succeeded"
+    assert "load" not in runtime.events and "verify" not in runtime.events and "scheduler" not in runtime.events
+    assert len(observe_host_state(paths).selections) == history_count
+    assert not observe_host_state(paths).backup_protections
+
+
+@pytest.mark.parametrize("failure", ["retired", "binding"])
+def test_retry_after_durable_success_only_finishes_cleanup(failure, tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = failure
+    _install(monkeypatch, runtime)
+    interrupted = restore_module.restore(_request(paths, runtime))
+    assert interrupted.outcome == "retryable"
+    history_count = len(observe_host_state(paths, allow_selection_transition=True).selections)
+    assert observe_host_state(paths, allow_selection_transition=True).latest_successful_selection.release_id == TARGET
+    runtime.events.clear()
+
+    completed = restore_module.restore(_request(paths, runtime))
+
+    assert completed.outcome == "succeeded"
+    assert "load" not in runtime.events and "verify" not in runtime.events and "scheduler" not in runtime.events
+    assert len(observe_host_state(paths).selections) == history_count
+    assert observe_host_state(paths).restore_target is None
+
+
+def test_cleanup_retired_drop_is_known_changed_when_binding_removal_then_fails(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    runtime.cleanup_failure = "binding"
+    runtime.events.clear()
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert runtime.events[:2] == ["drop-retired", "remove-binding"]
+    assert interrupted.state["mutation_state"] == "changed"
+
+
+def test_completed_cleanup_protection_removal_is_known_when_retired_drop_fails(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_backup_protection(
+        paths,
+        BackupProtection(
+            1, INPUT_BACKUP, state.latest_successful_selection_filename,
+            TARGET, 0, datetime(2026, 9, 14, 12, tzinfo=UTC),
+        ),
+    )
+    runtime.cleanup_failure = "retired"
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert interrupted.state["mutation_state"] == "changed"
+    assert not Path(paths.local(paths.backup_protection(INPUT_BACKUP))).exists()
+
+
+def test_completed_cleanup_unlink_then_fsync_failure_reports_changed(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_backup_protection(
+        paths,
+        BackupProtection(
+            1, INPUT_BACKUP, state.latest_successful_selection_filename,
+            TARGET, 0, datetime(2026, 9, 14, 12, tzinfo=UTC),
+        ),
+    )
+    runtime.cleanup_failure = None
+    monkeypatch.setattr(
+        protection_module.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert interrupted.state["mutation_state"] == "changed"
+    assert not Path(paths.local(paths.backup_protection(INPUT_BACKUP))).exists()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "configure"),
+    (
+        ("service", lambda runtime: setattr(runtime, "service_failure", "stop")),
+        ("selection", lambda runtime: None),
+    ),
+)
+def test_restore_lifecycle_failures_use_release_exit_8(
+    boundary, configure, tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    configure(runtime)
+    _install(monkeypatch, runtime)
+    if boundary == "selection":
+        monkeypatch.setattr(
+            restore_module,
+            "select_current",
+            lambda *_args: (_ for _ in ()).throw(
+                restore_module.SelectionAmbiguityError("selection interrupted")
+            ),
+        )
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == boundary
+    assert result.state["exit_code"] == 8
+    validate_mutation_state("restore", "retryable", result.state)
+
+
+def test_replacement_normalizes_exact_temporary_before_loading_new_input(
+    tmp_path, monkeypatch
+):
+    """Dropping by name before durable exact-OID intent could discard the wrong database."""
+
+    paths, source = _seed(tmp_path)
+    replacement = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+    original_drop = runtime.drop_temporary
+
+    def assert_intent_before_drop(database, credentials, oid):
+        bound = observe_host_state(paths, allow_selection_transition=True).restore_target
+        assert bound is not None
+        assert bound.replacement == {
+            "backup_id": replacement.backup_id,
+            "dump_sha256": replacement.dump_sha256,
+            "source_release_id": replacement.source_release_id,
+            "discard_database_oid": oid,
+        }
+        assert bound.original_database_oid == 101
+        assert bound.base_selection_id is not None
+        original_drop(database, credentials, oid)
+
+    def assert_restored_intent_before_drop(database, credentials, role, oid):
+        assert role == "temporary"
+        assert_intent_before_drop(database, credentials, oid)
+
+    monkeypatch.setattr(
+        restore_module,
+        "drop_registered_restored",
+        assert_restored_intent_before_drop,
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("backup:taskman") < runtime.events.index("drop-temporary")
+    assert runtime.events.index("drop-temporary") < runtime.events.index("create")
+    assert runtime.events.index("register") < runtime.events.index("load")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert replacement.backup_id in latest.recovery_backup_ids
+    assert source.backup_id not in latest.recovery_backup_ids
+
+
+def test_third_target_only_normalizes_pending_replacement_and_requires_fresh_plan(
+    tmp_path, monkeypatch
+):
+    """A third target must not load or start the abandoned pending target."""
+
+    paths, source = _seed(tmp_path)
+    pending = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"pending source")
+    _backup(paths, THIRD_BACKUP, TARGET, b"third source")
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            replacement={
+                "backup_id": pending.backup_id,
+                "dump_sha256": pending.dump_sha256,
+                "source_release_id": pending.source_release_id,
+                "discard_database_oid": 202,
+            },
+        ),
+    )
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+    Path(paths.local(paths.backup_root / f"{pending.backup_id}.dump")).write_bytes(
+        b"corrupt pending source"
+    )
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=THIRD_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "retryable"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["failed_boundary"] == "restore"
+    assert result.message == restore_module.REPLACEMENT_RECONFIRM_MESSAGE
+    assert f"completed backup dump is unavailable or corrupt: {REPLACEMENT_BACKUP}" in result.warnings
+    assert runtime.events == ["scheduler", "stop", "drop-temporary"]
+    state = observe_host_state(paths, allow_selection_transition=True)
+    assert state.restore_target is not None
+    assert state.restore_target.backup_id == pending.backup_id
+    assert state.restore_target.replacement is None
+    assert runtime.databases == {
+        "canonical": {
+            "oid": 101,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": (VERSION,),
+        },
+        "temporary": None,
+        "retired": None,
+    }
+
+
+@pytest.mark.parametrize("original_role", ("canonical", "retired"))
+def test_pending_replacement_resumes_after_exact_discard_is_already_absent(
+    original_role, tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    replacement = _backup(
+        paths, REPLACEMENT_BACKUP, TARGET, b"replacement source"
+    )
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            replacement={
+                "backup_id": replacement.backup_id,
+                "dump_sha256": replacement.dump_sha256,
+                "source_release_id": replacement.source_release_id,
+                "discard_database_oid": target.restored_database_oid,
+            },
+        ),
+    )
+    original = runtime.databases["canonical"]
+    runtime.databases = {
+        "canonical": original if original_role == "canonical" else None,
+        "temporary": None,
+        "retired": original if original_role == "retired" else None,
+    }
+    _install(monkeypatch, runtime)
+    absence_proofs = []
+    monkeypatch.setattr(
+        restore_module,
+        "prove_database_oid_absent",
+        lambda _database, oid: absence_proofs.append(oid),
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert absence_proofs == [target.restored_database_oid]
+
+
+def test_pending_replacement_refuses_moved_discard_oid_before_clearing_intent(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    replacement = _backup(
+        paths, REPLACEMENT_BACKUP, TARGET, b"replacement source"
+    )
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    pending = replace(
+        target,
+        replacement={
+            "backup_id": replacement.backup_id,
+            "dump_sha256": replacement.dump_sha256,
+            "source_release_id": replacement.source_release_id,
+            "discard_database_oid": target.restored_database_oid,
+        },
+    )
+    replace_restore_target(paths, pending)
+    runtime.databases["temporary"] = None
+    _install(monkeypatch, runtime)
+    monkeypatch.setattr(
+        restore_module,
+        "prove_database_oid_absent",
+        lambda *_args: (_ for _ in ()).throw(
+            restore_module.RestoreDatabaseError(
+                "replacement discard database OID moved unexpectedly"
+            )
+        ),
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "manual"
+    assert result.state["mutation_state"] == "changed"
+    observed = observe_host_state(paths, allow_selection_transition=True)
+    assert observed.restore_target is not None
+    assert observed.restore_target.replacement == pending.replacement
+
+
+def test_replacement_prunes_only_confirmed_attempts_after_durable_registration(
+    tmp_path, monkeypatch
+):
+    """Pruning before the fresh copy is bound could leave replacement without recovery."""
+
+    paths, source = _seed(tmp_path)
+    _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+temporary")
+    attempts = []
+    for number, digit in enumerate("012345"):
+        backup_id = "backup-" + digit * 32
+        _backup(paths, backup_id, CURRENT, f"safety-{number}".encode())
+        attempts.append({"backup_id": backup_id, "attempt_number": number})
+    state = observe_host_state(paths, allow_selection_transition=True)
+    target = RestoreTarget(
+        1,
+        source.backup_id,
+        source.dump_sha256,
+        source.source_release_id,
+        state.latest_successful_selection_filename,
+        CURRENT,
+        101,
+        202,
+        False,
+        attempts[-1]["backup_id"],
+        None,
+        tuple(attempts),
+    )
+    write_restore_target(paths, target)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+            prune_backup_ids=(attempts[1]["backup_id"], attempts[2]["backup_id"]),
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert not Path(
+        paths.local(paths.backup_root / f"{attempts[1]['backup_id']}.json")
+    ).exists()
+    assert not Path(
+        paths.local(paths.backup_root / f"{attempts[2]['backup_id']}.json")
+    ).exists()
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert len(latest.recovery_backup_ids) <= 6
+
+
+def test_failed_restored_canonical_is_backed_up_before_exact_drop(
+    tmp_path, monkeypatch
+):
+    """A failed restored canonical may have writes that must survive its discard."""
+
+    paths, source = _seed(tmp_path)
+    replacement = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+retired")
+    first_safety = _backup(
+        paths, "backup-" + "c" * 32, CURRENT, b"original safety"
+    )
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+    original_drop = runtime.drop_restored
+
+    def assert_failed_copy_registered(database, credentials, role, oid):
+        bound = observe_host_state(
+            paths, allow_selection_transition=True
+        ).restore_target
+        assert bound is not None
+        assert role == "canonical" and oid == 202
+        assert bound.replacement is not None
+        assert bound.replacement["discard_database_oid"] == oid
+        assert len(bound.safety_backup_attempts) == 2
+        assert bound.safety_backup_id == first_safety.backup_id
+        original_drop(database, credentials, role, oid)
+
+    monkeypatch.setattr(
+        restore_module,
+        "drop_registered_restored",
+        assert_failed_copy_registered,
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=replacement.backup_id,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("stop") < runtime.events.index("backup:taskman")
+    assert runtime.events.index("backup:taskman") < runtime.events.index(
+        "drop-canonical"
+    )
+    assert runtime.events.index("drop-canonical") < runtime.events.index(
+        "rename:retired:canonical"
+    )
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert first_safety.backup_id == latest.backup_id
+    assert len(latest.recovery_backup_ids) == 3
+
+
+def test_failed_restored_safety_failure_stops_before_intent_or_database_change(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+retired")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    original_databases = runtime.observe_databases()
+    original_target = _binding(paths, source, runtime)
+    runtime.safety_failure = True
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
 
     assert result.outcome == "retryable"
     assert result.state["failed_boundary"] == "backup"
-    assert runtime.events == ["source-validation", f"backup:{DATABASE}"]
-    assert runtime.databases == {DATABASE}
+    assert runtime.databases == original_databases
+    assert not any(event.startswith("drop-") for event in runtime.events)
+    assert observe_host_state(
+        paths, allow_selection_transition=True
+    ).restore_target == original_target
 
 
-def test_restore_repairs_a_safely_owned_group_or_other_readable_source_dump_before_using_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Using a readable backup dump would expose the restored production data."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    dump = Path(paths.local(paths.backup_root / f"{BACKUP}.dump"))
-    dump.chmod(0o644)
-    runtime = _Runtime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert stat.S_IMODE(dump.stat().st_mode) == 0o600
-
-
-def test_restore_of_the_selected_release_restarts_and_verifies_without_publishing_a_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Treating a same-release restore as a transition leaves its service stopped after the swap."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    _write_source_backup(paths, CURRENT, (MIGRATION_VERSION,))
-    selection_root = Path(paths.local(paths.selection_root))
-    selection_count = len(tuple(selection_root.iterdir()))
-    runtime = _Runtime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == CURRENT
-    assert result.state["pre_restore_backup_id"] == "backup-00000000000000000000000000000001"
-    assert runtime.events[-2:] == ["start", "verify"]
-    assert len(tuple(selection_root.iterdir())) == selection_count
-
-
-def test_same_release_restore_rerun_finishes_after_a_lost_start_result_without_a_new_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A same-release replay after the swap must retain completed-selection authority."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    _write_source_backup(paths, CURRENT, (MIGRATION_VERSION,))
-    selection_root = Path(paths.local(paths.selection_root))
-    selection_count = len(tuple(selection_root.iterdir()))
-    runtime = _Runtime(fail_start=True)
-    _install_runtime(monkeypatch, runtime)
-    request = _request(paths, _credentials(tmp_path))
-
-    interrupted = restore_module.restore(request)
-
-    assert interrupted.outcome == "retryable"
-    assert runtime.databases == {DATABASE, RETIRED}
-    runtime.fail_start = False
-    completed = restore_module.restore(request)
-
-    assert completed.outcome == "succeeded"
-    assert completed.state["selected_release_id"] == CURRENT
-    assert completed.state["pre_restore_backup_id"] == "backup-00000000000000000000000000000002"
-    assert len(tuple(selection_root.iterdir())) == selection_count
-
-
-def test_same_release_restore_refuses_a_link_history_contradiction_before_backup_or_database_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A same-release source does not make a contradictory selected link safe to repair."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    _write_source_backup(paths, CURRENT, (MIGRATION_VERSION,))
-    current = Path(paths.local(paths.current_link))
-    current.unlink()
-    current.symlink_to(Path(paths.local(paths.release_root / TARGET)))
-    runtime = _Runtime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "manual"
-    assert runtime.events == ["source-validation"]
-
-
-def test_restore_converges_the_recognized_post_rename_database_arrangement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The temp/live swap boundary remains recoverable without a restore journal."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    runtime = _Runtime({TEMPORARY, RETIRED})
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == TARGET
-    assert runtime.databases == {DATABASE}
-    assert runtime.events[0] == "source-validation"
-    assert f"backup:{RETIRED}" in runtime.events
-
-
-def test_restore_rebuilds_a_deterministic_temporary_left_after_create_or_during_restore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Those interruption points share one safe live-and-temporary observation."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    runtime = _IncompleteTemporaryRuntime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == TARGET
-    assert runtime.databases == {DATABASE}
-    assert runtime.events.index("source-validation") < runtime.events.index(f"backup:{DATABASE}")
-    assert "restore" in runtime.events
-
-
-def test_restore_rerun_after_atomic_selection_creates_a_fresh_backup_from_the_retired_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reusing an old matching backup would make a post-swap replay ambiguous."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    safety_id = "backup-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    safety_dump = Path(paths.local(paths.backup_root / f"{safety_id}.dump"))
-    safety_dump.write_bytes(b"pre-restore safety dump")
-    safety_dump.chmod(0o600)
-    write_backup_manifest(
+def test_pending_retired_only_replacement_normalizes_without_loading_for_third_target(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    pending = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"pending source")
+    _backup(paths, THIRD_BACKUP, TARGET, b"third source")
+    runtime = Runtime("retired")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
         paths,
-        BackupRecord(
-            safety_id,
-            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
-            hashlib.sha256(safety_dump.read_bytes()).hexdigest(),
-            CURRENT,
-            (MIGRATION_VERSION,),
-            1024,
+        replace(
+            target,
+            replacement={
+                "backup_id": pending.backup_id,
+                "dump_sha256": pending.dump_sha256,
+                "source_release_id": pending.source_release_id,
+                "discard_database_oid": None,
+            },
         ),
     )
-    historical_id = "backup-cccccccccccccccccccccccccccccccc"
-    historical_dump = Path(paths.local(paths.backup_root / f"{historical_id}.dump"))
-    historical_dump.write_bytes(b"ordinary historical backup")
-    historical_dump.chmod(0o600)
-    write_backup_manifest(
-        paths,
-        BackupRecord(
-            historical_id,
-            datetime(2026, 9, 7, 12, 0, tzinfo=UTC),
-            hashlib.sha256(historical_dump.read_bytes()).hexdigest(),
-            CURRENT,
-            (MIGRATION_VERSION,),
-            1024,
-        ),
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=THIRD_BACKUP,
+            replace_unfinished=True,
+        )
     )
-    current = Path(paths.local(paths.current_link))
-    current.unlink()
-    current.symlink_to(Path(paths.local(paths.release_root / TARGET)))
-    runtime = _Runtime({DATABASE, RETIRED})
-    _install_runtime(monkeypatch, runtime)
 
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert result.state["pre_restore_backup_id"] == "backup-00000000000000000000000000000001"
-    assert runtime.databases == {DATABASE}
-    assert f"backup:{RETIRED}" in runtime.events
+    assert result.outcome == "retryable"
+    assert result.message == restore_module.REPLACEMENT_RECONFIRM_MESSAGE
+    assert runtime.events == ["scheduler", "stop", "rename:retired:canonical"]
+    bound = observe_host_state(
+        paths, allow_selection_transition=True
+    ).restore_target
+    assert bound is not None
+    assert bound.backup_id == pending.backup_id
+    assert bound.replacement is None
 
 
-def test_restore_keeps_a_fresh_current_schema_backup_when_the_source_backup_is_older(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The pre-restore backup records the current database, not the source backup schema."""
+def test_ordinary_retry_still_rejects_unusable_bound_input(tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    _binding(paths, source, runtime)
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+    _install(monkeypatch, runtime)
 
-    paths = managed_paths(tmp_path)
-    _seed_state(paths, (MIGRATION, CURRENT_MIGRATION))
-    runtime = _DifferentSchemaRuntime()
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
-
-    assert result.outcome == "succeeded"
-    assert result.state["selected_release_id"] == TARGET
-    assert runtime.created_backups[0].migration_versions == (MIGRATION_VERSION, CURRENT_MIGRATION_VERSION)
-
-
-def test_restore_returns_manual_before_mutation_for_an_unrecognized_database_identity_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A third authoritative database identity cannot be repaired by guessing."""
-
-    paths = managed_paths(tmp_path)
-    _seed_state(paths)
-    runtime = _Runtime({DATABASE, TEMPORARY, RETIRED})
-    _install_runtime(monkeypatch, runtime)
-
-    result = restore_module.restore(_request(paths, _credentials(tmp_path)))
+    result = restore_module.restore(_request(paths, runtime))
 
     assert result.outcome == "manual"
-    assert not any(event.startswith("backup:") for event in runtime.events)
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+
+
+def test_unusable_abandoned_input_exception_does_not_weaken_its_safety_role(
+    tmp_path,
+):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_restore_target(
+        paths,
+        RestoreTarget(
+            1,
+            source.backup_id,
+            source.dump_sha256,
+            source.source_release_id,
+            state.latest_successful_selection_filename,
+            CURRENT,
+            101,
+            202,
+            False,
+            source.backup_id,
+            None,
+            ({"backup_id": source.backup_id, "attempt_number": 0},),
+        ),
+    )
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+
+    with pytest.raises(
+        restore_module.StateAmbiguityError,
+        match="independently required|recovery",
+    ):
+        observe_host_state(paths, allow_selection_transition=True)
+
+
+def test_reapply_after_completed_restore_takes_fresh_safety_backup_and_appends_success(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "succeeded"
+    first_selection = observe_host_state(paths).latest_successful_selection_filename
+    runtime.events.clear()
+
+    request = _request(paths, runtime)
+    reapplied = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+
+    assert reapplied.outcome == "succeeded"
+    assert "backup:taskman" in runtime.events and "load" in runtime.events
+    assert reapplied.state["pre_restore_backup_id"] == "backup-" + "d" * 32
+    reapply_state = observe_host_state(paths)
+    assert reapply_state.latest_successful_selection_filename != first_selection
+    assert reapply_state.latest_successful_selection.backup_id == "backup-" + "d" * 32
+
+
+def test_failed_reapply_binding_resumes_as_an_ordinary_restore(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    assert restore_module.restore(_request(paths, runtime)).outcome == "succeeded"
+    runtime.verification_failure = True
+    request = _request(paths, runtime)
+    failed = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+    assert failed.outcome == "retryable"
+    runtime.verification_failure = False
+    runtime.events.clear()
+
+    resumed = restore_module.restore(_request(paths, runtime))
+
+    assert resumed.outcome == "succeeded"
+    assert "backup:taskman" not in runtime.events and "load" not in runtime.events
+    assert observe_host_state(paths).restore_target is None
+
+
+def test_reapply_refuses_an_unfinished_restore_binding(tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+
+    result = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+
+    assert result.outcome == "refused"
+    assert result.state["failed_boundary"] == "input"
+    assert runtime.events == []
+
+
+def test_ordinary_completed_retry_preserves_later_application_writes(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    assert restore_module.restore(_request(paths, runtime)).outcome == "succeeded"
+    runtime.later_write = "preserved"
+    history = observe_host_state(paths).latest_successful_selection_filename
+    runtime.events.clear()
+
+    retried = restore_module.restore(_request(paths, runtime))
+
+    assert retried.outcome == "succeeded"
+    assert retried.state["mutation_state"] == "unchanged"
+    assert "load" not in runtime.events and "backup:taskman" not in runtime.events
+    assert runtime.later_write == "preserved"
+    assert observe_host_state(paths).latest_successful_selection_filename == history

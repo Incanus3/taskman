@@ -24,14 +24,6 @@ MINIMUM_DISK_BYTES = 10 * 1024**3
 
 _SYSTEMD_UNITS = ("taskman.service", "taskman-backup.service", "taskman-backup.timer", "caddy.service")
 _ACCOUNT_NAME = "taskman"
-_PROVISIONING_MARKER = PurePosixPath("/var/lib/taskman-provisioning.state")
-_PROVISIONING_MARKER_SCRIPT = (
-    'path=$1; if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf absent; '
-    'elif [ -f "$path" ] && [ ! -L "$path" ] '
-    '&& [ "$(stat --format=\'%U:%G:%a\' "$path")" = root:root:600 ] '
-    '&& [ "$(cat "$path")" = taskman-provisioning-v1 ]; then printf managed; '
-    'else printf unknown; fi'
-)
 _CADDYFILE = PurePosixPath("/etc/caddy/Caddyfile")
 _CADDY_AUTHORITY_KEYS = (
     "config",
@@ -44,6 +36,7 @@ _CADDY_AUTHORITY_KEYS = (
     "unit_metadata",
     "unit_package",
     "unit_verified",
+    "unit_executable",
 )
 _CADDY_CONFIG_SCRIPT = r'''set -eu
 config=$1
@@ -71,6 +64,7 @@ unit_fragment=$(property FragmentPath)
 unit_metadata=
 unit_package=missing
 unit_verified=missing
+unit_executable=
 
 if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
   unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
@@ -100,6 +94,10 @@ if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment"
   fi
 fi
 
+if [ "$unit_pid" -gt 0 ] 2>/dev/null; then
+  unit_executable=$(readlink -f "/proc/$unit_pid/exe" 2>/dev/null || true)
+fi
+
 emit config "$config_state"
 emit config_hash "$config_hash"
 emit config_metadata "$config_metadata"
@@ -109,7 +107,8 @@ emit unit_pid "$unit_pid"
 emit unit_fragment "$unit_fragment"
 emit unit_metadata "$unit_metadata"
 emit unit_package "$unit_package"
-emit unit_verified "$unit_verified"'''
+emit unit_verified "$unit_verified"
+emit unit_executable "$unit_executable"'''
 _CAPACITY_SCRIPT = (
     'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
@@ -156,6 +155,33 @@ test "$margin" -ge 67108864 || margin=67108864
 required=$(( database_bytes + margin ))
 test "$available_bytes" -ge "$required"
 '''
+_TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
+emit() { printf '%s=%s\n' "$1" "$2"; }
+root=$1
+properties=$(systemctl show taskman.service --property=ActiveState --property=MainPID --property=ControlGroup --value 2>/dev/null || true)
+active=$(printf '%s\n' "$properties" | sed -n '1p')
+pid=$(printf '%s\n' "$properties" | sed -n '2p')
+cgroup=$(printf '%s\n' "$properties" | sed -n '3p')
+executable=
+owner=
+process_cgroup=
+release_root=
+case "$pid" in ''|0|*[!0-9]*) ;; *)
+  executable=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+  owner=$(stat --format='%U:%G' "/proc/$pid" 2>/dev/null || true)
+  process_cgroup=$(sed -n '1s/^[0-9][0-9]*:://p' "/proc/$pid/cgroup" 2>/dev/null || true)
+;; esac
+if [ -d "$root/current" ]; then
+  release_root=$(readlink -f "$root/current" 2>/dev/null || true)
+  case "$release_root" in "$root"/releases/*) ;; *) release_root= ;; esac
+fi
+emit active "$active"
+emit pid "$pid"
+emit cgroup "$cgroup"
+emit executable "$executable"
+emit owner "$owner"
+emit process_cgroup "$process_cgroup"
+emit release_root "$release_root"'''
 
 
 class DiscoveryState(str, Enum):
@@ -164,14 +190,6 @@ class DiscoveryState(str, Enum):
     CLEAN = "clean"
     DETECTED = "detected"
     UNAVAILABLE = "unavailable"
-
-
-class ProvisioningMarkerState(str, Enum):
-    """Whether the durable Taskman provisioning anchor is trustworthy."""
-
-    ABSENT = "absent"
-    MANAGED = "managed"
-    UNKNOWN = "unknown"
 
 
 class CaddyState(str, Enum):
@@ -210,12 +228,19 @@ class HostFacts:
     dns_addresses: tuple[str, ...]
     listeners: tuple[Listener, ...]
     existing_paths: tuple[PurePosixPath, ...]
-    provisioning_marker: ProvisioningMarkerState
+    path_metadata: tuple[tuple[PurePosixPath, str], ...]
     caddy_state: CaddyState
     existing_units: tuple[str, ...]
     existing_accounts: tuple[str, ...]
+    taskman_account_compatible: bool
     existing_databases: tuple[str, ...]
     failed_checks: tuple[str, ...]
+    taskman_service_pid: int | None = None
+    taskman_service_executable: str = ""
+    taskman_service_owner: str = ""
+    taskman_service_cgroup: str = ""
+    taskman_service_release_root: str = ""
+    taskman_listener_owners: tuple[tuple[Listener, tuple[str, int]], ...] = ()
 
     @property
     def systemd(self) -> bool:
@@ -251,18 +276,10 @@ def collect_host_facts(
         (
             "sh",
             "-c",
-            'for path do if [ -e "$path" ] || [ -L "$path" ]; then printf "%s\\n" "$path"; fi; done',
+            'for path do if [ -e "$path" ] || [ -L "$path" ]; then '
+            'printf "%s\\t%s\\n" "$path" "$(stat --format=\'%F:%U:%G:%a\' "$path")"; fi; done',
             "taskman-host-facts",
             *(str(path) for path in paths),
-        )
-    )
-    provisioning_marker = remote.run(
-        (
-            "sh",
-            "-c",
-            _PROVISIONING_MARKER_SCRIPT,
-            "taskman-provisioning-marker",
-            str(_PROVISIONING_MARKER),
         )
     )
     # A filtered query returns status 1 when no requested units exist. Read the
@@ -317,18 +334,30 @@ def collect_host_facts(
         sudo=True,
     )
 
-    found_paths = _existing_paths(_stdout(existing_paths), paths)
+    found_paths, path_metadata = _existing_paths(_stdout(existing_paths), paths)
     found_units = _existing_units(_stdout(units))
+    observed_listeners = _listeners(_stdout(listeners))
+    taskman_authority: CommandResult | None = None
+    if (
+        "taskman.service" in found_units
+        and any(listener.port in {config.application_port, config.distribution_port} for listener in observed_listeners)
+    ):
+        taskman_authority = remote.run(
+            ("sh", "-ceu", _TASKMAN_SERVICE_AUTHORITY_SCRIPT, "taskman-service-authority", config.install_root.as_posix()),
+            sudo=True,
+        )
     found_accounts = (_ACCOUNT_NAME,) if DiscoveryState.DETECTED in account_states else ()
+    taskman_account_compatible = _managed_taskman_account(_stdout(account), _stdout(account_group))
     found_databases = _existing_databases(
         _stdout(databases) if databases is not None else "", config.database_name
     )
     expected_config_hash = _expected_caddyfile_hash(config, expected_caddyfile_sha256)
+    parsed_listener_owners = _listener_owners(_stdout(caddy_listener_owners))
     caddy_state = _caddy_state(
         paths=found_paths,
         units=found_units,
-        listeners=_listeners(_stdout(listeners)),
-        listener_owners=_listener_owners(_stdout(caddy_listener_owners)),
+        listeners=observed_listeners,
+        listener_owners=parsed_listener_owners,
         config=_caddy_config(_stdout(caddy_config)),
         expected_config_hash=expected_config_hash,
     )
@@ -350,7 +379,6 @@ def collect_host_facts(
         ("backup-root disk", backup_disk),
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
-        ("provisioning marker", provisioning_marker),
         ("Caddy listener ownership", caddy_listener_owners),
         ("Caddy configuration", caddy_config),
     )
@@ -396,12 +424,24 @@ def collect_host_facts(
         dns_addresses=dns_addresses,
         listeners=_listeners(_stdout(listeners)),
         existing_paths=found_paths,
-        provisioning_marker=_provisioning_marker_state(_stdout(provisioning_marker)),
+        path_metadata=path_metadata,
         caddy_state=caddy_state,
         existing_units=found_units,
         existing_accounts=found_accounts,
+        taskman_account_compatible=taskman_account_compatible,
         existing_databases=found_databases,
         failed_checks=tuple(failed_checks),
+        **(_taskman_authority(_stdout(taskman_authority)) if taskman_authority is not None and taskman_authority.succeeded else {}),
+        taskman_listener_owners=(
+            tuple(sorted(
+                (
+                    (listener, owner)
+                    for listener, owner in (parsed_listener_owners or {}).items()
+                    if listener.port in {config.application_port, config.distribution_port}
+                ),
+                key=lambda item: (item[0].port, item[0].address),
+            ))
+        ),
     )
 
 
@@ -412,7 +452,6 @@ def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
         config.deployment_root,
         config.backup_root,
         PurePosixPath("/etc/taskman"),
-        _PROVISIONING_MARKER,
         PurePosixPath("/etc/systemd/system/taskman.service"),
         _CADDYFILE,
     )
@@ -464,6 +503,24 @@ def collect_operational_preflight(
         sensitive=True,
     )
     return runtime, database
+
+
+def collect_runtime_preflight(remote: Remote) -> CommandResult:
+    """Collect the established protected runtime admission predicate."""
+
+    return remote.run(
+        (
+            "sh",
+            "-ceu",
+            _RUNTIME_PREFLIGHT,
+            "taskman-runtime-preflight",
+            _RUNTIME_ENVIRONMENT,
+            *_REQUIRED_RUNTIME_KEYS,
+        ),
+        sudo=True,
+        stdin=None,
+        sensitive=True,
+    )
 
 
 def _capacity(remote: Remote, root: PurePosixPath) -> CommandResult:
@@ -533,7 +590,7 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
         if len(fields) < 4 or fields[0].upper() != "LISTEN":
             continue
         listener = _listener_from_fields(fields)
-        if listener is None or listener.port not in {80, 443}:
+        if listener is None:
             continue
         if len(fields) != 6:
             return None
@@ -549,6 +606,30 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
             return None
         owners[listener] = owner
     return owners
+
+
+def _taskman_authority(value: str) -> dict[str, object]:
+    """Return exact managed-unit process evidence or an empty invalid snapshot."""
+
+    values: dict[str, str] = {}
+    required = ("active", "pid", "cgroup", "executable", "owner", "process_cgroup", "release_root")
+    for line in value.splitlines():
+        key, separator, item = line.partition("=")
+        if not separator or key not in required or key in values:
+            return {}
+        values[key] = item
+    if tuple(values) != required or values["active"] != "active" or not values["pid"].isdecimal():
+        return {}
+    pid = int(values["pid"])
+    if pid <= 0:
+        return {}
+    return {
+        "taskman_service_pid": pid,
+        "taskman_service_executable": values["executable"],
+        "taskman_service_owner": values["owner"],
+        "taskman_service_cgroup": values["cgroup"] if values["cgroup"] == values["process_cgroup"] else "",
+        "taskman_service_release_root": values["release_root"],
+    }
 
 
 def _listener_from_fields(fields: list[str]) -> Listener | None:
@@ -604,11 +685,16 @@ def _caddy_state(
     if {listener.port for listener in public_listeners} != {80, 443}:
         return CaddyState.INVALID
     main_pid = _caddy_pid(config)
-    if config["unit_active"] != "active" or main_pid is None:
+    if (
+        config["unit_active"] != "active"
+        or main_pid is None
+        or not _trusted_caddy_process(config, main_pid)
+    ):
         return CaddyState.INVALID
-    if any(listener_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
+    public_owners = {listener: owner for listener, owner in listener_owners.items() if listener.port in {80, 443}}
+    if any(public_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
         return CaddyState.INVALID
-    if set(listener_owners) != set(public_listeners):
+    if set(public_owners) != set(public_listeners):
         return CaddyState.INVALID
     return CaddyState.ACTIVE
 
@@ -622,6 +708,12 @@ def _trusted_caddy_unit(config: dict[str, str]) -> bool:
         and config["unit_package"] == "caddy"
         and config["unit_verified"] == "clean"
     )
+
+
+def _trusted_caddy_process(config: dict[str, str], main_pid: int) -> bool:
+    """Bind public sockets to the package-owned service process, not its name."""
+
+    return main_pid > 0 and config["unit_executable"] == "/usr/bin/caddy"
 
 
 def _inactive_caddy_unit(config: dict[str, str]) -> bool:
@@ -641,10 +733,17 @@ def _trusted_caddy_config(config: dict[str, str], expected_hash: str) -> bool:
     )
 
 
-def _existing_paths(value: str, candidates: tuple[PurePosixPath, ...]) -> tuple[PurePosixPath, ...]:
+def _existing_paths(
+    value: str, candidates: tuple[PurePosixPath, ...]
+) -> tuple[tuple[PurePosixPath, ...], tuple[tuple[PurePosixPath, str], ...]]:
     allowed = {path.as_posix(): path for path in candidates}
-    found = {allowed[line.strip()] for line in value.splitlines() if line.strip() in allowed}
-    return tuple(sorted(found))
+    metadata: dict[PurePosixPath, str] = {}
+    for line in value.splitlines():
+        path, separator, details = line.partition("\t")
+        if path in allowed:
+            metadata[allowed[path]] = details if separator else ""
+    paths = tuple(sorted(metadata))
+    return paths, tuple((path, metadata[path]) for path in paths)
 
 
 def _existing_units(value: str) -> tuple[str, ...]:
@@ -656,13 +755,20 @@ def _existing_units(value: str) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def _provisioning_marker_state(value: str) -> ProvisioningMarkerState:
-    marker = value.strip()
-    if marker == "absent":
-        return ProvisioningMarkerState.ABSENT
-    if marker == "managed":
-        return ProvisioningMarkerState.MANAGED
-    return ProvisioningMarkerState.UNKNOWN
+def _managed_taskman_account(account: str, group: str) -> bool:
+    """Recognize only the exact non-login account declared by the baseline."""
+
+    fields = account.strip().split(":")
+    group_fields = group.strip().split(":")
+    return (
+        len(fields) == 7
+        and fields[0] == _ACCOUNT_NAME
+        and fields[5] == "/var/lib/taskman"
+        and fields[6] == "/usr/sbin/nologin"
+        and len(group_fields) >= 3
+        and group_fields[0] == _ACCOUNT_NAME
+        and fields[3] == group_fields[2]
+    )
 
 
 def _getent_state(result: CommandResult) -> DiscoveryState:
@@ -721,6 +827,7 @@ __all__ = [
     "Listener",
     "MINIMUM_DISK_BYTES",
     "MINIMUM_MEMORY_BYTES",
-    "ProvisioningMarkerState",
     "collect_host_facts",
+    "collect_operational_preflight",
+    "collect_runtime_preflight",
 ]

@@ -146,10 +146,40 @@ It does not weaken public application authentication, the network boundary, or S
 Evaluate each additional mechanism against a concrete supported failure and its cost. Prefer a
 small shared capability with actual consumers over a generic workflow or recovery framework.
 
+Treat characterization as evidence of current behavior, not as a decision that every observed
+detail must remain permanent. Preserve behavior tied to material guarantees. Reproducing an
+incidental refusal, drift classification, change marker, or recovery detail exactly must justify
+its complexity when a simpler implementation still protects confidentiality, integrity,
+availability, privilege isolation, recoverability, and failure blast radius. Do not add migration
+logic, compatibility aliases, or legacy diagnostics for interfaces that were never released or
+consumed.
+
+Prefer established library, framework, and native-tool behavior for ordinary convergence when it
+is safe, rerunnable, and observable. Bespoke operations require a concrete material risk that the
+established capability cannot reasonably control. Keep one authoritative production path for each
+capability; do not retain an unused adapter beside a separate live implementation. Tests must
+exercise the path production actually invokes rather than treating isolated adapter tests as
+production coverage.
+
+Minimize independently configurable and persistent state. Prefer a small set of authoritative
+inputs and derive child directories and other dependent values from them instead of exposing each
+value separately. Choose between transient and durable mechanisms by comparing their total
+lifecycle cost, including installation, versioning, compatibility negotiation, rollback, cleanup,
+and metadata. Do not make either lifetime an architectural rule without that comparison.
+
+Give each invariant one clear owner. Across a process or protocol boundary, the caller should
+verify that a result matches the request's operation, identifier, and protocol version and contains
+the required evidence, but should not duplicate the authoritative side's state discovery or policy.
+Share transport, protocol, locking, and evidence mechanics where they are genuinely common while
+keeping materially different operation policies explicit. Do not introduce a generic workflow
+engine merely to reduce repeated syntax.
+
 Tests should cover distinct state transitions and consequential failure boundaries. Do not multiply
 every interruption by every command, flag, and timing permutation when they exercise the same
 invariant. Keep focused public-boundary coverage and direct tests for the distinct recovery states.
-Code-size measurements are a signal to review complexity, not a target that justifies hiding it.
+Code-size and duplication measurements are signals to review complexity, not targets that justify
+hiding it. Confirm that a simplification removes redundant behavior or state rather than merely
+relocating it, and do not trade understandable boundaries or meaningful tests for a smaller count.
 
 ### Prefer Python for workflows
 

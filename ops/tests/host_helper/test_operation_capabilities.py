@@ -28,7 +28,7 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
     """Treating an absent migration table as normal during a rollback would hide lost authority."""
 
     database = _capability("database")
-    commands = iter((b"", b"1\n", b"20260905120000\n"))
+    commands = iter((b"", b"1\n", b"1\n", b"20260905120000\n"))
 
     def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(argv, 0, next(commands), b"")
@@ -38,11 +38,89 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
     assert database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass")) == {
         "state": "ready",
         "applied_migrations": (),
+        "initial_empty": True,
     }
     assert database.observe_database_state(database_mapping(), Path("/etc/taskman/pgpass")) == {
         "state": "ready",
         "applied_migrations": (20260905120000,),
     }
+
+
+def test_initial_database_observation_refuses_populated_schema_without_migration_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing migration table cannot authorize adoption of existing application data."""
+
+    database = _capability("database")
+    commands = iter((b"", b"0\n"))
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, 0, next(commands), b"")
+
+    monkeypatch.setattr(database, "run_command", run)
+
+    with pytest.raises(database.DatabaseObservationError, match="initial database is not empty"):
+        database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass"))
+
+
+def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relation-only probe would adopt functions, types, or extensions as empty."""
+
+    database = _capability("database")
+    commands: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"" if len(commands) == 1 else b"1\n", b"")
+
+    monkeypatch.setattr(database, "run_command", run)
+
+    assert database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass")) == {
+        "state": "ready",
+        "applied_migrations": (),
+        "initial_empty": True,
+    }
+    query = commands[1][commands[1].index("--command") + 1]
+    for catalog in (
+        "pg_class", "pg_proc", "pg_type", "pg_extension", "pg_collation",
+        "pg_largeobject_metadata", "pg_foreign_data_wrapper", "pg_foreign_server",
+        "pg_user_mapping", "pg_publication", "pg_subscription", "pg_conversion",
+        "pg_opclass", "pg_opfamily", "pg_ts_config", "pg_ts_dict", "pg_ts_parser",
+        "pg_ts_template", "pg_database_owner", "nspacl",
+        "pg_event_trigger", "pg_default_acl", "pg_language",
+    ):
+        assert catalog in query
+    # These are present in a pristine PostgreSQL template and must be compared
+    # by their complete expected identities, not rejected by name alone.
+    for language in ("internal", "c", "sql", "plpgsql_call_handler", "plpgsql_validator"):
+        assert language in query
+
+
+def test_pristine_language_template_accepts_real_builtin_rows_and_refuses_identity_drift() -> None:
+    """Catalog comparison must admit PostgreSQL's actual built-in language rows."""
+
+    database = _capability("database")
+    pristine = (
+        {"name": "internal", "trusted": False, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_internal_validator", "owner": "postgres", "acl": None},
+        {"name": "c", "trusted": False, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_c_validator", "owner": "postgres", "acl": None},
+        {"name": "sql", "trusted": True, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_sql_validator", "owner": "postgres", "acl": None},
+        {"name": "plpgsql", "trusted": True, "handler": "pg_catalog.plpgsql_call_handler",
+         "inline_handler": "pg_catalog.plpgsql_inline_handler", "validator": "pg_catalog.plpgsql_validator",
+         "owner": "postgres", "acl": None},
+    )
+
+    assert database.pristine_language_rows_match(pristine)
+    assert not database.pristine_language_rows_match(
+        ({**pristine[0], "validator": None}, *pristine[1:])
+    )
+    assert not database.pristine_language_rows_match(
+        (*pristine[:3], {**pristine[3], "acl": "=U/postgres"})
+    )
 
 
 @pytest.mark.parametrize(
@@ -125,7 +203,7 @@ def test_verification_request_preserves_correlation_and_sets_only_the_target_rel
 
     requests = _capability("verification")
     source = HostRequest(
-        2,
+        3,
         "deploy",
         "op-0123456789abcdef0123456789abcdef",
         {"selected_release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"},

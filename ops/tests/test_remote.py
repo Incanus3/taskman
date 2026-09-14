@@ -501,7 +501,7 @@ def test_bounded_run_preserves_helper_protocol_request_and_result_bytes() -> Non
     """Newlines or Unicode line splitting would make a strict helper frame undecodable."""
 
     request = HostRequest(
-        protocol_version=2,
+        protocol_version=3,
         operation="discover",
         correlation_id="op-0123456789abcdef0123456789abcdef",
         expected_state={"lifecycle": "unknown"},
@@ -509,7 +509,7 @@ def test_bounded_run_preserves_helper_protocol_request_and_result_bytes() -> Non
         parameters={"dry_run": False},
     )
     helper_result = HostResult(
-        protocol_version=2,
+        protocol_version=3,
         operation="discover",
         correlation_id="op-0123456789abcdef0123456789abcdef",
         outcome="succeeded",

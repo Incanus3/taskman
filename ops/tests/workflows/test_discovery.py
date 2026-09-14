@@ -3,13 +3,19 @@ from __future__ import annotations
 import pytest
 
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.host_protocol import HostRequest, HostResult
+from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord
+from taskman_ops.releases.manifests import (
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
+    ArtifactManifest,
+)
 from taskman_ops.workflows.backups import list_backups
 from taskman_ops.workflows.releases import list_releases
 
 
-CORRELATION = "op-0123456789abcdef0123456789abcdef"
-RELEASE_ID = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"
+RELEASE_ID = (
+    "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+)
 BACKUP_ID = "backup-cccccccccccccccccccccccccccccccc"
 
 
@@ -34,45 +40,72 @@ def config() -> EnvironmentConfig:
     )
 
 
-def _invoke(monkeypatch: pytest.MonkeyPatch, state: dict[str, object], warnings: tuple[str, ...] = ()) -> None:
-    def run(_remote: object, request: HostRequest, **_kwargs: object) -> HostResult:
-        return HostResult(2, request.operation, request.correlation_id, "succeeded", "state observed", state, warnings)
+def _release() -> dict[str, object]:
+    manifest = ArtifactManifest.from_mapping(
+        {
+            "schema_version": 3,
+            "application": "taskman",
+            "application_version": "0.2.0",
+            "source_revision": "a" * 40,
+            "release_id": RELEASE_ID,
+            "built_at": "2026-09-14T12:00:00Z",
+            "target_os": "ubuntu26.04",
+            "architecture": "amd64",
+            "otp_version": "29.0.6",
+            "elixir_version": "1.20.4",
+            "node_version": "22.22.1",
+            "hex_version": "2.5.1",
+            "rebar3_version": "3.24.0",
+            "builder_base_tag": BUILDER_BASE_TAG,
+            "builder_base_digest": BUILDER_BASE_DIGEST,
+            "migrations": [],
+            "top_level": "taskman",
+            "artifact_sha256": "b" * 64,
+            "source_dirty": False,
+        }
+    )
+    return ReleaseRecord(RELEASE_ID, "a" * 40, "b" * 64, (), 2, manifest).to_mapping()
 
-    monkeypatch.setattr("taskman_ops.workflows.releases.run_request", run)
-    monkeypatch.setattr("taskman_ops.workflows.backups.run_request", run)
+
+def _backup() -> dict[str, object]:
+    return BackupRecord.from_mapping(
+        {
+            "backup_id": BACKUP_ID,
+            "created_at": "2026-09-08T10:15:30Z",
+            "dump_sha256": "e" * 64,
+            "source_release_id": RELEASE_ID,
+            "migration_versions": [20260905120000],
+            "source_database_size_bytes": 128,
+        }
+    ).to_mapping()
 
 
-def test_discovery_result_exposes_compact_completed_release_rows(
+def test_public_release_listing_returns_the_complete_collected_inventory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = {
-        "release_id": RELEASE_ID,
-        "source_revision": "a" * 40,
-        "artifact_sha256": "d" * 64,
-        "migrations": (),
-    }
-    _invoke(monkeypatch, {"releases": (row,), "future_fact": "ignored"}, ("unknown release entry",))
+    """A public wrapper must not reapply the wire page limit."""
+    rows = tuple(_release() for _index in range(65))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.releases.collect_inventory",
+        lambda *_args, **_kwargs: rows,
+    )
 
     result = list_releases(object(), config())
 
-    assert result.records == ({**row, "migrations": []},)
-    assert result.warnings == ("unknown release entry",)
+    assert result.records == rows
+    assert len(result.to_mapping()["records"]) == 65
 
 
-def test_discovery_result_exposes_compact_completed_backup_rows(
+def test_public_backup_listing_returns_validated_collected_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = {
-        "backup_id": BACKUP_ID,
-        "created_at": "2026-09-08T10:15:30Z",
-        "dump_sha256": "e" * 64,
-        "source_release_id": RELEASE_ID,
-        "migration_versions": (20260905120000,),
-        "source_database_size_bytes": 128,
-    }
-    _invoke(monkeypatch, {"backups": (row,), "future_fact": "ignored"}, ("unknown backup entry",))
+    rows = (_backup(),)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.backups.collect_inventory",
+        lambda *_args, **_kwargs: rows,
+    )
 
     result = list_backups(object(), config())
 
-    assert result.records == ({**row, "migration_versions": [20260905120000]},)
-    assert result.warnings == ("unknown backup entry",)
+    assert result.records == rows
+    assert result.warnings == ()

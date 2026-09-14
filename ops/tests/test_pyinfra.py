@@ -7,6 +7,7 @@ import importlib
 from io import StringIO
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,66 @@ _CADDY_PLAN = CaddyPlan(
     packages=("caddy",),
     caddyfile="taskman.acme.tld {\n}\n",
 )
+
+
+def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(monkeypatch) -> None:
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    calls = []
+    class Remote:
+        def run(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+            return SimpleNamespace(succeeded=True)
+    monkeypatch.setattr(
+        "taskman_ops.helper_client.runner.invoke_sensitive_pgpass_authority",
+        lambda _remote, _package, **kwargs: calls.append(("private", kwargs)) or SimpleNamespace(
+            exit_status=0, warnings=(), local_cleanup_incomplete=False
+        ),
+    )
+    inputs = ProvisioningInputs(
+        config=EnvironmentConfig.model_validate(valid_environment()), caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
+        role_password_input=b"role-password-input\n",
+    )
+
+    provisioning.validate_existing_credential_authority(Remote(), inputs)
+
+    private = next(value for kind, value in calls if kind == "private")
+    assert private["pgpass"] == inputs.pgpass
+    assert private["host"] == "127.0.0.1"
+    assert all(b"secret" not in repr(call).encode() for call in calls if call[0] != "private")
+
+
+def test_private_pgpass_parser_accepts_escaped_password_without_writes(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+    from taskman_ops.host_helper.operations import preflight
+    observed = []
+    monkeypatch.setattr(preflight, "_PGPASS_PATH", tmp_path / "pgpass")
+    monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *args, **kwargs: observed.append((args, kwargs)))
+
+    status = preflight.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        BytesIO(br"127.0.0.1:5432:taskman_prod:taskman:sec\:ret\\value" + b"\n"),
+    )
+
+    assert status == 0
+    assert observed[0][1]["password"] == "sec:ret\\value"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_private_pgpass_parser_refuses_mismatched_connection(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+    from taskman_ops.host_helper.operations import preflight
+    monkeypatch.setattr(preflight, "_PGPASS_PATH", tmp_path / "pgpass")
+    monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *_args, **_kwargs: pytest.fail("must not authenticate"))
+
+    status = preflight.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
+    )
+
+    assert status == 10
+    assert list(tmp_path.iterdir()) == []
 
 
 @dataclass
@@ -76,6 +137,16 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "load_environment", lambda _name: environment_config())
     monkeypatch.setattr(workflow, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="database-password"))
     monkeypatch.setattr(workflow, "_resolve_artifact", lambda _invocation: artifact())
+    # Provision now resolves automatic targets only after read-only host
+    # admission.  This pyinfra-boundary test intentionally isolates that
+    # separate public resolution concern.
+    monkeypatch.setattr(
+        workflow,
+        "_resolve_deployment_target",
+        lambda *_args, **_kwargs: artifact(),
+    )
+    monkeypatch.setattr(workflow, "identify_clean_inputs", lambda *_args: object())
+    monkeypatch.setattr(workflow, "clean_inputs_match", lambda *_args: True)
     monkeypatch.setattr(workflow, "render_runtime_environment", lambda _config, _secrets: b"RUNTIME=value\n")
     monkeypatch.setattr(workflow, "render_pgpass", lambda _config, _secrets: b"pgpass\n")
     monkeypatch.setattr(workflow, "build_caddy_plan", lambda _config: _CADDY_PLAN)
@@ -84,10 +155,11 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "_confirm", lambda _plan: True)
     monkeypatch.setattr(workflow, "connect", lambda _config: remote)
     monkeypatch.setattr(workflow, "validate_provisionable_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workflow, "validate_existing_authority", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         workflow,
         "deploy_first_release",
-        lambda *_args: WorkflowResult(
+            lambda *_args, **_kwargs: WorkflowResult(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
         ),
     )
