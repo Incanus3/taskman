@@ -250,7 +250,13 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
     result = discover_module.provision_authority(request)
 
     assert result.outcome == "succeeded"
-    assert result.state == {"authority": "validated"}
+    assert result.state["authority"] == "validated"
+    assert result.state["selected_release_id"] == RELEASE_ID
+    assert result.state["last_successful_selection_id"] is not None
+    assert result.state["applied_migrations"] == ()
+    assert result.state["backup_protection_sha256"] == hashlib.sha256(b"[]").hexdigest()
+    assert result.state["installed_release_count"] == 1
+    assert len(result.state["installed_release_sha256"]) == 64
     assert calls == ["postgres"]
 
 

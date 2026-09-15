@@ -53,13 +53,15 @@ class DeploymentAdmissionAuthority:
 
 
 def deployment_admission_authority(
-    remote: Remote, config: EnvironmentConfig
+    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy"
 ) -> DeploymentAdmissionAuthority:
     """Collect complete release authority before resolving an automatic target."""
 
     from .inventory import collect_inventory
 
-    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if mode not in {"deploy", "provision"}:
+        raise ValueError("deployment admission mode is invalid")
+    result = run_request(remote, discovery_request(config, mode=mode))
     if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused host state")
     state = mutable(result.state)

@@ -76,6 +76,15 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "load_environment", lambda _name: environment_config())
     monkeypatch.setattr(workflow, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="database-password"))
     monkeypatch.setattr(workflow, "_resolve_artifact", lambda _invocation: artifact())
+    # Provision now resolves automatic targets only after read-only host
+    # admission.  This pyinfra-boundary test intentionally isolates that
+    # separate public resolution concern.
+    monkeypatch.setattr(
+        workflow,
+        "_resolve_deployment_target",
+        lambda *_args, **_kwargs: artifact(),
+    )
+    monkeypatch.setattr(workflow, "identify_clean_inputs", lambda *_args: object())
     monkeypatch.setattr(workflow, "render_runtime_environment", lambda _config, _secrets: b"RUNTIME=value\n")
     monkeypatch.setattr(workflow, "render_pgpass", lambda _config, _secrets: b"pgpass\n")
     monkeypatch.setattr(workflow, "build_caddy_plan", lambda _config: _CADDY_PLAN)

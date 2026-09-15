@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 
@@ -222,15 +223,16 @@ def validate_existing_resource_authority(remote: object, inputs: ProvisioningInp
     )
 
 
-def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> None:
+def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> Mapping[str, object]:
     """Keep resource and secret validation as one pre-mutation capability."""
 
-    validate_preconvergence_authority(remote, inputs)
+    authority = validate_preconvergence_authority(remote, inputs)
     validate_existing_resource_authority(remote, inputs)
     validate_existing_credential_authority(remote, inputs)
+    return authority
 
 
-def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs) -> None:
+def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs) -> Mapping[str, object]:
     """Validate record and PostgreSQL authority through the read-only helper."""
 
     if not isinstance(inputs, ProvisioningInputs):
@@ -254,7 +256,21 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
     result = run_request(remote, authority_request)
     if result.outcome != "succeeded":
         raise result_error(result)
-    if result.state != {"authority": "validated"}:
+    state = result.state
+    required = {
+        "authority",
+        "selected_release_id",
+        "last_successful_selection_id",
+        "applied_migrations",
+        "backup_protection_sha256",
+        "scheduled_backup_sha256",
+        "backup_timer_enabled",
+        "backup_timer_state",
+        "downgrade_baseline_sha256",
+        "installed_release_count",
+        "installed_release_sha256",
+    }
+    if not isinstance(state, Mapping) or set(state) != required or state["authority"] != "validated":
         raise OpsError(
             ExitStatus.SAFETY,
             "authority-preflight",
@@ -262,6 +278,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             changed=False,
             next_action="inspect the existing record and PostgreSQL authority before retrying",
         )
+    return dict(state)
 
 
 def _systemd_asset_sha256(asset: object) -> str:

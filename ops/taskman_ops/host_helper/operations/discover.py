@@ -89,13 +89,27 @@ def provision_authority(request: HostRequest) -> HostResult:
         database = database_mapping(request.parameters["database"])
         paths = ManagedPaths.from_mapping(request.paths)
         with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
-            observe_host_state(paths, allow_selection_transition=True)
+            state = observe_host_state(paths, allow_selection_transition=True)
             _observe_postgresql_authority(database, package_track)
     except LifecycleLockContention:
         return _locked(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
-    return _success(request, {"authority": "validated"}, ())
+    # The controller separately obtains complete installed records through the
+    # paged inventory operation.  This projection binds the material summary
+    # to that inventory without putting an unbounded release list into a
+    # privileged read-only response.
+    projection = _discovery_state(state)
+    projection.update(_deployment_projection(state, _scheduler_facts(paths), mode="provision"))
+    release_rows = tuple(record.to_mapping() for record in state.releases)
+    projection.update(
+        {
+            "authority": "validated",
+            "installed_release_count": len(release_rows),
+            "installed_release_sha256": hashlib.sha256(_canonical_ascii(release_rows)).hexdigest(),
+        }
+    )
+    return _success(request, projection, state.warnings)
 
 
 def _observe_postgresql_authority(

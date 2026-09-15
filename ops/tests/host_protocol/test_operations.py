@@ -24,6 +24,7 @@ EXPECTED_OPERATIONS = frozenset(
         "genesis",
         "list_backups",
         "list_releases",
+        "provision_authority",
         "restore",
         "rollback",
         "verify",
