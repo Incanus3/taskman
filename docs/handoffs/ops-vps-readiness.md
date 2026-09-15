@@ -1,6 +1,6 @@
 # Operations VPS readiness
 
-Status: active. Updated: 2026-09-14. Resume: `$resume ops-vps-readiness`.
+Status: active. Updated: 2026-09-15. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
@@ -14,11 +14,11 @@ authorized clean staging recreation and fresh provisioning/readiness.
 - Implemented baseline:
   [Dedicated-host deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
 - Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Parent reconciliation issue: `tas-sr4b`; next task: `tas-sr4b.6`.
+- Parent reconciliation issue: `tas-sr4b`; next task: `tas-sr4b.7`.
 
 ## Current checkpoint
 
-Tasks 1–5 of the approved plan are complete on GitButler branch
+Tasks 1–6 of the approved plan are complete on GitButler branch
 `dedicated-host-deployment-automation`. Each passed independent task review and scoped fix
 re-reviews where required.
 
@@ -42,10 +42,13 @@ re-reviews where required.
   implement compatible scheduled-backup package construction, explicit lifecycle-lock handoff,
   deadline-bounded executable convergence, conservative mutation/restoration evidence, safe
   descriptor-based package replacement, and frozen earlier-package compatibility coverage.
+- `tas-sr4b.6` is closed. Commits from `b161dbe9` through `57963bc3` implement complete
+  desired-target admission and confirmation, exact protocol-v3 deploy authority, bounded recovery
+  projections and pruning, scheduler-safe six-step convergence, interruption/lost-reply recovery,
+  and isolated packaged-helper B retry and B-to-C replacement histories.
 
-Task 6 still owns public workflow migration to `DeploymentTarget` and the clean-input
-re-identify/discover/re-resolve loop. Task 11 still owns real Docker clean/dirty build acceptance.
-These are planned dependencies, not Task 2 blockers.
+Task 11 still owns real Docker clean/dirty build acceptance and whole-workstream verification.
+These are planned dependencies, not blockers for the completed increments.
 
 The old staging installation remains historical evidence outside the supported record/runtime
 boundary. Do not migrate, repair, or invoke the new controller against it. No host action, push, or
@@ -53,8 +56,8 @@ merge has occurred or is authorized.
 
 ## Next actions
 
-1. Execute plan Task 6 (`tas-sr4b.6`) with delegated implementation and distinct independent review:
-   migrate the public deploy request and controller workflow to exact desired-target reconciliation.
+1. Execute plan Task 7 (`tas-sr4b.7`) with delegated implementation and distinct independent review:
+   add resource-based first-install recovery.
 2. Continue in dependency order through `tas-sr4b.11`.
 
 ## Verification and remaining gates
@@ -65,12 +68,14 @@ merge has occurred or is authorized.
   `compileall` exited 0. Independent review plus three scoped re-reviews are clean.
 - Task 4 controller gate: 236 focused tests passed; transient package execution is included;
   `compileall` exited 0; `mix precommit` passed 805 tests. Independent review plus three scoped
-  re-reviews are clean. Repository-wide Python collection still
-  stops at the Task 6-owned removed `ArtifactResolution` import in `ops/tests/test_cli.py`.
+  re-reviews are clean.
 - Task 5 controller gate: 72 focused helper/service/package/workflow tests passed; `compileall`
   exited 0; `mix precommit` passed 805 tests. Independent review plus two scoped re-reviews are
   clean. The frozen earlier package and current replacement both execute in isolation against the
   supported record, protection, retention, and lifecycle-lock baseline.
+- Task 6 controller gate: 135 public/controller/host tests passed; package/entrypoint isolation
+  passed 19 tests; `compileall` exited 0; `mix precommit` passed 805 tests. Independent review plus
+  four scoped fix re-reviews are clean.
 - The Task 2 implementer also ran `mix precommit` after its production fix round; the final change
   after that run added only the complete clean-input test matrix.
 - Integrated failures in consumers assigned to Tasks 3–10 remain expected until their planned
