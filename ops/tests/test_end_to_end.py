@@ -207,6 +207,7 @@ def verify(request, **_kwargs):
 deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
 discover_module.observe_database_state_or_empty = database
+discover_module._observe_postgresql_authority = lambda *_args: "absent"
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
 services.run_command = command
@@ -343,7 +344,7 @@ def _install_public_controller(
     real_run_request = helper.run_request
 
     def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
-        return real_run_request(
+        result = real_run_request(
             _remote,
             request,
             package=package,
@@ -351,6 +352,7 @@ def _install_public_controller(
                 wire_request, selected, runtime_path
             ),
         )
+        return result
 
     monkeypatch.setattr(deploy_workflow, "validate_operational_preflight", lambda *_args: None)
     monkeypatch.setattr(deploy_workflow, "run_request", dispatch)
@@ -482,3 +484,61 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
     assert len(state.selections) == 1
     assert state.selections[0].previous_release_id is None
     assert state.selections[0].observed_previous_release_id is None
+
+
+def test_default_public_provision_composes_authority_inventory_and_packaged_genesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaking a default admission seam must stop this complete public path."""
+
+    from taskman_ops.host import acceptance as host_acceptance
+    from taskman_ops.host.facts import CaddyState, HostFacts
+    from taskman_ops.workflows import provision as provision_module
+
+    request = host_deploy_tests._request(tmp_path / "default-genesis", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    target = _artifact_target(request)
+    config = _controller_config(dict(request.paths))
+    archive = tmp_path / "local-artifact.tar.gz"
+    shutil.copyfile(target.artifact.archive, archive)
+    archive.with_name("local-artifact.manifest.json").write_text(
+        json.dumps(target.manifest.to_mapping(), sort_keys=True)
+    )
+    archive.with_name("local-artifact.tar.gz.sha256").write_text(
+        f"{target.artifact_sha256}  {archive.name}\n"
+    )
+    facts = HostFacts(
+        "ubuntu", "26.04", "amd64", "systemd", True, False, None, config.ssh_port,
+        8 * 1024**3, 40 * 1024**3, 40 * 1024**3, (config.public_ipv4,), (), (), (),
+        CaddyState.ABSENT, (), (), False, (), (),
+    )
+    monkeypatch.setattr(host_acceptance, "collect_host_facts", lambda *_args, **_kwargs: facts)
+    monkeypatch.setattr(provision_module, "load_environment", lambda _name: config)
+    monkeypatch.setattr(
+        provision_module,
+        "decrypt_secrets",
+        lambda _name: SimpleNamespace(database_password="test-password"),
+    )
+    monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
+    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
+    monkeypatch.setattr(
+        provision_module,
+        "build_caddy_plan",
+        lambda _config: CaddyPlan(
+            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+            (), ("caddy",), "taskman.example.test {\n}\n",
+        ),
+    )
+    monkeypatch.setattr(provision_module, "converge_provisioning", lambda *_args: ChangeSet(changed=False))
+
+    result = provision(Invocation(
+        command="provision", environment="production", yes=True, artifact=archive
+    ))
+
+    state = _state(dict(request.paths), runtime_path)
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert state.selected_release_id == target.release_id
+    assert len(state.selections) == 1
+    assert state.selections[0].previous_release_id is None

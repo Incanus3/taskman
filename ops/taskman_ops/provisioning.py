@@ -296,7 +296,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             raise ValueError
         if not isinstance(state["applied_migrations"], tuple) or any(type(item) is not int for item in state["applied_migrations"]):
             raise ValueError
-        if state["service_state"] not in {"running", "stopped", "unknown"} or state["database_state"] != "ready":
+        if state["service_state"] not in {"running", "stopped", "unknown"} or state["database_state"] not in {"ready", "absent"}:
             raise ValueError
         if not isinstance(state["backup_protections"], tuple) or not isinstance(state["independently_held_backup_ids"], tuple):
             raise ValueError

@@ -177,7 +177,9 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 raise _RetryableError("backup_helper") from error
             changed = changed or any((scheduler.mutation.paused, scheduler.mutation.replaced, scheduler.mutation.restarted))
             state = _observe(inputs)
-            state, repaired_selection = _repair_recorded_selection(inputs, state)
+            state, repaired_selection = _repair_recorded_selection(
+                inputs, state, first_release=first_release
+            )
             changed = changed or repaired_selection
             _validate_starting_state(state, inputs, first_release=first_release)
             if first_release and state.applied_migrations:
@@ -246,7 +248,8 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             # have advanced.  Stop before the candidate migration and before
             # any atomic selection, including no-schema release updates.
             if (migration_needed and not migration_done) or (
-                not first_release and state.selected_release_id != inputs.candidate.release_id
+                state.selected_release_id is not None
+                and state.selected_release_id != inputs.candidate.release_id
             ):
                 try:
                     change_service("stop")
@@ -619,14 +622,35 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
         raise DeploymentManualError("genesis current release is not managed")
     if state.applied_migrations not in {inputs.expected_migrations, inputs.candidate_versions}:
         raise DeploymentManualError("genesis records do not prove the observed schema")
-    if state.applied_migrations and not any(
-        _migration_versions_from_manifest(item.artifact_manifest)[: len(state.applied_migrations)]
-        == state.applied_migrations
-        for item in state.releases
-    ):
+    if state.applied_migrations and not _genesis_migration_provenance_matches(state, inputs):
         raise DeploymentManualError("genesis migrations lack installed provenance")
     if any(path != candidate_staging for path in state.temporary_paths):
         raise DeploymentManualError("genesis staging is not attributable to the candidate")
+
+
+def _genesis_migration_provenance_matches(state: HostState, inputs: _Inputs) -> bool:
+    """Require every observed installed provenance record to match the live prefix.
+
+    The database exposes version numbers only.  First-history admission must
+    therefore match the candidate's exact filename/checksum pairs against the
+    immutable records that existed independently of the requested archive;
+    integer membership alone can silently adopt edited migration source.
+    """
+
+    prefix_size = len(state.applied_migrations)
+    candidate_prefix = tuple(
+        item.to_mapping() for item in inputs.candidate.artifact_manifest.migrations[:prefix_size]
+    )
+    matching_records = tuple(
+        item
+        for item in state.releases
+        if _migration_versions_from_manifest(item.artifact_manifest)[:prefix_size]
+        == state.applied_migrations
+    )
+    return bool(matching_records) and all(
+        tuple(dict(item) for item in record.migrations[:prefix_size]) == candidate_prefix
+        for record in matching_records
+    )
 
 
 def _observe(
@@ -647,7 +671,9 @@ def _observe(
     )
 
 
-def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostState, bool]:
+def _repair_recorded_selection(
+    inputs: _Inputs, state: HostState, *, first_release: bool
+) -> tuple[HostState, bool]:
     """Repair only a recorded selection whose current-link replacement was lost.
 
     The normal sequence selects, starts, verifies, then records the successful
@@ -656,7 +682,7 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
     The reverse arrangement can only resume the same completed selection.
     """
 
-    if inputs.previous_release_id is None and state.latest_successful_selection is None:
+    if first_release and state.latest_successful_selection is None:
         # A physical selection without history is a valid failed first-install
         # attempt.  Genesis may replace it, but must not fabricate history for
         # it while reconciling the newly confirmed desired target.
@@ -722,9 +748,7 @@ def _record_successful_selection(
             _selection_backup(inputs, state, selection.backup_id, backup),
         )
     selection_backup = _selection_backup(inputs, state, None, backup)
-    observed_previous = (
-        inputs.previous_release_id if state.latest_successful_selection is None else recorded
-    )
+    observed_previous = None if state.latest_successful_selection is None else recorded
     try:
         _append_selection_with_previous(
             inputs.paths,

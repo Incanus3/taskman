@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -90,7 +91,8 @@ def provision_authority(request: HostRequest) -> HostResult:
         paths = ManagedPaths.from_mapping(request.paths)
         with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
             state = observe_host_state(paths, allow_selection_transition=True)
-            _observe_postgresql_authority(database, package_track)
+            database_state = _observe_postgresql_authority(database, package_track)
+            state = replace(state, database_state=database_state)
     except LifecycleLockContention:
         return _locked(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
@@ -114,18 +116,18 @@ def provision_authority(request: HostRequest) -> HostResult:
 
 def _observe_postgresql_authority(
     database: Mapping[str, object], package_track: str | None,
-) -> None:
+) -> str:
     """Observe a selected cluster, its listener process, and database identities."""
 
     script = "\n".join(
         (
             "set -eu",
             "track=$1 port=$2 role=$3 database=$4",
-            "command -v pg_lsclusters >/dev/null 2>&1 || exit 0",
+            "command -v pg_lsclusters >/dev/null 2>&1 || { printf '%s\\n' absent; exit 0; }",
             "candidates=$(pg_lsclusters --no-header 2>/dev/null | awk -v track=\"$track\" '(track == \"\" || $1 == track) { if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ || $3 !~ /^[0-9]+$/ || ($4 != \"online\" && $4 != \"down\") || $5 != \"postgres\") exit 2; print $1, $2, $3, $4 }')",
             "count=$(printf '%s\\n' \"$candidates\" | sed '/^$/d' | wc -l | tr -d ' ')",
             "[ \"$count\" -le 1 ] || exit 1",
-            "[ \"$count\" -eq 0 ] && exit 0",
+            "[ \"$count\" -eq 0 ] && { printf '%s\\n' absent; exit 0; }",
             "set -- $candidates",
             "version=$1 cluster=$2 configured_port=$3 state=$4",
             "[ \"$state\" = online ] && [ \"$configured_port\" = \"$port\" ] || exit 1",
@@ -137,10 +139,10 @@ def _observe_postgresql_authority(
             "admin() { runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host /var/run/postgresql --port \"$port\" --username postgres --dbname postgres \"$@\"; }",
             "role_ok=$(admin --set=role=\"$role\" --command \"SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND rolinherit AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership JOIN pg_roles member ON member.oid = membership.member WHERE member.rolname = :'role')\" 2>/dev/null || true)",
             "database_ok=$(admin --set=database=\"$database\" --set=role=\"$role\" --command \"SELECT 1 FROM pg_database WHERE datname = :'database' AND pg_get_userbyid(datdba) = :'role'\" 2>/dev/null || true)",
-            "case \"$role_ok:$database_ok\" in :) ;; 1:1) ;; *) exit 1 ;; esac",
+            "case \"$role_ok:$database_ok\" in :) printf '%s\\n' absent ;; 1:1) printf '%s\\n' ready ;; *) exit 1 ;; esac",
         )
     )
-    run_command(
+    result = run_command(
         (
             "sh", "-ceu", script, "taskman-provision-authority",
             "" if package_track is None else package_track,
@@ -149,6 +151,11 @@ def _observe_postgresql_authority(
         timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS,
         output_limit=1024,
     )
+    if result.stdout == b"ready\n":
+        return "ready"
+    if result.stdout == b"absent\n":
+        return "absent"
+    raise ValueError("PostgreSQL authority observation is incomplete")
 
 
 def list_releases(request: HostRequest) -> HostResult:

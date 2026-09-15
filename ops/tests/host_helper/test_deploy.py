@@ -89,7 +89,11 @@ def _release_tree(path: Path) -> None:
     (path / "bin").mkdir(parents=True, exist_ok=True)
     (path / "lib").mkdir(exist_ok=True)
     (path / "releases").mkdir(exist_ok=True)
-    for relative in ("bin/server", "bin/migrate", "lib/runtime", "releases/start_erl.data"):
+    (path / "erts-16.0").mkdir(exist_ok=True)
+    for relative in (
+        "bin/taskman", "bin/server", "bin/migrate", "bin/create-admin",
+        "lib/runtime", "releases/start_erl.data",
+    ):
         target = path / relative
         target.write_text("release\n")
         target.chmod(0o750 if relative.startswith("bin/") else 0o640)
@@ -1022,6 +1026,145 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
     assert result.state["backup_id"] is None
     assert runtime.backup_calls == 0
     assert runtime.events == ["stop", "migration", "start", "verify"]
+
+
+def test_genesis_stops_a_failed_same_schema_target_before_replacing_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed B selection cannot keep running while genesis selects C."""
+
+    request = _request(tmp_path, operation="genesis", previous=None, migrations=(), policy="no-change")
+    _install_current(dict(request.paths))
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    for record in Path(paths.local(paths.selection_root)).iterdir():
+        record.unlink()
+    request = HostRequest(
+        request.protocol_version,
+        request.operation,
+        request.correlation_id,
+        {**request.expected_state, "selected_release_id": CURRENT,
+         "downgrade_baseline_sha256": hashlib.sha256(
+             json.dumps([CURRENT], separators=(",", ":")).encode("ascii")
+         ).hexdigest()},
+        request.paths,
+        request.parameters,
+    )
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    first = genesis(request)
+    completed = deploy_module.observe_host_state(paths, database=runtime.observe_database())
+    second = genesis(HostRequest(
+        request.protocol_version,
+        request.operation,
+        request.correlation_id,
+        {**request.expected_state, "selected_release_id": _candidate_id(request),
+         "last_successful_selection_id": completed.latest_successful_selection_filename,
+         "downgrade_baseline_sha256": hashlib.sha256(
+             json.dumps([_candidate_id(request)], separators=(",", ":")).encode("ascii")
+         ).hexdigest()},
+        request.paths,
+        request.parameters,
+    ))
+
+    assert first.outcome == "succeeded", first.message
+    assert second.outcome == "succeeded", second.message
+    assert runtime.events == ["stop", "start", "verify", "verify"]
+    assert Path(request.paths["install_root"]).joinpath("current").resolve().name == _candidate_id(request)
+
+
+def test_genesis_refuses_conflicting_installed_migration_fingerprint_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing only a migration checksum must invalidate first-history provenance."""
+
+    request = _request(tmp_path, operation="genesis", previous=None, policy="backward-compatible")
+    conflicting = MigrationFingerprint(MIGRATION.filename, "f" * 64)
+    _install_current(dict(request.paths), migrations=(conflicting,))
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    for record in Path(paths.local(paths.selection_root)).iterdir():
+        record.unlink()
+    request = HostRequest(
+        request.protocol_version,
+        request.operation,
+        request.correlation_id,
+        {**request.expected_state, "selected_release_id": CURRENT,
+         "applied_migrations": (20260905120000,),
+         "downgrade_baseline_sha256": hashlib.sha256(
+             json.dumps([CURRENT], separators=(",", ":")).encode("ascii")
+         ).hexdigest()},
+        request.paths,
+        request.parameters,
+    )
+    runtime = _Runtime((20260905120000,))
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    assert result.outcome == "manual"
+    assert runtime.events == []
+    assert not Path(paths.local(paths.release_root / _candidate_id(request))).exists()
+
+
+def test_genesis_accepts_missing_current_only_with_exact_installed_fingerprint_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost result may replay from a complete matching installed record."""
+
+    request = _request(
+        tmp_path,
+        operation="genesis",
+        previous=None,
+        applied_migrations=(20260905120000,),
+        policy="no-change",
+    )
+    _install_unselected_candidate(request)
+    runtime = _Runtime((20260905120000,))
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    assert result.outcome == "succeeded", result.message
+    assert runtime.events == ["start", "verify"]
+
+
+def test_genesis_refuses_multiple_installed_records_with_conflicting_fingerprints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One matching release cannot override another observed conflicting prefix."""
+
+    request = _request(
+        tmp_path,
+        operation="genesis",
+        previous=None,
+        applied_migrations=(20260905120000,),
+        policy="no-change",
+    )
+    conflicting = MigrationFingerprint(MIGRATION.filename, "f" * 64)
+    _install_current(dict(request.paths), migrations=(conflicting,))
+    Path(request.paths["backup_root"]).rmdir()
+    _install_unselected_candidate(request)
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    for record in Path(paths.local(paths.selection_root)).iterdir():
+        record.unlink()
+    request = HostRequest(
+        request.protocol_version,
+        request.operation,
+        request.correlation_id,
+        {**request.expected_state, "selected_release_id": CURRENT,
+         "downgrade_baseline_sha256": hashlib.sha256(
+             json.dumps([CURRENT], separators=(",", ":")).encode("ascii")
+         ).hexdigest()},
+        request.paths,
+        request.parameters,
+    )
+    runtime = _Runtime((20260905120000,))
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    assert result.outcome == "manual"
+    assert runtime.events == []
 
 
 def test_genesis_accepts_missing_scheduler_checksum_for_first_convergence(

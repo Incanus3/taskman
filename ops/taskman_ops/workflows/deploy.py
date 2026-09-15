@@ -476,6 +476,7 @@ def _confirmed_expected_state(
         if expected["last_successful_selection_id"] is not None and not isinstance(expected["last_successful_selection_id"], str):
             raise ValueError
         validate_migration_versions(expected["applied_migrations"])
+        expected["applied_migrations"] = tuple(expected["applied_migrations"])
         if expected["scheduled_backup_sha256"] is not None and not isinstance(expected["scheduled_backup_sha256"], str):
             raise ValueError
         if type(expected["backup_timer_enabled"]) is not bool:

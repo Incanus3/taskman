@@ -246,7 +246,7 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
     monkeypatch.setattr(
         discover_module,
         "_observe_postgresql_authority",
-        lambda *_args: calls.append("postgres") or None,
+        lambda *_args: calls.append("postgres") or "ready",
         raising=False,
     )
 
@@ -270,7 +270,7 @@ def test_real_provision_authority_projection_passes_the_production_controller_sc
 
     observed = _state(migrations=())
     _install_observer(monkeypatch, observed)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: None)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "ready")
     helper_result = discover_module.provision_authority(
         HostRequest(
             3, "provision_authority", CORRELATION, {},
@@ -300,7 +300,7 @@ def test_preconvergence_postgresql_observer_binds_cluster_listener_and_identity(
     monkeypatch.setattr(
         discover_module,
         "run_command",
-        lambda argv, **_kwargs: commands.append(argv) or object(),
+        lambda argv, **_kwargs: commands.append(argv) or subprocess.CompletedProcess(argv, 0, b"ready\n", b""),
         raising=False,
     )
 
@@ -330,7 +330,7 @@ def _postgres_authority_exit(
     monkeypatch.setattr(
         discover_module,
         "run_command",
-        lambda argv, **_kwargs: captured.append(argv) or object(),
+        lambda argv, **_kwargs: captured.append(argv) or subprocess.CompletedProcess(argv, 0, b"ready\n", b""),
     )
     discover_module._observe_postgresql_authority(
         {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, None
