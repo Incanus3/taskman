@@ -272,6 +272,7 @@ def deploy_first_release(
     yes: bool = False,
     allow_downgrade: bool = False,
     dry_run: bool = False,
+    starting_state: Mapping[str, object] | None = None,
 ) -> WorkflowResult:
     """Run genesis only for an unfinished install or its exact durable replay."""
 
@@ -316,7 +317,7 @@ def deploy_first_release(
                 {
                     "candidate_release_id": candidate,
                     "migration_policy": policy,
-                    "starting_state": dict(expected_state),
+                    "starting_state": dict(starting_state or expected_state),
                     "artifact_source": deployment_target.source,
                 },
                 next_action="review the redacted provisioning plan and rerun without --dry-run after confirmation",
@@ -349,10 +350,22 @@ def deploy_first_release(
             result,
             previous_release_id=None,
             genesis=True,
-            starting_state=expected_state,
+            starting_state=starting_state or expected_state,
         )
     except OpsError as error:
-        return _failure_result(config, error, candidate=candidate, genesis=True)
+        result = _failure_result(config, error, candidate=candidate, genesis=True)
+        if starting_state is None:
+            return result
+        return WorkflowResult(
+            result.command,
+            result.environment,
+            result.changed,
+            result.stage,
+            {**result.facts, "starting_state": dict(starting_state)},
+            result.warnings,
+            result.next_action,
+            result.exit_status,
+        )
 
 
 def _planning_authority(

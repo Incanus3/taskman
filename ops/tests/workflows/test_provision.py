@@ -73,8 +73,8 @@ def test_provision_orders_one_convergence_boundary_before_helper_genesis() -> No
     assert host.closed == 2
 
 
-def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -> None:
-    """Host admission must precede every operator-controlled consequence."""
+def test_provision_builds_the_material_plan_after_all_preconvergence_authority() -> None:
+    """Confirmed material facts must come from the admitted starting authority."""
 
     host = Host()
     capabilities = _capabilities(
@@ -82,11 +82,26 @@ def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -
         present_plan=lambda _plan: host.events.append("present-plan"),
         confirm=lambda _plan: host.events.append("confirm") or True,
     )
+    capabilities = ProvisionCapabilities(
+        **{
+            **capabilities.__dict__,
+            "preflight": lambda _remote, _inputs: host.events.append("preflight"),
+        }
+    )
 
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.stage == "provisioned"
-    assert host.events == ["plan", "discovery", "present-plan", "confirm", "provisioning"]
+    assert host.events == [
+        "discovery",
+        "preflight",
+        "plan",
+        "present-plan",
+        "confirm",
+        "discovery",
+        "preflight",
+        "provisioning",
+    ]
 
 
 def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation() -> None:
@@ -110,7 +125,7 @@ def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["plan", "discovery", "credential-preflight"]
+    assert host.events == ["discovery", "credential-preflight"]
     assert "provisioning" not in host.events
 
 
@@ -131,7 +146,7 @@ def test_each_preconvergence_authority_refusal_stops_before_pyinfra_mutation(aut
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["plan", "discovery", authority]
+    assert host.events == ["discovery", authority]
     assert "provisioning" not in host.events
 
 
@@ -170,7 +185,7 @@ def test_default_preflight_checks_existing_resources_before_the_secret_writers(
     )
 
     assert result.exit_status is ExitStatus.OK
-    assert checks == ["observer", "resources", "credentials"]
+    assert checks == ["observer", "resources", "credentials"] * 2
 
 
 def test_default_preflight_observes_record_and_postgresql_authority_before_local_reuse_checks(
@@ -207,7 +222,7 @@ def test_default_preflight_observes_record_and_postgresql_authority_before_local
     )
 
     assert result.exit_status is ExitStatus.OK
-    assert checks == ["observer", "resources", "credentials"]
+    assert checks == ["observer", "resources", "credentials"] * 2
 
 
 def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() -> None:
@@ -237,7 +252,7 @@ def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() 
     assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
     assert result.stage == "provisioning-incomplete"
     assert result.facts == {"failed_boundary": "host-admission", "release_started": False}
-    assert host.events == ["plan", "discovery"]
+    assert host.events == ["discovery"]
     assert host.closed == 1
 
 
@@ -304,12 +319,13 @@ def test_provision_passes_migration_and_acknowledgement_authority_to_genesis() -
     )
 
     assert result.exit_status is ExitStatus.OK
-    assert observed == {
+    assert {key: value for key, value in observed.items() if key != "starting_state"} == {
         "migration_policy": "backward-compatible",
         "yes": True,
         "allow_downgrade": True,
         "dry_run": False,
     }
+    assert observed["starting_state"]["authority"] == "validated"
 
 
 def test_provision_yes_acknowledges_the_confirmed_resource_plan_without_prompting() -> None:
@@ -352,7 +368,7 @@ def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() ->
     assert result.facts["applied_migrations"] == (999,)
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect the release state before retrying"
-    assert host.events == ["plan", "discovery", "provisioning"]
+    assert host.events == ["discovery", "plan", "discovery", "provisioning"]
 
 
 def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_change() -> None:
@@ -383,7 +399,9 @@ def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_cha
     assert result.changed is False
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-refused"
-    assert result.facts == {"failure": "not-ready", "mutation_state": "unchanged"}
+    assert result.facts["failure"] == "not-ready"
+    assert result.facts["mutation_state"] == "unchanged"
+    assert result.facts["starting_state"]["authority"] == "validated"
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect release state before retrying"
 
@@ -416,7 +434,9 @@ def test_provision_release_failure_retains_release_change_evidence() -> None:
     assert result.changed is True
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-incomplete"
-    assert result.facts == {"failure": "started", "mutation_state": "changed"}
+    assert result.facts["failure"] == "started"
+    assert result.facts["mutation_state"] == "changed"
+    assert result.facts["starting_state"]["authority"] == "validated"
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect the partially deployed release before retrying"
 
@@ -446,7 +466,62 @@ def test_provision_aggregates_convergence_mutation_before_unknown_genesis_result
 
     assert result.changed is True
     assert result.facts["mutation_state"] == "changed"
-    assert result.facts["starting_state"] == {"selected_release_id": None}
+    assert result.facts["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+
+
+def test_provision_preserves_the_confirmed_preconvergence_snapshot_through_genesis() -> None:
+    """Later genesis observations must never replace the confirmed starting authority."""
+
+    host = Host()
+    received: dict[str, object] = {}
+
+    def genesis(_remote: object, _config: EnvironmentConfig, _artifact: object, **kwargs: object) -> WorkflowResult:
+        received.update(kwargs)
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="deployed",
+            facts={"starting_state": {"selected_release_id": "post-convergence"}},
+        )
+
+    capabilities = ProvisionCapabilities(**{**_capabilities(host).__dict__, "genesis": genesis})
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert received["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+    assert result.facts["starting_state"] == received["starting_state"]
+
+
+def test_provision_discards_a_drifted_plan_and_repeats_authority_before_convergence() -> None:
+    """A post-confirmation resource change must receive a new material plan."""
+
+    host = Host()
+    discoveries = iter(("first", "changed", "changed", "changed"))
+    presented: list[object] = []
+
+    capabilities = _capabilities(
+        host,
+        present_plan=lambda plan: presented.append(plan),
+        confirm=lambda _plan: True,
+    )
+    capabilities = ProvisionCapabilities(
+        **{
+            **capabilities.__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert len(presented) == 2
+    assert host.events == ["plan", "plan", "provisioning"]
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:
@@ -462,7 +537,7 @@ def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -
 
     assert result.stage == "planned"
     assert result.changed is False
-    assert host.events == ["plan", "discovery"]
+    assert host.events == ["discovery", "plan"]
     assert host.closed == 1
 
 
@@ -533,8 +608,11 @@ def _capabilities(
             ("caddy",),
             "taskman.acme.tld {\n}\n",
         ),
-        release_deployment=release
-        or (lambda _remote, _config, _artifact: WorkflowResult(
+        genesis=(
+            (lambda remote, config, supplied, **_kwargs: release(remote, config, supplied))
+            if release is not None
+            else lambda _remote, _config, _artifact, **_kwargs: WorkflowResult(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
-        )),
+            )
+        ),
     )

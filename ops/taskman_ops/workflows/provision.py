@@ -81,8 +81,7 @@ class ProvisionCapabilities:
     render_role_password_input: Callable[[object, str], bytes]
     provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
-    release_deployment: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
-    genesis: Callable[..., WorkflowResult] | None = None
+    genesis: Callable[..., WorkflowResult]
     preflight: Callable[[object, ProvisioningInputs], None] | None = None
 
 
@@ -117,7 +116,6 @@ def provision(
     role_password_input = cap.render_role_password_input(database_plan.role, secrets.database_password)
     caddy_plan = cap.caddy_plan(config)
     expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
-    plan = _redacted_plan(cap.render_plan(config, artifact))
     inputs = ProvisioningInputs(
         config=config,
         caddy_plan=caddy_plan,
@@ -128,40 +126,53 @@ def provision(
 
     remote = cap.connect(config)
     try:
-        # Discovery is a complete immutable snapshot.  It must precede every
-        # consequence below, including plan presentation, confirmation, and
-        # package installation.
-        cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
-        if cap.preflight is not None:
-            cap.preflight(remote, inputs)
-        cap.present_plan(plan)
-        if dry_run:
-            return _close_result(remote, WorkflowResult(
-                command="provision",
-                environment=environment_name,
-                changed=False,
-                stage="planned",
-                facts={"plan": plan, "discovery": "validated"},
-                next_action="review the redacted plan and rerun without --dry-run only after confirmation",
-            ))
+        while True:
+            # Discovery is a complete immutable snapshot.  It must precede every
+            # consequence below, including plan presentation, confirmation, and
+            # package installation.
+            discovery = cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
+            if cap.preflight is not None:
+                cap.preflight(remote, inputs)
+            starting_state = {
+                "authority": "validated",
+                "candidate_release_id": artifact.manifest.release_id,
+            }
+            plan = _redacted_plan(cap.render_plan(config, artifact))
+            plan = {**plan, "starting_state": starting_state}
+            cap.present_plan(plan)
+            if dry_run:
+                return _close_result(remote, WorkflowResult(
+                    command="provision",
+                    environment=environment_name,
+                    changed=False,
+                    stage="planned",
+                    facts={"plan": plan, "discovery": "validated"},
+                    next_action="review the redacted plan and rerun without --dry-run only after confirmation",
+                ))
 
-        if not yes and not cap.confirm(plan):
-            return _close_result(remote, WorkflowResult(
-                command="provision",
-                environment=environment_name,
-                changed=False,
-                stage="confirmation-cancelled",
-                facts={"plan": plan},
-                next_action="review the redacted plan and confirm a later provisioning run when ready",
-                exit_status=ExitStatus.SAFETY,
-            ))
+            if not yes and not cap.confirm(plan):
+                return _close_result(remote, WorkflowResult(
+                    command="provision",
+                    environment=environment_name,
+                    changed=False,
+                    stage="confirmation-cancelled",
+                    facts={"plan": plan},
+                    next_action="review the redacted plan and confirm a later provisioning run when ready",
+                    exit_status=ExitStatus.SAFETY,
+                ))
 
-        provisioning_changed = _changed(
-            cap.provisioning(
-                remote,
-                inputs,
-            ),
-        )
+            # Confirmation authorizes only the observed resource authority. A
+            # drifted snapshot is discarded and re-planned before pyinfra can
+            # receive any managed-write request, including under --yes.
+            refreshed_discovery = cap.discover(
+                remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256
+            )
+            if cap.preflight is not None:
+                cap.preflight(remote, inputs)
+            if refreshed_discovery != discovery:
+                continue
+            provisioning_changed = _changed(cap.provisioning(remote, inputs))
+            break
     except OpsError as error:
         return _close_result(remote, _pre_release_failure(environment_name, error))
     except TypeError:
@@ -180,18 +191,15 @@ def provision(
         raise
 
     try:
-        release = (
-            cap.genesis(
-                remote,
-                config,
-                artifact,
-                migration_policy=getattr(invocation, "migration_policy", None),
-                yes=yes,
-                allow_downgrade=getattr(invocation, "allow_downgrade", False),
-                dry_run=dry_run,
-            )
-            if cap.genesis is not None
-            else cap.release_deployment(remote, config, artifact)
+        release = cap.genesis(
+            remote,
+            config,
+            artifact,
+            migration_policy=getattr(invocation, "migration_policy", None),
+            yes=yes,
+            allow_downgrade=getattr(invocation, "allow_downgrade", False),
+            dry_run=dry_run,
+            starting_state=starting_state,
         )
     except BaseException:
         _close_remote(remote)
@@ -206,6 +214,7 @@ def provision(
                 changed=provisioning_changed or release.changed,
                 facts={
                     **release.facts,
+                    "starting_state": starting_state,
                     "mutation_state": _aggregate_mutation_state(
                         "changed" if provisioning_changed else "unchanged",
                         release.facts.get(
@@ -223,6 +232,7 @@ def provision(
         stage="provisioned" if provisioning_changed or release.changed else "already-provisioned",
         facts={
             "candidate_release_id": artifact.manifest.release_id,
+            "starting_state": starting_state,
             "provisioning_changed": provisioning_changed,
             "mutation_state": _aggregate_mutation_state(
                 "changed" if provisioning_changed else "unchanged",
@@ -302,7 +312,6 @@ def _default_capabilities() -> ProvisionCapabilities:
         render_role_password_input=render_role_password_input,
         provisioning=converge_provisioning,
         caddy_plan=build_caddy_plan,
-        release_deployment=deploy_first_release,
         genesis=deploy_first_release,
         preflight=validate_existing_authority,
     )
