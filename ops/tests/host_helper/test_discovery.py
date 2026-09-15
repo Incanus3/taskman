@@ -94,10 +94,15 @@ def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> N
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_host_state", lambda *_args, **_kwargs: observed)
     if observed.backups:
+        def validated_backup(_paths, backup_id):
+            return next(
+                item for item in observed.backups if item.backup_id == backup_id
+            )
+
         monkeypatch.setattr(
             discover_module,
             "_validate_restore_backup",
-            lambda *_args: observed.backups[0],
+            validated_backup,
         )
     monkeypatch.setattr(discover_module, "lifecycle_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
@@ -220,7 +225,22 @@ def test_restore_discovery_adds_digest_to_the_flat_validated_binding(
         None,
         ({"backup_id": "backup-" + "e" * 32, "attempt_number": 0},),
     )
-    observed = HostState(**{**_restore_state().__dict__, "restore_target": target})
+    restore_state = _restore_state()
+    safety = BackupRecord(
+        target.safety_backup_id,
+        SELECTED_AT,
+        "e" * 64,
+        RELEASE_ID,
+        (20260905120000,),
+        1024,
+    )
+    observed = HostState(
+        **{
+            **restore_state.__dict__,
+            "backups": (*restore_state.backups, safety),
+            "restore_target": target,
+        }
+    )
     _install_observer(monkeypatch, observed)
     monkeypatch.setattr(
         discover_module,
@@ -679,9 +699,22 @@ def test_restore_discovery_projects_only_independently_held_safety_attempts(
         ),
     )
     protection = BackupProtection(1, attempt_ids[2], None, RELEASE_ID, 0, SELECTED_AT)
+    restore_state = _restore_state()
+    safety_backups = tuple(
+        BackupRecord(
+            backup_id,
+            SELECTED_AT + timedelta(seconds=number + 1),
+            f"{number + 1:064x}",
+            RELEASE_ID,
+            (20260905120000,),
+            1024,
+        )
+        for number, backup_id in enumerate(attempt_ids)
+    )
     observed = HostState(
         **{
-            **_restore_state().__dict__,
+            **restore_state.__dict__,
+            "backups": (*restore_state.backups, *safety_backups),
             "restore_target": target,
             # This represents complete disk-backed history, including an ID
             # that need not appear in the latest/predecessor projection.

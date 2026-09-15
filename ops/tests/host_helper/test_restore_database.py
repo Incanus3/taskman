@@ -90,6 +90,25 @@ def test_database_capacity_refuses_unobservable_values(
         restore_database.observe_database_available_bytes(DATABASE)
 
 
+@pytest.mark.parametrize("count", (b"1\n", b"2\n", b"unknown\n"))
+def test_recorded_discard_oid_must_be_proved_absent_cluster_wide(
+    count: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import taskman_ops.host_helper.restore_database as restore_database
+
+    monkeypatch.setattr(
+        restore_database,
+        "run_command",
+        lambda argv, **_kwargs: _completed(argv, count),
+    )
+
+    with pytest.raises(
+        restore_database.RestoreDatabaseError,
+        match="replacement discard database OID",
+    ):
+        restore_database.prove_database_oid_absent(DATABASE, 202)
+
+
 def test_observation_distinguishes_absent_table_missing_table_empty_and_populated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

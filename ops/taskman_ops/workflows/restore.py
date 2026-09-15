@@ -121,14 +121,18 @@ def restore(
                 starting_state = authority.expected_state
             completed = _durably_completed(authority)
             completed_without_binding = _completed_same_backup(authority)
+            normalization_only = _pending_third_target(authority, backup_id)
             unfinished = authority.target is not None and not completed
             if not dry_run and reapply and unfinished:
                 raise _safety(
                     "an unfinished restore cannot be reapplied",
                     "resume with an ordinary retry or use --replace-unfinished for a different backup",
                 )
-            capacity_required = not completed and not (
-                completed_without_binding and not reapply
+            capacity_required = (
+                dry_run and completed and reapply
+                or not completed
+                and not normalization_only
+                and not (completed_without_binding and not reapply)
             )
             preflight = (
                 validate_restore_preflight(remote, config)
@@ -182,7 +186,7 @@ def restore(
                         },
                         prune_backup_ids=(),
                         replace_unfinished=False,
-                        reapply=reapply,
+                        reapply=False,
                     )
                     cleanup_result = run_restore_request(
                         remote,
@@ -193,12 +197,12 @@ def restore(
                     if cleanup_result.outcome != "succeeded":
                         raise result_error(
                             cleanup_result,
-                            starting_state=cleanup_expected,
+                            starting_state=starting_state,
                             prior_mutation_state=prior_mutation_state,
                         )
                     cleanup_facts = mutation_result_facts(
                         cleanup_result,
-                        starting_state=cleanup_expected,
+                        starting_state=starting_state,
                         prior_mutation_state=prior_mutation_state,
                     )
                     prior_mutation_state = str(cleanup_facts["mutation_state"])
@@ -287,7 +291,7 @@ def restore(
                 if _replacement_reconfirmation(result):
                     facts = mutation_result_facts(
                         result,
-                        starting_state=authority.expected_state,
+                        starting_state=starting_state,
                         prior_mutation_state=prior_mutation_state,
                     )
                     prior_mutation_state = str(facts["mutation_state"])
@@ -302,12 +306,12 @@ def restore(
                 if result.outcome != "succeeded":
                     raise result_error(
                         result,
-                        starting_state=authority.expected_state,
+                        starting_state=starting_state,
                         prior_mutation_state=prior_mutation_state,
                     )
                 facts = mutation_result_facts(
                     result,
-                    starting_state=authority.expected_state,
+                    starting_state=starting_state,
                     prior_mutation_state=prior_mutation_state,
                 )
                 _validate_success(
@@ -527,6 +531,12 @@ def _validate_arrangement(authority: _Authority, expected_owner: str) -> None:
     canonical = databases["canonical"]
     temporary = databases["temporary"]
     retired = databases["retired"]
+    post_discard_pending = (
+        target.replacement is not None
+        and target.replacement["discard_database_oid"] is not None
+        and target.replacement["discard_database_oid"]
+        == target.restored_database_oid
+    )
     if roles == frozenset({"canonical"}):
         expected_oid = (
             target.restored_database_oid
@@ -535,7 +545,11 @@ def _validate_arrangement(authority: _Authority, expected_owner: str) -> None:
         )
         if not isinstance(canonical, Mapping) or canonical["oid"] != expected_oid:
             raise ValueError("bound canonical database identity is inconsistent")
-        if not _durably_completed(authority) and not target.temporary_creation_pending:
+        if (
+            not _durably_completed(authority)
+            and not target.temporary_creation_pending
+            and not post_discard_pending
+        ):
             raise ValueError("registered temporary database disappeared")
         return
     if roles in {
@@ -561,7 +575,7 @@ def _validate_arrangement(authority: _Authority, expected_owner: str) -> None:
         if (
             not isinstance(retired, Mapping)
             or retired["oid"] != target.original_database_oid
-            or not target.temporary_creation_pending
+            or not (target.temporary_creation_pending or post_discard_pending)
         ):
             raise ValueError("retired original database identity is inconsistent")
         return
@@ -607,6 +621,8 @@ def _plan(
     target, completed = authority.target, _durably_completed(authority)
     different_unfinished = target is not None and target.backup_id != requested_backup_id and not completed
     pending_replacement = target is not None and target.replacement is not None and not completed
+    normalization_only = _pending_third_target(authority, requested_backup_id)
+    completed_reapply = target is not None and completed and reapply
     replacement_mode = different_unfinished or pending_replacement
     completed_without_binding = target is None and _completed_same_backup(authority)
     swapped = (
@@ -617,11 +633,12 @@ def _plan(
         and isinstance(authority.databases["retired"], Mapping)
         and authority.databases["retired"]["oid"] == target.original_database_oid
     )
-    needs_load = replacement_mode or (reapply and not completed) or (
+    needs_load = completed_reapply or replacement_mode or (reapply and not completed) or (
         not completed and not completed_without_binding and not swapped
     )
     original_safety_copy = (
-        reapply and not completed
+        completed_reapply
+        or reapply and not completed
         or target is None and not completed_without_binding
         or target is not None
         and target.replacement is None
@@ -639,14 +656,34 @@ def _plan(
     )
     needs_safety = original_safety_copy or failed_restored_safety_copy
     prune_backup_ids = _planned_safety_prune_ids(
-        target,
+        None if completed_reapply else target,
         authority.independently_held_backup_ids,
         fresh_safety_copies=(
             (original_safety_copy and target is not None, True),
             (failed_restored_safety_copy, False),
         ),
     )
-    if target is not None and completed:
+    if normalization_only:
+        needs_load = False
+        needs_safety = False
+        prune_backup_ids = ()
+        consequences = ["normalize-pending-replacement"]
+    elif completed_reapply:
+        consequences = [
+            "cleanup-retired",
+            "cleanup-binding",
+            "refresh-scheduled-backup-helper",
+            "fresh-safety-backup",
+            "publish-restore-binding",
+            "load-temporary",
+            "swap-databases",
+            "select-source-release",
+            "verify",
+            "publish-success",
+            "cleanup-retired",
+            "cleanup-binding",
+        ]
+    elif target is not None and completed:
         consequences = ["cleanup-retired", "cleanup-binding"]
     elif completed_without_binding and not reapply:
         consequences, needs_load = ["completion-check"], False
@@ -734,6 +771,16 @@ def _completed_same_backup(authority: _Authority) -> bool:
         and _roles(authority.databases) == frozenset({"canonical"})
         and isinstance(canonical, Mapping) and canonical["migration_table_present"] is True
         and canonical["applied_migrations"] == authority.source.migration_versions
+    )
+
+
+def _pending_third_target(authority: _Authority, requested_backup_id: str) -> bool:
+    target = authority.target
+    return (
+        target is not None
+        and target.replacement is not None
+        and target.replacement["backup_id"] != requested_backup_id
+        and not _durably_completed(authority)
     )
 
 

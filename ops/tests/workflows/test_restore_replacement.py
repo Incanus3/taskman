@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+import hashlib
 import json
 from pathlib import Path
 
@@ -238,6 +239,9 @@ def test_pending_third_target_normalization_requires_a_second_confirmation(
     assert plans[0]["restore_target"]["replacement"]["backup_id"] == BACKUP
     assert plans[1]["restore_target"]["replacement"] is None
     assert result.changed is True
+    assert result.facts["starting_state"]["restore_target_sha256"] == first[
+        "restore_target"
+    ]["sha256"]
     assert "abandoned input dump is unavailable" in result.warnings
 
 
@@ -510,6 +514,7 @@ def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconf
     )
     assert len(plans) == 2
     assert all(plan["backup_id"] == third.backup_id for plan in plans)
+    assert plans[0]["remaining_consequences"] == ["normalize-pending-replacement"]
     assert f"dump-loaded:{host_restore_tests.REPLACEMENT_BACKUP}" not in runtime[
         "events"
     ]
@@ -551,6 +556,125 @@ def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
         "safety-backup"
     )
     assert f"dump-loaded:{replacement.backup_id}" in runtime["events"]
+
+
+def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_writes(
+    tmp_path, monkeypatch
+):
+    config_value, runtime_path, _paths, remote, old_source = (
+        _install_public_restore_controller(
+            monkeypatch,
+            tmp_path,
+            scheduler_failure=False,
+            state_family="durable-retired",
+        )
+    )
+
+    result = restore(
+        remote, config_value, old_source.backup_id, dry_run=True, reapply=True
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert result.facts["planned_pre_restore_backup"] is True
+    assert result.facts["remaining_restore_bytes"] > 0
+    assert result.facts["remaining_consequences"] == [
+        "cleanup-retired",
+        "cleanup-binding",
+        "refresh-scheduled-backup-helper",
+        "fresh-safety-backup",
+        "publish-restore-binding",
+        "load-temporary",
+        "swap-databases",
+        "select-source-release",
+        "verify",
+        "publish-success",
+        "cleanup-retired",
+        "cleanup-binding",
+    ]
+    assert json.loads(runtime_path.read_text())["events"] == []
+
+
+@pytest.mark.parametrize("failure", ("checksum", "list"))
+def test_public_restore_preview_refuses_invalid_required_safety_content(
+    failure, tmp_path, monkeypatch
+):
+    config_value, runtime_path, paths, remote, old_source = (
+        _install_public_restore_controller(
+            monkeypatch,
+            tmp_path,
+            scheduler_failure=False,
+            state_family="registered",
+        )
+    )
+    safety_id = "backup-" + "c" * 32
+    dump_path = Path(paths.local(paths.backup_root / f"{safety_id}.dump"))
+    dump_path.write_bytes(b"invalid required safety archive")
+    if failure == "list":
+        manifest_path = Path(
+            paths.local(paths.backup_root / f"{safety_id}.json")
+        )
+        manifest = json.loads(manifest_path.read_text())
+        manifest["dump_sha256"] = hashlib.sha256(dump_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+        manifest_path.chmod(0o600)
+        runtime = json.loads(runtime_path.read_text())
+        runtime["invalid_backup_list_id"] = safety_id
+        runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = restore(remote, config_value, old_source.backup_id, dry_run=True)
+
+    assert result.exit_status is ExitStatus.BACKUP
+    assert json.loads(runtime_path.read_text())["events"] == []
+
+
+@pytest.mark.parametrize("role", ("canonical", "retired"))
+def test_controller_admits_pending_replacement_after_exact_discard(
+    role, tmp_path, monkeypatch
+):
+    release, backup, _selection, state, _attempt_ids = _replacement_authority(
+        tmp_path
+    )
+    old = RestoreTarget.from_mapping(
+        {key: value for key, value in state["restore_target"].items() if key != "sha256"}
+    )
+    pending = replace(
+        old,
+        replacement={
+            "backup_id": BACKUP,
+            "dump_sha256": backup.dump_sha256,
+            "source_release_id": backup.source_release_id,
+            "discard_database_oid": old.restored_database_oid,
+        },
+    )
+    state["restore_target"] = {
+        **pending.to_mapping(),
+        "sha256": restore_target_sha256(pending),
+    }
+    original = {
+        "oid": old.original_database_oid,
+        "owner": "taskman",
+        "migration_table_present": True,
+        "applied_migrations": [MIGRATION],
+    }
+    state["restore_database_state"] = {
+        "canonical": original if role == "canonical" else None,
+        "temporary": None,
+        "retired": original if role == "retired" else None,
+    }
+    state["applied_migrations"] = [MIGRATION] if role == "canonical" else None
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    result = restore(
+        object(),
+        config(),
+        BACKUP,
+        replace_unfinished=True,
+        confirm=lambda _plan: True,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert len(mutations) == 1
 
 
 def _seed_prunable_safety_attempts(paths):

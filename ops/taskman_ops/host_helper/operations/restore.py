@@ -36,6 +36,7 @@ from ..restore_database import (
     load_registered_temporary,
     observe_database_available_bytes,
     observe_restore_databases,
+    prove_database_oid_absent,
     register_restored_database,
     rename_registered_database,
     validate_restore_database_state,
@@ -851,6 +852,11 @@ def _normalize_replacement(
             for value in databases.values()
         ):
             raise RestoreManual("replacement discard database moved unexpectedly")
+        else:
+            try:
+                prove_database_oid_absent(inputs.database, int(discard_oid))
+            except RestoreDatabaseError as error:
+                raise RestoreManual(str(error)) from error
     databases = validate_restore_database_state(
         observe_restore_databases(inputs.database, inputs.credentials)
     )

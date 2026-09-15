@@ -163,7 +163,7 @@ def provision_authority(request: HostRequest) -> HostResult:
             "installed_release_sha256": hashlib.sha256(_canonical_ascii(release_rows)).hexdigest(),
             # Per-resource presence is the only scheduler state generic
             # convergence may act on. Existing resources remain under the
-            # locked Task 5 refresh protocol in genesis.
+            # locked scheduler refresh protocol during genesis.
             "scheduler_resources": _scheduler_resources(paths),
         }
     )
@@ -314,6 +314,8 @@ def _observe(
                 database=observation,
                 allow_selection_transition=mode in {"deploy", "provision", "restore"},
             )
+            if mode == "restore":
+                _validate_restore_required_safety(paths, state)
             if requested_backup is not None:
                 observed = next(
                     (
@@ -408,6 +410,26 @@ def _validate_restore_backup(paths: ManagedPaths, backup_id: object) -> BackupRe
         raise
     except (CommandError, OSError, UnicodeError, ValueError, RecordError) as error:
         raise _RestoreBackupFailure("restore backup cannot be validated") from error
+
+
+def _validate_restore_required_safety(
+    paths: ManagedPaths, state: HostState
+) -> None:
+    """Fully validate every backup whose current role is restore safety."""
+
+    target = state.restore_target
+    if target is None:
+        return
+    required_ids = {
+        target.safety_backup_id,
+        *(str(item["backup_id"]) for item in target.safety_backup_attempts),
+    }
+    observed = {item.backup_id: item for item in state.backups}
+    for backup_id in sorted(required_ids):
+        if observed.get(backup_id) != _validate_restore_backup(paths, backup_id):
+            raise _RestoreBackupFailure(
+                "restore safety backup authority changed"
+            )
 
 
 def _inventory_cursor(request: HostRequest, operation: str) -> Mapping[str, object] | None:

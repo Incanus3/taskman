@@ -895,7 +895,7 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
 
     assert outcome.stage == "reapplied"
     assert len(mutations) == 2
-    assert mutations[0]["request"].parameters["reapply"] is True
+    assert mutations[0]["request"].parameters["reapply"] is False
     assert mutations[0]["request"].parameters["backup_helper"]["upload_path"] is None
     assert mutations[1]["request"].parameters["reapply"] is True
     assert len(confirmations) == 1

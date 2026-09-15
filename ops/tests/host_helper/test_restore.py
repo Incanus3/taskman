@@ -837,6 +837,104 @@ def test_third_target_only_normalizes_pending_replacement_and_requires_fresh_pla
     }
 
 
+@pytest.mark.parametrize("original_role", ("canonical", "retired"))
+def test_pending_replacement_resumes_after_exact_discard_is_already_absent(
+    original_role, tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    replacement = _backup(
+        paths, REPLACEMENT_BACKUP, TARGET, b"replacement source"
+    )
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            replacement={
+                "backup_id": replacement.backup_id,
+                "dump_sha256": replacement.dump_sha256,
+                "source_release_id": replacement.source_release_id,
+                "discard_database_oid": target.restored_database_oid,
+            },
+        ),
+    )
+    original = runtime.databases["canonical"]
+    runtime.databases = {
+        "canonical": original if original_role == "canonical" else None,
+        "temporary": None,
+        "retired": original if original_role == "retired" else None,
+    }
+    _install(monkeypatch, runtime)
+    absence_proofs = []
+    monkeypatch.setattr(
+        restore_module,
+        "prove_database_oid_absent",
+        lambda _database, oid: absence_proofs.append(oid),
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert absence_proofs == [target.restored_database_oid]
+
+
+def test_pending_replacement_refuses_moved_discard_oid_before_clearing_intent(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    replacement = _backup(
+        paths, REPLACEMENT_BACKUP, TARGET, b"replacement source"
+    )
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    pending = replace(
+        target,
+        replacement={
+            "backup_id": replacement.backup_id,
+            "dump_sha256": replacement.dump_sha256,
+            "source_release_id": replacement.source_release_id,
+            "discard_database_oid": target.restored_database_oid,
+        },
+    )
+    replace_restore_target(paths, pending)
+    runtime.databases["temporary"] = None
+    _install(monkeypatch, runtime)
+    monkeypatch.setattr(
+        restore_module,
+        "prove_database_oid_absent",
+        lambda *_args: (_ for _ in ()).throw(
+            restore_module.RestoreDatabaseError(
+                "replacement discard database OID moved unexpectedly"
+            )
+        ),
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "manual"
+    assert result.state["mutation_state"] == "changed"
+    observed = observe_host_state(paths, allow_selection_transition=True)
+    assert observed.restore_target is not None
+    assert observed.restore_target.replacement == pending.replacement
+
+
 def test_replacement_prunes_only_confirmed_attempts_after_durable_registration(
     tmp_path, monkeypatch
 ):

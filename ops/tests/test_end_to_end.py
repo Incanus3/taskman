@@ -186,6 +186,11 @@ def database(*_args, **_kwargs):
 
 def command(argv, **_kwargs):
     value = read_state()
+    if (
+        argv[0] == "pg_restore"
+        and value.get("invalid_backup_list_id") == Path(argv[-1]).stem
+    ):
+        raise CommandError("injected pg_restore list failure")
     if argv[:2] == ("systemctl", "stop"):
         value["service_running"] = False
         value["events"].append("service-stop")

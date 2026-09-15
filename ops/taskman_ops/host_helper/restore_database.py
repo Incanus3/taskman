@@ -306,6 +306,23 @@ def drop_registered_restored(
         )
 
 
+def prove_database_oid_absent(
+    database: Mapping[str, object], expected_oid: int
+) -> None:
+    """Prove that a recorded replacement discard OID is absent cluster-wide."""
+
+    try:
+        present = _oid_present(database, _positive_oid(expected_oid))
+    except RestoreDatabaseError as error:
+        raise RestoreDatabaseError(
+            "replacement discard database OID absence is unprovable"
+        ) from error
+    if present:
+        raise RestoreDatabaseError(
+            "replacement discard database OID moved unexpectedly"
+        )
+
+
 def drop_registered_retired(
     database: Mapping[str, object], credentials: Path, expected_oid: int
 ) -> None:
