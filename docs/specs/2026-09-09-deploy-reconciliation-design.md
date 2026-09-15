@@ -1222,6 +1222,18 @@ the latest ID is its full selection filename. Mode-specific absence/admission ru
 The deploy, provision, and restore modes additionally return
 `backup_protections`, `backup_protection_sha256`,
 `scheduled_backup_sha256`, `backup_timer_enabled`, and `backup_timer_state`.
+The deploy, provision, and restore modes also return `independently_held_backup_ids`, a sorted
+unique bounded projection used to plan attempt retirement. For deploy/provision it is the
+intersection of active/retiring migration-protection backup IDs with independently held
+successful-history and restore references. For restore it is the intersection of safety-attempt
+IDs in the binding with complete successful-history and active/retiring migration-protection
+references. Restore attempt ownership itself is not an independent reference. Active/pending
+inputs and the current original-database safety copy remain protected by their explicit binding
+roles. Do not export unrelated historical backup IDs. The controller validates that this projection
+is a subset of the relevant observed attempt IDs; the host re-derives all references under the lock
+before retirement or deletion. Existing history, binding, and protection confirmation facts and
+exact confirmed prune IDs still govern drift refusal.
+
 Restore additionally returns
 the flat `restore_target` and `restore_database_state` described above.
 `selected_release_id` means physical current, not successful history. Timer state is

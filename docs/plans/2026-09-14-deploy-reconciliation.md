@@ -506,7 +506,12 @@ Files: modify `ops/taskman_ops/host_helper/{restore_target,restore_database}.py`
 Interfaces: replacement is the exact optional binding object from the specification, not a phase
 counter. Binding updates retain base/observed/original identity, register safety attempts, and bind
 only the exact non-original discard OID. `prune_backup_ids` is a sorted unique confirmed list.
-Readers distinguish abandoned input metadata validation from required dump-content validation.
+Readers distinguish abandoned input metadata validation from required dump-content validation. Restore
+planning consumes the bounded `independently_held_backup_ids` discovery field: safety-attempt IDs
+held independently by complete successful history or active/retiring migration protections.
+The host retains full reference authority; this projection excludes the binding's own attempt
+ownership and does not export full history. Apply the specification's mode-specific subset and
+drift validation.
 
 - [ ] Add public replacement tests in each recognized arrangement, including failed restored
   canonical with possible writes. Validate new input completely; preserve original and take all
