@@ -117,8 +117,6 @@ def restore(
         while True:
             authority = _collect_authority(remote, config, backup_id)
             warnings = merge_warnings(warnings, authority.warnings)
-            if starting_state is None:
-                starting_state = authority.expected_state
             completed = _durably_completed(authority)
             completed_without_binding = _completed_same_backup(authority)
             normalization_only = _pending_third_target(authority, backup_id)
@@ -261,6 +259,8 @@ def restore(
                         warnings,
                         "review the exact restore plan and confirm a later run when ready",
                     )
+                if starting_state is None:
+                    starting_state = authority.expected_state
                 verification_required = reapply or not (
                     _durably_completed(authority) or _completed_same_backup(authority)
                 )

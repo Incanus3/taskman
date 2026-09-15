@@ -19,6 +19,7 @@ from taskman_ops.host_helper.restore_target import (
     replace_restore_target,
 )
 from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
+from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.restore import restore
 from tests.host_helper import test_restore as host_restore_tests
 from tests.test_end_to_end import _install_public_restore_controller
@@ -393,6 +394,69 @@ def test_completed_different_target_cleans_before_the_only_new_restore_confirmat
     assert len(mutations) == 2
     assert mutations[0]["request"].parameters["backup_id"] == old.backup_id
     assert mutations[1]["request"].parameters["backup_id"] == BACKUP
+    assert result.facts["starting_state"] == mutable(
+        mutations[1]["request"].expected_state
+    )
+
+
+def test_completed_cleanup_then_cancel_has_no_confirmed_starting_state(
+    tmp_path, monkeypatch
+):
+    release, backup, _selection, first, attempt_ids = _replacement_authority(
+        tmp_path
+    )
+    old = RestoreTarget.from_mapping(
+        {key: value for key, value in first["restore_target"].items() if key != "sha256"}
+    )
+    completed_selection = SelectionRecord(
+        old.source_release_id,
+        release.release_id,
+        old.safety_backup_id,
+        datetime(2026, 9, 15, 8, 0, tzinfo=UTC),
+        2,
+        old.observed_previous_release_id,
+        tuple(sorted({old.backup_id, *attempt_ids})),
+    )
+    first.update(
+        selected_release_id=old.source_release_id,
+        last_successful_selection_id=selection_filename(completed_selection),
+        last_successful_selection=completed_selection.to_mapping(),
+        applied_migrations=[MIGRATION],
+        restore_database_state={
+            "canonical": {
+                "oid": old.restored_database_oid,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": [MIGRATION],
+            },
+            "temporary": None,
+            "retired": {
+                "oid": old.original_database_oid,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": [MIGRATION],
+            },
+        },
+    )
+    second = {
+        **first,
+        "restore_target": None,
+        "independently_held_backup_ids": [],
+        "restore_database_state": {
+            "canonical": first["restore_database_state"]["canonical"],
+            "temporary": None,
+            "retired": None,
+        },
+    }
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [first, second], mutations)
+
+    result = restore(object(), config(), BACKUP, confirm=lambda _plan: False)
+
+    assert result.stage == "confirmation-cancelled"
+    assert result.changed is True
+    assert result.facts["starting_state"] is None
+    assert len(mutations) == 1
 
 
 @pytest.mark.parametrize(
@@ -533,6 +597,16 @@ def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
             state_family="durable-retired",
         )
     )
+    from taskman_ops.workflows import restore as restore_workflow
+
+    dispatched_expected_states = []
+    run_restore_request = restore_workflow.run_restore_request
+
+    def capture_request(*args, **kwargs):
+        dispatched_expected_states.append(dict(kwargs["request"].expected_state))
+        return run_restore_request(*args, **kwargs)
+
+    monkeypatch.setattr(restore_workflow, "run_restore_request", capture_request)
     replacement = host_restore_tests._backup(
         paths,
         host_restore_tests.REPLACEMENT_BACKUP,
@@ -556,6 +630,8 @@ def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
         "safety-backup"
     )
     assert f"dump-loaded:{replacement.backup_id}" in runtime["events"]
+    assert result.facts["starting_state"] == mutable(dispatched_expected_states[-1])
+    assert result.facts["starting_state"] != mutable(dispatched_expected_states[0])
 
 
 def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_writes(

@@ -29,6 +29,7 @@ from taskman_ops.releases.manifests import ArtifactManifest, VerifiedArtifact
 from taskman_ops.remote import CommandResult, UploadReceipt
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.provision import ProvisionCapabilities, provision
 from tests.host_helper import test_deploy as host_deploy_tests
 from tests.host_helper import test_restore as host_restore_tests
@@ -1011,6 +1012,16 @@ def test_public_packaged_reapply_cleans_then_creates_one_fresh_restore(
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
         monkeypatch, tmp_path, scheduler_failure=False, state_family="durable-retired"
     )
+    from taskman_ops.workflows import restore as restore_workflow
+
+    dispatched_expected_states = []
+    run_restore_request = restore_workflow.run_restore_request
+
+    def capture_request(*args, **kwargs):
+        dispatched_expected_states.append(dict(kwargs["request"].expected_state))
+        return run_restore_request(*args, **kwargs)
+
+    monkeypatch.setattr(restore_workflow, "run_restore_request", capture_request)
 
     result = restore(
         remote, config, source.backup_id, reapply=True, confirm=lambda _plan: True
@@ -1024,6 +1035,8 @@ def test_public_packaged_reapply_cleans_then_creates_one_fresh_restore(
         "safety-backup"
     )
     assert not Path(paths.local(paths.restore_target_path)).exists()
+    assert result.facts["starting_state"] == mutable(dispatched_expected_states[-1])
+    assert result.facts["starting_state"] != mutable(dispatched_expected_states[0])
 
 
 def test_public_ordinary_retry_preserves_writes_after_durable_restore(

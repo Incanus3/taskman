@@ -933,6 +933,7 @@ def test_reapply_cleanup_mutation_survives_fresh_capacity_preflight_failure(
     assert len(mutations) == 1
     assert outcome.exit_status is ExitStatus.REMOTE_PREFLIGHT
     assert outcome.changed is True
+    assert outcome.facts["starting_state"] is None
     assert outcome.facts["mutation_state"] == "changed"
 
 
