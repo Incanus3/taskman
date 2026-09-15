@@ -756,9 +756,11 @@ recognize the completed restore through its exact backup references and null ori
 
 Rerunning `taskman restore ENV BACKUP_ID` with the same backup must reach restore-specific inspection
 even when the canonical database name is temporarily absent. Initial preflight verifies PostgreSQL
-cluster/admin access through its maintenance database, database credentials, filesystem and installed-release
-authority. It must not require application readiness, a connection to the canonical application
-database, or successful-selection equality before inspecting the restore arrangement. This applies
+cluster/admin access through its maintenance database, protected credential-file authority, configured
+role login eligibility, filesystem and installed-release authority. Initial inspection does not claim
+password authentication to an absent canonical database; later observations authenticate where the
+recognized database arrangement permits it. It must not require application readiness, a connection
+to the canonical application database, or successful-selection equality before inspecting the restore arrangement. This applies
 to both dry-run and execution. Permission to inspect is not permission to rename or delete databases.
 
 Keep the existing derived database names: `<database>__restore_tmp` and `<database>__restore_old`.
@@ -1127,6 +1129,61 @@ new scheduled backups do not invalidate otherwise safe confirmed targets. Nullab
 mean proven absence under valid managed authority. The controller calls cleanup inspection
 directly, bypassing generic discovery and its database requirement. Shared filesystem/record
 readers enforce the full protection graph, without a second controller-owned authority model.
+
+## Packaged admission boundaries
+
+Restore admission uses the finite read-only protocol-v3 operation `restore_preflight`. Its expected
+state is empty, its paths are the existing validated installation/backup roots, and its parameters
+are exactly `mode`, `credentials_path`, and `database`. Mode is `inspection` or `capacity`, the
+credential path is fixed to `/etc/taskman/pgpass`, and database has exactly the existing validated
+`host`, `port`, `role`, and `name` fields. Inspection validates credential-file authority,
+maintenance access and role login eligibility without requiring canonical access or capacity.
+Both modes observe under the lifecycle lock. Capacity is requested only after discovery establishes
+that the planned restore needs it.
+
+Successful inspection state is exactly `{"mode": "inspection"}`. Successful capacity state has
+exactly `mode` (`capacity`), `database_available_bytes`, and `database_size_bytes`; the latter has
+exactly `canonical`, `temporary`, and `retired`, using null only for proved absence. Observed byte
+counts are positive signed 64-bit integers. Failure returns no partial capacity facts or native
+output. Existing envelope, string, collection, correlation and output bounds apply. These are
+planning facts; mutation still freshly validates capacity and database identity under the lock.
+The controller maps failures to its fixed restore preflight errors and retains helper cleanup
+warnings. It never relies on stdout from a sensitive SSH command, which intentionally suppresses
+both output streams.
+
+`provision_authority` also validates the fixed managed resource metadata under its existing lock.
+Its parameters are exactly `database`, nullable `postgres_package_track`, and `resource_digests`.
+The digest mapping has exactly `taskman_service`, `backup_environment`, `backup_service`, and
+`backup_timer`, each a lowercase SHA-256. The helper derives all permitted paths and required
+metadata; no arbitrary path list enters the request. Missing resources remain eligible for
+create-only convergence. The scheduled executable remains metadata-only until the lifecycle-locked
+refresh. The existing successful authority result remains unchanged.
+
+Supplied provisioning credential proof is a narrow private entry point in the same verified
+transient package, outside the secret-free JSON protocol:
+
+```text
+python3 taskman-host.pyz provision-pgpass-authority HOST PORT ROLE DATABASE
+```
+
+The literal mode and argument count are exact. Host is an allowed loopback address, port a canonical
+decimal in 1–65535, and role/database use the existing PostgreSQL identifier grammar (at most
+63 ASCII characters, with any stricter database-name restriction retained). The pgpass path is
+fixed inside the helper. Raw stdin is a nonempty, bounded, single newline-terminated pgpass record
+with the existing colon/backslash escaping rules and exact connection-field equality. Secrets
+never enter argv, JSON requests/results, diagnostics, or temporary files. Existing pgpass requires
+exact non-link root-owned mode-0600 bytes before native authentication. When absent, the helper
+proves supplied credentials without writing a file, using a restricted child environment with the
+parsed password. Native execution is bounded to 60 seconds and emits no retained stdout/stderr.
+
+The private entry returns only status: 0 for successful proof, 2 for invalid private arguments or
+oversized input, and 10 for unsafe credential authority, malformed content, missing prerequisites,
+or failed authentication. The controller maps these to fixed admission errors. The runner reuses
+normal package validation, verified staging, deadlines and exact cleanup. Its receipt contains
+`exit_status`, `warnings`, and `local_cleanup_incomplete`; transport exceptions retain whether the
+entry was dispatched. Successful temporary-cleanup warnings do not change admission success or
+participate in plan-drift comparison. This finite exit-only adapter is not a generic remote command
+API and does not alter the v3 JSON framing or add a public workstation command.
 
 ## Scheduled helper compatibility
 
