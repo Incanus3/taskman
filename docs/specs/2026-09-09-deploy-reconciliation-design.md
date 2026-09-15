@@ -1024,7 +1024,12 @@ This exception does not allow missing or corrupt binding/backup metadata, confli
 unsafe paths or links, an unvalidated preserved original database, or invalid required safety
 backups. If an abandoned input also serves as a required safety backup, that independent role still
 requires full validation. Releasing its input reference does not erase another protection or
-authorize deletion of damaged or unknown files under ordinary retention.
+authorize deletion of damaged or unknown files under ordinary retention. After the input reference
+is released, later inventory may retain valid unreferenced backup metadata with unavailable dump
+contents and an explicit warning. There is no persistent abandoned-input tag to distinguish this
+remainder from other unreferenced damaged storage. Preserve its files and do not treat it as a
+validated deletion candidate; a new discriminator is unnecessary. This observation rule does not
+relax metadata/path validation or full content validation for any independently required role.
 
 ### Retention during restore retries and target replacement
 
