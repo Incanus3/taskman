@@ -25,6 +25,7 @@ from taskman_ops.host_protocol import (
 from taskman_ops.host_helper.credentials import validate_credentials
 from taskman_ops.host_helper.database import database_mapping, observe_database_state
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
+from taskman_ops.host_helper.restore_database import observe_restore_databases
 from taskman_ops.host_helper.operations.backup import backup
 from taskman_ops.host_helper.operations.cleanup import cleanup
 from taskman_ops.host_helper.operations.deploy import deploy, genesis
@@ -142,7 +143,24 @@ def _observe_final_mutation(
         credentials = Path(credentials_value)
         validate_credentials(credentials)
         database = database_mapping(request.parameters["database"])
-        database_observation = observe_database_state(database, credentials)
+        restore_database_state = None
+        if request.operation == "restore":
+            restore_database_state = observe_restore_databases(database, credentials)
+            canonical = restore_database_state["canonical"]
+            database_observation = (
+                {"state": "absent", "applied_migrations": ()}
+                if canonical is None
+                else {
+                    "state": "ready",
+                    "applied_migrations": (
+                        canonical["applied_migrations"]
+                        if canonical["migration_table_present"]
+                        else ()
+                    ),
+                }
+            )
+        else:
+            database_observation = observe_database_state(database, credentials)
         state = observe_host_state(
             paths,
             database=database_observation,
@@ -154,7 +172,7 @@ def _observe_final_mutation(
             state,
             request.operation,
             scheduler=scheduler,
-            restore_database_state=None,
+            restore_database_state=restore_database_state,
         )
         unavailable, inspection_error = _observation_unavailable(
             request.operation, observations

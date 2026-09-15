@@ -247,10 +247,9 @@ def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bo
         return False
     if boundary == "cleanup" and operation != "cleanup":
         return False
-    if boundary in {"backup_helper", "staging", "protection", "migration"} and operation not in {
-        "deploy",
-        "genesis",
-    }:
+    if boundary == "backup_helper" and operation not in {"deploy", "genesis", "restore"}:
+        return False
+    if boundary in {"staging", "protection", "migration"} and operation not in {"deploy", "genesis"}:
         return False
     return exit_code in expected
 

@@ -234,6 +234,28 @@ def drop_registered_temporary(
     if not isinstance(temporary, Mapping) or temporary["oid"] != expected_oid:
         raise RestoreDatabaseError("restore temporary database OID changed")
     _admin_query(database, f'DROP DATABASE "{names["temporary"]}" WITH (FORCE)')
+    if _oid_present(database, expected_oid):
+        raise RestoreDatabaseError("registered restore database OID remains after drop")
+
+
+def drop_registered_retired(
+    database: Mapping[str, object], credentials: Path, expected_oid: int
+) -> None:
+    """Drop only the preserved retired name after durable restore success."""
+
+    expected_oid = _positive_oid(expected_oid)
+    names = restore_database_names(database)
+    observed = observe_restore_databases(database, credentials)
+    retired = observed["retired"]
+    if retired is None:
+        if _oid_present(database, expected_oid):
+            raise RestoreDatabaseError("original database OID moved unexpectedly")
+        return
+    if not isinstance(retired, Mapping) or retired["oid"] != expected_oid:
+        raise RestoreDatabaseError("retired original database OID changed")
+    _admin_query(database, f'DROP DATABASE "{names["retired"]}" WITH (FORCE)')
+    if _oid_present(database, expected_oid):
+        raise RestoreDatabaseError("retired original database remains after drop")
 
 
 def rename_registered_database(
@@ -472,6 +494,7 @@ __all__ = [
     "begin_temporary_rebuild",
     "create_temporary_database",
     "drop_registered_temporary",
+    "drop_registered_retired",
     "load_registered_temporary",
     "observe_restore_databases",
     "prove_temporary_database_empty",

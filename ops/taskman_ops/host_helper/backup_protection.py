@@ -695,7 +695,7 @@ def complete_successful_selection(
         and not unresolved
         and latest.observed_previous_release_id == observed_previous_release_id
         and latest.backup_id == backup_id
-        and latest.recovery_backup_ids == referenced_ids
+        and set(referenced_ids).issubset(latest.recovery_backup_ids)
     )
     if generic_no_op or exact_completed_retry:
         _remove_resolved_protections(paths, resolved)

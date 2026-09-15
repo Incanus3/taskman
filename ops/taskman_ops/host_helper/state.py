@@ -259,6 +259,17 @@ def mutation_observations(
     )
     if operation == "restore":
         observations["restore_database_state"] = restore_database_state
+        canonical = (
+            None
+            if not isinstance(restore_database_state, Mapping)
+            else restore_database_state.get("canonical")
+        )
+        observations["applied_migrations"] = (
+            None
+            if not isinstance(canonical, Mapping)
+            or canonical.get("migration_table_present") is not True
+            else canonical.get("applied_migrations")
+        )
     return observations
 
 

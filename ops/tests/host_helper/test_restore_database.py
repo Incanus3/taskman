@@ -308,7 +308,13 @@ def test_rebuild_intent_is_durable_before_exact_registered_temporary_drop(
     monkeypatch.setattr(
         restore_database,
         "run_command",
-        lambda argv, **_kwargs: calls.append(argv) or _completed(argv, b""),
+        lambda argv, **_kwargs: calls.append(argv)
+        or _completed(
+            argv,
+            b"0\n"
+            if "SELECT count(*) FROM pg_catalog.pg_database" in argv[-1]
+            else b"",
+        ),
     )
 
     restore_database.drop_registered_temporary(

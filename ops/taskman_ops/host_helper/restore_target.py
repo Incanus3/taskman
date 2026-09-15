@@ -449,11 +449,30 @@ def replace_restore_target(paths: ManagedPaths, record: RestoreTarget) -> None:
             except FileNotFoundError:
                 pass
 
+
+def remove_restore_target(paths: ManagedPaths) -> None:
+    """Remove the validated binding and durably flush its parent directory."""
+
+    paths, owner_uid, root = _prepare_paths(paths)
+    target = Path(paths.local(paths.restore_target_path))
+    _safe_file(target, owner_uid=owner_uid)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        os.unlink(target.name, dir_fd=descriptor)
+        os.fsync(descriptor)
+    except OSError as error:
+        raise RecordError("unable to remove restore target") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
 __all__ = [
     "RestoreTarget",
     "allocate_safety_attempt",
     "append_safety_attempt",
     "replace_restore_target",
+    "remove_restore_target",
     "retire_safety_attempts",
     "restore_target_sha256",
     "safety_attempt_prune_ids",
