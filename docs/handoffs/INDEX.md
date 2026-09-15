@@ -7,8 +7,8 @@ This is the complete index of current repository handoffs.
 - [Projects without primary directories](projects-without-primary-directories.md) — active —
   Remove machine-specific Project paths without selecting a replacement agent model —
   `$resume projects-without-primary-directories`
-- [Operations VPS readiness](ops-vps-readiness.md) — active — Decide the remaining load-bearing
-  clean-source drift finding before any separately authorized staging or integration action —
+- [Operations VPS readiness](ops-vps-readiness.md) — active — Local reconciliation verification is
+  complete; resume only separately authorized clean staging recreation and real-host acceptance —
   `$resume ops-vps-readiness`
 - [Operations CLI UX](operations-cli-ux.md) — active — Finish readable progress, outcome, and provisioning-rerun design — `$resume operations-cli-ux`
 - [PostgreSQL host-side Python](postgresql-host-python.md) — parked — Finalize the approved-scope refactor specification and plan when selected — `$resume postgresql-host-python`

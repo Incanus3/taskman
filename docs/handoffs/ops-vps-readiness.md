@@ -12,22 +12,20 @@ does not authorize a host reset, provider/DNS change, deployment, publication, p
   [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
   [operator runbook](../deployment.md).
 - Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
-  remain open for a load-bearing final-review finding; the parent remains open for external
-  acceptance.
+  are closed; the parent remains open for external acceptance.
 
 ## Current checkpoint
 
-The current reviewed head is `9f7647c5e80558277bfc572e7045b7d517d62a49` on
-`dedicated-host-deployment-automation`. The single final-review fix wave resolved failed-verification
-evidence, finalized helper-upload cleanup, and local/host archive-validation parity. Its scoped
-re-review left one Important, load-bearing defect: production deploy/provision target resolution can
-fail on clean-source drift before the bounded refresh loop, while interactive post-confirmation
-source or host-authority drift can continue contrary to the runbook without consuming that bound.
-Do not treat this branch as merge-ready until the operator decides how to handle that residual.
+The locally verified head is `934baff3c282627efb58fd77bde3325807147973` on
+`dedicated-host-deployment-automation`. The final-review corrections preserve failed-verification
+evidence, remove finalized helper uploads, align local/host archive validation, and reconcile
+clean-source drift. Production deploy and provision now retry resolution-time drift through the
+complete pre-confirmation cycle within one shared bound; source or material-host drift after
+confirmation requires a new invocation. A distinct scoped reviewer approved the correction.
 
-Latest local evidence: compileall and `pytest ops/tests` passed at the reviewed head, with 1,452 tests
-in 323.91 seconds. The preceding final implementation checkpoint also passed locked dependency
-synchronization, shell syntax, command-help surfaces, and `mix precommit` (805 tests). Clean and
+Latest local evidence: compileall and `pytest ops/tests` passed at the reviewed head, with 1,462 tests
+in 344.70 seconds; `mix precommit` passed 805 tests. The preceding final implementation checkpoint
+also passed locked dependency synchronization, shell syntax, and command-help surfaces. Clean and
 controlled-dirty release builds passed there, including exact-input cache
 reuse and ignored-canary exclusion. Both helper packages ran under `python3 -I -S`; the extracted
 release terminal test and systemd diagnostic tests passed.

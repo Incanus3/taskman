@@ -51,9 +51,9 @@ deletion, provider action, or new provisioning is authorized by this documentati
 
 ## Checkpoint, scope, and execution
 
-Local implementation is present on GitButler branch `dedicated-host-deployment-automation`, but the
-final scoped re-review retains one load-bearing clean-source drift finding. Beads is the
-authoritative delivery state and records `tas-sr4b.11` in progress and `tas-6dkg` open; the
+Local implementation and verification are complete on GitButler branch
+`dedicated-host-deployment-automation`. Beads is the authoritative delivery state and records
+`tas-sr4b.11` and `tas-6dkg` closed after final scoped review; the
 [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation checkpoint.
 The original approved checkpoint was `df3e47b304161e251a65e0b642fa743f80679c70`; the subsequent
 compatibility amendment is committed and governs the implementation.
@@ -574,16 +574,14 @@ the reconciliation specification status/checklist, and affected handoffs after e
 implemented behavior. Keep detailed acceptance evidence in `tas-sr4b.11`; durable operator semantics
 belong in the design/runbook. Do not create a second architecture narrative.
 
-- [ ] Resolve or explicitly accept the remaining clean-source drift defect. The single final-review
-  fix wave addressed three of four Important findings; scoped re-review found that production
-  resolution can still fail before bounded refresh and that interactive post-confirmation drift can
-  continue contrary to the runbook. Then have a distinct verifier trace
+- [x] Resolve the final clean-source drift defect, then have a distinct verifier trace
   the public entry paths and actual record/DB consequences against
   every acceptance family below. Reproduce focused checks independently; identify untested or
   simulated boundaries explicitly. Fix scoped findings, then reverify changed boundaries.
 - [x] Run the required local gates from the repository root. At the final implementation checkpoint,
-  `uv sync --locked --project ops`, shell syntax, help checks, and `mix precommit` succeeded. At the
-  reviewed fix head, compileall and the final operations suite passed 1,452 tests in 323.91 seconds:
+  `uv sync --locked --project ops`, shell syntax, and help checks succeeded. At the reviewed fix
+  head, compileall and the final operations suite passed 1,462 tests in 344.70 seconds, and
+  `mix precommit` passed 805 tests:
 
   ```sh
   uv sync --locked --project ops
