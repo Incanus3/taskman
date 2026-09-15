@@ -111,7 +111,8 @@ def restore(
     warnings: tuple[str, ...] = ()
     prior_mutation_state = "unchanged"
     try:
-        validate_restore_inspection_preflight(remote, config)
+        inspection = validate_restore_inspection_preflight(remote, config)
+        warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
         cleanup_cycles = 0
         reconfirmation_cycles = 0
         while True:
@@ -137,6 +138,8 @@ def restore(
                 if capacity_required
                 else None
             )
+            if preflight is not None:
+                warnings = merge_warnings(warnings, tuple(getattr(preflight, "warnings", ())))
             with temporary_scheduled_backup_helper_package() as scheduler_package:
                 plan = _plan(
                     config,
@@ -205,7 +208,8 @@ def restore(
                     )
                     prior_mutation_state = str(cleanup_facts["mutation_state"])
                     cleanup_cycles += 1
-                    validate_restore_inspection_preflight(remote, config)
+                    inspection = validate_restore_inspection_preflight(remote, config)
+                    warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
                     continue
                 if (
                     plan["remaining_restore_bytes"] != 0
@@ -301,7 +305,8 @@ def restore(
                         raise _safety(
                             "restore replacement normalization did not converge"
                         )
-                    validate_restore_inspection_preflight(remote, config)
+                    inspection = validate_restore_inspection_preflight(remote, config)
+                    warnings = merge_warnings(warnings, tuple(getattr(inspection, "warnings", ())))
                     continue
                 if result.outcome != "succeeded":
                     raise result_error(

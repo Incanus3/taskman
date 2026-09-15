@@ -11,8 +11,7 @@ from ..host.acceptance import validate_operational_host, validate_restore_inspec
 from ..host.facts import (
     HostFacts,
     collect_operational_preflight,
-    collect_restore_inspection_preflight,
-    collect_restore_preflight,
+    collect_runtime_preflight,
 )
 from ..remote import Remote
 
@@ -28,6 +27,13 @@ class RestorePreflightFacts:
     backup_available_disk_bytes: int
     database_available_disk_bytes: int
     database_size_bytes: Mapping[str, int | None]
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RestoreInspectionFacts:
+    host_facts: HostFacts | object
+    warnings: tuple[str, ...] = ()
 
 
 def validate_operational_preflight(
@@ -66,39 +72,15 @@ def validate_restore_preflight(
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("restore preflight requires an environment configuration")
     facts = (host_validator or validate_operational_host)(remote, config)
-    runtime, database = collect_restore_preflight(remote, config)
+    runtime = collect_runtime_preflight(remote)
     if not runtime.succeeded:
         raise _preflight(
             "runtime environment ownership, mode, required keys, or distro Python is invalid"
         )
-    if not database.succeeded:
-        raise _preflight(
-            "PostgreSQL maintenance access, database role, or restore capacity preflight failed"
-        )
+    result = _restore_helper_preflight(remote, config, "capacity")
     try:
-        lines = database.stdout.splitlines()
-        if not lines or len(lines) > 4:
-            raise ValueError
-        database_available_bytes = int(lines[0])
-        database_sizes: dict[str, int | None] = {
-            "canonical": None,
-            "temporary": None,
-            "retired": None,
-        }
-        observed_roles: set[str] = set()
-        for line in lines[1:]:
-            role, separator, raw_size = line.partition("=")
-            if (
-                separator != "="
-                or role not in database_sizes
-                or role in observed_roles
-            ):
-                raise ValueError
-            size = int(raw_size)
-            if size <= 0:
-                raise ValueError
-            database_sizes[role] = size
-            observed_roles.add(role)
+        database_available_bytes = result.state["database_available_bytes"]
+        database_sizes = result.state["database_size_bytes"]
         available_bytes = getattr(facts, "available_disk_bytes")
         backup_available_bytes = getattr(facts, "backup_available_disk_bytes")
         if (
@@ -114,6 +96,7 @@ def validate_restore_preflight(
         backup_available_bytes,
         database_available_bytes,
         database_sizes,
+        result.warnings,
     )
 
 
@@ -122,20 +105,68 @@ def validate_restore_inspection_preflight(
     config: EnvironmentConfig,
     *,
     host_validator: HostValidator | None = None,
-) -> HostFacts | object:
+) -> RestoreInspectionFacts:
     """Validate cleanup and discovery authority without observing capacity."""
 
     if not isinstance(config, EnvironmentConfig):
         raise TypeError("restore inspection preflight requires an environment configuration")
     facts = (host_validator or validate_restore_inspection_host)(remote, config)
-    runtime, database = collect_restore_inspection_preflight(remote, config)
+    runtime = collect_runtime_preflight(remote)
     if not runtime.succeeded:
         raise _preflight(
             "runtime environment ownership, mode, required keys, or distro Python is invalid"
         )
-    if not database.succeeded:
-        raise _preflight("PostgreSQL maintenance access or database role preflight failed")
-    return facts
+    result = _restore_helper_preflight(remote, config, "inspection")
+    return RestoreInspectionFacts(facts, result.warnings)
+
+
+def _restore_helper_preflight(remote: Remote, config: EnvironmentConfig, mode: str):
+    from .helper import database_settings, request, run_request
+
+    message = (
+        "PostgreSQL maintenance access or database role preflight failed"
+        if mode == "inspection"
+        else "PostgreSQL maintenance access, database role, or restore capacity preflight failed"
+    )
+    try:
+        result = run_request(
+            remote,
+            request(
+                "restore_preflight",
+                config,
+                parameters={
+                    "mode": mode,
+                    "credentials_path": "/etc/taskman/pgpass",
+                    "database": database_settings(config),
+                },
+            ),
+        )
+    except OpsError as error:
+        raise _preflight(message, warnings=error.warnings) from None
+    expected = {"mode"} if mode == "inspection" else {
+        "mode", "database_available_bytes", "database_size_bytes"
+    }
+    if result.outcome != "succeeded" or set(result.state) != expected or result.state["mode"] != mode:
+        raise _preflight(message, warnings=result.warnings)
+    if mode == "capacity":
+        sizes = result.state["database_size_bytes"]
+        counts = (
+            result.state["database_available_bytes"],
+            *(sizes.values() if isinstance(sizes, Mapping) else ()),
+        )
+        if (
+            not isinstance(sizes, Mapping)
+            or set(sizes) != {"canonical", "temporary", "retired"}
+            or type(result.state["database_available_bytes"]) is not int
+            or not 0 < result.state["database_available_bytes"] <= (1 << 63) - 1
+            or any(
+                count is not None
+                and (type(count) is not int or not 0 < count <= (1 << 63) - 1)
+                for count in counts
+            )
+        ):
+            raise _preflight(message, warnings=result.warnings)
+    return result
 
 
 def validate_cleanup_preflight(
@@ -151,18 +182,20 @@ def validate_cleanup_preflight(
     return (host_validator or validate_restore_inspection_host)(remote, config)
 
 
-def _preflight(message: str) -> OpsError:
+def _preflight(message: str, *, warnings: tuple[str, ...] = ()) -> OpsError:
     return OpsError(
         ExitStatus.REMOTE_PREFLIGHT,
         "preflight",
         message,
         changed=False,
         next_action=f"{message}; correct this prerequisite before retrying",
+        warnings=warnings,
     )
 
 
 __all__ = [
     "RestorePreflightFacts",
+    "RestoreInspectionFacts",
     "validate_cleanup_preflight",
     "validate_operational_preflight",
     "validate_restore_inspection_preflight",

@@ -38,6 +38,7 @@ from taskman_ops.host_helper.operations.discover import (
 )
 from taskman_ops.host_helper.operations.rollback import rollback
 from taskman_ops.host_helper.operations.restore import restore
+from taskman_ops.host_helper.operations.preflight import provision_pgpass_authority, restore_preflight
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.state import (
     mutation_observation_availability,
@@ -391,6 +392,7 @@ _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
     "cleanup": cleanup,
     "rollback": rollback,
     "restore": restore,
+    "restore_preflight": restore_preflight,
 }
 
 if frozenset(_DISPATCH) != frozenset(OPERATION_NAMES):
@@ -450,6 +452,11 @@ def _dispatch(request: HostRequest) -> HostResult:
 
 def main() -> int:
     """Read one bounded request and emit exactly one bounded redacted result."""
+
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "provision-pgpass-authority":
+            return provision_pgpass_authority(tuple(sys.argv[2:]), sys.stdin.buffer)
+        return 2
 
     payload = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     operation = _FALLBACK_OPERATION

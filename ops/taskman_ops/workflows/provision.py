@@ -46,6 +46,7 @@ from ..services.postgresql import (
     render_role_password_input,
 )
 from .deploy import _confirm_downgrade, _downgrade_acknowledgment, deploy_first_release
+from .helper import merge_warnings
 
 
 AcceptanceSteps = tuple[str, ...]
@@ -152,6 +153,7 @@ def provision(
 
     remote = cap.connect(config)
     confirmed_starting_state: dict[str, object] | None = None
+    warnings: tuple[str, ...] = ()
     try:
         while True:
             # Discovery is a complete immutable snapshot.  It must precede every
@@ -181,6 +183,7 @@ def provision(
                 clean_inputs = identify_clean_inputs(_repository_root())
                 continue
             authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
+            warnings = merge_warnings(warnings, tuple(getattr(authority, "warnings", ())))
             starting_state = _starting_state(authority, discovery, release_input)
             plan = _redacted_plan(cap.render_plan(config, release_input))
             downgrade_required, downgrade_evidence = _provision_downgrade_authority(
@@ -202,6 +205,7 @@ def provision(
                     stage="planned",
                     facts={"plan": plan, "discovery": "validated"},
                     next_action="review the redacted plan and rerun without --dry-run only after confirmation",
+                    warnings=warnings,
                 ))
 
             if not yes and not cap.confirm(plan):
@@ -213,6 +217,7 @@ def provision(
                     facts={"plan": plan},
                     next_action="review the redacted plan and confirm a later provisioning run when ready",
                     exit_status=ExitStatus.SAFETY,
+                    warnings=warnings,
                 ))
 
             # This is the only state ordinary confirmation authorizes.  Keep
@@ -239,6 +244,7 @@ def provision(
                         facts={"plan": plan},
                         next_action="review the downgrade or unknown-order evidence before retrying",
                         exit_status=ExitStatus.SAFETY,
+                        warnings=warnings,
                     ))
 
             # Confirmation authorizes only the observed resource authority. A
@@ -265,6 +271,9 @@ def provision(
                 clean_inputs = identify_clean_inputs(_repository_root())
                 continue
             refreshed_authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
+            warnings = merge_warnings(
+                warnings, tuple(getattr(refreshed_authority, "warnings", ()))
+            )
             refreshed_downgrade_required, refreshed_downgrade_evidence = _provision_downgrade_authority(
                 remote, config, refreshed_input
             )
@@ -297,21 +306,27 @@ def provision(
     except OpsError as error:
         return _close_result(
             remote,
-            _pre_release_failure(
-                environment_name, error, starting_state=confirmed_starting_state
+            replace(
+                _pre_release_failure(
+                    environment_name, error, starting_state=confirmed_starting_state
+                ),
+                warnings=merge_warnings(warnings, error.warnings),
             ),
         )
     except TypeError:
-        return _close_result(remote, _pre_release_failure(
-            environment_name,
-            OpsError(
-                ExitStatus.REMOTE_PREFLIGHT,
-                "provisioning",
-                "provisioning convergence returned invalid capability evidence",
-                changed=False,
-                next_action="inspect the provisioning boundary and retry",
+        return _close_result(remote, replace(
+            _pre_release_failure(
+                environment_name,
+                OpsError(
+                    ExitStatus.REMOTE_PREFLIGHT,
+                    "provisioning",
+                    "provisioning convergence returned invalid capability evidence",
+                    changed=False,
+                    next_action="inspect the provisioning boundary and retry",
+                ),
+                starting_state=confirmed_starting_state,
             ),
-            starting_state=confirmed_starting_state,
+            warnings=warnings,
         ))
     except BaseException:
         _close_remote(remote)
@@ -359,6 +374,7 @@ def provision(
                         ),
                     ),
                 },
+                warnings=merge_warnings(warnings, release.warnings),
             ),
         )
     return _close_result(remote, WorkflowResult(
@@ -381,6 +397,7 @@ def provision(
             "acceptance_steps": _ACCEPTANCE_STEPS,
         },
         next_action="complete the listed interactive acceptance steps; they are not automated",
+        warnings=merge_warnings(warnings, release.warnings),
     ))
 
 
@@ -855,6 +872,7 @@ def _pre_release_failure(
         },
         next_action=error.next_action or "retry provisioning after correcting the reported boundary",
         exit_status=error.status,
+        warnings=error.warnings,
     )
 
 

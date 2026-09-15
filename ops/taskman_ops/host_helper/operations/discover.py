@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import grp
+import pwd
 import re
 import stat
 
@@ -53,6 +55,9 @@ _SCHEDULER_RESOURCES = {
     "timer": Path("/etc/systemd/system/taskman-backup.timer"),
     "environment": Path("/etc/taskman/taskman-backup.env"),
 }
+_RESOURCE_DIGEST_KEYS = frozenset(
+    {"taskman_service", "backup_environment", "backup_service", "backup_timer"}
+)
 
 
 class _InvalidCursor(ValueError):
@@ -99,14 +104,26 @@ def provision_authority(request: HostRequest) -> HostResult:
     try:
         if request.operation != "provision_authority" or request.expected_state:
             raise ValueError("provision authority request is incomplete")
-        if set(request.parameters) != {"database", "postgres_package_track"}:
+        if set(request.parameters) != {"database", "postgres_package_track", "resource_digests"}:
             raise ValueError("provision authority request is incomplete")
         package_track = request.parameters["postgres_package_track"]
         if package_track is not None and (type(package_track) is not str or not package_track.isdecimal()):
             raise ValueError("PostgreSQL package track is invalid")
         database = database_mapping(request.parameters["database"])
+        resource_digests = request.parameters["resource_digests"]
+        if (
+            not isinstance(resource_digests, Mapping)
+            or set(resource_digests) != _RESOURCE_DIGEST_KEYS
+            or any(type(value) is not str or _SHA256_RE.fullmatch(value) is None for value in resource_digests.values())
+        ):
+            raise ValueError("managed resource digests are invalid")
         paths = ManagedPaths.from_mapping(request.paths)
+        install_root_was_absent = not paths.local(paths.install_root).exists()
         with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
+            _validate_managed_resources(
+                paths, resource_digests,
+                allow_lock_created_install_root=install_root_was_absent,
+            )
             state = observe_host_state(paths, allow_selection_transition=True)
             database_state = _observe_postgresql_authority(database, package_track)
             # A provision plan may only call an existing database empty when
@@ -168,6 +185,54 @@ def provision_authority(request: HostRequest) -> HostResult:
         }
     )
     return _success(request, projection, state.warnings)
+
+
+def _validate_managed_resources(
+    paths: ManagedPaths, digests: Mapping[str, object], *,
+    allow_lock_created_install_root: bool = False,
+) -> None:
+    resources = (
+        (paths.local(paths.install_root), "directory", "root", "root", 0o755, None),
+        (paths.local(paths.release_root), "directory", "root", "root", 0o755, None),
+        (paths.local(paths.deployment_root), "directory", "root", "root", 0o700, None),
+        (paths.local(paths.selection_root), "directory", "root", "root", 0o750, None),
+        (paths.local(paths.backup_protection_root), "directory", "root", "root", 0o750, None),
+        (paths.local(paths.backup_root), "directory", "root", "root", 0o700, None),
+        (Path("/etc/taskman"), "directory", "root", "taskman", 0o750, None),
+        (Path("/var/lib/taskman"), "directory", "taskman", "taskman", 0o700, None),
+        (Path("/var/lock/taskman"), "directory", "root", "root", 0o700, None),
+        (Path("/usr/local/lib/taskman"), "directory", "root", "root", 0o755, None),
+        (paths.local(paths.lifecycle_lock_path), "file", "root", "root", 0o600, None),
+        (Path("/etc/taskman/taskman-backup.env"), "file", "root", "root", 0o600, digests["backup_environment"]),
+        (Path("/etc/systemd/system/taskman.service"), "file", "root", "root", 0o644, digests["taskman_service"]),
+        (Path("/etc/systemd/system/taskman-backup.service"), "file", "root", "root", 0o644, digests["backup_service"]),
+        (Path("/etc/systemd/system/taskman-backup.timer"), "file", "root", "root", 0o644, digests["backup_timer"]),
+        (Path("/usr/local/lib/taskman/taskman-backup.pyz"), "file", "root", "root", 0o750, None),
+    )
+    for path, kind, owner, group, mode, digest in resources:
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            continue
+        expected_uid = pwd.getpwnam(owner).pw_uid
+        expected_gid = grp.getgrnam(group).gr_gid
+        valid_kind = stat.S_ISDIR(details.st_mode) if kind == "directory" else stat.S_ISREG(details.st_mode)
+        if (
+            stat.S_ISLNK(details.st_mode)
+            or not valid_kind
+            or details.st_uid != expected_uid
+            or details.st_gid != expected_gid
+            or (
+                stat.S_IMODE(details.st_mode) != mode
+                and not (
+                    allow_lock_created_install_root
+                    and path == paths.local(paths.install_root)
+                    and stat.S_IMODE(details.st_mode) == 0o750
+                )
+            )
+            or (digest is not None and sha256_file(path) != digest)
+        ):
+            raise ValueError("managed resource authority is invalid")
 
 
 def _observe_postgresql_authority(

@@ -27,81 +27,6 @@ test -f "$path" && test ! -L "$path"
 test "$(stat --format='%U:%G:%a' -- "$path")" = root:root:600
 cmp -s - "$path"
 '''
-_PGPASS_REUSE_SCRIPT = r'''set -eu
-path=$1 host=$2 port=$3 role=$4 database=$5
-if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-  # A missing managed pgpass is the one supported partial-install boundary.
-  # libpq rejects a pipe as PGPASSFILE. Parse exactly the rendered line and
-  # give psql only its password environment variable; no passfile is written.
-  exec timeout 60s /usr/bin/python3 -c '
-import os
-import shutil
-import sys
-
-def refuse():
-    raise SystemExit(1)
-
-def parse(raw):
-    if not raw.endswith(b"\n") or raw[:-1].find(b"\n") >= 0 or b"\r" in raw:
-        refuse()
-    fields = []
-    field = bytearray()
-    escaped = False
-    for byte in raw[:-1]:
-        if escaped:
-            if byte not in (58, 92):
-                refuse()
-            field.append(byte)
-            escaped = False
-        elif byte == 92:
-            escaped = True
-        elif byte == 58:
-            fields.append(bytes(field))
-            field.clear()
-        else:
-            field.append(byte)
-    if escaped:
-        refuse()
-    fields.append(bytes(field))
-    if len(fields) != 5 or not fields[4]:
-        refuse()
-    return fields
-
-fields = parse(sys.stdin.buffer.read())
-expected = [item.encode("utf-8") for item in sys.argv[1:]]
-if len(expected) != 4 or fields[:4] != expected:
-    refuse()
-try:
-    password = fields[4].decode("utf-8")
-except UnicodeDecodeError:
-    refuse()
-psql = shutil.which("psql")
-if psql is None:
-    refuse()
-os.execve(psql, [psql, "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--no-password", "--host", sys.argv[1], "--port", sys.argv[2], "--username", sys.argv[4], "--dbname", sys.argv[3], "--command", "SELECT 1"], {"PGPASSWORD": password})
-' "$host" "$port" "$database" "$role" >/dev/null 2>&1
-fi
-test -f "$path" && test ! -L "$path"
-test "$(stat --format='%U:%G:%a' -- "$path")" = root:root:600
-cmp -s - "$path"
-export PGPASSFILE=$path
-psql --no-psqlrc --set=ON_ERROR_STOP=1 --no-password --host "$host" --port "$port" \
-  --username "$role" --dbname "$database" --command 'SELECT 1' >/dev/null 2>&1
-'''
-_RESOURCE_REUSE_SCRIPT = r'''set -eu
-check() {
-  path=$1 kind=$2 owner=$3 group=$4 mode=$5 digest=$6
-  if [ ! -e "$path" ] && [ ! -L "$path" ]; then return 0; fi
-  test ! -L "$path"
-  test "$(stat --format='%F:%U:%G:%a' -- "$path")" = "$kind:$owner:$group:$mode"
-  if [ -n "$digest" ]; then test "$(sha256sum -- "$path" | awk '{print $1}')" = "$digest"; fi
-}
-while [ "$#" -gt 0 ]; do
-  check "$1" "$2" "$3" "$4" "$5" "$6"
-  shift 6
-done
-'''
-
 _SCHEDULER_RESOURCE_PATHS = frozenset(
     {
         "/usr/local/lib/taskman/taskman-backup.pyz",
@@ -148,6 +73,14 @@ class ProvisioningInputs:
             _SCHEDULER_RESOURCE_PATHS
         ):
             raise ValueError("scheduler creation authority is invalid")
+
+
+class ProvisionAuthority(dict[str, object]):
+    """Plan authority with cleanup warnings outside mapping equality."""
+
+    def __init__(self, state: Mapping[str, object], warnings: tuple[str, ...] = ()) -> None:
+        super().__init__(state)
+        self.warnings = warnings
 
 
 @deploy("Converge Taskman host")
@@ -217,29 +150,11 @@ def validate_existing_credential_authority(remote: object, inputs: ProvisioningI
     if not callable(runner):
         raise TypeError("credential authority requires a remote command runner")
     config = inputs.config
-    checks = (
-        (_RUNTIME_REUSE_SCRIPT, ("/etc/taskman/taskman.env",), inputs.runtime_environment),
-        (
-            _PGPASS_REUSE_SCRIPT,
-            (
-                "/etc/taskman/pgpass",
-                config.database_host,
-                str(config.database_port),
-                config.database_role,
-                config.database_name,
-            ),
-            inputs.pgpass,
-        ),
+    result = runner(
+        ("sh", "-ceu", _RUNTIME_REUSE_SCRIPT, "taskman-credential-authority", "/etc/taskman/taskman.env"),
+        sudo=True, stdin=inputs.runtime_environment, sensitive=True,
     )
-    for script, arguments, content in checks:
-        result = runner(
-            ("sh", "-ceu", script, "taskman-credential-authority", *arguments),
-            sudo=True,
-            stdin=content,
-            sensitive=True,
-        )
-        if getattr(result, "succeeded", False):
-            continue
+    if not getattr(result, "succeeded", False):
         raise OpsError(
             ExitStatus.SAFETY,
             "credential-preflight",
@@ -247,75 +162,39 @@ def validate_existing_credential_authority(remote: object, inputs: ProvisioningI
             changed=False,
             next_action="inspect the existing credential and database authority before retrying",
         )
+    from .helper_client.package import temporary_helper_package
+    from .helper_client.runner import invoke_sensitive_pgpass_authority, new_correlation_id
 
-
-def validate_existing_resource_authority(remote: object, inputs: ProvisioningInputs) -> None:
-    """Validate every already-present stable convergence resource without repair.
-
-    The pyinfra declarations may create an absent prerequisite, but they must
-    not use their mode/owner convergence as an adoption mechanism.  This
-    admission is deliberately read-only: existing directories, account-home
-    state, lock, helper, unit files, and secret-parent records must have their
-    documented no-link metadata before a declaration can touch them.  Exact
-    unit and helper bytes are bound to the same rendered systemd plan that
-    convergence will install.
-    """
-
-    if not isinstance(inputs, ProvisioningInputs):
-        raise TypeError("resource authority requires provisioning inputs")
-    runner = getattr(remote, "run", None)
-    if not callable(runner):
-        raise TypeError("resource authority requires a remote command runner")
-
-    plan = build_systemd_plan(inputs.config)
-    assets = {asset.destination: _systemd_asset_sha256(asset) for asset in plan.assets}
-    config = inputs.config
-    roots = (
-        (config.install_root.as_posix(), "directory", "root", "root", "755", ""),
-        (config.release_root.as_posix(), "directory", "root", "root", "755", ""),
-        (config.deployment_root.as_posix(), "directory", "root", "root", "700", ""),
-        (f"{config.deployment_root}/selections", "directory", "root", "root", "750", ""),
-        (f"{config.deployment_root}/backup-protections", "directory", "root", "root", "750", ""),
-        (config.backup_root.as_posix(), "directory", "root", "root", "700", ""),
-        ("/etc/taskman", "directory", "root", "taskman", "750", ""),
-        ("/var/lib/taskman", "directory", "taskman", "taskman", "700", ""),
-        ("/var/lock/taskman", "directory", "root", "root", "700", ""),
-        ("/usr/local/lib/taskman", "directory", "root", "root", "755", ""),
-        (f"{config.install_root}/lifecycle.lock", "regular file", "root", "root", "600", ""),
-        # The executable can be an earlier supported helper and is refreshed
-        # only under the Task 5 lifecycle lock.  Units and environment are
-        # configuration, not versioned helper bytes: admit them only when
-        # they exactly match the rendered supported assets.
-        ("/etc/taskman/taskman-backup.env", "regular file", "root", "root", "600", _sha256(plan.backup_environment_content.encode("utf-8"))),
-        ("/etc/systemd/system/taskman.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman.service"]),
-        ("/etc/systemd/system/taskman-backup.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.service"]),
-        ("/etc/systemd/system/taskman-backup.timer", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.timer"]),
-        ("/usr/local/lib/taskman/taskman-backup.pyz", "regular file", "root", "root", "750", ""),
-    )
-    argv = ("sh", "-ceu", _RESOURCE_REUSE_SCRIPT, "taskman-resource-authority", *(value for row in roots for value in row))
-    result = runner(argv, sudo=True)
-    if getattr(result, "succeeded", False):
-        return
-    raise OpsError(
-        ExitStatus.SAFETY,
-        "resource-preflight",
-        "existing managed resource authority is incompatible and will not be replaced",
-        changed=False,
-        next_action="inspect the existing managed resource authority before retrying",
-    )
+    with temporary_helper_package() as package:
+        receipt = invoke_sensitive_pgpass_authority(
+            remote, package, correlation_id=new_correlation_id(),
+            host=config.database_host, port=config.database_port,
+            role=config.database_role, database=config.database_name, pgpass=inputs.pgpass,
+        )
+    if receipt.exit_status != 0:
+        raise OpsError(
+            ExitStatus.SAFETY, "credential-preflight",
+            "existing protected credential authority is incompatible and will not be replaced",
+            changed=False,
+            next_action="inspect the existing credential and database authority before retrying",
+            warnings=receipt.warnings,
+        )
+    return receipt
 
 
 def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> Mapping[str, object]:
     """Keep resource and secret validation as one pre-mutation capability."""
 
     authority = validate_preconvergence_authority(remote, inputs)
-    validate_existing_resource_authority(remote, inputs)
-    validate_existing_credential_authority(remote, inputs)
+    credential_receipt = validate_existing_credential_authority(remote, inputs)
     # Narrow legacy capability tests may replace the observer with a receipt.
     # Production's closed observer cannot return ``None``.
     if authority is None:
         return {}
-    return {**authority, "scheduler_create": _scheduler_create_authority(authority)}
+    return ProvisionAuthority(
+        {**authority, "scheduler_create": _scheduler_create_authority(authority)},
+        (*getattr(authority, "warnings", ()), *getattr(credential_receipt, "warnings", ())),
+    )
 
 
 def _scheduler_create_authority(authority: Mapping[str, object]) -> tuple[str, ...]:
@@ -356,6 +235,8 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
     from .workflows.helper import request, result_error, run_request
 
     plan = build_postgresql_plan(inputs.config)
+    systemd = build_systemd_plan(inputs.config)
+    assets = {asset.destination: _systemd_asset_sha256(asset) for asset in systemd.assets}
     authority_request = request(
         "provision_authority",
         inputs.config,
@@ -367,6 +248,12 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
                 "name": inputs.config.database_name,
             },
             "postgres_package_track": plan.package_track,
+            "resource_digests": {
+                "taskman_service": assets["/etc/systemd/system/taskman.service"],
+                "backup_environment": _sha256(systemd.backup_environment_content.encode("utf-8")),
+                "backup_service": assets["/etc/systemd/system/taskman-backup.service"],
+                "backup_timer": assets["/etc/systemd/system/taskman-backup.timer"],
+            },
         },
     )
     result = run_request(remote, authority_request)
@@ -441,7 +328,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             changed=False,
             next_action="inspect the existing record and PostgreSQL authority before retrying",
         ) from None
-    return dict(state)
+    return ProvisionAuthority(state, result.warnings)
 
 
 def _systemd_asset_sha256(asset: object) -> str:
@@ -469,5 +356,4 @@ __all__ = [
     "validate_existing_authority",
     "validate_preconvergence_authority",
     "validate_existing_credential_authority",
-    "validate_existing_resource_authority",
 ]

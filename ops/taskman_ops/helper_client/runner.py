@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 import re
 import secrets
@@ -12,7 +12,14 @@ from typing import Sequence
 
 from ..errors import ExitStatus, HelperTransportError, OpsError
 from .package import HelperPackage
-from ..host_protocol import MAX_OUTPUT_BYTES, HostRequest, HostResult, decode_result, encode_request
+from ..host_protocol import (
+    MAX_INPUT_BYTES,
+    MAX_OUTPUT_BYTES,
+    HostRequest,
+    HostResult,
+    decode_result,
+    encode_request,
+)
 from ..host_protocol.envelope import merge_result_warning
 from ..host_protocol.identifiers import validate_correlation_id
 from ..remote import CommandResult, Remote, UploadReceipt
@@ -29,6 +36,15 @@ MAX_STDERR_BYTES = 16 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _DECIMAL_RE = re.compile(r"[0-9]+\Z")
 _CLEANUP_WARNING = "transient helper cleanup was incomplete"
+
+
+@dataclass(frozen=True)
+class SensitiveHelperReceipt:
+    """Exit-only evidence from the finite supplied-pgpass helper entry."""
+
+    exit_status: int
+    warnings: tuple[str, ...] = ()
+    local_cleanup_incomplete: bool = False
 
 
 def new_correlation_id() -> str:
@@ -137,6 +153,102 @@ def invoke_helper(
     return result
 
 
+def invoke_sensitive_pgpass_authority(
+    remote: Remote,
+    package: HelperPackage,
+    *,
+    correlation_id: str,
+    host: str,
+    port: int,
+    role: str,
+    database: str,
+    pgpass: bytes,
+    deadline: float | None = None,
+) -> SensitiveHelperReceipt:
+    """Stage the verified helper and invoke its one secret-bearing entry."""
+
+    _validate_package(package)
+    correlation = validate_correlation_id(correlation_id)
+    if (
+        host not in {"127.0.0.1", "::1"}
+        or type(port) is not int
+        or not 1 <= port <= 65_535
+        or type(role) is not str
+        or type(database) is not str
+        or type(pgpass) is not bytes
+        or not pgpass
+        or len(pgpass) > MAX_INPUT_BYTES
+    ):
+        raise TypeError("sensitive helper invocation inputs are invalid")
+    if deadline is not None:
+        if type(deadline) not in {int, float}:
+            raise TypeError("helper invocation deadline is invalid")
+        remote = _DeadlineRemote(remote, float(deadline))
+    transfer_directory = _TRANSFER_ROOT / correlation
+    transfer_path = transfer_directory / _HELPER_NAME
+    invocation_directory = _INVOCATION_ROOT / correlation
+    installed_path = invocation_directory / _HELPER_NAME
+    cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]] = []
+    entry_dispatched = False
+    cleanup_warning = False
+    try:
+        administrator = _administrator_identity(remote)
+        _ensure_directory(remote, _TRANSFER_ROOT, administrator, sudo=False)
+        cleanup_targets.append((transfer_directory, transfer_path, False))
+        _create_directory(remote, transfer_directory, administrator, sudo=False)
+        receipt = remote.put(
+            package.path, transfer_path, mode=0o600, sensitive=True,
+            timeout=_CONTROL_TIMEOUT_SECONDS, sudo=False,
+        )
+        if not isinstance(receipt, UploadReceipt):
+            raise _safety_error("helper transfer receipt is invalid")
+        cleanup_warning = receipt.cleanup_warning
+        _assert_metadata(remote, transfer_path, administrator, "600", "regular file", sudo=False)
+        _assert_checksum(remote, transfer_path, package.sha256, sudo=False)
+        _ensure_directory(remote, _INVOCATION_ROOT, ("0", "0"), sudo=True)
+        cleanup_targets.append((invocation_directory, installed_path, True))
+        _create_directory(remote, invocation_directory, ("0", "0"), sudo=True)
+        _require_success(
+            remote,
+            ("install", "-o", "root", "-g", "root", "-m", "500", "--", transfer_path.as_posix(), installed_path.as_posix()),
+            sudo=True,
+            sensitive=True,
+        )
+        _assert_metadata(remote, installed_path, ("0", "0"), "500", "regular file", sudo=True)
+        _assert_checksum(remote, installed_path, package.sha256, sudo=True)
+        if not _remove_transfer(remote, transfer_directory, transfer_path, administrator):
+            cleanup_warning = True
+        else:
+            cleanup_targets.remove((transfer_directory, transfer_path, False))
+        entry_dispatched = True
+        command = _run(
+            remote,
+            (
+                "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed_path.as_posix(),
+                "provision-pgpass-authority", host, str(port), role, database,
+            ),
+            sudo=False,
+            stdin=pgpass,
+            sensitive=True,
+            stdout_limit=1,
+            stderr_limit=1,
+            timeout=_CONTROL_TIMEOUT_SECONDS,
+        )
+        if type(command.returncode) is not int or command.returncode not in {0, 2, 10}:
+            raise _safety_error("sensitive host helper returned invalid status")
+        status = command.returncode
+    except OpsError as error:
+        raise _cleanup_failure(error, remote, cleanup_targets, cleanup_warning, entry_dispatched) from None
+    except Exception:
+        raise _cleanup_failure(
+            _safety_error("transient helper invocation failed"), remote,
+            cleanup_targets, cleanup_warning, entry_dispatched,
+        ) from None
+    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets) or cleanup_warning
+    warnings = (_CLEANUP_WARNING,) if cleanup_warning else ()
+    return SensitiveHelperReceipt(status, warnings, cleanup_warning)
+
+
 class _DeadlineRemote:
     """Cap every transport step to one caller-owned absolute deadline."""
 
@@ -188,7 +300,13 @@ def _cleanup_failure(
 def _validate_inputs(package: HelperPackage, request: HostRequest) -> None:
     if not isinstance(package, HelperPackage) or not isinstance(request, HostRequest):
         raise TypeError("helper invocation requires a package and request")
-    if package.protocol_version != request.protocol_version or _SHA256_RE.fullmatch(package.sha256) is None:
+    if package.protocol_version != request.protocol_version:
+        raise _safety_error("helper package verification failed")
+    _validate_package(package)
+
+
+def _validate_package(package: HelperPackage) -> None:
+    if not isinstance(package, HelperPackage) or _SHA256_RE.fullmatch(package.sha256) is None:
         raise _safety_error("helper package verification failed")
     if package.path.is_symlink() or not package.path.is_file():
         raise _safety_error("helper package verification failed")

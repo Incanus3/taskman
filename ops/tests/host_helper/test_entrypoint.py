@@ -115,16 +115,19 @@ def invoke_entrypoint(
 ) -> Iterator[Stream]:
     original_stdin = entrypoint.sys.stdin
     original_stdout = entrypoint.sys.stdout
+    original_argv = entrypoint.sys.argv
     original_handler = entrypoint._DISPATCH[operation]
     stdout = Stream()
     entrypoint.sys.stdin = Stream(payload)
     entrypoint.sys.stdout = stdout
+    entrypoint.sys.argv = [entrypoint.__file__]
     entrypoint._DISPATCH[operation] = handler
     try:
         yield stdout
     finally:
         entrypoint.sys.stdin = original_stdin
         entrypoint.sys.stdout = original_stdout
+        entrypoint.sys.argv = original_argv
         entrypoint._DISPATCH[operation] = original_handler
 
 
@@ -153,6 +156,42 @@ def test_built_zipapp_emits_a_final_read_only_envelope(tmp_path: Path) -> None:
     }
 
 
+def test_built_zipapp_private_pgpass_entry_is_exit_only_and_finite(tmp_path: Path) -> None:
+    package = build_helper_package(tmp_path / "taskman-host.pyz")
+
+    malformed = subprocess.run(
+        [sys.executable, "-I", "-S", str(package.path), "provision-pgpass-authority", "127.0.0.1"],
+        input=b"secret-canary\n", capture_output=True, check=False,
+    )
+    mismatched = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(package.path), "provision-pgpass-authority",
+            "127.0.0.1", "5432", "taskman", "taskman_prod",
+        ],
+        input=b"127.0.0.1:5432:other:taskman:secret-canary\n",
+        capture_output=True, check=False,
+    )
+
+    assert malformed.returncode == 2
+    assert mismatched.returncode == 10
+    assert malformed.stdout == malformed.stderr == b""
+    assert mismatched.stdout == mismatched.stderr == b""
+
+
+def test_built_zipapp_refuses_unknown_private_entry_without_protocol_output(tmp_path: Path) -> None:
+    package = build_helper_package(tmp_path / "taskman-host.pyz")
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", str(package.path), "unknown-private-entry"],
+        input=b"secret-canary\n",
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == completed.stderr == b""
+
+
 def test_entrypoint_dispatches_bounded_preconvergence_authority_without_mutation() -> None:
     request = HostRequest(
         3,
@@ -163,6 +202,12 @@ def test_entrypoint_dispatches_bounded_preconvergence_authority_without_mutation
         {
             "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
             "postgres_package_track": None,
+            "resource_digests": {
+                "taskman_service": "1" * 64,
+                "backup_environment": "2" * 64,
+                "backup_service": "3" * 64,
+                "backup_timer": "4" * 64,
+            },
         },
     )
     received: list[HostRequest] = []

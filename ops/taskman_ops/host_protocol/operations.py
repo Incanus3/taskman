@@ -20,6 +20,7 @@ OPERATION_NAMES = frozenset(
         "list_releases",
         "provision_authority",
         "restore",
+        "restore_preflight",
         "rollback",
         "verify",
     }

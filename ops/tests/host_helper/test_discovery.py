@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,12 @@ from tests.support.environments import environment_config
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
+RESOURCE_DIGESTS = {
+    "taskman_service": "1" * 64,
+    "backup_environment": "2" * 64,
+    "backup_service": "3" * 64,
+    "backup_timer": "4" * 64,
+}
 REVISION = "a" * 40
 ARTIFACT_SHA256 = "b" * 64
 RELEASE_ID = build_release_id("0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=False)
@@ -398,6 +405,7 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
         {
             "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
             "postgres_package_track": None,
+            "resource_digests": RESOURCE_DIGESTS,
         },
     )
     calls: list[str] = []
@@ -443,12 +451,68 @@ def test_preconvergence_authority_binds_live_partial_migrations_before_pyinfra(
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
         )
     )
 
     assert result.outcome == "succeeded"
     assert result.state["applied_migrations"] == (20260905120000,)
+
+
+def test_preconvergence_authority_refuses_existing_resource_digest_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    postgres_calls: list[str] = []
+    monkeypatch.setattr(
+        discover_module,
+        "_observe_postgresql_authority",
+        lambda *_args: postgres_calls.append("postgres") or "ready",
+    )
+    service = tmp_path / "taskman.service"
+    expected = b"expected taskman service"
+    service.write_bytes(expected)
+    service.chmod(0o644)
+    original = discover_module._validate_managed_resources
+    monkeypatch.setattr(
+        discover_module.pwd,
+        "getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=os.geteuid()),
+    )
+    monkeypatch.setattr(
+        discover_module.grp,
+        "getgrnam",
+        lambda _name: SimpleNamespace(gr_gid=os.getegid()),
+    )
+
+    def validate(paths, digests, **kwargs):
+        monkeypatch.setattr(discover_module, "Path", lambda value: service if value == "/etc/systemd/system/taskman.service" else Path(value))
+        return original(paths, digests, **kwargs)
+
+    monkeypatch.setattr(discover_module, "_validate_managed_resources", validate)
+    request = HostRequest(
+        3, "provision_authority", CORRELATION, {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {
+            "database": {
+                "host": "127.0.0.1", "port": 5432,
+                "role": "taskman", "name": "taskman",
+            },
+            "postgres_package_track": None,
+            "resource_digests": {
+                **RESOURCE_DIGESTS,
+                "taskman_service": hashlib.sha256(expected).hexdigest(),
+            },
+        },
+    )
+    matching = discover_module.provision_authority(request)
+    service.write_bytes(b"foreign")
+    result = discover_module.provision_authority(request)
+
+    assert matching.outcome == "succeeded"
+    assert result.outcome == "refused"
+    assert postgres_calls == ["postgres"]
 
 
 def test_preconvergence_authority_preserves_database_absence_without_empty_evidence(
@@ -468,7 +532,7 @@ def test_preconvergence_authority_preserves_database_absence_without_empty_evide
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
         )
     )
 
@@ -506,7 +570,7 @@ def test_real_provision_authority_projection_passes_the_production_controller_sc
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
         )
     )
     import taskman_ops.workflows.helper as helper_module

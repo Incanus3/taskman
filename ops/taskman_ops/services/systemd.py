@@ -122,7 +122,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
         timer_path = "/etc/systemd/system/taskman-backup.timer"
         # A partially present scheduler may contain an earlier compatible
         # helper.  Generic convergence may lay down its missing timer, but
-        # must not start it before genesis owns the Task 5 pause/wait/refresh
+        # must not start it before genesis owns the lifecycle-locked pause/wait/refresh
         # sequence.  Only an entirely absent scheduler has no old executable
         # that this operation could accidentally launch.
         if service != "taskman-backup.timer" or (

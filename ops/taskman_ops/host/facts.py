@@ -155,38 +155,6 @@ test "$margin" -ge 67108864 || margin=67108864
 required=$(( database_bytes + margin ))
 test "$available_bytes" -ge "$required"
 '''
-_RESTORE_DATABASE_PREFLIGHT = r'''set -eu
-database_port=$1; database_role=$2; database_name=$3; backup_root=$4; pgpass=$5
-test -f "$pgpass" && test ! -L "$pgpass"
-test "$(stat -c '%U:%G:%a' -- "$pgpass")" = root:root:600
-command -v psql >/dev/null 2>&1
-command -v runuser >/dev/null 2>&1
-runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>&1
-role_ok=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=role="$database_role" --command "SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin" 2>/dev/null)
-test "$role_ok" = 1
-data_directory=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SHOW data_directory' 2>/dev/null)
-case "$data_directory" in /*) ;; *) exit 1;; esac
-database_available_bytes=$(df -B1 --output=avail "$data_directory" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
-case "$database_available_bytes" in ''|*[!0-9]*) exit 1;; esac
-available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
-case "$available_bytes" in ''|*[!0-9]*) exit 1;; esac
-test "$available_bytes" -ge 67108864
-printf '%s\n' "$database_available_bytes"
-temporary_name=${database_name}__restore_tmp
-retired_name=${database_name}__restore_old
-database_sizes=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=canonical="$database_name" --set=temporary="$temporary_name" --set=retired="$retired_name" --command "SELECT requested.role || '=' || pg_database_size(database.oid) FROM (VALUES ('canonical', :'canonical'), ('temporary', :'temporary'), ('retired', :'retired')) AS requested(role, name) JOIN pg_database AS database ON database.datname = requested.name ORDER BY CASE requested.role WHEN 'canonical' THEN 1 WHEN 'temporary' THEN 2 ELSE 3 END" 2>/dev/null)
-test -z "$database_sizes" || printf '%s\n' "$database_sizes"
-'''
-_RESTORE_INSPECTION_PREFLIGHT = r'''set -eu
-database_port=$1; database_role=$2; pgpass=$3
-test -f "$pgpass" && test ! -L "$pgpass"
-test "$(stat -c '%U:%G:%a' -- "$pgpass")" = root:root:600
-command -v psql >/dev/null 2>&1
-command -v runuser >/dev/null 2>&1
-runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>&1
-role_ok=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=role="$database_role" --command "SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin" 2>/dev/null)
-test "$role_ok" = 1
-'''
 _TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
 emit() { printf '%s=%s\n' "$1" "$2"; }
 root=$1
@@ -537,12 +505,10 @@ def collect_operational_preflight(
     return runtime, database
 
 
-def collect_restore_preflight(
-    remote: Remote, config: EnvironmentConfig
-) -> tuple[CommandResult, CommandResult]:
-    """Collect restore prerequisites without connecting to the canonical database."""
+def collect_runtime_preflight(remote: Remote) -> CommandResult:
+    """Collect the established protected runtime admission predicate."""
 
-    runtime = remote.run(
+    return remote.run(
         (
             "sh",
             "-ceu",
@@ -555,58 +521,6 @@ def collect_restore_preflight(
         stdin=None,
         sensitive=True,
     )
-    database = remote.run(
-        (
-            "sh",
-            "-ceu",
-            _RESTORE_DATABASE_PREFLIGHT,
-            "taskman-restore-database-preflight",
-            str(config.database_port),
-            config.database_role,
-            config.database_name,
-            config.backup_root.as_posix(),
-            _PGPASS,
-        ),
-        sudo=True,
-        stdin=None,
-        sensitive=True,
-    )
-    return runtime, database
-
-
-def collect_restore_inspection_preflight(
-    remote: Remote, config: EnvironmentConfig
-) -> tuple[CommandResult, CommandResult]:
-    """Collect authority required for read-only restore inspection and cleanup."""
-
-    runtime = remote.run(
-        (
-            "sh",
-            "-ceu",
-            _RUNTIME_PREFLIGHT,
-            "taskman-runtime-preflight",
-            _RUNTIME_ENVIRONMENT,
-            *_REQUIRED_RUNTIME_KEYS,
-        ),
-        sudo=True,
-        stdin=None,
-        sensitive=True,
-    )
-    database = remote.run(
-        (
-            "sh",
-            "-ceu",
-            _RESTORE_INSPECTION_PREFLIGHT,
-            "taskman-restore-inspection-preflight",
-            str(config.database_port),
-            config.database_role,
-            _PGPASS,
-        ),
-        sudo=True,
-        stdin=None,
-        sensitive=True,
-    )
-    return runtime, database
 
 
 def _capacity(remote: Remote, root: PurePosixPath) -> CommandResult:
@@ -914,6 +828,6 @@ __all__ = [
     "MINIMUM_DISK_BYTES",
     "MINIMUM_MEMORY_BYTES",
     "collect_host_facts",
-    "collect_restore_inspection_preflight",
-    "collect_restore_preflight",
+    "collect_operational_preflight",
+    "collect_runtime_preflight",
 ]

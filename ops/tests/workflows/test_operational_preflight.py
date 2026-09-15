@@ -114,100 +114,77 @@ def test_existing_host_preflight_checks_runtime_metadata_keys_database_and_capac
     assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
 
 
-def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_absent() -> None:
-    remote = RecordingRemote(
-        [CommandResult(0), CommandResult(0, "8589934592\nretired=4096\n")]
-    )
+def _stub_restore_result(monkeypatch, state, *, outcome="succeeded", warnings=()):
+    from taskman_ops.host_protocol import HostResult
+
+    captured = []
+    def run(_remote, request):
+        captured.append(request)
+        return HostResult.for_request(request, outcome, "observed", state, warnings)
+    monkeypatch.setattr("taskman_ops.workflows.helper.run_request", run)
+    return captured
+
+
+def test_restore_preflight_uses_packaged_capacity_projection(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    captured = _stub_restore_result(monkeypatch, {
+        "mode": "capacity", "database_available_bytes": 8589934592,
+        "database_size_bytes": {"canonical": None, "temporary": None, "retired": 4096},
+    }, warnings=("transient helper cleanup was incomplete",))
 
     facts = preflight_module.validate_restore_preflight(
-        remote,
-        config(),
-        host_validator=lambda *_args: _managed_host_facts(),
+        remote, config(), host_validator=lambda *_args: _managed_host_facts()
     )
 
-    assert len(remote.calls) == 2
-    database_argv, database_options = remote.calls[1]
-    assert database_argv[:2] == ("sh", "-ceu")
-    assert "runuser -u postgres" in database_argv[2]
-    assert "--dbname postgres" in database_argv[2]
-    assert "--dbname \"$database_name\"" not in database_argv[2]
-    assert "SHOW data_directory" in database_argv[2]
-    assert "pg_database_size" in database_argv[2]
-    assert config().database_name in database_argv
-    assert 'df -B1 --output=avail "$data_directory"' in database_argv[2]
-    assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+    assert captured[0].operation == "restore_preflight"
+    assert captured[0].parameters["mode"] == "capacity"
+    assert captured[0].parameters["credentials_path"] == "/etc/taskman/pgpass"
     assert facts.database_available_disk_bytes == 8589934592
-    assert facts.database_size_bytes == {
-        "canonical": None,
-        "temporary": None,
-        "retired": 4096,
-    }
+    assert facts.database_size_bytes["retired"] == 4096
+    assert facts.warnings == ("transient helper cleanup was incomplete",)
 
 
-def test_restore_inspection_preflight_omits_capacity_and_canonical_database_access() -> None:
-    remote = RecordingRemote([CommandResult(0), CommandResult(0)])
+def test_restore_inspection_preflight_omits_capacity(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    captured = _stub_restore_result(monkeypatch, {"mode": "inspection"})
 
-    preflight_module.validate_restore_inspection_preflight(
-        remote,
-        config(),
-        host_validator=lambda *_args: _managed_host_facts(),
+    observed = preflight_module.validate_restore_inspection_preflight(
+        remote, config(), host_validator=lambda *_args: _managed_host_facts()
     )
 
-    assert len(remote.calls) == 2
-    database_argv, database_options = remote.calls[1]
-    assert "runuser -u postgres" in database_argv[2]
-    assert "--dbname postgres" in database_argv[2]
-    assert "SHOW data_directory" not in database_argv[2]
-    assert "pg_database_size" not in database_argv[2]
-    assert "df -B1" not in database_argv[2]
-    assert config().backup_root.as_posix() not in database_argv
-    assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+    assert captured[0].parameters["mode"] == "inspection"
+    assert observed.host_facts == _managed_host_facts()
 
 
 @pytest.mark.parametrize(
     "facts",
     (
+        replace(_managed_host_facts(), available_disk_bytes=1, backup_available_disk_bytes=1),
         replace(
-            _managed_host_facts(),
-            available_disk_bytes=1,
-            backup_available_disk_bytes=1,
-        ),
-        replace(
-            _managed_host_facts(),
-            available_disk_bytes=0,
-            backup_available_disk_bytes=0,
+            _managed_host_facts(), available_disk_bytes=0, backup_available_disk_bytes=0,
             failed_checks=("install-root disk", "backup-root disk"),
         ),
     ),
 )
-def test_restore_inspection_admits_low_or_unobservable_capacity_for_cleanup(
-    facts: HostFacts,
-) -> None:
-    class FactRemote(RecordingRemote):
-        def facts(self) -> HostFacts:
-            return facts
-
-    remote = FactRemote([CommandResult(0), CommandResult(0)])
+def test_restore_inspection_admits_low_or_unobservable_capacity_for_cleanup(facts, monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(monkeypatch, {"mode": "inspection"})
 
     observed = preflight_module.validate_restore_inspection_preflight(
-        remote, config()
+        remote, config(), host_validator=lambda *_args: facts
     )
 
-    assert observed is facts
+    assert observed.host_facts is facts
 
 
 def test_cleanup_preflight_uses_host_facts_without_runtime_or_database_commands() -> None:
     facts = replace(
-        _managed_host_facts(),
-        available_disk_bytes=0,
-        backup_available_disk_bytes=0,
+        _managed_host_facts(), available_disk_bytes=0, backup_available_disk_bytes=0,
         failed_checks=("install-root disk", "backup-root disk"),
     )
-
     class FactRemote(RecordingRemote):
-        def facts(self) -> HostFacts:
+        def facts(self):
             return facts
-
     remote = FactRemote([])
 
     observed = preflight_module.validate_cleanup_preflight(remote, config())
@@ -216,67 +193,33 @@ def test_cleanup_preflight_uses_host_facts_without_runtime_or_database_commands(
     assert remote.calls == []
 
 
-@pytest.mark.parametrize("database_bytes", (40 * 1024**3, 8 * 1024**3))
-def test_restore_preflight_uses_native_postgres_volume_capacity_even_when_filesystems_differ(
-    database_bytes: int,
-) -> None:
-    remote = RecordingRemote(
-        [CommandResult(0), CommandResult(0, f"{database_bytes}\ncanonical=8192\n")]
-    )
-
-    facts = preflight_module.validate_restore_preflight(
-        remote,
-        config(),
-        host_validator=lambda *_args: _managed_host_facts(),
-    )
-
-    assert facts.database_available_disk_bytes == database_bytes
-    assert facts.available_disk_bytes == 40 * 1024**3
-    assert facts.database_size_bytes["canonical"] == 8192
-
-
-@pytest.mark.parametrize(
-    "capacity_output",
-    (
-        "",
-        "unknown\n",
-        "0\n",
-        "10000\ncanonical=unknown\n",
-        "10000\nunknown=1\n",
-        "10000\ncanonical=1\ncanonical=2\n",
-    ),
-)
-def test_restore_preflight_refuses_unobservable_postgres_volume_capacity(
-    capacity_output: str,
-) -> None:
-    remote = RecordingRemote([CommandResult(0), CommandResult(0, capacity_output)])
+def test_restore_preflight_refuses_invalid_packaged_capacity(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(monkeypatch, {"mode": "capacity", "database_available_bytes": 1})
 
     with pytest.raises(OpsError) as raised:
         preflight_module.validate_restore_preflight(
-            remote,
-            config(),
-            host_validator=lambda *_args: _managed_host_facts(),
+            remote, config(), host_validator=lambda *_args: _managed_host_facts()
         )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert "capacity" in raised.value.next_action
 
 
-def test_restore_preflight_reports_maintenance_database_failure_without_output() -> None:
-    remote = RecordingRemote(
-        [CommandResult(0), CommandResult(1, "secret-like-output", "secret-like-error")]
+def test_restore_preflight_maps_helper_refusal_and_retains_cleanup_warning(monkeypatch) -> None:
+    remote = RecordingRemote([CommandResult(0)])
+    _stub_restore_result(
+        monkeypatch, {}, outcome="refused",
+        warnings=("transient helper cleanup was incomplete",),
     )
 
     with pytest.raises(OpsError) as raised:
         preflight_module.validate_restore_preflight(
-            remote,
-            config(),
-            host_validator=lambda *_args: _managed_host_facts(),
+            remote, config(), host_validator=lambda *_args: _managed_host_facts()
         )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
-    assert "maintenance" in raised.value.next_action
-    assert "secret-like" not in str(raised.value)
+    assert raised.value.warnings == ("transient helper cleanup was incomplete",)
 
 
 @pytest.mark.parametrize("failed_call", (0, 1))

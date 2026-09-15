@@ -108,6 +108,26 @@ def test_provision_builds_the_material_plan_after_all_preconvergence_authority()
     ]
 
 
+def test_provision_retains_admission_cleanup_warning_without_plan_drift() -> None:
+    host = Host()
+
+    class Authority(dict):
+        warnings = ("transient helper cleanup was incomplete",)
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(
+        **{**capabilities.__dict__, "preflight": lambda *_args: Authority()}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", dry_run=True),
+        capabilities=capabilities,
+    )
+
+    assert result.stage == "planned"
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+
+
 def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation() -> None:
     """A conflicting recovered secret must never reach the convergence writer."""
 
@@ -154,7 +174,7 @@ def test_each_preconvergence_authority_refusal_stops_before_pyinfra_mutation(aut
     assert "provisioning" not in host.events
 
 
-def test_default_preflight_checks_existing_resources_before_the_secret_writers(
+def test_default_preflight_checks_packaged_resources_before_the_secret_writers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exact resource admission must precede both protected credential writes."""
@@ -172,11 +192,6 @@ def test_default_preflight_checks_existing_resources_before_the_secret_writers(
 
     monkeypatch.setattr(
         provisioning_module,
-        "validate_existing_resource_authority",
-        lambda *_args: checks.append("resources"),
-    )
-    monkeypatch.setattr(
-        provisioning_module,
         "validate_existing_credential_authority",
         lambda *_args: checks.append("credentials"),
     )
@@ -189,7 +204,7 @@ def test_default_preflight_checks_existing_resources_before_the_secret_writers(
     )
 
     assert result.exit_status is ExitStatus.OK
-    assert checks == ["observer", "resources", "credentials"] * 2
+    assert checks == ["observer", "credentials"] * 2
 
 
 def test_default_preflight_observes_record_and_postgresql_authority_before_local_reuse_checks(
@@ -209,11 +224,6 @@ def test_default_preflight_observes_record_and_postgresql_authority_before_local
     )
     monkeypatch.setattr(
         provisioning_module,
-        "validate_existing_resource_authority",
-        lambda *_args: checks.append("resources"),
-    )
-    monkeypatch.setattr(
-        provisioning_module,
         "validate_existing_credential_authority",
         lambda *_args: checks.append("credentials"),
     )
@@ -226,7 +236,7 @@ def test_default_preflight_observes_record_and_postgresql_authority_before_local
     )
 
     assert result.exit_status is ExitStatus.OK
-    assert checks == ["observer", "resources", "credentials"] * 2
+    assert checks == ["observer", "credentials"] * 2
 
 
 def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() -> None:

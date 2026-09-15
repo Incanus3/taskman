@@ -8,6 +8,7 @@ from io import StringIO
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+import hashlib
 import json
 import os
 import select
@@ -78,6 +79,15 @@ class _ControllerRemote:
         self.credentials = {} if credentials is None else dict(credentials)
         self.credential_mismatch = credential_mismatch
         self.credential_checks: list[tuple[str, bytes]] = []
+        self._root_staging = Path("/tmp") / f"taskman-e2e-run-{id(self)}"
+
+    def _local_path(self, value: object) -> Path:
+        path = Path(str(value))
+        try:
+            relative = path.relative_to("/run/taskman-ops")
+        except ValueError:
+            return path
+        return self._root_staging / relative
 
     def run(self, args: object, **kwargs: object) -> CommandResult:
         stdin = kwargs.get("stdin")
@@ -96,6 +106,80 @@ class _ControllerRemote:
                     and self.credentials.get(credential) != stdin
                 ):
                     return CommandResult(1)
+        if args == ("id", "-u"):
+            return CommandResult(0, f"{os.geteuid()}\n")
+        if args == ("id", "-g"):
+            return CommandResult(0, f"{os.getegid()}\n")
+        if isinstance(args, tuple) and args[:4] == ("mkdir", "-m", "700", "--"):
+            try:
+                self._local_path(args[4]).mkdir(mode=0o700)
+            except FileExistsError:
+                return CommandResult(1)
+            return CommandResult(0)
+        if isinstance(args, tuple) and args[:3] == ("stat", "-c", "%u:%g:%a:%F"):
+            path = self._local_path(args[-1])
+            details = path.stat()
+            kind = "directory" if path.is_dir() else "regular file"
+            root_staging = Path(str(args[-1])).is_relative_to("/run/taskman-ops")
+            uid = 0 if root_staging else details.st_uid
+            gid = 0 if root_staging else details.st_gid
+            return CommandResult(
+                0,
+                f"{uid}:{gid}:{details.st_mode & 0o777:o}:{kind}\n",
+            )
+        if isinstance(args, tuple) and args[:2] == ("sha256sum", "--"):
+            path = self._local_path(args[-1])
+            return CommandResult(
+                0,
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {args[-1]}\n",
+            )
+        if isinstance(args, tuple) and args[:2] == ("install", "-o"):
+            source = self._local_path(args[-2])
+            destination = self._local_path(args[-1])
+            shutil.copyfile(source, destination)
+            destination.chmod(0o500)
+            return CommandResult(0)
+        if isinstance(args, tuple) and args[:2] == ("rm", "--"):
+            self._local_path(args[-1]).unlink()
+            return CommandResult(0)
+        if isinstance(args, tuple) and args[:2] == ("rmdir", "--"):
+            self._local_path(args[-1]).rmdir()
+            return CommandResult(0)
+        if (
+            isinstance(args, tuple)
+            and len(args) == 10
+            and args[:4] == ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3")
+            and args[5] == "provision-pgpass-authority"
+            and isinstance(stdin, bytes)
+        ):
+            self.credential_checks.append(("packaged-pgpass-authority", stdin))
+            if self.credential_mismatch or (
+                self.credentials and self.credentials.get("pgpass") != stdin
+            ):
+                return CommandResult(10)
+            harness = r'''
+import runpy
+import subprocess
+import sys
+
+archive, *arguments = sys.argv[1:]
+sys.path.insert(0, archive)
+from taskman_ops.host_helper.operations import preflight
+preflight.run_command = lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, b"", b"")
+sys.argv = [archive, *arguments]
+runpy.run_path(archive, run_name="__main__")
+'''
+            completed = subprocess.run(
+                [
+                    sys.executable, "-I", "-S", "-c", harness,
+                    self._local_path(args[4]).as_posix(), *map(str, args[5:]),
+                ],
+                input=stdin,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return CommandResult(completed.returncode)
         return CommandResult(0)
 
     def put(self, source: Path, destination: Path | PurePosixPath, **_kwargs: object) -> UploadReceipt:
@@ -250,8 +334,8 @@ def test_public_cleanup_recovery_matrix_uses_real_filesystem_only_preflight(
         pytest.fail("cleanup must not use operational database or capacity preflight")
 
     monkeypatch.setattr(operational_preflight, "collect_operational_preflight", forbidden)
-    monkeypatch.setattr(operational_preflight, "collect_restore_preflight", forbidden)
-    monkeypatch.setattr(operational_preflight, "collect_restore_inspection_preflight", forbidden)
+    monkeypatch.setattr(operational_preflight, "validate_restore_preflight", forbidden)
+    monkeypatch.setattr(operational_preflight, "validate_restore_inspection_preflight", forbidden)
     package = build_helper_package(tmp_path / f"taskman-cleanup-{scenario}.pyz")
     runtime_path = tmp_path / f"isolated-cleanup-{scenario}.json"
     runtime_path.write_text("{}")
@@ -455,6 +539,7 @@ discover_module.observe_database_state = database
 discover_module.observe_database_state_or_empty = database
 discover_module.observe_database_state_or_empty_as_admin = database
 discover_module._observe_postgresql_authority = lambda *_args: read_state()["database_state"]
+discover_module._validate_managed_resources = lambda *_args, **_kwargs: None
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
 services.run_command = command
@@ -707,6 +792,7 @@ cleanup_module._delete_target = cleanup_delete
 
 os.write(ready_fd, b"R")
 os.close(ready_fd)
+sys.argv = [archive.as_posix()]
 runpy.run_path(archive.as_posix(), run_name="__main__")
 '''
 
@@ -1434,7 +1520,11 @@ def _configure_default_public_provision(
     )
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
-    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(
+        provision_module,
+        "render_pgpass",
+        lambda *_args: b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
+    )
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
     monkeypatch.setattr(
         provision_module,
@@ -1646,7 +1736,10 @@ def test_default_public_provision_preserves_existing_credentials_and_database_be
         migrations=(host_deploy_tests.MIGRATION, host_deploy_tests.SECOND_MIGRATION),
     )
     host_deploy_tests._install_unselected_candidate(request)
-    preserved = {"runtime": b"RUNTIME=value\n", "pgpass": b"pgpass\n"}
+    preserved = {
+        "runtime": b"RUNTIME=value\n",
+        "pgpass": b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
+    }
     remote = _ControllerRemote(credentials=preserved)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
@@ -1675,7 +1768,10 @@ def test_default_public_provision_refuses_credential_mismatch_before_partial_rec
 ) -> None:
     """Skipping credential admission would permit replacement before recovery is proved safe."""
 
-    preserved = {"runtime": b"RUNTIME=value\n", "pgpass": b"pgpass\n"}
+    preserved = {
+        "runtime": b"RUNTIME=value\n",
+        "pgpass": b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
+    }
     mismatch_remote = _ControllerRemote(credentials=preserved, credential_mismatch=True)
     mismatch_remote, mismatch_state = _install_public_controller(
         monkeypatch,
@@ -1784,7 +1880,9 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
         decrypt_secrets=lambda _name: SimpleNamespace(database_password="test-password"),
         resolve_artifact=lambda _invocation: target.artifact,
         render_runtime_environment=lambda _config, _secrets: b"RUNTIME=value\n",
-        render_pgpass=lambda _config, _secrets: b"pgpass\n",
+        render_pgpass=lambda _config, _secrets: (
+            b"127.0.0.1:5432:taskman_prod:taskman:test-password\n"
+        ),
         render_plan=lambda _config, artifact: {"candidate_release_id": artifact.manifest.release_id},
         present_plan=lambda _plan: None,
         confirm=lambda _plan: True,
@@ -1862,7 +1960,11 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
     )
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
-    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(
+        provision_module,
+        "render_pgpass",
+        lambda *_args: b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
+    )
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
     monkeypatch.setattr(
         provision_module,
@@ -1970,7 +2072,11 @@ def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_b
     monkeypatch.setattr(provision_module, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="test-password"))
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
-    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(
+        provision_module,
+        "render_pgpass",
+        lambda *_args: b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
+    )
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
     monkeypatch.setattr(provision_module, "build_caddy_plan", lambda _config: CaddyPlan(
         CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),

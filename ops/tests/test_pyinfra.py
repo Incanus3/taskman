@@ -34,132 +34,64 @@ _CADDY_PLAN = CaddyPlan(
 )
 
 
-def test_missing_pgpass_requires_a_sensitive_supplied_credential_proof_before_writes() -> None:
-    """Partial recovery must authenticate supplied bytes without publishing them."""
-
+def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(monkeypatch) -> None:
     provisioning = importlib.import_module("taskman_ops.provisioning")
-    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-
+    calls = []
     class Remote:
-        def run(self, argv: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+        def run(self, argv, **kwargs):
             calls.append((argv, kwargs))
             return SimpleNamespace(succeeded=True)
-
-    provisioning.validate_existing_credential_authority(
-        Remote(),
-        ProvisioningInputs(
-            config=EnvironmentConfig.model_validate(valid_environment()),
-            caddy_plan=_CADDY_PLAN,
-            runtime_environment=b"RUNTIME=value\n",
-            pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
-            role_password_input=b"role-password-input\n",
+    monkeypatch.setattr(
+        "taskman_ops.helper_client.runner.invoke_sensitive_pgpass_authority",
+        lambda _remote, _package, **kwargs: calls.append(("private", kwargs)) or SimpleNamespace(
+            exit_status=0, warnings=(), local_cleanup_incomplete=False
         ),
     )
-
-    pgpass_call = next(call for call in calls if call[0][3] == "taskman-credential-authority" and call[0][4] == "/etc/taskman/pgpass")
-    script, kwargs = pgpass_call[0][2], pgpass_call[1]
-    assert "PGPASSFILE=/dev/stdin" not in script
-    assert "PGPASSWORD" in script
-    assert "execve" in script
-    assert "mktemp" not in script
-    assert "--command 'SELECT 1'" in script
-    assert kwargs["sensitive"] is True
-    assert kwargs["stdin"] == b"127.0.0.1:5432:taskman_prod:taskman:secret\n"
-
-
-def test_missing_pgpass_wrapper_executes_psql_with_only_parsed_password_and_no_write(
-    tmp_path: Path,
-) -> None:
-    """The no-write admission wrapper must use libpq's password environment channel."""
-
-    provisioning = importlib.import_module("taskman_ops.provisioning")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    psql = fake_bin / "psql"
-    psql.write_text(
-        "#!/usr/bin/python3\n"
-        "import os, sys\n"
-        "sys.exit(0 if os.environ.get('PGPASSWORD') == 'secret' and set(os.environ) <= {'PGPASSWORD', 'LC_CTYPE'} and all('secret' not in value for value in sys.argv) else 23)\n",
-        encoding="utf-8",
-    )
-    psql.chmod(0o755)
-    missing = tmp_path / "pgpass"
-    before = set(tmp_path.iterdir())
-
-    result = subprocess.run(
-        ("sh", "-ceu", provisioning._PGPASS_REUSE_SCRIPT, "taskman-credential-authority", str(missing),
-         "127.0.0.1", "5432", "taskman", "taskman"),
-        input=b"127.0.0.1:5432:taskman:taskman:secret\n",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"},
-        timeout=5,
-        check=False,
+    inputs = ProvisioningInputs(
+        config=EnvironmentConfig.model_validate(valid_environment()), caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
+        role_password_input=b"role-password-input\n",
     )
 
-    assert result.returncode == 0
-    assert result.stdout == b""
-    assert result.stderr == b""
-    assert not missing.exists()
-    assert set(tmp_path.iterdir()) == before
+    provisioning.validate_existing_credential_authority(Remote(), inputs)
+
+    private = next(value for kind, value in calls if kind == "private")
+    assert private["pgpass"] == inputs.pgpass
+    assert private["host"] == "127.0.0.1"
+    assert all(b"secret" not in repr(call).encode() for call in calls if call[0] != "private")
 
 
-def test_missing_pgpass_wrapper_refuses_a_mismatched_line_without_writing(tmp_path: Path) -> None:
-    """A supplied pgpass line for another connection cannot be repurposed."""
+def test_private_pgpass_parser_accepts_escaped_password_without_writes(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+    from taskman_ops.host_helper.operations import preflight
+    observed = []
+    monkeypatch.setattr(preflight, "_PGPASS_PATH", tmp_path / "pgpass")
+    monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *args, **kwargs: observed.append((args, kwargs)))
 
-    provisioning = importlib.import_module("taskman_ops.provisioning")
-    missing = tmp_path / "pgpass"
-    before = set(tmp_path.iterdir())
-
-    result = subprocess.run(
-        ("sh", "-ceu", provisioning._PGPASS_REUSE_SCRIPT, "taskman-credential-authority", str(missing),
-         "127.0.0.1", "5432", "taskman", "taskman"),
-        input=b"127.0.0.1:5432:*:other:secret\n",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env={**os.environ, "PATH": "/usr/bin:/bin"},
-        timeout=5,
-        check=False,
+    status = preflight.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        BytesIO(br"127.0.0.1:5432:taskman_prod:taskman:sec\:ret\\value" + b"\n"),
     )
 
-    assert result.returncode != 0
-    assert result.stdout == b""
-    assert result.stderr == b""
-    assert not missing.exists()
-    assert set(tmp_path.iterdir()) == before
+    assert status == 0
+    assert observed[0][1]["password"] == "sec:ret\\value"
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_existing_scheduler_units_and_environment_require_exact_rendered_bytes() -> None:
-    """Foreign root-owned scheduler text is not safe reuse authority."""
+def test_private_pgpass_parser_refuses_mismatched_connection(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+    from taskman_ops.host_helper.operations import preflight
+    monkeypatch.setattr(preflight, "_PGPASS_PATH", tmp_path / "pgpass")
+    monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *_args, **_kwargs: pytest.fail("must not authenticate"))
 
-    provisioning = importlib.import_module("taskman_ops.provisioning")
-    config = EnvironmentConfig.model_validate(valid_environment())
-    calls: list[tuple[str, ...]] = []
+    status = preflight.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
+    )
 
-    class Remote:
-        def run(self, argv: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
-            calls.append(argv)
-            return SimpleNamespace(succeeded=False)
-
-    with pytest.raises(OpsError, match="existing managed resource authority"):
-        provisioning.validate_existing_resource_authority(
-            Remote(),
-            ProvisioningInputs(
-                config=config,
-                caddy_plan=_CADDY_PLAN,
-                runtime_environment=b"RUNTIME=value\n",
-                pgpass=b"pgpass\n",
-                role_password_input=b"role-password-input\n",
-            ),
-        )
-
-    script = calls[0][2]
-    plan = provisioning.build_systemd_plan(config)
-    assets = {asset.destination: provisioning._systemd_asset_sha256(asset) for asset in plan.assets}
-    assert assets["/etc/systemd/system/taskman-backup.service"] in calls[0]
-    assert assets["/etc/systemd/system/taskman-backup.timer"] in calls[0]
-    assert provisioning._sha256(plan.backup_environment_content.encode("utf-8")) in calls[0]
-    assert "sha256sum" in script
+    assert status == 10
+    assert list(tmp_path.iterdir()) == []
 
 
 @dataclass
