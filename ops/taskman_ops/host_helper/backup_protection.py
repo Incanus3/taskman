@@ -268,6 +268,39 @@ def protection_prune_ids(
     )
 
 
+def protection_prune_ids_after_fresh_attempt(
+    protections: Iterable[BackupProtection],
+    base_selection_id: str | None,
+    *,
+    independently_held_backup_ids: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return existing attempt IDs displaced by one future fresh protection."""
+
+    base_selection_id = _selection_id(base_selection_id)
+    matching = _protections_for_baseline(protections, base_selection_id)
+    held = _held_backup_ids(independently_held_backup_ids)
+    if not matching:
+        return ()
+    attempt_numbers = {item.attempt_number for item in matching}
+    if 0 not in attempt_numbers or len(attempt_numbers) != len(matching):
+        raise RecordError("backup protection attempts are contradictory")
+    retained = {
+        item.backup_id
+        for item in sorted(
+            (item for item in matching if item.attempt_number != 0 and item.backup_id not in held),
+            key=lambda item: item.attempt_number,
+            reverse=True,
+        )[:3]
+    }
+    return tuple(
+        sorted(
+            item.backup_id
+            for item in matching
+            if item.attempt_number != 0 and item.backup_id not in retained
+        )
+    )
+
+
 def _protections_for_baseline(
     protections: Iterable[BackupProtection], base_selection_id: str | None
 ) -> tuple[BackupProtection, ...]:
@@ -310,7 +343,7 @@ def retire_protection_attempts(
     except AttributeError as error:
         raise TypeError("protection retirement needs observed host state") from error
     base_selection_id = _selection_id(base_selection_id)
-    independent = _independent_state_backup_ids(state)
+    independent = independent_backup_ids(state)
     if pending:
         if any(item.base_selection_id != base_selection_id for item in pending):
             raise RecordError("pending backup-protection retirement has another baseline")
@@ -479,7 +512,8 @@ def _remove_retirement_marker(paths: ManagedPaths, backup_id: str) -> None:
         raise RecordError("unable to remove backup-protection retirement marker") from error
 
 
-def _independent_state_backup_ids(state: HostState) -> frozenset[str]:
+def independent_backup_ids(state: HostState) -> frozenset[str]:
+    """Return every successful-history and restore backup reference."""
     try:
         result = set(state.successful_backup_ids)
         target = state.restore_target
@@ -721,6 +755,8 @@ __all__ = [
     "backup_protection_retirement_path",
     "backup_protection_retirement_root",
     "complete_successful_selection",
+    "independent_backup_ids",
+    "protection_prune_ids_after_fresh_attempt",
     "protection_prune_ids",
     "register_backup_protection",
     "retire_protection_attempts",

@@ -16,7 +16,11 @@ from ..host_protocol import HostResult
 from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
 from ..host_helper.records import ReleaseRecord, SelectionRecord
-from ..host_helper.backup_protection import BackupProtection, protection_prune_ids
+from ..host_helper.backup_protection import (
+    BackupProtection,
+    protection_prune_ids,
+    protection_prune_ids_after_fresh_attempt,
+)
 from ..releases.source_order import compare_sources
 from ..migrations import validate_migration_versions
 from ..output import WorkflowResult, redact, render_human
@@ -141,10 +145,16 @@ def deploy(
                 )
             policy = migration_policy or "no-change"
             _validate_migration_policy(applied_versions, deployment_target.manifest.migrations, policy)
-            downgrade_required, downgrade_reasons = _downgrade_acknowledgment(
+            downgrade_required, downgrade_evidence = _downgrade_acknowledgment(
                 remote, config, deployment_target, repo
             )
-            prune_backup_ids = _planned_prune_backup_ids(remote, config, expected_state)
+            prune_authority = _planned_prune_backup_ids(
+                remote,
+                config,
+                expected_state,
+                fresh_backup_needed=bool(pending_versions),
+            )
+            prune_backup_ids, recovery_evidence = _prune_plan_authority(prune_authority)
             with temporary_scheduled_backup_helper_package() as scheduler_package:
                 scheduler_refresh_required = (
                     expected_state["scheduled_backup_sha256"] != scheduler_package.sha256
@@ -160,11 +170,18 @@ def deploy(
                         prune_backup_ids=prune_backup_ids,
                         scheduler_sha256=scheduler_package.sha256,
                         scheduler_refresh_required=scheduler_refresh_required,
+                        material_evidence=_material_plan_evidence(
+                            recovery_evidence["protections"],
+                            recovery_evidence["independent_backup_ids"],
+                            _downgrade_evidence_rows(downgrade_evidence),
+                        ),
                     )
                 )
                 plan["source_dirty"] = deployment_target.source_dirty
                 plan["requires_downgrade_acknowledgment"] = downgrade_required
-                plan["downgrade_reasons"] = downgrade_reasons
+                plan["downgrade_reasons"] = tuple(
+                    sorted({reason for _release_id, _order, reasons in downgrade_evidence for reason in reasons})
+                )
                 if dry_run:
                     return WorkflowResult(
                         "deploy", config.name or "", False, "planned",
@@ -198,7 +215,24 @@ def deploy(
                             next_action="review the downgrade or unknown-order evidence before retrying",
                         )
                 reobserved_state = _confirmed_expected_state(remote, config)
-                if reobserved_state != expected_state:
+                rechecked_prune_ids, rechecked_recovery = _prune_plan_authority(
+                    _planned_prune_backup_ids(
+                        remote,
+                        config,
+                        reobserved_state,
+                        fresh_backup_needed=bool(pending_versions),
+                    )
+                )
+                rechecked_downgrade_required, rechecked_downgrade_evidence = _downgrade_acknowledgment(
+                    remote, config, deployment_target, repo
+                )
+                if (
+                    reobserved_state != expected_state
+                    or rechecked_prune_ids != prune_backup_ids
+                    or rechecked_recovery != recovery_evidence
+                    or rechecked_downgrade_required != downgrade_required
+                    or rechecked_downgrade_evidence != downgrade_evidence
+                ):
                     if yes:
                         raise _safety("deployment authority changed after confirmation; rerun to acknowledge a new plan")
                     # The previous consent applies only to its displayed
@@ -352,7 +386,7 @@ def _downgrade_acknowledgment(
     config: EnvironmentConfig,
     target: DeploymentTarget,
     repo: Path | None,
-) -> tuple[bool, tuple[str, ...]]:
+) -> tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]:
     """Classify every validated deploy baseline without treating uncertainty as forward."""
 
     from .inventory import collect_inventory
@@ -410,9 +444,11 @@ def _downgrade_acknowledgment(
         )
         for baseline in baselines
     )
-    required = any(order.needs_acknowledgment for order in orders)
-    reasons = tuple(sorted({reason for order in orders for reason in order.reasons}))
-    return required, reasons
+    evidence = tuple(
+        (baseline.release_id, order.kind, order.reasons)
+        for baseline, order in zip(baselines, orders, strict=True)
+    )
+    return any(order.needs_acknowledgment for order in orders), evidence
 
 
 def _payload_result(
@@ -545,6 +581,7 @@ def _plan(
     prune_backup_ids: tuple[str, ...],
     scheduler_sha256: str,
     scheduler_refresh_required: bool,
+    material_evidence: Mapping[str, object],
 ) -> dict[str, object]:
     return {
         "environment": config.name or "",
@@ -562,6 +599,7 @@ def _plan(
         "last_successful_selection_id": expected_state["last_successful_selection_id"],
         "backup_protection_sha256": expected_state["backup_protection_sha256"],
         "prune_backup_ids": list(prune_backup_ids),
+        **material_evidence,
         "scheduled_backup": {
             "observed_sha256": expected_state["scheduled_backup_sha256"],
             "desired_sha256": scheduler_sha256,
@@ -637,7 +675,9 @@ def _planned_prune_backup_ids(
     remote: Remote,
     config: EnvironmentConfig,
     expected_state: Mapping[str, object],
-) -> tuple[str, ...]:
+    *,
+    fresh_backup_needed: bool,
+) -> tuple[tuple[str, ...], dict[str, object]]:
     """Derive the exact attempt retirements authorized by one displayed plan."""
 
     result = run_request(remote, discovery_request(config, mode="deploy"))
@@ -648,15 +688,91 @@ def _planned_prune_backup_ids(
         raise _safety("deployment planning helper returned invalid backup-protection authority")
     try:
         observed = {key: state[key] for key in expected_state}
-        if observed != dict(expected_state):
+        if observed != mutable(dict(expected_state)):
             raise ValueError
         protections = tuple(BackupProtection.from_mapping(item) for item in state["backup_protections"])
-        return protection_prune_ids(
+        independent = frozenset(state["independently_held_backup_ids"])
+        current = protection_prune_ids(
             protections,
             expected_state["last_successful_selection_id"],
+            independently_held_backup_ids=independent,
         )
+        planned = current
+        if not planned and fresh_backup_needed:
+            planned = protection_prune_ids_after_fresh_attempt(
+                protections,
+                expected_state["last_successful_selection_id"],
+                independently_held_backup_ids=independent,
+            )
+        return planned, {"protections": protections, "independent_backup_ids": independent}
     except (KeyError, TypeError, ValueError):
         raise _safety("deployment backup-protection authority changed during planning") from None
+
+
+def _prune_plan_authority(value: object) -> tuple[tuple[str, ...], dict[str, object]]:
+    """Normalize the complete current-or-conditional pruning authority."""
+
+    if (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], tuple)
+        and isinstance(value[1], Mapping)
+    ):
+        ids = value[0]
+        evidence = dict(value[1])
+    else:
+        raise _safety("deployment backup-protection plan is invalid")
+    if ids != tuple(sorted(ids)) or len(set(ids)) != len(ids):
+        raise _safety("deployment backup-protection plan is invalid")
+    if set(evidence) != {"protections", "independent_backup_ids"}:
+        raise _safety("deployment backup-protection evidence is invalid")
+    return ids, evidence
+
+
+def _downgrade_evidence_rows(
+    evidence: tuple[object, ...],
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Validate the named baseline comparisons which ordinary consent binds."""
+
+    rows: list[tuple[str, str, tuple[str, ...]]] = []
+    for item in evidence:
+        if not (
+            isinstance(item, tuple)
+            and len(item) == 3
+            and isinstance(item[0], str)
+            and item[1] in {"downgrade", "forward", "equal", "unknown", "no-baseline"}
+            and isinstance(item[2], tuple)
+            and all(isinstance(reason, str) for reason in item[2])
+        ):
+            raise _safety("deployment downgrade evidence is invalid")
+        rows.append((item[0], item[1], item[2]))
+    return tuple(rows)
+
+
+def _material_plan_evidence(
+    protections: tuple[BackupProtection, ...],
+    independently_held_backup_ids: frozenset[str] | set[str],
+    downgrade_baselines: tuple[tuple[str, str, tuple[str, ...]], ...],
+) -> dict[str, object]:
+    """Render named recovery and order facts rather than opaque acknowledgments."""
+
+    held = frozenset(independently_held_backup_ids)
+    return {
+        "retained_recovery_points": [
+            {
+                "backup_id": protection.backup_id,
+                "attempt_number": protection.attempt_number,
+                "base_selection_id": protection.base_selection_id,
+                "target_release_id": protection.target_release_id,
+                "independently_referenced": protection.backup_id in held,
+            }
+            for protection in sorted(protections, key=lambda item: item.backup_id)
+        ],
+        "downgrade_baselines": [
+            {"release_id": release_id, "order": order, "reasons": list(reasons)}
+            for release_id, order, reasons in downgrade_baselines
+        ],
+    }
 
 
 def _validate_migration_policy(

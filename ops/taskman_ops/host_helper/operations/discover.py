@@ -24,6 +24,7 @@ from ...checksums import sha256_file
 from ..credentials import validate_credentials
 from ..database import database_mapping, observe_database_state, release_migration_versions
 from ..lock import LifecycleLockContention, lifecycle_lock
+from ..backup_protection import independent_backup_ids
 from ..paths import ManagedPaths, PathAuthorityError
 from ..state import HostState, StateAmbiguityError, observe_host_state
 
@@ -299,6 +300,7 @@ def _deployment_projection(
         )
     return {
         "backup_protections": protection_rows,
+        "independently_held_backup_ids": tuple(sorted(independent_backup_ids(state))),
         "backup_protection_sha256": hashlib.sha256(_canonical_ascii(protection_rows)).hexdigest(),
         "downgrade_baseline_sha256": hashlib.sha256(
             _canonical_ascii(sorted(baseline_ids))

@@ -35,6 +35,7 @@ from ..operations.discover import _scheduler_facts
 from ..backup_helper import BackupHelperError, converge_backup_helper
 from ..backup_protection import (
     complete_successful_selection,
+    independent_backup_ids,
     protection_prune_ids,
     register_backup_protection,
     retire_protection_attempts,
@@ -190,34 +191,38 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 if state.applied_migrations != inputs.expected_migrations:
                     raise DeploymentManualError("applied migrations do not identify a safe candidate transition")
                 try:
-                    _finish_confirmed_pruning(inputs, state)
+                    reusable_backup, pruned = _finish_pending_pruning_or_reuse(inputs, state)
                     state = _observe(inputs)
                 except (RecordError, OSError, ValueError) as error:
                     raise _RetryableError("protection") from error
-                try:
-                    backup = create_validated_backup(
-                        state,
-                        inputs.paths,
-                        inputs.database,
-                        inputs.credentials,
-                        purpose="pre-deploy",
-                    )
-                except (CommandError, RecordError, OSError, ValueError) as error:
-                    raise _RetryableError("backup") from error
-                changed = True
-                try:
-                    register_backup_protection(
-                        inputs.paths,
-                        state.backup_protections,
-                        backup_id=backup.backup_id,
-                        base_selection_id=state.latest_successful_selection_filename,
-                        target_release_id=inputs.candidate.release_id,
-                    )
-                    state = _observe(inputs)
-                    _retire_newly_eligible_protections(inputs, state)
-                    state = _observe(inputs)
-                except (RecordError, OSError, ValueError) as error:
-                    raise _RetryableError("protection") from error
+                changed = changed or pruned
+                if reusable_backup is not None:
+                    backup = reusable_backup
+                else:
+                    try:
+                        backup = create_validated_backup(
+                            state,
+                            inputs.paths,
+                            inputs.database,
+                            inputs.credentials,
+                            purpose="pre-deploy",
+                        )
+                    except (CommandError, RecordError, OSError, ValueError) as error:
+                        raise _RetryableError("backup") from error
+                    changed = True
+                    try:
+                        register_backup_protection(
+                            inputs.paths,
+                            state.backup_protections,
+                            backup_id=backup.backup_id,
+                            base_selection_id=state.latest_successful_selection_filename,
+                            target_release_id=inputs.candidate.release_id,
+                        )
+                        state = _observe(inputs)
+                        _retire_newly_eligible_protections(inputs, state)
+                        state = _observe(inputs)
+                    except (RecordError, OSError, ValueError) as error:
+                        raise _RetryableError("protection") from error
 
             # The previous release is never restarted after its schema may
             # have advanced.  Stop before the candidate migration and before
@@ -770,7 +775,7 @@ def _selection_backup(
         raise DeploymentManualError("target-protected migration backup is unavailable") from error
 
 
-def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> None:
+def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> bool:
     """Complete a prior confirmed retirement before creating another backup.
 
     A previous interruption can leave active excess protections or durable
@@ -786,7 +791,7 @@ def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> None:
         else protection_prune_ids(
             state.backup_protections,
             state.latest_successful_selection_filename,
-            independently_held_backup_ids=state.successful_backup_ids,
+            independently_held_backup_ids=independent_backup_ids(state),
         )
     )
     if expected:
@@ -796,6 +801,33 @@ def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> None:
             state.latest_successful_selection_filename,
             inputs.prune_backup_ids,
         )
+    return bool(expected)
+
+
+def _finish_pending_pruning_or_reuse(
+    inputs: _Inputs, state: HostState
+) -> tuple[BackupRecord | None, bool]:
+    """Finish a prior authorized retirement before reusing its newest protection."""
+
+    if not _finish_confirmed_pruning(inputs, state):
+        return None, False
+    backup = _newest_reusable_protection_backup(inputs, state)
+    if backup is None:
+        raise DeploymentManualError("completed protection retirement has no reusable newest backup")
+    return backup, True
+
+
+def _newest_reusable_protection_backup(inputs: _Inputs, state: HostState) -> BackupRecord | None:
+    protected = tuple(
+        item
+        for item in state.backup_protections
+        if item.base_selection_id == state.latest_successful_selection_filename
+        and item.target_release_id == inputs.candidate.release_id
+    )
+    if not protected:
+        return None
+    newest = max(protected, key=lambda item: item.attempt_number)
+    return next((item for item in state.backups if item.backup_id == newest.backup_id), None)
 
 
 def _retire_newly_eligible_protections(inputs: _Inputs, state: HostState) -> None:
@@ -804,7 +836,7 @@ def _retire_newly_eligible_protections(inputs: _Inputs, state: HostState) -> Non
     eligible = protection_prune_ids(
         state.backup_protections,
         state.latest_successful_selection_filename,
-        independently_held_backup_ids=state.successful_backup_ids,
+        independently_held_backup_ids=independent_backup_ids(state),
     )
     if eligible:
         retire_protection_attempts(

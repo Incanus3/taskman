@@ -183,6 +183,7 @@ def test_deploy_discovery_projects_protection_scheduler_and_downgrade_digests(
     ).hexdigest()
     assert result.outcome == "succeeded"
     assert result.state["backup_protections"] == tuple(protection_rows)
+    assert result.state["independently_held_backup_ids"] == ()
     assert result.state["backup_protection_sha256"] == protection_digest
     assert result.state["downgrade_baseline_sha256"] == baseline_digest
     assert result.state["scheduled_backup_sha256"] == "d" * 64

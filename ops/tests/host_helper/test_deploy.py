@@ -654,6 +654,50 @@ def test_confirmed_protection_pruning_finishes_before_another_backup(
     assert runtime.events == []
 
 
+def test_pending_retirement_reuses_its_validated_newest_protection_before_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another backup after a pending sixth-attempt prune would require unconfirmed new retirement."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    state = deploy_module.HostState(
+        selected_release_id=CURRENT,
+        releases=(),
+        backups=(),
+        selections=(),
+        applied_migrations=(),
+        service_state="stopped",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+    )
+    seen: list[object] = []
+    monkeypatch.setattr(
+        deploy_module,
+        "_finish_confirmed_pruning",
+        lambda *_args: seen.append("finished") or True,
+    )
+    reusable = BackupRecord(
+        "backup-00000000000000000000000000000005",
+        datetime(2026, 9, 7, tzinfo=UTC),
+        "a" * 64,
+        CURRENT,
+        (),
+        1,
+    )
+    monkeypatch.setattr(
+        deploy_module,
+        "_newest_reusable_protection_backup",
+        lambda *_args: seen.append("reused") or reusable,
+    )
+
+    assert deploy_module._finish_pending_pruning_or_reuse(request, state) == (reusable, True)
+    assert seen == ["finished", "reused"]
+
+
 def test_successful_history_failure_keeps_the_report_and_history_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

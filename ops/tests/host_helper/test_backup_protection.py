@@ -16,6 +16,7 @@ import taskman_ops.host_helper.backup_protection as protection_module
 from taskman_ops.host_helper.backup_protection import (
     BackupProtection,
     allocate_protection_attempt,
+    protection_prune_ids_after_fresh_attempt,
     register_backup_protection,
     protection_prune_ids,
     retire_protection_attempts,
@@ -169,6 +170,23 @@ def test_attempts_allocate_by_baseline_and_prune_only_eligible_intermediates() -
     ) == (
         "backup-00000000000000000000000000000001",
         "backup-00000000000000000000000000000002",
+    )
+
+
+def test_five_protections_plan_the_exact_retirement_created_by_a_fresh_sixth_attempt() -> None:
+    """Calculating only current eligibility would deadlock a required sixth backup."""
+
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(minute=index),
+        )
+        for index in range(5)
+    )
+
+    assert protection_prune_ids_after_fresh_attempt(protections, SELECTION) == (
+        "backup-00000000000000000000000000000001",
     )
 
 

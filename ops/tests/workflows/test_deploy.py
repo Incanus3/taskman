@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import UTC, datetime
+import json
 
 import pytest
 
@@ -44,7 +46,10 @@ def _valid_operational_preflights(monkeypatch: pytest.MonkeyPatch) -> None:
 def _confirmed_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: _EXPECTED)
     monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
-    monkeypatch.setattr("taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args: ())
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids",
+        lambda *_args, **_kwargs: ((), {"protections": (), "independent_backup_ids": frozenset()}),
+    )
 
 
 def _success(*, mutation_state: str = "changed") -> HostResult:
@@ -202,6 +207,37 @@ def test_apply_time_authority_drift_after_yes_requires_a_new_invocation(
     assert result.stage == "safety-refused"
 
 
+def test_apply_time_named_recovery_or_baseline_drift_requires_a_new_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan binds recovery IDs and comparisons, not only their digest or reasons."""
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    recovery = {"protections": (), "independent_backup_ids": frozenset()}
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids",
+        lambda *_args, **_kwargs: ((), recovery),
+    )
+    evidence = iter(
+        (
+            (True, ((CURRENT, "unknown", ("source-unavailable",)),)),
+            (True, ((CURRENT, "downgrade", ("source-ancestor",)),)),
+        )
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: next(evidence)
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("changed material acknowledgment must not reach the helper"),
+    )
+
+    result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True, allow_downgrade=True)
+
+    assert result.exit_status is ExitStatus.SAFETY
+
+
 def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -216,7 +252,9 @@ def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     displayed: list[dict[str, object]] = []
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
-        "taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args: prune_ids, raising=False
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids",
+        lambda *_args, **_kwargs: (prune_ids, {"protections": (), "independent_backup_ids": frozenset()}),
+        raising=False,
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
@@ -236,6 +274,81 @@ def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     assert displayed[0]["prune_backup_ids"] == list(prune_ids)
     assert displayed[0]["applied_migrations"] == []
     assert displayed[0]["scheduled_backup"]["refresh_required"] is True
+
+
+def test_material_plan_names_retained_recovery_points_and_each_acknowledged_baseline() -> None:
+    """A digest or deduplicated reason cannot tell an operator what was retained or compared."""
+    from taskman_ops.host_helper.backup_protection import BackupProtection
+    from taskman_ops.output import WorkflowResult, render_human, render_json
+    from taskman_ops.workflows.deploy import _material_plan_evidence
+
+    first = "backup-00000000000000000000000000000001"
+    second = "backup-00000000000000000000000000000002"
+    baseline = "selection-" + "a" * 64 + ".json"
+    protections = (
+        BackupProtection(1, first, baseline, CURRENT, 0, datetime(2026, 9, 7, tzinfo=UTC)),
+        BackupProtection(1, second, baseline, CURRENT, 1, datetime(2026, 9, 7, 0, 1, tzinfo=UTC)),
+    )
+
+    evidence = _material_plan_evidence(
+        protections,
+        {second},
+        ((CURRENT, "unknown", ("source-unavailable",)),),
+    )
+
+    assert evidence["retained_recovery_points"] == [
+        {"backup_id": first, "attempt_number": 0, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": False},
+        {"backup_id": second, "attempt_number": 1, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": True},
+    ]
+    assert evidence["downgrade_baselines"] == [
+        {"release_id": CURRENT, "order": "unknown", "reasons": ["source-unavailable"]}
+    ]
+    rendered_json = json.loads(render_json(WorkflowResult("deploy", "test", False, "planned", evidence)))
+    assert rendered_json["facts"] == evidence
+    assert first in render_human(WorkflowResult("deploy", "test", False, "planned", evidence))
+
+
+def test_controller_plans_the_real_post_backup_retirement_set_with_independent_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Current eligibility is empty at five; the future sixth must retire attempt one."""
+    from datetime import UTC, datetime
+    from taskman_ops.host_helper.backup_protection import BackupProtection
+    from taskman_ops.workflows import deploy as deploy_module
+
+    monkeypatch.undo()
+    baseline = _EXPECTED["last_successful_selection_id"]
+    assert isinstance(baseline, str)
+    protections = tuple(
+        BackupProtection(
+            1,
+            f"backup-{index:032x}",
+            baseline,
+            CURRENT,
+            index,
+            datetime(2026, 9, 7, 12, index, tzinfo=UTC),
+        )
+        for index in range(5)
+    )
+    state = {
+        **_EXPECTED,
+        "backup_protections": [item.to_mapping() for item in protections],
+        "independently_held_backup_ids": [],
+    }
+    monkeypatch.setattr(
+        deploy_module,
+        "run_request",
+        lambda *_args, **_kwargs: HostResult(
+            PROTOCOL_VERSION, "discover", "op-0123456789abcdef0123456789abcdef", "succeeded", "observed", state, ()
+        ),
+    )
+
+    prune_ids, evidence = deploy_module._planned_prune_backup_ids(
+        object(), config(), _EXPECTED, fresh_backup_needed=True
+    )
+
+    assert prune_ids == ("backup-00000000000000000000000000000001",)
+    assert evidence["independent_backup_ids"] == frozenset()
 
 
 def test_migration_policy_uses_the_live_applied_prefix_not_the_previous_release_schema() -> None:
