@@ -43,6 +43,12 @@ _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SCHEDULED_BACKUP = Path("/usr/local/lib/taskman/taskman-backup.pyz")
 _BACKUP_TIMER = "taskman-backup.timer"
+_SCHEDULER_RESOURCES = {
+    "helper": Path("/usr/local/lib/taskman/taskman-backup.pyz"),
+    "service": Path("/etc/systemd/system/taskman-backup.service"),
+    "timer": Path("/etc/systemd/system/taskman-backup.timer"),
+    "environment": Path("/etc/taskman/taskman-backup.env"),
+}
 
 
 class _InvalidCursor(ValueError):
@@ -134,6 +140,10 @@ def provision_authority(request: HostRequest) -> HostResult:
             "initial_database_empty": database_observation["initial_empty"],
             "installed_release_count": len(release_rows),
             "installed_release_sha256": hashlib.sha256(_canonical_ascii(release_rows)).hexdigest(),
+            # Per-resource presence is the only scheduler state generic
+            # convergence may act on. Existing resources remain under the
+            # locked Task 5 refresh protocol in genesis.
+            "scheduler_resources": _scheduler_resources(paths),
         }
     )
     return _success(request, projection, state.warnings)
@@ -473,6 +483,23 @@ def _scheduler_facts(paths: ManagedPaths) -> dict[str, object]:
         "backup_timer_enabled": enabled == "enabled",
         "backup_timer_state": timer_state,
     }
+
+
+def _scheduler_resources(paths: ManagedPaths) -> dict[str, bool]:
+    """Return bounded create-only scheduler presence without adopting bytes."""
+
+    observed: dict[str, bool] = {}
+    for name, resource in _SCHEDULER_RESOURCES.items():
+        candidate = Path(paths.local(resource))
+        try:
+            details = candidate.lstat()
+        except FileNotFoundError:
+            observed[name] = False
+            continue
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+            raise StateAmbiguityError("scheduled resource is unsafe")
+        observed[name] = True
+    return observed
 
 
 def _systemd_property(name: str) -> str:

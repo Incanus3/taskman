@@ -68,8 +68,13 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
     from pyinfra.operations import files, server, systemd
 
     plan = build_systemd_plan(inputs.config)
+    scheduler_create = inputs.scheduler_create
     changed_unit_files: list[object] = []
     for asset in plan.assets:
+        if _scheduler_resource(asset.destination) and asset.destination not in scheduler_create:
+            # A pre-existing scheduler is never a generic convergence target.
+            # Its controlled pause/wait/checksum refresh belongs to genesis.
+            continue
         source: Path | StringIO | BytesIO
         if asset.source is not None:
             source = asset.source
@@ -89,15 +94,16 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
         if asset.destination.startswith("/etc/systemd/system/"):
             changed_unit_files.append(result)
         _verify_installed_checksum(server, asset)
-    files.put(
-        StringIO(plan.backup_environment_content),
-        plan.backup_environment_path,
-        user="root",
-        group="root",
-        mode="600",
-        add_deploy_dir=False,
-        name="Install Taskman backup environment",
-    )
+    if plan.backup_environment_path in scheduler_create:
+        files.put(
+            StringIO(plan.backup_environment_content),
+            plan.backup_environment_path,
+            user="root",
+            group="root",
+            mode="600",
+            add_deploy_dir=False,
+            name="Install Taskman backup environment",
+        )
     systemd.daemon_reload(
         name="Reload systemd daemon",
         _if=lambda: any(bool(getattr(result, "did_change")()) for result in changed_unit_files),
@@ -105,8 +111,18 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
     for service in plan.enable_without_start:
         systemd.service(service, running=None, enabled=True, name=f"Enable {service}")
     for service in plan.enable_and_start:
-        systemd.service(service, running=True, enabled=True, name=f"Enable and start {service}")
+        timer_path = "/etc/systemd/system/taskman-backup.timer"
+        if service != "taskman-backup.timer" or timer_path in scheduler_create:
+            systemd.service(service, running=True, enabled=True, name=f"Enable and start {service}")
     return plan
+
+
+def _scheduler_resource(destination: str) -> bool:
+    return destination in {
+        "/usr/local/lib/taskman/taskman-backup.pyz",
+        "/etc/systemd/system/taskman-backup.service",
+        "/etc/systemd/system/taskman-backup.timer",
+    }
 
 
 def install_runtime_environment(remote: Remote, content: bytes) -> ChangeSet:

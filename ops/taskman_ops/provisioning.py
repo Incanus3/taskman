@@ -51,6 +51,21 @@ while [ "$#" -gt 0 ]; do
 done
 '''
 
+_SCHEDULER_RESOURCE_PATHS = frozenset(
+    {
+        "/usr/local/lib/taskman/taskman-backup.pyz",
+        "/etc/systemd/system/taskman-backup.service",
+        "/etc/systemd/system/taskman-backup.timer",
+        "/etc/taskman/taskman-backup.env",
+    }
+)
+_SCHEDULER_RESOURCE_NAMES = {
+    "helper": "/usr/local/lib/taskman/taskman-backup.pyz",
+    "service": "/etc/systemd/system/taskman-backup.service",
+    "timer": "/etc/systemd/system/taskman-backup.timer",
+    "environment": "/etc/taskman/taskman-backup.env",
+}
+
 
 @dataclass(frozen=True)
 class ProvisioningInputs:
@@ -61,6 +76,13 @@ class ProvisioningInputs:
     runtime_environment: bytes
     pgpass: bytes
     role_password_input: bytes
+    # Only resources that were observed absent before confirmation may be
+    # created by the generic pyinfra boundary.  Scheduler replacement remains
+    # the locked genesis helper's responsibility.
+    # Compatibility callers which have not performed the provision admission
+    # retain the historic all-create declaration.  The public provision path
+    # always replaces this with its confirmed create-only delta.
+    scheduler_create: frozenset[str] = _SCHEDULER_RESOURCE_PATHS
 
     def __post_init__(self) -> None:
         if not isinstance(self.config, EnvironmentConfig):
@@ -71,6 +93,10 @@ class ProvisioningInputs:
             value = getattr(self, field_name)
             if not isinstance(value, bytes) or not value:
                 raise ValueError(f"{field_name} must be non-empty bytes")
+        if not isinstance(self.scheduler_create, frozenset) or not self.scheduler_create.issubset(
+            _SCHEDULER_RESOURCE_PATHS
+        ):
+            raise ValueError("scheduler creation authority is invalid")
 
 
 @deploy("Converge Taskman host")
@@ -205,11 +231,14 @@ def validate_existing_resource_authority(remote: object, inputs: ProvisioningInp
         ("/var/lock/taskman", "directory", "root", "root", "700", ""),
         ("/usr/local/lib/taskman", "directory", "root", "root", "755", ""),
         (f"{config.install_root}/lifecycle.lock", "regular file", "root", "root", "600", ""),
-        ("/etc/taskman/taskman-backup.env", "regular file", "root", "root", "600", _sha256(plan.backup_environment_content.encode("utf-8"))),
+        # Existing scheduler inputs are deliberately admitted by safe metadata
+        # only.  Genesis refreshes the executable under the lifecycle lock;
+        # generic pyinfra must never replace an older supported scheduler.
+        ("/etc/taskman/taskman-backup.env", "regular file", "root", "root", "600", ""),
         ("/etc/systemd/system/taskman.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman.service"]),
-        ("/etc/systemd/system/taskman-backup.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.service"]),
-        ("/etc/systemd/system/taskman-backup.timer", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.timer"]),
-        ("/usr/local/lib/taskman/taskman-backup.pyz", "regular file", "root", "root", "750", assets["/usr/local/lib/taskman/taskman-backup.pyz"]),
+        ("/etc/systemd/system/taskman-backup.service", "regular file", "root", "root", "644", ""),
+        ("/etc/systemd/system/taskman-backup.timer", "regular file", "root", "root", "644", ""),
+        ("/usr/local/lib/taskman/taskman-backup.pyz", "regular file", "root", "root", "750", ""),
     )
     argv = ("sh", "-ceu", _RESOURCE_REUSE_SCRIPT, "taskman-resource-authority", *(value for row in roots for value in row))
     result = runner(argv, sudo=True)
@@ -230,7 +259,41 @@ def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> M
     authority = validate_preconvergence_authority(remote, inputs)
     validate_existing_resource_authority(remote, inputs)
     validate_existing_credential_authority(remote, inputs)
-    return authority
+    # Narrow legacy capability tests may replace the observer with a receipt.
+    # Production's closed observer cannot return ``None``.
+    if authority is None:
+        return {}
+    return {**authority, "scheduler_create": _scheduler_create_authority(authority)}
+
+
+def _scheduler_create_authority(authority: Mapping[str, object]) -> tuple[str, ...]:
+    """Translate the closed helper presence projection into pyinfra deltas.
+
+    This is intentionally a create-only projection.  A present scheduler file
+    can be old but supported; adopting it by rewriting it in pyinfra would
+    bypass the lifecycle-lock pause/wait/refresh protocol.
+    """
+
+    resources = authority.get("scheduler_resources")
+    if not isinstance(resources, Mapping) or set(resources) != set(_SCHEDULER_RESOURCE_NAMES):
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "resource-preflight",
+            "pre-convergence scheduler resource authority is incomplete",
+            changed=False,
+            next_action="inspect the existing scheduler resources before retrying",
+        )
+    if not all(type(value) is bool for value in resources.values()):
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "resource-preflight",
+            "pre-convergence scheduler resource authority is invalid",
+            changed=False,
+            next_action="inspect the existing scheduler resources before retrying",
+        )
+    return tuple(
+        sorted(path for name, path in _SCHEDULER_RESOURCE_NAMES.items() if not resources[name])
+    )
 
 
 def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs) -> Mapping[str, object]:
@@ -281,6 +344,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
         "downgrade_baseline_sha256",
         "installed_release_count",
         "installed_release_sha256",
+        "scheduler_resources",
     }
     if not isinstance(state, Mapping) or set(state) != required or state["authority"] != "validated":
         raise OpsError(
@@ -310,6 +374,13 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             if value is not None and (type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None):
                 raise ValueError
         if type(state["backup_timer_enabled"]) is not bool or state["backup_timer_state"] not in {"active", "inactive"}:
+            raise ValueError
+        resources = state["scheduler_resources"]
+        if (
+            not isinstance(resources, Mapping)
+            or set(resources) != set(_SCHEDULER_RESOURCE_NAMES)
+            or not all(type(value) is bool for value in resources.values())
+        ):
             raise ValueError
     except (KeyError, TypeError, ValueError):
         raise OpsError(

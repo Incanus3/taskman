@@ -277,6 +277,7 @@ def deploy_first_release(
     dry_run: bool = False,
     starting_state: Mapping[str, object] | None = None,
     prune_backup_ids: tuple[str, ...] | None = None,
+    scheduler_create: tuple[str, ...] | None = None,
 ) -> WorkflowResult:
     """Run genesis only for an unfinished install or its exact durable replay."""
 
@@ -290,6 +291,21 @@ def deploy_first_release(
         or prune_backup_ids != tuple(sorted(set(prune_backup_ids)))
     ):
         raise TypeError("first release prune backup identifiers must be sorted unique IDs")
+    if scheduler_create is not None and (
+        not isinstance(scheduler_create, tuple)
+        or scheduler_create != tuple(sorted(set(scheduler_create)))
+        or any(
+            item
+            not in {
+                "/usr/local/lib/taskman/taskman-backup.pyz",
+                "/etc/systemd/system/taskman-backup.service",
+                "/etc/systemd/system/taskman-backup.timer",
+                "/etc/taskman/taskman-backup.env",
+            }
+            for item in scheduler_create
+        )
+    ):
+        raise TypeError("first release scheduler create authority is invalid")
     deployment_target = (
         target if isinstance(target, DeploymentTarget)
         else DeploymentTarget(artifact=target, release_record=None, source="explicit")
@@ -300,7 +316,9 @@ def deploy_first_release(
         confirmed_preconvergence = _starting_expected_state(starting_state)
         if (
             confirmed_preconvergence is not None
-            and expected_state != confirmed_preconvergence
+            and not _matches_confirmed_preconvergence(
+                expected_state, confirmed_preconvergence, scheduler_create
+            )
         ):
             raise _safety(
                 "release, schema, protection, or scheduler authority changed during provisioning; rerun to confirm a new plan"
@@ -488,6 +506,34 @@ def _confirmed_expected_state(
     except (TypeError, ValueError):
         raise _safety("deployment apply helper returned invalid expected state") from None
     return expected
+
+
+def _matches_confirmed_preconvergence(
+    observed: Mapping[str, object],
+    confirmed: Mapping[str, object],
+    scheduler_create: tuple[str, ...] | None,
+) -> bool:
+    """Permit only the scheduler absence-to-created delta shown in the plan.
+
+    Generic convergence can create an absent scheduler resource, but it cannot
+    reauthorize release, schema, history, protection, or any pre-existing
+    scheduler change.  The post-pyinfra helper observation becomes the exact
+    state passed to the locked genesis operation.
+    """
+
+    allowed = frozenset(scheduler_create or ())
+    for key in confirmed:
+        if key == "scheduled_backup_sha256" and "/usr/local/lib/taskman/taskman-backup.pyz" in allowed:
+            if confirmed[key] is not None or observed[key] is None:
+                return False
+            continue
+        if key == "backup_timer_enabled" and "/etc/systemd/system/taskman-backup.timer" in allowed:
+            if confirmed[key] is not False or observed[key] is not True:
+                return False
+            continue
+        if observed[key] != confirmed[key]:
+            return False
+    return True
 
 
 def _starting_expected_state(starting_state: Mapping[str, object] | None) -> dict[str, object] | None:

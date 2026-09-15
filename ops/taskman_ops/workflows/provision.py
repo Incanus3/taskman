@@ -291,7 +291,8 @@ def provision(
                         next_action="inspect the refreshed plan and rerun provision with a new confirmation",
                     )
                 continue
-            provisioning_changed = _changed(cap.provisioning(remote, inputs))
+            convergence_inputs = _with_scheduler_create_delta(inputs, authority)
+            provisioning_changed = _changed(cap.provisioning(remote, convergence_inputs))
             break
     except OpsError as error:
         return _close_result(
@@ -327,6 +328,9 @@ def provision(
         planned_prune_ids = plan_effects.get("prune_backup_ids")
         if isinstance(planned_prune_ids, tuple):
             genesis_kwargs["prune_backup_ids"] = planned_prune_ids
+        scheduler_create = _scheduler_create_delta(authority)
+        if scheduler_create is not None:
+            genesis_kwargs["scheduler_create"] = scheduler_create
         release = cap.genesis(
             remote,
             config,
@@ -631,7 +635,11 @@ def _provision_plan_effects(
                 else bool(getattr(target.manifest, "source_dirty", False))
             ),
         },
-        "resource_convergence": starting_state.get("resource_authority"),
+        "resource_convergence": {
+            "host": starting_state.get("resource_authority"),
+            "scheduler_create": list(_scheduler_create_delta(authority) or ()),
+            "scheduler_refresh": "genesis-owned",
+        },
     }
     if not isinstance(authority, Mapping):
         return effects
@@ -693,6 +701,38 @@ def _provision_plan_effects(
         }
     )
     return effects
+
+
+def _scheduler_create_delta(authority: Mapping[str, object] | None) -> tuple[str, ...] | None:
+    """Read the validated, explicitly planned create-only scheduler delta."""
+
+    if not isinstance(authority, Mapping):
+        return None
+    value = authority.get("scheduler_create")
+    if value is None:
+        return None
+    if (
+        not isinstance(value, tuple)
+        or value != tuple(sorted(set(value)))
+        or any(type(item) is not str for item in value)
+    ):
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "provision",
+            "pre-convergence scheduler delta is invalid",
+            changed=False,
+            next_action="rerun provisioning after inspecting scheduler authority",
+        )
+    return value
+
+
+def _with_scheduler_create_delta(
+    inputs: ProvisioningInputs, authority: Mapping[str, object] | None
+) -> ProvisioningInputs:
+    delta = _scheduler_create_delta(authority)
+    if delta is None:
+        return inputs
+    return replace(inputs, scheduler_create=frozenset(delta))
 
 
 def _plan_protections(authority: Mapping[str, object]) -> tuple[BackupProtection, ...]:

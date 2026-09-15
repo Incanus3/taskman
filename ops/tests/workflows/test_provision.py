@@ -16,6 +16,7 @@ from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from taskman_ops.workflows.provision import ProvisionCapabilities, _present_plan, provision
+from taskman_ops.workflows.deploy import _matches_confirmed_preconvergence
 
 
 def artifact(*, migrations: tuple[object, ...] = ()) -> object:
@@ -548,6 +549,91 @@ def test_provision_binds_dataclass_resource_authority_and_full_host_snapshot_int
         "database_state": "empty",
     }
     assert result.facts["starting_state"] == presented[0]["starting_state"]
+
+
+def test_provision_passes_only_confirmed_absent_scheduler_resources_to_pyinfra_and_genesis() -> None:
+    """Existing scheduler files are not generic writes; absent ones are explicit deltas."""
+
+    host = Host()
+    observed_inputs: list[object] = []
+    genesis_kwargs: dict[str, object] = {}
+    authority = {
+        "authority": "validated",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "last_successful_selection": None,
+        "previous_successful_selection": None,
+        "applied_migrations": (),
+        "service_state": "stopped",
+        "database_state": "ready",
+        "backup_protections": (),
+        "independently_held_backup_ids": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": "b" * 64,
+        "backup_timer_enabled": True,
+        "backup_timer_state": "inactive",
+        "downgrade_baseline_sha256": "c" * 64,
+        "installed_release_count": 0,
+        "installed_release_sha256": "d" * 64,
+        "scheduler_resources": {"helper": True, "service": True, "timer": False, "environment": True},
+        "scheduler_create": ("/etc/systemd/system/taskman-backup.timer",),
+    }
+
+    def provisioning(_remote: object, inputs: object) -> ChangeSet:
+        observed_inputs.append(inputs)
+        return ChangeSet(changed=False)
+
+    def genesis(_remote: object, _config: object, _target: object, **kwargs: object) -> WorkflowResult:
+        genesis_kwargs.update(kwargs)
+        return WorkflowResult("deploy", "production", False, "already-current", {})
+
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "preflight": lambda *_args: authority,
+            "provisioning": provisioning,
+            "genesis": genesis,
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert observed_inputs[0].scheduler_create == frozenset({"/etc/systemd/system/taskman-backup.timer"})
+    assert genesis_kwargs["scheduler_create"] == ("/etc/systemd/system/taskman-backup.timer",)
+
+
+def test_post_pyinfra_authority_accepts_only_the_confirmed_absent_scheduler_delta() -> None:
+    """A create delta cannot excuse concurrent release or existing-scheduler drift."""
+
+    confirmed = {
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "applied_migrations": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "downgrade_baseline_sha256": "b" * 64,
+    }
+    created = {
+        **confirmed,
+        "scheduled_backup_sha256": "c" * 64,
+        "backup_timer_enabled": True,
+    }
+
+    assert _matches_confirmed_preconvergence(
+        created,
+        confirmed,
+        ("/usr/local/lib/taskman/taskman-backup.pyz", "/etc/systemd/system/taskman-backup.timer"),
+    )
+    assert not _matches_confirmed_preconvergence(
+        {**created, "applied_migrations": (20260905120000,)},
+        confirmed,
+        ("/usr/local/lib/taskman/taskman-backup.pyz", "/etc/systemd/system/taskman-backup.timer"),
+    )
+    assert not _matches_confirmed_preconvergence(
+        {**confirmed, "scheduled_backup_sha256": "c" * 64}, confirmed, ()
+    )
 
 
 def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_before_release() -> None:
