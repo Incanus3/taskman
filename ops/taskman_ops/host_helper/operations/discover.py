@@ -141,7 +141,10 @@ def _observe(request: HostRequest) -> tuple[HostState, dict[str, object] | None]
             return state, scheduler
         if request.expected_state or set(request.parameters) != {"cursor"}:
             raise ValueError("listing request is invalid")
-        return observe_host_state(paths), None
+        return observe_host_state(
+            paths,
+            allow_selection_transition=request.operation == "list_releases",
+        ), None
 
 
 def _inventory_cursor(request: HostRequest, operation: str) -> Mapping[str, object] | None:

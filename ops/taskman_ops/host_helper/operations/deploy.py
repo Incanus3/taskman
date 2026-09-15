@@ -649,6 +649,11 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
         raise DeploymentManualError("selection transition is not attributable to this deployment")
     if selected == inputs.candidate.release_id and recorded != inputs.candidate.release_id:
         return state, False
+    if selected == inputs.previous_release_id and recorded != inputs.candidate.release_id:
+        # A failed prior candidate can remain physically selected without a
+        # completed record.  A newly confirmed desired target must replace it
+        # from the last verified predecessor, never invent that prior success.
+        return state, False
     if recorded == inputs.candidate.release_id:
         # Selection records are create-once completed authority.  A current
         # link moved back to the predecessor cannot be the unfinished atomic

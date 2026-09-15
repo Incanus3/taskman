@@ -169,7 +169,18 @@ def _observation_unavailable(
 
 
 def _requested_release(request: HostRequest) -> str | None:
-    value = request.parameters.get("candidate_release_id")
+    target = request.parameters.get("target")
+    if not isinstance(target, Mapping):
+        return None
+    target_kind = target.get("kind")
+    if target_kind == "upload":
+        manifest = target.get("manifest")
+        value = manifest.get("release_id") if isinstance(manifest, Mapping) else None
+    elif target_kind == "installed":
+        record = target.get("release_record")
+        value = record.get("release_id") if isinstance(record, Mapping) else None
+    else:
+        return None
     if type(value) is not str:
         return None
     try:
