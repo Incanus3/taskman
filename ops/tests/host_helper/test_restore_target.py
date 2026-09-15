@@ -257,7 +257,7 @@ def test_independently_held_intermediates_do_not_make_attempts_unbounded(
 
 
 def test_newer_failed_restore_backup_does_not_replace_original_safety_reference() -> None:
-    """Task 9 may append another safety kind without changing the original copy."""
+    """A later safety attempt may append another kind without changing the original copy."""
 
     original = _target()
     failed_restore = append_safety_attempt(
