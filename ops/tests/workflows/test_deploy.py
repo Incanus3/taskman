@@ -9,7 +9,7 @@ import json
 import pytest
 
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import OTP_VERSION, MigrationFingerprint
@@ -376,7 +376,7 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
     mutations: list[str] = []
     refreshed: list[str] = []
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
-    matches = iter((False, True))
+    matches = iter((False, True, True))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
     monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
 
@@ -393,6 +393,96 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
     assert result.exit_status is ExitStatus.OK
     assert refreshed == ["resolved"]
     assert mutations == ["apply"]
+
+
+def test_clean_build_drift_during_refresh_retries_within_the_deploy_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source change reported by production resolution restarts the full clean cycle."""
+    from taskman_ops.releases.artifacts import CleanInputs, DeploymentTarget
+    from taskman_ops.workflows.deploy import deploy
+
+    target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
+    refreshed = 0
+    mutations: list[str] = []
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    matches = iter((False, True, True))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
+
+    def refresh() -> tuple[DeploymentTarget, CleanInputs]:
+        nonlocal refreshed
+        refreshed += 1
+        if refreshed == 1:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return target, inputs
+
+    result = deploy(
+        object(), config(), target, repo=tmp_path, clean_inputs=inputs, yes=True,
+        refresh_clean_target=refresh,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert refreshed == 2
+    assert mutations == ["apply"]
+
+
+def test_interactive_deploy_refuses_authority_drift_after_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive consent cannot be reused after the displayed host authority changes."""
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    changed = {**_EXPECTED, "backup_protection_sha256": "e" * 64}
+    observed = iter((_EXPECTED, changed, changed, changed))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: next(observed)
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach the helper"),
+    )
+
+    result = deploy(
+        object(), config(), deployment_artifact(tmp_path),
+        present_plan=lambda _plan: None, confirm=lambda _plan: True,
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
+def test_deploy_refuses_clean_source_drift_after_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean checkout changed after consent cannot reach the deployment helper."""
+    from taskman_ops.releases.artifacts import CleanInputs, DeploymentTarget
+    from taskman_ops.workflows.deploy import deploy
+
+    target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
+    matches = iter((True, False))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("post-confirmation source drift must not mutate"),
+    )
+
+    result = deploy(
+        object(), config(), target, repo=tmp_path, clean_inputs=inputs,
+        present_plan=lambda _plan: None, confirm=lambda _plan: True,
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
 
 
 def test_apply_time_authority_drift_after_yes_requires_a_new_invocation(

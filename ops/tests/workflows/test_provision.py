@@ -688,8 +688,8 @@ def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_befor
     }
 
 
-def test_provision_discards_a_drifted_plan_and_repeats_authority_before_convergence() -> None:
-    """A post-confirmation resource change must receive a new material plan."""
+def test_provision_refuses_authority_drift_after_interactive_confirmation() -> None:
+    """Interactive consent cannot be reused after the displayed host authority changes."""
 
     host = Host()
     discoveries = iter(("first", "changed", "changed", "changed"))
@@ -709,9 +709,9 @@ def test_provision_discards_a_drifted_plan_and_repeats_authority_before_converge
 
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
-    assert result.exit_status is ExitStatus.OK
-    assert len(presented) == 2
-    assert host.events == ["plan", "plan", "provisioning"]
+    assert result.exit_status is ExitStatus.SAFETY
+    assert len(presented) == 1
+    assert host.events == ["plan"]
 
 
 def test_provision_yes_refuses_material_drift_after_confirmation_before_pyinfra() -> None:
@@ -745,7 +745,7 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
     old_inputs = object()
     fresh_inputs = object()
     identified = iter((old_inputs, fresh_inputs))
-    matches = iter((True, False, True, True))
+    matches = iter((False, True, True))
     resolved: list[object] = []
     monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
     monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
@@ -759,21 +759,21 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.exit_status is ExitStatus.OK
-    assert resolved == [old_inputs, old_inputs, fresh_inputs, fresh_inputs]
-    assert host.events.count("plan") == 2
+    assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
+    assert host.events.count("plan") == 1
     assert host.events.count("provisioning") == 1
 
 
-def test_provision_yes_reresolves_clean_input_drift_before_pyinfra(
+def test_provision_refuses_clean_input_drift_after_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--yes` cannot silently authorize a different clean source snapshot."""
+    """Any post-confirmation clean-source change requires a new invocation."""
 
     from taskman_ops.workflows import provision as provision_module
 
     host = Host()
     inputs = iter((object(), object()))
-    matches = iter((False, True, True))
+    matches = iter((True, False))
     resolved: list[object] = []
     monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(inputs))
     monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
@@ -788,10 +788,82 @@ def test_provision_yes_reresolves_clean_input_drift_before_pyinfra(
         Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
     )
 
+    assert result.exit_status is ExitStatus.SAFETY
+    assert resolved == [resolved[0], resolved[0]]
+    assert host.events == ["discovery", "plan", "discovery"]
+
+
+def test_provision_refuses_clean_build_drift_during_post_confirmation_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build-time source mismatch after consent cannot become an invalid-input result."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    inputs = object()
+    resolutions = 0
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: inputs)
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: True, raising=False)
+
+    def resolve(*_args: object) -> object:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions == 2:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return artifact()
+
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "provisioning-incomplete"
+    assert host.events == ["discovery", "plan", "discovery"]
+
+
+def test_provision_retries_clean_build_drift_during_target_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build-time mismatch restarts provision's clean discovery and resolution cycle."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    old_inputs = object()
+    fresh_inputs = object()
+    identified = iter((old_inputs, fresh_inputs))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: True, raising=False)
+
+    def resolve(_remote: object, _config: EnvironmentConfig, _invocation: object, inputs: object) -> object:
+        resolved.append(inputs)
+        if len(resolved) == 1:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return artifact()
+
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
     assert result.exit_status is ExitStatus.OK
-    assert resolved == [resolved[0], resolved[1], resolved[1]]
-    assert resolved[0] is not resolved[1]
-    assert host.events.count("provisioning") == 1
+    assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
+    assert host.events == ["discovery", "discovery", "plan", "discovery", "provisioning"]
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

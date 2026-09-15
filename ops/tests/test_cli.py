@@ -514,6 +514,59 @@ def test_automatic_deploy_refresh_uses_the_production_authority_resolver(
     assert authority_calls == [(remote, environment), (remote, environment)]
 
 
+def test_automatic_deploy_retries_a_clean_build_drift_during_production_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build-time clean-source mismatch repeats admission before deploy starts."""
+    from taskman_ops.releases.artifacts import CleanInputs
+    from taskman_ops.releases.manifests import OTP_VERSION
+    from taskman_ops.workflows.deploy import DeploymentAdmissionAuthority
+    from tests.workflows.support import deployment_artifact
+
+    environment = object()
+    remote = object()
+    artifact = deployment_artifact(tmp_path)
+    first = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    second = CleanInputs(**{**first.__dict__, "source_revision": "c" * 40})
+    identified = iter((first, second))
+    resolved: list[CleanInputs] = []
+    admissions: list[object] = []
+
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: next(identified))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deployment_admission_authority",
+        lambda actual_remote, actual_environment: admissions.append((actual_remote, actual_environment))
+        or DeploymentAdmissionAuthority((), None, None),
+    )
+
+    def resolve(_repo: Path, _artifact: Path | None, **kwargs: object) -> DeploymentTarget:
+        inputs = kwargs["clean_inputs"]
+        assert isinstance(inputs, CleanInputs)
+        resolved.append(inputs)
+        if len(resolved) == 1:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        return DeploymentTarget(artifact=artifact, release_record=None, source="built")
+
+    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_target", resolve)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deploy",
+        lambda _remote, _environment, _target, **_kwargs: WorkflowResult("deploy", "production", False, "planned", {}),
+    )
+
+    result = dispatch(Invocation(command="deploy", environment="production"))
+
+    assert result.stage == "planned"
+    assert resolved == [first, second]
+    assert admissions == [(remote, environment), (remote, environment)]
+
+
 def test_malformed_dispatch_result_maps_to_stable_secret_free_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

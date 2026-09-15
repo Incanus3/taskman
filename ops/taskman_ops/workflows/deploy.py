@@ -13,7 +13,7 @@ import re
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..host_protocol import HostResult
-from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match
+from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_drifted, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
 from ..host_helper.records import ReleaseRecord, SelectionRecord
 from ..host_helper.backup_protection import (
@@ -97,6 +97,7 @@ def deploy(
     repo: Path | None = None,
     clean_inputs: CleanInputs | None = None,
     refresh_clean_target: Callable[[], tuple[DeploymentTarget, CleanInputs]] | None = None,
+    initial_clean_reresolutions: int = 0,
     dry_run: bool = False,
     interactive: bool = True,
 ) -> WorkflowResult:
@@ -109,6 +110,12 @@ def deploy(
         for value in (dry_run, manual_adoption_confirmed, yes, allow_downgrade, interactive)
     ):
         raise TypeError("deployment flags must be boolean")
+    if (
+        type(initial_clean_reresolutions) is not int
+        or initial_clean_reresolutions < 0
+        or initial_clean_reresolutions > _MAX_CLEAN_INPUT_RERESOLUTIONS
+    ):
+        raise ValueError("deployment clean input retry count is invalid")
     if migration_policy is not None and migration_policy not in _POLICIES:
         raise ValueError("deployment requires a valid migration policy")
     deployment_target = (
@@ -116,7 +123,8 @@ def deploy(
         else DeploymentTarget(artifact=target, release_record=None, source="explicit")
     )
     candidate = deployment_target.release_id
-    clean_reresolutions = 0
+    clean_reresolutions = initial_clean_reresolutions
+    refresh_clean_target_required = False
     try:
         if manual_adoption_confirmed:
             raise _safety("manual lifecycle adoption is not part of replayable deployment")
@@ -124,6 +132,19 @@ def deploy(
             raise _safety("unattended deployment requires --yes; JSON is never confirmation")
         validate_operational_preflight(remote, config)
         while True:
+            if refresh_clean_target_required:
+                assert refresh_clean_target is not None
+                try:
+                    deployment_target, clean_inputs = refresh_clean_target()
+                except OpsError as error:
+                    if not clean_inputs_drifted(error):
+                        raise
+                    if clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
+                        raise _safety("clean deployment inputs did not stabilize while preparing a plan")
+                    clean_reresolutions += 1
+                    continue
+                candidate = deployment_target.release_id
+                refresh_clean_target_required = False
             previous, _previous_migrations, applied_versions = _planning_authority(remote, config)
             expected_state = _confirmed_expected_state(remote, config)
             if (
@@ -199,9 +220,8 @@ def deploy(
                         raise _safety("automatic clean source inputs changed before confirmation")
                     if clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
                         raise _safety("clean deployment inputs did not stabilize while preparing a plan")
-                    deployment_target, clean_inputs = refresh_clean_target()
-                    candidate = deployment_target.release_id
                     clean_reresolutions += 1
+                    refresh_clean_target_required = True
                     continue
                 if interactive:
                     (present_plan or _present_plan)(plan)
@@ -221,6 +241,10 @@ def deploy(
                             {**plan, "previous_release_id": previous, "selected_release_id": previous},
                             next_action="review the downgrade or unknown-order evidence before retrying",
                         )
+                if clean_inputs is not None and repo is not None and not clean_inputs_match(repo, clean_inputs):
+                    raise _safety(
+                        "clean deployment inputs changed after confirmation; rerun to acknowledge a new plan"
+                    )
                 reobserved_state = _confirmed_expected_state(remote, config)
                 rechecked_prune_ids, rechecked_recovery = _prune_plan_authority(
                     _planned_prune_backup_ids(
@@ -240,15 +264,7 @@ def deploy(
                     or rechecked_downgrade_required != downgrade_required
                     or rechecked_downgrade_evidence != downgrade_evidence
                 ):
-                    if yes:
-                        raise _safety("deployment authority changed after confirmation; rerun to acknowledge a new plan")
-                    # The previous consent applies only to its displayed
-                    # material facts.  Re-enter through identification,
-                    # discovery, resolution, policy, and acknowledgment.
-                    if clean_inputs is not None and refresh_clean_target is not None:
-                        deployment_target, clean_inputs = refresh_clean_target()
-                        candidate = deployment_target.release_id
-                    continue
+                    raise _safety("deployment authority changed after confirmation; rerun to acknowledge a new plan")
                 scheduler_upload = None if not scheduler_refresh_required else "pending-controller-upload"
                 result = run_deployment_request(
                     remote,

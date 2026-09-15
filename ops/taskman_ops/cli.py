@@ -332,10 +332,10 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             dry_run=invocation.dry_run,
         )
     if invocation.command == "deploy":
-        from .releases.artifacts import identify_clean_inputs, resolve_deploy_target
+        from .releases.artifacts import clean_inputs_drifted, identify_clean_inputs, resolve_deploy_target
         from .config import load_environment
         from .remote import connect
-        from .workflows.deploy import deploy
+        from .workflows.deploy import _MAX_CLEAN_INPUT_RERESOLUTIONS, deploy
 
         if invocation.environment is None:
             raise ValueError("deploy requires an environment")
@@ -397,7 +397,24 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
                 authority,
             )
 
-        target, _authority = resolve_current()
+        initial_clean_reresolutions = 0
+        while True:
+            try:
+                target, _authority = resolve_current()
+                break
+            except OpsError as error:
+                if clean_inputs is None or not clean_inputs_drifted(error):
+                    raise
+                if initial_clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
+                    raise OpsError(
+                        ExitStatus.SAFETY,
+                        "deploy",
+                        "clean deployment inputs did not stabilize while preparing a plan",
+                        changed=False,
+                        next_action="restore a stable intended clean checkout and rerun deploy",
+                    ) from None
+                clean_inputs = identify_clean_inputs(repo)
+                initial_clean_reresolutions += 1
 
         def refresh_clean_target():
             nonlocal clean_inputs
@@ -415,6 +432,7 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             repo=repo if clean_inputs is not None else None,
             clean_inputs=clean_inputs,
             refresh_clean_target=refresh_clean_target if clean_inputs is not None else None,
+            initial_clean_reresolutions=initial_clean_reresolutions,
             dry_run=invocation.dry_run,
             interactive=(not invocation.json if invocation.interactive is None else invocation.interactive),
         )

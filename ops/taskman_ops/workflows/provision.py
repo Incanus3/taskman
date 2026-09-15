@@ -28,6 +28,7 @@ from ..host_helper.backup_protection import (
 from ..releases.artifacts import (
     CleanInputs,
     DeploymentTarget,
+    clean_inputs_drifted,
     clean_inputs_match,
     identify_clean_inputs,
     resolve_deploy_target,
@@ -162,11 +163,26 @@ def provision(
             # consequence below, including plan presentation, confirmation, and
             # package installation.
             discovery = cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
-            release_input = (
-                cap.target_resolution(remote, config, invocation, clean_inputs)
-                if cap.target_resolution is not None
-                else artifact
-            )
+            try:
+                release_input = (
+                    cap.target_resolution(remote, config, invocation, clean_inputs)
+                    if cap.target_resolution is not None
+                    else artifact
+                )
+            except OpsError as error:
+                if clean_inputs is None or not clean_inputs_drifted(error):
+                    raise
+                if clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
+                    raise OpsError(
+                        ExitStatus.SAFETY,
+                        "provision",
+                        "clean provisioning inputs did not stabilize while preparing a plan",
+                        changed=False,
+                        next_action="restore a stable intended clean checkout and rerun provision",
+                    ) from None
+                clean_inputs = identify_clean_inputs(_repository_root())
+                clean_reresolutions += 1
+                continue
             assert release_input is not None
             _validate_artifact_target(config, release_input)
             if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
@@ -256,23 +272,31 @@ def provision(
             refreshed_discovery = cap.discover(
                 remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256
             )
-            refreshed_input = (
-                cap.target_resolution(remote, config, invocation, clean_inputs)
-                if cap.target_resolution is not None
-                else artifact
-            )
+            try:
+                refreshed_input = (
+                    cap.target_resolution(remote, config, invocation, clean_inputs)
+                    if cap.target_resolution is not None
+                    else artifact
+                )
+            except OpsError as error:
+                if clean_inputs is None or not clean_inputs_drifted(error):
+                    raise
+                raise OpsError(
+                    ExitStatus.SAFETY,
+                    "provision",
+                    "clean provisioning inputs changed after confirmation; rerun to acknowledge the refreshed plan",
+                    changed=False,
+                    next_action="restore the intended clean checkout and rerun provision to review a new plan",
+                ) from None
             assert refreshed_input is not None
             if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
-                if yes or _noninteractive(invocation):
-                    raise OpsError(
-                        ExitStatus.SAFETY,
-                        "provision",
-                        "clean provisioning inputs changed after confirmation; rerun to acknowledge the refreshed plan",
-                        changed=False,
-                        next_action="restore the intended clean checkout and rerun provision to review a new plan",
-                    )
-                clean_inputs = identify_clean_inputs(_repository_root())
-                continue
+                raise OpsError(
+                    ExitStatus.SAFETY,
+                    "provision",
+                    "clean provisioning inputs changed after confirmation; rerun to acknowledge the refreshed plan",
+                    changed=False,
+                    next_action="restore the intended clean checkout and rerun provision to review a new plan",
+                )
             refreshed_authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
             warnings = merge_warnings(
                 warnings, tuple(getattr(refreshed_authority, "warnings", ()))
@@ -294,15 +318,13 @@ def provision(
                 or refreshed_downgrade_evidence != downgrade_evidence
                 or refreshed_plan_effects != plan_effects
             ):
-                if yes or _noninteractive(invocation):
-                    raise OpsError(
-                        ExitStatus.SAFETY,
-                        "provision",
-                        "provision authority changed after confirmation; rerun to acknowledge the refreshed plan",
-                        changed=False,
-                        next_action="inspect the refreshed plan and rerun provision with a new confirmation",
-                    )
-                continue
+                raise OpsError(
+                    ExitStatus.SAFETY,
+                    "provision",
+                    "provision authority changed after confirmation; rerun to acknowledge the refreshed plan",
+                    changed=False,
+                    next_action="inspect the refreshed plan and rerun provision with a new confirmation",
+                )
             convergence_inputs = _with_scheduler_create_delta(inputs, authority)
             provisioning_changed = _changed(cap.provisioning(remote, convergence_inputs))
             break

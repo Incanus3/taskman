@@ -19,6 +19,7 @@ from .manifests import (
 
 DeploymentSource = Literal["explicit", "installed", "cached", "built"]
 ArtifactBuilder = Callable[[Path, Path], VerifiedArtifact]
+_CLEAN_INPUT_DRIFT_MESSAGE = "source inputs changed before the fresh build completed"
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,17 @@ def clean_inputs_match(repo: Path, clean_inputs: CleanInputs) -> bool:
         return False
 
 
+def clean_inputs_drifted(error: OpsError) -> bool:
+    """Recognize the one retryable mismatch raised during frozen clean resolution."""
+
+    return (
+        error.status is ExitStatus.INVALID
+        and error.stage == "artifact"
+        and error.message == _CLEAN_INPUT_DRIFT_MESSAGE
+        and not error.changed
+    )
+
+
 def _matches_clean_inputs(manifest: ArtifactManifest, inputs: CleanInputs) -> bool:
     return (
         not manifest.source_dirty and manifest.source_revision == inputs.source_revision
@@ -264,7 +276,7 @@ def resolve_deploy_target(
             return DeploymentTarget(artifact=candidate, release_record=None, source="cached")
     artifact = builder(repo, root)
     if not _matches_clean_inputs(artifact.manifest, clean_inputs):
-        raise _resolution_error("source inputs changed before the fresh build completed", status=ExitStatus.INVALID)
+        raise _resolution_error(_CLEAN_INPUT_DRIFT_MESSAGE, status=ExitStatus.INVALID)
     return DeploymentTarget(artifact=artifact, release_record=None, source="built")
 
 
