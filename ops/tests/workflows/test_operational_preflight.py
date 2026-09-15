@@ -114,7 +114,9 @@ def test_existing_host_preflight_checks_runtime_metadata_keys_database_and_capac
 
 
 def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_absent() -> None:
-    remote = RecordingRemote([CommandResult(0), CommandResult(0, "8589934592\n")])
+    remote = RecordingRemote(
+        [CommandResult(0), CommandResult(0, "8589934592\nretired=4096\n")]
+    )
 
     facts = preflight_module.validate_restore_preflight(
         remote,
@@ -129,16 +131,25 @@ def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_
     assert "--dbname postgres" in database_argv[2]
     assert "--dbname \"$database_name\"" not in database_argv[2]
     assert "SHOW data_directory" in database_argv[2]
+    assert "pg_database_size" in database_argv[2]
+    assert config().database_name in database_argv
     assert 'df -B1 --output=avail "$data_directory"' in database_argv[2]
     assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
     assert facts.database_available_disk_bytes == 8589934592
+    assert facts.database_size_bytes == {
+        "canonical": None,
+        "temporary": None,
+        "retired": 4096,
+    }
 
 
 @pytest.mark.parametrize("database_bytes", (40 * 1024**3, 8 * 1024**3))
 def test_restore_preflight_uses_native_postgres_volume_capacity_even_when_filesystems_differ(
     database_bytes: int,
 ) -> None:
-    remote = RecordingRemote([CommandResult(0), CommandResult(0, f"{database_bytes}\n")])
+    remote = RecordingRemote(
+        [CommandResult(0), CommandResult(0, f"{database_bytes}\ncanonical=8192\n")]
+    )
 
     facts = preflight_module.validate_restore_preflight(
         remote,
@@ -148,9 +159,20 @@ def test_restore_preflight_uses_native_postgres_volume_capacity_even_when_filesy
 
     assert facts.database_available_disk_bytes == database_bytes
     assert facts.available_disk_bytes == 40 * 1024**3
+    assert facts.database_size_bytes["canonical"] == 8192
 
 
-@pytest.mark.parametrize("capacity_output", ("", "unknown\n", "0\n"))
+@pytest.mark.parametrize(
+    "capacity_output",
+    (
+        "",
+        "unknown\n",
+        "0\n",
+        "10000\ncanonical=unknown\n",
+        "10000\nunknown=1\n",
+        "10000\ncanonical=1\ncanonical=2\n",
+    ),
+)
 def test_restore_preflight_refuses_unobservable_postgres_volume_capacity(
     capacity_output: str,
 ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
@@ -95,6 +96,8 @@ class Runtime:
         self.verification_failure = False
         self.verification_lost = False
         self.cleanup_failure: str | None = None
+        self.service_failure: str | None = None
+        self.service_state = "running"
         self.safety_count = 0
         self.later_write: str | None = None
         self.database_capacity = 1_000_000
@@ -125,8 +128,11 @@ class Runtime:
 
     def safety_backup(self, state, paths, database, *_args, **_kwargs):
         self.events.append(f"backup:{database['name']}")
-        backup_id = "backup-" + chr(ord("c") + self.safety_count) * 32
-        self.safety_count += 1
+        while True:
+            backup_id = "backup-" + chr(ord("c") + self.safety_count) * 32
+            self.safety_count += 1
+            if not Path(paths.local(paths.backup_root / f"{backup_id}.json")).exists():
+                break
         return _backup(paths, backup_id, state.selected_release_id or CURRENT, f"safety-{self.safety_count}".encode())
 
     def create_temporary(self, *_args):
@@ -187,6 +193,9 @@ class Runtime:
 
     def service(self, action: str):
         self.events.append(action)
+        if self.service_failure == action:
+            raise restore_module.CommandError("service transition interrupted")
+        self.service_state = "stopped" if action == "stop" else "running"
 
     def verify(self, request, **_kwargs):
         self.events.append("verify")
@@ -264,7 +273,6 @@ def _install(monkeypatch: pytest.MonkeyPatch, runtime: Runtime) -> None:
     monkeypatch.setattr(restore_module, "remove_restore_target", runtime.remove_target)
     monkeypatch.setattr(restore_module, "change_service", runtime.service)
     monkeypatch.setattr(restore_module, "verify", runtime.verify)
-    monkeypatch.setattr(restore_module, "_validate_source_dump", lambda *_args: None)
     monkeypatch.setattr(restore_module, "run_command", lambda *_args, **_kwargs: SimpleNamespace(stdout=b""))
     monkeypatch.setattr(restore_module, "_terminate_connections", lambda *_args: None)
     monkeypatch.setattr(
@@ -272,6 +280,14 @@ def _install(monkeypatch: pytest.MonkeyPatch, runtime: Runtime) -> None:
         "observe_database_available_bytes",
         lambda *_args: runtime.database_capacity,
         raising=False,
+    )
+    monkeypatch.setattr(
+        restore_module,
+        "observe_host_state",
+        lambda *args, include_runtime=False, **kwargs: replace(
+            observe_host_state(*args, include_runtime=False, **kwargs),
+            service_state=runtime.service_state if include_runtime else "unknown",
+        ),
     )
 
 
@@ -326,6 +342,115 @@ def test_new_restore_publishes_binding_before_create_and_registers_oid_before_lo
     assert latest.backup_id == "backup-" + "c" * 32
     assert latest.recovery_backup_ids == tuple(sorted({INPUT_BACKUP, PROTECTION_BACKUP, "backup-" + "c" * 32}))
     assert state.restore_target is None and not state.backup_protections
+
+
+def test_bound_retry_with_writable_original_registers_fresh_safety_before_stop_and_load(
+    tmp_path, monkeypatch
+):
+    """Reusing the old safety ID here would discard writes made after binding publication."""
+
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    first_safety = _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("scheduler") < runtime.events.index("backup:taskman")
+    assert runtime.events.index("backup:taskman") < runtime.events.index("stop")
+    assert runtime.events.index("stop") < runtime.events.index("load")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert latest.backup_id != first_safety.backup_id
+    assert {first_safety.backup_id, latest.backup_id}.issubset(latest.recovery_backup_ids)
+
+
+def test_apply_time_dump_mode_drift_refuses_without_repair_or_scheduler(
+    tmp_path, monkeypatch
+):
+    """A post-confirmation mode change must not be silently mutated back to 0600."""
+
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    dump = Path(paths.local(paths.backup_root / f"{source.backup_id}.dump"))
+    dump.chmod(0o640)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "manual"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+    assert dump.stat().st_mode & 0o777 == 0o640
+
+
+def test_expected_state_drift_uses_unsafe_boundary_and_exit_10(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+    runtime.databases["canonical"]["oid"] = 999
+
+    result = restore_module.restore(request)
+
+    assert result.outcome == "refused"
+    assert result.state["failed_boundary"] == "expected_state"
+    assert result.state["exit_code"] == 10
+    assert runtime.events == []
+
+
+def test_lock_refusal_marks_every_observation_unavailable(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+
+    @contextmanager
+    def unavailable(*_args, **_kwargs):
+        raise restore_module.LifecycleLockContention("held")
+        yield
+
+    monkeypatch.setattr(restore_module, "lifecycle_lock", unavailable)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.state["failed_boundary"] == "lock"
+    assert result.state["inspection_error"] == "lock-unavailable"
+    assert set(result.state["unavailable_fields"]) == set(result.state["observations"])
+
+
+def test_failure_reobservation_reacquires_lifecycle_lock(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+    runtime.databases["canonical"]["oid"] = 999
+    active = 0
+    entries = 0
+
+    @contextmanager
+    def tracked(*_args, **_kwargs):
+        nonlocal active, entries
+        entries += 1
+        active += 1
+        try:
+            yield SimpleNamespace()
+        finally:
+            active -= 1
+
+    def observe(*_args, **_kwargs):
+        assert active == 1
+        return runtime.observe_databases()
+
+    monkeypatch.setattr(restore_module, "lifecycle_lock", tracked)
+    monkeypatch.setattr(restore_module, "observe_restore_databases", observe)
+
+    result = restore_module.restore(request)
+
+    assert entries == 2
+    assert result.state["inspection_error"] is None
+    assert result.state["observations"]["restore_database_state"]["canonical"]["oid"] == 999
 
 
 @pytest.mark.parametrize("arrangement", ["canonical+temporary", "temporary+retired", "retired", "canonical+retired"])
@@ -387,7 +512,9 @@ def test_failed_or_lost_verification_preserves_original_binding_and_protection(l
     result = restore_module.restore(_request(paths, runtime))
 
     assert result.outcome == "retryable"
-    assert result.state["failed_boundary"] == ("restore" if lost else "verification")
+    assert result.state["failed_boundary"] == "verification"
+    assert result.state["exit_code"] == 9
+    assert (result.state["report"] is None) is lost
     validate_mutation_state("restore", "retryable", result.state)
     state = observe_host_state(paths, allow_selection_transition=True)
     assert state.restore_target is not None and state.backup_protections
@@ -443,6 +570,56 @@ def test_retry_after_durable_success_only_finishes_cleanup(failure, tmp_path, mo
     assert "load" not in runtime.events and "verify" not in runtime.events and "scheduler" not in runtime.events
     assert len(observe_host_state(paths).selections) == history_count
     assert observe_host_state(paths).restore_target is None
+
+
+def test_cleanup_retired_drop_is_known_changed_when_binding_removal_then_fails(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    runtime.cleanup_failure = "binding"
+    runtime.events.clear()
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert runtime.events[:2] == ["drop-retired", "remove-binding"]
+    assert interrupted.state["mutation_state"] == "changed"
+
+
+@pytest.mark.parametrize(
+    ("boundary", "configure"),
+    (
+        ("service", lambda runtime: setattr(runtime, "service_failure", "stop")),
+        ("selection", lambda runtime: None),
+    ),
+)
+def test_restore_lifecycle_failures_use_release_exit_8(
+    boundary, configure, tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    configure(runtime)
+    _install(monkeypatch, runtime)
+    if boundary == "selection":
+        monkeypatch.setattr(
+            restore_module,
+            "select_current",
+            lambda *_args: (_ for _ in ()).throw(
+                restore_module.SelectionAmbiguityError("selection interrupted")
+            ),
+        )
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == boundary
+    assert result.state["exit_code"] == 8
+    validate_mutation_state("restore", "retryable", result.state)
 
 
 def test_deferred_replacement_mode_is_refused_without_mutation(tmp_path, monkeypatch):

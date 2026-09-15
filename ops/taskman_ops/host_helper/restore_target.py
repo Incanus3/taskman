@@ -191,8 +191,8 @@ class RestoreTarget:
                     raise RecordError("replacement cannot discard the original database")
         object.__setattr__(self, "replacement", replacement)
         attempts = _attempts(self.safety_backup_attempts)
-        if attempts[0]["backup_id"] != self.safety_backup_id:
-            raise RecordError("safety backup attempts do not identify the original safety backup")
+        if attempts[-1]["backup_id"] != self.safety_backup_id:
+            raise RecordError("active safety backup is not the newest registered attempt")
         object.__setattr__(self, "safety_backup_attempts", attempts)
         _record_json(self.to_mapping())
 
@@ -300,7 +300,11 @@ def append_safety_attempt(record: RestoreTarget, backup_id: str) -> RestoreTarge
             {"backup_id": backup_id, "attempt_number": allocate_safety_attempt(record)}
         ),
     )
-    return replace(record, safety_backup_attempts=attempts)
+    return replace(
+        record,
+        safety_backup_id=backup_id,
+        safety_backup_attempts=attempts,
+    )
 
 
 def safety_attempt_prune_ids(

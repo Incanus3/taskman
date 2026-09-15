@@ -156,7 +156,7 @@ required=$(( database_bytes + margin ))
 test "$available_bytes" -ge "$required"
 '''
 _RESTORE_DATABASE_PREFLIGHT = r'''set -eu
-database_port=$1; database_role=$2; backup_root=$3; pgpass=$4
+database_port=$1; database_role=$2; database_name=$3; backup_root=$4; pgpass=$5
 test -f "$pgpass" && test ! -L "$pgpass"
 test "$(stat -c '%U:%G:%a' -- "$pgpass")" = root:root:600
 command -v psql >/dev/null 2>&1
@@ -172,6 +172,10 @@ available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1
 case "$available_bytes" in ''|*[!0-9]*) exit 1;; esac
 test "$available_bytes" -ge 67108864
 printf '%s\n' "$database_available_bytes"
+temporary_name=${database_name}__restore_tmp
+retired_name=${database_name}__restore_old
+database_sizes=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=canonical="$database_name" --set=temporary="$temporary_name" --set=retired="$retired_name" --command "SELECT requested.role || '=' || pg_database_size(database.oid) FROM (VALUES ('canonical', :'canonical'), ('temporary', :'temporary'), ('retired', :'retired')) AS requested(role, name) JOIN pg_database AS database ON database.datname = requested.name ORDER BY CASE requested.role WHEN 'canonical' THEN 1 WHEN 'temporary' THEN 2 ELSE 3 END" 2>/dev/null)
+test -z "$database_sizes" || printf '%s\n' "$database_sizes"
 '''
 _TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
 emit() { printf '%s=%s\n' "$1" "$2"; }
@@ -549,6 +553,7 @@ def collect_restore_preflight(
             "taskman-restore-database-preflight",
             str(config.database_port),
             config.database_role,
+            config.database_name,
             config.backup_root.as_posix(),
             _PGPASS,
         ),

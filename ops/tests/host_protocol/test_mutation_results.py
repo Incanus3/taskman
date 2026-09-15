@@ -185,19 +185,19 @@ def test_outcome_exit_status_and_failure_boundary_must_agree(
 
 
 def test_operation_category_controls_shared_failure_boundary_exit_code() -> None:
-    """Selection/service failures are release 8 for deploy and restore 11 for restore."""
+    """Selection/service/history failures retain release lifecycle exit 8."""
 
     restore = {
         **deploy_state(
             mutation_state="unknown",
-            exit_code=11,
+            exit_code=8,
             failed_boundary="selection",
             verification_report=None,
         ),
         "observations": observations(restore=True),
         "pre_restore_backup_id": None,
     }
-    assert validate_mutation_state("restore", "retryable", restore)["exit_code"] == 11
+    assert validate_mutation_state("restore", "retryable", restore)["exit_code"] == 8
 
     deploy = deploy_state(
         mutation_state="unknown",
@@ -207,6 +207,23 @@ def test_operation_category_controls_shared_failure_boundary_exit_code() -> None
     )
     with pytest.raises(ProtocolError):
         validate_mutation_state("deploy", "retryable", deploy)
+
+
+def test_verification_command_failure_can_report_unavailable_report() -> None:
+    """A lost verification reply must not fabricate check results."""
+
+    restore = {
+        **deploy_state(
+            mutation_state="unknown",
+            exit_code=9,
+            failed_boundary="verification",
+            verification_report=None,
+        ),
+        "observations": observations(restore=True),
+        "pre_restore_backup_id": OTHER_BACKUP,
+    }
+
+    assert validate_mutation_state("restore", "retryable", restore)["report"] is None
 
 
 def test_cleanup_delete_failure_keeps_cleanup_status_with_retryable_outcome() -> None:

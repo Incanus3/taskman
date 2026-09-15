@@ -205,7 +205,12 @@ def validate_mutation_state(
     verification_report = _optional_report(mapping["report"])
 
     if boundary == "verification":
-        if verification_report is None or verification_report["exit_status"] != 9:
+        if (
+            verification_report is None
+            and operation != "restore"
+            or verification_report is not None
+            and verification_report["exit_status"] != 9
+        ):
             raise ProtocolError("verification failure requires its failed report")
     if verification_report is not None and verification_report["status"] == "failed":
         if boundary != "verification" or exit_code != verification_report["exit_status"]:
@@ -240,7 +245,11 @@ def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bo
         expected = {
             "deploy": frozenset({8}),
             "genesis": frozenset({8}),
-            "restore": frozenset({11}),
+            "restore": (
+                frozenset({11})
+                if boundary in {"history", "inspection"}
+                else frozenset({8})
+            ),
             "cleanup": frozenset({10}),
         }[operation]
     if boundary == "restore" and operation != "restore":

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from ..config import EnvironmentConfig
@@ -22,6 +22,7 @@ class RestorePreflightFacts:
     available_disk_bytes: int
     backup_available_disk_bytes: int
     database_available_disk_bytes: int
+    database_size_bytes: Mapping[str, int | None]
 
 
 def validate_operational_preflight(
@@ -70,7 +71,29 @@ def validate_restore_preflight(
             "PostgreSQL maintenance access, database role, or restore capacity preflight failed"
         )
     try:
-        database_available_bytes = int(database.stdout.strip())
+        lines = database.stdout.splitlines()
+        if not lines or len(lines) > 4:
+            raise ValueError
+        database_available_bytes = int(lines[0])
+        database_sizes: dict[str, int | None] = {
+            "canonical": None,
+            "temporary": None,
+            "retired": None,
+        }
+        observed_roles: set[str] = set()
+        for line in lines[1:]:
+            role, separator, raw_size = line.partition("=")
+            if (
+                separator != "="
+                or role not in database_sizes
+                or role in observed_roles
+            ):
+                raise ValueError
+            size = int(raw_size)
+            if size <= 0:
+                raise ValueError
+            database_sizes[role] = size
+            observed_roles.add(role)
         available_bytes = getattr(facts, "available_disk_bytes")
         backup_available_bytes = getattr(facts, "backup_available_disk_bytes")
         if (
@@ -85,6 +108,7 @@ def validate_restore_preflight(
         available_bytes,
         backup_available_bytes,
         database_available_bytes,
+        database_sizes,
     )
 
 

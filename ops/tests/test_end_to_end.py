@@ -643,7 +643,12 @@ def _install_public_restore_controller(
     monkeypatch.setattr(
         restore_workflow,
         "validate_restore_preflight",
-        lambda *_args: RestorePreflightFacts(1_000_000, 1_000_000, 1_000_000),
+        lambda *_args: RestorePreflightFacts(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            {"canonical": 1024, "temporary": None, "retired": None},
+        ),
     )
     monkeypatch.setattr(restore_workflow, "run_request", dispatch)
     monkeypatch.setattr(inventory, "run_request", dispatch)

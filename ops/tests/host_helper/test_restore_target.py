@@ -118,12 +118,12 @@ def test_restore_target_accepts_more_than_64_safety_attempts_for_bounded_recover
         for index in range(64)
     )
     record = _target(
-        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_id=attempts[-1]["backup_id"],
         safety_backup_attempts=attempts,
     )
 
     extended = _target(
-        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_id="backup-" + "f" * 32,
         safety_backup_attempts=(*attempts, {"backup_id": "backup-" + "f" * 32, "attempt_number": 64}),
     )
 
@@ -139,7 +139,7 @@ def test_safety_attempt_retention_uses_attempt_order_and_skips_independent_copie
         for index in range(7)
     )
     record = _target(
-        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_id=attempts[-1]["backup_id"],
         safety_backup_attempts=attempts,
     )
 
@@ -167,6 +167,8 @@ def test_safety_attempt_reference_is_published_before_exact_retirement(tmp_path:
         json.loads(Path(paths.local(paths.restore_target_path)).read_text(encoding="utf-8"))
     )
     assert updated == persisted
+    assert updated.safety_backup_id == "backup-00000000000000000000000000000002"
+    assert updated.safety_backup_attempts[0]["backup_id"] == SECOND_BACKUP
     assert tuple(item["attempt_number"] for item in updated.safety_backup_attempts) == (0, 1)
 
 

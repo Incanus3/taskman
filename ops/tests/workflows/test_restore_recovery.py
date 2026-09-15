@@ -127,7 +127,11 @@ def _authority(tmp_path, *, current=FAILED_CURRENT, with_success=True, databases
 
 
 def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutations):
-    monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000, "database_available_disk_bytes": 10_000})())
+    database_sizes = {
+        role: None if value is None else 4096
+        for role, value in discoveries[0]["restore_database_state"].items()
+    }
+    monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000, "database_available_disk_bytes": 10_000, "database_size_bytes": database_sizes})())
     monkeypatch.setattr("taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package", _scheduler_package)
     release_records = [release.to_mapping()]
     selected = discoveries[0]["selected_release_id"]
@@ -291,6 +295,11 @@ def test_restore_refuses_when_native_database_volume_cannot_hold_remaining_work(
                 "available_disk_bytes": 10_000,
                 "backup_available_disk_bytes": 20_000,
                 "database_available_disk_bytes": 2_047,
+                "database_size_bytes": {
+                    "canonical": 4096,
+                    "temporary": None,
+                    "retired": None,
+                },
             },
         )(),
     )
@@ -328,6 +337,11 @@ def test_restore_dry_run_validates_selected_dump_content_before_plan_or_prompt(
                 "available_disk_bytes": 10_000,
                 "backup_available_disk_bytes": 20_000,
                 "database_available_disk_bytes": 10_000,
+                "database_size_bytes": {
+                    "canonical": 4096,
+                    "temporary": None,
+                    "retired": None,
+                },
             },
         )(),
     )
@@ -520,6 +534,156 @@ def test_retired_only_same_backup_retry_is_planned_as_remaining_load_and_swap(
     assert outcome.facts["canonical_applied_migrations"] is None
     assert outcome.facts["remaining_restore_bytes"] == 2048
     assert "load-temporary" in outcome.facts["remaining_consequences"]
+
+
+def test_durable_success_after_retired_cleanup_is_valid_cleanup_only_authority(
+    tmp_path, monkeypatch
+):
+    restored = {
+        "canonical": {
+            "oid": 42,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+        "temporary": None,
+        "retired": None,
+    }
+    release, backup, selection, state = _authority(tmp_path, databases=restored)
+    state["selected_release_id"] = release.release_id
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        selection_filename(selection), None, 41, 42, False,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.stage == "planned"
+    assert outcome.facts["remaining_restore_bytes"] == 0
+    assert outcome.facts["required_safety_backup_bytes"] == 0
+    assert outcome.facts["remaining_consequences"] == ["cleanup-retired", "cleanup-binding"]
+
+
+def test_post_swap_before_success_does_not_reserve_or_plan_another_dump_load(
+    tmp_path, monkeypatch
+):
+    swapped = {
+        "canonical": {
+            "oid": 42,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+        "temporary": None,
+        "retired": {
+            "oid": 41,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+    }
+    release, backup, selection, state = _authority(tmp_path, databases=swapped)
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        selection_filename(selection), FAILED_CURRENT, 41, 42, False,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.stage == "planned"
+    assert outcome.facts["remaining_restore_bytes"] == 0
+    assert outcome.facts["required_safety_backup_bytes"] == 0
+    assert "load-temporary" not in outcome.facts["remaining_consequences"]
+
+
+@pytest.mark.parametrize("arrangement", ("wrong-restored", "wrong-temporary"))
+def test_restore_refuses_role_identity_drift_before_consequence(
+    arrangement, tmp_path, monkeypatch
+):
+    databases = {
+        "canonical": {
+            "oid": 42 if arrangement == "wrong-temporary" else 43,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+        "temporary": (
+            {
+                "oid": 43,
+                "owner": "taskman",
+                "migration_table_present": False,
+                "applied_migrations": None,
+            }
+            if arrangement == "wrong-temporary"
+            else None
+        ),
+        "retired": (
+            {
+                "oid": 41,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": [MIGRATION],
+            }
+            if arrangement == "wrong-restored"
+            else None
+        ),
+    }
+    if arrangement == "wrong-temporary":
+        databases["canonical"]["oid"] = 41
+    release, backup, selection, state = _authority(tmp_path, databases=databases)
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        selection_filename(selection), FAILED_CURRENT, 41, 42, False,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert mutations == []
+
+
+@pytest.mark.parametrize("observed_size", (4096, None))
+def test_restore_uses_actual_original_database_size_for_safety_backup_capacity(
+    observed_size, tmp_path, monkeypatch
+):
+    release, backup, _selection, state = _authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight",
+        lambda *_args: type(
+            "Facts",
+            (),
+            {
+                "available_disk_bytes": 10_000,
+                "backup_available_disk_bytes": 4095,
+                "database_available_disk_bytes": 10_000,
+                "database_size_bytes": {
+                    "canonical": observed_size,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        )(),
+    )
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert outcome.facts["plan"]["required_safety_backup_bytes"] == observed_size
+    assert mutations == []
 
 
 def test_unknown_dispatched_restore_reply_preserves_starting_state_and_unknown_observations(

@@ -41,7 +41,9 @@ from ..restore_database import (
 )
 from ..restore_target import (
     RestoreTarget,
+    append_safety_attempt,
     remove_restore_target as _remove_restore_target_file,
+    replace_restore_target,
     restore_target_sha256,
     write_restore_target,
 )
@@ -81,11 +83,22 @@ class RestoreManual(RuntimeError):
     """Observed restore authority is contradictory."""
 
 
+class RestoreExpectedState(RestoreRefused):
+    """The confirmed restore state drifted before any consequence."""
+
+
 class _Retryable(RuntimeError):
-    def __init__(self, boundary: str, *, possibly_changed: bool = True) -> None:
+    def __init__(
+        self,
+        boundary: str,
+        *,
+        possibly_changed: bool = True,
+        known_changed: bool = False,
+    ) -> None:
         super().__init__(boundary)
         self.boundary = boundary
         self.possibly_changed = possibly_changed
+        self.known_changed = known_changed
 
 
 @dataclass(frozen=True)
@@ -119,7 +132,7 @@ def restore(request: HostRequest) -> HostResult:
         inputs = _inputs(request)
         validate_credentials(inputs.credentials)
         with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS) as lock:
-            state, databases = _observe_locked(inputs)
+            state, databases = _observe_locked(inputs, include_runtime=True)
             _validate_expected_state(state, databases, inputs)
             source = _source_record(state, inputs)
             _validate_source_dump(source, inputs)
@@ -167,7 +180,7 @@ def restore(request: HostRequest) -> HostResult:
                 raise _Retryable("backup_helper", possibly_changed=possibly_changed) from error
             changed = changed or any((convergence.mutation.paused, convergence.mutation.replaced, convergence.mutation.restarted))
 
-            state, databases = _observe_locked(inputs)
+            state, databases = _observe_locked(inputs, include_runtime=True)
             if target is None:
                 safety_state = _state_for_database(state, databases["canonical"])
                 try:
@@ -195,6 +208,33 @@ def restore(request: HostRequest) -> HostResult:
                 safety = _required_backup(state, target.safety_backup_id, inputs)
                 for attempt in target.safety_backup_attempts:
                     _required_backup(state, str(attempt["backup_id"]), inputs)
+                if _original_writes_cannot_be_excluded(state, databases, target):
+                    safety_state = _state_for_database(state, databases["canonical"])
+                    try:
+                        safety = create_validated_backup(
+                            safety_state,
+                            inputs.paths,
+                            inputs.database,
+                            inputs.credentials,
+                            purpose="pre-restore",
+                        )
+                    except (
+                        BackupAuthorityError,
+                        CommandError,
+                        OSError,
+                        RecordError,
+                        ValueError,
+                    ) as error:
+                        raise _Retryable("backup") from error
+                    changed = True
+                    target = append_safety_attempt(target, safety.backup_id)
+                    try:
+                        replace_restore_target(inputs.paths, target)
+                    except (OSError, RecordError) as error:
+                        raise _Retryable("restore") from error
+                    changed = True
+                    state, databases = _observe_locked(inputs, include_runtime=True)
+                    _validate_bound_target(state, databases, target, source, inputs)
 
             try:
                 change_service("stop")
@@ -226,7 +266,7 @@ def restore(request: HostRequest) -> HostResult:
                     lifecycle_locked=True,
                 )
             except CommandError as error:
-                raise _Retryable("restore") from error
+                raise _Retryable("verification") from error
             report_value = verification.state.get("report")
             report = report_value if isinstance(report_value, Mapping) else None
             if verification.outcome != "succeeded":
@@ -253,7 +293,9 @@ def restore(request: HostRequest) -> HostResult:
     except LifecycleLockContention:
         return _failure(request, "retryable", "lifecycle lock is unavailable", "lock", inputs, source, state, changed=False, possibly_changed=False, report=report, safety=safety)
     except _Retryable as error:
-        return _failure(request, "retryable", "restore did not complete; rerun to converge", error.boundary, inputs, source, state, changed=changed, possibly_changed=error.possibly_changed, report=report, safety=safety)
+        return _failure(request, "retryable", "restore did not complete; rerun to converge", error.boundary, inputs, source, state, changed=changed or error.known_changed, possibly_changed=error.possibly_changed, report=report, safety=safety)
+    except RestoreExpectedState:
+        return _failure(request, "refused", "confirmed restore state changed", "expected_state", inputs, source, state, changed=changed, possibly_changed=possibly_changed, report=report, safety=safety)
     except RestoreRefused:
         return _failure(request, "refused", "restore request is unsafe", "input", inputs, source, state, changed=changed, possibly_changed=possibly_changed, report=report, safety=safety)
     except (RestoreManual, RestoreDatabaseError, StateAmbiguityError):
@@ -366,11 +408,11 @@ def _validate_expected_state(state: HostState, databases: Mapping[str, object], 
         or (None if state.restore_target is None else restore_target_sha256(state.restore_target)) != expected["restore_target_sha256"]
         or databases != expected["restore_database_state"]
     ):
-        raise RestoreManual("confirmed restore state changed")
+        raise RestoreExpectedState("confirmed restore state changed")
     canonical = databases["canonical"]
     migrations = None if canonical is None or not canonical["migration_table_present"] else canonical["applied_migrations"]
     if migrations != expected["applied_migrations"]:
-        raise RestoreManual("confirmed canonical schema changed")
+        raise RestoreExpectedState("confirmed canonical schema changed")
 
 
 def _revalidate_before_consequences(inputs: _Inputs) -> None:
@@ -396,10 +438,8 @@ def _validate_source_dump(source: BackupRecord, inputs: _Inputs) -> None:
         details = dump.lstat()
     except OSError as error:
         raise RestoreManual("restore dump is unavailable") from error
-    if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid() or details.st_size <= 0 or details.st_mode & 0o7022 or sha256_file(dump) != source.dump_sha256:
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid() or details.st_size <= 0 or stat.S_IMODE(details.st_mode) != 0o600 or sha256_file(dump) != source.dump_sha256:
         raise RestoreManual("restore dump identity is contradictory")
-    if stat.S_IMODE(details.st_mode) != 0o600:
-        os.chmod(dump, 0o600)
     run_command(("pg_restore", "--list", dump.as_posix()), env={"PGPASSFILE": inputs.credentials.as_posix()}, timeout_seconds=_COMMAND_TIMEOUT_SECONDS)
 
 
@@ -449,6 +489,21 @@ def _roles(databases: Mapping[str, object]) -> frozenset[str]:
 def _require_initial_arrangement(databases: Mapping[str, object]) -> None:
     if _roles(databases) != frozenset({"canonical"}):
         raise RestoreManual("unbound restore databases are not canonical-only")
+
+
+def _original_writes_cannot_be_excluded(
+    state: HostState,
+    databases: Mapping[str, object],
+    target: RestoreTarget,
+) -> bool:
+    """Return whether the original canonical could have accepted later writes."""
+
+    canonical = databases["canonical"]
+    return (
+        isinstance(canonical, Mapping)
+        and canonical["oid"] == target.original_database_oid
+        and state.service_state != "stopped"
+    )
 
 
 def _validate_bound_target(
@@ -637,8 +692,9 @@ def _cleanup_completed(
     if latest is None:
         raise RestoreManual("restore success is unavailable")
     required = tuple(sorted({target.backup_id, *(str(item["backup_id"]) for item in target.safety_backup_attempts)}))
+    known_changed = False
     try:
-        _record, _protection_changed = complete_successful_selection(
+        _record, protection_changed = complete_successful_selection(
             inputs.paths,
             state,
             release_id=target.source_release_id,
@@ -648,16 +704,18 @@ def _cleanup_completed(
         )
     except (OSError, RecordError, ValueError) as error:
         raise _Retryable("history") from error
+    known_changed = known_changed or protection_changed
     retired = databases["retired"]
     if retired is not None:
         try:
             drop_registered_retired(inputs.database, inputs.credentials, target.original_database_oid)
         except RestoreDatabaseError as error:
-            raise _Retryable("restore") from error
+            raise _Retryable("restore", known_changed=known_changed) from error
+        known_changed = True
     try:
         remove_restore_target(inputs.paths)
     except (OSError, RecordError) as error:
-        raise _Retryable("restore") from error
+        raise _Retryable("restore", known_changed=known_changed) from error
     return True
 
 
@@ -677,11 +735,31 @@ def _failure(
 ) -> HostResult:
     databases: Mapping[str, object] | None = None
     final_state = state
-    if inputs is not None:
+    observation_evidence: tuple[Mapping[str, object], list[str], str | None] | None = None
+    if boundary == "lock":
+        observations, unavailable = unavailable_observations("restore")
+        observation_evidence = (observations, unavailable, "lock-unavailable")
+    elif inputs is not None:
         try:
-            final_state, databases = _observe_locked(inputs, include_runtime=True)
+            with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
+                final_state, databases = _observe_locked(inputs, include_runtime=True)
+                scheduler = _scheduler_facts(inputs.paths)
+                observations = mutation_observations(
+                    final_state,
+                    "restore",
+                    scheduler=scheduler,
+                    restore_database_state=databases,
+                )
+                unavailable, inspection_error = mutation_observation_availability(
+                    "restore", observations
+                )
+                observation_evidence = (observations, unavailable, inspection_error)
+        except LifecycleLockContention:
+            observations, unavailable = unavailable_observations("restore")
+            observation_evidence = (observations, unavailable, "lock-unavailable")
         except Exception:
-            pass
+            observations, unavailable = unavailable_observations("restore")
+            observation_evidence = (observations, unavailable, "inspection-failed")
     return _result(
         request, outcome, message, final_state, inputs, source,
         boundary=boundary, changed=changed, possibly_changed=possibly_changed,
@@ -691,6 +769,7 @@ def _failure(
             if safety is not None
             else None if state is None or state.restore_target is None else state.restore_target.safety_backup_id
         ),
+        observation_evidence=observation_evidence,
     )
 
 
@@ -708,8 +787,11 @@ def _result(
     report: Mapping[str, object] | None,
     databases: Mapping[str, object] | None,
     pre_restore_backup_id: str | None,
+    observation_evidence: tuple[Mapping[str, object], list[str], str | None] | None = None,
 ) -> HostResult:
-    if state is not None and inputs is not None and databases is not None:
+    if observation_evidence is not None:
+        observations, unavailable, inspection_error = observation_evidence
+    elif state is not None and inputs is not None and databases is not None:
         try:
             scheduler = _scheduler_facts(inputs.paths)
             observations = mutation_observations(
@@ -737,8 +819,9 @@ def _result(
             "backup": 6,
             "verification": 9,
             "history": 11,
-            "selection": 11,
-            "service": 11,
+            "selection": 8,
+            "service": 8,
+            "expected_state": 10,
             "restore": 11,
         }.get(failed_boundary, 10)
     mutation_state = "changed" if changed else ("unknown" if possibly_changed else "unchanged")

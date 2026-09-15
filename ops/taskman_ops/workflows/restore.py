@@ -114,6 +114,7 @@ def restore(
                         preflight, "database_available_disk_bytes", None
                     ),
                     backup_available_bytes=getattr(preflight, "backup_available_disk_bytes", None),
+                    database_size_bytes=getattr(preflight, "database_size_bytes", None),
                     requested_backup_id=backup_id,
                     replace_unfinished=replace_unfinished,
                     reapply=reapply,
@@ -124,7 +125,8 @@ def restore(
                         "free database volume capacity and rerun restore inspection",
                     )
                 if (
-                    type(plan["available_backup_bytes"]) is not int
+                    type(plan["required_safety_backup_bytes"]) is not int
+                    or type(plan["available_backup_bytes"]) is not int
                     or plan["available_backup_bytes"] < plan["required_safety_backup_bytes"]
                 ):
                     raise _safety(
@@ -338,7 +340,6 @@ def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str
             raise ValueError("successful restore history requires physical current")
         if latest is not None and not any(item.release_id == latest.release_id for item in releases):
             raise ValueError("successful selection release is not installed")
-        _validate_arrangement(databases, target, config.database_role)
         expected = {
             "selected_release_id": selected,
             "last_successful_selection_id": latest_id,
@@ -352,19 +353,20 @@ def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str
         }
         if set(expected) != _EXPECTED_KEYS:
             raise AssertionError("restore expected state changed")
+        authority = _Authority(
+            selected, latest_id, latest, source, source_release, backups, releases, protections,
+            target, target_sha, databases, expected, str(state["service_state"]),
+            str(state["backup_timer_state"]), result.warnings,
+        )
+        _validate_arrangement(authority, config.database_role)
+        if (
+            target is not None
+            and not _durably_completed(authority)
+            and target.base_selection_id != latest_id
+        ):
+            raise ValueError("unfinished restore base selection no longer matches authority")
     except (KeyError, StopIteration, TypeError, ValueError, RecordError, RestoreDatabaseError):
         raise _safety("restore discovery returned invalid authority") from None
-    authority = _Authority(
-        selected, latest_id, latest, source, source_release, backups, releases, protections,
-        target, target_sha, databases, expected, str(state["service_state"]),
-        str(state["backup_timer_state"]), result.warnings,
-    )
-    if (
-        target is not None
-        and not _durably_completed(authority)
-        and target.base_selection_id != latest_id
-    ):
-        raise _safety("unfinished restore base selection no longer matches authority")
     return authority
 
 
@@ -397,7 +399,8 @@ def _validate_target_authority(
         raise ValueError("restore binding safety authority is incomplete")
 
 
-def _validate_arrangement(databases: Mapping[str, object], target: RestoreTarget | None, expected_owner: str) -> None:
+def _validate_arrangement(authority: _Authority, expected_owner: str) -> None:
+    databases, target = authority.databases, authority.target
     roles = _roles(databases)
     for database in databases.values():
         if isinstance(database, Mapping) and database["owner"] != expected_owner:
@@ -412,18 +415,55 @@ def _validate_arrangement(databases: Mapping[str, object], target: RestoreTarget
         frozenset({"canonical", "retired"}),
     }:
         raise ValueError("bound restore database arrangement is invalid")
-    original = databases["retired"] or databases["canonical"]
     canonical = databases["canonical"]
-    if not isinstance(original, Mapping) or (
-        original["oid"] != target.original_database_oid
-        and not (
-            isinstance(databases["retired"], Mapping)
-            and databases["retired"]["oid"] == target.original_database_oid
-            and isinstance(canonical, Mapping)
-            and canonical["oid"] == target.restored_database_oid
+    temporary = databases["temporary"]
+    retired = databases["retired"]
+    if roles == frozenset({"canonical"}):
+        expected_oid = (
+            target.restored_database_oid
+            if _durably_completed(authority)
+            else target.original_database_oid
         )
+        if not isinstance(canonical, Mapping) or canonical["oid"] != expected_oid:
+            raise ValueError("bound canonical database identity is inconsistent")
+        if not _durably_completed(authority) and not target.temporary_creation_pending:
+            raise ValueError("registered temporary database disappeared")
+        return
+    if roles in {
+        frozenset({"canonical", "temporary"}),
+        frozenset({"temporary", "retired"}),
+    }:
+        original = canonical if canonical is not None else retired
+        if not isinstance(original, Mapping) or original["oid"] != target.original_database_oid:
+            raise ValueError("bound original database identity is inconsistent")
+        if not isinstance(temporary, Mapping):
+            raise ValueError("bound temporary database is unavailable")
+        if target.restored_database_oid is None:
+            if (
+                not target.temporary_creation_pending
+                or temporary["migration_table_present"] is not False
+                or temporary["applied_migrations"] is not None
+            ):
+                raise ValueError("unregistered temporary database is not proved empty")
+        elif temporary["oid"] != target.restored_database_oid:
+            raise ValueError("bound temporary database identity is inconsistent")
+        return
+    if roles == frozenset({"retired"}):
+        if (
+            not isinstance(retired, Mapping)
+            or retired["oid"] != target.original_database_oid
+            or not target.temporary_creation_pending
+        ):
+            raise ValueError("retired original database identity is inconsistent")
+        return
+    if (
+        not isinstance(canonical, Mapping)
+        or canonical["oid"] != target.restored_database_oid
+        or not isinstance(retired, Mapping)
+        or retired["oid"] != target.original_database_oid
+        or target.temporary_creation_pending
     ):
-        raise ValueError("bound original database identity is inconsistent")
+        raise ValueError("completed restore swap identity is inconsistent")
 
 
 def _durably_completed(authority: _Authority) -> bool:
@@ -449,6 +489,7 @@ def _plan(
     scheduler_sha256: str,
     available_bytes: object,
     backup_available_bytes: object,
+    database_size_bytes: object,
     requested_backup_id: str,
     replace_unfinished: bool,
     reapply: bool,
@@ -456,18 +497,41 @@ def _plan(
     roles = sorted(_roles(authority.databases))
     target, completed = authority.target, _durably_completed(authority)
     different_unfinished = target is not None and target.backup_id != requested_backup_id and not completed
-    needs_load = reapply or target is None or not completed
+    completed_without_binding = target is None and _completed_same_backup(authority)
+    swapped = (
+        target is not None
+        and _roles(authority.databases) == frozenset({"canonical", "retired"})
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.restored_database_oid
+        and isinstance(authority.databases["retired"], Mapping)
+        and authority.databases["retired"]["oid"] == target.original_database_oid
+    )
+    needs_load = reapply or (not completed and not completed_without_binding and not swapped)
+    needs_safety = (
+        reapply
+        or target is None and not completed_without_binding
+        or target is not None
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.original_database_oid
+        and authority.service_state != "stopped"
+    )
     if target is not None and completed and not reapply:
         consequences = ["cleanup-retired", "cleanup-binding"]
-    elif target is None and not reapply and _completed_same_backup(authority):
+    elif completed_without_binding and not reapply:
         consequences, needs_load = ["completion-check"], False
     else:
-        consequences = [
-            "refresh-scheduled-backup-helper", "fresh-safety-backup", "publish-restore-binding",
-            "load-temporary", "swap-databases", "select-source-release", "verify",
-            "publish-success", "cleanup-retired", "cleanup-binding",
-        ]
+        consequences = ["refresh-scheduled-backup-helper"]
+        if needs_safety:
+            consequences.extend(["fresh-safety-backup", "publish-restore-binding"])
+        if needs_load:
+            consequences.extend(["load-temporary", "swap-databases"])
+        consequences.extend([
+            "select-source-release", "verify", "publish-success",
+            "cleanup-retired", "cleanup-binding",
+        ])
     remaining_bytes = authority.source.source_database_size_bytes * 2 if needs_load else 0
+    sizes = database_size_bytes if isinstance(database_size_bytes, Mapping) else {}
+    required_safety_bytes = sizes.get("canonical") if needs_safety else 0
     return {
         "backup_id": requested_backup_id,
         "physical_current_release_id": authority.selected_release_id,
@@ -482,7 +546,7 @@ def _plan(
         "retained_backup_protections": [item.to_mapping() for item in authority.protections],
         "retained_safety_material": [] if target is None else [dict(item) for item in target.safety_backup_attempts],
         "remaining_restore_bytes": remaining_bytes,
-        "required_safety_backup_bytes": authority.source.source_database_size_bytes if needs_load else 0,
+        "required_safety_backup_bytes": required_safety_bytes,
         "available_database_bytes": available_bytes,
         "available_backup_bytes": backup_available_bytes,
         "remaining_capacity_sufficient": type(available_bytes) is int and available_bytes >= remaining_bytes,
@@ -493,7 +557,7 @@ def _plan(
         "backup_timer_enabled": authority.expected_state["backup_timer_enabled"],
         "backup_timer_state": authority.timer_state,
         "service_state": authority.service_state,
-        "planned_pre_restore_backup": needs_load,
+        "planned_pre_restore_backup": needs_safety,
         "replace_unfinished": replace_unfinished,
         "replace_unfinished_required": different_unfinished,
         "reapply": reapply,
