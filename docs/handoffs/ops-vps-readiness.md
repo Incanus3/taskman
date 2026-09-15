@@ -29,13 +29,19 @@ merge, deployment, or publication has occurred or is authorized.
 
 ## Next action
 
-Task 10 (`tas-sr4b.10`), recovery-aware cleanup and paged deletion, is in progress.
-Implement filesystem-only inspection, full recovery reference protection, bounded target pages and
-confirmed batches, and truthful partial-deletion evidence. Preserve damaged unreferenced backup
-remainders; they are not validated deletion candidates. Follow the approved plan's exact protocol
-and acceptance criteria, then obtain independent scoped review.
+Task 10 (`tas-sr4b.10`), recovery-aware cleanup and paged deletion, is implemented at `8d9774d9`
+and under independent scoped review. It provides filesystem-only inspection, full recovery reference
+protection, bounded target pages/confirmed batches, and partial-deletion evidence. Damaged
+unreferenced backup remainders remain excluded from validated deletion candidates. The coordinator
+reproduced the required cleanup/preflight tests plus packaged cleanup: 43 passed. Resolve any review
+findings before closing the issue. Review found missing full-history release protection, a
+64-entry temporary inventory truncation, lost proved-change evidence within a partial batch, and
+missing packaged recovery scenarios; these are the immediate fixes.
 
 After Task 10, continue integrated local verification and operator documentation in `tas-sr4b.11`.
+That gate must correct restore capacity preflight: its required stdout is currently suppressed by
+the sensitive SSH path, a mismatch masked by test doubles. It also owns the four new substantial
+shell admission predicates, stale architecture preflight guard, and two leaked planning comments.
 Native PostgreSQL/systemd/VPS acceptance remains separately authorized.
 
 ## Verification baseline and remaining gates
