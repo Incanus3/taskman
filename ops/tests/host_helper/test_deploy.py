@@ -166,6 +166,30 @@ def _install_selected_candidate(request: HostRequest) -> None:
     )
 
 
+def _install_unselected_candidate(request: HostRequest) -> None:
+    """Create immutable provenance for an interrupted first installation."""
+
+    target = request.parameters["target"]
+    assert isinstance(target, Mapping)
+    manifest_mapping = target["manifest"]
+    assert isinstance(manifest_mapping, Mapping)
+    manifest = ArtifactManifest.from_mapping(deploy_module._mutable(manifest_mapping))
+    artifact_sha256 = target["artifact_sha256"]
+    assert isinstance(artifact_sha256, str)
+    record = ReleaseRecord(
+        manifest.release_id,
+        manifest.source_revision,
+        artifact_sha256,
+        tuple(item.to_mapping() for item in manifest.migrations),
+        2,
+        manifest,
+    )
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    _release_tree(Path(paths.local(paths.release_root / record.release_id)))
+    Path(paths.local(paths.backup_root)).mkdir(parents=True)
+    write_release_manifest(paths, record)
+
+
 def _request(
     tmp_path: Path,
     *,
@@ -240,13 +264,27 @@ class _Runtime:
         self.service_running = False
 
     def observe_database(self, *_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"state": "ready", "applied_migrations": self.migrations}
+        return {
+            "state": "ready",
+            "applied_migrations": self.migrations,
+            "initial_empty": not self.migrations,
+        }
 
     def backup(self, state, paths, *_args: object, **_kwargs: object) -> BackupRecord:
         self.events.append("backup")
         self.backup_calls += 1
+        source_release_id = state.selected_release_id
+        if source_release_id is None:
+            # Null-baseline genesis backs up from validated installed migration
+            # provenance rather than inventing a physical current link.
+            source_release_id = next(
+                record.release_id
+                for record in state.releases
+                if tuple(int(item["filename"][:14]) for item in record.migrations)[: len(state.applied_migrations)]
+                == state.applied_migrations
+            )
         record = BackupRecord(
-            f"backup-{self.backup_calls:032x}", datetime(2026, 9, 7, 12, 0, tzinfo=UTC), "e" * 64, state.selected_release_id,
+            f"backup-{self.backup_calls:032x}", datetime(2026, 9, 7, 12, 0, tzinfo=UTC), "e" * 64, source_release_id,
             state.applied_migrations, 1024,
         )
         dump = Path(paths.local(paths.backup_root / f"{record.backup_id}.dump"))
@@ -472,7 +510,7 @@ def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
     assert previous == CURRENT
     assert fingerprints == (MIGRATION,)
     assert actual == (20260905120000,)
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
     assert runtime.events == ["backup", "stop", "migration", "start", "verify"]
 
 
@@ -963,7 +1001,7 @@ def test_genesis_is_the_same_procedure_with_an_empty_host_precondition(tmp_path:
 
     result = genesis(request)
 
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
     assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
     assert runtime.backup_calls == 0
     assert runtime.events == ["start", "verify"]
@@ -978,12 +1016,12 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
 
     result = genesis(request)
 
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
     assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
     assert result.state["observations"]["database_state"] == "ready"
     assert result.state["backup_id"] is None
     assert runtime.backup_calls == 0
-    assert runtime.events == ["migration", "start", "verify"]
+    assert runtime.events == ["stop", "migration", "start", "verify"]
 
 
 def test_genesis_accepts_missing_scheduler_checksum_for_first_convergence(
@@ -1014,7 +1052,7 @@ def test_genesis_accepts_missing_scheduler_checksum_for_first_convergence(
 
     result = genesis(request)
 
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
 
 
 def test_genesis_resumes_a_partial_initial_schema_only_with_backward_compatible_policy(
@@ -1035,15 +1073,30 @@ def test_genesis_resumes_a_partial_initial_schema_only_with_backward_compatible_
         migration_result=(20260905120000, 20260906120000),
     )
     _install_runtime(monkeypatch, runtime)
+    _install_unselected_candidate(request)
 
     result = genesis(request)
 
-    assert result.outcome == "succeeded"
+    assert result.outcome == "succeeded", result.message
     assert result.state["observations"]["applied_migrations"] == (
         20260905120000,
         20260906120000,
     )
-    assert runtime.backup_calls == 0
+    # A committed prefix is a real database, not an empty first initialization.
+    # Genesis therefore takes the same validated safety copy and stops the
+    # application before applying the remaining migration.
+    assert runtime.backup_calls == 1
+    assert runtime.events == ["backup", "stop", "migration", "start", "verify"]
+    state = deploy_module.observe_host_state(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)),
+        database=runtime.observe_database(),
+    )
+    assert state.selections[-1].previous_release_id is None
+    assert state.selections[-1].observed_previous_release_id is None
+    assert state.selections[-1].backup_id == "backup-00000000000000000000000000000001"
+    assert state.selections[-1].recovery_backup_ids == (
+        "backup-00000000000000000000000000000001",
+    )
 
 
 def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
@@ -1083,7 +1136,7 @@ def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
 
     assert result.outcome == "succeeded"
     assert migration_attempts == 1
-    assert runtime.events == ["migration", "start", "verify"]
+    assert runtime.events == ["stop", "stop", "migration", "start", "verify"]
 
 
 def test_genesis_rejects_an_exact_staged_candidate_with_partial_schema(
@@ -1116,10 +1169,10 @@ def test_genesis_rejects_an_exact_staged_candidate_with_partial_schema(
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
     assert result.state["observations"]["selected_release_id"] is None
-    assert runtime.events == ["migration"]
+    assert runtime.events == ["stop", "migration"]
 
 
-def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_current_link(
+def test_genesis_recovers_an_exact_staged_candidate_with_a_pre_migration_current_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
@@ -1142,9 +1195,9 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_current_
     result = genesis(request)
 
     assert first.outcome == "retryable"
-    assert result.outcome == "manual"
+    assert result.outcome == "succeeded"
     assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
-    assert runtime.events == []
+    assert runtime.events == ["stop", "stop", "migration", "start", "verify"]
 
 
 def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_selection(
@@ -1174,7 +1227,7 @@ def test_genesis_rejects_an_exact_staged_candidate_with_a_pre_migration_selectio
     assert first.outcome == "retryable"
     assert result.outcome == "manual"
     assert result.state["observations"]["selected_release_id"] is None
-    assert runtime.events == []
+    assert runtime.events == ["stop"]
 
 
 @pytest.mark.parametrize("applied_migrations", ((999,), (20260905120000,)))
@@ -1227,7 +1280,7 @@ def test_genesis_recognizes_interrupted_staging_only_with_the_clean_schema(
     assert Path(state.temporary_paths[0].as_posix()).name == f".release-{_candidate_id(request)}.tmp"
     assert result.outcome == "succeeded"
     assert runtime.backup_calls == 0
-    assert runtime.events == ["migration", "start", "verify"]
+    assert runtime.events == ["stop", "migration", "start", "verify"]
 
 
 def test_genesis_recovers_lost_migration_result_only_from_the_exact_candidate_release(

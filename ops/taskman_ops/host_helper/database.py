@@ -87,10 +87,13 @@ def observe_database_state_or_empty(database: Mapping[str, object], credentials:
     if table == b"":
         if _initial_database_empty(database, credentials) != b"1":
             raise DatabaseObservationError("initial database is not empty")
-        return {"state": "ready", "applied_migrations": ()}
+        # Keep this proof internal to the host procedure.  An empty migration
+        # table is not equivalent: only this direct catalog proof may skip the
+        # null-baseline recovery backup during first-install genesis.
+        return {"state": "ready", "applied_migrations": (), "initial_empty": True}
     if table != b"1":
         raise DatabaseObservationError("database migration authority is ambiguous")
-    return _state_from_versions(database, credentials)
+    return {**_state_from_versions(database, credentials), "initial_empty": False}
 
 
 def _migration_table(database: Mapping[str, object], credentials: Path) -> bytes:

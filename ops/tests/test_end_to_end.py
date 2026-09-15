@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from io import StringIO
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 import json
 import os
 import select
@@ -15,7 +16,7 @@ import sys
 
 import pytest
 
-from taskman_ops.cli import main
+from taskman_ops.cli import Invocation, main
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.output import WorkflowResult, register_secret, clear_secrets
 from taskman_ops.config import EnvironmentConfig
@@ -25,6 +26,9 @@ from taskman_ops.host_protocol import decode_result, encode_request
 from taskman_ops.releases.artifacts import DeploymentTarget
 from taskman_ops.releases.manifests import ArtifactManifest, VerifiedArtifact
 from taskman_ops.remote import CommandResult, UploadReceipt
+from taskman_ops.remote import ChangeSet
+from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.workflows.provision import ProvisionCapabilities, provision
 from tests.host_helper import test_deploy as host_deploy_tests
 from tests.support.environments import valid_environment
 
@@ -144,7 +148,8 @@ def write_state(value):
     runtime_path.write_text(json.dumps(value, sort_keys=True))
 
 def database(*_args, **_kwargs):
-    return {"state": "ready", "applied_migrations": tuple(read_state()["migrations"])}
+    migrations = tuple(read_state()["migrations"])
+    return {"state": "ready", "applied_migrations": migrations, "initial_empty": not migrations}
 
 def command(argv, **_kwargs):
     value = read_state()
@@ -201,6 +206,7 @@ def verify(request, **_kwargs):
 
 deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
+discover_module.observe_database_state_or_empty = database
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
 services.run_command = command
@@ -429,3 +435,50 @@ def test_public_controller_replaces_an_unhealthy_selected_release_without_publis
     assert [selection.release_id for selection in state.selections] == [host_deploy_tests.CURRENT, c_target.release_id]
     assert state.selections[-1].previous_release_id == host_deploy_tests.CURRENT
     assert all(protection.target_release_id != b_target.release_id for protection in state.backup_protections)
+
+
+def test_public_provision_executes_genesis_through_the_packaged_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provision reaches real genesis after its bounded local convergence seam."""
+
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    request = host_deploy_tests._request(tmp_path / "genesis", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    target = _artifact_target(request)
+    config = _controller_config(dict(request.paths))
+    capabilities = ProvisionCapabilities(
+        load_environment=lambda _name: config,
+        decrypt_secrets=lambda _name: SimpleNamespace(database_password="test-password"),
+        resolve_artifact=lambda _invocation: target.artifact,
+        render_runtime_environment=lambda _config, _secrets: b"RUNTIME=value\n",
+        render_pgpass=lambda _config, _secrets: b"pgpass\n",
+        render_plan=lambda _config, artifact: {"candidate_release_id": artifact.manifest.release_id},
+        present_plan=lambda _plan: None,
+        confirm=lambda _plan: True,
+        connect=lambda _config: remote,
+        discover=lambda _remote, _config, **_kwargs: {"admission": "isolated"},
+        render_role_password_input=lambda _role, _password: b"role-password-input\n",
+        provisioning=lambda _remote, _inputs: ChangeSet(changed=False),
+        caddy_plan=lambda _config: CaddyPlan(
+            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+            (),
+            ("caddy",),
+            "taskman.example.test {\n}\n",
+        ),
+        genesis=deploy_first_release,
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True),
+        capabilities=capabilities,
+    )
+
+    state = _state(dict(request.paths), runtime_path)
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert result.command == "provision"
+    assert state.selected_release_id == target.release_id
+    assert len(state.selections) == 1
+    assert state.selections[0].previous_release_id is None
+    assert state.selections[0].observed_previous_release_id is None

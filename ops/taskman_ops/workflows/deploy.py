@@ -290,12 +290,23 @@ def deploy_first_release(
     try:
         expected_state = _confirmed_expected_state(remote, config, mode="provision")
         current = expected_state["selected_release_id"]
-        if current not in {None, candidate}:
+        # The first durable successful-selection record, not a physical
+        # current link, is the command boundary.  A failed initial attempt may
+        # have selected another validated installed release and still belongs
+        # to provision; once history exists only its exact replay remains.
+        if expected_state["last_successful_selection_id"] is not None and current != candidate:
             raise _safety("a completed installation requires deploy for a different release")
+        if expected_state["last_successful_selection_id"] is not None:
+            completed = deployment_admission_authority(remote, config, mode="provision")
+            if (
+                completed.selected_release_id != candidate
+                or completed.last_successful_release_id != candidate
+            ):
+                raise _safety("a completed installation requires deploy for a different release")
         applied = tuple(expected_state["applied_migrations"])
         pending = _pending_migration_versions(applied, deployment_target.manifest.migrations)
         if migration_policy is None:
-            if applied:
+            if pending and applied:
                 raise OpsError(
                     ExitStatus.INVALID,
                     "provision",
@@ -303,7 +314,7 @@ def deploy_first_release(
                     changed=False,
                     next_action="review the initial schema and explicitly acknowledge backward-compatible migration continuation",
                 )
-            policy = "restore-required" if pending else "no-change"
+            policy = "restore-required" if pending and not applied else "no-change"
         else:
             policy = migration_policy
         if policy not in _POLICIES:

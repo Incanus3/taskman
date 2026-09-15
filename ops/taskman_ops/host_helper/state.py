@@ -85,6 +85,7 @@ class HostState:
     selection_filenames: tuple[str, ...] = ()
     successful_backup_ids: frozenset[str] = frozenset()
     retiring_backup_protections: tuple[BackupProtection, ...] = ()
+    initial_database_empty: bool = False
 
     def __post_init__(self) -> None:
         if self.selected_release_id is not None and not isinstance(self.selected_release_id, str):
@@ -150,6 +151,8 @@ class HostState:
             type(item) is str and BACKUP_ID_RE.fullmatch(item) for item in self.successful_backup_ids
         ):
             raise StateAmbiguityError("invalid successful backup references")
+        if type(self.initial_database_empty) is not bool:
+            raise StateAmbiguityError("invalid initial database evidence")
 
     @property
     def latest_successful_selection(self) -> SelectionRecord | None:
@@ -459,7 +462,7 @@ def observe_host_state(
         else:
             selected = selected_from_history
 
-        applied_migrations, database_state = _database_state(database)
+        applied_migrations, database_state, initial_database_empty = _database_state(database)
         service_state = _service_state(include_runtime)
         temporary.sort(key=lambda item: item.as_posix())
         warnings = sorted(set(warnings))[:MAX_WARNINGS]
@@ -480,6 +483,7 @@ def observe_host_state(
             retiring_backup_protections=tuple(
                 sorted(retiring_backup_protections, key=lambda item: item.backup_id)
             ),
+            initial_database_empty=initial_database_empty,
         )
     finally:
         history.close()
@@ -1179,12 +1183,12 @@ def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -
     return release_id
 
 
-def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, ...], str]:
+def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, ...], str, bool]:
     if database is None:
-        return (), "unknown"
+        return (), "unknown", False
     if not isinstance(database, Mapping):
         raise StateAmbiguityError("database observation is invalid")
-    if set(database) - {"state", "applied_migrations"}:
+    if set(database) - {"state", "applied_migrations", "initial_empty"}:
         raise StateAmbiguityError("database observation contains duplicate or unknown facts")
     state = database.get("state", "unknown")
     if type(state) is not str or state not in {"ready", "absent", "unknown"}:
@@ -1196,7 +1200,10 @@ def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, .
         raise StateAmbiguityError("applied migrations are not sorted and unique") from None
     except ValueError:
         raise StateAmbiguityError("applied migrations are invalid") from None
-    return migrations, state
+    initial_empty = database.get("initial_empty", False)
+    if type(initial_empty) is not bool or (initial_empty and (state != "ready" or migrations)):
+        raise StateAmbiguityError("initial database evidence is invalid")
+    return migrations, state, initial_empty
 
 
 def _service_state(include_runtime: bool) -> str:

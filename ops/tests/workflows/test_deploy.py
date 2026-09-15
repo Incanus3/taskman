@@ -181,6 +181,36 @@ def test_first_release_refuses_a_changed_target_after_durable_history(
     assert result.stage == "safety-refused"
 
 
+def test_first_release_refuses_when_history_names_a_different_completed_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A physical current link cannot turn a changed completed target into provision."""
+
+    from taskman_ops.workflows.deploy import DeploymentAdmissionAuthority, deploy_first_release
+
+    completed_current = {
+        **_EXPECTED,
+        "selected_release_id": CANDIDATE,
+    }
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._confirmed_expected_state",
+        lambda *_args, **_kwargs: completed_current,
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deployment_admission_authority",
+        lambda *_args, **_kwargs: DeploymentAdmissionAuthority((), CANDIDATE, CURRENT),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("changed completed target must require deploy"),
+    )
+
+    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
 def test_deploy_consumes_exact_v3_mutation_success_and_preserves_final_observations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

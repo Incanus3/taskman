@@ -133,6 +133,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     inputs: _Inputs | None = None
     state: HostState | None = None
     backup: BackupRecord | None = None
+    genesis_source_ids: frozenset[str] | None = None
     changed = False
     database_changed = False
     report: object | None = None
@@ -179,6 +180,11 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             state, repaired_selection = _repair_recorded_selection(inputs, state)
             changed = changed or repaired_selection
             _validate_starting_state(state, inputs, first_release=first_release)
+            if first_release and state.applied_migrations:
+                # Preserve the provenance that existed before this invocation
+                # stages its requested target.  A new archive must never
+                # prove migrations that were already committed.
+                genesis_source_ids = frozenset(item.release_id for item in state.releases)
             changed = _normalize_staging(inputs) or changed
 
             staged = _stage_or_reuse(inputs, state)
@@ -187,57 +193,60 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
 
             migration_needed = inputs.expected_migrations != inputs.candidate_versions
             migration_done = state.applied_migrations == inputs.candidate_versions
-            if migration_needed and not migration_done and not first_release:
+            if migration_needed and not migration_done:
                 if state.applied_migrations != inputs.expected_migrations:
                     raise DeploymentManualError("applied migrations do not identify a safe candidate transition")
-                try:
-                    reusable_backup, pruned = _finish_pending_pruning_or_reuse(inputs, state)
-                    changed = changed or pruned
-                    state = _observe(inputs)
-                except (RecordError, OSError, ValueError) as error:
-                    raise _RetryableError("protection") from error
-                if pruned:
-                    reusable_backup = _newest_reusable_protection_backup(inputs, state)
-                if reusable_backup is not None:
-                    backup = reusable_backup
-                elif pruned:
-                    # The prior confirmed retirement changed durable
-                    # authority.  A fresh backup would create a different
-                    # conditional retirement set, so return a fresh
-                    # retryable observation for controller re-planning.
-                    raise _RetryableError("protection", may_have_mutated=False)
-                else:
+                if not (first_release and state.initial_database_empty):
                     try:
-                        backup = create_validated_backup(
-                            state,
-                            inputs.paths,
-                            inputs.database,
-                            inputs.credentials,
-                            purpose="pre-deploy",
-                        )
-                    except (CommandError, RecordError, OSError, ValueError) as error:
-                        raise _RetryableError("backup") from error
-                    changed = True
-                    try:
-                        register_backup_protection(
-                            inputs.paths,
-                            state.backup_protections,
-                            backup_id=backup.backup_id,
-                            base_selection_id=state.latest_successful_selection_filename,
-                            target_release_id=inputs.candidate.release_id,
-                        )
-                        state = _observe(inputs)
-                        _retire_newly_eligible_protections(inputs, state)
+                        reusable_backup, pruned = _finish_pending_pruning_or_reuse(inputs, state)
+                        changed = changed or pruned
                         state = _observe(inputs)
                     except (RecordError, OSError, ValueError) as error:
                         raise _RetryableError("protection") from error
+                    if pruned:
+                        reusable_backup = _newest_reusable_protection_backup(inputs, state)
+                    if reusable_backup is not None:
+                        backup = reusable_backup
+                    elif pruned:
+                        # The prior confirmed retirement changed durable
+                        # authority.  A fresh backup would create a different
+                        # conditional retirement set, so return a fresh
+                        # retryable observation for controller re-planning.
+                        raise _RetryableError("protection", may_have_mutated=False)
+                    else:
+                        try:
+                            backup = create_validated_backup(
+                                state,
+                                inputs.paths,
+                                inputs.database,
+                                inputs.credentials,
+                                purpose="pre-deploy",
+                                allowed_source_release_ids=(
+                                    genesis_source_ids if first_release else None
+                                ),
+                            )
+                        except (CommandError, RecordError, OSError, ValueError) as error:
+                            raise _RetryableError("backup") from error
+                        changed = True
+                        try:
+                            register_backup_protection(
+                                inputs.paths,
+                                state.backup_protections,
+                                backup_id=backup.backup_id,
+                                base_selection_id=state.latest_successful_selection_filename,
+                                target_release_id=inputs.candidate.release_id,
+                            )
+                            state = _observe(inputs)
+                            _retire_newly_eligible_protections(inputs, state)
+                            state = _observe(inputs)
+                        except (RecordError, OSError, ValueError) as error:
+                            raise _RetryableError("protection") from error
 
             # The previous release is never restarted after its schema may
             # have advanced.  Stop before the candidate migration and before
             # any atomic selection, including no-schema release updates.
-            if not first_release and (
-                (migration_needed and not migration_done)
-                or state.selected_release_id != inputs.candidate.release_id
+            if (migration_needed and not migration_done) or (
+                not first_release and state.selected_release_id != inputs.candidate.release_id
             ):
                 try:
                     change_service("stop")
@@ -440,10 +449,6 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
         raise ValueError("invalid migration policy")
     candidate_versions = _migration_versions_from_manifest(manifest)
     if first_release:
-        if previous not in {None, record.release_id}:
-            raise ValueError("first release current must be the requested release")
-        if previous is not None and last_selection is None:
-            raise ValueError("first release current requires successful history")
         if tuple(candidate_versions[: len(expected_migrations)]) != expected_migrations:
             raise ValueError("first release schema is not a candidate prefix")
     _validate_migration_policy(expected_migrations, candidate_versions, policy, first_release=first_release)
@@ -566,7 +571,8 @@ def _validate_expected_state(state: HostState, inputs: _Inputs, *, first_release
     expected = inputs.expected_state
     replaying_genesis = (
         first_release
-        and state.selected_release_id in {None, inputs.candidate.release_id}
+        and state.latest_successful_selection is None
+        and state.selected_release_id in {inputs.previous_release_id, inputs.candidate.release_id}
         and state.applied_migrations in {inputs.expected_migrations, inputs.candidate_versions}
     )
     if (
@@ -591,44 +597,36 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
 
     candidate = inputs.candidate.release_id
     candidate_staging = PurePosixPath(_staging_path(inputs).as_posix())
-    if state.selected_release_id is None and not state.releases and not state.selections:
-        if state.applied_migrations != inputs.expected_migrations:
-            raise DeploymentManualError("genesis records do not prove the observed schema")
-        if any(path != candidate_staging for path in state.temporary_paths):
-            raise DeploymentManualError("genesis staging is not attributable to the candidate")
-        return
+    if state.selections:
+        if (
+                len(state.selections) == 1
+                and state.selections[0].release_id == candidate
+                and state.selections[0].previous_release_id is None
+                and state.selected_release_id == candidate
+                and state.applied_migrations == inputs.candidate_versions
+            ):
+            return
+        raise DeploymentManualError("a completed installation requires deploy for a different release")
 
-    # A release manifest can be published before its first migration runs.  It
-    # is safe to resume that exact genesis only while every other authoritative
-    # fact still proves the clean, unselected starting state.
-    if (
-        state.selected_release_id is None
-        and state.releases == (inputs.candidate,)
-        and not state.selections
-        and state.applied_migrations == inputs.expected_migrations
-        and not state.temporary_paths
+    # Before the first durable selection, several validated release records
+    # and a physical failed candidate are ordinary interruption evidence, not
+    # conflicting history.  Every committed migration must nevertheless be
+    # proved by one of those immutable records; a requested archive never
+    # supplies that provenance by itself.
+    if state.selected_release_id is not None and not any(
+        item.release_id == state.selected_release_id for item in state.releases
     ):
-        return
-
-    installed = next((item for item in state.releases if item.release_id == candidate), None)
-    if (
-        len(state.releases) != 1
-        or installed != inputs.candidate
-        or state.applied_migrations != inputs.candidate_versions
-        or state.temporary_paths
+        raise DeploymentManualError("genesis current release is not managed")
+    if state.applied_migrations not in {inputs.expected_migrations, inputs.candidate_versions}:
+        raise DeploymentManualError("genesis records do not prove the observed schema")
+    if state.applied_migrations and not any(
+        _migration_versions_from_manifest(item.artifact_manifest)[: len(state.applied_migrations)]
+        == state.applied_migrations
+        for item in state.releases
     ):
-        raise DeploymentManualError("genesis state is not attributable to the candidate")
-
-    if not state.selections and state.selected_release_id in {None, candidate}:
-        return
-    if (
-        len(state.selections) == 1
-        and state.selections[0].release_id == candidate
-        and state.selections[0].previous_release_id is None
-        and state.selected_release_id == candidate
-    ):
-        return
-    raise DeploymentManualError("genesis selection is not attributable to the candidate")
+        raise DeploymentManualError("genesis migrations lack installed provenance")
+    if any(path != candidate_staging for path in state.temporary_paths):
+        raise DeploymentManualError("genesis staging is not attributable to the candidate")
 
 
 def _observe(
@@ -657,6 +655,12 @@ def _repair_recorded_selection(inputs: _Inputs, state: HostState) -> tuple[HostS
     therefore remains unrecorded until verification succeeds on this rerun.
     The reverse arrangement can only resume the same completed selection.
     """
+
+    if inputs.previous_release_id is None and state.latest_successful_selection is None:
+        # A physical selection without history is a valid failed first-install
+        # attempt.  Genesis may replace it, but must not fabricate history for
+        # it while reconciling the newly confirmed desired target.
+        return state, False
 
     recorded = state.selections[-1].release_id if state.selections else None
     selected = state.selected_release_id
@@ -718,12 +722,15 @@ def _record_successful_selection(
             _selection_backup(inputs, state, selection.backup_id, backup),
         )
     selection_backup = _selection_backup(inputs, state, None, backup)
+    observed_previous = (
+        inputs.previous_release_id if state.latest_successful_selection is None else recorded
+    )
     try:
         _append_selection_with_previous(
             inputs.paths,
             state,
             inputs.candidate.release_id,
-            recorded,
+            observed_previous,
             selection_backup,
         )
     except (OSError, RecordError, ValueError) as error:
@@ -757,11 +764,6 @@ def _selection_backup(
     migration_needed = inputs.expected_migrations != inputs.candidate_versions
     if not migration_needed:
         return None
-    if inputs.previous_release_id is None:
-        # Genesis has no predecessor database and therefore creates no
-        # pre-migration protection to transfer into its first history record.
-        return None
-
     by_id = {item.backup_id: item for item in state.backups}
     if recorded_backup_id is not None:
         try:
@@ -780,6 +782,12 @@ def _selection_backup(
         and protection.target_release_id == inputs.candidate.release_id
     )
     if not protected:
+        if inputs.previous_release_id is None and state.latest_successful_selection is None:
+            # No null-baseline protection can only be the directly proved
+            # empty initialization path: partial recovery publishes it before
+            # migration and therefore reaches this point with durable
+            # protection authority to transfer.
+            return None
         raise DeploymentManualError("migration backup has no target protection authority")
     newest = max(protected, key=lambda protection: protection.attempt_number)
     try:

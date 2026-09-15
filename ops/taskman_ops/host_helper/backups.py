@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 import json
 import os
@@ -34,18 +34,32 @@ class BackupCapacityError(ValueError):
     """The backup filesystem cannot retain one validated database dump."""
 
 
-def select_backup_source(state: HostState) -> ReleaseRecord:
+def select_backup_source(
+    state: HostState, *, allowed_release_ids: Iterable[str] | None = None
+) -> ReleaseRecord:
     """Return the installed release whose immutable migrations prove live schema."""
 
     if not isinstance(state, HostState):
         raise TypeError("backup source needs observed host state")
-    if state.selected_release_id is None:
-        raise BackupAuthorityError("backup requires a selected release")
     releases = {record.release_id: record for record in state.releases}
-    selected = releases.get(state.selected_release_id)
-    if selected is None:
+    if allowed_release_ids is not None:
+        allowed = frozenset(allowed_release_ids)
+        if not allowed or not allowed.issubset(releases):
+            raise BackupAuthorityError("backup source provenance is unavailable")
+        releases = {release_id: record for release_id, record in releases.items() if release_id in allowed}
+    selected = None if state.selected_release_id is None else releases.get(state.selected_release_id)
+    if state.selected_release_id is not None and selected is None:
         raise BackupAuthorityError("selected release provenance is unavailable")
-    relevant_ids = {selected.release_id}
+
+    # Before the first durable selection, a recovery backup can be required
+    # even when no physical current link was ever published.  Its source is
+    # still constrained to already validated installed provenance: never let
+    # the requested archive alone establish which migrations were committed.
+    unfinished_genesis = selected is None and state.latest_successful_selection is None
+    if not unfinished_genesis and selected is None:
+        raise BackupAuthorityError("backup requires a selected release")
+
+    relevant_ids = set(releases) if unfinished_genesis else {selected.release_id}
     if state.latest_successful_selection is not None:
         relevant_ids.add(state.latest_successful_selection.release_id)
     relevant_ids.update(item.target_release_id for item in state.backup_protections)
@@ -68,7 +82,7 @@ def select_backup_source(state: HostState) -> ReleaseRecord:
             if previous != (filename, digest):
                 raise BackupAuthorityError("relevant release migration fingerprints conflict")
 
-    candidates = [selected, *(item for item in relevant if item.release_id != selected.release_id)]
+    candidates = relevant if unfinished_genesis else [selected, *(item for item in relevant if item.release_id != selected.release_id)]
     for candidate in candidates:
         versions = tuple(item[0] for item in migrations_by_release[candidate.release_id])
         if versions[: len(state.applied_migrations)] == state.applied_migrations:
@@ -98,6 +112,7 @@ def create_validated_backup(
     credentials: Path,
     *,
     purpose: str,
+    allowed_source_release_ids: Iterable[str] | None = None,
 ) -> BackupRecord:
     """Create one completed backup from already-observed selected state.
 
@@ -108,7 +123,7 @@ def create_validated_backup(
 
     if not isinstance(state, HostState):
         raise TypeError("backup needs observed host state")
-    source = select_backup_source(state)
+    source = select_backup_source(state, allowed_release_ids=allowed_source_release_ids)
     if state.database_state != "ready":
         raise BackupAuthorityError("backup requires an observed ready database")
     database = database_mapping(database)
