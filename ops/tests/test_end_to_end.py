@@ -710,7 +710,13 @@ def write_binding(paths, target):
     value = read_state()
     value["events"].append("binding-published")
     write_state(value)
-    return _write_restore_target(paths, target)
+    updated = _write_restore_target(paths, target)
+    if value.get("interrupt_after_binding"):
+        value["interrupt_after_binding"] = False
+        value["events"].append("binding-interrupted")
+        write_state(value)
+        raise OSError("injected interruption after restore binding publication")
+    return updated
 
 _remove_restore_target = restore_module.remove_restore_target
 def remove_binding(paths):
@@ -1256,12 +1262,60 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
         current_present=current_present,
     )
     safety_backup_id = "backup-" + f"{17:032x}"
+    plans = []
 
-    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+    def confirm(plan: dict[str, object]) -> bool:
+        plans.append(plan)
+        assert plan["typed_confirmation"] == f"restore production {source.backup_id}"
+        return True
+
+    runtime = json.loads(runtime_path.read_text())
+    runtime["interrupt_after_binding"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    interrupted = restore(remote, config, source.backup_id, confirm=confirm)
+
+    runtime = json.loads(runtime_path.read_text())
+    pending = observe_host_state(paths, allow_selection_transition=True)
+    assert interrupted.exit_status is ExitStatus.RESTORE
+    assert interrupted.changed is True
+    assert len(plans) == 1
+    assert pending.latest_successful_selection is None
+    assert pending.restore_target is not None
+    assert pending.restore_target.base_selection_id is None
+    assert pending.restore_target.observed_previous_release_id == (
+        host_restore_tests.CURRENT if current_present else None
+    )
+    assert (
+        pending.restore_target.backup_id,
+        pending.restore_target.dump_sha256,
+        pending.restore_target.source_release_id,
+        pending.restore_target.safety_backup_id,
+    ) == (
+        source.backup_id,
+        source.dump_sha256,
+        source.source_release_id,
+        safety_backup_id,
+    )
+    assert pending.restore_target.safety_backup_attempts == (
+        {"backup_id": safety_backup_id, "attempt_number": 0},
+    )
+    assert [item.backup_id for item in pending.backup_protections] == [
+        host_restore_tests.PROTECTION_BACKUP
+    ]
+    assert runtime["restore_databases"]["canonical"]["oid"] == 101
+    assert runtime["restore_databases"]["temporary"] is None
+    for backup_id in (source.backup_id, host_restore_tests.PROTECTION_BACKUP, safety_backup_id):
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.dump")).is_file()
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.json")).is_file()
+
+    result = restore(remote, config, source.backup_id, confirm=confirm)
 
     runtime = json.loads(runtime_path.read_text())
     state = observe_host_state(paths)
+    completion_safety_backup_id = "backup-" + f"{18:032x}"
     assert result.exit_status is ExitStatus.OK, result.facts
+    assert len(plans) == 2
     assert result.facts["starting_state"]["last_successful_selection_id"] is None
     assert result.facts["starting_state"]["selected_release_id"] == (
         host_restore_tests.CURRENT if current_present else None
@@ -1277,11 +1331,12 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
     assert selection.observed_previous_release_id == (
         host_restore_tests.CURRENT if current_present else None
     )
-    assert selection.backup_id == safety_backup_id
+    assert selection.backup_id == completion_safety_backup_id
     assert set(selection.recovery_backup_ids) == {
         source.backup_id,
         host_restore_tests.PROTECTION_BACKUP,
         safety_backup_id,
+        completion_safety_backup_id,
     }
     assert state.restore_target is None
     assert state.backup_protections == ()
@@ -1305,11 +1360,18 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
         first_success=True,
         current_present=True,
     )
+    plans = []
+
+    def confirm(plan: dict[str, object]) -> bool:
+        plans.append(plan)
+        assert plan["typed_confirmation"] == f"restore production {source.backup_id}"
+        return True
+
     runtime = json.loads(runtime_path.read_text())
     runtime["lose_restore_reply"] = True
     runtime_path.write_text(json.dumps(runtime, sort_keys=True))
 
-    interrupted = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+    interrupted = restore(remote, config, source.backup_id, confirm=confirm)
 
     runtime = json.loads(runtime_path.read_text())
     pending = observe_host_state(paths)
@@ -1326,11 +1388,12 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
         assert Path(paths.local(paths.backup_root / f"{backup_id}.dump")).is_file()
         assert Path(paths.local(paths.backup_root / f"{backup_id}.json")).is_file()
 
-    retried = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+    retried = restore(remote, config, source.backup_id, confirm=confirm)
 
     runtime = json.loads(runtime_path.read_text())
     state = observe_host_state(paths)
     assert retried.exit_status is ExitStatus.OK, retried.facts
+    assert len(plans) == 2
     assert len(state.selections) == 1
     selection = state.selections[0]
     assert selection.previous_release_id is None
