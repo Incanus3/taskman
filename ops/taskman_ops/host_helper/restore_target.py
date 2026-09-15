@@ -327,29 +327,42 @@ def safety_attempt_prune_ids(
     if not isinstance(record, RestoreTarget):
         raise TypeError("safety attempt pruning needs a restore target")
     try:
-        held = set(independently_held_backup_ids)
+        independently_held = set(independently_held_backup_ids)
     except TypeError as error:
         raise TypeError("independent backup references must be iterable") from error
-    if any(type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None for item in held):
+    if any(
+        type(item) is not str or _BACKUP_ID_RE.fullmatch(item) is None
+        for item in independently_held
+    ):
         raise RecordError("independent backup reference is invalid")
-    held.update({record.backup_id, record.safety_backup_id})
+    binding_inputs = {record.backup_id, record.safety_backup_id}
     if record.replacement is not None:
-        held.add(str(record.replacement["backup_id"]))
+        binding_inputs.add(str(record.replacement["backup_id"]))
     attempts = tuple(record.safety_backup_attempts)
     newest = max(int(item["attempt_number"]) for item in attempts)
-    eligible = [
+    intermediate = [
         item
         for item in attempts
-        if int(item["attempt_number"]) not in {0, newest} and str(item["backup_id"]) not in held
+        if int(item["attempt_number"]) not in {0, newest}
+        and str(item["backup_id"]) not in binding_inputs
+    ]
+    eligible_for_slots = [
+        item
+        for item in intermediate
+        if str(item["backup_id"]) not in independently_held
     ]
     retained = {
         str(item["backup_id"])
-        for item in sorted(eligible, key=lambda item: int(item["attempt_number"]), reverse=True)[:3]
+        for item in sorted(
+            eligible_for_slots,
+            key=lambda item: int(item["attempt_number"]),
+            reverse=True,
+        )[:3]
     }
     return tuple(
         sorted(
             str(item["backup_id"])
-            for item in eligible
+            for item in intermediate
             if str(item["backup_id"]) not in retained
         )
     )

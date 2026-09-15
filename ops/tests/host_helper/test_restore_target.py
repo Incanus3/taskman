@@ -131,7 +131,7 @@ def test_restore_target_accepts_more_than_64_safety_attempts_for_bounded_recover
     assert len(extended.safety_backup_attempts) == 65
 
 
-def test_safety_attempt_retention_uses_attempt_order_and_skips_independent_copies() -> None:
+def test_safety_attempt_retention_uses_attempt_order_and_retires_independent_entries() -> None:
     """Restore safety attempts retain five references plus one transient fresh copy."""
 
     attempts = tuple(
@@ -149,6 +149,7 @@ def test_safety_attempt_retention_uses_attempt_order_and_skips_independent_copie
         independently_held_backup_ids={"backup-00000000000000000000000000000002"},
     ) == (
         "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
     )
 
 
@@ -217,6 +218,42 @@ def test_sixty_five_safety_attempts_converge_to_original_newest_and_three_recent
         json.loads(Path(paths.local(paths.restore_target_path)).read_text(encoding="utf-8"))
     )
     assert persisted == record
+
+
+def test_independently_held_intermediates_do_not_make_attempts_unbounded(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    attempts = tuple(
+        {"backup_id": f"backup-{index:032x}", "attempt_number": index}
+        for index in range(67)
+    )
+    record = _target(
+        safety_backup_id=attempts[0]["backup_id"],
+        safety_backup_attempts=attempts,
+    )
+    independently_held = {
+        str(item["backup_id"])
+        for item in attempts[1:-1]
+    }
+    write_restore_target(paths, record)
+
+    prune_ids = safety_attempt_prune_ids(
+        record,
+        independently_held_backup_ids=independently_held,
+    )
+    updated = retire_safety_attempts(
+        paths,
+        record,
+        prune_ids,
+        independently_held_backup_ids=independently_held,
+    )
+
+    assert len(prune_ids) == 65
+    assert tuple(
+        int(item["attempt_number"])
+        for item in updated.safety_backup_attempts
+    ) == (0, 66)
 
 
 def test_newer_failed_restore_backup_does_not_replace_original_safety_reference() -> None:
