@@ -28,7 +28,7 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
     """Treating an absent migration table as normal during a rollback would hide lost authority."""
 
     database = _capability("database")
-    commands = iter((b"", b"1\n", b"20260905120000\n"))
+    commands = iter((b"", b"1\n", b"1\n", b"20260905120000\n"))
 
     def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(argv, 0, next(commands), b"")
@@ -43,6 +43,23 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
         "state": "ready",
         "applied_migrations": (20260905120000,),
     }
+
+
+def test_initial_database_observation_refuses_populated_schema_without_migration_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing migration table cannot authorize adoption of existing application data."""
+
+    database = _capability("database")
+    commands = iter((b"", b"0\n"))
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, 0, next(commands), b"")
+
+    monkeypatch.setattr(database, "run_command", run)
+
+    with pytest.raises(database.DatabaseObservationError, match="initial database is not empty"):
+        database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass"))
 
 
 @pytest.mark.parametrize(

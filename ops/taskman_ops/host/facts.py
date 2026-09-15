@@ -24,14 +24,6 @@ MINIMUM_DISK_BYTES = 10 * 1024**3
 
 _SYSTEMD_UNITS = ("taskman.service", "taskman-backup.service", "taskman-backup.timer", "caddy.service")
 _ACCOUNT_NAME = "taskman"
-_PROVISIONING_MARKER = PurePosixPath("/var/lib/taskman-provisioning.state")
-_PROVISIONING_MARKER_SCRIPT = (
-    'path=$1; if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf absent; '
-    'elif [ -f "$path" ] && [ ! -L "$path" ] '
-    '&& [ "$(stat --format=\'%U:%G:%a\' "$path")" = root:root:600 ] '
-    '&& [ "$(cat "$path")" = taskman-provisioning-v1 ]; then printf managed; '
-    'else printf unknown; fi'
-)
 _CADDYFILE = PurePosixPath("/etc/caddy/Caddyfile")
 _CADDY_AUTHORITY_KEYS = (
     "config",
@@ -166,14 +158,6 @@ class DiscoveryState(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
-class ProvisioningMarkerState(str, Enum):
-    """Whether the durable Taskman provisioning anchor is trustworthy."""
-
-    ABSENT = "absent"
-    MANAGED = "managed"
-    UNKNOWN = "unknown"
-
-
 class CaddyState(str, Enum):
     """Validated lifecycle state of the public HTTPS ownership boundary."""
 
@@ -210,10 +194,11 @@ class HostFacts:
     dns_addresses: tuple[str, ...]
     listeners: tuple[Listener, ...]
     existing_paths: tuple[PurePosixPath, ...]
-    provisioning_marker: ProvisioningMarkerState
+    path_metadata: tuple[tuple[PurePosixPath, str], ...]
     caddy_state: CaddyState
     existing_units: tuple[str, ...]
     existing_accounts: tuple[str, ...]
+    taskman_account_compatible: bool
     existing_databases: tuple[str, ...]
     failed_checks: tuple[str, ...]
 
@@ -251,18 +236,10 @@ def collect_host_facts(
         (
             "sh",
             "-c",
-            'for path do if [ -e "$path" ] || [ -L "$path" ]; then printf "%s\\n" "$path"; fi; done',
+            'for path do if [ -e "$path" ] || [ -L "$path" ]; then '
+            'printf "%s\\t%s\\n" "$path" "$(stat --format=\'%F:%U:%G:%a\' "$path")"; fi; done',
             "taskman-host-facts",
             *(str(path) for path in paths),
-        )
-    )
-    provisioning_marker = remote.run(
-        (
-            "sh",
-            "-c",
-            _PROVISIONING_MARKER_SCRIPT,
-            "taskman-provisioning-marker",
-            str(_PROVISIONING_MARKER),
         )
     )
     # A filtered query returns status 1 when no requested units exist. Read the
@@ -317,9 +294,10 @@ def collect_host_facts(
         sudo=True,
     )
 
-    found_paths = _existing_paths(_stdout(existing_paths), paths)
+    found_paths, path_metadata = _existing_paths(_stdout(existing_paths), paths)
     found_units = _existing_units(_stdout(units))
     found_accounts = (_ACCOUNT_NAME,) if DiscoveryState.DETECTED in account_states else ()
+    taskman_account_compatible = _managed_taskman_account(_stdout(account), _stdout(account_group))
     found_databases = _existing_databases(
         _stdout(databases) if databases is not None else "", config.database_name
     )
@@ -350,7 +328,6 @@ def collect_host_facts(
         ("backup-root disk", backup_disk),
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
-        ("provisioning marker", provisioning_marker),
         ("Caddy listener ownership", caddy_listener_owners),
         ("Caddy configuration", caddy_config),
     )
@@ -396,10 +373,11 @@ def collect_host_facts(
         dns_addresses=dns_addresses,
         listeners=_listeners(_stdout(listeners)),
         existing_paths=found_paths,
-        provisioning_marker=_provisioning_marker_state(_stdout(provisioning_marker)),
+        path_metadata=path_metadata,
         caddy_state=caddy_state,
         existing_units=found_units,
         existing_accounts=found_accounts,
+        taskman_account_compatible=taskman_account_compatible,
         existing_databases=found_databases,
         failed_checks=tuple(failed_checks),
     )
@@ -412,7 +390,6 @@ def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
         config.deployment_root,
         config.backup_root,
         PurePosixPath("/etc/taskman"),
-        _PROVISIONING_MARKER,
         PurePosixPath("/etc/systemd/system/taskman.service"),
         _CADDYFILE,
     )
@@ -641,10 +618,17 @@ def _trusted_caddy_config(config: dict[str, str], expected_hash: str) -> bool:
     )
 
 
-def _existing_paths(value: str, candidates: tuple[PurePosixPath, ...]) -> tuple[PurePosixPath, ...]:
+def _existing_paths(
+    value: str, candidates: tuple[PurePosixPath, ...]
+) -> tuple[tuple[PurePosixPath, ...], tuple[tuple[PurePosixPath, str], ...]]:
     allowed = {path.as_posix(): path for path in candidates}
-    found = {allowed[line.strip()] for line in value.splitlines() if line.strip() in allowed}
-    return tuple(sorted(found))
+    metadata: dict[PurePosixPath, str] = {}
+    for line in value.splitlines():
+        path, separator, details = line.partition("\t")
+        if path in allowed:
+            metadata[allowed[path]] = details if separator else ""
+    paths = tuple(sorted(metadata))
+    return paths, tuple((path, metadata[path]) for path in paths)
 
 
 def _existing_units(value: str) -> tuple[str, ...]:
@@ -656,13 +640,20 @@ def _existing_units(value: str) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def _provisioning_marker_state(value: str) -> ProvisioningMarkerState:
-    marker = value.strip()
-    if marker == "absent":
-        return ProvisioningMarkerState.ABSENT
-    if marker == "managed":
-        return ProvisioningMarkerState.MANAGED
-    return ProvisioningMarkerState.UNKNOWN
+def _managed_taskman_account(account: str, group: str) -> bool:
+    """Recognize only the exact non-login account declared by the baseline."""
+
+    fields = account.strip().split(":")
+    group_fields = group.strip().split(":")
+    return (
+        len(fields) == 7
+        and fields[0] == _ACCOUNT_NAME
+        and fields[5] == "/var/lib/taskman"
+        and fields[6] == "/usr/sbin/nologin"
+        and len(group_fields) >= 3
+        and group_fields[0] == _ACCOUNT_NAME
+        and fields[3] == group_fields[2]
+    )
 
 
 def _getent_state(result: CommandResult) -> DiscoveryState:
@@ -721,6 +712,5 @@ __all__ = [
     "Listener",
     "MINIMUM_DISK_BYTES",
     "MINIMUM_MEMORY_BYTES",
-    "ProvisioningMarkerState",
     "collect_host_facts",
 ]

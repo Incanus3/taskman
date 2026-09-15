@@ -21,7 +21,6 @@ from taskman_ops.host.facts import (
     MINIMUM_MEMORY_BYTES,
     HostFacts,
     Listener,
-    ProvisioningMarkerState,
     _listener_owners,
 )
 from taskman_ops.remote import CommandResult
@@ -77,13 +76,12 @@ def managed_caddy_responses(
     listener_owners: str,
     evidence: CommandResult | None = None,
 ) -> list[CommandResult]:
-    """Model marker-anchored Caddy facts plus process ownership evidence."""
+    """Model compatible Caddy resources plus process ownership evidence."""
 
     responses = fact_responses()
     responses[8] = CommandResult(0, "LISTEN 0 4096 *:80 0.0.0.0:*\nLISTEN 0 4096 *:443 0.0.0.0:*\n")
-    responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n/etc/caddy/Caddyfile\n")
-    responses[10] = CommandResult(0, "managed\n")
-    responses[11] = CommandResult(0, "caddy.service enabled\n")
+    responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
+    responses[10] = CommandResult(0, "caddy.service enabled\n")
     responses[-2:] = [CommandResult(0, listener_owners), evidence or caddy_evidence()]
     return responses
 
@@ -96,12 +94,11 @@ def managed_postgresql_responses(*, database_listeners: tuple[str, ...]) -> list
         "LISTEN 0 4096 *:443 0.0.0.0:*\n"
         + "".join(f"LISTEN 0 4096 {listener} *:*\n" for listener in database_listeners),
     )
-    responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n/etc/caddy/Caddyfile\n")
-    responses[10] = CommandResult(0, "managed\n")
-    responses[11] = CommandResult(0, "caddy.service enabled\n")
-    responses[12] = CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")
-    responses[13] = CommandResult(0, "taskman:x:1000:1000::\n")
-    responses[17] = CommandResult(0, "taskman_prod\n")
+    responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
+    responses[10] = CommandResult(0, "caddy.service enabled\n")
+    responses[11] = CommandResult(0, "taskman:x:1000:1000::/var/lib/taskman:/usr/sbin/nologin\n")
+    responses[12] = CommandResult(0, "taskman:x:1000:1000::\n")
+    responses[16] = CommandResult(0, "taskman_prod\n")
     responses[-2] = CommandResult(
         0,
         'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
@@ -167,7 +164,6 @@ def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
         CommandResult(0, "2202\n"),
         CommandResult(0, "LISTEN 0 4096 *:2202 0.0.0.0:*\n"),
         CommandResult(0),
-        CommandResult(0, "absent\n"),
         CommandResult(0),
         CommandResult(2),
         CommandResult(2),
@@ -175,8 +171,8 @@ def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
         CommandResult(1),
     ]
     if postgres:
-        responses[14] = CommandResult(0, "postgres:x:111:117:PostgreSQL administrator:/var/lib/postgresql:/bin/bash\n")
-        responses[15] = CommandResult(0, "/usr/bin/psql\n")
+        responses[13] = CommandResult(0, "postgres:x:111:117:PostgreSQL administrator:/var/lib/postgresql:/bin/bash\n")
+        responses[14] = CommandResult(0, "/usr/bin/psql\n")
         responses.extend((CommandResult(0), CommandResult(0)))
     responses.extend(
         (
@@ -206,7 +202,6 @@ def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
     assert facts.backup_available_disk_bytes == MINIMUM_DISK_BYTES
     assert facts.dns_addresses == ("203.0.113.10",)
     assert facts.listeners[0].port == 2202
-    assert facts.provisioning_marker is ProvisioningMarkerState.ABSENT
     assert not remote.responses
     with pytest.raises(FrozenInstanceError):
         facts.architecture = "arm64"  # type: ignore[misc]
@@ -246,7 +241,7 @@ def test_listener_owner_parser_rejects_ambiguous_or_nonwhitespace_suffix(
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
     ),
 )
-def test_marker_anchored_caddy_listener_refuses_foreign_or_ambiguous_owners(
+def test_resource_based_caddy_listener_refuses_foreign_or_ambiguous_owners(
     listener_owners: str,
 ) -> None:
     """Accepting a foreign or ambiguous public listener would adopt foreign HTTPS."""
@@ -271,7 +266,7 @@ def test_marker_anchored_caddy_listener_refuses_foreign_or_ambiguous_owners(
         caddy_evidence(config_metadata="root:root:600"),
     ),
 )
-def test_marker_anchored_caddy_requires_the_exact_owned_configuration(
+def test_resource_based_caddy_requires_the_exact_owned_configuration(
     evidence: CommandResult,
 ) -> None:
     """Matching paths alone must not adopt arbitrary Caddy bytes or modes."""
@@ -297,7 +292,7 @@ def test_marker_anchored_caddy_requires_the_exact_owned_configuration(
     assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_marker_anchored_caddy_owner_is_recognized_on_a_rerun_without_mutation() -> None:
+def test_resource_based_caddy_owner_is_recognized_on_a_rerun_without_mutation() -> None:
     """A known packaged Caddy owning both public ports remains an accepted partial state."""
 
     first_remote = ScriptedRemote.from_responses(
@@ -368,8 +363,8 @@ def test_loopback_rejects_bracketed_wildcard_public_and_malformed_addresses(addr
     assert not _loopback(address)
 
 
-def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_convergence() -> None:
-    """The marker and managed config path anchor Caddy; ordinary process drift is repairable."""
+def test_resource_based_caddy_process_drift_is_repaired_by_declarative_convergence() -> None:
+    """Managed Caddy configuration makes ordinary process drift repairable."""
 
     drifted_evidence = caddy_evidence()
     discovery = validate_provisionable_host(
@@ -398,7 +393,7 @@ def test_marker_anchored_caddy_process_drift_is_repaired_by_declarative_converge
         absent_caddy_evidence(),
     ),
 )
-def test_marker_anchored_caddy_service_drift_cannot_be_activated_unsafely(
+def test_resource_based_caddy_service_drift_cannot_be_activated_unsafely(
     evidence: CommandResult,
 ) -> None:
     """A modified or missing package-owned unit is refused before activation."""
@@ -411,8 +406,8 @@ def test_marker_anchored_caddy_service_drift_cannot_be_activated_unsafely(
         evidence=evidence,
     )
     if evidence.stdout.startswith("config=absent"):
-        responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n/etc/caddy/Caddyfile\n")
-        responses[11] = CommandResult(0)
+        responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
+        responses[10] = CommandResult(0)
 
     with pytest.raises(OpsError) as raised:
         validate_provisionable_host(
@@ -434,7 +429,7 @@ def test_marker_anchored_caddy_service_drift_cannot_be_activated_unsafely(
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=999,fd=7))\n',
     ),
 )
-def test_marker_anchored_caddy_requires_one_authorized_listener_pid(
+def test_resource_based_caddy_requires_one_authorized_listener_pid(
     listener_owners: str,
 ) -> None:
     """A named process is not enough without one service-correlated PID."""
@@ -452,7 +447,7 @@ def test_marker_anchored_caddy_requires_one_authorized_listener_pid(
     assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_marker_anchored_named_caddy_without_service_authority_is_refused() -> None:
+def test_resource_based_named_caddy_without_service_authority_is_refused() -> None:
     """A process name on both ports cannot establish managed service ownership."""
 
     responses = managed_caddy_responses(
@@ -462,7 +457,7 @@ def test_marker_anchored_named_caddy_without_service_authority_is_refused() -> N
         ),
         evidence=caddy_evidence(unit_load="not-found", unit_active="inactive", unit_pid="0", unit_fragment="", unit_metadata="", unit_package="missing", unit_verified="missing"),
     )
-    responses[11] = CommandResult(0)
+    responses[10] = CommandResult(0)
 
     with pytest.raises(OpsError) as raised:
         validate_provisionable_host(
@@ -475,12 +470,11 @@ def test_marker_anchored_named_caddy_without_service_authority_is_refused() -> N
     assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_marker_anchored_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
+def test_resource_based_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
     """The Caddy ownership proof must not reject a legitimate earlier convergence boundary."""
 
     responses = fact_responses()
-    responses[9] = CommandResult(0, "/var/lib/taskman-provisioning.state\n")
-    responses[10] = CommandResult(0, "managed\n")
+    responses[9] = CommandResult(0, "/etc/taskman\tdirectory:root:taskman:750\n")
     discovery = validate_provisionable_host(
         ScriptedRemote.from_responses(responses),
         environment_config(),
@@ -492,23 +486,57 @@ def test_marker_anchored_pre_caddy_partial_state_remains_safe_without_any_public
     assert discovery.caddy_state.value == "absent"
 
 
+def test_resource_based_admission_refuses_an_unverified_managed_directory() -> None:
+    """A directory name alone cannot prove ownership of an interrupted installation."""
+
+    responses = fact_responses()
+    responses[9] = CommandResult(0, "/opt/taskman\n")
+
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            ScriptedRemote.from_responses(responses),
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_resource_based_admission_refuses_a_foreign_taskman_account() -> None:
+    """The reserved account name is not sufficient evidence of Taskman ownership."""
+
+    responses = fact_responses()
+    responses[11] = CommandResult(0, "taskman:x:1000:1000::/root:/bin/bash\n")
+    responses[12] = CommandResult(0, "taskman:x:1000:\n")
+
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            ScriptedRemote.from_responses(responses),
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
 @pytest.mark.parametrize(
     ("configured", "expected_state"),
     ((False, "prepared"), (True, "staged")),
 )
-def test_marker_anchored_caddy_installation_partial_states_remain_safe_to_retry(
+def test_resource_based_caddy_installation_partial_states_remain_safe_to_retry(
     configured: bool,
     expected_state: str,
 ) -> None:
     """The Caddy package and a validated pre-start config are legitimate retry boundaries."""
 
     responses = fact_responses()
-    paths = "/var/lib/taskman-provisioning.state\n"
+    paths = "/etc/taskman\tdirectory:root:taskman:750\n"
     if configured:
         paths += "/etc/caddy/Caddyfile\n"
     responses[9] = CommandResult(0, paths)
-    responses[10] = CommandResult(0, "managed\n")
-    responses[11] = CommandResult(0, "caddy.service enabled\n")
+    responses[10] = CommandResult(0, "caddy.service enabled\n")
     responses[-1] = inactive_caddy_evidence(configured=configured)
 
     discovery = validate_provisionable_host(
@@ -606,10 +634,9 @@ def test_failed_required_fact_command_maps_to_status_five_after_the_snapshot() -
     ("index", "result"),
     [
         (9, CommandResult(1, stderr="path inspection unavailable")),
-        (10, CommandResult(1, stderr="provisioning marker unavailable")),
-        (11, CommandResult(1, stderr="unit inspection unavailable")),
-        (12, CommandResult(1, stderr="passwd inspection unavailable")),
-        (13, CommandResult(1, stderr="group inspection unavailable")),
+        (10, CommandResult(1, stderr="unit inspection unavailable")),
+        (11, CommandResult(1, stderr="passwd inspection unavailable")),
+        (12, CommandResult(1, stderr="group inspection unavailable")),
     ],
 )
 def test_inability_to_inspect_non_database_managed_state_refuses_preflight(
@@ -691,7 +718,7 @@ def test_absent_postgresql_passes_shell_discovery(
 
 def test_present_postgresql_requires_sudo_and_detects_a_managed_database() -> None:
     responses = fact_responses(postgres=True)
-    responses[17] = CommandResult(0, "taskman_prod\n")
+    responses[16] = CommandResult(0, "taskman_prod\n")
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
@@ -716,8 +743,8 @@ def test_partial_postgresql_installation_refuses_without_running_privileged_insp
 @pytest.mark.parametrize(
     ("index", "result"),
     [
-        (16, CommandResult(1, stderr="postgres sudo unavailable")),
-        (17, CommandResult(2, stderr="psql connection unavailable")),
+        (15, CommandResult(1, stderr="postgres sudo unavailable")),
+        (16, CommandResult(2, stderr="psql connection unavailable")),
     ],
 )
 def test_inability_to_inspect_present_postgresql_refuses_preflight(
@@ -782,9 +809,9 @@ def test_direct_public_dns_must_include_only_the_configured_vps_address() -> Non
     [
         (8, CommandResult(0, "LISTEN 0 4096 *:4000 0.0.0.0:*\n")),
         (9, CommandResult(0, "/opt/taskman\n")),
-        (11, CommandResult(0, "taskman.service enabled\n")),
+        (10, CommandResult(0, "taskman.service enabled\n")),
+        (11, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
         (12, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
-        (13, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
     ],
 )
 def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_refusal(

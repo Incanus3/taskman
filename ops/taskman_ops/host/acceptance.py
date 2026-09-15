@@ -15,10 +15,8 @@ from .facts import (
     CaddyState,
     HostFacts,
     Listener,
-    ProvisioningMarkerState,
     _ACCOUNT_NAME,
     _CADDYFILE,
-    _PROVISIONING_MARKER,
     _SYSTEMD_UNITS,
     MINIMUM_DISK_BYTES,
     MINIMUM_MEMORY_BYTES,
@@ -87,7 +85,7 @@ def validate_provisionable_host(
     resolver: Callable[[str], Iterable[str]] | None = None,
     expected_caddyfile_sha256: str,
 ) -> ProvisioningDiscovery:
-    """Classify a pristine host or one anchored by the managed provisioning marker."""
+    """Classify a pristine host or compatible unfinished resource state."""
 
     facts = collect_host_facts(
         remote,
@@ -139,12 +137,8 @@ def _provisioning_state(facts: HostFacts, config: EnvironmentConfig) -> Provisio
         or _reserved_listeners(facts, config)
         or facts.caddy_state is not CaddyState.ABSENT
     )
-    if facts.provisioning_marker is ProvisioningMarkerState.ABSENT:
-        if managed_evidence:
-            raise _safety("existing managed state has no Taskman provisioning marker and will not be adopted")
+    if not managed_evidence:
         return ProvisioningState.PRISTINE
-    if facts.provisioning_marker is not ProvisioningMarkerState.MANAGED:
-        raise _safety("Taskman provisioning marker is invalid and will not be adopted")
     _validate_managed_service_boundaries(facts, config)
     return ProvisioningState.MANAGED if _fully_managed(facts, config) else ProvisioningState.PARTIAL
 
@@ -159,6 +153,9 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
     units = set(facts.existing_units)
     service_path = PurePosixPath("/etc/systemd/system/taskman.service")
     taskman_units = {"taskman.service", "taskman-backup.service", "taskman-backup.timer"}
+    _validate_existing_paths(facts, config)
+    if facts.existing_accounts and not facts.taskman_account_compatible:
+        raise _safety("Taskman account ownership is unrecognized or contradictory")
     if facts.existing_databases and (not facts.postgres_available or not facts.existing_accounts):
         raise _safety("Taskman database evidence is missing its managed service boundaries")
     if units.intersection(taskman_units) and service_path not in paths:
@@ -185,6 +182,26 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
             raise _safety("managed listener topology is unrecognized or contradictory")
 
 
+def _validate_existing_paths(facts: HostFacts, config: EnvironmentConfig) -> None:
+    """Require ownership and mode proof before reusing any Taskman path."""
+
+    expected = {
+        config.install_root: "directory:root:root:755",
+        config.release_root: "directory:root:root:755",
+        config.deployment_root: "directory:root:root:700",
+        config.backup_root: "directory:root:root:700",
+        PurePosixPath("/etc/taskman"): "directory:root:taskman:750",
+        PurePosixPath("/etc/systemd/system/taskman.service"): "regular file:root:root:644",
+    }
+    observed = dict(facts.path_metadata)
+    for path in facts.existing_paths:
+        if path == _CADDYFILE:
+            # Caddy's file content and package ownership have dedicated proof.
+            continue
+        if observed.get(path) != expected.get(path):
+            raise _safety("managed directory or unit ownership is unrecognized or contradictory")
+
+
 def _fully_managed(facts: HostFacts, config: EnvironmentConfig) -> bool:
     required_paths = {
         config.install_root,
@@ -192,7 +209,6 @@ def _fully_managed(facts: HostFacts, config: EnvironmentConfig) -> bool:
         config.deployment_root,
         config.backup_root,
         PurePosixPath("/etc/taskman"),
-        _PROVISIONING_MARKER,
         PurePosixPath("/etc/systemd/system/taskman.service"),
         _CADDYFILE,
     }

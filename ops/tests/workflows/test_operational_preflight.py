@@ -11,7 +11,6 @@ from taskman_ops.host.acceptance import validate_operational_host
 from taskman_ops.host.facts import (
     CaddyState,
     HostFacts,
-    ProvisioningMarkerState,
 )
 from taskman_ops.output import render_human, render_json
 from taskman_ops.remote import CommandResult
@@ -46,10 +45,11 @@ def _managed_host_facts() -> HostFacts:
         dns_addresses=("203.0.113.10",),
         listeners=(),
         existing_paths=(),
-        provisioning_marker=ProvisioningMarkerState.MANAGED,
+        path_metadata=(),
         caddy_state=CaddyState.ACTIVE,
         existing_units=(),
-        existing_accounts=("taskman", "postgres"),
+        existing_accounts=("taskman",),
+        taskman_account_compatible=True,
         existing_databases=("taskman_prod",),
         failed_checks=(),
     )

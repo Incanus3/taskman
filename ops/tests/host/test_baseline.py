@@ -34,8 +34,6 @@ def test_baseline_plan_uses_built_in_owned_packages_account_and_directories() ->
     assert plan.service_account.name == "taskman"
     assert plan.service_account.shell == "/usr/sbin/nologin"
     assert 'Unattended-Upgrade::Automatic-Reboot "false";' in plan.unattended_updates
-    assert plan.provisioning_marker_path == "/var/lib/taskman-provisioning.state"
-    assert plan.provisioning_marker_content == "taskman-provisioning-v1\n"
 
 
 def test_baseline_plan_uses_validated_configured_roots() -> None:
@@ -115,7 +113,6 @@ def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to
         (content, destination, kwargs["user"], kwargs["group"], int(str(ensure_mode_int(kwargs["mode"])), 8))
         for content, destination, kwargs in files_written
     ] == [
-        (plan.provisioning_marker_content, plan.provisioning_marker_path, "root", "root", 0o600),
         (plan.unattended_updates, "/etc/apt/apt.conf.d/52taskman-unattended-upgrades", "root", "root", 0o644),
     ]
     assert services == [
@@ -126,8 +123,8 @@ def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to
     ]
 
 
-def test_baseline_declares_the_provisioning_marker_before_other_mutations(monkeypatch) -> None:
-    """A partial baseline run is marked before package/account/directory work begins."""
+def test_baseline_declares_only_managed_resources(monkeypatch) -> None:
+    """The baseline declares packages, accounts, directories, and configuration only."""
 
     events: list[tuple[str, str]] = []
     from pyinfra.operations import apt, files, server
@@ -147,9 +144,9 @@ def test_baseline_declares_the_provisioning_marker_before_other_mutations(monkey
     monkeypatch.setattr(server, "service", lambda service, **_kwargs: events.append(("service", service)))
     monkeypatch.setattr(baseline, "declare_firewall", lambda _config: events.append(("firewall", "")))
 
-    plan = baseline.declare_baseline(environment_config())
+    baseline.declare_baseline(environment_config())
 
-    assert events[0] == ("file", plan.provisioning_marker_path)
+    assert events[0] == ("packages", "")
 
 
 def test_baseline_applies_domain_modes_through_actual_pyinfra_commands(
@@ -186,7 +183,6 @@ def test_baseline_applies_domain_modes_through_actual_pyinfra_commands(
             replace(directory_plan, path=remote_path(directory_plan.path), owner="", group="")
             for directory_plan in plan.directories
         ),
-        provisioning_marker_path=remote_path(plan.provisioning_marker_path),
     )
     monkeypatch.setattr(baseline, "build_baseline_plan", lambda _config: mapped_plan)
     monkeypatch.setattr(files, "put", put)
@@ -209,7 +205,6 @@ def test_baseline_applies_domain_modes_through_actual_pyinfra_commands(
         directory_path = Path(directory_plan.path)
         assert stat.S_IMODE(directory_path.stat().st_mode) == directory_plan.mode
 
-    assert stat.S_IMODE(Path(mapped_plan.provisioning_marker_path).stat().st_mode) == 0o600
     assert stat.S_IMODE(
         Path(remote_path("/etc/apt/apt.conf.d/52taskman-unattended-upgrades")).stat().st_mode
     ) == 0o644

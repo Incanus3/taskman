@@ -81,10 +81,12 @@ def observe_database_migrations(database: Mapping[str, object], credentials: Pat
 
 
 def observe_database_state_or_empty(database: Mapping[str, object], credentials: Path) -> dict[str, object]:
-    """Observe a deploy database where only an absent migration table proves a clean genesis."""
+    """Observe a database where direct empty-schema evidence permits genesis."""
 
     table = _migration_table(database, credentials)
     if table == b"":
+        if _initial_database_empty(database, credentials) != b"1":
+            raise DatabaseObservationError("initial database is not empty")
         return {"state": "ready", "applied_migrations": ()}
     if table != b"1":
         raise DatabaseObservationError("database migration authority is ambiguous")
@@ -94,6 +96,25 @@ def observe_database_state_or_empty(database: Mapping[str, object], credentials:
 def _migration_table(database: Mapping[str, object], credentials: Path) -> bytes:
     return run_command(
         (*_psql_argv(database), "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
+        env={"PGPASSFILE": credentials.as_posix()},
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout.strip()
+
+
+def _initial_database_empty(database: Mapping[str, object], credentials: Path) -> bytes:
+    """Prove a migration-table-free database has no user schema objects or data."""
+
+    return run_command(
+        (
+            *_psql_argv(database),
+            "--command",
+            "SELECT CASE WHEN EXISTS ("
+            "SELECT 1 FROM pg_catalog.pg_class AS relation "
+            "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+            "WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema') "
+            "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')"
+            ") THEN 0 ELSE 1 END",
+        ),
         env={"PGPASSFILE": credentials.as_posix()},
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     ).stdout.strip()
