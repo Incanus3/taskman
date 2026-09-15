@@ -26,6 +26,7 @@ from ..database import (
     database_mapping,
     migration_versions,
     observe_database_state_or_empty,
+    release_migration_versions,
 )
 from ...checksums import sha256_file
 from ..filesystem import fsync_directory
@@ -576,6 +577,27 @@ def _validate_expected_state(state: HostState, inputs: _Inputs, *, first_release
         *(() if expected["selected_release_id"] is None else (expected["selected_release_id"],)),
         *(item.target_release_id for item in protections),
     }
+    # Provision-mode discovery includes immutable installed provenance whose
+    # migrations overlap a partial initial schema when no physical current or
+    # successful history exists.  Genesis must derive that same bounded
+    # baseline before deciding whether its confirmed authority still matches;
+    # otherwise a legitimate partial first-install plan is rejected after
+    # pyinfra despite no intervening drift.
+    if (
+        first_release
+        and expected["selected_release_id"] is None
+        and expected["last_successful_selection_id"] is None
+        and inputs.expected_migrations
+    ):
+        # The initial confirmed prefix, rather than a later candidate schema,
+        # distinguishes existing partial-install provenance from the exact
+        # candidate-attributable transition permitted on a lost-result replay.
+        applied = frozenset(inputs.expected_migrations)
+        expected_baselines.update(
+            record.release_id
+            for record in state.releases
+            if applied.intersection(release_migration_versions(record.migrations))
+        )
     expected_baseline_digest = __import__("hashlib").sha256(
         json.dumps(
             sorted(expected_baselines),

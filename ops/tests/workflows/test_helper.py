@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import MappingProxyType
 import hashlib
 
@@ -8,6 +9,20 @@ import pytest
 from taskman_ops.errors import ExitStatus, HelperTransportError, OpsError
 from taskman_ops.host_protocol import HostRequest, HostResult
 from taskman_ops.output import WorkflowResult
+from taskman_ops.releases.manifests import (
+    ARCHITECTURE,
+    APPLICATION,
+    BUILDER_BASE_DIGEST,
+    BUILDER_BASE_TAG,
+    ELIXIR_VERSION,
+    HEX_VERSION,
+    NODE_VERSION,
+    OTP_VERSION,
+    REBAR3_VERSION,
+    SCHEMA_VERSION,
+    TARGET_OS,
+    ArtifactManifest,
+)
 from taskman_ops.workflows.helper import (
     aggregate_mutation_state,
     merge_warnings,
@@ -138,13 +153,48 @@ def _exact_failure_state(operation: str, boundary: str, exit_code: int) -> dict[
 
 
 def _deploy_request() -> HostRequest:
+    """Build the real v3 upload target used to recover lost dispatches.
+
+    Replacing this with the retired ``candidate_release_id`` field would hide
+    a request-shape regression: mutation evidence must still retain the exact
+    target identity after the helper entrypoint is dispatched.
+    """
+
+    manifest = ArtifactManifest(
+        SCHEMA_VERSION,
+        APPLICATION,
+        "0.2.0",
+        "a" * 40,
+        RELEASE,
+        datetime(2026, 9, 7, 12, tzinfo=UTC),
+        TARGET_OS,
+        ARCHITECTURE,
+        OTP_VERSION,
+        ELIXIR_VERSION,
+        NODE_VERSION,
+        BUILDER_BASE_TAG,
+        BUILDER_BASE_DIGEST,
+        (),
+        "taskman",
+        HEX_VERSION,
+        REBAR3_VERSION,
+        "b" * 64,
+        False,
+    )
     return HostRequest(
         3,
         "deploy",
         CORRELATION,
         {"selected_release_id": None},
         {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-        {"candidate_release_id": RELEASE},
+        {
+            "target": {
+                "kind": "upload",
+                "manifest": manifest.to_mapping(),
+                "artifact_sha256": "b" * 64,
+                "artifact_path": "/opt/taskman/deployments/uploads/taskman.tar.gz",
+            },
+        },
     )
 
 

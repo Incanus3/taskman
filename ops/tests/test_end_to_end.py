@@ -148,8 +148,13 @@ def write_state(value):
     runtime_path.write_text(json.dumps(value, sort_keys=True))
 
 def database(*_args, **_kwargs):
-    migrations = tuple(read_state()["migrations"])
-    return {"state": "ready", "applied_migrations": migrations, "initial_empty": not migrations}
+    value = read_state()
+    migrations = tuple(value["migrations"])
+    return {
+        "state": value["database_state"],
+        "applied_migrations": migrations,
+        "initial_empty": value["database_state"] == "ready" and not migrations,
+    }
 
 def command(argv, **_kwargs):
     value = read_state()
@@ -158,7 +163,7 @@ def command(argv, **_kwargs):
     elif argv[:2] == ("systemctl", "start"):
         value["service_running"] = True
     elif argv[0] == "systemd-run":
-        value["migrations"] = [20260905120000]
+        value["migrations"] = value["migration_result"]
     write_state(value)
     return subprocess.CompletedProcess(argv, 0, b"", b"")
 
@@ -173,7 +178,7 @@ def backup(current, paths, *_args, **_kwargs):
         f"backup-{value['backup_count']:032x}",
         __import__("datetime").datetime(2026, 9, 7, 12, value["backup_count"], tzinfo=__import__("datetime").UTC),
         hashlib.sha256(dump.read_bytes()).hexdigest(),
-        current.selected_release_id,
+        current.selected_release_id or current.releases[0].release_id,
         tuple(value["migrations"]),
         1024,
     )
@@ -207,7 +212,7 @@ def verify(request, **_kwargs):
 deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
 discover_module.observe_database_state_or_empty = database
-discover_module._observe_postgresql_authority = lambda *_args: "absent"
+discover_module._observe_postgresql_authority = lambda *_args: read_state()["database_state"]
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
 services.run_command = command
@@ -217,10 +222,21 @@ discover_module.validate_credentials = lambda *_args: None
 deploy_module._taskman_gid = os.getegid
 state_module._service_state = lambda include_runtime: "running" if include_runtime and read_state()["service_running"] else "stopped"
 deploy_module.verify = verify
-facts = {"scheduled_backup_sha256": read_state()["scheduler_sha256"], "backup_timer_enabled": True, "backup_timer_state": "active"}
-deploy_module._scheduler_facts = lambda _paths: facts
-discover_module._scheduler_facts = lambda _paths: facts
-backup_helper.observe_backup_timer = lambda **_kwargs: (True, "active")
+def scheduler_facts(_paths):
+    value = read_state()
+    present = all(value["scheduler_resources"].values())
+    return {
+        "scheduled_backup_sha256": value["scheduler_sha256"] if present else None,
+        "backup_timer_enabled": value["backup_timer_enabled"] if present else False,
+        "backup_timer_state": value["backup_timer_state"] if present else "inactive",
+    }
+
+deploy_module._scheduler_facts = scheduler_facts
+discover_module._scheduler_facts = scheduler_facts
+discover_module._scheduler_resources = lambda _paths: read_state()["scheduler_resources"]
+backup_helper.observe_backup_timer = lambda **_kwargs: (
+    read_state()["backup_timer_enabled"], read_state()["backup_timer_state"]
+)
 backup_helper._verified_executable_checksum = lambda: read_state()["scheduler_sha256"]
 
 os.write(ready_fd, b"R")
@@ -323,6 +339,10 @@ def _install_public_controller(
     tmp_path: Path,
     *,
     verification: str = "failing",
+    database_state: str = "ready",
+    migrations: tuple[int, ...] = (),
+    migration_result: tuple[int, ...] | None = None,
+    scheduler_resources: dict[str, bool] | None = None,
 ) -> tuple[_ControllerRemote, Path]:
     """Keep discovery/admission real while replacing only native and transport edges."""
 
@@ -335,8 +355,20 @@ def _install_public_controller(
     scheduler = build_scheduled_backup_package(tmp_path / "taskman-backup.pyz")
     runtime_path.write_text(json.dumps({
         "backup_count": 0,
-        "migrations": [],
+        "migrations": list(migrations),
+        "migration_result": list(
+            (20260905120000,) if migration_result is None else migration_result
+        ),
+        "database_state": database_state,
         "scheduler_sha256": scheduler.sha256,
+        "scheduler_resources": scheduler_resources or {
+            "helper": True,
+            "service": True,
+            "timer": True,
+            "environment": True,
+        },
+        "backup_timer_enabled": True,
+        "backup_timer_state": "active",
         "service_running": False,
         "verification": verification,
     }))
@@ -375,6 +407,35 @@ def _set_verification(runtime_path: Path, value: str) -> None:
     runtime = json.loads(runtime_path.read_text())
     runtime["verification"] = value
     runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+
+def _converge_native_provision_writers(runtime_path: Path):
+    """Model the native/pyinfra write boundary without replacing provision.
+
+    The controller, authority package, inventory, planning, and genesis remain
+    real.  This boundary only supplies the local effects a disposable host
+    would normally receive from pyinfra/PostgreSQL: creating confirmed missing
+    scheduler resources and making the configured database available.
+    """
+
+    def converge(_remote: object, inputs: object) -> ChangeSet:
+        scheduler_create = getattr(inputs, "scheduler_create")
+        assert isinstance(scheduler_create, frozenset)
+        runtime = json.loads(runtime_path.read_text())
+        paths = {
+            "/usr/local/lib/taskman/taskman-backup.pyz": "helper",
+            "/etc/systemd/system/taskman-backup.service": "service",
+            "/etc/systemd/system/taskman-backup.timer": "timer",
+            "/etc/taskman/taskman-backup.env": "environment",
+        }
+        for path in scheduler_create:
+            runtime["scheduler_resources"][paths[path]] = True
+        runtime["database_state"] = "ready"
+        runtime["native_provision_writes"] = runtime.get("native_provision_writes", 0) + 1
+        runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+        return ChangeSet(changed=True, operations=("pyinfra", "postgresql", "scheduler"))
+
+    return converge
 
 
 def test_public_controller_retries_a_selected_unverified_release_without_synthetic_success(
@@ -486,17 +547,29 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
     assert state.selections[0].observed_previous_release_id is None
 
 
-def test_default_public_provision_composes_authority_inventory_and_packaged_genesis(
+def test_default_public_provision_creates_confirmed_absent_scheduler_through_packaged_genesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Breaking a default admission seam must stop this complete public path."""
+    """A fresh timer must cross default authority, writers, and genesis intact."""
 
     from taskman_ops.host import acceptance as host_acceptance
     from taskman_ops.host.facts import CaddyState, HostFacts
     from taskman_ops.workflows import provision as provision_module
 
     request = host_deploy_tests._request(tmp_path / "default-genesis", operation="genesis", previous=None)
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+        database_state="absent",
+        migration_result=(20260905120000,),
+        scheduler_resources={
+            "helper": False,
+            "service": False,
+            "timer": False,
+            "environment": False,
+        },
+    )
     target = _artifact_target(request)
     config = _controller_config(dict(request.paths))
     archive = tmp_path / "local-artifact.tar.gz"
@@ -531,7 +604,11 @@ def test_default_public_provision_composes_authority_inventory_and_packaged_gene
             (), ("caddy",), "taskman.example.test {\n}\n",
         ),
     )
-    monkeypatch.setattr(provision_module, "converge_provisioning", lambda *_args: ChangeSet(changed=False))
+    monkeypatch.setattr(
+        provision_module,
+        "converge_provisioning",
+        _converge_native_provision_writers(runtime_path),
+    )
 
     result = provision(Invocation(
         command="provision", environment="production", yes=True, artifact=archive
@@ -542,3 +619,80 @@ def test_default_public_provision_composes_authority_inventory_and_packaged_gene
     assert state.selected_release_id == target.release_id
     assert len(state.selections) == 1
     assert state.selections[0].previous_release_id is None
+    runtime = json.loads(runtime_path.read_text())
+    assert runtime["native_provision_writes"] == 1
+    assert runtime["scheduler_resources"] == {
+        "helper": True,
+        "service": True,
+        "timer": True,
+        "environment": True,
+    }
+
+
+def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing genesis's null-baseline backup or prune authority breaks recovery."""
+
+    from taskman_ops.host import acceptance as host_acceptance
+    from taskman_ops.host.facts import CaddyState, HostFacts
+    from taskman_ops.workflows import provision as provision_module
+
+    request = host_deploy_tests._request(
+        tmp_path / "partial-genesis",
+        operation="genesis",
+        previous=None,
+        applied_migrations=(20260905120000,),
+        migrations=(host_deploy_tests.MIGRATION, host_deploy_tests.SECOND_MIGRATION),
+    )
+    host_deploy_tests._install_unselected_candidate(request)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+        migrations=(20260905120000,),
+        migration_result=(20260905120000, 20260906120000),
+    )
+    target = _artifact_target(request)
+    config = _controller_config(dict(request.paths))
+    archive = tmp_path / "partial-artifact.tar.gz"
+    shutil.copyfile(target.artifact.archive, archive)
+    archive.with_name("partial-artifact.manifest.json").write_text(
+        json.dumps(target.manifest.to_mapping(), sort_keys=True)
+    )
+    archive.with_name("partial-artifact.tar.gz.sha256").write_text(
+        f"{target.artifact_sha256}  {archive.name}\n"
+    )
+    facts = HostFacts(
+        "ubuntu", "26.04", "amd64", "systemd", True, False, None, config.ssh_port,
+        8 * 1024**3, 40 * 1024**3, 40 * 1024**3, (config.public_ipv4,), (), (), (),
+        CaddyState.ABSENT, (), (), False, (), (),
+    )
+    monkeypatch.setattr(host_acceptance, "collect_host_facts", lambda *_args, **_kwargs: facts)
+    monkeypatch.setattr(provision_module, "load_environment", lambda _name: config)
+    monkeypatch.setattr(provision_module, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="test-password"))
+    monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
+    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
+    monkeypatch.setattr(provision_module, "build_caddy_plan", lambda _config: CaddyPlan(
+        CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+        (), ("caddy",), "taskman.example.test {\n}\n",
+    ))
+    monkeypatch.setattr(provision_module, "converge_provisioning", _converge_native_provision_writers(runtime_path))
+
+    result = provision(Invocation(
+        command="provision",
+        environment="production",
+        yes=True,
+        artifact=archive,
+        migration_policy="backward-compatible",
+    ))
+
+    state = _state(dict(request.paths), runtime_path)
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert state.applied_migrations == (20260905120000, 20260906120000)
+    assert len(state.selections) == 1
+    assert state.selections[0].previous_release_id is None
+    assert state.selections[0].observed_previous_release_id is None
+    assert state.backups
