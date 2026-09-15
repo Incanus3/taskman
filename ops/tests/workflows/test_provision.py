@@ -596,6 +596,26 @@ def test_provision_discards_a_drifted_plan_and_repeats_authority_before_converge
     assert host.events == ["plan", "plan", "provisioning"]
 
 
+def test_provision_yes_refuses_material_drift_after_confirmation_before_pyinfra() -> None:
+    """`--yes` confirms one plan, not a later resource snapshot."""
+
+    host = Host()
+    discoveries = iter(("first", "changed"))
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan"]
+
+
 def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1242,6 +1242,35 @@ def test_genesis_resumes_a_partial_initial_schema_only_with_backward_compatible_
     )
 
 
+def test_genesis_first_success_records_the_physical_starting_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First history is logical-null but must retain the failed physical origin."""
+
+    request = _request(tmp_path, operation="genesis", previous=None, migrations=(), policy="no-change")
+    request = HostRequest(
+        request.protocol_version, request.operation, request.correlation_id,
+        {**request.expected_state, "selected_release_id": CURRENT,
+         "downgrade_baseline_sha256": hashlib.sha256(json.dumps([CURRENT], separators=(",", ":")).encode("ascii")).hexdigest()},
+        request.paths, request.parameters,
+    )
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    _install_current(dict(request.paths), migrations=())
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    for selection in Path(paths.local(paths.selection_root)).iterdir():
+        selection.unlink()
+
+    result = genesis(request)
+
+    assert result.outcome == "succeeded", result.message
+    state = deploy_module.observe_host_state(
+        deploy_module.ManagedPaths.from_mapping(dict(request.paths)), database=runtime.observe_database()
+    )
+    assert state.selections[-1].previous_release_id is None
+    assert state.selections[-1].observed_previous_release_id == CURRENT
+
+
 def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

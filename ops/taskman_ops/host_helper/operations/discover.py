@@ -92,7 +92,31 @@ def provision_authority(request: HostRequest) -> HostResult:
         with lifecycle_lock(paths, timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS):
             state = observe_host_state(paths, allow_selection_transition=True)
             database_state = _observe_postgresql_authority(database, package_track)
-            state = replace(state, database_state=database_state)
+            # A provision plan may only call an existing database empty when
+            # the controlled-template probe proved it.  Preserve observed
+            # migrations as authority; missing observation is never an empty
+            # tuple for the convenience of first-install planning.
+            if database_state == "absent":
+                # A missing cluster/database is a planned provisioning delta,
+                # not an observed empty schema.  Do not touch absent
+                # credentials or manufacture controlled-template evidence.
+                database_observation = {
+                    "state": "absent",
+                    "applied_migrations": (),
+                    "initial_empty": False,
+                }
+            else:
+                credentials = Path("/etc/taskman/pgpass")
+                validate_credentials(credentials)
+                database_observation = observe_database_state_or_empty(database, credentials)
+                if database_observation["state"] != database_state:
+                    raise ValueError("PostgreSQL authority observations disagree")
+            state = replace(
+                state,
+                database_state=database_state,
+                applied_migrations=tuple(database_observation["applied_migrations"]),
+                initial_database_empty=database_observation["initial_empty"],
+            )
     except LifecycleLockContention:
         return _locked(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
@@ -107,6 +131,7 @@ def provision_authority(request: HostRequest) -> HostResult:
     projection.update(
         {
             "authority": "validated",
+            "initial_database_empty": database_observation["initial_empty"],
             "installed_release_count": len(release_rows),
             "installed_release_sha256": hashlib.sha256(_canonical_ascii(release_rows)).hexdigest(),
         }
@@ -431,6 +456,14 @@ def _scheduler_facts(paths: ManagedPaths) -> dict[str, object]:
             raise StateAmbiguityError("scheduled backup executable is unsafe")
         package_sha256 = sha256_file(package)
     enabled = _systemd_property("UnitFileState")
+    if enabled == "not-found":
+        # Absence is a valid pre-convergence fact.  The first provision plan
+        # owns creating the package and timer; it is not ambiguous authority.
+        return {
+            "scheduled_backup_sha256": package_sha256,
+            "backup_timer_enabled": False,
+            "backup_timer_state": "inactive",
+        }
     if enabled not in {"enabled", "disabled"}:
         raise StateAmbiguityError("backup timer enablement is ambiguous")
     active = _systemd_property("ActiveState")

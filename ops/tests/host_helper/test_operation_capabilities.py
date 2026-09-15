@@ -89,6 +89,7 @@ def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
         "pg_user_mapping", "pg_publication", "pg_subscription", "pg_conversion",
         "pg_opclass", "pg_opfamily", "pg_ts_config", "pg_ts_dict", "pg_ts_parser",
         "pg_ts_template", "pg_database_owner", "nspacl",
+        "pg_event_trigger", "pg_default_acl", "pg_language",
     ):
         assert catalog in query
 

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -66,7 +67,7 @@ def _state(*, migrations: tuple[int, ...] = (20260905120000,)) -> HostState:
 def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> None:
     monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
     monkeypatch.setattr(discover_module, "observe_database_state", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
-    monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_host_state", lambda *_args, **_kwargs: observed)
     monkeypatch.setattr(discover_module, "lifecycle_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
@@ -261,6 +262,74 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
     assert result.state["installed_release_count"] == 1
     assert len(result.state["installed_release_sha256"]) == 64
     assert calls == ["postgres"]
+
+
+def test_preconvergence_authority_binds_live_partial_migrations_before_pyinfra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing a partial prefix with an empty tuple would misplan its backup."""
+
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "ready")
+    monkeypatch.setattr(
+        discover_module,
+        "observe_database_state_or_empty",
+        lambda *_args: {"state": "ready", "applied_migrations": (20260905120000,), "initial_empty": False},
+    )
+    result = discover_module.provision_authority(
+        HostRequest(
+            3, "provision_authority", CORRELATION, {},
+            {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert result.state["applied_migrations"] == (20260905120000,)
+
+
+def test_preconvergence_authority_preserves_database_absence_without_empty_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh database creation must not be mislabeled as a proved empty schema."""
+
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "absent")
+    monkeypatch.setattr(
+        discover_module,
+        "observe_database_state_or_empty",
+        lambda *_args: pytest.fail("an absent database has no schema to inspect"),
+    )
+    result = discover_module.provision_authority(
+        HostRequest(
+            3, "provision_authority", CORRELATION, {},
+            {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert result.state["database_state"] == "absent"
+    assert result.state["initial_database_empty"] is False
+
+
+def test_scheduler_facts_represent_a_missing_timer_as_planned_first_install_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh provisioning must distinguish missing scheduler resources from ambiguity."""
+
+    paths = discover_module.ManagedPaths.from_mapping(
+        {"install_root": (tmp_path / "install").as_posix(), "backup_root": (tmp_path / "backups").as_posix()}
+    )
+    monkeypatch.setattr(discover_module, "_systemd_property", lambda _name: "not-found")
+
+    assert discover_module._scheduler_facts(paths) == {
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "backup_timer_state": "inactive",
+    }
 
 
 def test_real_provision_authority_projection_passes_the_production_controller_schema(

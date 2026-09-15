@@ -264,6 +264,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
     # observation into authority the controller never reviewed.
     required = {
         "authority",
+        "initial_database_empty",
         "selected_release_id",
         "last_successful_selection_id",
         "last_successful_selection",
@@ -295,6 +296,8 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
         if state["last_successful_selection_id"] is not None and not isinstance(state["last_successful_selection_id"], str):
             raise ValueError
         if not isinstance(state["applied_migrations"], tuple) or any(type(item) is not int for item in state["applied_migrations"]):
+            raise ValueError
+        if type(state["initial_database_empty"]) is not bool:
             raise ValueError
         if state["service_state"] not in {"running", "stopped", "unknown"} or state["database_state"] not in {"ready", "absent"}:
             raise ValueError

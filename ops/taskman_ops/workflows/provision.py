@@ -282,6 +282,14 @@ def provision(
                 or refreshed_downgrade_evidence != downgrade_evidence
                 or refreshed_plan_effects != plan_effects
             ):
+                if yes or _noninteractive(invocation):
+                    raise OpsError(
+                        ExitStatus.SAFETY,
+                        "provision",
+                        "provision authority changed after confirmation; rerun to acknowledge the refreshed plan",
+                        changed=False,
+                        next_action="inspect the refreshed plan and rerun provision with a new confirmation",
+                    )
                 continue
             provisioning_changed = _changed(cap.provisioning(remote, inputs))
             break

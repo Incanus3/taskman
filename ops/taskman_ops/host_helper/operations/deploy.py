@@ -572,18 +572,36 @@ def _validate_expected_state(state: HostState, inputs: _Inputs, *, first_release
     ).hexdigest()
     scheduler = _scheduler_facts(inputs.paths)
     expected = inputs.expected_state
-    replaying_genesis = (
+    expected_baselines = {
+        *(() if expected["selected_release_id"] is None else (expected["selected_release_id"],)),
+        *(item.target_release_id for item in protections),
+    }
+    expected_baseline_digest = __import__("hashlib").sha256(
+        json.dumps(
+            sorted(expected_baselines),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    # The one supported replay is an interrupted genesis before first history.
+    # Only the independently attributable candidate selection and candidate
+    # schema prefix may have advanced; history, the originally confirmed
+    # baseline, protections, and scheduler remain exact.
+    genesis_transition = (
         first_release
-        and state.latest_successful_selection is None
-        and state.selected_release_id in {inputs.previous_release_id, inputs.candidate.release_id}
+        and expected["last_successful_selection_id"] is None
+        and state.latest_successful_selection_filename is None
+        and expected["downgrade_baseline_sha256"] == expected_baseline_digest
+        and state.selected_release_id in {expected["selected_release_id"], inputs.candidate.release_id}
         and state.applied_migrations in {inputs.expected_migrations, inputs.candidate_versions}
     )
     if (
-        (not replaying_genesis and state.selected_release_id != expected["selected_release_id"])
-        or (not replaying_genesis and state.latest_successful_selection_filename != expected["last_successful_selection_id"])
-        or (not replaying_genesis and state.applied_migrations != inputs.expected_migrations)
+        (not genesis_transition and state.selected_release_id != expected["selected_release_id"])
+        or state.latest_successful_selection_filename != expected["last_successful_selection_id"]
+        or (not genesis_transition and state.applied_migrations != inputs.expected_migrations)
         or protection_digest != expected["backup_protection_sha256"]
-        or (not replaying_genesis and downgrade_baseline_digest != expected["downgrade_baseline_sha256"])
+        or (not genesis_transition and downgrade_baseline_digest != expected["downgrade_baseline_sha256"])
         or scheduler["scheduled_backup_sha256"] != expected["scheduled_backup_sha256"]
         or scheduler["backup_timer_enabled"] != expected["backup_timer_enabled"]
     ):
@@ -641,15 +659,19 @@ def _genesis_migration_provenance_matches(state: HostState, inputs: _Inputs) -> 
     candidate_prefix = tuple(
         item.to_mapping() for item in inputs.candidate.artifact_manifest.migrations[:prefix_size]
     )
-    matching_records = tuple(
+    relevant_records = tuple(
         item
         for item in state.releases
-        if _migration_versions_from_manifest(item.artifact_manifest)[:prefix_size]
-        == state.applied_migrations
+        if set(_migration_versions_from_manifest(item.artifact_manifest)).intersection(state.applied_migrations)
     )
-    return bool(matching_records) and all(
-        tuple(dict(item) for item in record.migrations[:prefix_size]) == candidate_prefix
-        for record in matching_records
+    complete_records = tuple(
+        record for record in relevant_records
+        if _migration_versions_from_manifest(record.artifact_manifest)[:prefix_size] == state.applied_migrations
+    )
+    return bool(complete_records) and all(
+        tuple(dict(item) for item in record.migrations if int(item["filename"][:14]) in state.applied_migrations)
+        == tuple(item for item in candidate_prefix if int(item["filename"][:14]) in _migration_versions_from_manifest(record.artifact_manifest))
+        for record in relevant_records
     )
 
 
@@ -748,7 +770,9 @@ def _record_successful_selection(
             _selection_backup(inputs, state, selection.backup_id, backup),
         )
     selection_backup = _selection_backup(inputs, state, None, backup)
-    observed_previous = None if state.latest_successful_selection is None else recorded
+    # Logical history starts at null, but recovery must retain the exact
+    # physical selection observed at the confirmed start of this genesis.
+    observed_previous = inputs.previous_release_id if state.latest_successful_selection is None else recorded
     try:
         _append_selection_with_previous(
             inputs.paths,

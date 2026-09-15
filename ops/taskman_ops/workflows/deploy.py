@@ -504,6 +504,10 @@ def _starting_expected_state(starting_state: Mapping[str, object] | None) -> dic
     authority = starting_state.get("host_authority")
     if not isinstance(authority, Mapping):
         return None
+    if authority.get("database_state") == "absent":
+        # A proven-absent database is an explicit provisioning delta.  It
+        # cannot supply schema authority to compare with post-pyinfra genesis.
+        return None
     required = {
         "selected_release_id",
         "last_successful_selection_id",
