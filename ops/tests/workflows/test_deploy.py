@@ -162,6 +162,68 @@ def test_first_release_binds_the_exact_fresh_expected_state_to_genesis(
     assert result.facts["starting_state"] == fresh
 
 
+def test_first_release_sends_confirmed_null_baseline_pruning_to_genesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interrupted first-install recovery must not replace its planned pruning with ()."""
+
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    fresh = {
+        **_EXPECTED,
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "scheduled_backup_sha256": None,
+    }
+    prune_ids = ("backup-00000000000000000000000000000001",)
+    sent: list[tuple[str, ...]] = []
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: fresh)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids",
+        lambda *_args, **_kwargs: (prune_ids, {"protections": (), "independent_backup_ids": frozenset()}),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **kwargs: sent.append(kwargs["prune_backup_ids"]) or _success(),
+    )
+
+    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+
+    assert result.exit_status is ExitStatus.OK
+    assert sent == [prune_ids]
+
+
+def test_first_release_refuses_post_pyinfra_release_authority_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Genesis may observe diagnostics after pyinfra but cannot adopt changed release authority."""
+
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    confirmed = {
+        **_EXPECTED,
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "scheduled_backup_sha256": None,
+    }
+    drifted = {**confirmed, "selected_release_id": CANDIDATE}
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: drifted)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach genesis"),
+    )
+
+    result = deploy_first_release(
+        object(),
+        config(),
+        deployment_artifact(tmp_path),
+        starting_state={"host_authority": confirmed},
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.facts["starting_state"] == {"host_authority": confirmed}
+
+
 def test_first_release_refuses_a_changed_target_after_durable_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

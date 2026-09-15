@@ -8,7 +8,7 @@ capabilities provided by the established deployment workflow.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 import hashlib
 from pathlib import Path
 import os
@@ -20,7 +20,18 @@ from ..config import EnvironmentConfig, load_environment
 from ..errors import ExitStatus, OpsError
 from ..host.acceptance import validate_provisionable_host
 from ..releases.manifests import VerifiedArtifact, verify_artifact
-from ..releases.artifacts import CleanInputs, DeploymentTarget, identify_clean_inputs, resolve_deploy_target
+from ..host_helper.backup_protection import (
+    BackupProtection,
+    protection_prune_ids,
+    protection_prune_ids_after_fresh_attempt,
+)
+from ..releases.artifacts import (
+    CleanInputs,
+    DeploymentTarget,
+    clean_inputs_match,
+    identify_clean_inputs,
+    resolve_deploy_target,
+)
 from ..output import WorkflowResult, redact, render_human
 from ..provisioning import (
     ProvisioningInputs,
@@ -140,6 +151,7 @@ def provision(
     )
 
     remote = cap.connect(config)
+    confirmed_starting_state: dict[str, object] | None = None
     try:
         while True:
             # Discovery is a complete immutable snapshot.  It must precede every
@@ -153,6 +165,21 @@ def provision(
             )
             assert release_input is not None
             _validate_artifact_target(config, release_input)
+            if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
+                # Unlike an explicit artifact or frozen dirty source, a clean
+                # target has no independent identity until the source inputs
+                # are freshly re-identified.  A previous confirmation cannot
+                # authorize whichever checkout happens to be present now.
+                if yes or _noninteractive(invocation):
+                    raise OpsError(
+                        ExitStatus.SAFETY,
+                        "provision",
+                        "clean provisioning inputs changed; rerun to acknowledge the refreshed plan",
+                        changed=False,
+                        next_action="restore the intended clean checkout and rerun provision to review a new plan",
+                    )
+                clean_inputs = identify_clean_inputs(_repository_root())
+                continue
             authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
             starting_state = _starting_state(authority, discovery, release_input)
             plan = _redacted_plan(cap.render_plan(config, release_input))
@@ -164,7 +191,8 @@ def provision(
                 "requires_downgrade_acknowledgment": downgrade_required,
                 "downgrade_baselines": _downgrade_plan_rows(downgrade_evidence),
             }
-            plan = {**plan, "starting_state": starting_state}
+            plan_effects = _provision_plan_effects(starting_state, release_input, invocation)
+            plan = {**plan, **plan_effects, "starting_state": starting_state}
             cap.present_plan(plan)
             if dry_run:
                 return _close_result(remote, WorkflowResult(
@@ -186,6 +214,12 @@ def provision(
                     next_action="review the redacted plan and confirm a later provisioning run when ready",
                     exit_status=ExitStatus.SAFETY,
                 ))
+
+            # This is the only state ordinary confirmation authorizes.  Keep
+            # an owned immutable-value copy before any post-confirmation
+            # boundary so even a pyinfra refusal can report the exact plan
+            # that was confirmed rather than a later observation.
+            confirmed_starting_state = _copy_authority(starting_state)
 
             if downgrade_required and not getattr(invocation, "allow_downgrade", False):
                 if yes or _noninteractive(invocation):
@@ -219,9 +253,26 @@ def provision(
                 else artifact
             )
             assert refreshed_input is not None
+            if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
+                if yes or _noninteractive(invocation):
+                    raise OpsError(
+                        ExitStatus.SAFETY,
+                        "provision",
+                        "clean provisioning inputs changed after confirmation; rerun to acknowledge the refreshed plan",
+                        changed=False,
+                        next_action="restore the intended clean checkout and rerun provision to review a new plan",
+                    )
+                clean_inputs = identify_clean_inputs(_repository_root())
+                continue
             refreshed_authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
             refreshed_downgrade_required, refreshed_downgrade_evidence = _provision_downgrade_authority(
                 remote, config, refreshed_input
+            )
+            refreshed_starting_state = _starting_state(
+                refreshed_authority, refreshed_discovery, refreshed_input
+            )
+            refreshed_plan_effects = _provision_plan_effects(
+                refreshed_starting_state, refreshed_input, invocation
             )
             if (
                 refreshed_discovery != discovery
@@ -229,12 +280,18 @@ def provision(
                 or refreshed_authority != authority
                 or refreshed_downgrade_required != downgrade_required
                 or refreshed_downgrade_evidence != downgrade_evidence
+                or refreshed_plan_effects != plan_effects
             ):
                 continue
             provisioning_changed = _changed(cap.provisioning(remote, inputs))
             break
     except OpsError as error:
-        return _close_result(remote, _pre_release_failure(environment_name, error))
+        return _close_result(
+            remote,
+            _pre_release_failure(
+                environment_name, error, starting_state=confirmed_starting_state
+            ),
+        )
     except TypeError:
         return _close_result(remote, _pre_release_failure(
             environment_name,
@@ -245,21 +302,28 @@ def provision(
                 changed=False,
                 next_action="inspect the provisioning boundary and retry",
             ),
+            starting_state=confirmed_starting_state,
         ))
     except BaseException:
         _close_remote(remote)
         raise
 
     try:
+        genesis_kwargs: dict[str, object] = {
+            "migration_policy": getattr(invocation, "migration_policy", None),
+            "yes": yes,
+            "allow_downgrade": getattr(invocation, "allow_downgrade", False),
+            "dry_run": dry_run,
+            "starting_state": starting_state,
+        }
+        planned_prune_ids = plan_effects.get("prune_backup_ids")
+        if isinstance(planned_prune_ids, tuple):
+            genesis_kwargs["prune_backup_ids"] = planned_prune_ids
         release = cap.genesis(
             remote,
             config,
             release_input,
-            migration_policy=getattr(invocation, "migration_policy", None),
-            yes=yes,
-            allow_downgrade=getattr(invocation, "allow_downgrade", False),
-            dry_run=dry_run,
-            starting_state=starting_state,
+            **genesis_kwargs,
         )
     except BaseException:
         _close_remote(remote)
@@ -525,13 +589,154 @@ def _starting_state(
             source_dirty=target.source_dirty,
         )
     if isinstance(authority, Mapping):
-        result["host_authority"] = dict(authority)
-    if isinstance(discovery, Mapping):
+        result["host_authority"] = _copy_authority(authority)
+    resource_authority = _authority_mapping(discovery)
+    if resource_authority is not None:
         # Host admission contains only checked resource facts; it never
         # contains credentials.  Preserve it so convergence cannot silently
         # change the resource snapshot the operator confirmed.
-        result["resource_authority"] = dict(discovery)
+        result["resource_authority"] = resource_authority
     return result
+
+
+def _provision_plan_effects(
+    starting_state: Mapping[str, object],
+    target: VerifiedArtifact | DeploymentTarget,
+    invocation: object,
+) -> dict[str, object]:
+    """Project the bounded recovery consequences the operator confirms.
+
+    The helper remains the authority for applying the plan.  This projection
+    deliberately contains no credential bytes and is derived solely from the
+    exact resource/host snapshots already admitted before pyinfra.
+    """
+
+    authority = starting_state.get("host_authority")
+    effects: dict[str, object] = {
+        "target": {
+            "release_id": _release_id(target),
+            "artifact_sha256": _artifact_sha256(target),
+            "provenance": target.source if isinstance(target, DeploymentTarget) else "explicit",
+            "source_dirty": (
+                target.source_dirty
+                if isinstance(target, DeploymentTarget)
+                else bool(getattr(target.manifest, "source_dirty", False))
+            ),
+        },
+        "resource_convergence": starting_state.get("resource_authority"),
+    }
+    if not isinstance(authority, Mapping):
+        return effects
+    applied = authority.get("applied_migrations")
+    if not isinstance(applied, tuple) or any(type(version) is not int for version in applied):
+        return effects
+    candidate_versions = tuple(int(item.filename[:14]) for item in target.manifest.migrations)
+    pending = candidate_versions[len(applied) :] if candidate_versions[: len(applied)] == applied else ()
+    protections = _plan_protections(authority)
+    independent = authority.get("independently_held_backup_ids")
+    independent_ids = (
+        tuple(independent)
+        if isinstance(independent, tuple) and all(isinstance(item, str) for item in independent)
+        else ()
+    )
+    baseline = authority.get("last_successful_selection_id")
+    if baseline is not None and not isinstance(baseline, str):
+        baseline = None
+    prune_backup_ids: tuple[str, ...] = ()
+    try:
+        prune_backup_ids = (
+            protection_prune_ids_after_fresh_attempt(
+                protections, baseline, independently_held_backup_ids=independent_ids
+            )
+            if pending
+            else protection_prune_ids(
+                protections, baseline, independently_held_backup_ids=independent_ids
+            )
+        )
+    except ValueError:
+        # The host still validates the complete record graph.  Do not claim a
+        # prune decision when an injected legacy projection lacks it.
+        prune_backup_ids = ()
+    effects.update(
+        {
+            "physical_current_release_id": authority.get("selected_release_id"),
+            "durable_history": {
+                "latest_selection_id": authority.get("last_successful_selection_id"),
+                "latest_selection": authority.get("last_successful_selection"),
+                "previous_selection": authority.get("previous_successful_selection"),
+                "first_history_publication": authority.get("last_successful_selection_id") is None,
+            },
+            "applied_migrations": list(applied),
+            "pending_migration_versions": list(pending),
+            "migration_policy": getattr(invocation, "migration_policy", None),
+            "recovery": {
+                "backup_protections": [item.to_mapping() for item in protections],
+                "independently_held_backup_ids": list(independent_ids),
+                "prune_backup_ids": list(prune_backup_ids),
+                "fresh_backup_required": bool(pending),
+            },
+            "prune_backup_ids": prune_backup_ids,
+            "scheduled_backup": {
+                "observed_sha256": authority.get("scheduled_backup_sha256"),
+                "timer_enabled": authority.get("backup_timer_enabled"),
+                "timer_state": authority.get("backup_timer_state"),
+                "effects": ("pause", "refresh-if-needed", "resume-if-enabled"),
+            },
+        }
+    )
+    return effects
+
+
+def _plan_protections(authority: Mapping[str, object]) -> tuple[BackupProtection, ...]:
+    values = authority.get("backup_protections")
+    if not isinstance(values, tuple):
+        return ()
+    try:
+        return tuple(BackupProtection.from_mapping(value) for value in values)
+    except (TypeError, ValueError):
+        return ()
+
+
+def _authority_mapping(value: object) -> dict[str, object] | None:
+    """Normalize only bounded, value-shaped discovery evidence for a plan.
+
+    Production resource discovery is a dataclass while narrow legacy fakes
+    often return ``None``.  Treat both mapping and frozen dataclass evidence
+    as facts; do not stringify arbitrary objects into an apparently reviewed
+    plan.
+    """
+
+    if isinstance(value, Mapping):
+        return _copy_authority(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        projected = asdict(value)
+        if isinstance(projected, dict):
+            return _copy_authority(projected)
+    return None
+
+
+def _copy_authority(value: Mapping[str, object]) -> dict[str, object]:
+    """Copy nested bounded plan evidence without retaining mutable helpers."""
+
+    copied: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("authority evidence keys must be strings")
+        if isinstance(item, Mapping):
+            copied[key] = _copy_authority(item)
+        elif isinstance(item, tuple):
+            copied[key] = tuple(
+                _copy_authority(member) if isinstance(member, Mapping) else member
+                for member in item
+            )
+        elif isinstance(item, list):
+            copied[key] = [
+                _copy_authority(member) if isinstance(member, Mapping) else member
+                for member in item
+            ]
+        else:
+            copied[key] = item
+    return copied
 
 
 def _redacted_plan(plan: Mapping[str, object]) -> Mapping[str, object]:
@@ -583,6 +788,8 @@ def _aggregate_mutation_state(*states: object) -> str:
 def _pre_release_failure(
     environment: str,
     error: OpsError,
+    *,
+    starting_state: Mapping[str, object] | None = None,
 ) -> WorkflowResult:
     return WorkflowResult(
         command="provision",
@@ -592,6 +799,11 @@ def _pre_release_failure(
         facts={
             "failed_boundary": error.stage,
             "release_started": False,
+            **(
+                {"starting_state": _copy_authority(starting_state)}
+                if starting_state is not None
+                else {}
+            ),
         },
         next_action=error.next_action or "retry provisioning after correcting the reported boundary",
         exit_status=error.status,

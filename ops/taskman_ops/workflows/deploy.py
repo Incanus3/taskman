@@ -276,6 +276,7 @@ def deploy_first_release(
     allow_downgrade: bool = False,
     dry_run: bool = False,
     starting_state: Mapping[str, object] | None = None,
+    prune_backup_ids: tuple[str, ...] | None = None,
 ) -> WorkflowResult:
     """Run genesis only for an unfinished install or its exact durable replay."""
 
@@ -283,6 +284,12 @@ def deploy_first_release(
         raise TypeError("first release requires validated configuration and target")
     if not all(type(value) is bool for value in (yes, allow_downgrade, dry_run)):
         raise TypeError("first release flags must be boolean")
+    if prune_backup_ids is not None and (
+        not isinstance(prune_backup_ids, tuple)
+        or any(type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None for backup_id in prune_backup_ids)
+        or prune_backup_ids != tuple(sorted(set(prune_backup_ids)))
+    ):
+        raise TypeError("first release prune backup identifiers must be sorted unique IDs")
     deployment_target = (
         target if isinstance(target, DeploymentTarget)
         else DeploymentTarget(artifact=target, release_record=None, source="explicit")
@@ -290,6 +297,14 @@ def deploy_first_release(
     candidate = deployment_target.release_id
     try:
         expected_state = _confirmed_expected_state(remote, config, mode="provision")
+        confirmed_preconvergence = _starting_expected_state(starting_state)
+        if (
+            confirmed_preconvergence is not None
+            and expected_state != confirmed_preconvergence
+        ):
+            raise _safety(
+                "release, schema, protection, or scheduler authority changed during provisioning; rerun to confirm a new plan"
+            )
         current = expected_state["selected_release_id"]
         # The first durable successful-selection record, not a physical
         # current link, is the command boundary.  A failed initial attempt may
@@ -322,6 +337,19 @@ def deploy_first_release(
             raise ValueError("first release requires a valid migration policy")
         if not (not applied and pending and policy == "restore-required"):
             _validate_migration_policy(applied, deployment_target.manifest.migrations, policy)
+        # The null successful-history baseline uses the same bounded recovery
+        # retention calculation as an ordinary deploy.  It is material
+        # authority: the host may retire only these IDs after a fresh
+        # protection exists, never a controller-side empty placeholder.
+        if prune_backup_ids is None:
+            prune_backup_ids, _recovery_evidence = _prune_plan_authority(
+                _planned_prune_backup_ids(
+                    remote,
+                    config,
+                    expected_state,
+                    fresh_backup_needed=bool(pending),
+                )
+            )
         if dry_run:
             return WorkflowResult(
                 "deploy",
@@ -351,7 +379,7 @@ def deploy_first_release(
                         else "pending-controller-upload"
                     ),
                 },
-                prune_backup_ids=(),
+                prune_backup_ids=prune_backup_ids,
                 backup_helper_package=scheduler_package,
                 genesis=True,
             )
@@ -459,6 +487,34 @@ def _confirmed_expected_state(
     except (TypeError, ValueError):
         raise _safety("deployment apply helper returned invalid expected state") from None
     return expected
+
+
+def _starting_expected_state(starting_state: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Extract the apply-time authority already confirmed before pyinfra.
+
+    Provisioning convergence may create missing infrastructure, but it does
+    not authorize a concurrent change to release, schema, protection, or
+    scheduled-helper authority.  Preserve legacy injected tests that do not
+    provide host authority by returning ``None`` for that narrow seam.
+    """
+
+    if not isinstance(starting_state, Mapping):
+        return None
+    authority = starting_state.get("host_authority")
+    if not isinstance(authority, Mapping):
+        return None
+    required = {
+        "selected_release_id",
+        "last_successful_selection_id",
+        "applied_migrations",
+        "backup_protection_sha256",
+        "scheduled_backup_sha256",
+        "backup_timer_enabled",
+        "downgrade_baseline_sha256",
+    }
+    if not required.issubset(authority):
+        return None
+    return {key: authority[key] for key in required}
 
 
 def _downgrade_acknowledgment(

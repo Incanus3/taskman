@@ -498,6 +498,78 @@ def test_provision_preserves_the_confirmed_preconvergence_snapshot_through_genes
     assert result.facts["starting_state"] == received["starting_state"]
 
 
+@dataclass(frozen=True)
+class _ObservedProvisionResources:
+    reused: tuple[str, ...]
+    converged: tuple[str, ...]
+    database_state: str
+
+
+def test_provision_binds_dataclass_resource_authority_and_full_host_snapshot_into_plan() -> None:
+    """The confirmed transaction must not lose real discovery dataclass facts."""
+
+    host = Host()
+    presented: list[dict[str, object]] = []
+    authority = {
+        "authority": "validated",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "last_successful_selection": None,
+        "previous_successful_selection": None,
+        "applied_migrations": (),
+        "service_state": "stopped",
+        "database_state": "ready",
+        "backup_protections": (),
+        "independently_held_backup_ids": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "backup_timer_state": "inactive",
+        "downgrade_baseline_sha256": "b" * 64,
+        "installed_release_count": 0,
+        "installed_release_sha256": "c" * 64,
+    }
+    resources = _ObservedProvisionResources(("/etc/taskman",), ("taskman.service",), "empty")
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda *_args, **_kwargs: resources,
+            "preflight": lambda *_args: authority,
+            "present_plan": lambda plan: presented.append(dict(plan)),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert presented[0]["starting_state"]["host_authority"] == authority
+    assert presented[0]["starting_state"]["resource_authority"] == {
+        "reused": ("/etc/taskman",),
+        "converged": ("taskman.service",),
+        "database_state": "empty",
+    }
+    assert result.facts["starting_state"] == presented[0]["starting_state"]
+
+
+def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_before_release() -> None:
+    """A post-confirmation provisioning error cannot erase the authorized plan."""
+
+    host = Host()
+
+    def refuse(*_args: object) -> ChangeSet:
+        raise OpsError(ExitStatus.SAFETY, "pyinfra", "resource drift", changed=False)
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, provisioning=refuse),
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.facts["starting_state"] == {
+        "authority": "validated",
+        "candidate_release_id": artifact().manifest.release_id,
+    }
+
+
 def test_provision_discards_a_drifted_plan_and_repeats_authority_before_convergence() -> None:
     """A post-confirmation resource change must receive a new material plan."""
 
@@ -522,6 +594,61 @@ def test_provision_discards_a_drifted_plan_and_repeats_authority_before_converge
     assert result.exit_status is ExitStatus.OK
     assert len(presented) == 2
     assert host.events == ["plan", "plan", "provisioning"]
+
+
+def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed clean checkout cannot reuse its pre-discovery identity."""
+
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    old_inputs = object()
+    fresh_inputs = object()
+    identified = iter((old_inputs, fresh_inputs))
+    matches = iter((True, False, True, True))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "target_resolution": lambda _remote, _config, _invocation, inputs: resolved.append(inputs) or artifact(),
+        }
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.OK
+    assert resolved == [old_inputs, old_inputs, fresh_inputs, fresh_inputs]
+    assert host.events.count("plan") == 2
+    assert host.events.count("provisioning") == 1
+
+
+def test_provision_yes_refuses_clean_input_drift_before_pyinfra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--yes` cannot silently authorize a different clean source snapshot."""
+
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: object())
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: False, raising=False)
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "target_resolution": lambda *_args: artifact(),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert "provisioning" not in host.events
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

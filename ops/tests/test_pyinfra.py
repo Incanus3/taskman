@@ -85,6 +85,7 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
         lambda *_args, **_kwargs: artifact(),
     )
     monkeypatch.setattr(workflow, "identify_clean_inputs", lambda *_args: object())
+    monkeypatch.setattr(workflow, "clean_inputs_match", lambda *_args: True)
     monkeypatch.setattr(workflow, "render_runtime_environment", lambda _config, _secrets: b"RUNTIME=value\n")
     monkeypatch.setattr(workflow, "render_pgpass", lambda _config, _secrets: b"pgpass\n")
     monkeypatch.setattr(workflow, "build_caddy_plan", lambda _config: _CADDY_PLAN)
