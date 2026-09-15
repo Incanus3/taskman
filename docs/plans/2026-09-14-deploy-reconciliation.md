@@ -574,7 +574,8 @@ the reconciliation specification status/checklist, and affected handoffs after e
 implemented behavior. Keep detailed acceptance evidence in `tas-sr4b.11`; durable operator semantics
 belong in the design/runbook. Do not create a second architecture narrative.
 
-- [x] Have a distinct verifier trace the public entry paths and actual record/DB consequences against
+- [ ] Address the reopened final whole-branch review corrections, then have a distinct verifier trace
+  the public entry paths and actual record/DB consequences against
   every acceptance family below. Reproduce focused checks independently; identify untested or
   simulated boundaries explicitly. Fix scoped findings, then reverify changed boundaries.
 - [x] Run the required local gates from the repository root. On the final committed implementation,

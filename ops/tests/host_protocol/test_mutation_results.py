@@ -133,6 +133,28 @@ def test_failed_verification_retains_the_attempted_report() -> None:
         validate_mutation_state("deploy", "retryable", {**state, "report": None})
 
 
+def test_lifecycle_verification_failure_retains_exit_eight_report() -> None:
+    """A failed lifecycle check uses the release boundary, not readiness exit 9."""
+
+    lifecycle_report = report(successful=True)
+    lifecycle_report.update(
+        status="failed",
+        exit_status=8,
+        checks=[
+            {**check, "status": "failed" if index == 0 else "passed"}
+            for index, check in enumerate(lifecycle_report["checks"][:5])
+        ],
+        next_action="inspect the fixed verification summaries and correct the reported host state before retrying",
+    )
+    state = deploy_state(
+        exit_code=8,
+        failed_boundary="verification",
+        verification_report=lifecycle_report,
+    )
+
+    assert validate_mutation_state("deploy", "retryable", state)["report"] == lifecycle_report
+
+
 def test_passing_report_survives_a_later_history_failure() -> None:
     """A history error after readiness must not erase the earlier passing proof."""
 

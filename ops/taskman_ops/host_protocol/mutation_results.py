@@ -109,7 +109,7 @@ _EXIT_CODES_BY_BOUNDARY = {
     "migration": frozenset({7}),
     "selection": frozenset({8}),
     "service": frozenset({8}),
-    "verification": frozenset({9}),
+    "verification": frozenset({8, 9}),
     "history": frozenset({8}),
     "restore": frozenset({11}),
     "cleanup": frozenset({10}),
@@ -209,7 +209,7 @@ def validate_mutation_state(
             verification_report is None
             and operation != "restore"
             or verification_report is not None
-            and verification_report["exit_status"] != 9
+            and verification_report["exit_status"] not in {8, 9}
         ):
             raise ProtocolError("verification failure requires its failed report")
     if verification_report is not None and verification_report["status"] == "failed":

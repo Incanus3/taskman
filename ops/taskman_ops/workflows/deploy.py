@@ -42,6 +42,7 @@ from .operational_preflight import validate_operational_preflight
 
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
+_MAX_CLEAN_INPUT_RERESOLUTIONS = 3
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ def deploy(
         else DeploymentTarget(artifact=target, release_record=None, source="explicit")
     )
     candidate = deployment_target.release_id
+    clean_reresolutions = 0
     try:
         if manual_adoption_confirmed:
             raise _safety("manual lifecycle adoption is not part of replayable deployment")
@@ -193,12 +195,13 @@ def deploy(
                         next_action="review the redacted deployment plan and rerun without --dry-run only after confirmation",
                     )
                 if clean_inputs is not None and repo is not None and not clean_inputs_match(repo, clean_inputs):
-                    if yes:
-                        raise _safety("clean deployment inputs changed; rerun to acknowledge the refreshed plan")
                     if refresh_clean_target is None:
                         raise _safety("automatic clean source inputs changed before confirmation")
+                    if clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
+                        raise _safety("clean deployment inputs did not stabilize while preparing a plan")
                     deployment_target, clean_inputs = refresh_clean_target()
                     candidate = deployment_target.release_id
+                    clean_reresolutions += 1
                     continue
                 if interactive:
                     (present_plan or _present_plan)(plan)

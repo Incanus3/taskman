@@ -409,6 +409,7 @@ def run_deployment_request(
     artifact = target.artifact
     upload: Path | None = None
     scheduler_upload: Path | None = None
+    upload_cleanup_warning = False
     helper_value = dict(backup_helper)
     if artifact is not None:
         upload = upload_root / f".upload-{artifact.manifest.release_id}-{correlation_id}.tar.gz"
@@ -427,6 +428,7 @@ def run_deployment_request(
             receipt = remote.put(artifact.archive, upload, mode=0o600, sensitive=True)
             if not isinstance(receipt, UploadReceipt):
                 raise _safety("deploy", "release upload returned an invalid receipt")
+            upload_cleanup_warning = receipt.cleanup_warning
             target_value: dict[str, object] = {
                 "kind": "upload",
                 "manifest": artifact.manifest.to_mapping(),
@@ -450,6 +452,7 @@ def run_deployment_request(
             )
             if not isinstance(scheduler_receipt, UploadReceipt):
                 raise _safety("deploy", "scheduler helper upload returned an invalid receipt")
+            upload_cleanup_warning = upload_cleanup_warning or scheduler_receipt.cleanup_warning
             helper_value["upload_path"] = scheduler_upload.as_posix()
         request_value = HostRequest(
             protocol_version=PROTOCOL_VERSION,
@@ -468,25 +471,20 @@ def run_deployment_request(
             },
         )
         result = run_request(remote, request_value, package=package, invoker=invoker)
+        upload_cleanup_warning = _remove_finalized_uploads(
+            remote, (upload, scheduler_upload)
+        ) or upload_cleanup_warning
         return (
             merge_result_warning(result, "transient upload cleanup was incomplete")
-            if receipt.cleanup_warning
+            if upload_cleanup_warning
             else result
         )
     except HelperTransportError as error:
         # The uploaded archive is only removed when the runner proves helper
         # entry never started.  No residue path or recovery command crosses
         # the final result boundary.
-        if error.helper_entry_dispatched is False and upload is not None:
-            try:
-                remote.run(("rm", "-f", "--", upload.as_posix()), sudo=True, sensitive=True)
-            except Exception:
-                pass
-            if scheduler_upload is not None:
-                try:
-                    remote.run(("rm", "-f", "--", scheduler_upload.as_posix()), sudo=True, sensitive=True)
-                except Exception:
-                    pass
+        if error.helper_entry_dispatched is False:
+            _remove_finalized_uploads(remote, (upload, scheduler_upload))
         raise
 
 
@@ -527,6 +525,7 @@ def run_restore_request(
     if marker not in {None, "pending-controller-upload"}:
         raise ValueError("restore backup helper upload marker is invalid")
     scheduler_upload: Path | None = None
+    upload_cleanup_warning = False
     try:
         if marker is not None:
             if backup_helper_package is None or helper_value["sha256"] != backup_helper_package.sha256:
@@ -542,17 +541,24 @@ def run_restore_request(
             )
             if not isinstance(receipt, UploadReceipt):
                 raise _safety("restore", "scheduler helper upload returned an invalid receipt")
+            upload_cleanup_warning = receipt.cleanup_warning
             helper_value["upload_path"] = scheduler_upload.as_posix()
         dispatched = replace(
             request,
             parameters={**request.parameters, "backup_helper": helper_value},
         )
-        return run_request(
+        result = run_request(
             remote,
             dispatched,
             package=package,
             invoker=invoker,
             prior_mutation_state=prior_mutation_state,
+        )
+        upload_cleanup_warning = _remove_finalized_uploads(remote, (scheduler_upload,)) or upload_cleanup_warning
+        return (
+            merge_result_warning(result, "transient upload cleanup was incomplete")
+            if upload_cleanup_warning
+            else result
         )
     except HelperTransportError as error:
         if error.helper_entry_dispatched is False and scheduler_upload is not None:
@@ -565,6 +571,22 @@ def run_restore_request(
             except Exception:
                 pass
         raise
+
+
+def _remove_finalized_uploads(remote: Remote, uploads: tuple[Path | None, ...]) -> bool:
+    """Remove controller-staged bytes after a final helper result without changing it."""
+
+    incomplete = False
+    for upload in uploads:
+        if upload is None:
+            continue
+        try:
+            removed = remote.run(("rm", "-f", "--", upload.as_posix()), sudo=True, sensitive=True)
+            if not getattr(removed, "succeeded", False):
+                incomplete = True
+        except Exception:
+            incomplete = True
+    return incomplete
 
 
 def _valid_deployment_expected_state(value: object) -> bool:

@@ -396,6 +396,16 @@ def test_verify_artifact_returns_the_detached_checksum_for_a_safe_release_layout
     assert verified.checksum == checksum
 
 
+def test_verify_artifact_accepts_a_contained_relative_symlink(tmp_path: Path) -> None:
+    """Normal release symlinks remain supported when every component stays below taskman/."""
+    archive = write_release_archive(
+        tmp_path, extra=("taskman/lib/current", tarfile.SYMTYPE, b"target")
+    )
+    manifest, checksum = write_manifest_bundle(tmp_path, archive)
+
+    assert verify_artifact(archive, manifest, checksum).archive == archive
+
+
 @pytest.mark.parametrize(
     "checksum_text",
     [
@@ -426,6 +436,7 @@ def test_verify_artifact_refuses_malformed_or_mismatched_detached_checksums(
         ("taskman/../../outside", tarfile.REGTYPE, None),
         ("other/readme", tarfile.REGTYPE, None),
         ("taskman/bin/escape", tarfile.SYMTYPE, b"../../outside"),
+        ("taskman/bin/escape", tarfile.SYMTYPE, b"../lib/inside"),
         ("taskman/bin/escape", tarfile.LNKTYPE, b"../outside"),
         ("taskman/device", tarfile.CHRTYPE, None),
     ],
@@ -439,6 +450,35 @@ def test_verify_artifact_rejects_unsafe_members_before_any_extraction(
     with pytest.raises(OpsError) as raised:
         verify_artifact(archive, manifest, checksum)
 
+    assert raised.value.status is ExitStatus.INVALID
+
+
+def test_verify_artifact_requires_gzip_and_shared_member_budget(tmp_path: Path, monkeypatch) -> None:
+    """Local admission must not accept an archive the host staging boundary rejects."""
+    import taskman_ops.releases.manifests as manifests_module
+
+    archive = write_release_archive(tmp_path)
+    manifest, checksum = write_manifest_bundle(tmp_path, archive)
+    for limit in ("MAX_RELEASE_ARCHIVE_MEMBERS", "MAX_RELEASE_ARCHIVE_BYTES", "MAX_RELEASE_EXPANDED_BYTES"):
+        with monkeypatch.context() as patched:
+            patched.setattr(manifests_module, limit, 1)
+            with pytest.raises(OpsError) as raised:
+                verify_artifact(archive, manifest, checksum)
+        assert raised.value.status is ExitStatus.INVALID
+
+    uncompressed = tmp_path / "uncompressed.tar.gz"
+    with tarfile.open(uncompressed, "w") as archive_file:
+        add_directory(archive_file, "taskman")
+        add_directory(archive_file, "taskman/bin")
+        add_directory(archive_file, "taskman/lib")
+        add_directory(archive_file, "taskman/releases")
+        add_directory(archive_file, "taskman/erts-16.0")
+        for launcher in ("taskman", "server", "migrate", "create-admin"):
+            add_file(archive_file, f"taskman/bin/{launcher}")
+    manifest, checksum = write_manifest_bundle(tmp_path, uncompressed)
+
+    with pytest.raises(OpsError) as raised:
+        verify_artifact(uncompressed, manifest, checksum)
     assert raised.value.status is ExitStatus.INVALID
 
 

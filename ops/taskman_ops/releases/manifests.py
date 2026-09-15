@@ -40,6 +40,9 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_MIGRATIONS = 256
 MAX_MIGRATION_FILENAME_BYTES = 255
+MAX_RELEASE_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_RELEASE_EXPANDED_BYTES = 10 * 1024 * 1024 * 1024
+MAX_RELEASE_ARCHIVE_MEMBERS = 16_384
 MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 _CHECKSUM_LINE_RE = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)\n\Z")
 _ERTS_DIRECTORY_RE = re.compile(r"taskman/erts-[0-9][A-Za-z0-9._-]*\Z")
@@ -381,6 +384,8 @@ def _member_parts(name: object) -> tuple[str, ...]:
 def _symlink_target(parts: tuple[str, ...], linkname: object) -> tuple[str, ...]:
     if not isinstance(linkname, str) or not linkname or linkname.startswith("/") or "\\" in linkname:
         raise _artifact_error("unsafe archive link")
+    if ".." in linkname.split("/"):
+        raise _artifact_error("unsafe archive link")
     target = list(parts[:-1])
     for part in linkname.split("/"):
         if part in {"", "."}:
@@ -400,9 +405,33 @@ def _hardlink_target(linkname: object) -> tuple[str, ...]:
     return _member_parts(linkname)
 
 
+def validate_release_archive_members(members: object) -> None:
+    """Apply the shared host/local archive safety and resource bounds."""
+
+    if not isinstance(members, list) or not members or len(members) > MAX_RELEASE_ARCHIVE_MEMBERS:
+        raise _artifact_error("release archive inventory is invalid")
+    expanded = 0
+    for member in members:
+        if not isinstance(member, tarfile.TarInfo):
+            raise _artifact_error("unsupported archive member")
+        parts = _member_parts(member.name)
+        if member.isdev() or member.isfifo() or member.islnk() or not (
+            member.isdir() or member.isreg() or member.issym()
+        ):
+            raise _artifact_error("unsupported archive member")
+        if member.issym():
+            _symlink_target(parts, member.linkname)
+        if member.isreg():
+            if type(member.size) is not int or member.size < 0:
+                raise _artifact_error("release archive expanded size is unsafe")
+            expanded += member.size
+            if expanded > MAX_RELEASE_EXPANDED_BYTES:
+                raise _artifact_error("release archive expanded size is unsafe")
+
+
 def _inspect_archive(path: Path) -> None:
     try:
-        archive = tarfile.open(path, mode="r:*")
+        archive = tarfile.open(path, mode="r:gz")
     except (OSError, tarfile.TarError):
         raise _artifact_error("invalid release archive") from None
     with archive:
@@ -410,8 +439,7 @@ def _inspect_archive(path: Path) -> None:
             members = archive.getmembers()
         except tarfile.TarError:
             raise _artifact_error("invalid release archive") from None
-        if not members:
-            raise _artifact_error("release archive is empty")
+        validate_release_archive_members(members)
         names: set[str] = set()
         directories: set[str] = set()
         files: dict[str, tarfile.TarInfo] = {}
@@ -422,8 +450,6 @@ def _inspect_archive(path: Path) -> None:
             if member.name in names:
                 raise _artifact_error("duplicate archive member")
             names.add(member.name)
-            if member.isdev() or member.isfifo() or not (member.isdir() or member.isreg() or member.issym() or member.islnk()):
-                raise _artifact_error("unsupported archive member")
             if member.mode & 0o022:
                 raise _artifact_error("archive member is group or world writable")
             if len(parts) >= 2:
@@ -432,10 +458,6 @@ def _inspect_archive(path: Path) -> None:
                     raise _artifact_error("release archive has an unrecognized runtime root child")
                 if _ERTS_ROOT_CHILD_RE.fullmatch(root_child) is not None:
                     erts_root_children.add(root_child)
-            if member.issym():
-                _symlink_target(parts, member.linkname)
-            elif member.islnk():
-                _hardlink_target(member.linkname)
             if member.isdir():
                 directories.add(member.name)
                 if _ERTS_DIRECTORY_RE.fullmatch(member.name) is not None:
@@ -456,8 +478,13 @@ def verify_artifact(archive: Path, manifest: Path, checksum: Path) -> VerifiedAr
     archive = Path(archive)
     manifest = Path(manifest)
     checksum = Path(checksum)
-    if not archive.is_file() or not manifest.is_file() or not checksum.is_file():
+    if archive.is_symlink() or not archive.is_file() or not manifest.is_file() or not checksum.is_file():
         raise _artifact_error("artifact input is missing")
+    try:
+        if not 0 < archive.stat().st_size <= MAX_RELEASE_ARCHIVE_BYTES:
+            raise _artifact_error("release archive is oversized")
+    except OSError:
+        raise _artifact_error("unable to read release archive") from None
     expected_checksum = _read_detached_checksum(checksum, archive)
     try:
         actual_checksum = sha256_file(archive)
@@ -490,6 +517,9 @@ __all__ = [
     "HEX_VERSION",
     "MigrationFingerprint",
     "MAX_MANIFEST_BYTES",
+    "MAX_RELEASE_ARCHIVE_BYTES",
+    "MAX_RELEASE_ARCHIVE_MEMBERS",
+    "MAX_RELEASE_EXPANDED_BYTES",
     "MAX_MIGRATION_FILENAME_BYTES",
     "MAX_MIGRATIONS",
     "NODE_VERSION",
@@ -503,4 +533,5 @@ __all__ = [
     "manifest_from_json",
     "manifest_to_json",
     "verify_artifact",
+    "validate_release_archive_members",
 ]

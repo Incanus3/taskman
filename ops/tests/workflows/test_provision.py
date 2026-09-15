@@ -764,7 +764,7 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
     assert host.events.count("provisioning") == 1
 
 
-def test_provision_yes_refuses_clean_input_drift_before_pyinfra(
+def test_provision_yes_reresolves_clean_input_drift_before_pyinfra(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`--yes` cannot silently authorize a different clean source snapshot."""
@@ -772,12 +772,15 @@ def test_provision_yes_refuses_clean_input_drift_before_pyinfra(
     from taskman_ops.workflows import provision as provision_module
 
     host = Host()
-    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: object())
-    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: False, raising=False)
+    inputs = iter((object(), object()))
+    matches = iter((False, True, True))
+    resolved: list[object] = []
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(inputs))
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
     capabilities = ProvisionCapabilities(
         **{
             **_capabilities(host).__dict__,
-            "target_resolution": lambda *_args: artifact(),
+            "target_resolution": lambda *_args: resolved.append(_args[-1]) or artifact(),
         }
     )
 
@@ -785,8 +788,10 @@ def test_provision_yes_refuses_clean_input_drift_before_pyinfra(
         Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
     )
 
-    assert result.exit_status is ExitStatus.SAFETY
-    assert "provisioning" not in host.events
+    assert result.exit_status is ExitStatus.OK
+    assert resolved == [resolved[0], resolved[1], resolved[1]]
+    assert resolved[0] is not resolved[1]
+    assert host.events.count("provisioning") == 1
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

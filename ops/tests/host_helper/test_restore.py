@@ -565,6 +565,35 @@ def test_failed_or_lost_verification_preserves_original_binding_and_protection(l
     assert runtime.databases["retired"]["oid"] == 101
 
 
+def test_failed_lifecycle_verification_preserves_exit_eight_report(tmp_path, monkeypatch):
+    """The public restore result must preserve the helper's lifecycle exit category."""
+    paths, _source = _seed(tmp_path, protection=True)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+
+    def lifecycle_failure(request, **_kwargs):
+        report = successful_verification_report(TARGET)
+        checks = [dict(item) for item in report["checks"][:5]]
+        checks[0]["status"] = "failed"
+        report.update(
+            status="failed",
+            exit_status=8,
+            checks=checks,
+            next_action="inspect the fixed verification summaries and correct the reported host state before retrying",
+        )
+        return HostResult.for_request(request, "retryable", "failed", {"report": report})
+
+    monkeypatch.setattr(restore_module, "verify", lifecycle_failure)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "verification"
+    assert result.state["exit_code"] == 8
+    assert result.state["report"]["exit_status"] == 8
+    validate_mutation_state("restore", "retryable", result.state)
+
+
 def test_success_publication_interruption_retries_only_protection_and_database_cleanup(tmp_path, monkeypatch):
     paths, _source = _seed(tmp_path, protection=True)
     runtime = Runtime()

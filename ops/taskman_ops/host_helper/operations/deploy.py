@@ -16,7 +16,11 @@ import tarfile
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.host_protocol.mutation_results import unavailable_observations
-from taskman_ops.releases.manifests import ArtifactManifest
+from taskman_ops.releases.manifests import (
+    ArtifactManifest,
+    MAX_RELEASE_ARCHIVE_BYTES,
+    validate_release_archive_members,
+)
 from taskman_ops.releases.identifiers import validate_release_id
 
 from ..commands import CommandError, run_command
@@ -74,9 +78,6 @@ _EXPECTED_STATE = frozenset({
 })
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SELECTION_FILENAME_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
-_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_EXPANDED_ARCHIVE_BYTES = 10 * 1024 * 1024 * 1024
-_MAX_ARCHIVE_MEMBERS = 16_384
 _LOCK_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 60.0
 _RUNTIME_ENVIRONMENT = Path("/etc/taskman/taskman.env")
@@ -1042,7 +1043,7 @@ def _safe_artifact(inputs: _Inputs) -> None:
         or not stat.S_ISREG(details.st_mode)
         or details.st_uid != os.geteuid()
         or stat.S_IMODE(details.st_mode) != 0o600
-        or not 0 < details.st_size <= _MAX_ARCHIVE_BYTES
+        or not 0 < details.st_size <= MAX_RELEASE_ARCHIVE_BYTES
         or sha256_file(inputs.artifact_path) != inputs.artifact_sha256
     ):
         raise ValueError("deployment artifact is unsafe")
@@ -1097,27 +1098,10 @@ def _extract_release(archive: Path, destination: Path) -> None:
 
 
 def _validate_archive_members(members: list[tarfile.TarInfo]) -> None:
-    if not members or len(members) > _MAX_ARCHIVE_MEMBERS:
-        raise ValueError("release archive inventory is invalid")
-    expanded = 0
-    for member in members:
-        target = PurePosixPath(member.name)
-        if (
-            target.is_absolute()
-            or not target.parts
-            or target.parts[0] != "taskman"
-            or ".." in target.parts
-            or member.isdev()
-            or member.isfifo()
-            or member.islnk()
-        ):
-            raise ValueError("release archive member is unsafe")
-        if member.issym() and (PurePosixPath(member.linkname).is_absolute() or ".." in PurePosixPath(member.linkname).parts):
-            raise ValueError("release archive link is unsafe")
-        if member.isfile():
-            expanded += member.size
-            if expanded > _MAX_EXPANDED_ARCHIVE_BYTES:
-                raise ValueError("release archive expanded size is unsafe")
+    try:
+        validate_release_archive_members(members)
+    except OpsError as error:
+        raise ValueError("release archive inventory is unsafe") from error
 
 
 def _validate_release_tree(path: Path) -> None:
@@ -1259,7 +1243,7 @@ def _result(
             "selection": 8,
             "start": 8,
             "service": 8,
-            "verification": 9,
+            "verification": _verification_exit_code(report),
             "history": 8,
             "observation": 5,
             "inspection": 5,
@@ -1311,6 +1295,16 @@ def _requested_release_id(request: HostRequest) -> str | None:
     except (KeyError, TypeError, ValueError, RecordError):
         pass
     return None
+
+
+def _verification_exit_code(report: object) -> int:
+    """Keep a validated lifecycle/readiness report's exact failure category."""
+
+    if isinstance(report, Mapping) and type(report.get("exit_status")) is int:
+        status = report["exit_status"]
+        if status in {8, 9}:
+            return status
+    return 9
 
 
 def _mutable(value: object) -> object:

@@ -337,9 +337,11 @@ without reconstructing an archive or requiring a surviving local artifact.
 Dirty automatic resolution freezes tracked and nonignored untracked files, honoring deletions and
 excluding ignored files, repository metadata and controller state. Unsafe member types and changes
 during capture refuse. It builds before exact identity is known; matching a base revision cannot
-substitute for dirty bytes. Clean-source drift invalidates an automatic target before confirmation
-or execution: interactive execution resolves again, while unattended execution refuses for a new
-invocation. A frozen dirty target does not follow later worktree edits.
+substitute for dirty bytes. Before confirmation, clean-source drift discards an automatic target
+and repeats clean input identification, host discovery, resolution, planning, and confirmation,
+including under `--yes`; a bounded unstable source refusal prevents an unending retry. After
+confirmation, source or material host drift refuses a new invocation rather than silently adopting
+a different target. A frozen dirty target does not follow later worktree edits.
 
 ## Provisioning and admission
 

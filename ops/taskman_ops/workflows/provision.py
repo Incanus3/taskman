@@ -58,6 +58,7 @@ _ACCEPTANCE_STEPS: AcceptanceSteps = (
     "verify a LiveView route remains connected",
     "copy a verified local backup off-host",
 )
+_MAX_CLEAN_INPUT_RERESOLUTIONS = 3
 
 
 class ProvisionDiscovery(Protocol):
@@ -154,6 +155,7 @@ def provision(
     remote = cap.connect(config)
     confirmed_starting_state: dict[str, object] | None = None
     warnings: tuple[str, ...] = ()
+    clean_reresolutions = 0
     try:
         while True:
             # Discovery is a complete immutable snapshot.  It must precede every
@@ -172,15 +174,16 @@ def provision(
                 # target has no independent identity until the source inputs
                 # are freshly re-identified.  A previous confirmation cannot
                 # authorize whichever checkout happens to be present now.
-                if yes or _noninteractive(invocation):
+                if clean_reresolutions >= _MAX_CLEAN_INPUT_RERESOLUTIONS:
                     raise OpsError(
                         ExitStatus.SAFETY,
                         "provision",
-                        "clean provisioning inputs changed; rerun to acknowledge the refreshed plan",
+                        "clean provisioning inputs did not stabilize while preparing a plan",
                         changed=False,
-                        next_action="restore the intended clean checkout and rerun provision to review a new plan",
+                        next_action="restore a stable intended clean checkout and rerun provision",
                     )
                 clean_inputs = identify_clean_inputs(_repository_root())
+                clean_reresolutions += 1
                 continue
             authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
             warnings = merge_warnings(warnings, tuple(getattr(authority, "warnings", ())))

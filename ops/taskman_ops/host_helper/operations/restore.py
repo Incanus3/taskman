@@ -1223,7 +1223,7 @@ def _result(
             "lock": 12,
             "backup_helper": 8,
             "backup": 6,
-            "verification": 9,
+            "verification": _verification_exit_code(report),
             "history": 11,
             "selection": 8,
             "service": 8,
@@ -1244,6 +1244,16 @@ def _result(
         "pre_restore_backup_id": pre_restore_backup_id,
     }
     return HostResult(PROTOCOL_VERSION, request.operation, request.correlation_id, outcome, message, facts, () if state is None else state.warnings)
+
+
+def _verification_exit_code(report: object) -> int:
+    """Keep a validated lifecycle/readiness report's exact failure category."""
+
+    if isinstance(report, Mapping) and type(report.get("exit_status")) is int:
+        status = report["exit_status"]
+        if status in {8, 9}:
+            return status
+    return 9
 
 
 __all__ = ["REPLACEMENT_RECONFIRM_MESSAGE", "restore"]

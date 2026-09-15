@@ -313,6 +313,57 @@ def test_deploy_preserves_unknown_lost_reply_evidence_in_the_public_failure(
     assert result.facts["selected_release_id"] == CANDIDATE
 
 
+@pytest.mark.parametrize("genesis", (False, True))
+def test_public_lifecycle_verification_failure_preserves_exit_eight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, genesis: bool
+) -> None:
+    """Deploy and genesis keep the helper's lifecycle report and release exit category."""
+    from taskman_ops.workflows.deploy import deploy, deploy_first_release
+
+    report = successful_verification_report(CANDIDATE)
+    checks = [dict(check) for check in report["checks"][:5]]
+    checks[0]["status"] = "failed"
+    report.update(
+        status="failed",
+        exit_status=8,
+        checks=checks,
+        next_action="inspect the fixed verification summaries and correct the reported host state before retrying",
+    )
+    helper_result = _success()
+    helper_result = HostResult(
+        helper_result.protocol_version,
+        "genesis" if genesis else helper_result.operation,
+        helper_result.correlation_id,
+        "retryable",
+        "lifecycle verification failed",
+        {**helper_result.state, "exit_code": 8, "failed_boundary": "verification", "report": report},
+        (),
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: helper_result
+    )
+
+    if genesis:
+        monkeypatch.setattr(
+            "taskman_ops.workflows.deploy._confirmed_expected_state",
+            lambda *_args, **_kwargs: {
+                **_EXPECTED,
+                "selected_release_id": None,
+                "last_successful_selection_id": None,
+                "scheduled_backup_sha256": None,
+            },
+        )
+        result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+    else:
+        result = deploy(
+            object(), config(), deployment_artifact(tmp_path), present_plan=lambda _plan: None, confirm=lambda _plan: True
+        )
+
+    assert result.exit_status is ExitStatus.RELEASE
+    assert result.facts["verification"]["exit_status"] == 8
+
+
 def test_clean_input_drift_reresolves_before_yes_mutates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -323,15 +374,25 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
     target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
     inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
     mutations: list[str] = []
+    refreshed: list[str] = []
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     matches = iter((False, True))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
     monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
 
-    result = deploy(object(), config(), target, repo=tmp_path, clean_inputs=inputs, yes=True, refresh_clean_target=lambda: (target, inputs))
+    result = deploy(
+        object(),
+        config(),
+        target,
+        repo=tmp_path,
+        clean_inputs=inputs,
+        yes=True,
+        refresh_clean_target=lambda: refreshed.append("resolved") or (target, inputs),
+    )
 
-    assert result.exit_status is ExitStatus.SAFETY
-    assert mutations == []
+    assert result.exit_status is ExitStatus.OK
+    assert refreshed == ["resolved"]
+    assert mutations == ["apply"]
 
 
 def test_apply_time_authority_drift_after_yes_requires_a_new_invocation(

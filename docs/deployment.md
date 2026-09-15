@@ -290,9 +290,11 @@ resolution builds before identity can be known; it does not reuse a base revisio
 identical bytes. Explicitly choosing a dirty artifact implies dirty-source allowance; adding
 `--allow-dirty` to an explicitly selected clean artifact is invalid.
 
-Automatic clean source inputs are rechecked before confirmation and execution. Interactive drift
-requires fresh resolution and confirmation; `--yes` refuses the drifted run and requires a new
-invocation. An already frozen dirty artifact remains the exact target of its plan.
+Automatic clean source inputs are rechecked before confirmation and execution. Before confirmation,
+drift discards the stale target and repeats clean-input identification, host discovery, resolution,
+and planning (including with `--yes`); repeated instability refuses. After a plan has been
+confirmed, any source or host-authority drift refuses and requires a new invocation, including
+under `--yes`. An already frozen dirty artifact remains the exact target of its plan.
 
 To retry exact bytes after a failure, pass the archive reported by that attempt:
 
