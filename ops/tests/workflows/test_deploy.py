@@ -124,6 +124,63 @@ def test_dry_run_observes_material_authority_but_does_not_need_confirmation_or_a
     assert observed == ["observed"]
 
 
+def test_first_release_binds_the_exact_fresh_expected_state_to_genesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provisioning must not fabricate a selected release or scheduler checksum."""
+
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    fresh = {
+        **_EXPECTED,
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "scheduled_backup_sha256": None,
+        "downgrade_baseline_sha256": "e" * 64,
+    }
+    captured: dict[str, object] = {}
+    genesis_result = _success()
+    genesis_result = HostResult(
+        genesis_result.protocol_version,
+        "genesis",
+        genesis_result.correlation_id,
+        genesis_result.outcome,
+        genesis_result.message,
+        genesis_result.state,
+        genesis_result.warnings,
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: fresh)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **kwargs: captured.update(kwargs) or genesis_result,
+    )
+
+    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+
+    assert captured["expected_state"] == fresh
+    assert captured["genesis"] is True
+    assert result.facts["starting_state"] == fresh
+
+
+def test_first_release_refuses_a_changed_target_after_durable_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provision is idempotent only for its exact completed genesis target."""
+
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: _EXPECTED)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("a changed completed target must require deploy"),
+    )
+
+    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
 def test_deploy_consumes_exact_v3_mutation_success_and_preserves_final_observations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

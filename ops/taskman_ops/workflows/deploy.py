@@ -263,20 +263,69 @@ def deploy(
         return _failure_result(config, error, candidate=candidate)
 
 
-def deploy_first_release(remote: Remote, config: EnvironmentConfig, artifact: VerifiedArtifact) -> WorkflowResult:
-    """Enter the same helper procedure with the first-release precondition."""
+def deploy_first_release(
+    remote: Remote,
+    config: EnvironmentConfig,
+    target: DeploymentTarget | VerifiedArtifact,
+    *,
+    migration_policy: str | None = None,
+    yes: bool = False,
+    allow_downgrade: bool = False,
+    dry_run: bool = False,
+) -> WorkflowResult:
+    """Run genesis only for an unfinished install or its exact durable replay."""
 
-    if not isinstance(config, EnvironmentConfig) or not isinstance(artifact, VerifiedArtifact):
-        raise TypeError("first release requires validated configuration and artifact")
-    policy = "no-change" if not artifact.manifest.migrations else "restore-required"
+    if not isinstance(config, EnvironmentConfig) or not isinstance(target, (DeploymentTarget, VerifiedArtifact)):
+        raise TypeError("first release requires validated configuration and target")
+    if not all(type(value) is bool for value in (yes, allow_downgrade, dry_run)):
+        raise TypeError("first release flags must be boolean")
+    deployment_target = (
+        target if isinstance(target, DeploymentTarget)
+        else DeploymentTarget(artifact=target, release_record=None, source="explicit")
+    )
+    candidate = deployment_target.release_id
     try:
-        target = DeploymentTarget(artifact=artifact, release_record=None, source="explicit")
-        expected_state = _confirmed_expected_state(remote, config)
+        expected_state = _confirmed_expected_state(remote, config, mode="provision")
+        current = expected_state["selected_release_id"]
+        if current not in {None, candidate}:
+            raise _safety("a completed installation requires deploy for a different release")
+        applied = tuple(expected_state["applied_migrations"])
+        pending = _pending_migration_versions(applied, deployment_target.manifest.migrations)
+        if migration_policy is None:
+            if applied:
+                raise OpsError(
+                    ExitStatus.INVALID,
+                    "provision",
+                    "partial initial migrations require --migration-policy backward-compatible",
+                    changed=False,
+                    next_action="review the initial schema and explicitly acknowledge backward-compatible migration continuation",
+                )
+            policy = "restore-required" if pending else "no-change"
+        else:
+            policy = migration_policy
+        if policy not in _POLICIES:
+            raise ValueError("first release requires a valid migration policy")
+        if not (not applied and pending and policy == "restore-required"):
+            _validate_migration_policy(applied, deployment_target.manifest.migrations, policy)
+        if dry_run:
+            return WorkflowResult(
+                "deploy",
+                config.name or "",
+                False,
+                "planned",
+                {
+                    "candidate_release_id": candidate,
+                    "migration_policy": policy,
+                    "starting_state": dict(expected_state),
+                    "artifact_source": deployment_target.source,
+                },
+                next_action="review the redacted provisioning plan and rerun without --dry-run after confirmation",
+            )
         with temporary_scheduled_backup_helper_package() as scheduler_package:
             result = run_deployment_request(
                 remote,
                 config,
-                target,
+                deployment_target,
                 expected_state=expected_state,
                 migration_policy=policy,
                 backup_helper={
@@ -295,14 +344,15 @@ def deploy_first_release(remote: Remote, config: EnvironmentConfig, artifact: Ve
             raise result_error(result)
         return _payload_result(
             config,
-            artifact.manifest.release_id,
+            candidate,
             policy,
             result,
             previous_release_id=None,
             genesis=True,
+            starting_state=expected_state,
         )
     except OpsError as error:
-        return _failure_result(config, error, candidate=artifact.manifest.release_id, genesis=True)
+        return _failure_result(config, error, candidate=candidate, genesis=True)
 
 
 def _planning_authority(
@@ -344,10 +394,12 @@ def _planning_authority(
     return previous, migrations, applied
 
 
-def _confirmed_expected_state(remote: Remote, config: EnvironmentConfig) -> dict[str, object]:
+def _confirmed_expected_state(
+    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy"
+) -> dict[str, object]:
     """Reobserve exactly the material deploy facts immediately before apply."""
 
-    result = run_request(remote, discovery_request(config, mode="deploy"))
+    result = run_request(remote, discovery_request(config, mode=mode))
     if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
         raise _safety("deployment apply helper refused host state")
     state = mutable(result.state)
@@ -460,8 +512,16 @@ def _payload_result(
     *,
     previous_release_id: str | None,
     genesis: bool = False,
+    starting_state: Mapping[str, object] | None = None,
 ) -> WorkflowResult:
-    facts = _facts(result, candidate, policy, previous_release_id=previous_release_id, genesis=genesis)
+    facts = _facts(
+        result,
+        candidate,
+        policy,
+        previous_release_id=previous_release_id,
+        genesis=genesis,
+        starting_state=starting_state,
+    )
     changed = facts["changed"]
     assert isinstance(changed, bool)
     if not changed:
@@ -482,6 +542,7 @@ def _facts(
     *,
     previous_release_id: str | None,
     genesis: bool,
+    starting_state: Mapping[str, object] | None,
 ) -> dict[str, object]:
     try:
         evidence = mutation_result_facts(result)
@@ -498,6 +559,7 @@ def _facts(
         raise _safety("deployment helper returned invalid success evidence") from None
     changed = evidence["mutation_state"] != "unchanged"
     return {
+        "starting_state": None if starting_state is None else dict(starting_state),
         "changed": changed,
         "previous_release_id": None if genesis else previous_release_id,
         "candidate_release_id": candidate,

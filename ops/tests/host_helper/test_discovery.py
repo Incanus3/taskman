@@ -61,6 +61,7 @@ def _state(*, migrations: tuple[int, ...] = (20260905120000,)) -> HostState:
 def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> None:
     monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
     monkeypatch.setattr(discover_module, "observe_database_state", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_host_state", lambda *_args, **_kwargs: observed)
     monkeypatch.setattr(discover_module, "lifecycle_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
@@ -191,6 +192,31 @@ def test_deploy_discovery_projects_protection_scheduler_and_downgrade_digests(
     assert result.state["backup_timer_state"] == "active"
     assert "releases" not in result.state
     assert "backups" not in result.state
+
+
+def test_provision_discovery_uses_direct_empty_database_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing migration table is admissible only through the empty-schema proof."""
+
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        discover_module,
+        "observe_database_state",
+        lambda *_args: pytest.fail("provision must not require an existing migration table"),
+    )
+    monkeypatch.setattr(
+        discover_module,
+        "observe_database_state_or_empty",
+        lambda *_args: calls.append("empty-proof") or {"state": "ready", "applied_migrations": ()},
+    )
+
+    result = discover_module.discover(_request(mode="provision"))
+
+    assert result.outcome == "succeeded"
+    assert calls == ["empty-proof"]
 
 
 def test_deploy_discovery_bounds_history_to_the_protection_reference_intersection(

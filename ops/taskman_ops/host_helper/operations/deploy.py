@@ -396,14 +396,13 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
         value = request.expected_state[key]
         if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
             raise ValueError("invalid expected deployment digest")
-    if type(request.expected_state["scheduled_backup_sha256"]) is not str or _SHA256_RE.fullmatch(
-        request.expected_state["scheduled_backup_sha256"]
-    ) is None or type(request.expected_state["backup_timer_enabled"]) is not bool:
+    scheduler_sha256 = request.expected_state["scheduled_backup_sha256"]
+    if (
+        scheduler_sha256 is not None
+        and (type(scheduler_sha256) is not str or _SHA256_RE.fullmatch(scheduler_sha256) is None)
+    ) or type(request.expected_state["backup_timer_enabled"]) is not bool:
         raise ValueError("invalid expected backup scheduler state")
-    if first_release:
-        if previous is not None or expected_migrations:
-            raise ValueError("first release requires an empty confirmed host")
-    elif previous is None:
+    if not first_release and previous is None:
         raise ValueError("deploy requires a selected release")
 
     paths = ManagedPaths.from_mapping(request.paths)
@@ -440,6 +439,13 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     if type(policy) is not str or policy not in _POLICIES:
         raise ValueError("invalid migration policy")
     candidate_versions = _migration_versions_from_manifest(manifest)
+    if first_release:
+        if previous not in {None, record.release_id}:
+            raise ValueError("first release current must be the requested release")
+        if previous is not None and last_selection is None:
+            raise ValueError("first release current requires successful history")
+        if tuple(candidate_versions[: len(expected_migrations)]) != expected_migrations:
+            raise ValueError("first release schema is not a candidate prefix")
     _validate_migration_policy(expected_migrations, candidate_versions, policy, first_release=first_release)
     credentials = request.parameters["credentials_path"]
     if type(credentials) is not str or not Path(credentials).is_absolute():
@@ -498,7 +504,7 @@ def _validate_migration_policy(
 ) -> None:
     if policy == "no-change" and current == candidate:
         return
-    if policy == "backward-compatible" and not first_release and candidate[: len(current)] == current:
+    if policy == "backward-compatible" and candidate[: len(current)] == current:
         return
     if policy == "restore-required" and current != candidate:
         if first_release and not current:
@@ -587,7 +593,7 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
     candidate_staging = PurePosixPath(_staging_path(inputs).as_posix())
     if state.selected_release_id is None and not state.releases and not state.selections:
         if state.applied_migrations != inputs.expected_migrations:
-            raise DeploymentManualError("empty genesis records do not prove the observed schema")
+            raise DeploymentManualError("genesis records do not prove the observed schema")
         if any(path != candidate_staging for path in state.temporary_paths):
             raise DeploymentManualError("genesis staging is not attributable to the candidate")
         return
@@ -600,7 +606,6 @@ def _validate_genesis_starting_state(state: HostState, inputs: _Inputs) -> None:
         and state.releases == (inputs.candidate,)
         and not state.selections
         and state.applied_migrations == inputs.expected_migrations
-        and not state.applied_migrations
         and not state.temporary_paths
     ):
         return

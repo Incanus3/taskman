@@ -87,7 +87,7 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(
         workflow,
         "deploy_first_release",
-        lambda *_args: WorkflowResult(
+            lambda *_args, **_kwargs: WorkflowResult(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
         ),
     )

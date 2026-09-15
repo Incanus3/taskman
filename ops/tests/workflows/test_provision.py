@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+
 from tests.support.environments import environment_config
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
@@ -157,6 +159,51 @@ def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability(
     assert result.facts["release"]["backup_id"] is None
 
 
+def test_provision_passes_migration_and_acknowledgement_authority_to_genesis() -> None:
+    host = Host()
+    observed: dict[str, object] = {}
+
+    def genesis(_remote: object, _config: EnvironmentConfig, supplied: object, **kwargs: object) -> WorkflowResult:
+        observed.update(kwargs)
+        return WorkflowResult(
+            command="deploy", environment="production", changed=False, stage="already-current", facts={}
+        )
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "genesis": genesis})
+    result = provision(
+        Invocation(
+            command="provision",
+            environment="production",
+            migration_policy="backward-compatible",
+            yes=True,
+            allow_downgrade=True,
+        ),
+        capabilities=capabilities,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert observed == {
+        "migration_policy": "backward-compatible",
+        "yes": True,
+        "allow_downgrade": True,
+        "dry_run": False,
+    }
+
+
+def test_provision_yes_acknowledges_the_confirmed_resource_plan_without_prompting() -> None:
+    host = Host()
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True),
+        capabilities=_capabilities(
+            host,
+            confirm=lambda _plan: pytest.fail("--yes must not request another confirmation"),
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+
+
 def test_provision_returns_a_manual_genesis_result_without_reclassifying_it() -> None:
     host = Host()
 
@@ -215,7 +262,7 @@ def test_provision_release_failure_keeps_unchanged_when_provisioning_did_not_cha
     assert result.changed is False
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-refused"
-    assert result.facts == {"failure": "not-ready"}
+    assert result.facts == {"failure": "not-ready", "mutation_state": "unchanged"}
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect release state before retrying"
 
@@ -248,9 +295,37 @@ def test_provision_release_failure_retains_release_change_evidence() -> None:
     assert result.changed is True
     assert result.exit_status is ExitStatus.RELEASE
     assert result.stage == "release-incomplete"
-    assert result.facts == {"failure": "started"}
+    assert result.facts == {"failure": "started", "mutation_state": "changed"}
     assert result.warnings == ("release warning",)
     assert result.next_action == "inspect the partially deployed release before retrying"
+
+
+def test_provision_aggregates_convergence_mutation_before_unknown_genesis_result() -> None:
+    """A lost genesis reply must not erase an earlier proved host convergence."""
+
+    host = Host()
+
+    def release(_remote: object, _config: EnvironmentConfig, _artifact: object) -> WorkflowResult:
+        return WorkflowResult(
+            command="deploy",
+            environment="production",
+            changed=True,
+            stage="deployment-incomplete",
+            facts={
+                "mutation_state": "unknown",
+                "starting_state": {"selected_release_id": None},
+            },
+            exit_status=ExitStatus.RELEASE,
+        )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, release=release),
+    )
+
+    assert result.changed is True
+    assert result.facts["mutation_state"] == "changed"
+    assert result.facts["starting_state"] == {"selected_release_id": None}
 
 
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:

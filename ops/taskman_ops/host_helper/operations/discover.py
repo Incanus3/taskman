@@ -22,7 +22,12 @@ from taskman_ops.host_protocol import (
 from ..commands import CommandError
 from ...checksums import sha256_file
 from ..credentials import validate_credentials
-from ..database import database_mapping, observe_database_state, release_migration_versions
+from ..database import (
+    database_mapping,
+    observe_database_state,
+    observe_database_state_or_empty,
+    release_migration_versions,
+)
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..backup_protection import independent_backup_ids
 from ..paths import ManagedPaths, PathAuthorityError
@@ -130,7 +135,11 @@ def _observe(request: HostRequest) -> tuple[HostState, dict[str, object] | None]
             credentials_path = Path(credentials)
             validate_credentials(credentials_path)
             database = database_mapping(request.parameters["database"])
-            observation = observe_database_state(database, credentials_path)
+            observation = (
+                observe_database_state_or_empty(database, credentials_path)
+                if mode == "provision"
+                else observe_database_state(database, credentials_path)
+            )
             state = observe_host_state(
                 paths,
                 database=observation,

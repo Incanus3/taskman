@@ -78,6 +78,7 @@ class ProvisionCapabilities:
     provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
     release_deployment: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
+    genesis: Callable[..., WorkflowResult] | None = None
 
 
 def provision(
@@ -95,6 +96,7 @@ def provision(
 
     environment_name = _environment_name(invocation)
     dry_run = _dry_run(invocation)
+    yes = _yes(invocation)
     cap = capabilities or _default_capabilities()
 
     config = cap.load_environment(environment_name)
@@ -129,7 +131,7 @@ def provision(
                 next_action="review the redacted plan and rerun without --dry-run only after confirmation",
             ))
 
-        if not cap.confirm(plan):
+        if not yes and not cap.confirm(plan):
             return _close_result(remote, WorkflowResult(
                 command="provision",
                 environment=environment_name,
@@ -170,7 +172,19 @@ def provision(
         raise
 
     try:
-        release = cap.release_deployment(remote, config, artifact)
+        release = (
+            cap.genesis(
+                remote,
+                config,
+                artifact,
+                migration_policy=getattr(invocation, "migration_policy", None),
+                yes=yes,
+                allow_downgrade=getattr(invocation, "allow_downgrade", False),
+                dry_run=dry_run,
+            )
+            if cap.genesis is not None
+            else cap.release_deployment(remote, config, artifact)
+        )
     except BaseException:
         _close_remote(remote)
         raise
@@ -178,7 +192,21 @@ def provision(
     if release.exit_status is not ExitStatus.OK:
         return _close_result(
             remote,
-            replace(release, command="provision", changed=provisioning_changed or release.changed),
+            replace(
+                release,
+                command="provision",
+                changed=provisioning_changed or release.changed,
+                facts={
+                    **release.facts,
+                    "mutation_state": _aggregate_mutation_state(
+                        "changed" if provisioning_changed else "unchanged",
+                        release.facts.get(
+                            "mutation_state",
+                            "changed" if release.changed else "unchanged",
+                        ),
+                    ),
+                },
+            ),
         )
     return _close_result(remote, WorkflowResult(
         command="provision",
@@ -188,6 +216,12 @@ def provision(
         facts={
             "candidate_release_id": artifact.manifest.release_id,
             "provisioning_changed": provisioning_changed,
+            "mutation_state": _aggregate_mutation_state(
+                "changed" if provisioning_changed else "unchanged",
+                release.facts.get(
+                    "mutation_state", "changed" if release.changed else "unchanged"
+                ),
+            ),
             "release": _safe_result_facts(release),
             "verification": release.facts.get("verification", {}),
             "acceptance_steps": _ACCEPTANCE_STEPS,
@@ -223,6 +257,19 @@ def _dry_run(invocation: object) -> bool:
     return value
 
 
+def _yes(invocation: object) -> bool:
+    value = getattr(invocation, "yes", False)
+    if type(value) is not bool:
+        raise OpsError(
+            ExitStatus.INVALID,
+            "provision",
+            "provision confirmation flag must be boolean",
+            changed=False,
+            next_action="correct the provision command arguments and retry",
+        )
+    return value
+
+
 def _caddyfile_sha256(plan: CaddyPlan) -> str:
     """Bind later remote Caddy ownership checks to the rendered plan bytes."""
 
@@ -248,6 +295,7 @@ def _default_capabilities() -> ProvisionCapabilities:
         provisioning=converge_provisioning,
         caddy_plan=build_caddy_plan,
         release_deployment=deploy_first_release,
+        genesis=deploy_first_release,
     )
 
 
@@ -331,6 +379,18 @@ def _changed(result: object) -> bool:
     if isinstance(result, bool):
         return result
     raise TypeError("provisioning convergence must return ChangeSet, WorkflowResult, or bool")
+
+
+def _aggregate_mutation_state(*states: object) -> str:
+    """Retain proved provisioning consequences through a later genesis loss."""
+
+    if any(state not in {"unchanged", "changed", "unknown"} for state in states):
+        raise TypeError("provisioning mutation evidence is invalid")
+    if "changed" in states:
+        return "changed"
+    if "unknown" in states:
+        return "unknown"
+    return "unchanged"
 
 
 def _pre_release_failure(

@@ -986,6 +986,66 @@ def test_genesis_applies_initial_migrations_under_restore_required_without_a_bac
     assert runtime.events == ["migration", "start", "verify"]
 
 
+def test_genesis_accepts_missing_scheduler_checksum_for_first_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The initial scheduler is installed by the same confirmed genesis request."""
+
+    request = _request(tmp_path, operation="genesis", previous=None, migrations=(), policy="no-change")
+    request = HostRequest(
+        request.protocol_version,
+        request.operation,
+        request.correlation_id,
+        {**request.expected_state, "scheduled_backup_sha256": None},
+        request.paths,
+        request.parameters,
+    )
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(
+        deploy_module,
+        "_scheduler_facts",
+        lambda _paths: {
+            "scheduled_backup_sha256": None,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "inactive",
+        },
+    )
+
+    result = genesis(request)
+
+    assert result.outcome == "succeeded"
+
+
+def test_genesis_resumes_a_partial_initial_schema_only_with_backward_compatible_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unfinished initial install may continue only under an explicit policy."""
+
+    request = _request(
+        tmp_path,
+        operation="genesis",
+        previous=None,
+        applied_migrations=(20260905120000,),
+        migrations=(MIGRATION, SECOND_MIGRATION),
+        policy="backward-compatible",
+    )
+    runtime = _Runtime(
+        (20260905120000,),
+        migration_result=(20260905120000, 20260906120000),
+    )
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    assert result.outcome == "succeeded"
+    assert result.state["observations"]["applied_migrations"] == (
+        20260905120000,
+        20260906120000,
+    )
+    assert runtime.backup_calls == 0
+
+
 def test_genesis_replays_an_exact_staged_candidate_before_its_first_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
