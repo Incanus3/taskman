@@ -988,6 +988,8 @@ def _install_public_restore_controller(
     *,
     scheduler_failure: bool,
     state_family: str = "initial",
+    first_success: bool = False,
+    current_present: bool = True,
 ) -> tuple[EnvironmentConfig, Path, object, _ControllerRemote, Path]:
     """Keep public restore and the packaged helper real; replace only native effects."""
 
@@ -995,10 +997,38 @@ def _install_public_restore_controller(
     from taskman_ops.workflows import restore as restore_workflow
     from taskman_ops.workflows.operational_preflight import RestorePreflightFacts
 
+    from taskman_ops.host_helper.backup_protection import (
+        BackupProtection,
+        write_backup_protection,
+    )
     from taskman_ops.host_helper.records import SelectionRecord, append_selection
     from taskman_ops.host_helper.restore_target import replace_restore_target
 
     paths, source = host_restore_tests._seed(tmp_path / "public-restore")
+    if first_success:
+        selection_root = Path(paths.local(paths.selection_root))
+        for selection in selection_root.glob("*.json"):
+            selection.unlink()
+        current = Path(paths.local(paths.current_link))
+        if not current_present:
+            current.unlink()
+        protection = host_restore_tests._backup(
+            paths,
+            host_restore_tests.PROTECTION_BACKUP,
+            host_restore_tests.CURRENT,
+            b"unresolved null-baseline protection",
+        )
+        write_backup_protection(
+            paths,
+            BackupProtection(
+                1,
+                protection.backup_id,
+                None,
+                host_restore_tests.TARGET,
+                0,
+                datetime(2026, 9, 14, 11, tzinfo=UTC),
+            ),
+        )
     restore_databases = host_restore_tests.Runtime().observe_databases()
     target = None
     if state_family != "initial":
@@ -1205,6 +1235,114 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
             "events"
         ].index("binding-published")
         assert not binding.exists()
+
+
+@pytest.mark.parametrize("current_present", (True, False), ids=("current-present", "current-absent"))
+def test_public_packaged_restore_creates_first_success_from_null_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current_present: bool,
+) -> None:
+    """Dropping null-baseline reference transfer would lose pre-first-success recovery."""
+
+    from taskman_ops.host_helper.state import observe_host_state
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch,
+        tmp_path,
+        scheduler_failure=False,
+        first_success=True,
+        current_present=current_present,
+    )
+    safety_backup_id = "backup-" + f"{17:032x}"
+
+    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    state = observe_host_state(paths)
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert result.facts["starting_state"]["last_successful_selection_id"] is None
+    assert result.facts["starting_state"]["selected_release_id"] == (
+        host_restore_tests.CURRENT if current_present else None
+    )
+    assert runtime["events"].index("safety-backup") < runtime["events"].index(
+        "binding-published"
+    )
+    assert state.selected_release_id == host_restore_tests.TARGET
+    assert len(state.selections) == 1
+    selection = state.selections[0]
+    assert selection.release_id == host_restore_tests.TARGET
+    assert selection.previous_release_id is None
+    assert selection.observed_previous_release_id == (
+        host_restore_tests.CURRENT if current_present else None
+    )
+    assert selection.backup_id == safety_backup_id
+    assert set(selection.recovery_backup_ids) == {
+        source.backup_id,
+        host_restore_tests.PROTECTION_BACKUP,
+        safety_backup_id,
+    }
+    assert state.restore_target is None
+    assert state.backup_protections == ()
+    for backup_id in selection.recovery_backup_ids:
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.dump")).is_file()
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.json")).is_file()
+
+
+def test_public_packaged_null_baseline_restore_retries_after_lost_completion_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost post-completion reply must retain original recovery and avoid duplicate success."""
+
+    from taskman_ops.host_helper.state import observe_host_state
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch,
+        tmp_path,
+        scheduler_failure=False,
+        first_success=True,
+        current_present=True,
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["lose_restore_reply"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    interrupted = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    pending = observe_host_state(paths)
+    first_safety_backup_id = "backup-" + f"{17:032x}"
+    assert interrupted.exit_status is ExitStatus.SAFETY
+    assert interrupted.changed is True
+    assert interrupted.facts["mutation_state"] == "unknown"
+    assert len(pending.selections) == 1
+    assert pending.selections[0].previous_release_id is None
+    assert pending.selections[0].backup_id == first_safety_backup_id
+    assert runtime["restore_databases"]["canonical"]["oid"] != 101
+    assert runtime["restore_databases"]["temporary"] is None
+    for backup_id in (source.backup_id, host_restore_tests.PROTECTION_BACKUP, first_safety_backup_id):
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.dump")).is_file()
+        assert Path(paths.local(paths.backup_root / f"{backup_id}.json")).is_file()
+
+    retried = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    state = observe_host_state(paths)
+    assert retried.exit_status is ExitStatus.OK, retried.facts
+    assert len(state.selections) == 1
+    selection = state.selections[0]
+    assert selection.previous_release_id is None
+    assert selection.observed_previous_release_id == host_restore_tests.CURRENT
+    assert {source.backup_id, host_restore_tests.PROTECTION_BACKUP, first_safety_backup_id}.issubset(
+        selection.recovery_backup_ids
+    )
+    assert state.restore_target is None
+    assert state.backup_protections == ()
+    assert runtime["events"].count("safety-backup") == 1
+    assert runtime["events"].count("dump-loaded") == 1
+    assert runtime["restore_databases"]["retired"] is None
 
 
 @pytest.mark.parametrize(
