@@ -20,6 +20,7 @@ from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper import services as service_capability
 from taskman_ops.host_helper.operations.deploy import converge_deployment, deploy, genesis
+from taskman_ops.host_helper.backup_protection import BackupProtection
 from taskman_ops.host_helper.records import (
     BackupRecord,
     ReleaseRecord,
@@ -529,6 +530,150 @@ def test_deploy_rerun_keeps_a_healthy_complete_candidate_running(tmp_path: Path,
     assert result.outcome == "succeeded"
     assert result.state["mutation_state"] == "unchanged"
     assert runtime.events == ["backup", "stop", "migration", "start", "verify", "verify"]
+
+
+def test_genesis_scheduler_refresh_revalidates_the_first_release_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real helper refresh must revalidate the genesis admission under its lock."""
+
+    from taskman_ops.host_helper import backup_helper
+
+    request = _request(tmp_path, operation="genesis", previous=None, policy="restore-required")
+    request = replace(
+        request,
+        parameters={
+            **request.parameters,
+            "backup_helper": {
+                "sha256": "b" * 64,
+                "upload_path": str(Path(request.paths["install_root"]) / "deployments" / "uploads" / "backup.pyz"),
+            },
+        },
+    )
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    events: list[str] = []
+    monkeypatch.setattr(deploy_module, "converge_backup_helper", backup_helper.converge_backup_helper)
+    monkeypatch.setattr(deploy_module, "_validate_starting_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        deploy_module,
+        "_record_successful_selection",
+        lambda _inputs, state, backup: (state, False, backup),
+    )
+    monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: (True, "inactive"))
+    monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: events.append("pause"))
+    monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: events.append("restart"))
+    monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: events.append("wait"))
+    monkeypatch.setattr(backup_helper, "_verified_executable_checksum", lambda: "a" * 64)
+    monkeypatch.setattr(backup_helper, "_validate_upload", lambda *_args: events.append("validate"))
+    monkeypatch.setattr(backup_helper, "_replace_executable", lambda *_args: events.append("replace"))
+
+    result = genesis(request)
+
+    assert result.outcome == "succeeded", (result.message, result.state, events, runtime.events)
+    assert events == ["validate", "pause", "wait", "replace", "restart"]
+
+
+def test_partial_migration_history_uses_the_target_protected_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing a recovery backup's source must not discard its protection authority."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime(migrations=(20260905120000,))
+    _install_runtime(monkeypatch, runtime)
+    inputs = deploy_module._inputs(request, first_release=False)
+    state = deploy_module._observe(inputs)
+    backup = BackupRecord(
+        "backup-00000000000000000000000000000009",
+        datetime(2026, 9, 7, 12, tzinfo=UTC),
+        "e" * 64,
+        _candidate_id(request),
+        (20260905120000,),
+        1024,
+    )
+    protection = BackupProtection(
+        1,
+        backup.backup_id,
+        state.latest_successful_selection_filename,
+        _candidate_id(request),
+        1,
+        datetime(2026, 9, 7, 12, tzinfo=UTC),
+    )
+    state = replace(state, backups=(backup,), backup_protections=(protection,))
+
+    selected = deploy_module._selection_backup(inputs, state, None, None)
+
+    assert selected == backup
+
+
+def test_verified_start_is_retained_when_verification_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later verification failure must not erase evidence that the service started."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(
+        deploy_module,
+        "verify",
+        lambda verify_request, **_kwargs: HostResult(
+            PROTOCOL_VERSION, "verify", verify_request.correlation_id, "retryable", "failed", {"report": {"ok": False}}, ()
+        ),
+    )
+
+    result = deploy(request)
+
+    assert result.outcome == "retryable"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["report"] == {"ok": False}
+
+
+def test_confirmed_protection_pruning_finishes_before_another_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed prior retirement must stop before it creates another recovery point."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(
+        deploy_module,
+        "_finish_confirmed_pruning",
+        lambda *_args: (_ for _ in ()).throw(deploy_module.RecordError("retirement interrupted")),
+    )
+
+    result = deploy(request)
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "protection"
+    assert runtime.events == []
+
+
+def test_successful_history_failure_keeps_the_report_and_history_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Publication/reference-transfer is a history boundary after passing verification."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(
+        deploy_module,
+        "_append_selection_with_previous",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("history publication interrupted")),
+    )
+
+    result = deploy(request)
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "history"
+    assert result.state["report"] == {"ok": True}
 
 
 def test_deploy_reuses_an_installed_target_after_its_uploaded_archive_is_lost(

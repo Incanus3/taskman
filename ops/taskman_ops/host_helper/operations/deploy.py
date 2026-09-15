@@ -35,6 +35,7 @@ from ..operations.discover import _scheduler_facts
 from ..backup_helper import BackupHelperError, converge_backup_helper
 from ..backup_protection import (
     complete_successful_selection,
+    protection_prune_ids,
     register_backup_protection,
     retire_protection_attempts,
 )
@@ -163,7 +164,9 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                     inputs.backup_helper,
                     confirmed_checksum=request.expected_state["scheduled_backup_sha256"],
                     confirmed_enabled=request.expected_state["backup_timer_enabled"],
-                    revalidate=lambda: _validate_expected_state(_observe(inputs), inputs),
+                    revalidate=lambda: _validate_expected_state(
+                        _observe(inputs), inputs, first_release=first_release
+                    ),
                     timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
                     lock=lock,
                 )
@@ -175,7 +178,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             state, repaired_selection = _repair_recorded_selection(inputs, state)
             changed = changed or repaired_selection
             _validate_starting_state(state, inputs, first_release=first_release)
-            _normalize_staging(inputs)
+            changed = _normalize_staging(inputs) or changed
 
             staged = _stage_or_reuse(inputs, state)
             changed = changed or staged
@@ -186,6 +189,11 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             if migration_needed and not migration_done and not first_release:
                 if state.applied_migrations != inputs.expected_migrations:
                     raise DeploymentManualError("applied migrations do not identify a safe candidate transition")
+                try:
+                    _finish_confirmed_pruning(inputs, state)
+                    state = _observe(inputs)
+                except (RecordError, OSError, ValueError) as error:
+                    raise _RetryableError("protection") from error
                 try:
                     backup = create_validated_backup(
                         state,
@@ -206,12 +214,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                         target_release_id=inputs.candidate.release_id,
                     )
                     state = _observe(inputs)
-                    retire_protection_attempts(
-                        inputs.paths,
-                        state,
-                        state.latest_successful_selection_filename,
-                        inputs.prune_backup_ids,
-                    )
+                    _retire_newly_eligible_protections(inputs, state)
                     state = _observe(inputs)
                 except (RecordError, OSError, ValueError) as error:
                     raise _RetryableError("protection") from error
@@ -268,6 +271,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                     change_service("start")
                 except CommandError as error:
                     raise _RetryableError("start") from error
+                changed = True
             verification = _verify(request, inputs)
             report = verification.state.get("report") or None
             if verification.outcome != "succeeded":
@@ -705,7 +709,7 @@ def _record_successful_selection(
             selection_backup,
         )
     except (OSError, RecordError, ValueError) as error:
-        raise _RetryableError("selection") from error
+        raise _RetryableError("history") from error
     return (
         _observe(
             inputs,
@@ -735,22 +739,12 @@ def _selection_backup(
     migration_needed = inputs.expected_migrations != inputs.candidate_versions
     if not migration_needed:
         return None
-
-    predecessor = (
-        state.latest_successful_selection.release_id
-        if state.latest_successful_selection is not None
-        else inputs.previous_release_id
-    )
-    if predecessor is None:
+    if inputs.previous_release_id is None:
+        # Genesis has no predecessor database and therefore creates no
+        # pre-migration protection to transfer into its first history record.
         return None
 
-    candidates = tuple(
-        item
-        for item in state.backups
-        if item.source_release_id == predecessor
-        and item.migration_versions == inputs.expected_migrations
-    )
-    by_id = {item.backup_id: item for item in candidates}
+    by_id = {item.backup_id: item for item in state.backups}
     if recorded_backup_id is not None:
         try:
             return by_id[recorded_backup_id]
@@ -761,9 +755,64 @@ def _selection_backup(
             return by_id[local_backup.backup_id]
         except KeyError as error:
             raise DeploymentManualError("created backup is not present in completed state") from error
-    if len(candidates) != 1:
-        raise DeploymentManualError("migration backup cannot be recovered unambiguously")
-    return candidates[0]
+    protected = tuple(
+        protection
+        for protection in state.backup_protections
+        if protection.base_selection_id == state.latest_successful_selection_filename
+        and protection.target_release_id == inputs.candidate.release_id
+    )
+    if not protected:
+        raise DeploymentManualError("migration backup has no target protection authority")
+    newest = max(protected, key=lambda protection: protection.attempt_number)
+    try:
+        return by_id[newest.backup_id]
+    except KeyError as error:
+        raise DeploymentManualError("target-protected migration backup is unavailable") from error
+
+
+def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> None:
+    """Complete a prior confirmed retirement before creating another backup.
+
+    A previous interruption can leave active excess protections or durable
+    retirement markers.  The controller's exact confirmation is the only
+    authority to finish either state; never create another protection until it
+    has converged.
+    """
+
+    pending = tuple(state.retiring_backup_protections)
+    expected = (
+        tuple(sorted(item.backup_id for item in pending))
+        if pending
+        else protection_prune_ids(
+            state.backup_protections,
+            state.latest_successful_selection_filename,
+            independently_held_backup_ids=state.successful_backup_ids,
+        )
+    )
+    if expected:
+        retire_protection_attempts(
+            inputs.paths,
+            state,
+            state.latest_successful_selection_filename,
+            inputs.prune_backup_ids,
+        )
+
+
+def _retire_newly_eligible_protections(inputs: _Inputs, state: HostState) -> None:
+    """Retire only a sixth-attempt protection already named by the plan."""
+
+    eligible = protection_prune_ids(
+        state.backup_protections,
+        state.latest_successful_selection_filename,
+        independently_held_backup_ids=state.successful_backup_ids,
+    )
+    if eligible:
+        retire_protection_attempts(
+            inputs.paths,
+            state,
+            state.latest_successful_selection_filename,
+            inputs.prune_backup_ids,
+        )
 
 
 def _prepare_release_roots(paths: ManagedPaths) -> None:
@@ -782,10 +831,10 @@ def _prepare_release_roots(paths: ManagedPaths) -> None:
             raise DeploymentManualError("managed release directory is unsafe")
 
 
-def _normalize_staging(inputs: _Inputs) -> None:
+def _normalize_staging(inputs: _Inputs) -> bool:
     path = _staging_path(inputs)
     if not path.exists() and not path.is_symlink():
-        return
+        return False
     details = path.lstat()
     if (
         stat.S_ISLNK(details.st_mode)
@@ -794,8 +843,12 @@ def _normalize_staging(inputs: _Inputs) -> None:
         or details.st_mode & 0o7022
     ):
         raise DeploymentManualError("release staging directory is unsafe")
-    shutil.rmtree(path)
-    fsync_directory(path.parent)
+    try:
+        shutil.rmtree(path)
+        fsync_directory(path.parent)
+    except OSError as error:
+        raise _RetryableError("staging") from error
+    return True
 
 
 def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
