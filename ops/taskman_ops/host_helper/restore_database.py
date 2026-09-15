@@ -272,6 +272,40 @@ def drop_registered_temporary(
         raise RestoreDatabaseError("registered restore database OID remains after drop")
 
 
+def drop_registered_restored(
+    database: Mapping[str, object],
+    credentials: Path,
+    source_role: str,
+    expected_oid: int,
+) -> None:
+    """Drop one exact non-original restore database during target replacement."""
+
+    if source_role not in {"canonical", "temporary"}:
+        raise RestoreDatabaseError("replacement discard database role is invalid")
+    expected_oid = _positive_oid(expected_oid)
+    names = restore_database_names(database)
+    observed = observe_restore_databases(database, credentials)
+    source = observed[source_role]
+    if source is None:
+        if _oid_present(database, expected_oid):
+            raise RestoreDatabaseError(
+                "replacement discard database OID moved unexpectedly"
+            )
+        return
+    if not isinstance(source, Mapping) or source["oid"] != expected_oid:
+        raise RestoreDatabaseError("replacement discard database OID changed")
+    retired = observed["retired"]
+    if source_role == "canonical" and retired is None:
+        raise RestoreDatabaseError(
+            "replacement cannot discard canonical without a preserved original"
+        )
+    _admin_query(database, f'DROP DATABASE "{names[source_role]}" WITH (FORCE)')
+    if _oid_present(database, expected_oid):
+        raise RestoreDatabaseError(
+            "replacement discard database OID remains after drop"
+        )
+
+
 def drop_registered_retired(
     database: Mapping[str, object], credentials: Path, expected_oid: int
 ) -> None:
@@ -528,6 +562,7 @@ __all__ = [
     "begin_temporary_rebuild",
     "create_temporary_database",
     "drop_registered_temporary",
+    "drop_registered_restored",
     "drop_registered_retired",
     "load_registered_temporary",
     "observe_restore_databases",

@@ -48,6 +48,9 @@ _ATTEMPT_FIELDS = frozenset({"backup_id", "attempt_number"})
 _SELECTION_FILE_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+REPLACEMENT_RECONFIRM_MESSAGE = (
+    "restore recovery state normalized; inspect and confirm the requested replacement again"
+)
 
 
 def _exact(value: object, keys: frozenset[str], label: str) -> Mapping[str, object]:
@@ -346,9 +349,8 @@ def safety_attempt_prune_ids(
     return tuple(
         sorted(
             str(item["backup_id"])
-            for item in attempts
-            if int(item["attempt_number"]) not in {0, newest}
-            and str(item["backup_id"]) not in retained
+            for item in eligible
+            if str(item["backup_id"]) not in retained
         )
     )
 
@@ -479,6 +481,7 @@ def remove_restore_target(paths: ManagedPaths) -> None:
             os.close(descriptor)
 
 __all__ = [
+    "REPLACEMENT_RECONFIRM_MESSAGE",
     "RestoreTarget",
     "allocate_safety_attempt",
     "append_safety_attempt",

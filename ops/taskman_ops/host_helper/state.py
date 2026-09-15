@@ -14,6 +14,7 @@ import subprocess
 import sqlite3
 import time
 
+from ..checksums import sha256_file
 from ..migrations import MigrationOrderError, validate_migration_versions
 from taskman_ops.releases.identifiers import RELEASE_ID_RE, validate_release_id
 from .backup_protection import BackupProtection, backup_protection_retirement_root
@@ -403,8 +404,28 @@ def observe_host_state(
     _check_or_note_directory(install_root, owner_uid, "install root")
     deployment_root = Path(paths.local(paths.deployment_root))
     _note_unknown_deployment_entries(deployment_root, owner_uid, warnings, temporary)
+    restore_target_path = Path(paths.local(paths.restore_target_path))
+    restore_target = _read_restore_target(restore_target_path, owner_uid)
+    optional_restore_inputs: set[str] = set()
+    if restore_target is not None:
+        optional_restore_inputs.add(restore_target.backup_id)
+        if restore_target.replacement is not None:
+            optional_restore_inputs.add(
+                str(restore_target.replacement["backup_id"])
+            )
+        optional_restore_inputs.difference_update(
+            str(item["backup_id"])
+            for item in restore_target.safety_backup_attempts
+        )
+        optional_restore_inputs.discard(restore_target.safety_backup_id)
     releases = _read_releases(release_root, owner_uid, temporary, warnings)
-    backups = _read_backups(backup_root, owner_uid, temporary, warnings)
+    backups, unavailable_restore_inputs = _read_backups(
+        backup_root,
+        owner_uid,
+        temporary,
+        warnings,
+        optional_dump_ids=optional_restore_inputs,
+    )
     release_by_id = {item.release_id: item for item in releases}
     backup_by_id = {item.backup_id: item for item in backups}
     history = _read_selections(
@@ -429,9 +450,6 @@ def observe_host_state(
             for item in retiring_backup_protections
         }
         temporary[:] = [item for item in temporary if Path(item) not in retiring_dump_paths]
-        restore_target_path = Path(paths.local(paths.restore_target_path))
-        restore_target = _read_restore_target(restore_target_path, owner_uid)
-
         _require_history_deadline(float(deadline))
         _validate_backup_sources(backup_by_id, release_by_id, float(deadline))
         _validate_selection_history(history, release_by_id, backup_by_id, float(deadline))
@@ -457,6 +475,21 @@ def observe_host_state(
             history,
             float(deadline),
         )
+        independently_required = {
+            *history.successful_backup_ids,
+            *(item.backup_id for item in backup_protections),
+            *(item.backup_id for item in retiring_backup_protections),
+        }
+        if restore_target is not None:
+            independently_required.add(restore_target.safety_backup_id)
+            independently_required.update(
+                str(item["backup_id"])
+                for item in restore_target.safety_backup_attempts
+            )
+        if unavailable_restore_inputs.intersection(independently_required):
+            raise StateAmbiguityError(
+                "an unavailable restore input is independently required for recovery"
+            )
         selected_from_history = history.projection[-1].release_id if history.projection else None
     except Exception:
         history.close()
@@ -608,9 +641,12 @@ def _read_backups(
     owner_uid: int,
     temporary: list[PurePosixPath],
     warnings: list[str],
-) -> list[BackupRecord]:
+    *,
+    optional_dump_ids: set[str] | frozenset[str] = frozenset(),
+) -> tuple[list[BackupRecord], frozenset[str]]:
     entries = _entries(root, owner_uid, "backup root")
     result: list[BackupRecord] = []
+    unavailable: set[str] = set()
     seen: set[str] = set()
     for entry in entries:
         if _BACKUP_TEMP_RE.fullmatch(entry.name):
@@ -648,13 +684,34 @@ def _read_backups(
             raise StateAmbiguityError("backup manifest identity conflicts with its path")
         seen.add(record.backup_id)
         dump = root / f"{entry.stem}.dump"
-        details = _lstat(dump, "backup dump")
+        try:
+            details = _lstat(dump, "backup dump")
+        except StateAmbiguityError:
+            unavailable.add(record.backup_id)
+            warnings.append(
+                f"completed backup dump is unavailable: {record.backup_id}"
+            )
+            result.append(record)
+            continue
         if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
             raise StateAmbiguityError("completed backup dump is not a regular file")
         if details.st_uid != owner_uid or details.st_mode & 0o7022:
             raise StateAmbiguityError("completed backup dump is unsafe")
+        if record.backup_id in optional_dump_ids:
+            try:
+                available = (
+                    details.st_size > 0
+                    and sha256_file(dump) == record.dump_sha256
+                )
+            except OSError:
+                available = False
+            if not available:
+                unavailable.add(record.backup_id)
+                warnings.append(
+                    f"completed backup dump is unavailable or corrupt: {record.backup_id}"
+                )
         result.append(record)
-    return result
+    return result, frozenset(unavailable)
 
 
 def _read_selections(

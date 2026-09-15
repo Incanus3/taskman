@@ -32,6 +32,8 @@ TARGET_REVISION = "b" * 40
 CURRENT = build_release_id("0.2.0", CURRENT_REVISION, artifact_sha256="c" * 64, source_dirty=False)
 TARGET = build_release_id("0.2.0", TARGET_REVISION, artifact_sha256="d" * 64, source_dirty=False)
 INPUT_BACKUP = "backup-" + "a" * 32
+REPLACEMENT_BACKUP = "backup-" + "9" * 32
+THIRD_BACKUP = "backup-" + "8" * 32
 PROTECTION_BACKUP = "backup-" + "b" * 32
 OLD_HELPER = "1" * 64
 NEW_HELPER = "2" * 64
@@ -98,6 +100,7 @@ class Runtime:
         self.cleanup_failure: str | None = None
         self.service_failure: str | None = None
         self.service_state = "running"
+        self.safety_failure = False
         self.safety_count = 0
         self.later_write: str | None = None
         self.database_capacity = 1_000_000
@@ -128,6 +131,8 @@ class Runtime:
 
     def safety_backup(self, state, paths, database, *_args, **_kwargs):
         self.events.append(f"backup:{database['name']}")
+        if self.safety_failure:
+            raise restore_module.BackupAuthorityError("safety backup failed")
         while True:
             backup_id = "backup-" + chr(ord("c") + self.safety_count) * 32
             self.safety_count += 1
@@ -160,6 +165,15 @@ class Runtime:
         if temporary is not None:
             assert temporary["oid"] == oid
             self.databases["temporary"] = None
+
+    def drop_restored(self, _database, _credentials, role, oid):
+        self.events.append(f"drop-{role}")
+        value = self.databases[role]
+        if value is not None:
+            assert value["oid"] == oid
+            if role == "canonical":
+                assert self.databases["retired"] is not None
+            self.databases[role] = None
 
     def load(self, target, *_args):
         self.events.append("load")
@@ -226,7 +240,14 @@ def _binding(paths, source: BackupRecord, runtime: Runtime) -> RestoreTarget:
     return target
 
 
-def _request(paths, runtime: Runtime) -> HostRequest:
+def _request(
+    paths,
+    runtime: Runtime,
+    *,
+    backup_id: str = INPUT_BACKUP,
+    replace_unfinished: bool = False,
+    prune_backup_ids: tuple[str, ...] = (),
+) -> HostRequest:
     state = observe_host_state(paths, allow_selection_transition=True)
     databases = runtime.observe_databases()
     canonical = databases["canonical"]
@@ -237,7 +258,7 @@ def _request(paths, runtime: Runtime) -> HostRequest:
         "backup_protection_sha256": _protection_digest(state),
         "scheduled_backup_sha256": runtime.scheduler_sha256,
         "backup_timer_enabled": True,
-        "backup_id": INPUT_BACKUP,
+        "backup_id": backup_id,
         "restore_target_sha256": None if state.restore_target is None else restore_target_sha256(state.restore_target),
         "restore_database_state": databases,
     }
@@ -245,13 +266,13 @@ def _request(paths, runtime: Runtime) -> HostRequest:
         3, "restore", CORRELATION, expected,
         {"install_root": paths.install_root.as_posix(), "backup_root": paths.backup_root.as_posix()},
         {
-            "backup_id": INPUT_BACKUP,
+            "backup_id": backup_id,
             "credentials_path": "/etc/taskman/pgpass",
             "database": database_mapping(),
             "verification": verification_settings(),
             "backup_helper": {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/deployments/uploads/backup.pyz"},
-            "prune_backup_ids": [],
-            "replace_unfinished": False,
+            "prune_backup_ids": list(prune_backup_ids),
+            "replace_unfinished": replace_unfinished,
             "reapply": False,
         },
     )
@@ -267,6 +288,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, runtime: Runtime) -> None:
     monkeypatch.setattr(restore_module, "register_restored_database", runtime.register)
     monkeypatch.setattr(restore_module, "begin_temporary_rebuild", runtime.begin_rebuild)
     monkeypatch.setattr(restore_module, "drop_registered_temporary", runtime.drop_temporary)
+    monkeypatch.setattr(restore_module, "drop_registered_restored", runtime.drop_restored)
     monkeypatch.setattr(restore_module, "load_registered_temporary", runtime.load)
     monkeypatch.setattr(restore_module, "rename_registered_database", runtime.rename)
     monkeypatch.setattr(restore_module, "drop_registered_retired", runtime.drop_retired)
@@ -700,16 +722,348 @@ def test_restore_lifecycle_failures_use_release_exit_8(
     validate_mutation_state("restore", "retryable", result.state)
 
 
-def test_deferred_replacement_mode_is_refused_without_mutation(tmp_path, monkeypatch):
-    paths, _source = _seed(tmp_path)
-    runtime = Runtime()
+def test_replacement_normalizes_exact_temporary_before_loading_new_input(
+    tmp_path, monkeypatch
+):
+    """Dropping by name before durable exact-OID intent could discard the wrong database."""
+
+    paths, source = _seed(tmp_path)
+    replacement = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    _binding(paths, source, runtime)
     _install(monkeypatch, runtime)
-    request = _request(paths, runtime)
+    original_drop = runtime.drop_temporary
 
-    result = restore_module.restore(replace(request, parameters={**request.parameters, "replace_unfinished": True}))
+    def assert_intent_before_drop(database, credentials, oid):
+        bound = observe_host_state(paths, allow_selection_transition=True).restore_target
+        assert bound is not None
+        assert bound.replacement == {
+            "backup_id": replacement.backup_id,
+            "dump_sha256": replacement.dump_sha256,
+            "source_release_id": replacement.source_release_id,
+            "discard_database_oid": oid,
+        }
+        assert bound.original_database_oid == 101
+        assert bound.base_selection_id is not None
+        original_drop(database, credentials, oid)
 
-    assert result.outcome == "refused" and result.state["failed_boundary"] == "input"
+    def assert_restored_intent_before_drop(database, credentials, role, oid):
+        assert role == "temporary"
+        assert_intent_before_drop(database, credentials, oid)
+
+    monkeypatch.setattr(
+        restore_module,
+        "drop_registered_restored",
+        assert_restored_intent_before_drop,
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("backup:taskman") < runtime.events.index("drop-temporary")
+    assert runtime.events.index("drop-temporary") < runtime.events.index("create")
+    assert runtime.events.index("register") < runtime.events.index("load")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert replacement.backup_id in latest.recovery_backup_ids
+    assert source.backup_id not in latest.recovery_backup_ids
+
+
+def test_third_target_only_normalizes_pending_replacement_and_requires_fresh_plan(
+    tmp_path, monkeypatch
+):
+    """A third target must not load or start the abandoned pending target."""
+
+    paths, source = _seed(tmp_path)
+    pending = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"pending source")
+    _backup(paths, THIRD_BACKUP, TARGET, b"third source")
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"first safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            replacement={
+                "backup_id": pending.backup_id,
+                "dump_sha256": pending.dump_sha256,
+                "source_release_id": pending.source_release_id,
+                "discard_database_oid": 202,
+            },
+        ),
+    )
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+    Path(paths.local(paths.backup_root / f"{pending.backup_id}.dump")).write_bytes(
+        b"corrupt pending source"
+    )
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=THIRD_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "retryable"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["failed_boundary"] == "restore"
+    assert result.message == restore_module.REPLACEMENT_RECONFIRM_MESSAGE
+    assert f"completed backup dump is unavailable or corrupt: {REPLACEMENT_BACKUP}" in result.warnings
+    assert runtime.events == ["scheduler", "stop", "drop-temporary"]
+    state = observe_host_state(paths, allow_selection_transition=True)
+    assert state.restore_target is not None
+    assert state.restore_target.backup_id == pending.backup_id
+    assert state.restore_target.replacement is None
+    assert runtime.databases == {
+        "canonical": {
+            "oid": 101,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": (VERSION,),
+        },
+        "temporary": None,
+        "retired": None,
+    }
+
+
+def test_replacement_prunes_only_confirmed_attempts_after_durable_registration(
+    tmp_path, monkeypatch
+):
+    """Pruning before the fresh copy is bound could leave replacement without recovery."""
+
+    paths, source = _seed(tmp_path)
+    _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+temporary")
+    attempts = []
+    for number, digit in enumerate("012345"):
+        backup_id = "backup-" + digit * 32
+        _backup(paths, backup_id, CURRENT, f"safety-{number}".encode())
+        attempts.append({"backup_id": backup_id, "attempt_number": number})
+    state = observe_host_state(paths, allow_selection_transition=True)
+    target = RestoreTarget(
+        1,
+        source.backup_id,
+        source.dump_sha256,
+        source.source_release_id,
+        state.latest_successful_selection_filename,
+        CURRENT,
+        101,
+        202,
+        False,
+        attempts[-1]["backup_id"],
+        None,
+        tuple(attempts),
+    )
+    write_restore_target(paths, target)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+            prune_backup_ids=(attempts[1]["backup_id"], attempts[2]["backup_id"]),
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert not Path(
+        paths.local(paths.backup_root / f"{attempts[1]['backup_id']}.json")
+    ).exists()
+    assert not Path(
+        paths.local(paths.backup_root / f"{attempts[2]['backup_id']}.json")
+    ).exists()
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert len(latest.recovery_backup_ids) <= 6
+
+
+def test_failed_restored_canonical_is_backed_up_before_exact_drop(
+    tmp_path, monkeypatch
+):
+    """A failed restored canonical may have writes that must survive its discard."""
+
+    paths, source = _seed(tmp_path)
+    replacement = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+retired")
+    first_safety = _backup(
+        paths, "backup-" + "c" * 32, CURRENT, b"original safety"
+    )
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+    original_drop = runtime.drop_restored
+
+    def assert_failed_copy_registered(database, credentials, role, oid):
+        bound = observe_host_state(
+            paths, allow_selection_transition=True
+        ).restore_target
+        assert bound is not None
+        assert role == "canonical" and oid == 202
+        assert bound.replacement is not None
+        assert bound.replacement["discard_database_oid"] == oid
+        assert len(bound.safety_backup_attempts) == 2
+        assert bound.safety_backup_id == first_safety.backup_id
+        original_drop(database, credentials, role, oid)
+
+    monkeypatch.setattr(
+        restore_module,
+        "drop_registered_restored",
+        assert_failed_copy_registered,
+    )
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=replacement.backup_id,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("stop") < runtime.events.index("backup:taskman")
+    assert runtime.events.index("backup:taskman") < runtime.events.index(
+        "drop-canonical"
+    )
+    assert runtime.events.index("drop-canonical") < runtime.events.index(
+        "rename:retired:canonical"
+    )
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None
+    assert first_safety.backup_id == latest.backup_id
+    assert len(latest.recovery_backup_ids) == 3
+
+
+def test_failed_restored_safety_failure_stops_before_intent_or_database_change(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    _backup(paths, REPLACEMENT_BACKUP, TARGET, b"replacement source")
+    runtime = Runtime("canonical+retired")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    original_databases = runtime.observe_databases()
+    original_target = _binding(paths, source, runtime)
+    runtime.safety_failure = True
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=REPLACEMENT_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "retryable"
+    assert result.state["failed_boundary"] == "backup"
+    assert runtime.databases == original_databases
+    assert not any(event.startswith("drop-") for event in runtime.events)
+    assert observe_host_state(
+        paths, allow_selection_transition=True
+    ).restore_target == original_target
+
+
+def test_pending_retired_only_replacement_normalizes_without_loading_for_third_target(
+    tmp_path, monkeypatch
+):
+    paths, source = _seed(tmp_path)
+    pending = _backup(paths, REPLACEMENT_BACKUP, TARGET, b"pending source")
+    _backup(paths, THIRD_BACKUP, TARGET, b"third source")
+    runtime = Runtime("retired")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    target = _binding(paths, source, runtime)
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            replacement={
+                "backup_id": pending.backup_id,
+                "dump_sha256": pending.dump_sha256,
+                "source_release_id": pending.source_release_id,
+                "discard_database_oid": None,
+            },
+        ),
+    )
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(
+        _request(
+            paths,
+            runtime,
+            backup_id=THIRD_BACKUP,
+            replace_unfinished=True,
+        )
+    )
+
+    assert result.outcome == "retryable"
+    assert result.message == restore_module.REPLACEMENT_RECONFIRM_MESSAGE
+    assert runtime.events == ["scheduler", "stop", "rename:retired:canonical"]
+    bound = observe_host_state(
+        paths, allow_selection_transition=True
+    ).restore_target
+    assert bound is not None
+    assert bound.backup_id == pending.backup_id
+    assert bound.replacement is None
+
+
+def test_ordinary_retry_still_rejects_unusable_bound_input(tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"original safety")
+    _binding(paths, source, runtime)
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "manual"
+    assert result.state["mutation_state"] == "unchanged"
     assert runtime.events == []
+
+
+def test_unusable_abandoned_input_exception_does_not_weaken_its_safety_role(
+    tmp_path,
+):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_restore_target(
+        paths,
+        RestoreTarget(
+            1,
+            source.backup_id,
+            source.dump_sha256,
+            source.source_release_id,
+            state.latest_successful_selection_filename,
+            CURRENT,
+            101,
+            202,
+            False,
+            source.backup_id,
+            None,
+            ({"backup_id": source.backup_id, "attempt_number": 0},),
+        ),
+    )
+    Path(paths.local(paths.backup_root / f"{source.backup_id}.dump")).unlink()
+
+    with pytest.raises(
+        restore_module.StateAmbiguityError,
+        match="independently required|recovery",
+    ):
+        observe_host_state(paths, allow_selection_transition=True)
 
 
 def test_reapply_after_completed_restore_takes_fresh_safety_backup_and_appends_success(tmp_path, monkeypatch):

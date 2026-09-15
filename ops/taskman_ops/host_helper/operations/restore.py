@@ -17,7 +17,7 @@ from taskman_ops.host_protocol.mutation_results import unavailable_observations
 from ...checksums import sha256_file
 from ..backup_helper import BackupHelperError, converge_backup_helper
 from ..backup_protection import complete_successful_selection
-from ..backups import BackupAuthorityError
+from ..backups import BackupAuthorityError, delete_completed_backup
 from ..commands import CommandError, run_command
 from ..credentials import validate_credentials
 from ..database import database_mapping, release_migration_versions
@@ -30,6 +30,7 @@ from ..restore_database import (
     RestoreDatabaseError,
     begin_temporary_rebuild,
     create_temporary_database,
+    drop_registered_restored,
     drop_registered_retired,
     drop_registered_temporary,
     load_registered_temporary,
@@ -40,11 +41,14 @@ from ..restore_database import (
     validate_restore_database_state,
 )
 from ..restore_target import (
+    REPLACEMENT_RECONFIRM_MESSAGE,
     RestoreTarget,
     append_safety_attempt,
     remove_restore_target as _remove_restore_target_file,
     replace_restore_target,
+    retire_safety_attempts,
     restore_target_sha256,
+    safety_attempt_prune_ids,
     write_restore_target,
 )
 from ..selection import SelectionAmbiguityError, select_current
@@ -138,10 +142,31 @@ def restore(request: HostRequest) -> HostResult:
             _validate_source_dump(source, inputs)
 
             target = state.restore_target
-            if target is not None and _durable_success(state, databases, target, source):
+            bound_source = (
+                None if target is None else _bound_source_record(state, target)
+            )
+            if (
+                target is not None
+                and bound_source is not None
+                and _durable_success(state, databases, target, bound_source)
+            ):
                 safety = _required_backup(state, target.safety_backup_id, inputs)
                 changed = _cleanup_completed(inputs, state, databases, target) or changed
                 state, databases = _observe_locked(inputs, include_runtime=True)
+                if source.backup_id != bound_source.backup_id or inputs.reapply:
+                    return _result(
+                        request,
+                        "retryable",
+                        REPLACEMENT_RECONFIRM_MESSAGE,
+                        state,
+                        inputs,
+                        source,
+                        boundary="restore",
+                        changed=changed,
+                        report=None,
+                        databases=databases,
+                        pre_restore_backup_id=safety.backup_id,
+                    )
                 return _result(request, "succeeded", "restore cleanup converged", state, inputs, source, changed=changed, report=None, databases=databases, pre_restore_backup_id=safety.backup_id)
             if target is not None and inputs.reapply:
                 raise RestoreRefused("unfinished restore must be resumed before reapply")
@@ -156,9 +181,30 @@ def restore(request: HostRequest) -> HostResult:
             if target is None:
                 _require_initial_arrangement(databases)
             else:
-                _validate_bound_target(state, databases, target, source, inputs)
+                assert bound_source is not None
+                _validate_bound_target(
+                    state, databases, target, bound_source, inputs
+                )
+                if target.replacement is not None and not inputs.replace_unfinished:
+                    raise RestoreRefused(
+                        "unfinished replacement requires replacement execution"
+                    )
+                if (
+                    target.backup_id != source.backup_id
+                    and not inputs.replace_unfinished
+                ):
+                    raise RestoreRefused(
+                        "requested backup does not match the unfinished restore"
+                    )
+            replacement_mode = target is not None and (
+                target.replacement is not None
+                or target.backup_id != source.backup_id
+            )
+            replacement_pending = (
+                target is not None and target.replacement is not None
+            )
             if (
-                _restore_load_required(databases, target)
+                (replacement_mode or _restore_load_required(databases, target))
                 and observe_database_available_bytes(inputs.database)
                 < source.source_database_size_bytes * 2
             ):
@@ -205,44 +251,112 @@ def restore(request: HostRequest) -> HostResult:
                 changed = True
                 state, databases = _observe_locked(inputs)
             else:
+                current_target = state.restore_target
+                if current_target is None:
+                    raise RestoreManual("restore binding disappeared")
+                target = current_target
                 safety = _required_backup(state, target.safety_backup_id, inputs)
                 for attempt in target.safety_backup_attempts:
                     _required_backup(state, str(attempt["backup_id"]), inputs)
-                if _original_writes_cannot_be_excluded(state, databases, target):
-                    safety_state = _state_for_database(state, databases["canonical"])
-                    try:
-                        safety = create_validated_backup(
-                            safety_state,
-                            inputs.paths,
-                            inputs.database,
-                            inputs.credentials,
-                            purpose="pre-restore",
-                        )
-                    except (
-                        BackupAuthorityError,
-                        CommandError,
-                        OSError,
-                        RecordError,
-                        ValueError,
-                    ) as error:
-                        raise _Retryable("backup") from error
-                    changed = True
-                    target = append_safety_attempt(
-                        target, safety.backup_id, promote_original=True
-                    )
-                    try:
-                        replace_restore_target(inputs.paths, target)
-                    except (OSError, RecordError) as error:
-                        raise _Retryable("restore") from error
-                    changed = True
-                    state, databases = _observe_locked(inputs, include_runtime=True)
-                    _validate_bound_target(state, databases, target, source, inputs)
+                remaining_prune_ids = set(inputs.prune_backup_ids)
+                target, state, pruned = _retire_confirmed_safety_attempts(
+                    inputs, state, target, remaining_prune_ids
+                )
+                changed = changed or pruned
+                databases = validate_restore_database_state(
+                    observe_restore_databases(inputs.database, inputs.credentials)
+                )
 
-            try:
-                change_service("stop")
-            except CommandError as error:
-                raise _Retryable("service") from error
-            changed = True
+                if replacement_mode:
+                    try:
+                        change_service("stop")
+                    except CommandError as error:
+                        raise _Retryable("service") from error
+                    changed = True
+
+                if (
+                    not replacement_pending
+                    and _original_writes_cannot_be_excluded(
+                        state, databases, target
+                    )
+                ):
+                    target, state, safety = _create_registered_safety_backup(
+                        inputs,
+                        state,
+                        databases,
+                        target,
+                        promote_original=True,
+                    )
+                    changed = True
+                    target, state, pruned = _retire_confirmed_safety_attempts(
+                        inputs, state, target, remaining_prune_ids
+                    )
+                    changed = changed or pruned
+                    databases = validate_restore_database_state(
+                        observe_restore_databases(inputs.database, inputs.credentials)
+                    )
+
+                if (
+                    replacement_mode
+                    and not replacement_pending
+                    and _failed_restored_writes_cannot_be_excluded(
+                        databases, target
+                    )
+                ):
+                    target, state, _failed_safety = _create_registered_safety_backup(
+                        inputs,
+                        state,
+                        databases,
+                        target,
+                        promote_original=False,
+                    )
+                    changed = True
+                    target, state, pruned = _retire_confirmed_safety_attempts(
+                        inputs, state, target, remaining_prune_ids
+                    )
+                    changed = changed or pruned
+                    databases = validate_restore_database_state(
+                        observe_restore_databases(inputs.database, inputs.credentials)
+                    )
+
+                if remaining_prune_ids:
+                    raise RestoreExpectedState(
+                        "confirmed safety-attempt prune set is no longer eligible"
+                    )
+
+                if replacement_mode:
+                    target = _publish_replacement_intent(
+                        inputs, target, source, databases
+                    )
+                    changed = True
+                    target, databases = _normalize_replacement(
+                        inputs, target, databases
+                    )
+                    changed = True
+                    if target.backup_id != source.backup_id:
+                        state, databases = _observe_locked(
+                            inputs, include_runtime=True
+                        )
+                        return _result(
+                            request,
+                            "retryable",
+                            REPLACEMENT_RECONFIRM_MESSAGE,
+                            state,
+                            inputs,
+                            source,
+                            boundary="restore",
+                            changed=True,
+                            report=None,
+                            databases=databases,
+                            pre_restore_backup_id=target.safety_backup_id,
+                        )
+
+            if target is not None and not replacement_mode:
+                try:
+                    change_service("stop")
+                except CommandError as error:
+                    raise _Retryable("service") from error
+                changed = True
             target, databases = _converge_database(inputs, source, target, databases)
             changed = True
 
@@ -319,8 +433,6 @@ def _inputs(request: HostRequest) -> _Inputs:
     reapply = request.parameters["reapply"]
     if type(replace_unfinished) is not bool or type(reapply) is not bool or replace_unfinished and reapply:
         raise RestoreRefused("restore mode flags are invalid")
-    if replace_unfinished:
-        raise RestoreRefused("unfinished restore replacement is not enabled")
     backup_id = request.parameters["backup_id"]
     if type(backup_id) is not str or _BACKUP_RE.fullmatch(backup_id) is None or request.expected_state["backup_id"] != backup_id:
         raise RestoreRefused("restore backup authority is invalid")
@@ -361,8 +473,6 @@ def _inputs(request: HostRequest) -> _Inputs:
     prune_ids = tuple(prune)
     if prune_ids != tuple(sorted(set(prune_ids))) or any(type(item) is not str or _BACKUP_RE.fullmatch(item) is None for item in prune_ids):
         raise RestoreRefused("restore pruning authority is invalid")
-    if prune_ids:
-        raise RestoreRefused("restore safety-attempt pruning requires replacement execution")
     return _Inputs(
         ManagedPaths.from_mapping(request.paths), dict(request.expected_state), backup_id,
         Path(credentials), database_mapping(request.parameters["database"]), dict(verification),
@@ -431,6 +541,32 @@ def _source_record(state: HostState, inputs: _Inputs) -> BackupRecord:
         raise RestoreManual("backup source release is unavailable")
     if release_migration_versions(release.migrations) != source.migration_versions:
         raise RestoreManual("backup source migrations are contradictory")
+    return source
+
+
+def _bound_source_record(state: HostState, target: RestoreTarget) -> BackupRecord:
+    source = next(
+        (item for item in state.backups if item.backup_id == target.backup_id),
+        None,
+    )
+    if source is None:
+        raise RestoreManual("bound restore input metadata is unavailable")
+    release = next(
+        (
+            item
+            for item in state.releases
+            if item.release_id == source.source_release_id
+        ),
+        None,
+    )
+    if (
+        release is None
+        or release_migration_versions(release.migrations)
+        != source.migration_versions
+        or (source.dump_sha256, source.source_release_id)
+        != (target.dump_sha256, target.source_release_id)
+    ):
+        raise RestoreManual("bound restore input metadata is contradictory")
     return source
 
 
@@ -507,6 +643,258 @@ def _original_writes_cannot_be_excluded(
     )
 
 
+def _failed_restored_writes_cannot_be_excluded(
+    databases: Mapping[str, object], target: RestoreTarget
+) -> bool:
+    canonical = databases["canonical"]
+    retired = databases["retired"]
+    return (
+        isinstance(canonical, Mapping)
+        and canonical["oid"] == target.restored_database_oid
+        and isinstance(retired, Mapping)
+        and retired["oid"] == target.original_database_oid
+    )
+
+
+def _create_registered_safety_backup(
+    inputs: _Inputs,
+    state: HostState,
+    databases: Mapping[str, object],
+    target: RestoreTarget,
+    *,
+    promote_original: bool,
+) -> tuple[RestoreTarget, HostState, BackupRecord]:
+    safety_state = _state_for_database(state, databases["canonical"])
+    try:
+        safety = create_validated_backup(
+            safety_state,
+            inputs.paths,
+            inputs.database,
+            inputs.credentials,
+            purpose="pre-restore",
+        )
+    except (
+        BackupAuthorityError,
+        CommandError,
+        OSError,
+        RecordError,
+        ValueError,
+    ) as error:
+        raise _Retryable("backup") from error
+    target = append_safety_attempt(
+        target, safety.backup_id, promote_original=promote_original
+    )
+    try:
+        replace_restore_target(inputs.paths, target)
+    except (OSError, RecordError) as error:
+        raise _Retryable("restore", known_changed=True) from error
+    state = _observe_metadata(inputs, include_runtime=True)
+    persisted = state.restore_target
+    if persisted != target:
+        raise RestoreManual("registered restore safety backup changed")
+    return target, state, safety
+
+
+def _independently_held_safety_ids(
+    state: HostState, target: RestoreTarget
+) -> frozenset[str]:
+    held = {
+        *state.successful_backup_ids,
+        *(item.backup_id for item in state.backup_protections),
+        *(item.backup_id for item in state.retiring_backup_protections),
+        target.backup_id,
+        target.safety_backup_id,
+    }
+    if target.replacement is not None:
+        held.add(str(target.replacement["backup_id"]))
+    return frozenset(held)
+
+
+def _retire_confirmed_safety_attempts(
+    inputs: _Inputs,
+    state: HostState,
+    target: RestoreTarget,
+    remaining_confirmed: set[str],
+) -> tuple[RestoreTarget, HostState, bool]:
+    independent = _independently_held_safety_ids(state, target)
+    eligible = safety_attempt_prune_ids(
+        target, independently_held_backup_ids=independent
+    )
+    if not eligible:
+        return target, state, False
+    if not set(eligible).issubset(remaining_confirmed):
+        raise RestoreExpectedState(
+            "new safety-attempt pruning needs fresh confirmation"
+        )
+    try:
+        target = retire_safety_attempts(
+            inputs.paths,
+            target,
+            eligible,
+            independently_held_backup_ids=independent,
+        )
+    except (OSError, RecordError) as error:
+        raise _Retryable("restore", possibly_changed=True) from error
+    remaining_confirmed.difference_update(eligible)
+    state = _observe_metadata(inputs, include_runtime=True)
+    persisted = state.restore_target
+    if persisted != target:
+        raise RestoreManual("retired restore safety references changed")
+    remaining_references = set(_independently_held_safety_ids(state, target))
+    remaining_references.update(
+        str(item["backup_id"]) for item in target.safety_backup_attempts
+    )
+    for backup_id in eligible:
+        if backup_id in remaining_references:
+            continue
+        record = next(
+            (item for item in state.backups if item.backup_id == backup_id),
+            None,
+        )
+        if record is None:
+            continue
+        try:
+            delete_completed_backup(inputs.paths, record)
+        except (BackupAuthorityError, OSError, RecordError) as error:
+            raise _Retryable("restore", known_changed=True) from error
+        state = _observe_metadata(inputs, include_runtime=True)
+    persisted = state.restore_target
+    if persisted is None:
+        raise RestoreManual("restore binding disappeared during pruning")
+    return persisted, state, True
+
+
+def _publish_replacement_intent(
+    inputs: _Inputs,
+    target: RestoreTarget,
+    source: BackupRecord,
+    databases: Mapping[str, object],
+) -> RestoreTarget:
+    if target.replacement is not None:
+        return target
+    temporary = databases["temporary"]
+    canonical = databases["canonical"]
+    retired = databases["retired"]
+    if (
+        isinstance(temporary, Mapping)
+        and target.restored_database_oid is None
+        and target.temporary_creation_pending
+    ):
+        target = register_restored_database(
+            inputs.paths,
+            target,
+            inputs.database,
+            inputs.credentials,
+        )
+        databases = validate_restore_database_state(
+            observe_restore_databases(inputs.database, inputs.credentials)
+        )
+        temporary = databases["temporary"]
+        canonical = databases["canonical"]
+        retired = databases["retired"]
+    discard_oid: int | None = None
+    if isinstance(temporary, Mapping):
+        discard_oid = int(temporary["oid"])
+    elif (
+        isinstance(canonical, Mapping)
+        and canonical["oid"] == target.restored_database_oid
+        and isinstance(retired, Mapping)
+        and retired["oid"] == target.original_database_oid
+    ):
+        discard_oid = int(canonical["oid"])
+    if discard_oid is not None and discard_oid != target.restored_database_oid:
+        raise RestoreManual("replacement discard database identity changed")
+    replacement = {
+        "backup_id": source.backup_id,
+        "dump_sha256": source.dump_sha256,
+        "source_release_id": source.source_release_id,
+        "discard_database_oid": discard_oid,
+    }
+    updated = replace(target, replacement=replacement)
+    try:
+        replace_restore_target(inputs.paths, updated)
+    except (OSError, RecordError) as error:
+        raise _Retryable("restore", possibly_changed=True) from error
+    return updated
+
+
+def _normalize_replacement(
+    inputs: _Inputs,
+    target: RestoreTarget,
+    databases: Mapping[str, object],
+) -> tuple[RestoreTarget, dict[str, object]]:
+    replacement = target.replacement
+    if replacement is None:
+        raise RestoreManual("replacement intent is unavailable")
+    discard_oid = replacement["discard_database_oid"]
+    if discard_oid is not None:
+        matching_roles = tuple(
+            role
+            for role in ("canonical", "temporary")
+            if isinstance(databases[role], Mapping)
+            and databases[role]["oid"] == discard_oid
+        )
+        if len(matching_roles) > 1:
+            raise RestoreManual("replacement discard database identity is duplicated")
+        if matching_roles:
+            try:
+                drop_registered_restored(
+                    inputs.database,
+                    inputs.credentials,
+                    matching_roles[0],
+                    int(discard_oid),
+                )
+            except RestoreDatabaseError as error:
+                raise _Retryable("restore", possibly_changed=True) from error
+        elif any(
+            isinstance(value, Mapping) and value["oid"] == discard_oid
+            for value in databases.values()
+        ):
+            raise RestoreManual("replacement discard database moved unexpectedly")
+    databases = validate_restore_database_state(
+        observe_restore_databases(inputs.database, inputs.credentials)
+    )
+    retired = databases["retired"]
+    canonical = databases["canonical"]
+    if isinstance(retired, Mapping):
+        if retired["oid"] != target.original_database_oid or canonical is not None:
+            raise RestoreManual("replacement original database identity changed")
+        try:
+            rename_registered_database(
+                inputs.database,
+                inputs.credentials,
+                "retired",
+                "canonical",
+                target.original_database_oid,
+            )
+        except RestoreDatabaseError as error:
+            raise _Retryable("restore", possibly_changed=True) from error
+        databases = validate_restore_database_state(
+            observe_restore_databases(inputs.database, inputs.credentials)
+        )
+    canonical = databases["canonical"]
+    if (
+        _roles(databases) != frozenset({"canonical"})
+        or not isinstance(canonical, Mapping)
+        or canonical["oid"] != target.original_database_oid
+    ):
+        raise RestoreManual("replacement original database was not normalized")
+    updated = replace(
+        target,
+        backup_id=str(replacement["backup_id"]),
+        dump_sha256=str(replacement["dump_sha256"]),
+        source_release_id=str(replacement["source_release_id"]),
+        restored_database_oid=None,
+        temporary_creation_pending=True,
+        replacement=None,
+    )
+    try:
+        replace_restore_target(inputs.paths, updated)
+    except (OSError, RecordError) as error:
+        raise _Retryable("restore", possibly_changed=True) from error
+    return updated, databases
+
+
 def _validate_bound_target(
     state: HostState,
     databases: Mapping[str, object],
@@ -514,10 +902,12 @@ def _validate_bound_target(
     source: BackupRecord,
     inputs: _Inputs,
 ) -> None:
-    if target.replacement is not None:
-        raise RestoreRefused("unfinished replacement requires replacement execution")
-    if (target.backup_id, target.dump_sha256, target.source_release_id) != (source.backup_id, source.dump_sha256, source.source_release_id):
-        raise RestoreRefused("requested backup does not match the unfinished restore")
+    if (target.backup_id, target.dump_sha256, target.source_release_id) != (
+        source.backup_id,
+        source.dump_sha256,
+        source.source_release_id,
+    ):
+        raise RestoreManual("bound restore input metadata changed")
     if target.base_selection_id != state.latest_successful_selection_filename:
         raise RestoreManual("restore history baseline changed")
     roles = _roles(databases)
@@ -850,4 +1240,4 @@ def _result(
     return HostResult(PROTOCOL_VERSION, request.operation, request.correlation_id, outcome, message, facts, () if state is None else state.warnings)
 
 
-__all__ = ["restore"]
+__all__ = ["REPLACEMENT_RECONFIRM_MESSAGE", "restore"]

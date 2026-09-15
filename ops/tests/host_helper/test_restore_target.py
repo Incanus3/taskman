@@ -149,8 +149,22 @@ def test_safety_attempt_retention_uses_attempt_order_and_skips_independent_copie
         independently_held_backup_ids={"backup-00000000000000000000000000000002"},
     ) == (
         "backup-00000000000000000000000000000001",
-        "backup-00000000000000000000000000000002",
     )
+
+
+def test_current_original_safety_reference_is_never_returned_for_retirement() -> None:
+    """A newer failed-restored copy must not make the required original copy removable."""
+
+    attempts = tuple(
+        {"backup_id": f"backup-{index:032x}", "attempt_number": index}
+        for index in range(7)
+    )
+    record = _target(
+        safety_backup_id=attempts[2]["backup_id"],
+        safety_backup_attempts=attempts,
+    )
+
+    assert record.safety_backup_id not in safety_attempt_prune_ids(record)
 
 
 def test_safety_attempt_reference_is_published_before_exact_retirement(tmp_path: Path) -> None:

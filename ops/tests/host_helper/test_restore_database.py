@@ -398,3 +398,55 @@ def test_rename_requires_the_exact_registered_oid_and_absent_destination(
     assert called[0][-1] == (
         'ALTER DATABASE "taskman__restore_tmp" RENAME TO "taskman"'
     )
+
+
+def test_replacement_drops_exact_restored_canonical_only_with_retired_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical deletion is safe only while the bound original remains retired."""
+
+    import taskman_ops.host_helper.restore_database as restore_database
+
+    called: list[tuple[str, ...]] = []
+    observed = {
+        "canonical": {
+            "oid": 202,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": (),
+        },
+        "temporary": None,
+        "retired": None,
+    }
+    monkeypatch.setattr(
+        restore_database,
+        "observe_restore_databases",
+        lambda *_args: observed,
+    )
+    monkeypatch.setattr(restore_database, "_oid_present", lambda *_args: False)
+    monkeypatch.setattr(
+        restore_database,
+        "run_command",
+        lambda argv, **_kwargs: called.append(argv) or _completed(argv, b""),
+    )
+
+    with pytest.raises(
+        restore_database.RestoreDatabaseError,
+        match="preserved original",
+    ):
+        restore_database.drop_registered_restored(
+            DATABASE, Path("/etc/taskman/pgpass"), "canonical", 202
+        )
+    assert called == []
+
+    observed["retired"] = {
+        "oid": 101,
+        "owner": "taskman",
+        "migration_table_present": True,
+        "applied_migrations": (),
+    }
+    restore_database.drop_registered_restored(
+        DATABASE, Path("/etc/taskman/pgpass"), "canonical", 202
+    )
+
+    assert called[0][-1] == 'DROP DATABASE "taskman" WITH (FORCE)'
