@@ -324,7 +324,7 @@ def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(
     assert "/usr/local/lib/taskman/taskman-backup.pyz" not in puts
     assert "/etc/systemd/system/taskman-backup.service" not in puts
     assert "/etc/taskman/taskman-backup.env" not in puts
-    assert services == ["taskman.service", "taskman-backup.timer"]
+    assert services == ["taskman.service"]
 
 
 def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(

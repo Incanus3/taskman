@@ -235,6 +235,7 @@ def verify(request, **_kwargs):
 deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
 discover_module.observe_database_state_or_empty = database
+discover_module.observe_database_state_or_empty_as_admin = database
 discover_module._observe_postgresql_authority = lambda *_args: read_state()["database_state"]
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
@@ -247,11 +248,12 @@ state_module._service_state = lambda include_runtime: "running" if include_runti
 deploy_module.verify = verify
 def scheduler_facts(_paths):
     value = read_state()
-    present = all(value["scheduler_resources"].values())
+    helper_present = value["scheduler_resources"]["helper"]
+    timer_present = value["scheduler_resources"]["timer"]
     return {
-        "scheduled_backup_sha256": value["scheduler_sha256"] if present else None,
-        "backup_timer_enabled": value["backup_timer_enabled"] if present else False,
-        "backup_timer_state": value["backup_timer_state"] if present else "inactive",
+        "scheduled_backup_sha256": value["scheduler_sha256"] if helper_present else None,
+        "backup_timer_enabled": value["backup_timer_enabled"] if timer_present else False,
+        "backup_timer_state": value["backup_timer_state"] if timer_present else "inactive",
     }
 
 deploy_module._scheduler_facts = scheduler_facts
@@ -506,6 +508,8 @@ def _converge_native_provision_writers(runtime_path: Path):
         for path in scheduler_create:
             runtime["scheduler_resources"][paths[path]] = True
         runtime["database_state"] = "ready"
+        if "post_pyinfra_migrations" in runtime:
+            runtime["migrations"] = runtime["post_pyinfra_migrations"]
         runtime["native_provision_writes"] = runtime.get("native_provision_writes", 0) + 1
         runtime_path.write_text(json.dumps(runtime, sort_keys=True))
         return ChangeSet(changed=True, operations=("pyinfra", "postgresql", "scheduler"))
@@ -617,6 +621,40 @@ def test_default_public_provision_refreshes_an_existing_scheduler_under_genesis_
     assert runtime["events"].index("scheduler-stop") < runtime["events"].index("scheduler-wait")
     assert runtime["events"].index("scheduler-wait") < runtime["events"].index("scheduler-replace")
     assert runtime["events"].index("scheduler-replace") < runtime["events"].index("scheduler-start")
+
+
+def test_default_public_partial_scheduler_never_starts_an_old_helper_before_locked_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent timer must not launch the existing helper during generic convergence."""
+
+    request = host_deploy_tests._request(tmp_path / "partial-scheduler", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+        scheduler_resources={"helper": True, "service": True, "timer": False, "environment": True},
+    )
+    _config, archive, target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="partial-scheduler.tar.gz"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["scheduler_sha256"] = "e" * 64
+    runtime["backup_timer_enabled"] = False
+    runtime["backup_timer_state"] = "inactive"
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = provision(_default_provision(archive))
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, (result.facts, runtime["events"])
+    assert _state(dict(request.paths), runtime_path).selected_release_id == target.release_id
+    assert runtime["scheduler_resources"] == {
+        "helper": True, "service": True, "timer": True, "environment": True,
+    }
+    assert runtime["events"][:3] == ["scheduler-stop", "scheduler-wait", "scheduler-replace"]
+    assert runtime["events"].index("scheduler-replace") < runtime["events"].index("current-swap")
+    assert "scheduler-start" not in runtime["events"]
 
 
 def test_default_public_provision_refuses_unattended_post_confirmation_authority_drift(
@@ -986,6 +1024,35 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
         "timer": True,
         "environment": True,
     }
+
+
+def test_default_public_fresh_database_refuses_post_pyinfra_schema_drift_before_genesis_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating PostgreSQL cannot reauthorize a changed schema after confirmation."""
+
+    request = host_deploy_tests._request(tmp_path / "fresh-post-pyinfra-drift", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+        database_state="absent",
+        migration_result=(20260905120000,),
+        scheduler_resources={"helper": False, "service": False, "timer": False, "environment": False},
+    )
+    _config, archive, _target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="fresh-post-pyinfra-drift.tar.gz"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["post_pyinfra_migrations"] = [20260905120000]
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    refused = provision(_default_provision(archive))
+
+    runtime = json.loads(runtime_path.read_text())
+    assert refused.exit_status is ExitStatus.SAFETY
+    assert runtime["native_provision_writes"] == 1
+    assert runtime["events"] == []
 
 
 def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_backup(

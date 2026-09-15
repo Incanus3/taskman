@@ -27,6 +27,7 @@ from ..database import (
     database_mapping,
     observe_database_state,
     observe_database_state_or_empty,
+    observe_database_state_or_empty_as_admin,
     release_migration_versions,
 )
 from ..lock import LifecycleLockContention, lifecycle_lock
@@ -113,8 +114,18 @@ def provision_authority(request: HostRequest) -> HostResult:
                 }
             else:
                 credentials = Path("/etc/taskman/pgpass")
-                validate_credentials(credentials)
-                database_observation = observe_database_state_or_empty(database, credentials)
+                try:
+                    credentials.lstat()
+                except FileNotFoundError:
+                    # The controller proves its supplied pgpass through a
+                    # sensitive, read-only authentication command before
+                    # pyinfra. Keep this catalog observation secret-free so
+                    # supplied credential bytes never enter the wire result,
+                    # request, or diagnostics.
+                    database_observation = observe_database_state_or_empty_as_admin(database)
+                else:
+                    validate_credentials(credentials)
+                    database_observation = observe_database_state_or_empty(database, credentials)
                 if database_observation["state"] != database_state:
                     raise ValueError("PostgreSQL authority observations disagree")
             state = replace(

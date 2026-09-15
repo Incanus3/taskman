@@ -68,6 +68,7 @@ def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> N
     monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
     monkeypatch.setattr(discover_module, "observe_database_state", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_host_state", lambda *_args, **_kwargs: observed)
     monkeypatch.setattr(discover_module, "lifecycle_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
@@ -275,6 +276,11 @@ def test_preconvergence_authority_binds_live_partial_migrations_before_pyinfra(
     monkeypatch.setattr(
         discover_module,
         "observe_database_state_or_empty",
+        lambda *_args: {"state": "ready", "applied_migrations": (20260905120000,), "initial_empty": False},
+    )
+    monkeypatch.setattr(
+        discover_module,
+        "observe_database_state_or_empty_as_admin",
         lambda *_args: {"state": "ready", "applied_migrations": (20260905120000,), "initial_empty": False},
     )
     result = discover_module.provision_authority(

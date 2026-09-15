@@ -33,6 +33,70 @@ _CADDY_PLAN = CaddyPlan(
 )
 
 
+def test_missing_pgpass_requires_a_sensitive_supplied_credential_proof_before_writes() -> None:
+    """Partial recovery must authenticate supplied bytes without publishing them."""
+
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    class Remote:
+        def run(self, argv: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+            calls.append((argv, kwargs))
+            return SimpleNamespace(succeeded=True)
+
+    provisioning.validate_existing_credential_authority(
+        Remote(),
+        ProvisioningInputs(
+            config=EnvironmentConfig.model_validate(valid_environment()),
+            caddy_plan=_CADDY_PLAN,
+            runtime_environment=b"RUNTIME=value\n",
+            pgpass=b"127.0.0.1:5432:*:taskman:secret\n",
+            role_password_input=b"role-password-input\n",
+        ),
+    )
+
+    pgpass_call = next(call for call in calls if call[0][3] == "taskman-credential-authority" and call[0][4] == "/etc/taskman/pgpass")
+    script, kwargs = pgpass_call[0][2], pgpass_call[1]
+    assert "PGPASSFILE=/dev/stdin" in script
+    assert "mktemp" not in script
+    assert "--command 'SELECT 1'" in script
+    assert kwargs["sensitive"] is True
+    assert kwargs["stdin"] == b"127.0.0.1:5432:*:taskman:secret\n"
+
+
+def test_existing_scheduler_units_and_environment_require_exact_rendered_bytes() -> None:
+    """Foreign root-owned scheduler text is not safe reuse authority."""
+
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    config = EnvironmentConfig.model_validate(valid_environment())
+    calls: list[tuple[str, ...]] = []
+
+    class Remote:
+        def run(self, argv: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+            calls.append(argv)
+            return SimpleNamespace(succeeded=False)
+
+    with pytest.raises(OpsError, match="existing managed resource authority"):
+        provisioning.validate_existing_resource_authority(
+            Remote(),
+            ProvisioningInputs(
+                config=config,
+                caddy_plan=_CADDY_PLAN,
+                runtime_environment=b"RUNTIME=value\n",
+                pgpass=b"pgpass\n",
+                role_password_input=b"role-password-input\n",
+            ),
+        )
+
+    script = calls[0][2]
+    plan = provisioning.build_systemd_plan(config)
+    assets = {asset.destination: provisioning._systemd_asset_sha256(asset) for asset in plan.assets}
+    assert assets["/etc/systemd/system/taskman-backup.service"] in calls[0]
+    assert assets["/etc/systemd/system/taskman-backup.timer"] in calls[0]
+    assert provisioning._sha256(plan.backup_environment_content.encode("utf-8")) in calls[0]
+    assert "sha256sum" in script
+
+
 @dataclass
 class DeployTraceRemote(PyinfraRemote):
     """Records the one programmatic deploy expected from production provision."""

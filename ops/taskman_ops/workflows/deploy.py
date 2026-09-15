@@ -524,10 +524,14 @@ def _matches_confirmed_preconvergence(
     allowed = frozenset(scheduler_create or ())
     for key in confirmed:
         if key == "scheduled_backup_sha256" and "/usr/local/lib/taskman/taskman-backup.pyz" in allowed:
+            if observed[key] == confirmed[key]:
+                continue
             if confirmed[key] is not None or observed[key] is None:
                 return False
             continue
         if key == "backup_timer_enabled" and "/etc/systemd/system/taskman-backup.timer" in allowed:
+            if observed[key] == confirmed[key]:
+                continue
             if confirmed[key] is not False or observed[key] is not True:
                 return False
             continue
@@ -549,10 +553,6 @@ def _starting_expected_state(starting_state: Mapping[str, object] | None) -> dic
         return None
     authority = starting_state.get("host_authority")
     if not isinstance(authority, Mapping):
-        return None
-    if authority.get("database_state") == "absent":
-        # A proven-absent database is an explicit provisioning delta.  It
-        # cannot supply schema authority to compare with post-pyinfra genesis.
         return None
     required = {
         "selected_release_id",

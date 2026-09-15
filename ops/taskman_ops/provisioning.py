@@ -29,7 +29,15 @@ cmp -s - "$path"
 '''
 _PGPASS_REUSE_SCRIPT = r'''set -eu
 path=$1 host=$2 port=$3 role=$4 database=$5
-if [ ! -e "$path" ] && [ ! -L "$path" ]; then exit 0; fi
+if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+  # A missing managed pgpass is the one supported partial-install boundary.
+  # Prove the supplied bytes authenticate before the later protected write.
+  # libpq parses the protected stdin directly as a pgpass file; no temporary
+  # file or managed host state is created during this read-only admission.
+  export PGPASSFILE=/dev/stdin
+  exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --no-password --host "$host" --port "$port" \
+    --username "$role" --dbname "$database" --command 'SELECT 1' >/dev/null 2>&1
+fi
 test -f "$path" && test ! -L "$path"
 test "$(stat --format='%U:%G:%a' -- "$path")" = root:root:600
 cmp -s - "$path"
@@ -231,13 +239,14 @@ def validate_existing_resource_authority(remote: object, inputs: ProvisioningInp
         ("/var/lock/taskman", "directory", "root", "root", "700", ""),
         ("/usr/local/lib/taskman", "directory", "root", "root", "755", ""),
         (f"{config.install_root}/lifecycle.lock", "regular file", "root", "root", "600", ""),
-        # Existing scheduler inputs are deliberately admitted by safe metadata
-        # only.  Genesis refreshes the executable under the lifecycle lock;
-        # generic pyinfra must never replace an older supported scheduler.
-        ("/etc/taskman/taskman-backup.env", "regular file", "root", "root", "600", ""),
+        # The executable can be an earlier supported helper and is refreshed
+        # only under the Task 5 lifecycle lock.  Units and environment are
+        # configuration, not versioned helper bytes: admit them only when
+        # they exactly match the rendered supported assets.
+        ("/etc/taskman/taskman-backup.env", "regular file", "root", "root", "600", _sha256(plan.backup_environment_content.encode("utf-8"))),
         ("/etc/systemd/system/taskman.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman.service"]),
-        ("/etc/systemd/system/taskman-backup.service", "regular file", "root", "root", "644", ""),
-        ("/etc/systemd/system/taskman-backup.timer", "regular file", "root", "root", "644", ""),
+        ("/etc/systemd/system/taskman-backup.service", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.service"]),
+        ("/etc/systemd/system/taskman-backup.timer", "regular file", "root", "root", "644", assets["/etc/systemd/system/taskman-backup.timer"]),
         ("/usr/local/lib/taskman/taskman-backup.pyz", "regular file", "root", "root", "750", ""),
     )
     argv = ("sh", "-ceu", _RESOURCE_REUSE_SCRIPT, "taskman-resource-authority", *(value for row in roots for value in row))

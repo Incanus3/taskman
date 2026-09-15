@@ -110,9 +110,24 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
     )
     for service in plan.enable_without_start:
         systemd.service(service, running=None, enabled=True, name=f"Enable {service}")
+    create_all_scheduler_resources = scheduler_create == frozenset(
+        {
+            "/usr/local/lib/taskman/taskman-backup.pyz",
+            "/etc/systemd/system/taskman-backup.service",
+            "/etc/systemd/system/taskman-backup.timer",
+            "/etc/taskman/taskman-backup.env",
+        }
+    )
     for service in plan.enable_and_start:
         timer_path = "/etc/systemd/system/taskman-backup.timer"
-        if service != "taskman-backup.timer" or timer_path in scheduler_create:
+        # A partially present scheduler may contain an earlier compatible
+        # helper.  Generic convergence may lay down its missing timer, but
+        # must not start it before genesis owns the Task 5 pause/wait/refresh
+        # sequence.  Only an entirely absent scheduler has no old executable
+        # that this operation could accidentally launch.
+        if service != "taskman-backup.timer" or (
+            timer_path in scheduler_create and create_all_scheduler_resources
+        ):
             systemd.service(service, running=True, enabled=True, name=f"Enable and start {service}")
     return plan
 

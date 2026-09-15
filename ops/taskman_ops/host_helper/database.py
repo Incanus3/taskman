@@ -96,15 +96,35 @@ def observe_database_state_or_empty(database: Mapping[str, object], credentials:
     return {**_state_from_versions(database, credentials), "initial_empty": False}
 
 
-def _migration_table(database: Mapping[str, object], credentials: Path) -> bytes:
-    return run_command(
-        (*_psql_argv(database), "--command", "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'"),
-        env={"PGPASSFILE": credentials.as_posix()},
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
+def observe_database_state_or_empty_as_admin(database: Mapping[str, object]) -> dict[str, object]:
+    """Read a ready database through its already-validated local cluster.
+
+    This is the narrow missing-pgpass recovery observation.  The caller has
+    already proved the cluster, database, and unprivileged role identity with
+    the native PostgreSQL authority check; the controller separately proves
+    the supplied pgpass can authenticate before any managed write.  No secret
+    crosses this admin-only catalog observation.
+    """
+
+    table = _migration_table(database, None)
+    if table == b"":
+        if _initial_database_empty(database, None) != b"1":
+            raise DatabaseObservationError("initial database is not empty")
+        return {"state": "ready", "applied_migrations": (), "initial_empty": True}
+    if table != b"1":
+        raise DatabaseObservationError("database migration authority is ambiguous")
+    return {**_state_from_versions(database, None), "initial_empty": False}
 
 
-def _initial_database_empty(database: Mapping[str, object], credentials: Path) -> bytes:
+def _migration_table(database: Mapping[str, object], credentials: Path | None) -> bytes:
+    return _database_query(
+        database,
+        credentials,
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations'",
+    ).strip()
+
+
+def _initial_database_empty(database: Mapping[str, object], credentials: Path | None) -> bytes:
     """Compare every user-extensible catalog to the controlled empty template.
 
     ``schema_migrations`` is application provenance, not proof that a database
@@ -116,11 +136,10 @@ def _initial_database_empty(database: Mapping[str, object], credentials: Path) -
     do not own and must refuse.
     """
 
-    return run_command(
-        (
-            *_psql_argv(database),
-            "--command",
-            "WITH user_namespaces AS ("
+    return _database_query(
+        database,
+        credentials,
+        "WITH user_namespaces AS ("
             "SELECT oid FROM pg_catalog.pg_namespace "
             "WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'public') "
             "AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp_%'"
@@ -147,10 +166,19 @@ def _initial_database_empty(database: Mapping[str, object], credentials: Path) -
             "WHERE extension.extname <> 'plpgsql' "
             "OR extension.extversion <> '1.0' "
             "OR extension.extnamespace <> 'pg_catalog'::pg_catalog.regnamespace "
-            "UNION ALL SELECT 1 FROM pg_catalog.pg_language language "
-            "WHERE language.lanname <> 'plpgsql' "
-            "OR NOT language.lanpltrusted "
-            "OR language.lanplcallfoid = 0 "
+            "UNION ALL SELECT 1 FROM (VALUES "
+            "('internal',false,NULL::text,NULL::text,NULL::text),"
+            "('c',false,NULL::text,NULL::text,NULL::text),"
+            "('sql',true,NULL::text,NULL::text,NULL::text),"
+            "('plpgsql',true,'pg_catalog.plpgsql_call_handler','pg_catalog.plpgsql_inline_handler','pg_catalog.plpgsql_validator')"
+            ") AS expected_language(name,trusted,handler,inline_handler,validator) "
+            "FULL JOIN pg_catalog.pg_language language ON language.lanname = expected_language.name "
+            "WHERE expected_language.name IS NULL OR language.lanname IS NULL "
+            "OR language.lanpltrusted IS DISTINCT FROM expected_language.trusted "
+            "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.lanplcallfoid) IS DISTINCT FROM expected_language.handler "
+            "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.laninline) IS DISTINCT FROM expected_language.inline_handler "
+            "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.lanvalidator) IS DISTINCT FROM expected_language.validator "
+            "OR (language.lanname = 'plpgsql' AND pg_catalog.pg_get_userbyid(language.lanowner) <> 'postgres') "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_event_trigger "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_default_acl "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_largeobject_metadata "
@@ -185,18 +213,13 @@ def _initial_database_empty(database: Mapping[str, object], credentials: Path) -
             "public_schema.nspowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'pg_database_owner') "
             "OR public_schema.nspacl IS DISTINCT FROM ARRAY['pg_database_owner=UC/pg_database_owner','=U/pg_database_owner']::aclitem[])"
             ") SELECT CASE WHEN EXISTS (SELECT 1 FROM unexpected) THEN 0 ELSE 1 END",
-        ),
-        env={"PGPASSFILE": credentials.as_posix()},
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.strip()
+    ).strip()
 
 
-def _state_from_versions(database: Mapping[str, object], credentials: Path) -> dict[str, object]:
-    output = run_command(
-        (*_psql_argv(database), "--command", "SELECT version FROM schema_migrations ORDER BY version"),
-        env={"PGPASSFILE": credentials.as_posix()},
-        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-    ).stdout.splitlines()
+def _state_from_versions(database: Mapping[str, object], credentials: Path | None) -> dict[str, object]:
+    output = _database_query(
+        database, credentials, "SELECT version FROM schema_migrations ORDER BY version"
+    ).splitlines()
     try:
         if any(item and _MIGRATION_VERSION_RE.fullmatch(item) is None for item in output):
             raise ValueError("migration evidence is not decimal")
@@ -224,6 +247,23 @@ def _psql_argv(database: Mapping[str, object]) -> tuple[str, ...]:
     )
 
 
+def _database_query(
+    database: Mapping[str, object], credentials: Path | None, command: str
+) -> bytes:
+    if credentials is None:
+        argv = (
+            "runuser", "-u", "postgres", "--", "psql", "--no-psqlrc",
+            "--tuples-only", "--no-align", "--host", "/var/run/postgresql",
+            "--port", str(database["port"]), "--username", "postgres",
+            "--dbname", str(database["name"]), "--no-password", "--command", command,
+        )
+        env = None
+    else:
+        argv = (*_psql_argv(database), "--command", command)
+        env = {"PGPASSFILE": credentials.as_posix()}
+    return run_command(argv, env=env, timeout_seconds=_COMMAND_TIMEOUT_SECONDS).stdout
+
+
 __all__ = [
     "DatabaseObservationError",
     "database_mapping",
@@ -231,5 +271,6 @@ __all__ = [
     "observe_database_migrations",
     "observe_database_state",
     "observe_database_state_or_empty",
+    "observe_database_state_or_empty_as_admin",
     "release_migration_versions",
 ]

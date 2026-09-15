@@ -92,6 +92,10 @@ def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
         "pg_event_trigger", "pg_default_acl", "pg_language",
     ):
         assert catalog in query
+    # These are present in a pristine PostgreSQL template and must be compared
+    # by their complete expected identities, not rejected by name alone.
+    for language in ("internal", "c", "sql", "plpgsql_call_handler", "plpgsql_validator"):
+        assert language in query
 
 
 @pytest.mark.parametrize(

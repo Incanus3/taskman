@@ -16,7 +16,10 @@ from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from taskman_ops.workflows.provision import ProvisionCapabilities, _present_plan, provision
-from taskman_ops.workflows.deploy import _matches_confirmed_preconvergence
+from taskman_ops.workflows.deploy import (
+    _matches_confirmed_preconvergence,
+    _starting_expected_state,
+)
 
 
 def artifact(*, migrations: tuple[object, ...] = ()) -> object:
@@ -634,6 +637,25 @@ def test_post_pyinfra_authority_accepts_only_the_confirmed_absent_scheduler_delt
     assert not _matches_confirmed_preconvergence(
         {**confirmed, "scheduled_backup_sha256": "c" * 64}, confirmed, ()
     )
+
+
+def test_absent_database_keeps_non_database_confirmation_authority() -> None:
+    """Database creation is a delta, not a waiver for release-state drift."""
+
+    authority = {
+        "database_state": "absent",
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "applied_migrations": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "downgrade_baseline_sha256": "b" * 64,
+    }
+
+    assert _starting_expected_state({"host_authority": authority}) == {
+        key: value for key, value in authority.items() if key != "database_state"
+    }
 
 
 def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_before_release() -> None:
