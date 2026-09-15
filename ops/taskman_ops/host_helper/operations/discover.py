@@ -30,6 +30,8 @@ from ..database import (
     observe_database_state_or_empty_as_admin,
     release_migration_versions,
 )
+from ..restore_database import observe_restore_databases
+from ..restore_target import restore_target_sha256
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..backup_protection import independent_backup_ids
 from ..paths import ManagedPaths, PathAuthorityError
@@ -60,20 +62,21 @@ def discover(request: HostRequest) -> HostResult:
     """Return one bounded projection of completed records and physical state."""
 
     try:
-        state, scheduler = _observe(request)
+        state, scheduler, restore_database_state = _observe(request)
     except LifecycleLockContention:
         return _locked(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
     mode = request.parameters["mode"]
-    if mode == "restore":
-        # Refuse until native restore-database identity can be observed;
-        # unknown authority cannot be represented as absence.
-        return _refused(request)
     projection = _discovery_state(state)
     if mode in {"deploy", "provision"}:
         assert scheduler is not None
         projection.update(_deployment_projection(state, scheduler, mode=mode))
+    elif mode == "restore":
+        assert scheduler is not None and restore_database_state is not None
+        projection.update(
+            _restore_projection(state, scheduler, restore_database_state)
+        )
     return _success(request, projection, state.warnings)
 
 
@@ -208,7 +211,7 @@ def list_releases(request: HostRequest) -> HostResult:
     """Return completed release manifests from one coherent snapshot."""
 
     try:
-        state, _scheduler = _observe(request)
+        state, _scheduler, _restore_database_state = _observe(request)
         cursor = _inventory_cursor(request, "list_releases")
     except _InvalidCursor:
         return _invalid_cursor(request)
@@ -227,7 +230,7 @@ def list_backups(request: HostRequest) -> HostResult:
     """Return validated backup manifests from one coherent snapshot."""
 
     try:
-        state, _scheduler = _observe(request)
+        state, _scheduler, _restore_database_state = _observe(request)
         cursor = _inventory_cursor(request, "list_backups")
     except _InvalidCursor:
         return _invalid_cursor(request)
@@ -242,7 +245,9 @@ def list_backups(request: HostRequest) -> HostResult:
     return _inventory_page(request, records, cursor, state.warnings)
 
 
-def _observe(request: HostRequest) -> tuple[HostState, dict[str, object] | None]:
+def _observe(
+    request: HostRequest,
+) -> tuple[HostState, dict[str, object] | None, dict[str, object] | None]:
     paths = ManagedPaths.from_mapping(request.paths)
     # The lock is held only while the completed records and physical selection
     # are read.  Health/readiness commands run after this snapshot is released.
@@ -270,26 +275,45 @@ def _observe(request: HostRequest) -> tuple[HostState, dict[str, object] | None]
             credentials_path = Path(credentials)
             validate_credentials(credentials_path)
             database = database_mapping(request.parameters["database"])
-            observation = (
-                observe_database_state_or_empty(database, credentials_path)
-                if mode == "provision"
-                else observe_database_state(database, credentials_path)
-            )
+            restore_database_state = None
+            if mode == "restore":
+                restore_database_state = observe_restore_databases(
+                    database, credentials_path
+                )
+                canonical = restore_database_state["canonical"]
+                if isinstance(canonical, Mapping):
+                    canonical_versions = canonical["applied_migrations"]
+                    observation = {
+                        "state": "ready",
+                        "applied_migrations": (
+                            () if canonical_versions is None else canonical_versions
+                        ),
+                    }
+                else:
+                    observation = {"state": "absent", "applied_migrations": ()}
+            else:
+                observation = (
+                    observe_database_state_or_empty(database, credentials_path)
+                    if mode == "provision"
+                    else observe_database_state(database, credentials_path)
+                )
             state = observe_host_state(
                 paths,
                 database=observation,
                 allow_selection_transition=mode in {"deploy", "provision", "restore"},
             )
             scheduler = (
-                _scheduler_facts(paths) if mode in {"deploy", "provision"} else None
+                _scheduler_facts(paths)
+                if mode in {"deploy", "provision", "restore"}
+                else None
             )
-            return state, scheduler
+            return state, scheduler, restore_database_state
         if request.expected_state or set(request.parameters) != {"cursor"}:
             raise ValueError("listing request is invalid")
         return observe_host_state(
             paths,
             allow_selection_transition=request.operation == "list_releases",
-        ), None
+        ), None, None
 
 
 def _inventory_cursor(request: HostRequest, operation: str) -> Mapping[str, object] | None:
@@ -458,6 +482,37 @@ def _deployment_projection(
             _canonical_ascii(sorted(baseline_ids))
         ).hexdigest(),
         **scheduler,
+    }
+
+
+def _restore_projection(
+    state: HostState,
+    scheduler: Mapping[str, object],
+    restore_database_state: Mapping[str, object],
+) -> dict[str, object]:
+    """Project restore-only identity without a deployment downgrade baseline."""
+
+    deployment = _deployment_projection(state, scheduler, mode="restore")
+    canonical = restore_database_state["canonical"]
+    applied_migrations = (
+        canonical["applied_migrations"] if isinstance(canonical, Mapping) else None
+    )
+    return {
+        "applied_migrations": applied_migrations,
+        "backup_protections": deployment["backup_protections"],
+        "backup_protection_sha256": deployment["backup_protection_sha256"],
+        "scheduled_backup_sha256": deployment["scheduled_backup_sha256"],
+        "backup_timer_enabled": deployment["backup_timer_enabled"],
+        "backup_timer_state": deployment["backup_timer_state"],
+        "restore_target": (
+            None
+            if state.restore_target is None
+            else {
+                **state.restore_target.to_mapping(),
+                "sha256": restore_target_sha256(state.restore_target),
+            }
+        ),
+        "restore_database_state": dict(restore_database_state),
     }
 
 

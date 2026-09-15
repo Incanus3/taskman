@@ -13,6 +13,7 @@ import pytest
 from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper.backup_protection import BackupProtection
 from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, SelectionRecord
+from taskman_ops.host_helper.restore_target import RestoreTarget, restore_target_sha256
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
 from taskman_ops.releases.identifiers import build_release_id
@@ -148,9 +149,92 @@ def test_v3_discovery_refuses_malformed_mode_specific_parameters(monkeypatch: py
     assert result.state == {}
 
 
-def test_restore_discovery_refuses_until_database_binding_facts_are_observable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replacing unavailable restore database authority with null would claim absence."""
+def test_restore_discovery_returns_exact_database_shapes_and_flat_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nesting or omitting binding identity would prevent exact apply-time drift checks."""
     _install_observer(monkeypatch, _state())
+    database_state = {
+        "canonical": {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (20260905120000,)},
+        "temporary": None,
+        "retired": None,
+    }
+    monkeypatch.setattr(
+        discover_module, "observe_restore_databases", lambda *_args: database_state
+    )
+
+    result = discover_module.discover(
+        _request(mode="restore", backup_id="backup-" + "c" * 32)
+    )
+
+    assert result.outcome == "succeeded"
+    assert result.state["restore_target"] is None
+    assert result.state["restore_database_state"] == database_state
+    assert result.state["applied_migrations"] == (20260905120000,)
+    assert result.state["scheduled_backup_sha256"] == "d" * 64
+    assert "downgrade_baseline_sha256" not in result.state
+
+
+def test_restore_discovery_adds_digest_to_the_flat_validated_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A nested record or persisted digest would break the exact restore discovery contract."""
+
+    target = RestoreTarget(
+        1,
+        "backup-" + "c" * 32,
+        "d" * 64,
+        RELEASE_ID,
+        None,
+        RELEASE_ID,
+        101,
+        None,
+        True,
+        "backup-" + "e" * 32,
+        None,
+        ({"backup_id": "backup-" + "e" * 32, "attempt_number": 0},),
+    )
+    observed = HostState(**{**_state().__dict__, "restore_target": target})
+    _install_observer(monkeypatch, observed)
+    monkeypatch.setattr(
+        discover_module,
+        "observe_restore_databases",
+        lambda *_args: {
+            "canonical": {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (20260905120000,)},
+            "temporary": None,
+            "retired": None,
+        },
+    )
+
+    result = discover_module.discover(
+        _request(mode="restore", backup_id="backup-" + "c" * 32)
+    )
+
+    assert result.outcome == "succeeded"
+    projected = result.state["restore_target"]
+    assert set(projected) == {
+        "schema_version", "backup_id", "dump_sha256", "source_release_id",
+        "base_selection_id", "observed_previous_release_id", "original_database_oid",
+        "restored_database_oid", "temporary_creation_pending", "safety_backup_id",
+        "replacement", "safety_backup_attempts", "sha256",
+    }
+    assert projected["backup_id"] == "backup-" + "c" * 32
+    assert projected["original_database_oid"] == 101
+    assert projected["sha256"] == restore_target_sha256(target)
+    assert "record" not in projected
+
+
+def test_restore_discovery_refuses_failed_database_observation_instead_of_returning_nulls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Null database entries are proof of absence, never an observation fallback."""
+
+    from taskman_ops.host_helper.restore_database import RestoreDatabaseError
+
+    _install_observer(monkeypatch, _state())
+    monkeypatch.setattr(
+        discover_module,
+        "observe_restore_databases",
+        lambda *_args: (_ for _ in ()).throw(RestoreDatabaseError("failed")),
+    )
 
     result = discover_module.discover(
         _request(mode="restore", backup_id="backup-" + "c" * 32)
@@ -158,6 +242,30 @@ def test_restore_discovery_refuses_until_database_binding_facts_are_observable(m
 
     assert result.outcome == "refused"
     assert result.state == {}
+
+
+def test_restore_discovery_uses_null_top_level_migrations_for_a_missing_canonical_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Temporary migration evidence must never masquerade as canonical live schema."""
+
+    _install_observer(monkeypatch, _state(migrations=()))
+    monkeypatch.setattr(
+        discover_module,
+        "observe_restore_databases",
+        lambda *_args: {
+            "canonical": {"oid": 101, "owner": "taskman", "migration_table_present": False, "applied_migrations": None},
+            "temporary": {"oid": 202, "owner": "taskman", "migration_table_present": True, "applied_migrations": (20260905120000,)},
+            "retired": None,
+        },
+    )
+
+    result = discover_module.discover(
+        _request(mode="restore", backup_id="backup-" + "c" * 32)
+    )
+
+    assert result.outcome == "succeeded"
+    assert result.state["applied_migrations"] is None
 
 
 def test_deploy_discovery_projects_protection_scheduler_and_downgrade_digests(
