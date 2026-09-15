@@ -2171,6 +2171,196 @@ def test_public_controller_retries_a_selected_unverified_release_without_synthet
     assert state.backup_protections == ()
 
 
+def test_public_deploy_advances_migration_protections_past_attempt_64(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One public migration beyond 64 retains only the exact bounded recovery set.
+
+    Independently derived expectations: attempts 0, 62, 63, 64, and 65
+    already fill the original/newest/three-intermediate allowance. A separate
+    successful-history backup is deliberately outside those slots. The planned
+    fresh attempt 66 displaces only attempt 62. Verified success must publish
+    precisely the five unresolved recovery IDs before resolving their active
+    protections. An implementation that caps/restarts attempt numbers, deletes
+    the original/newest/history-held backup, or omits a reference cannot
+    satisfy these consequences.
+    """
+
+    from taskman_ops.host_helper.backup_protection import (
+        BackupProtection,
+        protection_prune_ids,
+        protection_prune_ids_after_fresh_attempt,
+        write_backup_protection,
+    )
+    from taskman_ops.host_helper.records import (
+        BackupRecord,
+        SelectionRecord,
+        append_selection,
+        selection_filename,
+        write_backup_manifest,
+    )
+    from taskman_ops.workflows import deploy as deploy_workflow
+
+    request = host_deploy_tests._request(tmp_path / "high-attempt")
+    host_deploy_tests._install_current(dict(request.paths))
+    Path(request.paths["backup_root"]).rmdir()
+    host_deploy_tests._install_unselected_candidate(request)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch, tmp_path, verification="passing"
+    )
+    paths = host_deploy.ManagedPaths.from_mapping(dict(request.paths))
+    target = _artifact_target(request)
+
+    pruned_attempt = 62
+    retained_attempts = (0, pruned_attempt, 63, 64, 65)
+    new_attempt = 66
+    attempt_ids = {
+        attempt: f"backup-{attempt:032x}"
+        for attempt in retained_attempts
+    }
+    new_backup_id = f"backup-{new_attempt:032x}"
+    history_held_backup_id = "backup-" + "e" * 32
+    unrelated_backup_id = "backup-" + "f" * 32
+    backup_payload = b"high-attempt recovery backup"
+    backup_digest = hashlib.sha256(backup_payload).hexdigest()
+
+    existing = _state(dict(request.paths), runtime_path).selections
+    assert len(existing) == 1
+    (Path(paths.local(paths.selection_root)) / selection_filename(existing[0])).unlink()
+    baseline = SelectionRecord(
+        host_deploy_tests.CURRENT,
+        None,
+        history_held_backup_id,
+        datetime(2026, 9, 15, 12, tzinfo=UTC),
+        2,
+        None,
+        (history_held_backup_id,),
+    )
+    append_selection(paths, baseline)
+    baseline_id = selection_filename(baseline)
+
+    Path(paths.local(paths.backup_protection_root)).mkdir(mode=0o750)
+    backup_root = Path(paths.local(paths.backup_root))
+    for backup_id in (*attempt_ids.values(), history_held_backup_id, unrelated_backup_id):
+        (backup_root / f"{backup_id}.dump").write_bytes(backup_payload)
+        (backup_root / f"{backup_id}.dump").chmod(0o600)
+        write_backup_manifest(
+            paths,
+            BackupRecord(
+                backup_id,
+                datetime(2026, 9, 15, 12, tzinfo=UTC),
+                backup_digest,
+                host_deploy_tests.CURRENT,
+                (),
+                len(backup_payload),
+            ),
+        )
+    for attempt, backup_id in attempt_ids.items():
+        write_backup_protection(
+            paths,
+            BackupProtection(
+                1,
+                backup_id,
+                baseline_id,
+                target.release_id,
+                attempt,
+                datetime(2026, 9, 15, 12, tzinfo=UTC),
+            ),
+        )
+
+    before = _state(dict(request.paths), runtime_path)
+    assert before.successful_backup_ids == frozenset({history_held_backup_id})
+    assert (
+        tuple(item.attempt_number for item in before.backup_protections)
+        == retained_attempts
+    )
+    assert protection_prune_ids(before.backup_protections, baseline_id) == ()
+    assert protection_prune_ids_after_fresh_attempt(before.backup_protections, baseline_id) == (
+        attempt_ids[pruned_attempt],
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["backup_count"] = 65
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+    sent_prune_ids: list[tuple[str, ...]] = []
+    captured_plans: list[dict[str, object]] = []
+    dispatch = deploy_workflow.run_deployment_request
+
+    def capture_dispatch(*args: object, **kwargs: object) -> object:
+        prune_ids = kwargs["prune_backup_ids"]
+        assert isinstance(prune_ids, tuple)
+        sent_prune_ids.append(prune_ids)
+        return dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(deploy_workflow, "run_deployment_request", capture_dispatch)
+
+    result = deploy_workflow.deploy(
+        remote,
+        _controller_config(dict(request.paths)),
+        target,
+        migration_policy="backward-compatible",
+        yes=True,
+        allow_downgrade=True,
+        present_plan=lambda plan: captured_plans.append(dict(plan)),
+    )
+
+    resolved_recovery_backup_ids = tuple(
+        sorted(
+            (
+                *[
+                    attempt_ids[attempt]
+                    for attempt in retained_attempts
+                    if attempt != pruned_attempt
+                ],
+                new_backup_id,
+            )
+        )
+    )
+    retained_backup_ids = tuple(
+        sorted((*resolved_recovery_backup_ids, history_held_backup_id))
+    )
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert len(captured_plans) == 1
+    assert captured_plans[0]["prune_backup_ids"] == [attempt_ids[pruned_attempt]]
+    recovery_points = captured_plans[0]["recovery_protection_points"]
+    assert recovery_points == [
+        {
+            "backup_id": attempt_ids[attempt],
+            "attempt_number": attempt,
+            "base_selection_id": baseline_id,
+            "target_release_id": target.release_id,
+            "independently_referenced": False,
+            "disposition": "prune-authorized"
+            if attempt == pruned_attempt
+            else "retained",
+        }
+        for attempt in retained_attempts
+    ]
+    assert sent_prune_ids == [(attempt_ids[pruned_attempt],)]
+
+    state = _state(dict(request.paths), runtime_path)
+    runtime = json.loads(runtime_path.read_text())
+    final_selection = state.selections[-1]
+    assert [selection.release_id for selection in state.selections] == [
+        host_deploy_tests.CURRENT,
+        target.release_id,
+    ]
+    assert final_selection.backup_id == new_backup_id
+    assert final_selection.recovery_backup_ids == resolved_recovery_backup_ids
+    assert state.backup_protections == ()
+    assert state.successful_backup_ids == frozenset(retained_backup_ids)
+    assert state.selections[0].recovery_backup_ids == (history_held_backup_id,)
+    assert not Path(paths.local(paths.backup_protection(attempt_ids[pruned_attempt]))).exists()
+    assert not (backup_root / f"{attempt_ids[pruned_attempt]}.json").exists()
+    assert not (backup_root / f"{attempt_ids[pruned_attempt]}.dump").exists()
+    for backup_id in (*retained_backup_ids, unrelated_backup_id):
+        assert (backup_root / f"{backup_id}.json").is_file()
+        assert (backup_root / f"{backup_id}.dump").is_file()
+    assert runtime["backup_count"] == new_attempt
+    assert runtime["events"].index("safety-backup") < runtime["events"].index("service-stop")
+    assert runtime["events"].index("service-stop") < runtime["events"].index("current-swap")
+    assert runtime["events"].index("current-swap") < runtime["events"].index("service-start")
+
+
 def test_public_controller_replaces_an_unhealthy_selected_release_without_publishing_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
