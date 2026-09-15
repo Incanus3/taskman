@@ -38,6 +38,7 @@ def test_database_observation_accepts_an_empty_schema_only_for_first_release(
     assert database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass")) == {
         "state": "ready",
         "applied_migrations": (),
+        "initial_empty": True,
     }
     assert database.observe_database_state(database_mapping(), Path("/etc/taskman/pgpass")) == {
         "state": "ready",
@@ -79,9 +80,16 @@ def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
     assert database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass")) == {
         "state": "ready",
         "applied_migrations": (),
+        "initial_empty": True,
     }
     query = commands[1][commands[1].index("--command") + 1]
-    for catalog in ("pg_class", "pg_proc", "pg_type", "pg_extension", "pg_collation"):
+    for catalog in (
+        "pg_class", "pg_proc", "pg_type", "pg_extension", "pg_collation",
+        "pg_largeobject_metadata", "pg_foreign_data_wrapper", "pg_foreign_server",
+        "pg_user_mapping", "pg_publication", "pg_subscription", "pg_conversion",
+        "pg_opclass", "pg_opfamily", "pg_ts_config", "pg_ts_dict", "pg_ts_parser",
+        "pg_ts_template", "pg_database_owner", "nspacl",
+    ):
         assert catalog in query
 
 

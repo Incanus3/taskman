@@ -23,6 +23,7 @@ from ..host_helper.backup_protection import (
 )
 from ..releases.source_order import compare_sources
 from ..migrations import validate_migration_versions
+from ..host_helper.database import release_migration_versions
 from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
@@ -465,12 +466,16 @@ def _downgrade_acknowledgment(
     config: EnvironmentConfig,
     target: DeploymentTarget,
     repo: Path | None,
+    *,
+    mode: str = "deploy",
 ) -> tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]:
     """Classify every validated deploy baseline without treating uncertainty as forward."""
 
     from .inventory import collect_inventory
 
-    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if mode not in {"deploy", "provision"}:
+        raise ValueError("downgrade authority mode is invalid")
+    result = run_request(remote, discovery_request(config, mode=mode))
     if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused downgrade authority")
     state = mutable(result.state)
@@ -495,11 +500,6 @@ def _downgrade_acknowledgment(
         if latest_record is not None:
             baseline_ids.add(latest_record.release_id)
         baseline_ids.update(item.target_release_id for item in protections)
-        expected_digest = hashlib.sha256(
-            json.dumps(sorted(baseline_ids), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
-        ).hexdigest()
-        if state["downgrade_baseline_sha256"] != expected_digest:
-            raise ValueError
         records = {
             record.release_id: record
             for record in (
@@ -509,6 +509,22 @@ def _downgrade_acknowledgment(
                 )
             )
         }
+        # Fresh provision may have applied schema versions without a physical
+        # current selection.  Its helper includes every installed record whose
+        # immutable migration provenance intersects those versions; mirror that
+        # exact bounded baseline set before checking its digest.
+        if mode == "provision" and selected is None and latest_record is None:
+            applied = frozenset(validate_migration_versions(state["applied_migrations"]))
+            baseline_ids.update(
+                release_id
+                for release_id, record in records.items()
+                if applied.intersection(release_migration_versions(record.migrations))
+            )
+        expected_digest = hashlib.sha256(
+            json.dumps(sorted(baseline_ids), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        if state["downgrade_baseline_sha256"] != expected_digest:
+            raise ValueError
         baselines = tuple(records[release_id] for release_id in sorted(baseline_ids))
     except (KeyError, TypeError, ValueError):
         raise _safety("deployment planning helper returned invalid downgrade authority") from None

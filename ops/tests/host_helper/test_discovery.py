@@ -16,6 +16,9 @@ from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
 from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ArtifactManifest
+from taskman_ops.provisioning import ProvisioningInputs, validate_preconvergence_authority
+from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from tests.support.environments import environment_config
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
@@ -258,6 +261,34 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
     assert result.state["installed_release_count"] == 1
     assert len(result.state["installed_release_sha256"]) == 64
     assert calls == ["postgres"]
+
+
+def test_real_provision_authority_projection_passes_the_production_controller_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The packaged helper's exact projection must be consumable before pyinfra."""
+
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: None)
+    helper_result = discover_module.provision_authority(
+        HostRequest(
+            3, "provision_authority", CORRELATION, {},
+            {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None},
+        )
+    )
+    import taskman_ops.workflows.helper as helper_module
+
+    monkeypatch.setattr(helper_module, "run_request", lambda *_args: helper_result)
+    config = environment_config()
+    inputs = ProvisioningInputs(
+        config=config,
+        caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/key", "deb example"), (), (), ""),
+        runtime_environment=b"runtime", pgpass=b"pgpass", role_password_input=b"password",
+    )
+
+    assert validate_preconvergence_authority(object(), inputs) == helper_result.state
 
 
 def test_preconvergence_postgresql_observer_binds_cluster_listener_and_identity(

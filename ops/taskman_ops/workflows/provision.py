@@ -483,7 +483,9 @@ def _provision_downgrade_authority(
         # archive and have no paged host-record boundary.  Production's
         # default resolver always produces DeploymentTarget.
         return False, ()
-    return _downgrade_acknowledgment(remote, config, target, _repository_root())
+    return _downgrade_acknowledgment(
+        remote, config, target, _repository_root(), mode="provision"
+    )
 
 
 def _downgrade_plan_rows(

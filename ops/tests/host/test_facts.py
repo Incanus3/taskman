@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import pytest
@@ -13,6 +13,7 @@ from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host.acceptance import (
     ProvisioningState,
     _loopback,
+    _provisioning_state,
     validate_provisionable_host,
     validate_supported_host,
 )
@@ -853,3 +854,37 @@ def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_ref
         validate_supported_host(remote, environment_config(), resolver=direct_dns)
 
     assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_taskman_listener_requires_the_exact_managed_beam_process() -> None:
+    """A loopback port plus a unit file cannot authorize a foreign process."""
+
+    base = validate_supported_host(
+        ScriptedRemote.from_responses(fact_responses()), environment_config(), resolver=direct_dns
+    )
+    listener = Listener("127.0.0.1", 4000)
+    managed = replace(
+        base,
+        listeners=(listener,),
+        existing_paths=(PurePosixPath("/etc/systemd/system/taskman.service"),),
+        path_metadata=((PurePosixPath("/etc/systemd/system/taskman.service"), "regular file:root:root:644"),),
+        existing_units=("taskman.service",),
+        existing_accounts=("taskman",),
+        taskman_account_compatible=True,
+        taskman_service_pid=812,
+        taskman_service_executable="/opt/taskman/releases/release-a/erts-16.0/bin/beam.smp",
+        taskman_service_owner="taskman:taskman",
+        taskman_service_cgroup="/system.slice/taskman.service",
+        taskman_service_release_root="/opt/taskman/releases/release-a",
+        taskman_listener_owners=((listener, ("beam.smp", 812)),),
+    )
+
+    assert _provisioning_state(managed, environment_config()) is ProvisioningState.PARTIAL
+    for foreign in (
+        replace(managed, taskman_listener_owners=((listener, ("beam.smp", 813)),)),
+        replace(managed, taskman_service_executable="/usr/local/bin/foreign-beam.smp"),
+        replace(managed, taskman_service_owner="root:root"),
+    ):
+        with pytest.raises(OpsError) as raised:
+            _provisioning_state(foreign, environment_config())
+        assert raised.value.status is ExitStatus.SAFETY

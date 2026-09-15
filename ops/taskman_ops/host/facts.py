@@ -155,6 +155,33 @@ test "$margin" -ge 67108864 || margin=67108864
 required=$(( database_bytes + margin ))
 test "$available_bytes" -ge "$required"
 '''
+_TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
+emit() { printf '%s=%s\n' "$1" "$2"; }
+root=$1
+properties=$(systemctl show taskman.service --property=ActiveState --property=MainPID --property=ControlGroup --value 2>/dev/null || true)
+active=$(printf '%s\n' "$properties" | sed -n '1p')
+pid=$(printf '%s\n' "$properties" | sed -n '2p')
+cgroup=$(printf '%s\n' "$properties" | sed -n '3p')
+executable=
+owner=
+process_cgroup=
+release_root=
+case "$pid" in ''|0|*[!0-9]*) ;; *)
+  executable=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+  owner=$(stat --format='%U:%G' "/proc/$pid" 2>/dev/null || true)
+  process_cgroup=$(sed -n '1s/^[0-9][0-9]*:://p' "/proc/$pid/cgroup" 2>/dev/null || true)
+;; esac
+if [ -d "$root/current" ]; then
+  release_root=$(readlink -f "$root/current" 2>/dev/null || true)
+  case "$release_root" in "$root"/releases/*) ;; *) release_root= ;; esac
+fi
+emit active "$active"
+emit pid "$pid"
+emit cgroup "$cgroup"
+emit executable "$executable"
+emit owner "$owner"
+emit process_cgroup "$process_cgroup"
+emit release_root "$release_root"'''
 
 
 class DiscoveryState(str, Enum):
@@ -208,6 +235,12 @@ class HostFacts:
     taskman_account_compatible: bool
     existing_databases: tuple[str, ...]
     failed_checks: tuple[str, ...]
+    taskman_service_pid: int | None = None
+    taskman_service_executable: str = ""
+    taskman_service_owner: str = ""
+    taskman_service_cgroup: str = ""
+    taskman_service_release_root: str = ""
+    taskman_listener_owners: tuple[tuple[Listener, tuple[str, int]], ...] = ()
 
     @property
     def systemd(self) -> bool:
@@ -303,17 +336,28 @@ def collect_host_facts(
 
     found_paths, path_metadata = _existing_paths(_stdout(existing_paths), paths)
     found_units = _existing_units(_stdout(units))
+    observed_listeners = _listeners(_stdout(listeners))
+    taskman_authority: CommandResult | None = None
+    if (
+        "taskman.service" in found_units
+        and any(listener.port in {config.application_port, config.distribution_port} for listener in observed_listeners)
+    ):
+        taskman_authority = remote.run(
+            ("sh", "-ceu", _TASKMAN_SERVICE_AUTHORITY_SCRIPT, "taskman-service-authority", config.install_root.as_posix()),
+            sudo=True,
+        )
     found_accounts = (_ACCOUNT_NAME,) if DiscoveryState.DETECTED in account_states else ()
     taskman_account_compatible = _managed_taskman_account(_stdout(account), _stdout(account_group))
     found_databases = _existing_databases(
         _stdout(databases) if databases is not None else "", config.database_name
     )
     expected_config_hash = _expected_caddyfile_hash(config, expected_caddyfile_sha256)
+    parsed_listener_owners = _listener_owners(_stdout(caddy_listener_owners))
     caddy_state = _caddy_state(
         paths=found_paths,
         units=found_units,
-        listeners=_listeners(_stdout(listeners)),
-        listener_owners=_listener_owners(_stdout(caddy_listener_owners)),
+        listeners=observed_listeners,
+        listener_owners=parsed_listener_owners,
         config=_caddy_config(_stdout(caddy_config)),
         expected_config_hash=expected_config_hash,
     )
@@ -387,6 +431,17 @@ def collect_host_facts(
         taskman_account_compatible=taskman_account_compatible,
         existing_databases=found_databases,
         failed_checks=tuple(failed_checks),
+        **(_taskman_authority(_stdout(taskman_authority)) if taskman_authority is not None and taskman_authority.succeeded else {}),
+        taskman_listener_owners=(
+            tuple(sorted(
+                (
+                    (listener, owner)
+                    for listener, owner in (parsed_listener_owners or {}).items()
+                    if listener.port in {config.application_port, config.distribution_port}
+                ),
+                key=lambda item: (item[0].port, item[0].address),
+            ))
+        ),
     )
 
 
@@ -517,7 +572,7 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
         if len(fields) < 4 or fields[0].upper() != "LISTEN":
             continue
         listener = _listener_from_fields(fields)
-        if listener is None or listener.port not in {80, 443}:
+        if listener is None:
             continue
         if len(fields) != 6:
             return None
@@ -533,6 +588,30 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
             return None
         owners[listener] = owner
     return owners
+
+
+def _taskman_authority(value: str) -> dict[str, object]:
+    """Return exact managed-unit process evidence or an empty invalid snapshot."""
+
+    values: dict[str, str] = {}
+    required = ("active", "pid", "cgroup", "executable", "owner", "process_cgroup", "release_root")
+    for line in value.splitlines():
+        key, separator, item = line.partition("=")
+        if not separator or key not in required or key in values:
+            return {}
+        values[key] = item
+    if tuple(values) != required or values["active"] != "active" or not values["pid"].isdecimal():
+        return {}
+    pid = int(values["pid"])
+    if pid <= 0:
+        return {}
+    return {
+        "taskman_service_pid": pid,
+        "taskman_service_executable": values["executable"],
+        "taskman_service_owner": values["owner"],
+        "taskman_service_cgroup": values["cgroup"] if values["cgroup"] == values["process_cgroup"] else "",
+        "taskman_service_release_root": values["release_root"],
+    }
 
 
 def _listener_from_fields(fields: list[str]) -> Listener | None:
@@ -594,9 +673,10 @@ def _caddy_state(
         or not _trusted_caddy_process(config, main_pid)
     ):
         return CaddyState.INVALID
-    if any(listener_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
+    public_owners = {listener: owner for listener, owner in listener_owners.items() if listener.port in {80, 443}}
+    if any(public_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
         return CaddyState.INVALID
-    if set(listener_owners) != set(public_listeners):
+    if set(public_owners) != set(public_listeners):
         return CaddyState.INVALID
     return CaddyState.ACTIVE
 

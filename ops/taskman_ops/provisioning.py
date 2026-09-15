@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
+import re
 
 from pyinfra.api import deploy
 
@@ -257,11 +258,21 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
     if result.outcome != "succeeded":
         raise result_error(result)
     state = result.state
+    # This is the exact bounded projection returned by
+    # ``discover.provision_authority``.  Keep this schema deliberately closed:
+    # accepting arbitrary helper keys would turn an incomplete privileged
+    # observation into authority the controller never reviewed.
     required = {
         "authority",
         "selected_release_id",
         "last_successful_selection_id",
+        "last_successful_selection",
+        "previous_successful_selection",
         "applied_migrations",
+        "service_state",
+        "database_state",
+        "backup_protections",
+        "independently_held_backup_ids",
         "backup_protection_sha256",
         "scheduled_backup_sha256",
         "backup_timer_enabled",
@@ -278,6 +289,32 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             changed=False,
             next_action="inspect the existing record and PostgreSQL authority before retrying",
         )
+    try:
+        if state["selected_release_id"] is not None and not isinstance(state["selected_release_id"], str):
+            raise ValueError
+        if state["last_successful_selection_id"] is not None and not isinstance(state["last_successful_selection_id"], str):
+            raise ValueError
+        if not isinstance(state["applied_migrations"], tuple) or any(type(item) is not int for item in state["applied_migrations"]):
+            raise ValueError
+        if state["service_state"] not in {"running", "stopped", "unknown"} or state["database_state"] != "ready":
+            raise ValueError
+        if not isinstance(state["backup_protections"], tuple) or not isinstance(state["independently_held_backup_ids"], tuple):
+            raise ValueError
+        if type(state["installed_release_count"]) is not int or state["installed_release_count"] < 0:
+            raise ValueError
+        for key in ("backup_protection_sha256", "scheduled_backup_sha256", "downgrade_baseline_sha256", "installed_release_sha256"):
+            value = state[key]
+            if value is not None and (type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None):
+                raise ValueError
+        if type(state["backup_timer_enabled"]) is not bool or state["backup_timer_state"] not in {"active", "inactive"}:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise OpsError(
+            ExitStatus.SAFETY, "authority-preflight",
+            "pre-convergence authority observation returned invalid evidence",
+            changed=False,
+            next_action="inspect the existing record and PostgreSQL authority before retrying",
+        ) from None
     return dict(state)
 
 

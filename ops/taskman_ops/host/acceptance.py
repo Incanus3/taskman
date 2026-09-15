@@ -177,9 +177,28 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
         elif listener.port == config.database_port:
             valid = facts.postgres_available and _loopback(listener.address)
         else:
-            valid = "taskman.service" in units and _loopback(listener.address)
+            valid = _trusted_taskman_listener(facts, config, listener)
         if not valid:
             raise _safety("managed listener topology is unrecognized or contradictory")
+
+
+def _trusted_taskman_listener(facts: HostFacts, config: EnvironmentConfig, listener: Listener) -> bool:
+    """Bind reserved Taskman sockets to the active managed release process."""
+
+    owner = dict(facts.taskman_listener_owners).get(listener)
+    return (
+        _loopback(listener.address)
+        and "taskman.service" in facts.existing_units
+        and facts.taskman_service_pid is not None
+        and facts.taskman_service_pid > 0
+        and owner is not None
+        and owner[1] == facts.taskman_service_pid
+        and facts.taskman_service_owner == "taskman:taskman"
+        and facts.taskman_service_cgroup.endswith("/taskman.service")
+        and facts.taskman_service_release_root.startswith(f"{config.install_root.as_posix()}/releases/")
+        and facts.taskman_service_executable.startswith(f"{facts.taskman_service_release_root}/")
+        and facts.taskman_service_executable.endswith("/beam.smp")
+    )
 
 
 def _validate_existing_paths(facts: HostFacts, config: EnvironmentConfig) -> None:
