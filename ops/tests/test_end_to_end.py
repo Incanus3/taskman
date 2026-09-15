@@ -429,6 +429,7 @@ import runpy
 import subprocess
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 archive, runtime_path = map(Path, sys.argv[1:3])
 ready_fd = int(sys.argv[3])
@@ -440,6 +441,7 @@ from taskman_ops.host_helper import restore_database as restore_database_module
 from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import cleanup as cleanup_module
 from taskman_ops.host_helper.operations import discover as discover_module
+from taskman_ops.host_helper.operations import preflight as preflight_module
 from taskman_ops.host_helper.operations import restore as restore_module
 from taskman_ops.host_helper.records import BackupRecord, write_backup_manifest
 from taskman_ops.host_helper.restore_target import replace_restore_target
@@ -804,6 +806,48 @@ restore_database_module._oid_present = lambda _database, oid: any(
     for value in read_state()["restore_databases"].values()
 )
 discover_module.run_command = command
+def preflight_credentials(_path):
+    value = read_state()
+    value["events"].append("restore-preflight-credentials")
+    write_state(value)
+
+def preflight_command(argv, **_kwargs):
+    query = argv[-1]
+    value = read_state()
+    if "rolcanlogin" in query:
+        value["events"].append("restore-preflight-role-login")
+        write_state(value)
+        return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
+    if query == "SHOW data_directory":
+        value["events"].append("restore-preflight-capacity")
+        write_state(value)
+        return subprocess.CompletedProcess(argv, 0, b"/var/lib/postgresql/data\n", b"")
+    if "pg_database_size" in query:
+        value["events"].append("restore-preflight-database-size-query")
+        write_state(value)
+        variables = dict(
+            item.removeprefix("--set=").partition("=")[::2]
+            for item in argv
+            if item.startswith("--set=")
+        )
+        output = b"".join(
+            f"{variables[role]}\t1024\n".encode()
+            for role in ("canonical", "temporary", "retired")
+            if value["restore_databases"][role] is not None
+        )
+        value["events"].append("restore-preflight-database-sizes")
+        write_state(value)
+        return subprocess.CompletedProcess(argv, 0, output, b"")
+    raise AssertionError(f"unexpected restore preflight command: {argv!r}")
+
+preflight_module.validate_credentials = preflight_credentials
+preflight_module.run_command = preflight_command
+def preflight_statvfs(_path):
+    value = read_state()
+    value["events"].append("restore-preflight-statvfs")
+    write_state(value)
+    return SimpleNamespace(f_bavail=1000, f_frsize=1000)
+preflight_module.os.statvfs = preflight_statvfs
 restore_module.validate_credentials = lambda *_args: None
 restore_module.observe_restore_databases = restore_databases
 restore_module.observe_database_available_bytes = lambda *_args: read_state()["database_capacity"]
@@ -1058,7 +1102,7 @@ def _replace_with_large_successful_history(paths: object, old_backup_id: str) ->
     """Publish 4,097 valid selections with recovery authority held only by the first."""
 
     from taskman_ops.host_helper.records import SelectionRecord, append_selection
-    from taskman_ops.host_helper.state import MAX_INVENTORY_ENTRIES, observe_host_state
+    from taskman_ops.host_helper.state import observe_host_state
 
     state = observe_host_state(paths)
     assert state.selected_release_id is not None
@@ -1068,7 +1112,7 @@ def _replace_with_large_successful_history(paths: object, old_backup_id: str) ->
 
     selected_release_id = state.selected_release_id
     selected_at = datetime(2026, 9, 15, tzinfo=UTC)
-    for index in range(MAX_INVENTORY_ENTRIES + 1):
+    for index in range(4097):
         previous_release_id = None if index == 0 else selected_release_id
         append_selection(
             paths,
@@ -1082,7 +1126,7 @@ def _replace_with_large_successful_history(paths: object, old_backup_id: str) ->
                 (),
             ),
         )
-    assert len(tuple(selection_root.glob("selection-*.json"))) == MAX_INVENTORY_ENTRIES + 1
+    assert len(tuple(selection_root.glob("selection-*.json"))) == 4097
 
 
 def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
@@ -1210,8 +1254,6 @@ def _install_public_restore_controller(
 
     from taskman_ops.workflows import helper, inventory
     from taskman_ops.workflows import restore as restore_workflow
-    from taskman_ops.workflows.operational_preflight import RestorePreflightFacts
-
     from taskman_ops.host_helper.backup_protection import (
         BackupProtection,
         write_backup_protection,
@@ -1325,6 +1367,7 @@ def _install_public_restore_controller(
     )
     package = build_helper_package(tmp_path / "taskman-restore-host.pyz")
     remote = _ControllerRemote()
+    remote.facts = _managed_host_facts
     runtime_path = tmp_path / "isolated-restore-state.json"
     runtime_path.write_text(
         json.dumps(
@@ -1349,6 +1392,7 @@ def _install_public_restore_controller(
                 "service_running": True,
                 "verification": "passing",
                 "events": [],
+                "preflight_results": [],
             },
             sort_keys=True,
         )
@@ -1359,6 +1403,21 @@ def _install_public_restore_controller(
         def invoke(_transport, selected, wire_request, **_options):
             result = _wire_helper(wire_request, selected, runtime_path)
             runtime = json.loads(runtime_path.read_text())
+            if wire_request.operation == "restore_preflight":
+                state = {"mode": result.state["mode"]}
+                if result.state["mode"] == "capacity":
+                    state.update(
+                        database_available_bytes=result.state["database_available_bytes"],
+                        database_size_bytes=dict(result.state["database_size_bytes"]),
+                    )
+                runtime["preflight_results"].append(
+                    {
+                        "mode": wire_request.parameters["mode"],
+                        "outcome": result.outcome,
+                        "state": state,
+                    }
+                )
+                runtime_path.write_text(json.dumps(runtime, sort_keys=True))
             if wire_request.operation == "restore" and runtime.get("lose_restore_reply"):
                 runtime["lose_restore_reply"] = False
                 runtime_path.write_text(json.dumps(runtime, sort_keys=True))
@@ -1380,24 +1439,6 @@ def _install_public_restore_controller(
             invoker=invoke,
         )
 
-    monkeypatch.setattr(
-        restore_workflow,
-        "validate_restore_inspection_preflight",
-        lambda *_args: object(),
-    )
-    monkeypatch.setattr(
-        restore_workflow,
-        "validate_restore_preflight",
-        lambda *_args: RestorePreflightFacts(
-            1_000_000,
-            1_000_000,
-            1_000_000,
-            {
-                role: None if observed is None else 1024
-                for role, observed in restore_databases.items()
-            },
-        ),
-    )
     monkeypatch.setattr(restore_workflow, "run_request", dispatch)
     monkeypatch.setattr(inventory, "run_request", dispatch)
     monkeypatch.setattr(helper, "run_request", dispatch)
@@ -1489,6 +1530,26 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
     assert interrupted.exit_status is ExitStatus.RESTORE
     assert interrupted.changed is True
     assert len(plans) == 1
+    assert runtime["preflight_results"] == [
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+        {
+            "mode": "capacity",
+            "outcome": "succeeded",
+            "state": {
+                "mode": "capacity",
+                "database_available_bytes": 1_000_000,
+                "database_size_bytes": {
+                    "canonical": 1024,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        },
+    ]
     assert pending.latest_successful_selection is None
     assert pending.restore_target is not None
     assert pending.restore_target.base_selection_id is None
@@ -1525,6 +1586,44 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
     completion_safety_backup_id = "backup-" + f"{18:032x}"
     assert result.exit_status is ExitStatus.OK, result.facts
     assert len(plans) == 2
+    assert runtime["preflight_results"] == [
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+        {
+            "mode": "capacity",
+            "outcome": "succeeded",
+            "state": {
+                "mode": "capacity",
+                "database_available_bytes": 1_000_000,
+                "database_size_bytes": {
+                    "canonical": 1024,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        },
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+        {
+            "mode": "capacity",
+            "outcome": "succeeded",
+            "state": {
+                "mode": "capacity",
+                "database_available_bytes": 1_000_000,
+                "database_size_bytes": {
+                    "canonical": 1024,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        },
+    ]
     assert result.facts["starting_state"]["last_successful_selection_id"] is None
     assert result.facts["starting_state"]["selected_release_id"] == (
         host_restore_tests.CURRENT if current_present else None
@@ -1588,6 +1687,26 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
     assert interrupted.exit_status is ExitStatus.SAFETY
     assert interrupted.changed is True
     assert interrupted.facts["mutation_state"] == "unknown"
+    assert runtime["preflight_results"] == [
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+        {
+            "mode": "capacity",
+            "outcome": "succeeded",
+            "state": {
+                "mode": "capacity",
+                "database_available_bytes": 1_000_000,
+                "database_size_bytes": {
+                    "canonical": 1024,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        },
+    ]
     assert len(pending.selections) == 1
     assert pending.selections[0].previous_release_id is None
     assert pending.selections[0].backup_id == first_safety_backup_id
@@ -1603,6 +1722,31 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
     state = observe_host_state(paths)
     assert retried.exit_status is ExitStatus.OK, retried.facts
     assert len(plans) == 2
+    assert runtime["preflight_results"] == [
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+        {
+            "mode": "capacity",
+            "outcome": "succeeded",
+            "state": {
+                "mode": "capacity",
+                "database_available_bytes": 1_000_000,
+                "database_size_bytes": {
+                    "canonical": 1024,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        },
+        {
+            "mode": "inspection",
+            "outcome": "succeeded",
+            "state": {"mode": "inspection"},
+        },
+    ]
     assert len(state.selections) == 1
     selection = state.selections[0]
     assert selection.previous_release_id is None
@@ -1797,7 +1941,10 @@ def test_public_packaged_restore_refuses_database_identity_or_empty_proof_drift(
     result = restore(remote, config, source.backup_id, dry_run=True)
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert json.loads(runtime_path.read_text())["events"] == []
+    assert json.loads(runtime_path.read_text())["events"] == [
+        "restore-preflight-credentials",
+        "restore-preflight-role-login",
+    ]
 
 
 @pytest.mark.parametrize("failure", ("active-writers", "empty-proof-failed"))
