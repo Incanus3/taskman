@@ -12,20 +12,16 @@ authorized clean staging recreation and fresh provisioning/readiness.
 - Approved implementation plan:
   [Reconciliation delivery](../plans/2026-09-14-deploy-reconciliation.md)
 - Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Parent issue: `tas-sr4b`; next task: `tas-sr4b.9`.
+- Parent issue: `tas-sr4b`; active task: `tas-sr4b.10`.
 
 ## Current checkpoint
 
-Plan Tasks 1–8 are implemented and their Beads issues are closed. The current GitButler branch is
-`dedicated-host-deployment-automation`; Task 8 was implemented from `43d3928a` through `07083125`
-and passed independent review after three focused fix rounds.
-
-Task 8 provides restore-specific inspection and native capacity admission, durable database
-identity and creation-intent handling, same-backup retry and reapply recovery across recognized
-database arrangements, scheduler-safe binding publication, completed-binding cleanup, and precise
-mutation evidence across partial cleanup and later read-only failures. It preserves the original
-database and later writes, refuses unregistered loaded databases without the required proof, and
-does not implement unfinished-restore replacement.
+Plan Tasks 1–9 are implemented and their Beads issues are closed on
+`dedicated-host-deployment-automation`. Restore replacement is implemented through `8e925e44`.
+It preserves original database identity and required safety copies, normalizes pending replacements,
+requires fresh confirmation for a third target, and bounds eligible safety attempts while retaining
+independent backup protections. The first accepted plan supplies the stable starting-state audit.
+Scoped independent review approved the increment after two fix rounds.
 
 The old staging installation remains historical evidence outside the supported record/runtime
 boundary. Do not migrate, repair, or invoke the new controller against it. No host action, push,
@@ -33,25 +29,22 @@ merge, deployment, or publication has occurred or is authorized.
 
 ## Next action
 
-Plan Task 9 (`tas-sr4b.9`), **Unfinished restore replacement and bounded safety copies**, is in
-progress from `33bdbd71`. The complete approved specification, baseline design, plan, and development
-guide were refreshed. Host replacement/admission/retention is the first bounded continuation; public
-planning/confirmation and packaged recovery integration follow, then a distinct combined reviewer.
-Refresh live implementation state before restarting either continuation.
+Task 10 (`tas-sr4b.10`), recovery-aware cleanup and paged deletion, is in progress.
+Implement filesystem-only inspection, full recovery reference protection, bounded target pages and
+confirmed batches, and truthful partial-deletion evidence. Preserve damaged unreferenced backup
+remainders; they are not validated deletion candidates. Follow the approved plan's exact protocol
+and acceptance criteria, then obtain independent scoped review.
 
-Task 9 must add exact replacement intent, pending/third-target normalization, the abandoned-input
-content exception, and bounded safety-attempt pruning. It must support replacement after a failed
-swap without deleting the original, validate required safety copies, and remain bounded beyond 64
-replacement attempts. Continue afterward in dependency order through `tas-sr4b.11`.
+After Task 10, continue integrated local verification and operator documentation in `tas-sr4b.11`.
+Native PostgreSQL/systemd/VPS acceptance remains separately authorized.
 
 ## Verification baseline and remaining gates
 
-- Task 8 exact gate: 184 passed.
-- Task 8 supplementary gates: backup protection 35 passed; packaged public restore 21 passed;
-  package isolation 4 passed; host acceptance, facts, preflight, and aggregation 82 passed; Python
-  compileall succeeded.
-- Fresh `mix precommit`: 805 passed.
-- Final Task 8 independent review: all scoped findings addressed with no new Critical, Important,
-  or Minor regression.
-- Real PostgreSQL/systemd/VPS behavior remains an acceptance-stage risk owned by later separately
-  authorized verification. Task 11 owns whole-workstream, Docker build, and clean staging gates.
+- Restore replacement expanded gate: 141 passed, including packaged controller/helper behavior.
+- Final audit-snapshot correction: 6 focused tests passed; bounded regression 52 passed with the
+  unchanged 65-cycle case deselected; independent focused re-review 3 passed.
+- Python compileall succeeded; fresh `mix precommit`: 805 passed.
+- Full operations suite is not yet green; remaining cleanup fixture/protocol migration and
+  integrated verification belong to Tasks 10 and 11.
+- Native effects in packaged tests are doubled. Real PostgreSQL/systemd/VPS behavior remains an
+  acceptance-stage risk; Task 11 also owns local build and packaging verification.
