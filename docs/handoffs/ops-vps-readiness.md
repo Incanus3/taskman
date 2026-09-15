@@ -12,18 +12,20 @@ authorized clean staging recreation and fresh provisioning/readiness.
 - Approved implementation plan:
   [Reconciliation delivery](../plans/2026-09-14-deploy-reconciliation.md)
 - Operator workflow and acceptance gates: [Deployment runbook](../deployment.md)
-- Parent issue: `tas-sr4b`; next task: `tas-sr4b.8`.
+- Parent issue: `tas-sr4b`; next task: `tas-sr4b.9`.
 
 ## Current checkpoint
 
-Plan Tasks 1–7 are implemented and their Beads issues are closed. The current GitButler branch is
-`dedicated-host-deployment-automation`; the Task 7 implementation ends at `995d2fd4`.
+Plan Tasks 1–8 are implemented and their Beads issues are closed. The current GitButler branch is
+`dedicated-host-deployment-automation`; Task 8 was implemented from `43d3928a` through `07083125`
+and passed independent review after three focused fix rounds.
 
-Task 7 now provides marker-free resource admission, exact pre-mutation host/database/credential
-authority, deploy-style target resolution and independent downgrade consent, confirmed material
-planning, null-baseline backup/protection/pruning, scheduler-safe interrupted-genesis recovery,
-first-success publication, and bounded default-public packaged recovery coverage. Its final
-independent review found no Critical or Important issues.
+Task 8 provides restore-specific inspection and native capacity admission, durable database
+identity and creation-intent handling, same-backup retry and reapply recovery across recognized
+database arrangements, scheduler-safe binding publication, completed-binding cleanup, and precise
+mutation evidence across partial cleanup and later read-only failures. It preserves the original
+database and later writes, refuses unregistered loaded databases without the required proof, and
+does not implement unfinished-restore replacement.
 
 The old staging installation remains historical evidence outside the supported record/runtime
 boundary. Do not migrate, repair, or invoke the new controller against it. No host action, push,
@@ -31,23 +33,24 @@ merge, deployment, or publication has occurred or is authorized.
 
 ## Next action
 
-Execute plan Task 8 (`tas-sr4b.8`), **Restore binding and same-backup recovery**, using delegated
-implementation and a distinct independent reviewer. Before implementation, read the complete
-approved specification, plan, and `docs/development.md`; then move the bead to `in_progress` and
-create the Task 8 SDD brief from the approved plan.
+Plan Task 9 (`tas-sr4b.9`), **Unfinished restore replacement and bounded safety copies**, is the
+next unblocked increment. Start by refreshing the complete approved specification, baseline design,
+plan, and `docs/development.md`; then execute with delegated implementation and a distinct
+independent reviewer.
 
-Task 8 must add restore-specific inspection and database creation intent, recover all recognized
-same-backup arrangements, preserve the original and later writes, and consume scheduled-helper
-convergence before supported-format or binding writes. Continue afterward in dependency order
-through `tas-sr4b.11`.
+Task 9 must add exact replacement intent, pending/third-target normalization, the abandoned-input
+content exception, and bounded safety-attempt pruning. It must support replacement after a failed
+swap without deleting the original, validate required safety copies, and remain bounded beyond 64
+replacement attempts. Continue afterward in dependency order through `tas-sr4b.11`.
 
 ## Verification baseline and remaining gates
 
-- Task 7 focused final gate: 183 passed.
-- Fresh controller Task 7 integration gate across host, PostgreSQL, systemd, protocol, package,
-  controller, CLI, dry-run, and E2E suites reached 100% with exit 0.
+- Task 8 exact gate: 184 passed.
+- Task 8 supplementary gates: backup protection 35 passed; packaged public restore 21 passed;
+  package isolation 4 passed; host acceptance, facts, preflight, and aggregation 82 passed; Python
+  compileall succeeded.
 - Fresh `mix precommit`: 805 passed.
-- Final Task 7 independent review: clean; its focused gate passed 6 tests.
+- Final Task 8 independent review: all scoped findings addressed with no new Critical, Important,
+  or Minor regression.
 - Real PostgreSQL/systemd/VPS behavior remains an acceptance-stage risk owned by later separately
   authorized verification. Task 11 owns whole-workstream, Docker build, and clean staging gates.
-
