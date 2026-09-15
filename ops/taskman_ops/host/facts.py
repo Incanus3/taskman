@@ -36,6 +36,7 @@ _CADDY_AUTHORITY_KEYS = (
     "unit_metadata",
     "unit_package",
     "unit_verified",
+    "unit_executable",
 )
 _CADDY_CONFIG_SCRIPT = r'''set -eu
 config=$1
@@ -63,6 +64,7 @@ unit_fragment=$(property FragmentPath)
 unit_metadata=
 unit_package=missing
 unit_verified=missing
+unit_executable=
 
 if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
   unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
@@ -92,6 +94,10 @@ if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment"
   fi
 fi
 
+if [ "$unit_pid" -gt 0 ] 2>/dev/null; then
+  unit_executable=$(readlink -f "/proc/$unit_pid/exe" 2>/dev/null || true)
+fi
+
 emit config "$config_state"
 emit config_hash "$config_hash"
 emit config_metadata "$config_metadata"
@@ -101,7 +107,8 @@ emit unit_pid "$unit_pid"
 emit unit_fragment "$unit_fragment"
 emit unit_metadata "$unit_metadata"
 emit unit_package "$unit_package"
-emit unit_verified "$unit_verified"'''
+emit unit_verified "$unit_verified"
+emit unit_executable "$unit_executable"'''
 _CAPACITY_SCRIPT = (
     'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
@@ -581,7 +588,11 @@ def _caddy_state(
     if {listener.port for listener in public_listeners} != {80, 443}:
         return CaddyState.INVALID
     main_pid = _caddy_pid(config)
-    if config["unit_active"] != "active" or main_pid is None:
+    if (
+        config["unit_active"] != "active"
+        or main_pid is None
+        or not _trusted_caddy_process(config, main_pid)
+    ):
         return CaddyState.INVALID
     if any(listener_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
         return CaddyState.INVALID
@@ -599,6 +610,12 @@ def _trusted_caddy_unit(config: dict[str, str]) -> bool:
         and config["unit_package"] == "caddy"
         and config["unit_verified"] == "clean"
     )
+
+
+def _trusted_caddy_process(config: dict[str, str], main_pid: int) -> bool:
+    """Bind public sockets to the package-owned service process, not its name."""
+
+    return main_pid > 0 and config["unit_executable"] == "/usr/bin/caddy"
 
 
 def _inactive_caddy_unit(config: dict[str, str]) -> bool:

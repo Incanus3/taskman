@@ -102,18 +102,47 @@ def _migration_table(database: Mapping[str, object], credentials: Path) -> bytes
 
 
 def _initial_database_empty(database: Mapping[str, object], credentials: Path) -> bytes:
-    """Prove a migration-table-free database has no user schema objects or data."""
+    """Compare every user-extensible catalog to the controlled empty template.
+
+    ``schema_migrations`` is application provenance, not proof that a database
+    is new.  In particular, a relation-only inspection would incorrectly
+    admit functions, domains, extensions, collations, policies, and full-text
+    objects left by another application.  The empty Ubuntu PostgreSQL template
+    contains the ``public`` schema and the built-in ``plpgsql`` extension; any
+    additional user namespace or user-extensible catalog entry is authority we
+    do not own and must refuse.
+    """
 
     return run_command(
         (
             *_psql_argv(database),
             "--command",
-            "SELECT CASE WHEN EXISTS ("
-            "SELECT 1 FROM pg_catalog.pg_class AS relation "
-            "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
-            "WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema') "
-            "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')"
-            ") THEN 0 ELSE 1 END",
+            "WITH user_namespaces AS ("
+            "SELECT oid FROM pg_catalog.pg_namespace "
+            "WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'public') "
+            "AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp_%'"
+            "), unexpected AS ("
+            "SELECT 1 FROM pg_catalog.pg_namespace namespace "
+            "WHERE namespace.oid IN (SELECT oid FROM user_namespaces) "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_class relation "
+            "WHERE relation.relnamespace IN (SELECT oid FROM user_namespaces) "
+            "OR (relation.relnamespace = 'public'::pg_catalog.regnamespace "
+            "AND relation.relkind IN ('r','p','v','m','S','f')) "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_proc procedure "
+            "WHERE procedure.pronamespace IN (SELECT oid FROM user_namespaces) "
+            "OR procedure.pronamespace = 'public'::pg_catalog.regnamespace "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_type type "
+            "WHERE type.typnamespace IN (SELECT oid FROM user_namespaces) "
+            "OR type.typnamespace = 'public'::pg_catalog.regnamespace "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_collation collation "
+            "WHERE collation.collnamespace IN (SELECT oid FROM user_namespaces) "
+            "OR collation.collnamespace = 'public'::pg_catalog.regnamespace "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_operator operator "
+            "WHERE operator.oprnamespace IN (SELECT oid FROM user_namespaces) "
+            "OR operator.oprnamespace = 'public'::pg_catalog.regnamespace "
+            "UNION ALL SELECT 1 FROM pg_catalog.pg_extension extension "
+            "WHERE extension.extname <> 'plpgsql'"
+            ") SELECT CASE WHEN EXISTS (SELECT 1 FROM unexpected) THEN 0 ELSE 1 END",
         ),
         env={"PGPASSFILE": credentials.as_posix()},
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,

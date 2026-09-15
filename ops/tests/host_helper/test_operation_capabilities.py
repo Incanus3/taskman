@@ -62,6 +62,29 @@ def test_initial_database_observation_refuses_populated_schema_without_migration
         database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass"))
 
 
+def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relation-only probe would adopt functions, types, or extensions as empty."""
+
+    database = _capability("database")
+    commands: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"" if len(commands) == 1 else b"1\n", b"")
+
+    monkeypatch.setattr(database, "run_command", run)
+
+    assert database.observe_database_state_or_empty(database_mapping(), Path("/etc/taskman/pgpass")) == {
+        "state": "ready",
+        "applied_migrations": (),
+    }
+    query = commands[1][commands[1].index("--command") + 1]
+    for catalog in ("pg_class", "pg_proc", "pg_type", "pg_extension", "pg_collation"):
+        assert catalog in query
+
+
 @pytest.mark.parametrize(
     "raw_versions",
     (
@@ -142,7 +165,7 @@ def test_verification_request_preserves_correlation_and_sets_only_the_target_rel
 
     requests = _capability("verification")
     source = HostRequest(
-        2,
+        3,
         "deploy",
         "op-0123456789abcdef0123456789abcdef",
         {"selected_release_id": "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6"},

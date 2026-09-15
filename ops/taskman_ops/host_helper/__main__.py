@@ -33,6 +33,7 @@ from taskman_ops.host_helper.operations.discover import (
     discover,
     list_backups,
     list_releases,
+    provision_authority,
 )
 from taskman_ops.host_helper.operations.rollback import rollback
 from taskman_ops.host_helper.operations.restore import restore
@@ -364,6 +365,7 @@ _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
     "discover": discover,
     "list_releases": list_releases,
     "list_backups": list_backups,
+    "provision_authority": provision_authority,
     "verify": verify,
     "deploy": deploy,
     "genesis": genesis,

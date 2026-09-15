@@ -47,6 +47,7 @@ def caddy_evidence(
     unit_metadata: str = "root:root:644",
     unit_package: str = "caddy",
     unit_verified: str = "clean",
+    unit_executable: str = "/usr/bin/caddy",
 ) -> CommandResult:
     """Return the decision-relevant managed Caddy authority evidence."""
 
@@ -65,6 +66,7 @@ def caddy_evidence(
                 f"unit_metadata={unit_metadata}",
                 f"unit_package={unit_package}",
                 f"unit_verified={unit_verified}",
+                f"unit_executable={unit_executable}",
                 "",
             )
         ),
@@ -123,6 +125,7 @@ def absent_caddy_evidence() -> CommandResult:
                 "unit_metadata=",
                 "unit_package=missing",
                 "unit_verified=missing",
+                "unit_executable=",
                 "",
             )
         ),
@@ -146,6 +149,7 @@ def inactive_caddy_evidence(*, configured: bool) -> CommandResult:
                 "unit_metadata=root:root:644",
                 "unit_package=caddy",
                 "unit_verified=clean",
+                "unit_executable=",
                 "",
             )
         ),
@@ -278,6 +282,30 @@ def test_resource_based_caddy_requires_the_exact_owned_configuration(
                 'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
             ),
             evidence=evidence,
+        )
+    )
+
+    with pytest.raises(OpsError) as raised:
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
+
+    assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_resource_based_caddy_refuses_a_service_pid_with_a_foreign_executable() -> None:
+    """A process named caddy is not sufficient attribution for public listeners."""
+
+    remote = ScriptedRemote.from_responses(
+        managed_caddy_responses(
+            listener_owners=(
+                'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+                'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+            ),
+            evidence=caddy_evidence(unit_executable="/usr/local/bin/foreign-caddy"),
         )
     )
 

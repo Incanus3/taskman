@@ -4,6 +4,8 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import os
+import subprocess
 
 import pytest
 
@@ -217,6 +219,138 @@ def test_provision_discovery_uses_direct_empty_database_observation(
 
     assert result.outcome == "succeeded"
     assert calls == ["empty-proof"]
+
+
+def test_preconvergence_authority_uses_the_same_locked_record_observer_before_pyinfra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The early observer must validate records/current, not reparse their JSON."""
+
+    observed = _state(migrations=())
+    _install_observer(monkeypatch, observed)
+    request = HostRequest(
+        3,
+        "provision_authority",
+        CORRELATION,
+        {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {
+            "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
+            "postgres_package_track": None,
+        },
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        discover_module,
+        "_observe_postgresql_authority",
+        lambda *_args: calls.append("postgres") or None,
+        raising=False,
+    )
+
+    result = discover_module.provision_authority(request)
+
+    assert result.outcome == "succeeded"
+    assert result.state == {"authority": "validated"}
+    assert calls == ["postgres"]
+
+
+def test_preconvergence_postgresql_observer_binds_cluster_listener_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role/database name alone cannot admit a foreign live cluster."""
+
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        discover_module,
+        "run_command",
+        lambda argv, **_kwargs: commands.append(argv) or object(),
+        raising=False,
+    )
+
+    discover_module._observe_postgresql_authority(
+        {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
+        None,
+    )
+
+    command = commands[0]
+    assert command[:3] == ("sh", "-ceu", command[2])
+    for required in ("pg_lsclusters", "postmaster.pid", "/proc/$pid/exe", "pg_roles", "pg_database"):
+        assert required in command[2]
+    assert command[-4:] == ("", "5432", "taskman", "taskman")
+
+
+def _postgres_authority_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    clusters: str,
+    executable: str = "/usr/lib/postgresql/16/bin/postgres",
+    owner: str = "postgres:postgres",
+    role: str = "1",
+    database: str = "1",
+) -> subprocess.CompletedProcess[bytes]:
+    captured: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        discover_module,
+        "run_command",
+        lambda argv, **_kwargs: captured.append(argv) or object(),
+    )
+    discover_module._observe_postgresql_authority(
+        {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, None
+    )
+    scripts = {
+        "pg_lsclusters": f"#!/bin/sh\nprintf '%s\\n' '{clusters}'\n",
+        "pg_conftool": "#!/bin/sh\nprintf '/var/lib/postgresql/16/main\\n'\n",
+        "sed": "#!/bin/sh\nif [ \"$1\" = -n ]; then printf '42\\n'; elif [ \"$1\" = '/^$/d' ]; then /bin/sed \"$1\"; else cat; fi\n",
+        "readlink": f"#!/bin/sh\nprintf '%s\\n' '{executable}'\n",
+        "stat": f"#!/bin/sh\nprintf '%s\\n' '{owner}'\n",
+        "runuser": "#!/bin/sh\ncase \"$*\" in *pg_roles*) printf '%s\\n' \"${ROLE_RESULT-1}\" ;; *pg_database*) printf '%s\\n' \"${DATABASE_RESULT-1}\" ;; esac\n",
+    }
+    for name, source in scripts.items():
+        path = tmp_path / name
+        path.write_text(source)
+        path.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "ROLE_RESULT": role,
+        "DATABASE_RESULT": database,
+    }
+    completed = subprocess.run(captured[0], env=environment, capture_output=True, check=False)
+    return completed
+
+
+@pytest.mark.parametrize(
+    ("clusters", "executable", "owner", "role", "database", "expected"),
+    (
+        ("invalid", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
+        ("16 main 5432 online postgres\\n16 other 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
+        ("16 main 5433 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
+        ("16 main 5432 down postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
+        ("16 main 5432 online postgres", "/foreign/postgres", "postgres:postgres", "1", "1", 1),
+        ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "root:root", "1", "1", 1),
+        ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "", "", 0),
+        ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "", 1),
+    ),
+)
+def test_preconvergence_postgresql_observer_refuses_every_present_incompatible_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clusters: str,
+    executable: str,
+    owner: str,
+    role: str,
+    database: str,
+    expected: int,
+) -> None:
+    """Missing resources may proceed; each present contradictory fact refuses."""
+
+    completed = _postgres_authority_exit(
+        tmp_path, monkeypatch, clusters=clusters, executable=executable, owner=owner, role=role, database=database
+    )
+    assert completed.returncode == 0 if expected == 0 else completed.returncode != 0, (
+        completed.returncode, completed.stdout.decode(), completed.stderr.decode()
+    )
 
 
 def test_deploy_discovery_bounds_history_to_the_protection_reference_intersection(

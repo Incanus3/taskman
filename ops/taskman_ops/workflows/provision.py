@@ -21,7 +21,11 @@ from ..errors import ExitStatus, OpsError
 from ..host.acceptance import validate_provisionable_host
 from ..releases.manifests import VerifiedArtifact, verify_artifact
 from ..output import WorkflowResult, redact, render_human
-from ..provisioning import ProvisioningInputs, converge_provisioning
+from ..provisioning import (
+    ProvisioningInputs,
+    converge_provisioning,
+    validate_existing_authority,
+)
 from ..remote import ChangeSet, connect
 from ..secrets import SecretConfig, decrypt_secrets, render_pgpass, render_runtime_environment
 from ..services.caddy import CaddyPlan, build_caddy_plan
@@ -79,6 +83,7 @@ class ProvisionCapabilities:
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
     release_deployment: Callable[[object, EnvironmentConfig, VerifiedArtifact], WorkflowResult]
     genesis: Callable[..., WorkflowResult] | None = None
+    preflight: Callable[[object, ProvisioningInputs], None] | None = None
 
 
 def provision(
@@ -113,6 +118,13 @@ def provision(
     caddy_plan = cap.caddy_plan(config)
     expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
     plan = _redacted_plan(cap.render_plan(config, artifact))
+    inputs = ProvisioningInputs(
+        config=config,
+        caddy_plan=caddy_plan,
+        runtime_environment=runtime_environment,
+        pgpass=pgpass,
+        role_password_input=role_password_input,
+    )
 
     remote = cap.connect(config)
     try:
@@ -120,6 +132,8 @@ def provision(
         # consequence below, including plan presentation, confirmation, and
         # package installation.
         cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
+        if cap.preflight is not None:
+            cap.preflight(remote, inputs)
         cap.present_plan(plan)
         if dry_run:
             return _close_result(remote, WorkflowResult(
@@ -145,13 +159,7 @@ def provision(
         provisioning_changed = _changed(
             cap.provisioning(
                 remote,
-                ProvisioningInputs(
-                    config=config,
-                    caddy_plan=caddy_plan,
-                    runtime_environment=runtime_environment,
-                    pgpass=pgpass,
-                    role_password_input=role_password_input,
-                ),
+                inputs,
             ),
         )
     except OpsError as error:
@@ -296,6 +304,7 @@ def _default_capabilities() -> ProvisionCapabilities:
         caddy_plan=build_caddy_plan,
         release_deployment=deploy_first_release,
         genesis=deploy_first_release,
+        preflight=validate_existing_authority,
     )
 
 

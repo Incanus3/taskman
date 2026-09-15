@@ -89,6 +89,127 @@ def test_provision_admits_the_host_before_plan_presentation_and_confirmation() -
     assert host.events == ["plan", "discovery", "present-plan", "confirm", "provisioning"]
 
 
+def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation() -> None:
+    """A conflicting recovered secret must never reach the convergence writer."""
+
+    host = Host()
+
+    def preflight(_remote: object, _inputs: object) -> None:
+        host.events.append("credential-preflight")
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "credential-preflight",
+            "existing credentials disagree with the supplied authority",
+            changed=False,
+            next_action="resolve the credential authority deliberately",
+        )
+
+    capabilities = _capabilities(host)
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "preflight": preflight})
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan", "discovery", "credential-preflight"]
+    assert "provisioning" not in host.events
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ("current", "release-record", "selection-record", "backup-protection", "restore-record", "postgresql"),
+)
+def test_each_preconvergence_authority_refusal_stops_before_pyinfra_mutation(authority: str) -> None:
+    """Every existing authority class is a read-only admission boundary."""
+
+    host = Host()
+
+    def preflight(_remote: object, _inputs: object) -> None:
+        host.events.append(authority)
+        raise OpsError(ExitStatus.SAFETY, "authority-preflight", "unsafe authority", changed=False)
+
+    capabilities = ProvisionCapabilities(**{**_capabilities(host).__dict__, "preflight": preflight})
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan", "discovery", authority]
+    assert "provisioning" not in host.events
+
+
+def test_default_preflight_checks_existing_resources_before_the_secret_writers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exact resource admission must precede both protected credential writes."""
+
+    from taskman_ops import provisioning as provisioning_module
+
+    host = Host()
+    checks: list[str] = []
+
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_preconvergence_authority",
+        lambda *_args: checks.append("observer"),
+    )
+
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_resource_authority",
+        lambda *_args: checks.append("resources"),
+    )
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_credential_authority",
+        lambda *_args: checks.append("credentials"),
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=ProvisionCapabilities(
+            **{**_capabilities(host).__dict__, "preflight": provisioning_module.validate_existing_authority}
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert checks == ["observer", "resources", "credentials"]
+
+
+def test_default_preflight_observes_record_and_postgresql_authority_before_local_reuse_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No existing record or database authority may reach pyinfra unobserved."""
+
+    from taskman_ops import provisioning as provisioning_module
+
+    host = Host()
+    checks: list[str] = []
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_preconvergence_authority",
+        lambda *_args: checks.append("observer"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_resource_authority",
+        lambda *_args: checks.append("resources"),
+    )
+    monkeypatch.setattr(
+        provisioning_module,
+        "validate_existing_credential_authority",
+        lambda *_args: checks.append("credentials"),
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"),
+        capabilities=ProvisionCapabilities(
+            **{**_capabilities(host).__dict__, "preflight": provisioning_module.validate_existing_authority}
+        ),
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert checks == ["observer", "resources", "credentials"]
+
+
 def test_provision_refuses_failed_immutable_admission_before_plan_or_mutation() -> None:
     """A rejected immutable snapshot must not reach operator or host consequences."""
 

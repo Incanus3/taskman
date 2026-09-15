@@ -153,6 +153,32 @@ def test_built_zipapp_emits_a_final_read_only_envelope(tmp_path: Path) -> None:
     }
 
 
+def test_entrypoint_dispatches_bounded_preconvergence_authority_without_mutation() -> None:
+    request = HostRequest(
+        3,
+        "provision_authority",
+        CORRELATION,
+        {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {
+            "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
+            "postgres_package_track": None,
+        },
+    )
+    received: list[HostRequest] = []
+
+    def observed(value: object) -> HostResult:
+        assert isinstance(value, HostRequest)
+        received.append(value)
+        return HostResult.for_request(value, "succeeded", "authority observed", {"authority": "validated"})
+
+    with invoke_entrypoint(encode_request(request), observed, operation="provision_authority") as stdout:
+        assert entrypoint.main() == 0
+
+    assert decode_result(stdout.buffer.getvalue()).state == {"authority": "validated"}
+    assert received == [request]
+
+
 def test_entrypoint_rejects_oversized_input_without_echoing_it(tmp_path: Path) -> None:
     package = build_helper_package(tmp_path / "taskman-host.pyz")
     secret = b"canary-secret-value"

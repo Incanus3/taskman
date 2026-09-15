@@ -84,6 +84,7 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "_confirm", lambda _plan: True)
     monkeypatch.setattr(workflow, "connect", lambda _config: remote)
     monkeypatch.setattr(workflow, "validate_provisionable_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workflow, "validate_existing_authority", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         workflow,
         "deploy_first_release",
