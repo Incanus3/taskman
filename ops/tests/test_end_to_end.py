@@ -435,7 +435,7 @@ ready_fd = int(sys.argv[3])
 sys.path.insert(0, archive.as_posix())
 
 from taskman_ops.host_helper import __main__ as entrypoint
-from taskman_ops.host_helper import backup_helper, services, state as state_module
+from taskman_ops.host_helper import backup_helper, backup_protection as protection_module, services, state as state_module
 from taskman_ops.host_helper import restore_database as restore_database_module
 from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import cleanup as cleanup_module
@@ -478,6 +478,8 @@ def command(argv, **_kwargs):
         value["events"].append("service-start")
     elif argv[0] == "systemd-run":
         value["migrations"] = value["migration_result"]
+        if value.get("track_deploy_protection_sequence"):
+            value["events"].append("migration")
     write_state(value)
     return subprocess.CompletedProcess(argv, 0, b"", b"")
 
@@ -531,8 +533,78 @@ def report(release_id, ok):
 
 def verify(request, **_kwargs):
     expected = request.expected_state["expected_release_id"]
-    ok = read_state()["verification"] == "passing"
+    value = read_state()
+    ok = value["verification"] == "passing"
+    if value.get("track_deploy_protection_sequence"):
+        value["events"].append("verification")
+        write_state(value)
     return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "succeeded" if ok else "retryable", "verified" if ok else "not ready", {"report": report(expected, ok)}, ())
+
+_write_backup_protection = protection_module.write_backup_protection
+def write_backup_protection(paths, protection):
+    result = _write_backup_protection(paths, protection)
+    value = read_state()
+    if value.get("track_deploy_protection_sequence"):
+        value["events"].append(f"fresh-protection-published:{protection.backup_id}")
+        write_state(value)
+    return result
+
+_mark_retiring_protections = protection_module._mark_retiring_protections
+def mark_retiring_protections(paths, protections):
+    protections = tuple(protections)
+    value = read_state()
+    if value.get("track_deploy_protection_sequence"):
+        assert any(event.startswith("fresh-protection-published:") for event in value["events"])
+    result = _mark_retiring_protections(paths, protections)
+    if value.get("track_deploy_protection_sequence"):
+        value = read_state()
+        value["events"].extend(
+            f"attempt-protection-retired:{protection.backup_id}"
+            for protection in protections
+        )
+        write_state(value)
+    return result
+
+_delete_attempt_backup = protection_module.delete_completed_backup
+def delete_attempt_backup(paths, record):
+    result = _delete_attempt_backup(paths, record)
+    value = read_state()
+    if value.get("track_deploy_protection_sequence"):
+        value["events"].append(f"attempt-backup-deleted:{record.backup_id}")
+        write_state(value)
+    return result
+
+_append_successful_selection = protection_module.append_selection
+def append_successful_selection(paths, record):
+    result = _append_successful_selection(paths, record)
+    value = read_state()
+    if value.get("track_deploy_protection_sequence"):
+        assert record.schema_version == 2
+        value["events"].append("successful-history-appended")
+        write_state(value)
+    return result
+
+_remove_resolved_protections = protection_module._remove_resolved_protections
+def remove_resolved_protections(paths, protections, **kwargs):
+    protections = tuple(protections)
+    value = read_state()
+    if value.get("track_deploy_protection_sequence"):
+        assert "successful-history-appended" in value["events"]
+    result = _remove_resolved_protections(paths, protections, **kwargs)
+    if value.get("track_deploy_protection_sequence"):
+        value = read_state()
+        value["events"].extend(
+            f"resolved-protection-removed:{protection.backup_id}"
+            for protection in protections
+        )
+        write_state(value)
+    return result
+
+protection_module.write_backup_protection = write_backup_protection
+protection_module._mark_retiring_protections = mark_retiring_protections
+protection_module.delete_completed_backup = delete_attempt_backup
+protection_module.append_selection = append_successful_selection
+protection_module._remove_resolved_protections = remove_resolved_protections
 
 deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
@@ -2280,6 +2352,7 @@ def test_public_deploy_advances_migration_protections_past_attempt_64(
     )
     runtime = json.loads(runtime_path.read_text())
     runtime["backup_count"] = 65
+    runtime["track_deploy_protection_sequence"] = True
     runtime_path.write_text(json.dumps(runtime, sort_keys=True))
     sent_prune_ids: list[tuple[str, ...]] = []
     captured_plans: list[dict[str, object]] = []
@@ -2345,10 +2418,14 @@ def test_public_deploy_advances_migration_protections_past_attempt_64(
         target.release_id,
     ]
     assert final_selection.backup_id == new_backup_id
+    assert final_selection.schema_version == 2
     assert final_selection.recovery_backup_ids == resolved_recovery_backup_ids
     assert state.backup_protections == ()
     assert state.successful_backup_ids == frozenset(retained_backup_ids)
     assert state.selections[0].recovery_backup_ids == (history_held_backup_id,)
+    assert state.applied_migrations == (20260905120000,)
+    assert result.facts["selected_release_id"] == target.release_id
+    assert result.facts["applied_migrations"] == [20260905120000]
     assert not Path(paths.local(paths.backup_protection(attempt_ids[pruned_attempt]))).exists()
     assert not (backup_root / f"{attempt_ids[pruned_attempt]}.json").exists()
     assert not (backup_root / f"{attempt_ids[pruned_attempt]}.dump").exists()
@@ -2359,6 +2436,31 @@ def test_public_deploy_advances_migration_protections_past_attempt_64(
     assert runtime["events"].index("safety-backup") < runtime["events"].index("service-stop")
     assert runtime["events"].index("service-stop") < runtime["events"].index("current-swap")
     assert runtime["events"].index("current-swap") < runtime["events"].index("service-start")
+    mutation_events = (
+        "safety-backup",
+        f"fresh-protection-published:{new_backup_id}",
+        f"attempt-protection-retired:{attempt_ids[pruned_attempt]}",
+        f"attempt-backup-deleted:{attempt_ids[pruned_attempt]}",
+        "migration",
+        "current-swap",
+        "service-start",
+        "verification",
+        "successful-history-appended",
+    )
+    assert [runtime["events"].index(event) for event in mutation_events] == sorted(
+        runtime["events"].index(event) for event in mutation_events
+    )
+    assert [
+        event
+        for event in runtime["events"]
+        if event.startswith("resolved-protection-removed:")
+    ] == [
+        f"resolved-protection-removed:{backup_id}"
+        for backup_id in resolved_recovery_backup_ids
+    ]
+    assert runtime["events"].index("successful-history-appended") < runtime["events"].index(
+        f"resolved-protection-removed:{resolved_recovery_backup_ids[0]}"
+    )
 
 
 def test_public_controller_replaces_an_unhealthy_selected_release_without_publishing_it(
