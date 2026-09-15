@@ -389,7 +389,8 @@ Provisioning installs hardened systemd assets and reconciles the first release f
 owned resources. It validates existing resources before writes, admits missing resources for
 create-only convergence, and refuses conflicting authority. Fixed resource metadata/digests are
 checked inside the locked `provision_authority` helper. Supplied credential proof remains a private,
-read-only sensitive channel. The marker does not authorize adopting arbitrary resources.
+read-only sensitive channel. Resource inspection and confirmed convergence do not adopt arbitrary
+resources.
 
 Before the first durable successful selection, provision can retry or replace the desired target;
 installed provenance must cover live migrations, including recognized partial prefixes. After that

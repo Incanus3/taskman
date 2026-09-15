@@ -339,8 +339,8 @@ instance is not part of this workflow.
 The transient helper reconciles the desired first release from validated resources, records and
 live migrations. Before the first durable successful selection, a rerun may retry or replace the
 target while preserving compatible partial state. Missing managed resources can be created after
-confirmation; conflicting present resources refuse. The marker does not authorize adoption of an
-unknown installation or invent provenance for applied migrations.
+confirmation; conflicting present resources refuse. Resource inspection and confirmed convergence
+do not adopt an unknown installation or invent provenance for applied migrations.
 
 The first successful selection is the command boundary. Once it exists, release replacement uses
 `deploy`, even if the controller lost the successful response. Replaying the exact completed first
@@ -363,11 +363,10 @@ generated secrets.
 Provisioning deliberately does not perform the interactive administrator step. Do it after
 readiness succeeds as described below.
 
-After successful admission and confirmation, provisioning installs its private ownership
-marker before package, account, or directory changes. This lets a later run recognize a
-compatible partial installation. A failed convergence after execution begins can report
-`changed=true` conservatively: inspect the partial host state before retrying. Do not
-create an ownership marker to adopt an unknown existing installation.
+After successful admission and confirmation, provisioning converges only the validated managed
+resources. A failed convergence after execution begins can report `changed=true` conservatively:
+inspect the partial host state before retrying. A later rerun again uses resource inspection and
+confirmed convergence; it does not adopt unknown existing resources.
 
 ## Deploy an existing host
 

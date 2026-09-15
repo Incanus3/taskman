@@ -4,9 +4,9 @@ Status: active. Updated: 2026-09-15. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Complete the separately authorized clean staging recreation, provisioning, and real-host readiness
-acceptance for the locally verified dedicated-host controller. This handoff does not authorize a
-host reset, provider/DNS change, deployment, publication, push, or merge.
+If the operator separately authorizes it, complete clean staging recreation, provisioning, and
+real-host readiness acceptance for the locally verified dedicated-host controller. This handoff
+does not authorize a host reset, provider/DNS change, deployment, publication, push, or merge.
 
 - Canonical behavior: [reconciliation specification](../specs/2026-09-09-deploy-reconciliation-design.md),
   [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
@@ -31,7 +31,7 @@ The old staging installation is outside the supported format/runtime boundary. I
 email, administrator, and failed-upgrade observations are historical evidence only. Do not migrate,
 repair, or run the new controller against it.
 
-## Next authorized action
+## Next external gate — authorization required
 
 Before acting, obtain explicit operator authorization that identifies the disposable target,
 permitted host/provider/DNS changes, access path, and destructive restore scope. Then recreate a

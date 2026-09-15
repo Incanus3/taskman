@@ -1,7 +1,8 @@
 # Desired-target deployment reconciliation implementation plan
 
 Status: approved by the operator on 2026-09-14, including the subsequently approved one-time
-compatibility break; implementation in progress. Created: 2026-09-14. Updated: 2026-09-15.
+compatibility break; local implementation and verification complete. Beads remains canonical for
+current tracker state and final closure. Created: 2026-09-14. Updated: 2026-09-15.
 
 Scoped independent review and focused amendment review completed on 2026-09-14. The manual-backup
 admission finding is resolved; no outstanding review blocker. Evidence is recorded in `tas-sr4b`.
@@ -50,8 +51,9 @@ deletion, provider action, or new provisioning is authorized by this documentati
 
 ## Checkpoint, scope, and execution
 
-Implementation is in progress on GitButler branch `dedicated-host-deployment-automation`.
-Beads is the authoritative delivery state; the
+Local implementation and verification are complete on GitButler branch
+`dedicated-host-deployment-automation`. Beads is the authoritative delivery state and currently
+retains `tas-sr4b.11` in progress and `tas-6dkg` open pending final documentation review; the
 [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation checkpoint.
 The original approved checkpoint was `df3e47b304161e251a65e0b642fa743f80679c70`; the subsequent
 compatibility amendment is committed and governs the implementation.
@@ -137,7 +139,7 @@ These types validate exact specification fields and serialize only persisted fie
 adds binding `sha256` separately. Add keyword-only `artifact_sha256` and `source_dirty` to
 `build_release_id`; the digest is required for construction and old ID parsing is removed.
 
-- [ ] Add supported-identity and old-format rejection tests, including this construction contract:
+- [x] Add supported-identity and old-format rejection tests, including this construction contract:
 
   ```python
   clean = build_release_id("0.2.0", "a" * 40, artifact_sha256="b" * 64, source_dirty=False)
@@ -147,23 +149,23 @@ adds binding `sha256` separately. Add keyword-only `artifact_sha256` and `source
   assert validate_release_id(clean) == clean
   ```
 
-- [ ] Run those tests red; replace old-format positive fixtures with supported records and keep
+- [x] Run those tests red; replace old-format positive fixtures with supported records and keep
   only focused old-format/runtime rejection cases. Verify canonical supported selection filename
   hashes. Add strict booleans, duplicate/reference mismatches, digest disagreement, path-length,
   256/257 fingerprints, and per-format byte-limit cases.
-- [ ] Implement only manifest v3 and installed/selection v2 exactly. Remove old-runtime readers,
+- [x] Implement only manifest v3 and installed/selection v2 exactly. Remove old-runtime readers,
   unversioned serializers and compatibility constructor defaults. Update existing consumer/test
   fixtures to the supported baseline rather than maintaining alternate constructors. Accept differing
   `built_at` only when all identity fields agree; preserve original installed provenance. Add exact protection and
   restore-binding parsing, OID/creation intent validation, safe atomic create/replace/fsync methods,
   and derived paths. No record writer is enabled in operations yet.
-- [ ] Update both explicit zipapp allowlists and source mappings for the complete dependency closure.
+- [x] Update both explicit zipapp allowlists and source mappings for the complete dependency closure.
   Scheduled readers now consume embedded manifests and their error dependencies; do not include
   controller build/SSH/Pydantic or restore mutation code in the scheduled archive.
   Update `ops/tests/test_architecture.py`, `ops/tests/test_simplification_contract.py`, and
   `ops/tests/support/architecture.py` only where their old record assumptions conflict with the
   approved narrow protection/binding owners; preserve guards against generic journals and engines.
-- [ ] Run `uv run --project ops pytest ops/tests/test_manifests.py ops/tests/releases
+- [x] Run `uv run --project ops pytest ops/tests/test_manifests.py ops/tests/releases
   ops/tests/host_helper/test_records.py ops/tests/host_helper/test_paths.py
   ops/tests/host_helper/test_state.py ops/tests/host_helper/test_package.py
   ops/tests/host_helper/test_backup_protection.py ops/tests/host_helper/test_restore_target.py`.
@@ -194,30 +196,30 @@ do not silently substitute a different source or build it under stale provenance
 and frozen dirty targets do not use this clean-input gate. The controller supplies already validated
 pages; resolution does not open SSH itself.
 
-- [ ] Add failing build tests using existing builder doubles: final bytes are hashed before naming,
+- [x] Add failing build tests using existing builder doubles: final bytes are hashed before naming,
   changed archive bytes yield changed IDs, identical bytes/provenance reuse identity, and timestamp
   variation alone does not invalidate installed identity.
-- [ ] Capture tracked edits/deletions and non-ignored untracked regular files into a private stable
+- [x] Capture tracked edits/deletions and non-ignored untracked regular files into a private stable
   snapshot. Exclude ignored files, metadata, controller state, and secrets. Reuse exporter path/type
   bounds; refuse links, submodules, unsupported members, and relevant drift during capture. Build
   only that snapshot. Do not persist a snapshot digest.
-- [ ] Implement final archive naming without repacking and validate prospective manifest, installed
+- [x] Implement final archive naming without repacking and validate prospective manifest, installed
   record, and both target request representations before publishing a reusable artifact. Bounds
   failures are exit 2, not a late staging error. Keep local prerequisites/build failures at exit 3.
-- [ ] Implement selected, successful, sorted installed, sorted cache, build resolution. Compare exact
+- [x] Implement selected, successful, sorted installed, sorted cache, build resolution. Compare exact
   source/toolchain/builder/layout/migration inputs, not source-only ID or age. Every accepted installed
   record must contain full provenance; an explicit artifact cannot excuse unsupported host metadata.
   Unsupported cache entries remain ignored and preserved. Dirty automatic work
   builds before exact-identity reuse; clean `--allow-dirty` follows clean resolution.
-- [ ] Test that automatic clean matching/building consumes the supplied pre-discovery identity and
+- [x] Test that automatic clean matching/building consumes the supplied pre-discovery identity and
   refuses stale inputs rather than relabelling changed source. Test the fresh clean-input equality
   check for changed revision, newly dirty files, and changed build-input fingerprints; unchanged
   inputs remain reusable. Task 6 owns the public re-resolution and confirmation loop.
-- [ ] Add source-order tests for SemVer prereleases/build metadata, unorderable version inputs, ancestor,
+- [x] Add source-order tests for SemVer prereleases/build metadata, unorderable version inputs, ancestor,
   missing/divergent objects, equal full revisions without lookup, conflicting signals, and no baseline.
   Use bounded local ancestry checks only. Return explicit known-downgrade and unknown reasons;
   either requires independent acknowledgment against any applicable baseline.
-- [ ] Run `uv run --project ops pytest ops/tests/test_build.py ops/tests/test_artifacts.py
+- [x] Run `uv run --project ops pytest ops/tests/test_build.py ops/tests/test_artifacts.py
   ops/tests/releases`. Real clean/dirty builder acceptance is repeated on the final implementation
   in task 11; unit doubles do not establish artifact acceptance.
 
@@ -235,7 +237,7 @@ reference traversal validates complete history; it is not a controller inventory
 use it. Protection publication/pruning and successful reference transfer belong to
 `backup_protection.py`; restore binding safety-attempt updates belong to `restore_target.py`.
 
-- [ ] Add a regression for selected A with migration 1, protected B with 1/2/3, live 1/2:
+- [x] Add a regression for selected A with migration 1, protected B with 1/2/3, live 1/2:
 
   ```python
   source = select_backup_source(state)
@@ -245,21 +247,21 @@ use it. Protection publication/pruning and successful reference transfer belong 
 
   Build `state`, `protected_target`, and `selected_release` using existing record fixtures with those
   exact migration versions. Assert produced backup metadata records source B and actual versions 1/2.
-- [ ] Implement operation-specific eligible provenance, exact live-prefix validation, all relevant
+- [x] Implement operation-specific eligible provenance, exact live-prefix validation, all relevant
   fingerprint agreement, and deterministic current-first/ascending-ID fallback. A newly supplied
   target or unrelated installed record cannot prove old migrations. Preserve partial-schema caveats.
-- [ ] Replace the lifetime selection-count refusal with incremental per-record history validation
+- [x] Replace the lifetime selection-count refusal with incremental per-record history validation
   under the operation timeout. Retain latest/predecessor and complete reference protection without
   silently dropping old history. Validate all authority before projecting it.
-- [ ] Implement attempt numbering, original/newest/three eligible intermediates, independent
+- [x] Implement attempt numbering, original/newest/three eligible intermediates, independent
   references, transient sixth protection, exact confirmed prune sets, and provenance preservation.
   Register fresh protection before retirement; retire reference/fsync before manifest/dump deletion.
   Interrupted pruning must finish under renewed confirmation before another fresh backup.
-- [ ] Implement success-reference transfer before resolved-protection removal, null-baseline rules,
+- [x] Implement success-reference transfer before resolved-protection removal, null-baseline rules,
   same-release successful transitions, no duplicate complete no-op, and rollback self-predecessor
   refusal. Scheduled/manual backup and ordinary retention share the full protection graph but cannot
   retire attempt protections or mutate the restore binding.
-- [ ] Run `uv run --project ops pytest ops/tests/host_helper/test_state.py
+- [x] Run `uv run --project ops pytest ops/tests/host_helper/test_state.py
   ops/tests/host_helper/test_records.py ops/tests/host_helper/test_backup.py
   ops/tests/host_helper/test_backup_protection.py ops/tests/host_helper/test_restore_target.py
   ops/tests/host_helper/test_rollback.py ops/tests/services/test_backups.py`.
@@ -287,15 +289,15 @@ record entries or raises, never partial success. `validate_mutation_state(operat
 returns the exact validated result mapping or raises `ProtocolError`. Mutation callers in tasks
 6–10 use this shared validator and keep their consequence ordering local.
 
-- [ ] Add codec regressions before raising aggregate limits: 65 and 256 fingerprints round-trip
+- [x] Add codec regressions before raising aggregate limits: 65 and 256 fingerprints round-trip
   inside installed manifests and upload targets; unrelated arrays of 65 still fail. Cover 257,
   512/513 observations, nested record depth, maximum filenames, and exact UTF-8 byte boundaries.
   Validate exceptions by operation and schema path, never a permissive field-name match.
-- [ ] Switch controller, helper, and transport bounds together to protocol 3. Reject old transient
+- [x] Switch controller, helper, and transport bounds together to protocol 3. Reject old transient
   requests. Ensure runner output limits do not clip valid envelopes before the codec sees them.
   Add exact discovery modes and canonical digests for unresolved protections/downgrade baselines.
   Restore's database/binding observations are completed in task 8; never represent unknown as absent.
-- [ ] Implement release/backup pages with canonical incremental inventory hashes, byte/count page
+- [x] Implement release/backup pages with canonical incremental inventory hashes, byte/count page
   limits, snapshot-first cursor checking, and strict ascending IDs. Collect complete public listings
   within one deadline. Adapt rollback/backup/verify consumers of old discovery inventories now.
   Verify and rollback retain strict completed-selection admission. Public manual backup must reach
@@ -305,7 +307,7 @@ returns the exact validated result mapping or raises `ProtocolError`. Mutation c
   projection for those facts without granting backup any deployment or history-repair authority.
   Scheduled backup uses the same accepted selected/live-prefix/protection authority. More than 4096
   selections must not overflow discovery.
-- [ ] Implement exact common mutation fields, operation additions, status/outcome consistency,
+- [x] Implement exact common mutation fields, operation additions, status/outcome consistency,
   unavailable markers, report validation, and required completion authority. Preserve reports on
   verification failure and on passing verification followed by history failure. Add this aggregation
   rule to controller integration tests:
@@ -320,11 +322,11 @@ returns the exact validated result mapping or raises `ProtocolError`. Mutation c
   Trigger it with proved provisioning/batch mutation followed by a lost mutating helper reply;
   earlier mutation stays proved but final identity is unavailable. A first lost mutating dispatch
   is `unknown`; a read-only transport failure alone is `unchanged`.
-- [ ] Update entrypoint operation failure boundaries so affected valid requests never receive the
+- [x] Update entrypoint operation failure boundaries so affected valid requests never receive the
   former empty state or optional success-only evidence on exceptions. Take at most one safe bounded
   final observation under the lock after the last possible mutation; keep primary error separate.
   Store confirmed `facts.starting_state` locally, not as final observations.
-- [ ] Run `uv run --project ops pytest ops/tests/host_protocol ops/tests/test_helper_runner.py
+- [x] Run `uv run --project ops pytest ops/tests/host_protocol ops/tests/test_helper_runner.py
   ops/tests/host_helper/test_discovery.py ops/tests/host_helper/test_entrypoint.py
   ops/tests/host_helper/test_package.py ops/tests/workflows/test_helper.py
   ops/tests/workflows/test_discovery.py ops/tests/workflows/test_helper_read_only.py
@@ -349,16 +351,16 @@ supplies a locked authority revalidation callback; convergence returns with the 
 held, or fails with accumulated mutation evidence. Use one explicit lock owner so context-manager
 exit cannot unlock a different acquisition. No timer enablement or unit/schedule convergence here.
 
-- [ ] Add a deterministic concurrency test where the old scheduled process waits for the lifecycle
+- [x] Add a deterministic concurrency test where the old scheduled process waits for the lifecycle
   lock. Use events/pipes, not sleeps: timer stops, lock releases, old backup completes, lock reacquires,
   authority revalidates, package replaces, checksum verifies, enabled timer starts.
-- [ ] Implement that sequence in Python with a single finite command deadline. Validate root-owned
+- [x] Implement that sequence in Python with a single finite command deadline. Validate root-owned
   upload bytes and fixed destination before installation. Never kill the running backup. Enabled
   but inactive timers recover; disabled/inactive remain so; active/disabled refuses refresh.
-- [ ] Fail before supported-format publication when quiescence, identity, or enablement fails. Restore an
+- [x] Fail before supported-format publication when quiescence, identity, or enablement fails. Restore an
   enabled timer only with a verified old/new executable and preserve restoration failure separately.
   Track pause, replacement, and restart as known/possible managed changes.
-- [ ] Run `uv run --project ops pytest ops/tests/host_helper/test_backup_helper.py
+- [x] Run `uv run --project ops pytest ops/tests/host_helper/test_backup_helper.py
   ops/tests/services/test_backups.py ops/tests/host_helper/test_package.py` for no-op, refresh,
   lock reacquisition drift, timeout, interrupted replacement, and restoration failure. Confirm the
   persistent package reads the supported formats and honors protections without importing mutation
@@ -386,27 +388,27 @@ and prune IDs. Helper `converge_deployment` retains explicit `first_release` spe
 Wire parameters and expected state are exactly the specification tables; no force/confirmation
 booleans are added to host requests.
 
-- [ ] Add a public-controller regression that dispatches real helper code against isolated managed
+- [x] Add a public-controller regression that dispatches real helper code against isolated managed
   state: select B, fail verification, then rerun B and complete. A sibling case replaces unhealthy
   B with C. Mock native commands/transport at their boundaries, not discovery or workflow admission.
   Verify history links A to the verified desired outcome and failed B has no synthetic success.
-- [ ] Integrate source resolution, full release pages, baseline digest agreement, material-state
+- [x] Integrate source resolution, full release pages, baseline digest agreement, material-state
   reobservation, target/policy validation, prominent dirty provenance, exact prune plan, and separate
   ordinary/downgrade acknowledgments. Dry-run needs no prompt/ack flags and performs no managed writes.
   Missing policy is exit 2; incompatible policy/schema or missing unattended acknowledgment is 10.
-- [ ] Add public tests that change clean source/build inputs during host discovery and before
+- [x] Add public tests that change clean source/build inputs during host discovery and before
   confirmation, including `--yes`: no stale target is confirmed or mutated, resolution repeats with
   fresh inputs and discovery, and any changed plan receives its required acknowledgments. Include
   unchanged-clean and frozen-dirty controls so the clean gate does not retarget a dirty snapshot.
-- [ ] Add parser scope tests for all commands. Explicit dirty artifacts imply dirty permission and
+- [x] Add parser scope tests for all commands. Explicit dirty artifacts imply dirty permission and
   accept redundant `--allow-dirty`; explicit clean artifacts reject it. JSON never supplies consent.
   Equal source/version rebuilds need no downgrade acknowledgment; unknown against any baseline does.
-- [ ] Implement the specification's six-step mutation sequence. Ensure scheduler compatibility before
+- [x] Implement the specification's six-step mutation sequence. Ensure scheduler compatibility before
   staging new records. Stop the app before every migration even when current already equals target.
   Protect fresh backup, prune only confirmed intermediates, run missing versions, observe complete
   schema, select/start/verify, then publish history and transfer references. A healthy complete match
   avoids restart and duplicate history. Preserve changed/unknown evidence through all exceptions.
-- [ ] Run `uv run --project ops pytest ops/tests/test_cli.py ops/tests/test_dry_run.py
+- [x] Run `uv run --project ops pytest ops/tests/test_cli.py ops/tests/test_dry_run.py
   ops/tests/test_end_to_end.py
   ops/tests/workflows/test_deploy.py ops/tests/workflows/test_deploy_transaction.py
   ops/tests/workflows/test_helper_deploy_transaction.py ops/tests/host_helper/test_deploy.py`.
@@ -428,21 +430,21 @@ target/expected-state schema as deploy, but null history/current is permitted on
 specified unfinished-installation rules. Preserve the original confirmed pre-convergence state in
 public results; fresh infrastructure observations do not authorize changed release/schema/protections.
 
-- [ ] Remove marker fields, probes, writes, and admission branches. Verify generated fact/convergence
+- [x] Remove marker fields, probes, writes, and admission branches. Verify generated fact/convergence
   operations do not access the retired path and exercise resource-based admission directly; remove
   old marker-state positive fixtures rather than retaining a compatibility matrix. No cleanup or
   migration of historical marker files is part of this operation.
-- [ ] Validate existing accounts, units, directories, Caddy/listeners, database and credentials
+- [x] Validate existing accounts, units, directories, Caddy/listeners, database and credentials
   individually. Missing prerequisites may be created before use; names alone cannot admit foreign
   resources. Add direct schema-object/data emptiness checks: absent migration table is not emptiness.
-- [ ] Integrate missing-current, multiple installed candidates, null-baseline protections, backup
+- [x] Integrate missing-current, multiple installed candidates, null-baseline protections, backup
   source fallback, scheduler refresh, source/dirty/explicit target replacement, and both acknowledgments.
   Preserve database and credential contents through convergence. Partial committed migrations need
   explicit backward-compatible policy; a proven empty initial DB retains automatic restore-required.
-- [ ] Make first durable successful history the command boundary. After success/lost response,
+- [x] Make first durable successful history the command boundary. After success/lost response,
   changed releases require deploy; only the existing exact completed-genesis replay remains.
   Aggregate convergence mutation before later failure or unknown genesis output.
-- [ ] Run `uv run --project ops pytest ops/tests/host ops/tests/workflows/test_provision.py
+- [x] Run `uv run --project ops pytest ops/tests/host ops/tests/workflows/test_provision.py
   ops/tests/test_pyinfra.py ops/tests/host_helper/test_deploy.py`. Public tests interrupt supported
   convergence and release boundaries; assert original data survives and incompatible authority refuses.
 
@@ -467,29 +469,29 @@ before publishing supported-format records or an initial/reapply restore binding
 dependency chain already makes Task 5 available. Supply the confirmed scheduler payload through
 the restore request's specified `backup_helper` parameter rather than introducing another protocol.
 
-- [ ] Add public tests from failed A-to-B deployment and before first success, with/without current.
+- [x] Add public tests from failed A-to-B deployment and before first success, with/without current.
   Assert backup-source compatibility and typed environment/backup confirmation; failed B need not run.
   Inspect cluster/admin authority via maintenance DB when canonical is absent.
-- [ ] Integrate Task 5's confirmed pause/wait/replace/checksum/restart sequence before initial or
+- [x] Integrate Task 5's confirmed pause/wait/replace/checksum/restart sequence before initial or
   reapply binding publication and other supported-format writes. Preserve its lock ordering and
   mutation evidence; failed or interrupted convergence must not publish a new binding. Add public
   restore/reapply tests with a running earlier supported-baseline scheduled package, verifying it
   finishes before replacement/publication and that retries after refresh interruptions remain safe.
-- [ ] Implement five recognized arrangements, OID/ownership authority, canonical-only top-level
+- [x] Implement five recognized arrangements, OID/ownership authority, canonical-only top-level
   migrations, absent/table-missing/table-empty distinctions, and remaining-work capacity checks.
   Bind exact input/digest/source, original OID, safety copy, original baseline/current before temporary
   creation. Register restored OID durably before loading. Unregistered temporary adoption requires
   pending intent and independent empty-template proof; never adopt populated contents or delete it.
-- [ ] Implement same-input temporary rebuild with durable pending intent and exact old-OID absence,
+- [x] Implement same-input temporary rebuild with durable pending intent and exact old-OID absence,
   including retired-only recovery. Keep app/workers stopped through load/validation/swap; preserve
   original and protections. Backup partial live prefixes via the shared provenance selector.
-- [ ] Transfer exact input/safety/protection references to verified successful history before retiring
+- [x] Transfer exact input/safety/protection references to verified successful history before retiring
   original DB and binding. Retry after durable success validates identities/references and completes
   cleanup without readiness, reload, or duplicate history. Unknown health is separate evidence.
-- [ ] Implement explicit `--reapply`: complete old cleanup, freshly inspect/confirm, fresh safety copy,
+- [x] Implement explicit `--reapply`: complete old cleanup, freshly inspect/confirm, fresh safety copy,
   new binding and success even for same input. Ordinary completed retry preserves subsequent writes.
   Unfinished reapply refuses and instructs ordinary retry/replacement; flags mutually exclude with exit 2.
-- [ ] Run `uv run --project ops pytest ops/tests/host_helper/test_restore.py
+- [x] Run `uv run --project ops pytest ops/tests/host_helper/test_restore.py
   ops/tests/host_helper/test_restore_target.py ops/tests/host_helper/test_restore_database.py
   ops/tests/workflows/test_restore.py ops/tests/workflows/test_restore_recovery.py
   ops/tests/workflows/test_operational_preflight.py ops/tests/test_cli.py`. Cover every durable
@@ -513,22 +515,22 @@ The host retains full reference authority; this projection excludes the binding'
 ownership and does not export full history. Apply the specification's mode-specific subset and
 drift validation.
 
-- [ ] Add public replacement tests in each recognized arrangement, including failed restored
+- [x] Add public replacement tests in each recognized arrangement, including failed restored
   canonical with possible writes. Validate new input completely; preserve original and take all
   required safety copies before recording replacement intent or deleting databases.
-- [ ] Implement durable intent, exact discard, original-name normalization, atomic input switch,
+- [x] Implement durable intent, exact discard, original-name normalization, atomic input switch,
   restored-OID clearing/creation intent, then registered fresh temporary load. A pending replacement
   resumes with its flag; a third target normalizes only the pending arrangement, then receives a new
   plan/confirmation. It never loads or starts an abandoned target just to advance recovery.
-- [ ] Permit missing/unreadable/corrupt abandoned dump contents only when metadata/binding/source
+- [x] Permit missing/unreadable/corrupt abandoned dump contents only when metadata/binding/source
   remain authoritative and no independent safety role needs those bytes. Apply this in public
   preflight/discovery and shared readers; ordinary retry still validates its dump fully. Preserve
   remaining abandoned files and report their condition.
-- [ ] Implement original/newest/three eligible safety attempts, current original-database safety
+- [x] Implement original/newest/three eligible safety attempts, current original-database safety
   copy and independent references outside slots, transient sixth registration, sequential handling
   of multiple fresh copies, reference retirement before pair deletion, and exact confirmed pruning.
   Failed backup/pruning stops before DB consequences. Do not accumulate abandoned input references.
-- [ ] Run `uv run --project ops pytest ops/tests/host_helper/test_restore.py
+- [x] Run `uv run --project ops pytest ops/tests/host_helper/test_restore.py
   ops/tests/host_helper/test_restore_target.py ops/tests/host_helper/test_restore_database.py
   ops/tests/workflows/test_restore_recovery.py ops/tests/workflows/test_restore_replacement.py`.
   Include 65+ replacements, clock rollback, pending normalization with unusable abandoned content,
@@ -548,18 +550,18 @@ facts and a maximum-64 target batch with null cursor. Ordering is `(kind, identi
 cursor `after_id` is its canonical JSON tuple. Result `completed_targets` covers only fully deleted
 or safely absent targets in that request; controller accumulates earlier batch completions.
 
-- [ ] Add public tests with low backup capacity, absent/unavailable canonical DB, mismatched
+- [x] Add public tests with low backup capacity, absent/unavailable canonical DB, mismatched
   current/history, and unfinished genesis. Fail if database-health/capacity preflight is called.
   Read-only inspect/dry-run must not normalize partial backup files.
-- [ ] Implement filesystem-only admission and full reference protection. Preserve all releases
+- [x] Implement filesystem-only admission and full reference protection. Preserve all releases
   during unfinished first install, and conservatively during other unfinished transitions when
   migration irrelevance cannot be proved. No database names or authority-record removal targets.
-- [ ] Collect all byte/count bounded pages before typed confirmation. Hash full ordered eligibility
+- [x] Collect all byte/count bounded pages before typed confirmation. Hash full ordered eligibility
   and confirmation facts; drift refuses. Execute only confirmed batches with fresh protection/path/
   checksum/inode checks. A newly protected target refuses; safe absence remains idempotent.
-- [ ] Preserve manifest-before-dump ordering, unknown files, and partial changes/completions. Lost
+- [x] Preserve manifest-before-dump ordering, unknown files, and partial changes/completions. Lost
   later replies cannot reuse earlier final observations. Cleanup never refreshes scheduler code.
-- [ ] Run `uv run --project ops pytest ops/tests/workflows/test_cleanup.py
+- [x] Run `uv run --project ops pytest ops/tests/workflows/test_cleanup.py
   ops/tests/host_helper/test_cleanup.py ops/tests/workflows/test_operational_preflight.py`.
   Cover byte-driven pages/batches, no eligible targets, malformed references, partial pair deletion,
   changed protection after confirmation, and loss after a proved earlier batch.
