@@ -654,6 +654,73 @@ def test_deploy_discovery_bounds_history_to_the_protection_reference_intersectio
     assert result.state["backup_protections"] == tuple(item.to_mapping() for item in protections)
 
 
+def test_restore_discovery_projects_only_independently_held_safety_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full history must affect exact pruning without becoming an unbounded response."""
+
+    attempt_ids = tuple(f"backup-{index:032x}" for index in range(6))
+    requested = _restore_state().backups[0]
+    target = RestoreTarget(
+        1,
+        requested.backup_id,
+        requested.dump_sha256,
+        requested.source_release_id,
+        None,
+        RELEASE_ID,
+        101,
+        202,
+        False,
+        attempt_ids[0],
+        None,
+        tuple(
+            {"backup_id": backup_id, "attempt_number": number}
+            for number, backup_id in enumerate(attempt_ids)
+        ),
+    )
+    protection = BackupProtection(1, attempt_ids[2], None, RELEASE_ID, 0, SELECTED_AT)
+    observed = HostState(
+        **{
+            **_restore_state().__dict__,
+            "restore_target": target,
+            # This represents complete disk-backed history, including an ID
+            # that need not appear in the latest/predecessor projection.
+            "successful_backup_ids": frozenset({attempt_ids[1]}),
+            "backup_protections": (protection,),
+        }
+    )
+    _install_observer(monkeypatch, observed)
+    monkeypatch.setattr(
+        discover_module,
+        "observe_restore_databases",
+        lambda *_args: {
+            "canonical": {
+                "oid": 202,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": (20260905120000,),
+            },
+            "temporary": None,
+            "retired": {
+                "oid": 101,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": (20260905120000,),
+            },
+        },
+    )
+
+    result = discover_module.discover(
+        _request(mode="restore", backup_id=requested.backup_id)
+    )
+
+    assert result.outcome == "succeeded"
+    assert result.state["independently_held_backup_ids"] == (
+        attempt_ids[1],
+        attempt_ids[2],
+    )
+
+
 def test_unfinished_provision_downgrade_digest_includes_release_proving_live_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

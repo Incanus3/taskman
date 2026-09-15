@@ -200,6 +200,9 @@ def command(argv, **_kwargs):
 def backup(current, paths, *_args, **_kwargs):
     value = read_state()
     value["events"].append("safety-backup")
+    if value.get("safety_failure"):
+        write_state(value)
+        raise OSError("injected safety backup failure")
     value["backup_count"] += 1
     dump = Path(paths.local(paths.backup_root / f"backup-{value['backup_count']:032x}.dump"))
     dump.parent.mkdir(parents=True, exist_ok=True)
@@ -207,7 +210,14 @@ def backup(current, paths, *_args, **_kwargs):
     dump.chmod(0o600)
     record = BackupRecord(
         f"backup-{value['backup_count']:032x}",
-        __import__("datetime").datetime(2026, 9, 7, 12, value["backup_count"], tzinfo=__import__("datetime").UTC),
+        __import__("datetime").datetime(2026, 9, 7, 12, tzinfo=__import__("datetime").UTC)
+        + __import__("datetime").timedelta(
+            minutes=(
+                -value["backup_count"]
+                if value.get("backup_clock_rollback")
+                else value["backup_count"]
+            )
+        ),
         hashlib.sha256(dump.read_bytes()).hexdigest(),
         current.selected_release_id or current.releases[0].release_id,
         tuple(value["migrations"]),
@@ -354,6 +364,7 @@ def load_temporary(target, *_args, **_kwargs):
     assert not target.temporary_creation_pending
     assert value["restore_databases"]["temporary"]["oid"] == target.restored_database_oid
     value["events"].append("dump-loaded")
+    value["events"].append(f"dump-loaded:{target.backup_id}")
     value["restore_databases"]["temporary"].update(
         migration_table_present=True,
         applied_migrations=value["migrations"],
@@ -397,6 +408,18 @@ def drop_temporary(_database, _credentials, oid):
         value["restore_databases"]["temporary"] = None
         write_state(value)
 
+def drop_restored(_database, _credentials, role, oid):
+    value = read_state()
+    assert role in {"canonical", "temporary"}
+    restored = value["restore_databases"][role]
+    if restored is not None:
+        assert restored["oid"] == oid
+        if role == "canonical":
+            assert value["restore_databases"]["retired"] is not None
+        value["events"].append(f"restored-dropped:{role}:{oid}")
+        value["restore_databases"][role] = None
+        write_state(value)
+
 _write_restore_target = restore_module.write_restore_target
 def write_binding(paths, target):
     value = read_state()
@@ -426,6 +449,7 @@ restore_module.create_temporary_database = create_temporary
 restore_module.register_restored_database = register_temporary
 restore_module.begin_temporary_rebuild = begin_rebuild
 restore_module.drop_registered_temporary = drop_temporary
+restore_module.drop_registered_restored = drop_restored
 restore_module.load_registered_temporary = load_temporary
 restore_module.rename_registered_database = rename_database
 restore_module.drop_registered_retired = drop_retired
@@ -434,6 +458,42 @@ restore_module.remove_restore_target = remove_binding
 restore_module.run_command = command
 restore_module._terminate_connections = lambda *_args: None
 restore_module.verify = verify
+
+_replace_restore_target = restore_module.replace_restore_target
+def replace_target(paths, target):
+    value = read_state()
+    _replace_restore_target(paths, target)
+    if value.get("lose_registration_reply"):
+        value["lose_registration_reply"] = False
+        value["events"].append("registration-reply-lost")
+        write_state(value)
+        raise OSError("injected registration reply loss")
+
+_retire_safety_attempts = restore_module.retire_safety_attempts
+def retire_attempts(paths, target, confirmed, **kwargs):
+    updated = _retire_safety_attempts(paths, target, confirmed, **kwargs)
+    value = read_state()
+    value["events"].append("safety-references-retired")
+    if value.get("lose_retirement_reply"):
+        value["lose_retirement_reply"] = False
+        write_state(value)
+        raise OSError("injected retirement reply loss")
+    write_state(value)
+    return updated
+
+_delete_completed_backup = restore_module.delete_completed_backup
+def delete_backup(paths, record):
+    value = read_state()
+    if value.get("interrupt_backup_deletion"):
+        value["interrupt_backup_deletion"] = False
+        value["events"].append("backup-deletion-interrupted")
+        write_state(value)
+        raise OSError("injected backup deletion interruption")
+    return _delete_completed_backup(paths, record)
+
+restore_module.replace_restore_target = replace_target
+restore_module.retire_safety_attempts = retire_attempts
+restore_module.delete_completed_backup = delete_backup
 
 os.write(ready_fd, b"R")
 os.close(ready_fd)
@@ -652,6 +712,7 @@ def _install_public_restore_controller(
             "registered": "canonical+temporary",
             "partial": "canonical+temporary",
             "pending-old": "canonical+temporary",
+            "replacement-pending": "canonical+temporary",
             "temporary-retired": "temporary+retired",
             "retired": "retired",
             "swapped": "canonical+retired",
@@ -675,6 +736,23 @@ def _install_public_restore_controller(
             )
         if state_family == "pending-old":
             target = replace(target, temporary_creation_pending=True)
+            replace_restore_target(paths, target)
+        if state_family == "replacement-pending":
+            pending = host_restore_tests._backup(
+                paths,
+                host_restore_tests.REPLACEMENT_BACKUP,
+                host_restore_tests.TARGET,
+                b"pending restore source",
+            )
+            target = replace(
+                target,
+                replacement={
+                    "backup_id": pending.backup_id,
+                    "dump_sha256": pending.dump_sha256,
+                    "source_release_id": pending.source_release_id,
+                    "discard_database_oid": target.restored_database_oid,
+                },
+            )
             replace_restore_target(paths, target)
         if state_family == "retired":
             target = replace(
@@ -773,7 +851,10 @@ def _install_public_restore_controller(
             1_000_000,
             1_000_000,
             1_000_000,
-            {"canonical": 1024, "temporary": None, "retired": None},
+            {
+                role: None if observed is None else 1024
+                for role, observed in restore_databases.items()
+            },
         ),
     )
     monkeypatch.setattr(restore_workflow, "run_request", dispatch)

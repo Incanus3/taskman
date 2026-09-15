@@ -350,7 +350,8 @@ def _observe(
             raise ValueError("listing request is invalid")
         return observe_host_state(
             paths,
-            allow_selection_transition=request.operation == "list_releases",
+            allow_selection_transition=request.operation
+            in {"list_releases", "list_backups"},
         ), None, None
 
 
@@ -586,6 +587,28 @@ def _restore_projection(
     """Project restore-only identity without a deployment downgrade baseline."""
 
     deployment = _deployment_projection(state, scheduler, mode="restore")
+    target = state.restore_target
+    attempt_ids = (
+        frozenset()
+        if target is None
+        else frozenset(
+            str(item["backup_id"]) for item in target.safety_backup_attempts
+        )
+    )
+    independently_held_attempt_ids = tuple(
+        sorted(
+            attempt_ids.intersection(
+                {
+                    *state.successful_backup_ids,
+                    *(item.backup_id for item in state.backup_protections),
+                    *(
+                        item.backup_id
+                        for item in state.retiring_backup_protections
+                    ),
+                }
+            )
+        )
+    )
     canonical = restore_database_state["canonical"]
     applied_migrations = (
         canonical["applied_migrations"] if isinstance(canonical, Mapping) else None
@@ -593,6 +616,10 @@ def _restore_projection(
     return {
         "applied_migrations": applied_migrations,
         "backup_protections": deployment["backup_protections"],
+        # Full successful history remains host-local. Only safety attempts
+        # whose retention changes because of another durable role are needed
+        # to derive the exact bounded prune plan.
+        "independently_held_backup_ids": independently_held_attempt_ids,
         "backup_protection_sha256": deployment["backup_protection_sha256"],
         "scheduled_backup_sha256": deployment["scheduled_backup_sha256"],
         "backup_timer_enabled": deployment["backup_timer_enabled"],

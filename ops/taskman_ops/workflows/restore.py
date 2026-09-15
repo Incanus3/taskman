@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -15,8 +15,14 @@ from ..host_helper.backup_protection import BackupProtection
 from ..host_helper.database import release_migration_versions
 from ..host_helper.records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, selection_filename
 from ..host_helper.restore_database import RestoreDatabaseError, validate_restore_database_state
-from ..host_helper.restore_target import RestoreTarget, restore_target_sha256
-from ..host_protocol import HostRequest, PROTOCOL_VERSION
+from ..host_helper.restore_target import (
+    REPLACEMENT_RECONFIRM_MESSAGE,
+    RestoreTarget,
+    append_safety_attempt,
+    restore_target_sha256,
+    safety_attempt_prune_ids,
+)
+from ..host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from ..output import WorkflowResult
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
@@ -49,7 +55,8 @@ _DISCOVERY_KEYS = frozenset({
     "selected_release_id", "last_successful_selection_id", "last_successful_selection",
     "previous_successful_selection", "applied_migrations", "service_state", "database_state",
     "backup_protections", "backup_protection_sha256", "scheduled_backup_sha256",
-    "backup_timer_enabled", "backup_timer_state", "restore_target", "restore_database_state",
+    "backup_timer_enabled", "backup_timer_state", "independently_held_backup_ids",
+    "restore_target", "restore_database_state",
 })
 _EXPECTED_KEYS = frozenset({
     "selected_release_id", "last_successful_selection_id", "applied_migrations",
@@ -68,6 +75,7 @@ class _Authority:
     backups: tuple[BackupRecord, ...]
     releases: tuple[ReleaseRecord, ...]
     protections: tuple[BackupProtection, ...]
+    independently_held_backup_ids: frozenset[str]
     target: RestoreTarget | None
     target_sha256: str | None
     databases: Mapping[str, object]
@@ -105,10 +113,12 @@ def restore(
     try:
         validate_restore_inspection_preflight(remote, config)
         cleanup_cycles = 0
+        reconfirmation_cycles = 0
         while True:
             authority = _collect_authority(remote, config, backup_id)
             warnings = merge_warnings(warnings, authority.warnings)
-            starting_state = authority.expected_state
+            if starting_state is None:
+                starting_state = authority.expected_state
             completed = _durably_completed(authority)
             completed_without_binding = _completed_same_backup(authority)
             unfinished = authority.target is not None and not completed
@@ -140,13 +150,16 @@ def restore(
                     reapply=reapply,
                 )
                 # A completed binding is cleanup authority, not permission to
-                # start a fresh reapply from stale capacity or confirmation.
+                # start a fresh restore from stale capacity or confirmation.
                 # Finish it first, then recollect preflight and restore facts.
                 if (
                     not dry_run
-                    and reapply
                     and authority.target is not None
                     and _durably_completed(authority)
+                    and (
+                        reapply
+                        or authority.target.backup_id != backup_id
+                    )
                 ):
                     if cleanup_cycles:
                         raise _safety("completed restore cleanup did not converge")
@@ -167,8 +180,9 @@ def restore(
                             "sha256": scheduler_package.sha256,
                             "upload_path": None,
                         },
+                        prune_backup_ids=(),
                         replace_unfinished=False,
-                        reapply=True,
+                        reapply=reapply,
                     )
                     cleanup_result = run_restore_request(
                         remote,
@@ -216,14 +230,20 @@ def restore(
                     and authority.target.backup_id != backup_id
                     and not _durably_completed(authority)
                 )
+                replacement_execution_required = (
+                    different_unfinished
+                    or authority.target is not None
+                    and authority.target.replacement is not None
+                    and not _durably_completed(authority)
+                )
                 if dry_run:
                     next_action = (
                         "review this replacement preview; execution requires --replace-unfinished and fresh typed confirmation"
-                        if different_unfinished and not replace_unfinished
+                        if replacement_execution_required and not replace_unfinished
                         else "review the exact restore plan and rerun without --dry-run for fresh typed confirmation"
                     )
                     return WorkflowResult("restore", config.name or "", False, "planned", plan, warnings, next_action)
-                if different_unfinished and not replace_unfinished:
+                if replacement_execution_required and not replace_unfinished:
                     raise _safety(
                         "a different unfinished restore target is already bound",
                         "preview it with --dry-run, then use --replace-unfinished with fresh typed confirmation",
@@ -253,6 +273,7 @@ def restore(
                         "sha256": scheduler_package.sha256,
                         "upload_path": "pending-controller-upload" if refresh_required else None,
                     },
+                    prune_backup_ids=tuple(plan["prune_backup_ids"]),
                     replace_unfinished=replace_unfinished,
                     reapply=reapply,
                 )
@@ -263,6 +284,21 @@ def restore(
                     backup_helper_package=scheduler_package if refresh_required else None,
                     prior_mutation_state=prior_mutation_state,
                 )
+                if _replacement_reconfirmation(result):
+                    facts = mutation_result_facts(
+                        result,
+                        starting_state=authority.expected_state,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    prior_mutation_state = str(facts["mutation_state"])
+                    warnings = merge_warnings(warnings, result.warnings)
+                    reconfirmation_cycles += 1
+                    if reconfirmation_cycles > 2:
+                        raise _safety(
+                            "restore replacement normalization did not converge"
+                        )
+                    validate_restore_inspection_preflight(remote, config)
+                    continue
                 if result.outcome != "succeeded":
                     raise result_error(
                         result,
@@ -358,6 +394,14 @@ def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str
         protection_sha = hashlib.sha256(_canonical_ascii(protection_rows)).hexdigest()
         if state["backup_protection_sha256"] != protection_sha:
             raise ValueError("backup protection digest is inconsistent")
+        independent_values = state["independently_held_backup_ids"]
+        if (
+            not isinstance(independent_values, (list, tuple))
+            or tuple(independent_values) != tuple(sorted(set(independent_values)))
+            or any(type(item) is not str or _BACKUP_RE.fullmatch(item) is None for item in independent_values)
+        ):
+            raise ValueError("independent restore backup authority is invalid")
+        independently_held_backup_ids = frozenset(independent_values)
         target_value = state["restore_target"]
         if target_value is None:
             target, target_sha = None, None
@@ -382,6 +426,13 @@ def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str
         source_release = next(item for item in releases if item.release_id == source.source_release_id)
         if target is not None:
             _validate_target_authority(target, backups, releases)
+            attempt_ids = {
+                str(item["backup_id"]) for item in target.safety_backup_attempts
+            }
+            if not independently_held_backup_ids.issubset(attempt_ids):
+                raise ValueError("independent restore backup authority is unrelated")
+        elif independently_held_backup_ids:
+            raise ValueError("independent restore backup authority lacks a binding")
         if selected is not None and not any(item.release_id == selected for item in releases):
             raise ValueError("physical current is not an installed release")
         if latest is not None and selected is None:
@@ -403,6 +454,7 @@ def _collect_authority(remote: Remote, config: EnvironmentConfig, backup_id: str
             raise AssertionError("restore expected state changed")
         authority = _Authority(
             selected, latest_id, latest, source, source_release, backups, releases, protections,
+            independently_held_backup_ids,
             target, target_sha, databases, expected, str(state["service_state"]),
             str(state["backup_timer_state"]), result.warnings,
         )
@@ -439,6 +491,15 @@ def _validate_target_authority(
         target.source_release_id,
     ):
         raise ValueError("restore binding input authority is inconsistent")
+    if target.replacement is not None:
+        pending = _source_for_id(
+            backups, releases, str(target.replacement["backup_id"])
+        )
+        if (pending.dump_sha256, pending.source_release_id) != (
+            target.replacement["dump_sha256"],
+            target.replacement["source_release_id"],
+        ):
+            raise ValueError("restore replacement input authority is inconsistent")
     required = {
         target.safety_backup_id,
         *(str(item["backup_id"]) for item in target.safety_backup_attempts),
@@ -545,6 +606,8 @@ def _plan(
     roles = sorted(_roles(authority.databases))
     target, completed = authority.target, _durably_completed(authority)
     different_unfinished = target is not None and target.backup_id != requested_backup_id and not completed
+    pending_replacement = target is not None and target.replacement is not None and not completed
+    replacement_mode = different_unfinished or pending_replacement
     completed_without_binding = target is None and _completed_same_backup(authority)
     swapped = (
         target is not None
@@ -554,20 +617,59 @@ def _plan(
         and isinstance(authority.databases["retired"], Mapping)
         and authority.databases["retired"]["oid"] == target.original_database_oid
     )
-    needs_load = (reapply and not completed) or (
+    needs_load = replacement_mode or (reapply and not completed) or (
         not completed and not completed_without_binding and not swapped
     )
-    needs_safety = (
+    original_safety_copy = (
         reapply and not completed
         or target is None and not completed_without_binding
         or target is not None
+        and target.replacement is None
         and isinstance(authority.databases["canonical"], Mapping)
         and authority.databases["canonical"]["oid"] == target.original_database_oid
+    )
+    failed_restored_safety_copy = (
+        different_unfinished
+        and target is not None
+        and target.replacement is None
+        and isinstance(authority.databases["canonical"], Mapping)
+        and authority.databases["canonical"]["oid"] == target.restored_database_oid
+        and isinstance(authority.databases["retired"], Mapping)
+        and authority.databases["retired"]["oid"] == target.original_database_oid
+    )
+    needs_safety = original_safety_copy or failed_restored_safety_copy
+    prune_backup_ids = _planned_safety_prune_ids(
+        target,
+        authority.independently_held_backup_ids,
+        fresh_safety_copies=(
+            (original_safety_copy and target is not None, True),
+            (failed_restored_safety_copy, False),
+        ),
     )
     if target is not None and completed:
         consequences = ["cleanup-retired", "cleanup-binding"]
     elif completed_without_binding and not reapply:
         consequences, needs_load = ["completion-check"], False
+    elif replacement_mode:
+        consequences = ["refresh-scheduled-backup-helper"]
+        if pending_replacement:
+            consequences.append("normalize-pending-replacement")
+        if needs_safety:
+            consequences.append("fresh-safety-backup")
+        consequences.extend(
+            [
+                "publish-replacement-intent",
+                "normalize-original-database-name",
+                "switch-restore-input",
+                "load-temporary",
+                "swap-databases",
+                "select-source-release",
+                "verify",
+                "publish-success",
+                "cleanup-retired",
+                "cleanup-binding",
+            ]
+        )
     else:
         consequences = ["refresh-scheduled-backup-helper"]
         if needs_safety:
@@ -583,6 +685,7 @@ def _plan(
     required_safety_bytes = sizes.get("canonical") if needs_safety else 0
     return {
         "backup_id": requested_backup_id,
+        "previous_backup_id": None if target is None else target.backup_id,
         "physical_current_release_id": authority.selected_release_id,
         "last_successful_selection": None if authority.latest_selection is None else authority.latest_selection.to_mapping(),
         "canonical_applied_migrations": mutable(authority.expected_state["applied_migrations"]),
@@ -594,6 +697,10 @@ def _plan(
         "physical_database_arrangement": roles,
         "retained_backup_protections": [item.to_mapping() for item in authority.protections],
         "retained_safety_material": [] if target is None else [dict(item) for item in target.safety_backup_attempts],
+        "independently_held_safety_backup_ids": sorted(
+            authority.independently_held_backup_ids
+        ),
+        "prune_backup_ids": list(prune_backup_ids),
         "remaining_restore_bytes": remaining_bytes,
         "required_safety_backup_bytes": required_safety_bytes,
         "available_database_bytes": available_bytes,
@@ -610,7 +717,7 @@ def _plan(
         "service_state": authority.service_state,
         "planned_pre_restore_backup": needs_safety,
         "replace_unfinished": replace_unfinished,
-        "replace_unfinished_required": different_unfinished,
+        "replace_unfinished_required": replacement_mode,
         "reapply": reapply,
         "data_loss_warning": "restoring replaces the database and discards changes made after the selected backup",
         "typed_confirmation": f"restore {config.name or ''} {requested_backup_id}",
@@ -630,12 +737,78 @@ def _completed_same_backup(authority: _Authority) -> bool:
     )
 
 
+def _planned_safety_prune_ids(
+    target: RestoreTarget | None,
+    independently_held_backup_ids: frozenset[str],
+    *,
+    fresh_safety_copies: tuple[tuple[bool, bool], ...],
+) -> tuple[str, ...]:
+    """Simulate the helper's register-then-prune sequence for one plan."""
+
+    if target is None:
+        return ()
+    planned = target
+    prune_ids: set[str] = set()
+
+    def retire_current(record: RestoreTarget) -> RestoreTarget:
+        eligible = safety_attempt_prune_ids(
+            record,
+            independently_held_backup_ids=independently_held_backup_ids,
+        )
+        prune_ids.update(eligible)
+        if not eligible:
+            return record
+        return replace(
+            record,
+            safety_backup_attempts=tuple(
+                item
+                for item in record.safety_backup_attempts
+                if str(item["backup_id"]) not in set(eligible)
+            ),
+        )
+
+    planned = retire_current(planned)
+    for required, promote_original in fresh_safety_copies:
+        if not required:
+            continue
+        attempt_number = max(
+            int(item["attempt_number"])
+            for item in planned.safety_backup_attempts
+        ) + 1
+        synthetic_id = "backup-" + hashlib.sha256(
+            f"planned-restore-safety-{attempt_number}".encode("ascii")
+        ).hexdigest()[:32]
+        planned = append_safety_attempt(
+            planned,
+            synthetic_id,
+            promote_original=promote_original,
+        )
+        planned = retire_current(planned)
+    return tuple(sorted(prune_ids))
+
+
+def _replacement_reconfirmation(result: HostResult) -> bool:
+    """Recognize only the fixed changed restore continuation contract."""
+
+    state = result.state
+    return (
+        result.operation == "restore"
+        and result.outcome == "retryable"
+        and result.message == REPLACEMENT_RECONFIRM_MESSAGE
+        and isinstance(state, Mapping)
+        and state.get("mutation_state") == "changed"
+        and state.get("exit_code") == int(ExitStatus.RESTORE)
+        and state.get("failed_boundary") == "restore"
+    )
+
+
 def _request(
     config: EnvironmentConfig,
     expected_state: Mapping[str, object],
     backup_id: str,
     *,
     backup_helper: Mapping[str, object],
+    prune_backup_ids: tuple[str, ...],
     replace_unfinished: bool,
     reapply: bool,
 ) -> HostRequest:
@@ -653,7 +826,7 @@ def _request(
             "database": database_settings(config),
             "verification": verification_settings(config),
             "backup_helper": backup_helper,
-            "prune_backup_ids": [],
+            "prune_backup_ids": list(prune_backup_ids),
             "replace_unfinished": replace_unfinished,
             "reapply": reapply,
         },

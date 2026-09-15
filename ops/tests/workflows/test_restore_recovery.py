@@ -112,6 +112,7 @@ def _authority(tmp_path, *, current=FAILED_CURRENT, with_success=True, databases
         "service_state": "failed",
         "database_state": "absent" if databases["canonical"] is None else "ready",
         "backup_protections": [],
+        "independently_held_backup_ids": [],
         "backup_protection_sha256": PROTECTION_SHA,
         "scheduled_backup_sha256": SCHEDULER_SHA,
         "backup_timer_enabled": True,
