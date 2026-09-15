@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -24,7 +24,7 @@ from taskman_ops.output import WorkflowResult, register_secret, clear_secrets
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.helper_client.package import build_helper_package, build_scheduled_backup_package
 from taskman_ops.host_helper.operations import deploy as host_deploy
-from taskman_ops.host_protocol import decode_result, encode_request
+from taskman_ops.host_protocol import decode_result, encode_request, encode_result
 from taskman_ops.releases.artifacts import DeploymentTarget
 from taskman_ops.releases.manifests import ArtifactManifest, VerifiedArtifact
 from taskman_ops.remote import CommandResult, UploadReceipt
@@ -980,6 +980,143 @@ def _state(paths: dict[str, str], runtime_path: Path):
         include_runtime=True,
         allow_selection_transition=True,
     )
+
+
+def _replace_with_large_successful_history(paths: object, old_backup_id: str) -> None:
+    """Publish 4,097 valid selections with recovery authority held only by the first."""
+
+    from taskman_ops.host_helper.records import SelectionRecord, append_selection
+    from taskman_ops.host_helper.state import MAX_INVENTORY_ENTRIES, observe_host_state
+
+    state = observe_host_state(paths)
+    assert state.selected_release_id is not None
+    assert state.latest_successful_selection_filename is not None
+    selection_root = Path(paths.local(paths.selection_root))
+    (selection_root / state.latest_successful_selection_filename).unlink()
+
+    selected_release_id = state.selected_release_id
+    selected_at = datetime(2026, 9, 15, tzinfo=UTC)
+    for index in range(MAX_INVENTORY_ENTRIES + 1):
+        previous_release_id = None if index == 0 else selected_release_id
+        append_selection(
+            paths,
+            SelectionRecord(
+                selected_release_id,
+                previous_release_id,
+                old_backup_id if index == 0 else None,
+                selected_at + timedelta(seconds=index),
+                2,
+                previous_release_id,
+                (),
+            ),
+        )
+    assert len(tuple(selection_root.glob("selection-*.json"))) == MAX_INVENTORY_ENTRIES + 1
+
+
+def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Would catch an observer that truncates at 4,096 or trusts latest/predecessor only.
+
+    Independently derived expectations: the old selection's backup remains protected by
+    full host history, while each public discovery response contains only its bounded
+    projection. Removing that old dump must therefore refuse both public consumers.
+    """
+
+    from taskman_ops.host_helper.backups import retained_backup_ids
+    from taskman_ops.host_helper.state import observe_host_state
+    from taskman_ops.workflows import deploy as deploy_workflow
+    from taskman_ops.workflows import helper, inventory
+    from taskman_ops.workflows import restore as restore_workflow
+
+    config, _runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch,
+        tmp_path,
+        scheduler_failure=False,
+    )
+    old_backup_id = "backup-" + "f" * 32
+    host_restore_tests._backup(
+        paths,
+        old_backup_id,
+        host_restore_tests.CURRENT,
+        b"retained only by the oldest successful selection",
+    )
+    _replace_with_large_successful_history(paths, old_backup_id)
+
+    captured_discoveries: list[tuple[object, object]] = []
+    package_dispatch = helper.run_request
+
+    def capture_dispatch(_remote: object, request: object, **kwargs: object) -> object:
+        result = package_dispatch(_remote, request, **kwargs)
+        if getattr(request, "operation", None) == "discover":
+            captured_discoveries.append((request, result))
+        return result
+
+    monkeypatch.setattr(deploy_workflow, "validate_operational_preflight", lambda *_args: None)
+    monkeypatch.setattr(deploy_workflow, "run_request", capture_dispatch)
+    monkeypatch.setattr(restore_workflow, "run_request", capture_dispatch)
+    monkeypatch.setattr(inventory, "run_request", capture_dispatch)
+    monkeypatch.setattr(helper, "run_request", capture_dispatch)
+
+    deploy_request = host_deploy_tests._request(tmp_path / "large-history-deploy")
+    deploy_result = deploy_workflow.deploy(
+        remote,
+        config,
+        _artifact_target(deploy_request),
+        migration_policy="no-change",
+        allow_downgrade=True,
+        dry_run=True,
+    )
+    restore_result = restore_workflow.restore(
+        remote,
+        config,
+        source.backup_id,
+        dry_run=True,
+    )
+
+    state = observe_host_state(paths)
+    assert old_backup_id in state.successful_backup_ids
+    assert old_backup_id in retained_backup_ids(state, 1)
+    assert all(selection.backup_id != old_backup_id for selection in state.selections)
+    assert deploy_result.exit_status is ExitStatus.OK, deploy_result.facts
+    assert restore_result.exit_status is ExitStatus.OK, restore_result.facts
+    assert deploy_result.stage == "planned"
+    assert restore_result.stage == "planned"
+    assert len(json.dumps(deploy_result.facts, sort_keys=True)) < 64 * 1024
+    assert len(json.dumps(restore_result.facts, sort_keys=True)) < 64 * 1024
+
+    discovered_modes = {
+        request.parameters["mode"]
+        for request, _result in captured_discoveries
+        if isinstance(getattr(request, "parameters", None), Mapping)
+    }
+    assert {"deploy", "restore"}.issubset(discovered_modes)
+    for request, result in captured_discoveries:
+        encoded = encode_result(result)
+        assert len(encoded) < 64 * 1024
+        assert "selections" not in result.state
+        assert old_backup_id.encode() not in encoded
+        assert request.parameters["mode"] in {"deploy", "restore"}
+
+    Path(paths.local(paths.backup_root / f"{old_backup_id}.dump")).unlink()
+
+    refused_deploy = deploy_workflow.deploy(
+        remote,
+        config,
+        _artifact_target(deploy_request),
+        migration_policy="no-change",
+        allow_downgrade=True,
+        dry_run=True,
+    )
+    refused_restore = restore_workflow.restore(
+        remote,
+        config,
+        source.backup_id,
+        dry_run=True,
+    )
+
+    assert refused_deploy.exit_status is ExitStatus.SAFETY
+    assert refused_restore.exit_status is ExitStatus.SAFETY
 
 
 def _set_verification(runtime_path: Path, value: str) -> None:
