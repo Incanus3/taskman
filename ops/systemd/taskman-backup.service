@@ -1,0 +1,33 @@
+[Unit]
+Description=Taskman validated local PostgreSQL backup
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/taskman/taskman-backup.env
+ExecStart=/usr/local/lib/taskman/taskman-backup.pyz
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=taskman-backup
+
+# The backup command needs only its protected password file, PostgreSQL over
+# loopback, and its explicitly writable durable state roots.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{TASKMAN_BACKUP_ROOT}} {{TASKMAN_INSTALL_ROOT}}/lifecycle.lock
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

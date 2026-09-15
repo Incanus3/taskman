@@ -1,0 +1,751 @@
+"""Exact backup-protection records and durable publication."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from tests.host_helper.support import managed_paths
+
+import taskman_ops.host_helper.backup_protection as protection_module
+from taskman_ops.host_helper.backup_protection import (
+    BackupProtection,
+    allocate_protection_attempt,
+    protection_prune_ids_after_fresh_attempt,
+    register_backup_protection,
+    protection_prune_ids,
+    retire_protection_attempts,
+    replace_backup_protection,
+    write_backup_protection,
+)
+from taskman_ops.host_helper.paths import ManagedPaths
+from taskman_ops.host_helper.records import (
+    BackupRecord,
+    RecordError,
+    SelectionRecord,
+    append_selection,
+    selection_filename,
+    write_backup_manifest,
+)
+from taskman_ops.host_helper.state import HostState
+
+
+BACKUP = "backup-" + "a" * 32
+OTHER_BACKUP = "backup-" + "b" * 32
+TARGET = "0.2.0-" + "c" * 12 + "-ubuntu26.04-amd64-otp29.0.6-" + "d" * 64
+OTHER_TARGET = "0.2.1-" + "f" * 12 + "-ubuntu26.04-amd64-otp29.0.6-" + "1" * 64
+SELECTION = "selection-" + "e" * 64 + ".json"
+AT = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+def _protection(**changes: object) -> BackupProtection:
+    values: dict[str, object] = {
+        "schema_version": 1,
+        "backup_id": BACKUP,
+        "base_selection_id": SELECTION,
+        "target_release_id": TARGET,
+        "attempt_number": 0,
+        "created_at": AT,
+    }
+    values.update(changes)
+    return BackupProtection(**values)  # type: ignore[arg-type]
+
+
+def _backup(backup_id: str) -> BackupRecord:
+    return BackupRecord(backup_id, AT, hashlib.sha256(b"dump").hexdigest(), TARGET, (), 1024)
+
+
+def _publish_backup(paths: ManagedPaths, backup_id: str) -> BackupRecord:
+    root = Path(paths.local(paths.backup_root))
+    root.mkdir(parents=True, exist_ok=True)
+    dump = root / f"{backup_id}.dump"
+    dump.write_bytes(b"dump")
+    dump.chmod(0o600)
+    record = _backup(backup_id)
+    write_backup_manifest(paths, record)
+    return record
+
+
+def _prunable_protections() -> tuple[BackupProtection, ...]:
+    return tuple(
+        _protection(
+            backup_id=BACKUP if index == 1 else f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(minute=index),
+        )
+        for index in range(6)
+    )
+
+
+def _state(
+    *,
+    selections: tuple[SelectionRecord, ...] = (),
+    protections: tuple[BackupProtection, ...] = (),
+    backups: tuple[BackupRecord, ...] = (),
+    retiring: tuple[BackupProtection, ...] = (),
+    successful_backup_ids: frozenset[str] = frozenset(),
+) -> HostState:
+    return HostState(
+        selected_release_id=TARGET,
+        releases=(),
+        backups=backups,
+        selections=selections,
+        applied_migrations=(),
+        service_state="unknown",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+        backup_protections=protections,
+        retiring_backup_protections=retiring,
+        successful_backup_ids=successful_backup_ids,
+    )
+
+
+def test_backup_protection_has_exact_persisted_fields_and_round_trips() -> None:
+    record = _protection()
+
+    assert record.to_mapping() == {
+        "schema_version": 1,
+        "backup_id": BACKUP,
+        "base_selection_id": SELECTION,
+        "target_release_id": TARGET,
+        "attempt_number": 0,
+        "created_at": "2026-09-07T12:00:00Z",
+    }
+    assert BackupProtection.from_mapping(record.to_mapping()) == record
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"schema_version": 2},
+        {"backup_id": OTHER_BACKUP[:-1] + "Z"},
+        {"base_selection_id": "selection-invalid.json"},
+        {"target_release_id": "source-only-release"},
+        {"attempt_number": -1},
+        {"attempt_number": True},
+        {"created_at": "2026-09-07T12:00:00.000Z"},
+        {"created_at": datetime(2026, 9, 7, 12, 0, 1)},
+        {"extra": "not persisted"},
+    ),
+)
+def test_backup_protection_rejects_invalid_or_extra_fields(changes: dict[str, object]) -> None:
+    mapping = _protection().to_mapping()
+    mapping.update(changes)
+
+    with pytest.raises((TypeError, ValueError)):
+        BackupProtection.from_mapping(mapping)
+
+
+def test_null_baseline_is_a_valid_pre_first_selection_protection() -> None:
+    record = _protection(base_selection_id=None)
+
+    assert record.base_selection_id is None
+    assert BackupProtection.from_mapping(record.to_mapping()) == record
+
+
+def test_attempts_allocate_by_baseline_and_prune_only_eligible_intermediates() -> None:
+    """Clock order and separately-held copies cannot change protection retention."""
+
+    baseline = SELECTION
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            base_selection_id=baseline,
+            target_release_id=TARGET if index % 2 else OTHER_TARGET,
+            attempt_number=index,
+            created_at=AT.replace(hour=12 - (index % 2)),
+        )
+        for index in range(7)
+    )
+
+    assert allocate_protection_attempt(protections, baseline) == 7
+    assert protection_prune_ids(
+        protections,
+        baseline,
+        independently_held_backup_ids={"backup-00000000000000000000000000000002"},
+    ) == (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    )
+
+
+def test_five_protections_plan_the_exact_retirement_created_by_a_fresh_sixth_attempt() -> None:
+    """Calculating only current eligibility would deadlock a required sixth backup."""
+
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(minute=index),
+        )
+        for index in range(5)
+    )
+
+    assert protection_prune_ids_after_fresh_attempt(protections, SELECTION) == (
+        "backup-00000000000000000000000000000001",
+    )
+
+
+def test_confirmed_protection_retirement_removes_the_reference_before_backup_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash at deletion leaves a completed pair, never a live reference to it."""
+
+    paths = managed_paths(tmp_path)
+    protections = tuple(
+        _protection(
+            backup_id=f"backup-{index:032x}",
+            attempt_number=index,
+            created_at=AT.replace(hour=12 - (index % 2)),
+        )
+        for index in range(7)
+    )
+    for protection in protections:
+        write_backup_protection(paths, protection)
+    for backup_id in (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    ):
+        _publish_backup(paths, backup_id)
+
+    def interrupted_delete(_paths: ManagedPaths, record: BackupRecord) -> None:
+        for backup_id in (
+            "backup-00000000000000000000000000000001",
+            "backup-00000000000000000000000000000002",
+        ):
+            assert not Path(paths.local(paths.backup_protection(backup_id))).exists()
+            assert protection_module.backup_protection_retirement_path(paths, backup_id).is_file()
+        raise RecordError("interrupted manifest deletion")
+
+    monkeypatch.setattr(protection_module, "delete_completed_backup", interrupted_delete, raising=False)
+
+    with pytest.raises(RecordError, match="manifest deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(
+                protections=protections,
+                backups=tuple(_backup(item.backup_id) for item in protections),
+            ),
+            SELECTION,
+            (
+                "backup-00000000000000000000000000000001",
+                "backup-00000000000000000000000000000002",
+            ),
+        )
+
+
+def test_pending_retirement_blocks_a_fresh_protection_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = managed_paths(tmp_path)
+    protections = _prunable_protections()
+    protection = protections[1]
+    for item in protections:
+        write_backup_protection(paths, item)
+    _publish_backup(paths, BACKUP)
+    monkeypatch.setattr(
+        protection_module,
+        "delete_completed_backup",
+        lambda *_args: (_ for _ in ()).throw(RecordError("interrupted deletion")),
+    )
+    with pytest.raises(RecordError, match="interrupted deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(protections=protections, backups=tuple(_backup(item.backup_id) for item in protections)),
+            SELECTION,
+            (BACKUP,),
+        )
+    with pytest.raises(RecordError, match="retirement|pruning.*finish"):
+        register_backup_protection(
+            paths,
+            (),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=SELECTION,
+            target_release_id=OTHER_TARGET,
+        )
+
+
+@pytest.mark.parametrize("unsafe_kind", ("mode", "link"))
+def test_pending_retirement_marker_requires_private_nonlink_authority(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    paths = managed_paths(tmp_path)
+    protection = _protection()
+    write_backup_protection(paths, protection)
+    root = protection_module.backup_protection_retirement_root(paths)
+    root.mkdir(mode=0o750)
+    marker = protection_module.backup_protection_retirement_path(paths, BACKUP)
+    if unsafe_kind == "mode":
+        marker.write_text(json.dumps(protection.to_mapping()), encoding="utf-8")
+        marker.chmod(0o644)
+    else:
+        marker.symlink_to(Path(paths.local(paths.backup_protection(BACKUP))))
+
+    with pytest.raises(RecordError, match="unsafe|retirement"):
+        register_backup_protection(
+            paths,
+            (protection,),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=SELECTION,
+            target_release_id=OTHER_TARGET,
+        )
+
+
+def test_retirement_directory_parent_fsync_failure_is_retried_before_reference_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = managed_paths(tmp_path)
+    protection = _protection()
+    write_backup_protection(paths, protection)
+    deployment_root = Path(paths.local(paths.deployment_root))
+    events: list[tuple[str, Path]] = []
+    original_fsync = protection_module.fsync_directory
+    original_replace = protection_module.os.replace
+    failed_parent_fsync = False
+
+    def record_fsync(path: Path) -> None:
+        nonlocal failed_parent_fsync
+        events.append(("fsync", path))
+        if path == deployment_root and not failed_parent_fsync:
+            failed_parent_fsync = True
+            raise OSError("simulated parent fsync failure")
+        original_fsync(path)
+
+    def record_replace(source: Path, target: Path) -> None:
+        events.append(("replace", target))
+        original_replace(source, target)
+
+    monkeypatch.setattr(protection_module, "fsync_directory", record_fsync)
+    monkeypatch.setattr(protection_module.os, "replace", record_replace)
+
+    with pytest.raises(RecordError, match="persist.*retirement directory"):
+        protection_module._mark_retiring_protections(paths, (protection,))
+
+    assert protection_module.backup_protection_retirement_root(paths).is_dir()
+    assert Path(paths.local(paths.backup_protection(BACKUP))).is_file()
+    assert events == [("fsync", deployment_root)]
+
+    protection_module._mark_retiring_protections(paths, (protection,))
+
+    assert events[1] == ("fsync", deployment_root)
+    assert events[2][0] == "replace"
+
+
+@pytest.mark.parametrize("failure_name", ("manifest", "dump"))
+def test_interrupted_pair_deletion_resumes_from_retirement_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_name: str
+) -> None:
+    paths = managed_paths(tmp_path)
+    protections = _prunable_protections()
+    protection = protections[1]
+    backups = tuple(_publish_backup(paths, item.backup_id) for item in protections)
+    for item in protections:
+        write_backup_protection(paths, item)
+    import taskman_ops.host_helper.backups as backups_module
+
+    original_unlink = backups_module.os.unlink
+    failed = False
+
+    def interrupt_once(name: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        nonlocal failed
+        if not failed and str(name).endswith(f".{ 'json' if failure_name == 'manifest' else 'dump'}"):
+            failed = True
+            raise OSError(f"interrupted {failure_name} deletion")
+        original_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(backups_module.os, "unlink", interrupt_once)
+    with pytest.raises(ValueError, match="deletion"):
+        retire_protection_attempts(
+            paths,
+            _state(protections=protections, backups=backups),
+            SELECTION,
+            (BACKUP,),
+        )
+
+    marker = protection_module.backup_protection_retirement_path(paths, BACKUP)
+    assert marker.is_file()
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    monkeypatch.setattr(backups_module.os, "unlink", original_unlink)
+    manifest = Path(paths.local(paths.backup_root)) / f"{BACKUP}.json"
+    resumed_backups = backups if manifest.exists() else tuple(item for item in backups if item.backup_id != BACKUP)
+    resumed = _state(
+        protections=tuple(item for item in protections if item != protection),
+        backups=resumed_backups,
+        retiring=(protection,),
+    )
+
+    retire_protection_attempts(paths, resumed, SELECTION, (BACKUP,))
+
+    assert not marker.exists()
+    assert not (Path(paths.local(paths.backup_root)) / f"{BACKUP}.json").exists()
+    assert not (Path(paths.local(paths.backup_root)) / f"{BACKUP}.dump").exists()
+
+
+def test_failed_protection_publication_does_not_authorize_attempt_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh attempt exists only after its durable protection publication."""
+
+    paths = managed_paths(tmp_path)
+    original = _protection(base_selection_id=None)
+    write_backup_protection(paths, original)
+
+    def fail_publication(_paths: ManagedPaths, _record: BackupProtection) -> None:
+        raise RecordError("fresh protection publication failed")
+
+    monkeypatch.setattr(protection_module, "write_backup_protection", fail_publication)
+
+    with pytest.raises(RecordError, match="publication failed"):
+        register_backup_protection(
+            paths,
+            (original,),
+            backup_id=OTHER_BACKUP,
+            base_selection_id=None,
+            target_release_id=OTHER_TARGET,
+            created_at=AT.replace(minute=1),
+        )
+
+    assert Path(paths.local(paths.backup_protection(BACKUP))).is_file()
+    assert not Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
+
+
+def test_backup_protection_is_created_once_with_private_atomic_publication(tmp_path: Path) -> None:
+    paths = managed_paths(tmp_path)
+    record = _protection()
+
+    write_backup_protection(paths, record)
+
+    target = Path(paths.local(paths.backup_protection(record.backup_id)))
+    assert target.is_file()
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert json.loads(target.read_text(encoding="utf-8")) == record.to_mapping()
+    assert not list(target.parent.glob(".*.tmp"))
+    with pytest.raises(ValueError, match="exists|published"):
+        write_backup_protection(paths, record)
+
+
+def test_backup_protection_can_be_replaced_atomically_after_initial_publication(tmp_path: Path) -> None:
+    paths: ManagedPaths = managed_paths(tmp_path)
+    first = _protection()
+    replacement = _protection(
+        base_selection_id=None,
+        attempt_number=1,
+        created_at=datetime(2026, 9, 7, 13, 0, tzinfo=UTC),
+    )
+    write_backup_protection(paths, first)
+
+    replace_backup_protection(paths, replacement)
+
+    target = Path(paths.local(paths.backup_protection(BACKUP)))
+    assert json.loads(target.read_text(encoding="utf-8")) == replacement.to_mapping()
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert not list(target.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("mode", (0o644, 0o700))
+def test_backup_protection_replacement_refuses_nonprivate_existing_authority(
+    tmp_path: Path, mode: int
+) -> None:
+    paths = managed_paths(tmp_path)
+    first = _protection()
+    replacement = _protection(
+        base_selection_id=None,
+        attempt_number=1,
+        created_at=datetime(2026, 9, 7, 13, 0, tzinfo=UTC),
+    )
+    write_backup_protection(paths, first)
+    Path(paths.local(paths.backup_protection(BACKUP))).chmod(mode)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        replace_backup_protection(paths, replacement)
+
+
+def test_backup_protection_serializer_enforces_the_other_record_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taskman_ops.host_helper.backup_protection as protection_module
+
+    monkeypatch.setattr(protection_module, "MAX_RECORD_BYTES", 1)
+    with pytest.raises(ValueError, match="oversized|size|protection"):
+        BackupProtection.from_mapping(_protection().to_mapping())
+
+
+def test_first_success_transfers_all_null_baseline_references_before_removal(
+    tmp_path: Path,
+) -> None:
+    """Dropping a protection before durable history would expose its exact backup."""
+
+    paths = managed_paths(tmp_path)
+    original = _protection(base_selection_id=None)
+    newest = _protection(
+        backup_id=OTHER_BACKUP,
+        base_selection_id=None,
+        attempt_number=1,
+        created_at=AT.replace(minute=1),
+    )
+    write_backup_protection(paths, original)
+    write_backup_protection(paths, newest)
+
+    record, created = protection_module.complete_successful_selection(
+        paths,
+        _state(
+            protections=(original, newest),
+            backups=(_backup(BACKUP), _backup(OTHER_BACKUP)),
+        ),
+        release_id=TARGET,
+        observed_previous_release_id=None,
+        selected_at=AT.replace(minute=2),
+    )
+
+    assert created is True
+    assert record.previous_release_id is None
+    assert record.backup_id == OTHER_BACKUP
+    assert record.recovery_backup_ids == (BACKUP, OTHER_BACKUP)
+    assert (Path(paths.local(paths.selection_root)) / selection_filename(record)).is_file()
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    assert not Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
+
+
+def test_first_success_preserves_an_existing_physical_selection(tmp_path: Path) -> None:
+    """Empty successful history does not imply that physical current was absent."""
+
+    paths = managed_paths(tmp_path)
+
+    record, created = protection_module.complete_successful_selection(
+        paths,
+        _state(),
+        release_id=TARGET,
+        observed_previous_release_id=TARGET,
+        selected_at=AT,
+    )
+
+    assert created is True
+    assert record.previous_release_id is None
+    assert record.observed_previous_release_id == TARGET
+
+
+def test_success_publication_survives_protection_removal_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reversing publication/removal order would lose the only durable backup reference."""
+
+    paths = managed_paths(tmp_path)
+    protection = _protection(base_selection_id=None)
+    write_backup_protection(paths, protection)
+
+    def fail_removal(_paths: object, _protections: object) -> None:
+        selection_files = list(Path(paths.local(paths.selection_root)).glob("selection-*.json"))
+        assert len(selection_files) == 1
+        persisted = SelectionRecord.from_mapping(
+            json.loads(selection_files[0].read_text(encoding="utf-8"))
+        )
+        assert persisted.recovery_backup_ids == (BACKUP,)
+        raise RecordError("interrupted protection removal")
+
+    monkeypatch.setattr(protection_module, "_remove_resolved_protections", fail_removal)
+
+    with pytest.raises(RecordError, match="remove|protection"):
+        protection_module.complete_successful_selection(
+            paths,
+            _state(protections=(protection,), backups=(_backup(BACKUP),)),
+            release_id=TARGET,
+            observed_previous_release_id=None,
+            selected_at=AT.replace(minute=1),
+        )
+
+    assert Path(paths.local(paths.backup_protection(BACKUP))).is_file()
+    assert len(list(Path(paths.local(paths.selection_root)).glob("selection-*.json"))) == 1
+
+
+def test_matching_complete_success_is_a_history_noop(tmp_path: Path) -> None:
+    """A healthy replay without unresolved references must not duplicate history."""
+
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, None, AT, 2, None, ())
+    append_selection(paths, latest)
+
+    record, created = protection_module.complete_successful_selection(
+        paths,
+        _state(selections=(latest,)),
+        release_id=TARGET,
+        observed_previous_release_id=TARGET,
+        selected_at=AT.replace(minute=1),
+    )
+
+    assert created is False
+    assert record == latest
+    assert list(Path(paths.local(paths.selection_root)).glob("selection-*.json")) == [
+        Path(paths.local(paths.selection_root)) / selection_filename(latest)
+    ]
+
+
+def test_explicit_completed_retry_removes_stale_protection_without_duplicate_history(
+    tmp_path: Path,
+) -> None:
+    """A retry after durable publication must finish cleanup, not append the same success."""
+
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(
+        TARGET,
+        None,
+        BACKUP,
+        AT,
+        2,
+        None,
+        (BACKUP,),
+    )
+    append_selection(paths, latest)
+    protection = _protection(base_selection_id=None)
+    write_backup_protection(paths, protection)
+
+    record, created = protection_module.complete_successful_selection(
+        paths,
+        _state(
+            selections=(latest,),
+            protections=(protection,),
+            backups=(_backup(BACKUP),),
+        ),
+        release_id=TARGET,
+        observed_previous_release_id=None,
+        backup_id=BACKUP,
+        recovery_backup_ids=(BACKUP,),
+        selected_at=AT.replace(minute=1),
+    )
+
+    assert created is False
+    assert record == latest
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    assert len(list(Path(paths.local(paths.selection_root)).glob("selection-*.json"))) == 1
+
+
+def test_completed_retry_reports_partial_resolved_protection_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, BACKUP, AT, 2, None, (BACKUP, OTHER_BACKUP))
+    append_selection(paths, latest)
+    protections = (
+        _protection(backup_id=BACKUP, base_selection_id=None, attempt_number=0),
+        _protection(backup_id=OTHER_BACKUP, base_selection_id=None, attempt_number=1),
+    )
+    for protection in protections:
+        write_backup_protection(paths, protection)
+    unlink = os.unlink
+    removals = 0
+
+    def interrupted(path, *args, **kwargs):
+        nonlocal removals
+        removals += 1
+        if removals == 2:
+            raise OSError("interrupted after first fsync")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(protection_module.os, "unlink", interrupted)
+
+    with pytest.raises(RecordError) as raised:
+        protection_module.complete_successful_selection(
+            paths,
+            _state(
+                selections=(latest,),
+                protections=protections,
+                backups=(_backup(BACKUP), _backup(OTHER_BACKUP)),
+                successful_backup_ids=frozenset({BACKUP, OTHER_BACKUP}),
+            ),
+            release_id=TARGET,
+            observed_previous_release_id=None,
+            backup_id=BACKUP,
+            recovery_backup_ids=(BACKUP, OTHER_BACKUP),
+        )
+
+    assert raised.value.changed is True
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    assert Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
+
+
+def test_completed_retry_reports_unlink_before_directory_fsync_failure_as_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, BACKUP, AT, 2, None, (BACKUP,))
+    append_selection(paths, latest)
+    protection = _protection(base_selection_id=None)
+    write_backup_protection(paths, protection)
+    monkeypatch.setattr(
+        protection_module.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+
+    with pytest.raises(RecordError) as raised:
+        protection_module.complete_successful_selection(
+            paths,
+            _state(
+                selections=(latest,),
+                protections=(protection,),
+                backups=(_backup(BACKUP),),
+                successful_backup_ids=frozenset({BACKUP}),
+            ),
+            release_id=TARGET,
+            observed_previous_release_id=None,
+            backup_id=BACKUP,
+            recovery_backup_ids=(BACKUP,),
+        )
+
+    assert raised.value.changed is True
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+
+
+def test_same_release_physical_transition_appends_meaningful_success(tmp_path: Path) -> None:
+    """Release equality alone must not hide a freshly verified physical transition."""
+
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, None, AT, 2, None, ())
+    append_selection(paths, latest)
+
+    record, created = protection_module.complete_successful_selection(
+        paths,
+        _state(selections=(latest,)),
+        release_id=TARGET,
+        observed_previous_release_id=OTHER_TARGET,
+        selected_at=AT.replace(minute=1),
+    )
+
+    assert created is True
+    assert record.release_id == TARGET
+    assert record.previous_release_id == TARGET
+    assert record.observed_previous_release_id == OTHER_TARGET
+    assert len(list(Path(paths.local(paths.selection_root)).glob("selection-*.json"))) == 2
+
+
+def test_null_baseline_protection_cannot_resolve_into_a_later_success(
+    tmp_path: Path,
+) -> None:
+    """A later selection cannot retroactively claim a pre-first-success protection."""
+
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, None, AT, 2, None, ())
+    append_selection(paths, latest)
+    protection = _protection(base_selection_id=None)
+    write_backup_protection(paths, protection)
+
+    with pytest.raises(RecordError, match="null-baseline|first success|baseline"):
+        protection_module.complete_successful_selection(
+            paths,
+            _state(
+                selections=(latest,),
+                protections=(protection,),
+                backups=(_backup(BACKUP),),
+            ),
+            release_id=TARGET,
+            observed_previous_release_id=TARGET,
+            selected_at=AT.replace(minute=1),
+        )

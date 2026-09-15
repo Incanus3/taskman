@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+FROM ubuntu:resolute-20260811.1@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SOURCE_REVISION
+ARG OTP_VERSION=29.0.6
+ARG OTP_SHA256=34b93d66fb4dea9e14509fc0622e212303e7beb218c2718646ab47b3cfa6c348
+ARG ELIXIR_VERSION=1.20.4
+ARG ELIXIR_SHA256=7863c546cda13fecc949e562e326042451dacf8fd8698a36783cb71eeb223b46
+ARG HEX_VERSION=2.5.1
+ARG REBAR3_VERSION=3.24.0
+ARG REBAR3_SHA512=158473850233093e6a1417e9779919cb6768402ea967db510d926bc5e74361377e9176014e827c622098e0dbf96b505677addc4bd4817ce2b9b4f4bc8121768b
+
+ENV LANG=C.UTF-8 \
+    MIX_ENV=prod
+
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      ca-certificates \
+      build-essential \
+      curl \
+      git \
+      libc6 \
+      libgcc-s1 \
+      libssl3t64 \
+      libstdc++6 \
+      libtinfo6 \
+      nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 \
+      npm=9.2.0~ds3-1 \
+      unzip \
+      zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl --fail --location --silent --show-error \
+      "https://builds.hex.pm/builds/otp/amd64/ubuntu-26.04/OTP-${OTP_VERSION}.tar.gz" \
+      --output /tmp/otp.tar.gz \
+ && echo "${OTP_SHA256}  /tmp/otp.tar.gz" | sha256sum --check --strict \
+ && tar --extract --gzip --file /tmp/otp.tar.gz --directory /tmp \
+ && mkdir --parents /opt/taskman-runtime \
+ && mv /tmp/OTP-${OTP_VERSION} /opt/taskman-runtime/otp \
+ && /opt/taskman-runtime/otp/Install -minimal /opt/taskman-runtime/otp \
+ && curl --fail --location --silent --show-error \
+      "https://builds.hex.pm/builds/elixir/v${ELIXIR_VERSION}-otp-29.zip" \
+      --output /tmp/elixir.zip \
+ && echo "${ELIXIR_SHA256}  /tmp/elixir.zip" | sha256sum --check --strict \
+ && mkdir --parents /opt/taskman-runtime/elixir \
+ && unzip -q /tmp/elixir.zip -d /opt/taskman-runtime/elixir
+
+ENV PATH=/opt/taskman-runtime/elixir/bin:/opt/taskman-runtime/otp/bin:${PATH}
+
+WORKDIR /app
+COPY . .
+
+RUN test -n "$SOURCE_REVISION" \
+ && mix local.hex "$HEX_VERSION" --force \
+ && mix local.rebar rebar3 "https://builds.hex.pm/installs/1.18.3/rebar3-$REBAR3_VERSION-otp-27" --sha512 "$REBAR3_SHA512" --force \
+ && mix deps.get --only prod \
+ && mix compile --warnings-as-errors \
+ && mix assets.deploy \
+ && mix release --overwrite
+
+RUN --network=none \
+    timeout --kill-after=5s 30s env \
+      RELEASE_TMP=/tmp/taskman-release-boot-check \
+      DATABASE_URL=ecto://taskman:build@127.0.0.1:5432/taskman_build \
+      SECRET_KEY_BASE="$(printf '%064d' 0)" \
+      ASH_AUTHENTICATION_TOKEN_SIGNING_SECRET="$(printf '%064d' 1)" \
+      PHX_HOST=build.example.test \
+      RESEND_API_KEY=build-resend-key \
+      MAIL_FROM=build@example.test \
+      /app/_build/prod/rel/taskman/bin/taskman eval ':ok'
+
+RUN test "$(mix hex.info | sed -n 's/^Hex:[[:space:]]*//p')" = "$HEX_VERSION" \
+ && mkdir -p /artifact \
+ && cp -a /app/_build/prod/rel/taskman /artifact/taskman \
+ && printf '{"source_revision":"%s","target_os":"ubuntu26.04","architecture":"amd64","otp_version":"%s","elixir_version":"%s","node_version":"22.22.1","hex_version":"%s","rebar3_version":"%s"}\n' "$SOURCE_REVISION" "$OTP_VERSION" "$ELIXIR_VERSION" "$HEX_VERSION" "$REBAR3_VERSION" \
+      > /artifact/toolchain.json
+
+FROM scratch AS artifact
+COPY --from=build /artifact/ /
