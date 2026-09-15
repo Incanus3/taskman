@@ -132,6 +132,10 @@ def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutatio
         for role, value in discoveries[0]["restore_database_state"].items()
     }
     monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000, "database_available_disk_bytes": 10_000, "database_size_bytes": database_sizes})())
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
+    )
     monkeypatch.setattr("taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package", _scheduler_package)
     release_records = [release.to_mapping()]
     selected = discoveries[0]["selected_release_id"]
@@ -344,6 +348,10 @@ def test_restore_dry_run_validates_selected_dump_content_before_plan_or_prompt(
                 },
             },
         )(),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package",
@@ -734,9 +742,7 @@ def test_unknown_dispatched_restore_reply_preserves_starting_state_and_unknown_o
     assert outcome.facts["observations"]["restore_database_state"] is None
 
 
-def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_plan(
-    tmp_path, monkeypatch
-):
+def _completed_restore_authority(tmp_path):
     completed_databases = {
         "canonical": {
             "oid": 42,
@@ -783,6 +789,63 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
         "temporary": None,
         "retired": None,
     }
+    return release, backup, completed, fresh
+
+
+@pytest.mark.parametrize(
+    "database_result",
+    (
+        CommandError("native restore capacity command failed"),
+        OpsError(
+            ExitStatus.REMOTE_PREFLIGHT,
+            "preflight",
+            "PostgreSQL data-volume capacity is unobservable",
+            False,
+        ),
+    ),
+)
+def test_completed_cleanup_does_not_run_failing_or_unobservable_capacity_preflight(
+    tmp_path, monkeypatch, database_result
+):
+    release, backup, completed, _fresh = _completed_restore_authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [completed], mutations)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
+        raising=False,
+    )
+    capacity_calls = []
+
+    def capacity(*_args):
+        capacity_calls.append(True)
+        if isinstance(database_result, OpsError):
+            raise database_result
+        raise OpsError(
+            ExitStatus.REMOTE_PREFLIGHT,
+            "preflight",
+            "PostgreSQL maintenance access, database role, or restore capacity preflight failed",
+            False,
+        ) from database_result
+
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight", capacity
+    )
+
+    outcome = restore(
+        object(), config(), BACKUP, confirm=lambda _plan: True
+    )
+
+    assert outcome.exit_status is ExitStatus.OK, outcome.facts
+    assert outcome.stage == "restored"
+    assert len(mutations) == 1
+    assert capacity_calls == []
+
+
+def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_plan(
+    tmp_path, monkeypatch
+):
+    release, backup, completed, fresh = _completed_restore_authority(tmp_path)
     mutations = []
     _install_controller_fakes(
         monkeypatch,
@@ -795,14 +858,13 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
 
     def preflight(*_args):
         preflight_calls.append(True)
-        sufficient = len(preflight_calls) > 1
         return type(
             "Facts",
             (),
             {
                 "available_disk_bytes": 10_000,
-                "backup_available_disk_bytes": 10_000 if sufficient else 1,
-                "database_available_disk_bytes": 10_000 if sufficient else 1,
+                "backup_available_disk_bytes": 10_000,
+                "database_available_disk_bytes": 10_000,
                 "database_size_bytes": {
                     "canonical": 4096,
                     "temporary": None,
@@ -813,6 +875,12 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
 
     monkeypatch.setattr(
         "taskman_ops.workflows.restore.validate_restore_preflight", preflight
+    )
+    inspection_calls = []
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: inspection_calls.append(True) or object(),
+        raising=False,
     )
     confirmations = []
 
@@ -831,5 +899,74 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
     assert mutations[1]["request"].parameters["reapply"] is True
     assert len(confirmations) == 1
     assert confirmations[0]["planned_pre_restore_backup"] is True
-    assert len(preflight_calls) == 2
+    assert len(preflight_calls) == 1
+    assert len(inspection_calls) == 2
     assert confirmations[0]["available_database_bytes"] == 10_000
+
+
+def test_reapply_cleanup_mutation_survives_fresh_capacity_preflight_failure(
+    tmp_path, monkeypatch
+):
+    release, backup, completed, fresh = _completed_restore_authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [completed, fresh], mutations)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight",
+        lambda *_args: (_ for _ in ()).throw(
+            OpsError(
+                ExitStatus.REMOTE_PREFLIGHT,
+                "preflight",
+                "PostgreSQL data-volume capacity is unobservable",
+                False,
+            )
+        ),
+    )
+
+    outcome = restore(object(), config(), BACKUP, reapply=True, confirm=lambda _: True)
+
+    assert len(mutations) == 1
+    assert outcome.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert outcome.changed is True
+    assert outcome.facts["mutation_state"] == "changed"
+
+
+def test_reapply_cleanup_mutation_survives_lost_rediscovery_result(
+    tmp_path, monkeypatch
+):
+    release, backup, completed, _fresh = _completed_restore_authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [completed], mutations)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
+        raising=False,
+    )
+    discoveries = 0
+    original = __import__("taskman_ops.workflows.restore", fromlist=["run_request"]).run_request
+
+    def lost_after_cleanup(remote, request):
+        nonlocal discoveries
+        discoveries += 1
+        if discoveries > 1:
+            raise OpsError(
+                ExitStatus.SAFETY,
+                "helper",
+                "restore discovery reply was lost",
+                False,
+                state={"mutation_state": "unknown"},
+            )
+        return original(remote, request)
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", lost_after_cleanup)
+
+    outcome = restore(object(), config(), BACKUP, reapply=True, confirm=lambda _: True)
+
+    assert len(mutations) == 1
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert outcome.changed is True
+    assert outcome.facts["mutation_state"] == "changed"

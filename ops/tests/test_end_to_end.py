@@ -158,6 +158,7 @@ sys.path.insert(0, archive.as_posix())
 
 from taskman_ops.host_helper import __main__ as entrypoint
 from taskman_ops.host_helper import backup_helper, services, state as state_module
+from taskman_ops.host_helper import restore_database as restore_database_module
 from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper.operations import restore as restore_module
@@ -325,13 +326,26 @@ def create_temporary(*_args, **_kwargs):
     }
     write_state(value)
 
-def register_temporary(paths, target, *_args, **_kwargs):
+_register_restored_database = restore_database_module.register_restored_database
+def prove_temporary_empty(_database, _credentials):
     value = read_state()
-    value["events"].append("temporary-registered")
     temporary = value["restore_databases"]["temporary"]
     assert temporary is not None and temporary["migration_table_present"] is False
-    updated = replace(target, restored_database_oid=temporary["oid"], temporary_creation_pending=False)
-    replace_restore_target(paths, updated)
+    if value.get("temporary_active_writers"):
+        raise restore_database_module.RestoreDatabaseError(
+            "restore temporary database has active writers"
+        )
+    if value.get("temporary_empty_proof_failure"):
+        raise restore_database_module.RestoreDatabaseError(
+            "restore temporary database is not empty"
+        )
+    return temporary["oid"]
+restore_database_module.prove_temporary_database_empty = prove_temporary_empty
+
+def register_temporary(paths, target, database, credentials):
+    updated = _register_restored_database(paths, target, database, credentials)
+    value = read_state()
+    value["events"].append("temporary-registered")
     write_state(value)
     return updated
 
@@ -379,6 +393,7 @@ def drop_temporary(_database, _credentials, oid):
     if temporary is not None:
         assert temporary["oid"] == oid
         value["events"].append("temporary-dropped")
+        value["events"].append(f"temporary-dropped:{oid}")
         value["restore_databases"]["temporary"] = None
         write_state(value)
 
@@ -397,6 +412,11 @@ def remove_binding(paths):
     return _remove_restore_target(paths)
 
 discover_module.observe_restore_databases = restore_databases
+restore_database_module.observe_restore_databases = restore_databases
+restore_database_module._oid_present = lambda _database, oid: any(
+    value is not None and value["oid"] == oid
+    for value in read_state()["restore_databases"].values()
+)
 discover_module.run_command = command
 restore_module.validate_credentials = lambda *_args: None
 restore_module.observe_restore_databases = restore_databases
@@ -631,6 +651,7 @@ def _install_public_restore_controller(
             "created": "canonical+temporary",
             "registered": "canonical+temporary",
             "partial": "canonical+temporary",
+            "pending-old": "canonical+temporary",
             "temporary-retired": "temporary+retired",
             "retired": "retired",
             "swapped": "canonical+retired",
@@ -652,6 +673,9 @@ def _install_public_restore_controller(
             restore_databases["temporary"].update(
                 migration_table_present=True, applied_migrations=[]
             )
+        if state_family == "pending-old":
+            target = replace(target, temporary_creation_pending=True)
+            replace_restore_target(paths, target)
         if state_family == "retired":
             target = replace(
                 target, restored_database_oid=202, temporary_creation_pending=True
@@ -737,6 +761,11 @@ def _install_public_restore_controller(
             invoker=invoke,
         )
 
+    monkeypatch.setattr(
+        restore_workflow,
+        "validate_restore_inspection_preflight",
+        lambda *_args: object(),
+    )
     monkeypatch.setattr(
         restore_workflow,
         "validate_restore_preflight",
@@ -825,6 +854,11 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
             set(),
         ),
         (
+            "pending-old",
+            {"temporary-dropped:202", "temporary-registered", "dump-loaded"},
+            set(),
+        ),
+        (
             "temporary-retired",
             {"rebuild-pending", "temporary-dropped", "dump-loaded"},
             {"safety-backup"},
@@ -872,7 +906,7 @@ def test_public_packaged_restore_converges_each_durable_database_family(
     )
 
     runtime = json.loads(runtime_path.read_text())
-    assert result.exit_status is ExitStatus.OK, result.facts
+    assert result.exit_status is ExitStatus.OK, (result.facts, runtime)
     assert required_events.issubset(runtime["events"])
     assert forbidden_events.isdisjoint(runtime["events"])
     assert not Path(paths.local(paths.restore_target_path)).exists()
@@ -965,6 +999,32 @@ def test_public_packaged_restore_refuses_database_identity_or_empty_proof_drift(
 
     assert result.exit_status is ExitStatus.SAFETY
     assert json.loads(runtime_path.read_text())["events"] == []
+
+
+@pytest.mark.parametrize("failure", ("active-writers", "empty-proof-failed"))
+def test_public_packaged_restore_refuses_unregistered_temporary_without_empty_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False, state_family="created"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["temporary_active_writers"] = failure == "active-writers"
+    runtime["temporary_empty_proof_failure"] = failure == "empty-proof-failed"
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.RESTORE
+    assert result.changed is True
+    assert "temporary-registered" not in runtime["events"]
+    assert "dump-loaded" not in runtime["events"]
+    assert Path(paths.local(paths.restore_target_path)).exists()
 
 
 def test_public_packaged_restore_lost_reply_reports_unknown_after_real_consequence(

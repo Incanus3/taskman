@@ -78,6 +78,28 @@ def validate_operational_host(
     return facts
 
 
+def validate_restore_inspection_host(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    resolver: Callable[[str], Iterable[str]] | None = None,
+) -> HostFacts:
+    """Validate cleanup authority without making disk capacity an admission gate."""
+
+    cached_facts = getattr(remote, "facts", None)
+    facts = (
+        cached_facts()
+        if callable(cached_facts) and resolver is None
+        else collect_host_facts(remote, config, resolver=resolver)
+    )
+    if not isinstance(facts, HostFacts):
+        raise TypeError("restore inspection host discovery returned invalid facts")
+    _validate_host_platform(facts, config, require_capacity=False)
+    if not facts.postgres_available or facts.postgres_sudo_available is not True:
+        raise _preflight("managed PostgreSQL prerequisites are unavailable")
+    return facts
+
+
 def validate_provisionable_host(
     remote: Remote,
     config: EnvironmentConfig,
@@ -101,8 +123,20 @@ def validate_provisionable_host(
     )
 
 
-def _validate_host_platform(facts: HostFacts, config: EnvironmentConfig) -> None:
-    if facts.failed_checks:
+def _validate_host_platform(
+    facts: HostFacts,
+    config: EnvironmentConfig,
+    *,
+    require_capacity: bool = True,
+) -> None:
+    failed_checks = facts.failed_checks
+    if not require_capacity:
+        failed_checks = tuple(
+            item
+            for item in failed_checks
+            if item not in {"install-root disk", "backup-root disk"}
+        )
+    if failed_checks:
         raise _preflight("required host fact collection failed")
     if facts.os_id != "ubuntu" or facts.ubuntu_release != "26.04":
         raise _unsupported("host must run Ubuntu 26.04")
@@ -112,7 +146,7 @@ def _validate_host_platform(facts: HostFacts, config: EnvironmentConfig) -> None
         raise _unsupported("host PID 1 must be systemd")
     if facts.memory_bytes < MINIMUM_MEMORY_BYTES:
         raise _unsupported("host does not meet the minimum memory requirement")
-    if (
+    if require_capacity and (
         facts.available_disk_bytes < MINIMUM_DISK_BYTES
         or facts.backup_available_disk_bytes < MINIMUM_DISK_BYTES
     ):

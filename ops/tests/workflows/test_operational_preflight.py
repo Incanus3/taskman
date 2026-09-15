@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 
 import pytest
 
@@ -141,6 +142,58 @@ def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_
         "temporary": None,
         "retired": 4096,
     }
+
+
+def test_restore_inspection_preflight_omits_capacity_and_canonical_database_access() -> None:
+    remote = RecordingRemote([CommandResult(0), CommandResult(0)])
+
+    preflight_module.validate_restore_inspection_preflight(
+        remote,
+        config(),
+        host_validator=lambda *_args: _managed_host_facts(),
+    )
+
+    assert len(remote.calls) == 2
+    database_argv, database_options = remote.calls[1]
+    assert "runuser -u postgres" in database_argv[2]
+    assert "--dbname postgres" in database_argv[2]
+    assert "SHOW data_directory" not in database_argv[2]
+    assert "pg_database_size" not in database_argv[2]
+    assert "df -B1" not in database_argv[2]
+    assert config().backup_root.as_posix() not in database_argv
+    assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+
+
+@pytest.mark.parametrize(
+    "facts",
+    (
+        replace(
+            _managed_host_facts(),
+            available_disk_bytes=1,
+            backup_available_disk_bytes=1,
+        ),
+        replace(
+            _managed_host_facts(),
+            available_disk_bytes=0,
+            backup_available_disk_bytes=0,
+            failed_checks=("install-root disk", "backup-root disk"),
+        ),
+    ),
+)
+def test_restore_inspection_admits_low_or_unobservable_capacity_for_cleanup(
+    facts: HostFacts,
+) -> None:
+    class FactRemote(RecordingRemote):
+        def facts(self) -> HostFacts:
+            return facts
+
+    remote = FactRemote([CommandResult(0), CommandResult(0)])
+
+    observed = preflight_module.validate_restore_inspection_preflight(
+        remote, config()
+    )
+
+    assert observed is facts
 
 
 @pytest.mark.parametrize("database_bytes", (40 * 1024**3, 8 * 1024**3))

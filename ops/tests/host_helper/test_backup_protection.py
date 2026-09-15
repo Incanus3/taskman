@@ -670,6 +670,40 @@ def test_completed_retry_reports_partial_resolved_protection_removal(
     assert Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
 
 
+def test_completed_retry_reports_unlink_before_directory_fsync_failure_as_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, BACKUP, AT, 2, None, (BACKUP,))
+    append_selection(paths, latest)
+    protection = _protection(base_selection_id=None)
+    write_backup_protection(paths, protection)
+    monkeypatch.setattr(
+        protection_module.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+
+    with pytest.raises(RecordError) as raised:
+        protection_module.complete_successful_selection(
+            paths,
+            _state(
+                selections=(latest,),
+                protections=(protection,),
+                backups=(_backup(BACKUP),),
+                successful_backup_ids=frozenset({BACKUP}),
+            ),
+            release_id=TARGET,
+            observed_previous_release_id=None,
+            backup_id=BACKUP,
+            recovery_backup_ids=(BACKUP,),
+        )
+
+    assert raised.value.changed is True
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+
+
 def test_same_release_physical_transition_appends_meaningful_success(tmp_path: Path) -> None:
     """Release equality alone must not hide a freshly verified physical transition."""
 

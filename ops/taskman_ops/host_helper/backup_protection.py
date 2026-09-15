@@ -764,10 +764,10 @@ def _remove_resolved_protections(
             target = Path(paths.local(paths.backup_protection(protection.backup_id)))
             _safe_file(target, owner_uid=owner_uid)
             os.unlink(target.name, dir_fd=descriptor)
-            os.fsync(descriptor)
             changed = True
             if on_removed is not None:
                 on_removed()
+            os.fsync(descriptor)
     except (OSError, RecordError) as error:
         raise ProtectionCleanupError(
             "unable to remove resolved backup protection", changed=changed

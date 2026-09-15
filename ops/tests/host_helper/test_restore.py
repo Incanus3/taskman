@@ -638,6 +638,37 @@ def test_completed_cleanup_protection_removal_is_known_when_retired_drop_fails(
     assert not Path(paths.local(paths.backup_protection(INPUT_BACKUP))).exists()
 
 
+def test_completed_cleanup_unlink_then_fsync_failure_reports_changed(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_backup_protection(
+        paths,
+        BackupProtection(
+            1, INPUT_BACKUP, state.latest_successful_selection_filename,
+            TARGET, 0, datetime(2026, 9, 14, 12, tzinfo=UTC),
+        ),
+    )
+    runtime.cleanup_failure = None
+    monkeypatch.setattr(
+        protection_module.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert interrupted.state["mutation_state"] == "changed"
+    assert not Path(paths.local(paths.backup_protection(INPUT_BACKUP))).exists()
+
+
 @pytest.mark.parametrize(
     ("boundary", "configure"),
     (

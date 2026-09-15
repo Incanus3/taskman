@@ -12,11 +12,19 @@ from tests.workflows.test_deploy import config
 BACKUP = "backup-" + "a" * 32
 
 
+@pytest.fixture(autouse=True)
+def _successful_restore_inspection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
+        lambda *_args: object(),
+    )
+
+
 def test_restore_specific_preflight_refuses_before_discovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "taskman_ops.workflows.restore.validate_restore_preflight",
+        "taskman_ops.workflows.restore.validate_restore_inspection_preflight",
         lambda *_args: (_ for _ in ()).throw(
             OpsError(
                 ExitStatus.REMOTE_PREFLIGHT,

@@ -7,8 +7,13 @@ from dataclasses import dataclass
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..host.acceptance import validate_operational_host
-from ..host.facts import HostFacts, collect_operational_preflight, collect_restore_preflight
+from ..host.acceptance import validate_operational_host, validate_restore_inspection_host
+from ..host.facts import (
+    HostFacts,
+    collect_operational_preflight,
+    collect_restore_inspection_preflight,
+    collect_restore_preflight,
+)
 from ..remote import Remote
 
 
@@ -112,6 +117,27 @@ def validate_restore_preflight(
     )
 
 
+def validate_restore_inspection_preflight(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    host_validator: HostValidator | None = None,
+) -> HostFacts | object:
+    """Validate cleanup and discovery authority without observing capacity."""
+
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("restore inspection preflight requires an environment configuration")
+    facts = (host_validator or validate_restore_inspection_host)(remote, config)
+    runtime, database = collect_restore_inspection_preflight(remote, config)
+    if not runtime.succeeded:
+        raise _preflight(
+            "runtime environment ownership, mode, required keys, or distro Python is invalid"
+        )
+    if not database.succeeded:
+        raise _preflight("PostgreSQL maintenance access or database role preflight failed")
+    return facts
+
+
 def _preflight(message: str) -> OpsError:
     return OpsError(
         ExitStatus.REMOTE_PREFLIGHT,
@@ -125,5 +151,6 @@ def _preflight(message: str) -> OpsError:
 __all__ = [
     "RestorePreflightFacts",
     "validate_operational_preflight",
+    "validate_restore_inspection_preflight",
     "validate_restore_preflight",
 ]

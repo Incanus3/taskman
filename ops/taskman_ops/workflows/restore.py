@@ -21,6 +21,7 @@ from ..output import WorkflowResult
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
 from .helper import (
+    aggregate_mutation_state,
     database_settings,
     discovery_request,
     helper_paths,
@@ -35,7 +36,10 @@ from .helper import (
     verification_settings,
 )
 from .inventory import collect_inventory
-from .operational_preflight import validate_restore_preflight
+from .operational_preflight import (
+    validate_restore_inspection_preflight,
+    validate_restore_preflight,
+)
 
 
 _PGPASS = "/etc/taskman/pgpass"
@@ -99,12 +103,28 @@ def restore(
     warnings: tuple[str, ...] = ()
     prior_mutation_state = "unchanged"
     try:
-        preflight = validate_restore_preflight(remote, config)
+        validate_restore_inspection_preflight(remote, config)
         cleanup_cycles = 0
         while True:
             authority = _collect_authority(remote, config, backup_id)
             warnings = merge_warnings(warnings, authority.warnings)
             starting_state = authority.expected_state
+            completed = _durably_completed(authority)
+            completed_without_binding = _completed_same_backup(authority)
+            unfinished = authority.target is not None and not completed
+            if not dry_run and reapply and unfinished:
+                raise _safety(
+                    "an unfinished restore cannot be reapplied",
+                    "resume with an ordinary retry or use --replace-unfinished for a different backup",
+                )
+            capacity_required = not completed and not (
+                completed_without_binding and not reapply
+            )
+            preflight = (
+                validate_restore_preflight(remote, config)
+                if capacity_required
+                else None
+            )
             with temporary_scheduled_backup_helper_package() as scheduler_package:
                 plan = _plan(
                     config,
@@ -169,17 +189,23 @@ def restore(
                     )
                     prior_mutation_state = str(cleanup_facts["mutation_state"])
                     cleanup_cycles += 1
-                    preflight = validate_restore_preflight(remote, config)
+                    validate_restore_inspection_preflight(remote, config)
                     continue
-                if plan["remaining_capacity_sufficient"] is not True:
+                if (
+                    plan["remaining_restore_bytes"] != 0
+                    and plan["remaining_capacity_sufficient"] is not True
+                ):
                     raise _safety(
                         "remaining restore capacity is insufficient",
                         "free database volume capacity and rerun restore inspection",
                     )
                 if (
-                    type(plan["required_safety_backup_bytes"]) is not int
-                    or type(plan["available_backup_bytes"]) is not int
-                    or plan["available_backup_bytes"] < plan["required_safety_backup_bytes"]
+                    plan["required_safety_backup_bytes"] != 0
+                    and (
+                        type(plan["required_safety_backup_bytes"]) is not int
+                        or type(plan["available_backup_bytes"]) is not int
+                        or plan["available_backup_bytes"] < plan["required_safety_backup_bytes"]
+                    )
                 ):
                     raise _safety(
                         "remaining safety-backup capacity is insufficient",
@@ -190,7 +216,6 @@ def restore(
                     and authority.target.backup_id != backup_id
                     and not _durably_completed(authority)
                 )
-                unfinished = authority.target is not None and not _durably_completed(authority)
                 if dry_run:
                     next_action = (
                         "review this replacement preview; execution requires --replace-unfinished and fresh typed confirmation"
@@ -198,11 +223,6 @@ def restore(
                         else "review the exact restore plan and rerun without --dry-run for fresh typed confirmation"
                     )
                     return WorkflowResult("restore", config.name or "", False, "planned", plan, warnings, next_action)
-                if reapply and unfinished:
-                    raise _safety(
-                        "an unfinished restore cannot be reapplied",
-                        "resume with an ordinary retry or use --replace-unfinished for a different backup",
-                    )
                 if different_unfinished and not replace_unfinished:
                     raise _safety(
                         "a different unfinished restore target is already bound",
@@ -271,16 +291,27 @@ def restore(
                 )
     except OpsError as error:
         state = mutable(error.state)
+        state_facts = dict(state) if isinstance(state, Mapping) else {}
+        if prior_mutation_state != "unchanged":
+            state_facts["mutation_state"] = (
+                aggregate_mutation_state(
+                    prior_mutation_state,
+                    str(state_facts.get("mutation_state", "changed")),
+                )
+                if error.changed
+                else prior_mutation_state
+            )
         facts = {
             "backup_id": backup_id,
             "starting_state": None if starting_state is None else mutable(starting_state),
             "plan": None if plan is None else mutable(plan),
-            **(dict(state) if isinstance(state, Mapping) else {}),
+            **state_facts,
         }
+        changed = error.changed or prior_mutation_state != "unchanged"
         return WorkflowResult(
             "restore",
             config.name or "",
-            error.changed,
+            changed,
             "lock-contended" if error.status is ExitStatus.LOCKED else "safety-refused" if error.status is ExitStatus.SAFETY else f"{error.stage}-failed",
             facts,
             merge_warnings(warnings, tuple(getattr(error, "warnings", ()))),
@@ -523,15 +554,17 @@ def _plan(
         and isinstance(authority.databases["retired"], Mapping)
         and authority.databases["retired"]["oid"] == target.original_database_oid
     )
-    needs_load = reapply or (not completed and not completed_without_binding and not swapped)
+    needs_load = (reapply and not completed) or (
+        not completed and not completed_without_binding and not swapped
+    )
     needs_safety = (
-        reapply
+        reapply and not completed
         or target is None and not completed_without_binding
         or target is not None
         and isinstance(authority.databases["canonical"], Mapping)
         and authority.databases["canonical"]["oid"] == target.original_database_oid
     )
-    if target is not None and completed and not reapply:
+    if target is not None and completed:
         consequences = ["cleanup-retired", "cleanup-binding"]
     elif completed_without_binding and not reapply:
         consequences, needs_load = ["completion-check"], False
@@ -565,7 +598,9 @@ def _plan(
         "required_safety_backup_bytes": required_safety_bytes,
         "available_database_bytes": available_bytes,
         "available_backup_bytes": backup_available_bytes,
-        "remaining_capacity_sufficient": type(available_bytes) is int and available_bytes >= remaining_bytes,
+        "remaining_capacity_sufficient": remaining_bytes == 0 or (
+            type(available_bytes) is int and available_bytes >= remaining_bytes
+        ),
         "remaining_consequences": consequences,
         "scheduled_backup_sha256": authority.expected_state["scheduled_backup_sha256"],
         "required_scheduled_backup_sha256": scheduler_sha256,
