@@ -30,6 +30,7 @@ from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from taskman_ops.workflows.provision import ProvisionCapabilities, provision
 from tests.host_helper import test_deploy as host_deploy_tests
+from tests.host_helper import test_restore as host_restore_tests
 from tests.support.environments import valid_environment
 
 
@@ -148,6 +149,7 @@ from pathlib import Path
 import runpy
 import subprocess
 import sys
+from dataclasses import replace
 
 archive, runtime_path = map(Path, sys.argv[1:3])
 ready_fd = int(sys.argv[3])
@@ -157,7 +159,10 @@ from taskman_ops.host_helper import __main__ as entrypoint
 from taskman_ops.host_helper import backup_helper, services, state as state_module
 from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import discover as discover_module
+from taskman_ops.host_helper.operations import restore as restore_module
 from taskman_ops.host_helper.records import BackupRecord, write_backup_manifest
+from taskman_ops.host_helper.restore_target import replace_restore_target
+from taskman_ops.host_helper.commands import CommandError
 from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 
 assert archive.as_posix() in entrypoint.__file__
@@ -192,6 +197,7 @@ def command(argv, **_kwargs):
 
 def backup(current, paths, *_args, **_kwargs):
     value = read_state()
+    value["events"].append("safety-backup")
     value["backup_count"] += 1
     dump = Path(paths.local(paths.backup_root / f"backup-{value['backup_count']:032x}.dump"))
     dump.parent.mkdir(parents=True, exist_ok=True)
@@ -258,6 +264,7 @@ def scheduler_facts(_paths):
 
 deploy_module._scheduler_facts = scheduler_facts
 discover_module._scheduler_facts = scheduler_facts
+restore_module._scheduler_facts = scheduler_facts
 discover_module._scheduler_resources = lambda _paths: read_state()["scheduler_resources"]
 backup_helper.observe_backup_timer = lambda **_kwargs: (
     read_state()["backup_timer_enabled"], read_state()["backup_timer_state"]
@@ -276,9 +283,15 @@ def start_timer(**_kwargs):
 def wait_backup(*_args, **_kwargs):
     value = read_state()
     value["events"].append("scheduler-wait")
+    if "scheduler_running" in value:
+        value["events"].append("old-scheduler-finished")
+        value["scheduler_running"] = False
     write_state(value)
+    if value.get("scheduler_failure"):
+        raise CommandError("scheduled backup wait interrupted")
 def replace_helper(_upload, digest):
     value = read_state()
+    assert not value.get("scheduler_running", False)
     value["scheduler_sha256"] = digest
     value["events"].append("scheduler-replace")
     write_state(value)
@@ -294,6 +307,81 @@ def select_current(paths, release_id):
     write_state(value)
     return _select_current(paths, release_id)
 deploy_module.select_current = select_current
+
+def restore_databases(*_args, **_kwargs):
+    value = read_state()
+    return value["restore_databases"]
+
+def create_temporary(*_args, **_kwargs):
+    value = read_state()
+    value["events"].append("temporary-created")
+    value["restore_databases"]["temporary"] = {
+        "oid": 202,
+        "owner": "taskman",
+        "migration_table_present": False,
+        "applied_migrations": None,
+    }
+    write_state(value)
+
+def register_temporary(paths, target, *_args, **_kwargs):
+    value = read_state()
+    value["events"].append("temporary-registered")
+    updated = replace(target, restored_database_oid=202, temporary_creation_pending=False)
+    replace_restore_target(paths, updated)
+    write_state(value)
+    return updated
+
+def load_temporary(target, *_args, **_kwargs):
+    value = read_state()
+    assert target.restored_database_oid == 202 and not target.temporary_creation_pending
+    value["events"].append("dump-loaded")
+    value["restore_databases"]["temporary"].update(
+        migration_table_present=True,
+        applied_migrations=value["migrations"],
+    )
+    write_state(value)
+
+def rename_database(_database, _credentials, source, destination, oid):
+    value = read_state()
+    record = value["restore_databases"][source]
+    assert record is not None and record["oid"] == oid
+    assert value["restore_databases"][destination] is None
+    value["events"].append(f"rename:{source}:{destination}")
+    value["restore_databases"][destination] = record
+    value["restore_databases"][source] = None
+    write_state(value)
+
+def drop_retired(_database, _credentials, oid):
+    value = read_state()
+    retired = value["restore_databases"]["retired"]
+    if retired is not None:
+        assert retired["oid"] == oid
+        value["events"].append("retired-dropped")
+        value["restore_databases"]["retired"] = None
+        write_state(value)
+
+_write_restore_target = restore_module.write_restore_target
+def write_binding(paths, target):
+    value = read_state()
+    value["events"].append("binding-published")
+    write_state(value)
+    return _write_restore_target(paths, target)
+
+discover_module.observe_restore_databases = restore_databases
+discover_module.run_command = command
+restore_module.validate_credentials = lambda *_args: None
+restore_module.observe_restore_databases = restore_databases
+restore_module.observe_database_available_bytes = lambda *_args: read_state()["database_capacity"]
+restore_module.create_validated_backup = backup
+restore_module.create_temporary_database = create_temporary
+restore_module.register_restored_database = register_temporary
+restore_module.load_registered_temporary = load_temporary
+restore_module.rename_registered_database = rename_database
+restore_module.drop_registered_retired = drop_retired
+restore_module.write_restore_target = write_binding
+restore_module.run_command = command
+restore_module._terminate_connections = lambda *_args: None
+restore_module.verify = verify
 
 os.write(ready_fd, b"R")
 os.close(ready_fd)
@@ -484,6 +572,125 @@ def _set_verification(runtime_path: Path, value: str) -> None:
     runtime = json.loads(runtime_path.read_text())
     runtime["verification"] = value
     runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+
+def _install_public_restore_controller(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    scheduler_failure: bool,
+) -> tuple[EnvironmentConfig, Path, object, _ControllerRemote, Path]:
+    """Keep public restore and the packaged helper real; replace only native effects."""
+
+    from taskman_ops.workflows import helper, inventory
+    from taskman_ops.workflows import restore as restore_workflow
+    from taskman_ops.workflows.operational_preflight import RestorePreflightFacts
+
+    paths, source = host_restore_tests._seed(tmp_path / "public-restore")
+    config = EnvironmentConfig.model_validate(valid_environment(ssh_port=22)).model_copy(
+        update={"install_root": paths.install_root, "backup_root": paths.backup_root}
+    )
+    package = build_helper_package(tmp_path / "taskman-restore-host.pyz")
+    remote = _ControllerRemote()
+    runtime_path = tmp_path / "isolated-restore-state.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "backup_count": 16,
+                "migrations": [host_restore_tests.VERSION],
+                "database_state": "ready",
+                "restore_databases": {
+                    "canonical": {
+                        "oid": 101,
+                        "owner": "taskman",
+                        "migration_table_present": True,
+                        "applied_migrations": [host_restore_tests.VERSION],
+                    },
+                    "temporary": None,
+                    "retired": None,
+                },
+                "database_capacity": 1_000_000,
+                "scheduler_sha256": "e" * 64,
+                "scheduler_resources": {
+                    "helper": True,
+                    "service": True,
+                    "timer": True,
+                    "environment": True,
+                },
+                "scheduler_running": True,
+                "scheduler_failure": scheduler_failure,
+                "backup_timer_enabled": True,
+                "backup_timer_state": "active",
+                "service_running": True,
+                "verification": "passing",
+                "events": [],
+            },
+            sort_keys=True,
+        )
+    )
+    real_run_request = helper.run_request
+
+    def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        return real_run_request(
+            _remote,
+            request,
+            package=package,
+            invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
+                wire_request, selected, runtime_path
+            ),
+        )
+
+    monkeypatch.setattr(
+        restore_workflow,
+        "validate_restore_preflight",
+        lambda *_args: RestorePreflightFacts(1_000_000, 1_000_000, 1_000_000),
+    )
+    monkeypatch.setattr(restore_workflow, "run_request", dispatch)
+    monkeypatch.setattr(inventory, "run_request", dispatch)
+    monkeypatch.setattr(helper, "run_request", dispatch)
+    return config, runtime_path, paths, remote, source
+
+
+@pytest.mark.parametrize("scheduler_failure", (False, True))
+def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scheduler_failure: bool,
+) -> None:
+    """Skipping controller upload or packaged convergence would publish too early."""
+
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch,
+        tmp_path,
+        scheduler_failure=scheduler_failure,
+    )
+
+    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    binding = Path(paths.local(paths.restore_target_path))
+    if not scheduler_failure:
+        assert result.exit_status is ExitStatus.OK, result.facts
+    assert "scheduler-stop" in runtime["events"], (result, runtime)
+    assert runtime["events"].index("scheduler-stop") < runtime["events"].index(
+        "old-scheduler-finished"
+    )
+    if scheduler_failure:
+        assert result.exit_status is ExitStatus.RELEASE
+        assert result.facts["failed_boundary"] == "backup_helper"
+        assert result.facts["mutation_state"] == "changed"
+        assert "scheduler-replace" not in runtime["events"]
+        assert not binding.exists()
+    else:
+        assert runtime["events"].index("old-scheduler-finished") < runtime[
+            "events"
+        ].index("scheduler-replace")
+        assert runtime["events"].index("scheduler-replace") < runtime[
+            "events"
+        ].index("binding-published")
+        assert not binding.exists()
 
 
 def _converge_native_provision_writers(runtime_path: Path):

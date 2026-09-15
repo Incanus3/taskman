@@ -164,9 +164,14 @@ command -v runuser >/dev/null 2>&1
 runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>&1
 role_ok=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=role="$database_role" --command "SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin" 2>/dev/null)
 test "$role_ok" = 1
+data_directory=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SHOW data_directory' 2>/dev/null)
+case "$data_directory" in /*) ;; *) exit 1;; esac
+database_available_bytes=$(df -B1 --output=avail "$data_directory" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
+case "$database_available_bytes" in ''|*[!0-9]*) exit 1;; esac
 available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
 case "$available_bytes" in ''|*[!0-9]*) exit 1;; esac
 test "$available_bytes" -ge 67108864
+printf '%s\n' "$database_available_bytes"
 '''
 _TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
 emit() { printf '%s=%s\n' "$1" "$2"; }

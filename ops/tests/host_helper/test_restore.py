@@ -97,6 +97,7 @@ class Runtime:
         self.cleanup_failure: str | None = None
         self.safety_count = 0
         self.later_write: str | None = None
+        self.database_capacity = 1_000_000
         original = {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
         restored = {"oid": 202, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
         empty = {"oid": 202, "owner": "taskman", "migration_table_present": False, "applied_migrations": None}
@@ -266,7 +267,12 @@ def _install(monkeypatch: pytest.MonkeyPatch, runtime: Runtime) -> None:
     monkeypatch.setattr(restore_module, "_validate_source_dump", lambda *_args: None)
     monkeypatch.setattr(restore_module, "run_command", lambda *_args, **_kwargs: SimpleNamespace(stdout=b""))
     monkeypatch.setattr(restore_module, "_terminate_connections", lambda *_args: None)
-    monkeypatch.setattr(restore_module, "available_bytes", lambda *_args: 1_000_000)
+    monkeypatch.setattr(
+        restore_module,
+        "observe_database_available_bytes",
+        lambda *_args: runtime.database_capacity,
+        raising=False,
+    )
 
 
 def test_scheduler_converges_before_any_supported_write_and_failure_publishes_no_binding(tmp_path, monkeypatch):
@@ -281,6 +287,22 @@ def test_scheduler_converges_before_any_supported_write_and_failure_publishes_no
     assert result.state["failed_boundary"] == "backup_helper"
     validate_mutation_state("restore", "retryable", result.state)
     assert runtime.events == ["scheduler"]
+    assert not Path(paths.local(paths.restore_target_path)).exists()
+
+
+def test_insufficient_database_volume_refuses_before_scheduler_or_binding(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.database_capacity = 2_047
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "refused"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
     assert not Path(paths.local(paths.restore_target_path)).exists()
 
 

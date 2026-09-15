@@ -33,6 +33,7 @@ from ..restore_database import (
     drop_registered_retired,
     drop_registered_temporary,
     load_registered_temporary,
+    observe_database_available_bytes,
     observe_restore_databases,
     register_restored_database,
     rename_registered_database,
@@ -53,7 +54,7 @@ from ..state import (
     mutation_observations,
     observe_host_state,
 )
-from ..verification import available_bytes, verification_request, verify
+from ..verification import verification_request, verify
 
 
 _EXPECTED_STATE_KEYS = frozenset({
@@ -70,7 +71,6 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _SELECTION_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _LOCK_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 60.0
-_POSTGRES_DATA = Path("/var/lib/postgresql")
 
 
 class RestoreRefused(ValueError):
@@ -144,6 +144,12 @@ def restore(request: HostRequest) -> HostResult:
                 _require_initial_arrangement(databases)
             else:
                 _validate_bound_target(state, databases, target, source, inputs)
+            if (
+                _restore_load_required(databases, target)
+                and observe_database_available_bytes(inputs.database)
+                < source.source_database_size_bytes * 2
+            ):
+                raise RestoreRefused("restore capacity is insufficient")
 
             try:
                 convergence = converge_backup_helper(
@@ -521,8 +527,6 @@ def _converge_database(
         if any(isinstance(value, Mapping) and value["oid"] == old_oid for value in databases.values()):
             raise RestoreManual("previous restored database OID is still present")
     if temporary is None:
-        if available_bytes(_POSTGRES_DATA) < source.source_database_size_bytes * 2:
-            raise RestoreRefused("restore capacity is insufficient")
         create_temporary_database(inputs.database, inputs.credentials)
     target = register_restored_database(inputs.paths, target, inputs.database, inputs.credentials)
     dump = Path(inputs.paths.local(inputs.paths.backup_root / f"{source.backup_id}.dump"))
@@ -544,6 +548,22 @@ def _converge_database(
     databases = validate_restore_database_state(observe_restore_databases(inputs.database, inputs.credentials))
     _validate_restored(databases["canonical"], source, target)
     return target, databases
+
+
+def _restore_load_required(
+    databases: Mapping[str, object], target: RestoreTarget | None
+) -> bool:
+    if target is None:
+        return True
+    canonical = databases["canonical"]
+    retired = databases["retired"]
+    return not (
+        isinstance(canonical, Mapping)
+        and canonical["oid"] == target.restored_database_oid
+        and isinstance(retired, Mapping)
+        and retired["oid"] == target.original_database_oid
+        and _roles(databases) == frozenset({"canonical", "retired"})
+    )
 
 
 def _validate_restored(database: object, source: BackupRecord, target: RestoreTarget) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
@@ -12,6 +13,15 @@ from ..remote import Remote
 
 
 HostValidator = Callable[[Remote, EnvironmentConfig], HostFacts | object]
+
+
+@dataclass(frozen=True)
+class RestorePreflightFacts:
+    """Capacity facts required only by restore planning."""
+
+    available_disk_bytes: int
+    backup_available_disk_bytes: int
+    database_available_disk_bytes: int
 
 
 def validate_operational_preflight(
@@ -44,7 +54,7 @@ def validate_restore_preflight(
     config: EnvironmentConfig,
     *,
     host_validator: HostValidator | None = None,
-) -> HostFacts | object:
+) -> RestorePreflightFacts:
     """Validate restore access through PostgreSQL's maintenance database."""
 
     if not isinstance(config, EnvironmentConfig):
@@ -59,7 +69,23 @@ def validate_restore_preflight(
         raise _preflight(
             "PostgreSQL maintenance access, database role, or restore capacity preflight failed"
         )
-    return facts
+    try:
+        database_available_bytes = int(database.stdout.strip())
+        available_bytes = getattr(facts, "available_disk_bytes")
+        backup_available_bytes = getattr(facts, "backup_available_disk_bytes")
+        if (
+            database_available_bytes <= 0
+            or type(available_bytes) is not int
+            or type(backup_available_bytes) is not int
+        ):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        raise _preflight("PostgreSQL data-volume capacity is unobservable") from None
+    return RestorePreflightFacts(
+        available_bytes,
+        backup_available_bytes,
+        database_available_bytes,
+    )
 
 
 def _preflight(message: str) -> OpsError:
@@ -72,4 +98,8 @@ def _preflight(message: str) -> OpsError:
     )
 
 
-__all__ = ["validate_operational_preflight", "validate_restore_preflight"]
+__all__ = [
+    "RestorePreflightFacts",
+    "validate_operational_preflight",
+    "validate_restore_preflight",
+]

@@ -114,9 +114,9 @@ def test_existing_host_preflight_checks_runtime_metadata_keys_database_and_capac
 
 
 def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_absent() -> None:
-    remote = RecordingRemote([CommandResult(0), CommandResult(0)])
+    remote = RecordingRemote([CommandResult(0), CommandResult(0, "8589934592\n")])
 
-    preflight_module.validate_restore_preflight(
+    facts = preflight_module.validate_restore_preflight(
         remote,
         config(),
         host_validator=lambda *_args: _managed_host_facts(),
@@ -128,7 +128,43 @@ def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_
     assert "runuser -u postgres" in database_argv[2]
     assert "--dbname postgres" in database_argv[2]
     assert "--dbname \"$database_name\"" not in database_argv[2]
+    assert "SHOW data_directory" in database_argv[2]
+    assert 'df -B1 --output=avail "$data_directory"' in database_argv[2]
     assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+    assert facts.database_available_disk_bytes == 8589934592
+
+
+@pytest.mark.parametrize("database_bytes", (40 * 1024**3, 8 * 1024**3))
+def test_restore_preflight_uses_native_postgres_volume_capacity_even_when_filesystems_differ(
+    database_bytes: int,
+) -> None:
+    remote = RecordingRemote([CommandResult(0), CommandResult(0, f"{database_bytes}\n")])
+
+    facts = preflight_module.validate_restore_preflight(
+        remote,
+        config(),
+        host_validator=lambda *_args: _managed_host_facts(),
+    )
+
+    assert facts.database_available_disk_bytes == database_bytes
+    assert facts.available_disk_bytes == 40 * 1024**3
+
+
+@pytest.mark.parametrize("capacity_output", ("", "unknown\n", "0\n"))
+def test_restore_preflight_refuses_unobservable_postgres_volume_capacity(
+    capacity_output: str,
+) -> None:
+    remote = RecordingRemote([CommandResult(0), CommandResult(0, capacity_output)])
+
+    with pytest.raises(OpsError) as raised:
+        preflight_module.validate_restore_preflight(
+            remote,
+            config(),
+            host_validator=lambda *_args: _managed_host_facts(),
+        )
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert "capacity" in raised.value.next_action
 
 
 def test_restore_preflight_reports_maintenance_database_failure_without_output() -> None:

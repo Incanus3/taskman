@@ -35,6 +35,7 @@ from ..restore_target import restore_target_sha256
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..backup_protection import independent_backup_ids
 from ..paths import ManagedPaths, PathAuthorityError
+from ..records import MAX_RECORD_BYTES, BackupRecord, RecordError
 from ..state import HostState, StateAmbiguityError, observe_host_state
 
 
@@ -58,6 +59,10 @@ class _InvalidCursor(ValueError):
     """A syntactically invalid page position, distinct from host ambiguity."""
 
 
+class _RestoreBackupFailure(ValueError):
+    """The specifically requested restore input failed read-only validation."""
+
+
 def discover(request: HostRequest) -> HostResult:
     """Return one bounded projection of completed records and physical state."""
 
@@ -65,6 +70,8 @@ def discover(request: HostRequest) -> HostResult:
         state, scheduler, restore_database_state = _observe(request)
     except LifecycleLockContention:
         return _locked(request)
+    except _RestoreBackupFailure:
+        return _backup_failure(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
     mode = request.parameters["mode"]
@@ -275,6 +282,11 @@ def _observe(
             credentials_path = Path(credentials)
             validate_credentials(credentials_path)
             database = database_mapping(request.parameters["database"])
+            requested_backup = (
+                _validate_restore_backup(paths, backup_id)
+                if mode == "restore"
+                else None
+            )
             restore_database_state = None
             if mode == "restore":
                 restore_database_state = observe_restore_databases(
@@ -302,6 +314,32 @@ def _observe(
                 database=observation,
                 allow_selection_transition=mode in {"deploy", "provision", "restore"},
             )
+            if requested_backup is not None:
+                observed = next(
+                    (
+                        item
+                        for item in state.backups
+                        if item.backup_id == requested_backup.backup_id
+                    ),
+                    None,
+                )
+                source = next(
+                    (
+                        item
+                        for item in state.releases
+                        if item.release_id == requested_backup.source_release_id
+                    ),
+                    None,
+                )
+                if (
+                    observed != requested_backup
+                    or source is None
+                    or release_migration_versions(source.migrations)
+                    != requested_backup.migration_versions
+                ):
+                    raise _RestoreBackupFailure(
+                        "restore input record or source authority changed"
+                    )
             scheduler = (
                 _scheduler_facts(paths)
                 if mode in {"deploy", "provision", "restore"}
@@ -314,6 +352,61 @@ def _observe(
             paths,
             allow_selection_transition=request.operation == "list_releases",
         ), None, None
+
+
+def _validate_restore_backup(paths: ManagedPaths, backup_id: object) -> BackupRecord:
+    """Validate one immutable restore record and dump without changing either."""
+
+    if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
+        raise _RestoreBackupFailure("restore backup identity is invalid")
+    root = Path(paths.local(paths.backup_root))
+    manifest = root / f"{backup_id}.json"
+    dump = root / f"{backup_id}.dump"
+    try:
+        manifest_details = manifest.lstat()
+        if (
+            stat.S_ISLNK(manifest_details.st_mode)
+            or not stat.S_ISREG(manifest_details.st_mode)
+            or manifest_details.st_uid != os.geteuid()
+            or stat.S_IMODE(manifest_details.st_mode) != 0o600
+            or not 0 < manifest_details.st_size <= MAX_RECORD_BYTES
+        ):
+            raise _RestoreBackupFailure("restore backup record is unsafe")
+        record = BackupRecord.from_mapping(json.loads(manifest.read_text("utf-8")))
+        if record.backup_id != backup_id:
+            raise _RestoreBackupFailure("restore backup record identity is inconsistent")
+        before = dump.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size <= 0
+            or sha256_file(dump) != record.dump_sha256
+        ):
+            raise _RestoreBackupFailure("restore backup dump is invalid")
+        run_command(
+            ("pg_restore", "--list", dump.as_posix()),
+            timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS,
+        )
+        after = dump.lstat()
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise _RestoreBackupFailure("restore backup dump changed during validation")
+        return record
+    except _RestoreBackupFailure:
+        raise
+    except (CommandError, OSError, UnicodeError, ValueError, RecordError) as error:
+        raise _RestoreBackupFailure("restore backup cannot be validated") from error
 
 
 def _inventory_cursor(request: HostRequest, operation: str) -> Mapping[str, object] | None:
@@ -647,6 +740,18 @@ def _refused(request: HostRequest) -> HostResult:
         outcome="refused",
         message="authoritative host state is ambiguous",
         state={},
+        warnings=(),
+    )
+
+
+def _backup_failure(request: HostRequest) -> HostResult:
+    return HostResult(
+        protocol_version=PROTOCOL_VERSION,
+        operation=request.operation,
+        correlation_id=request.correlation_id,
+        outcome="manual",
+        message="selected restore backup is invalid",
+        state={"failed_boundary": "backup"},
         warnings=(),
     )
 

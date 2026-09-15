@@ -6,10 +6,13 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host_helper.commands import CommandError
+from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper.records import (
     BackupRecord,
     ReleaseRecord,
@@ -24,6 +27,7 @@ from taskman_ops.workflows.restore import restore
 from taskman_ops.workflows.helper import mutable
 from tests.workflows.support import deployment_artifact, successful_verification_report
 from tests.workflows.test_deploy import config
+from tests.host_helper import test_restore as host_restore_tests
 
 
 BACKUP = "backup-" + "a" * 32
@@ -123,7 +127,7 @@ def _authority(tmp_path, *, current=FAILED_CURRENT, with_success=True, databases
 
 
 def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutations):
-    monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000})())
+    monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000, "database_available_disk_bytes": 10_000})())
     monkeypatch.setattr("taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package", _scheduler_package)
     release_records = [release.to_mapping()]
     selected = discoveries[0]["selected_release_id"]
@@ -270,6 +274,118 @@ def test_restore_plans_from_restore_specific_authority_after_failed_or_first_ins
     assert outcome.facts["scheduler_refresh_required"] is True
     assert outcome.facts["planned_pre_restore_backup"] is True
     assert mutations == []
+
+
+def test_restore_refuses_when_native_database_volume_cannot_hold_remaining_work(
+    tmp_path, monkeypatch
+):
+    release, backup, _selection, state = _authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight",
+        lambda *_args: type(
+            "Facts",
+            (),
+            {
+                "available_disk_bytes": 10_000,
+                "backup_available_disk_bytes": 20_000,
+                "database_available_disk_bytes": 2_047,
+            },
+        )(),
+    )
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert outcome.facts["plan"]["available_database_bytes"] == 2_047
+    assert mutations == []
+
+
+@pytest.mark.parametrize("failure", ("corrupt", "missing", "unreadable", "invalid-list"))
+def test_restore_dry_run_validates_selected_dump_content_before_plan_or_prompt(
+    failure, tmp_path, monkeypatch
+):
+    paths, source = host_restore_tests._seed(tmp_path)
+    dump = Path(paths.local(paths.backup_root / f"{source.backup_id}.dump"))
+    if failure == "corrupt":
+        dump.write_bytes(b"changed restore source")
+    elif failure == "missing":
+        dump.unlink()
+    elif failure == "unreadable":
+        dump.chmod(0)
+
+    actual_config = config().model_copy(
+        update={"install_root": paths.install_root, "backup_root": paths.backup_root}
+    )
+    runtime = host_restore_tests.Runtime()
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight",
+        lambda *_args: type(
+            "Facts",
+            (),
+            {
+                "available_disk_bytes": 10_000,
+                "backup_available_disk_bytes": 20_000,
+                "database_available_disk_bytes": 10_000,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package",
+        _scheduler_package,
+    )
+    monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
+    monkeypatch.setattr(discover_module, "observe_restore_databases", runtime.observe_databases)
+    monkeypatch.setattr(
+        discover_module,
+        "_scheduler_facts",
+        lambda *_args: {
+            "scheduled_backup_sha256": host_restore_tests.OLD_HELPER,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "active",
+        },
+    )
+
+    def native(argv, **_kwargs):
+        if failure == "invalid-list" and argv[:2] == ("pg_restore", "--list"):
+            raise CommandError("invalid dump directory")
+        return type("Completed", (), {"stdout": b""})()
+
+    monkeypatch.setattr(discover_module, "run_command", native)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.run_request",
+        lambda _remote, request: discover_module.discover(request),
+    )
+    state = host_restore_tests.observe_host_state(
+        paths,
+        database={"state": "ready", "applied_migrations": (host_restore_tests.VERSION,)},
+        allow_selection_transition=True,
+    ) if failure not in {"missing", "unreadable"} else None
+    if state is not None:
+        monkeypatch.setattr(
+            "taskman_ops.workflows.restore.collect_inventory",
+            lambda _remote, _config, operation, **_kwargs: (
+                tuple(item.to_mapping() for item in state.releases)
+                if operation == "list_releases"
+                else tuple(item.to_mapping() for item in state.backups)
+            ),
+        )
+    prompted = []
+
+    outcome = restore(
+        object(),
+        actual_config,
+        source.backup_id,
+        dry_run=True,
+        confirm=lambda plan: prompted.append(plan) or True,
+    )
+
+    assert outcome.exit_status is ExitStatus.BACKUP
+    assert outcome.stage == "backup-failed"
+    assert outcome.changed is False
+    assert outcome.facts["plan"] is None
+    assert prompted == []
 
 
 def test_restore_dispatches_exact_v3_state_and_parameters_and_preserves_result_evidence(

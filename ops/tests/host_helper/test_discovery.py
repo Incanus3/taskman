@@ -65,12 +65,40 @@ def _state(*, migrations: tuple[int, ...] = (20260905120000,)) -> HostState:
     )
 
 
+def _restore_state(*, migrations: tuple[int, ...] = (20260905120000,)) -> HostState:
+    migration = {
+        "filename": "20260905120000_create_tasks.exs",
+        "sha256": "c" * 64,
+    }
+    backup = BackupRecord(
+        "backup-" + "c" * 32,
+        SELECTED_AT,
+        "d" * 64,
+        RELEASE_ID,
+        (20260905120000,),
+        1024,
+    )
+    return HostState(
+        **{
+            **_state(migrations=migrations).__dict__,
+            "releases": (_release(migrations=(migration,)),),
+            "backups": (backup,),
+        }
+    )
+
+
 def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> None:
     monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
     monkeypatch.setattr(discover_module, "observe_database_state", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_host_state", lambda *_args, **_kwargs: observed)
+    if observed.backups:
+        monkeypatch.setattr(
+            discover_module,
+            "_validate_restore_backup",
+            lambda *_args: observed.backups[0],
+        )
     monkeypatch.setattr(discover_module, "lifecycle_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
         discover_module,
@@ -151,7 +179,7 @@ def test_v3_discovery_refuses_malformed_mode_specific_parameters(monkeypatch: py
 
 def test_restore_discovery_returns_exact_database_shapes_and_flat_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nesting or omitting binding identity would prevent exact apply-time drift checks."""
-    _install_observer(monkeypatch, _state())
+    _install_observer(monkeypatch, _restore_state())
     database_state = {
         "canonical": {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (20260905120000,)},
         "temporary": None,
@@ -192,7 +220,7 @@ def test_restore_discovery_adds_digest_to_the_flat_validated_binding(
         None,
         ({"backup_id": "backup-" + "e" * 32, "attempt_number": 0},),
     )
-    observed = HostState(**{**_state().__dict__, "restore_target": target})
+    observed = HostState(**{**_restore_state().__dict__, "restore_target": target})
     _install_observer(monkeypatch, observed)
     monkeypatch.setattr(
         discover_module,
@@ -229,7 +257,7 @@ def test_restore_discovery_refuses_failed_database_observation_instead_of_return
 
     from taskman_ops.host_helper.restore_database import RestoreDatabaseError
 
-    _install_observer(monkeypatch, _state())
+    _install_observer(monkeypatch, _restore_state())
     monkeypatch.setattr(
         discover_module,
         "observe_restore_databases",
@@ -249,7 +277,7 @@ def test_restore_discovery_uses_null_top_level_migrations_for_a_missing_canonica
 ) -> None:
     """Temporary migration evidence must never masquerade as canonical live schema."""
 
-    _install_observer(monkeypatch, _state(migrations=()))
+    _install_observer(monkeypatch, _restore_state(migrations=()))
     monkeypatch.setattr(
         discover_module,
         "observe_restore_databases",

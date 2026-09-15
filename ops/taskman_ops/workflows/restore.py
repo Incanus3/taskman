@@ -110,7 +110,9 @@ def restore(
                     config,
                     authority,
                     scheduler_sha256=scheduler_package.sha256,
-                    available_bytes=getattr(preflight, "available_disk_bytes", None),
+                    available_bytes=getattr(
+                        preflight, "database_available_disk_bytes", None
+                    ),
                     backup_available_bytes=getattr(preflight, "backup_available_disk_bytes", None),
                     requested_backup_id=backup_id,
                     replace_unfinished=replace_unfinished,
@@ -250,13 +252,12 @@ def restore(
                 )
     except OpsError as error:
         state = mutable(error.state)
-        facts = dict(state) if isinstance(state, Mapping) else {}
-        if not facts:
-            facts = {
-                "backup_id": backup_id,
-                "starting_state": None if starting_state is None else mutable(starting_state),
-                "plan": None if plan is None else mutable(plan),
-            }
+        facts = {
+            "backup_id": backup_id,
+            "starting_state": None if starting_state is None else mutable(starting_state),
+            "plan": None if plan is None else mutable(plan),
+            **(dict(state) if isinstance(state, Mapping) else {}),
+        }
         return WorkflowResult(
             "restore",
             config.name or "",

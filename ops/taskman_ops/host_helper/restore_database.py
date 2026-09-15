@@ -34,6 +34,40 @@ class RestoreDatabaseError(ValueError):
     """Restore database identity or direct observation is not authoritative."""
 
 
+def observe_database_available_bytes(database: Mapping[str, object]) -> int:
+    """Read free bytes from the selected PostgreSQL cluster's data filesystem."""
+
+    settings = database_mapping(database)
+    script = r'''set -eu
+port=$1
+data_directory=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SHOW data_directory' 2>/dev/null)
+case "$data_directory" in /*) ;; *) exit 1;; esac
+available=$(df -B1 --output=avail "$data_directory" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
+case "$available" in ''|*[!0-9]*) exit 1;; esac
+printf '%s\n' "$available"
+'''
+    try:
+        result = run_command(
+            (
+                "sh",
+                "-ceu",
+                script,
+                "taskman-restore-database-capacity",
+                str(settings["port"]),
+            ),
+            timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+            output_limit=64,
+        )
+        available = int(result.stdout.decode("ascii", "strict").strip())
+        if available <= 0:
+            raise ValueError
+        return available
+    except (CommandError, UnicodeError, ValueError) as error:
+        raise RestoreDatabaseError(
+            "PostgreSQL data-volume capacity observation failed"
+        ) from error
+
+
 def restore_database_names(database: Mapping[str, object]) -> dict[str, str]:
     """Derive the only three database names owned by restore."""
 

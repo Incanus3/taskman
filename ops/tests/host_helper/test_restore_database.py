@@ -54,6 +54,42 @@ def _completed(argv: tuple[str, ...], stdout: bytes) -> subprocess.CompletedProc
     return subprocess.CompletedProcess(argv, 0, stdout, b"")
 
 
+@pytest.mark.parametrize("available", (40 * 1024**3, 8 * 1024**3))
+def test_database_capacity_uses_postgres_data_directory_filesystem(
+    available: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import taskman_ops.host_helper.restore_database as restore_database
+
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        return _completed(argv, f"{available}\n".encode())
+
+    monkeypatch.setattr(restore_database, "run_command", run)
+
+    assert restore_database.observe_database_available_bytes(DATABASE) == available
+    assert calls[0][:2] == ("sh", "-ceu")
+    assert "SHOW data_directory" in calls[0][2]
+    assert 'df -B1 --output=avail "$data_directory"' in calls[0][2]
+
+
+@pytest.mark.parametrize("stdout", (b"", b"unknown\n", b"0\n"))
+def test_database_capacity_refuses_unobservable_values(
+    stdout: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import taskman_ops.host_helper.restore_database as restore_database
+
+    monkeypatch.setattr(
+        restore_database,
+        "run_command",
+        lambda argv, **_kwargs: _completed(argv, stdout),
+    )
+
+    with pytest.raises(restore_database.RestoreDatabaseError):
+        restore_database.observe_database_available_bytes(DATABASE)
+
+
 def test_observation_distinguishes_absent_table_missing_table_empty_and_populated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
