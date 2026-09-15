@@ -148,12 +148,39 @@ def test_build_allows_only_dirty_source_permission() -> None:
     assert invocation.allow_downgrade is False
 
 
+@pytest.mark.parametrize("flag", ("--reapply", "--replace-unfinished"))
+def test_restore_only_recovery_flags_are_typed(flag: str) -> None:
+    invocation = parse_invocation(
+        ["restore", "production", "backup-" + "a" * 32, flag]
+    )
+
+    assert invocation.reapply is (flag == "--reapply")
+    assert invocation.replace_unfinished is (flag == "--replace-unfinished")
+
+
+def test_restore_recovery_flags_are_mutually_exclusive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(
+        [
+            "restore",
+            "production",
+            "backup-" + "a" * 32,
+            "--reapply",
+            "--replace-unfinished",
+        ]
+    ) == ExitStatus.INVALID
+    assert "usage:" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "argv",
     (
         ["build", "--yes"],
         ["verify", "production", "--allow-dirty"],
         ["backup", "production", "--allow-downgrade"],
+        ["deploy", "production", "--reapply"],
+        ["cleanup", "production", "--replace-unfinished"],
     ),
 )
 def test_deployment_consent_flags_are_rejected_outside_their_command_scope(
@@ -208,13 +235,60 @@ def test_dispatch_routes_valid_recovery_ids_to_the_gated_workflow(
     monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
     monkeypatch.setattr(
         f"taskman_ops.workflows.{command}.{command}",
-        lambda actual_remote, actual_environment, release_id, *, dry_run: seen.append((actual_remote, actual_environment, release_id, dry_run)) or expected,
+        lambda actual_remote, actual_environment, release_id, *, dry_run, **_kwargs: seen.append((actual_remote, actual_environment, release_id, dry_run)) or expected,
     )
 
     result = dispatch(parse_invocation([command, "production", identifier]))
 
     assert result is expected
     assert seen == [(remote, environment, identifier, False)]
+
+
+def test_dispatch_forwards_restore_recovery_mode_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object()
+    remote = object()
+    backup_id = "backup-" + "a" * 32
+    seen: list[dict[str, object]] = []
+    expected = WorkflowResult("restore", "production", False, "planned", {})
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.restore",
+        lambda actual_remote, actual_environment, actual_backup, **kwargs: (
+            seen.append(
+                {
+                    "remote": actual_remote,
+                    "environment": actual_environment,
+                    "backup_id": actual_backup,
+                    **kwargs,
+                }
+            )
+            or expected
+        ),
+    )
+
+    result = dispatch(
+        Invocation(
+            "restore",
+            environment="production",
+            backup_id=backup_id,
+            reapply=True,
+        )
+    )
+
+    assert result is expected
+    assert seen == [
+        {
+            "remote": remote,
+            "environment": environment,
+            "backup_id": backup_id,
+            "dry_run": False,
+            "replace_unfinished": False,
+            "reapply": True,
+        }
+    ]
 
 
 def test_dispatch_routes_create_admin_to_the_interactive_workflow(

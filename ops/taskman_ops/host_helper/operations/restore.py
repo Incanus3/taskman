@@ -98,6 +98,8 @@ class _Inputs:
     verification: Mapping[str, object]
     backup_helper: Mapping[str, object]
     prune_backup_ids: tuple[str, ...]
+    replace_unfinished: bool
+    reapply: bool
 
 
 # Kept as a module-owned name so interruption tests and the workflow share the
@@ -128,7 +130,9 @@ def restore(request: HostRequest) -> HostResult:
                 changed = _cleanup_completed(inputs, state, databases, target) or changed
                 state, databases = _observe_locked(inputs, include_runtime=True)
                 return _result(request, "succeeded", "restore cleanup converged", state, inputs, source, changed=changed, report=None, databases=databases, pre_restore_backup_id=safety.backup_id)
-            if target is None and _completed_without_binding(state, databases, source):
+            if target is not None and inputs.reapply:
+                raise RestoreRefused("unfinished restore must be resumed before reapply")
+            if target is None and not inputs.reapply and _completed_without_binding(state, databases, source):
                 state, databases = _observe_locked(inputs, include_runtime=True)
                 return _result(
                     request, "succeeded", "restore already completed", state, inputs, source,
@@ -261,8 +265,12 @@ def _inputs(request: HostRequest) -> _Inputs:
         raise RestoreRefused("invalid restore operation")
     if set(request.expected_state) != _EXPECTED_STATE_KEYS or set(request.parameters) != _PARAMETER_KEYS:
         raise RestoreRefused("restore request fields are incomplete")
-    if request.parameters["replace_unfinished"] is not False or request.parameters["reapply"] is not False:
-        raise RestoreRefused("requested restore mode is not enabled")
+    replace_unfinished = request.parameters["replace_unfinished"]
+    reapply = request.parameters["reapply"]
+    if type(replace_unfinished) is not bool or type(reapply) is not bool or replace_unfinished and reapply:
+        raise RestoreRefused("restore mode flags are invalid")
+    if replace_unfinished:
+        raise RestoreRefused("unfinished restore replacement is not enabled")
     backup_id = request.parameters["backup_id"]
     if type(backup_id) is not str or _BACKUP_RE.fullmatch(backup_id) is None or request.expected_state["backup_id"] != backup_id:
         raise RestoreRefused("restore backup authority is invalid")
@@ -308,7 +316,7 @@ def _inputs(request: HostRequest) -> _Inputs:
     return _Inputs(
         ManagedPaths.from_mapping(request.paths), dict(request.expected_state), backup_id,
         Path(credentials), database_mapping(request.parameters["database"]), dict(verification),
-        dict(helper), prune_ids,
+        dict(helper), prune_ids, replace_unfinished, reapply,
     )
 
 

@@ -490,6 +490,83 @@ def run_deployment_request(
         raise
 
 
+def run_restore_request(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    request: HostRequest,
+    backup_helper_package: HelperPackage | None = None,
+    package: HelperPackage | None = None,
+    invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
+    prior_mutation_state: str = "unchanged",
+) -> HostResult:
+    """Upload the confirmed scheduled helper and dispatch one exact restore request."""
+
+    if (
+        not isinstance(request, HostRequest)
+        or request.operation != "restore"
+        or request.paths != helper_paths(config)
+        or set(request.parameters)
+        != {
+            "backup_id",
+            "credentials_path",
+            "database",
+            "verification",
+            "backup_helper",
+            "prune_backup_ids",
+            "replace_unfinished",
+            "reapply",
+        }
+    ):
+        raise ValueError("restore helper request is invalid")
+    helper = request.parameters["backup_helper"]
+    if not isinstance(helper, Mapping) or set(helper) != {"sha256", "upload_path"}:
+        raise ValueError("restore backup helper authority is invalid")
+    helper_value = dict(helper)
+    marker = helper_value["upload_path"]
+    if marker not in {None, "pending-controller-upload"}:
+        raise ValueError("restore backup helper upload marker is invalid")
+    scheduler_upload: Path | None = None
+    try:
+        if marker is not None:
+            if backup_helper_package is None or helper_value["sha256"] != backup_helper_package.sha256:
+                raise ValueError("scheduler package checksum does not match its payload")
+            scheduler_upload = (
+                config.deployment_root / "uploads" / f".backup-helper-{request.correlation_id}.pyz"
+            )
+            receipt = remote.put(
+                backup_helper_package.path,
+                scheduler_upload,
+                mode=0o600,
+                sensitive=True,
+            )
+            if not isinstance(receipt, UploadReceipt):
+                raise _safety("restore", "scheduler helper upload returned an invalid receipt")
+            helper_value["upload_path"] = scheduler_upload.as_posix()
+        dispatched = replace(
+            request,
+            parameters={**request.parameters, "backup_helper": helper_value},
+        )
+        return run_request(
+            remote,
+            dispatched,
+            package=package,
+            invoker=invoker,
+            prior_mutation_state=prior_mutation_state,
+        )
+    except HelperTransportError as error:
+        if error.helper_entry_dispatched is False and scheduler_upload is not None:
+            try:
+                remote.run(
+                    ("rm", "-f", "--", scheduler_upload.as_posix()),
+                    sudo=True,
+                    sensitive=True,
+                )
+            except Exception:
+                pass
+        raise
+
+
 def _valid_deployment_expected_state(value: object) -> bool:
     if not isinstance(value, Mapping) or set(value) != {
         "selected_release_id",

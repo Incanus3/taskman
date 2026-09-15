@@ -15,6 +15,7 @@ from taskman_ops.host.facts import (
 from taskman_ops.output import render_human, render_json
 from taskman_ops.remote import CommandResult
 from taskman_ops.workflows.backup import run_backup
+from taskman_ops.workflows import operational_preflight as preflight_module
 from taskman_ops.workflows.operational_preflight import validate_operational_preflight
 from tests.workflows.test_deploy import config
 
@@ -110,6 +111,41 @@ def test_existing_host_preflight_checks_runtime_metadata_keys_database_and_capac
     assert "pg_database_size" in database_argv[2]
     assert "df -B1" in database_argv[2]
     assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+
+
+def test_restore_preflight_uses_postgres_maintenance_database_when_canonical_is_absent() -> None:
+    remote = RecordingRemote([CommandResult(0), CommandResult(0)])
+
+    preflight_module.validate_restore_preflight(
+        remote,
+        config(),
+        host_validator=lambda *_args: _managed_host_facts(),
+    )
+
+    assert len(remote.calls) == 2
+    database_argv, database_options = remote.calls[1]
+    assert database_argv[:2] == ("sh", "-ceu")
+    assert "runuser -u postgres" in database_argv[2]
+    assert "--dbname postgres" in database_argv[2]
+    assert "--dbname \"$database_name\"" not in database_argv[2]
+    assert database_options == {"sudo": True, "stdin": None, "sensitive": True}
+
+
+def test_restore_preflight_reports_maintenance_database_failure_without_output() -> None:
+    remote = RecordingRemote(
+        [CommandResult(0), CommandResult(1, "secret-like-output", "secret-like-error")]
+    )
+
+    with pytest.raises(OpsError) as raised:
+        preflight_module.validate_restore_preflight(
+            remote,
+            config(),
+            host_validator=lambda *_args: _managed_host_facts(),
+        )
+
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert "maintenance" in raised.value.next_action
+    assert "secret-like" not in str(raised.value)
 
 
 @pytest.mark.parametrize("failed_call", (0, 1))

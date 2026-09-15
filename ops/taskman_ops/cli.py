@@ -78,6 +78,8 @@ class Invocation:
     yes: bool = False
     allow_dirty: bool = False
     allow_downgrade: bool = False
+    replace_unfinished: bool = False
+    reapply: bool = False
     json: bool = False
     dry_run: bool = False
     interactive: bool | None = None
@@ -164,6 +166,17 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("environment")
     restore.add_argument("backup_id")
     _add_common_options(restore)
+    restore_modes = restore.add_mutually_exclusive_group()
+    restore_modes.add_argument(
+        "--replace-unfinished",
+        action="store_true",
+        help="replace a different unfinished restore target after renewed confirmation",
+    )
+    restore_modes.add_argument(
+        "--reapply",
+        action="store_true",
+        help="intentionally load a previously completed backup again",
+    )
 
     return parser
 
@@ -195,6 +208,8 @@ def parse_invocation(argv: Sequence[str] | None = None) -> Invocation:
         yes=bool(getattr(namespace, "yes", False)),
         allow_dirty=bool(getattr(namespace, "allow_dirty", False)),
         allow_downgrade=bool(getattr(namespace, "allow_downgrade", False)),
+        replace_unfinished=bool(getattr(namespace, "replace_unfinished", False)),
+        reapply=bool(getattr(namespace, "reapply", False)),
         json=bool(getattr(namespace, "json", False)),
         dry_run=bool(getattr(namespace, "dry_run", False)),
     )
@@ -208,6 +223,23 @@ def parse_args(argv: Sequence[str] | None = None) -> Invocation:
 
 def dispatch(invocation: Invocation) -> WorkflowResult:
     """Run one validated invocation through its concrete workflow."""
+
+    if (invocation.reapply or invocation.replace_unfinished) and invocation.command != "restore":
+        raise OpsError(
+            ExitStatus.INVALID,
+            "arguments",
+            "restore recovery flags are valid only for restore",
+            changed=False,
+            next_action="remove the restore-only recovery flag",
+        )
+    if invocation.reapply and invocation.replace_unfinished:
+        raise OpsError(
+            ExitStatus.INVALID,
+            "arguments",
+            "--reapply and --replace-unfinished are mutually exclusive",
+            changed=False,
+            next_action="select exactly one restore recovery mode",
+        )
 
     if invocation.command in {"rollback", "restore"}:
         from .releases.identifiers import validate_release_id
@@ -409,7 +441,14 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             raise ValueError("restore requires an environment and backup identifier")
         environment = load_environment(invocation.environment)
         remote = connect(environment)
-        return restore(remote, environment, invocation.backup_id, dry_run=invocation.dry_run)
+        return restore(
+            remote,
+            environment,
+            invocation.backup_id,
+            dry_run=invocation.dry_run,
+            replace_unfinished=invocation.replace_unfinished,
+            reapply=invocation.reapply,
+        )
     if invocation.command == "cleanup":
         from .config import load_environment
         from .remote import connect

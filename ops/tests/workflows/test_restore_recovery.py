@@ -1,0 +1,530 @@
+"""Public restore recovery admission, confirmation, and result evidence."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import UTC, datetime
+import hashlib
+import json
+
+import pytest
+
+from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host_helper.records import (
+    BackupRecord,
+    ReleaseRecord,
+    SelectionRecord,
+    selection_filename,
+)
+from taskman_ops.host_helper.restore_target import RestoreTarget, restore_target_sha256
+from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.releases.identifiers import build_release_id
+from taskman_ops.releases.manifests import ArtifactManifest, MigrationFingerprint, OTP_VERSION
+from taskman_ops.workflows.restore import restore
+from taskman_ops.workflows.helper import mutable
+from tests.workflows.support import deployment_artifact, successful_verification_report
+from tests.workflows.test_deploy import config
+
+
+BACKUP = "backup-" + "a" * 32
+SAFETY = "backup-" + "b" * 32
+MIGRATION = 20260905120000
+FAILED_CURRENT = build_release_id(
+    "0.3.0",
+    "d" * 40,
+    artifact_sha256="d" * 64,
+    source_dirty=False,
+    otp_version=OTP_VERSION,
+)
+PROTECTION_SHA = hashlib.sha256(b"[]").hexdigest()
+SCHEDULER_SHA = "c" * 64
+DESIRED_SCHEDULER_SHA = "e" * 64
+
+
+class _Package:
+    sha256 = DESIRED_SCHEDULER_SHA
+    path = None
+
+
+@contextmanager
+def _scheduler_package():
+    yield _Package()
+
+
+def _authority(tmp_path, *, current=FAILED_CURRENT, with_success=True, databases=None, target=None):
+    fingerprint = MigrationFingerprint("20260905120000_create_tasks.exs", "f" * 64)
+    artifact = deployment_artifact(tmp_path, migrations=(fingerprint,))
+    release = ReleaseRecord(
+        artifact.manifest.release_id,
+        artifact.manifest.source_revision,
+        artifact.sha256,
+        tuple(item.to_mapping() for item in artifact.manifest.migrations),
+        2,
+        artifact.manifest,
+    )
+    backup = BackupRecord(
+        BACKUP,
+        datetime(2026, 9, 14, 10, 30, tzinfo=UTC),
+        "a" * 64,
+        release.release_id,
+        (MIGRATION,),
+        1024,
+    )
+    selection = (
+        SelectionRecord(
+            release.release_id,
+            None,
+            SAFETY,
+            datetime(2026, 9, 14, 11, 0, tzinfo=UTC),
+            2,
+            None,
+            (BACKUP, SAFETY),
+        )
+        if with_success
+        else None
+    )
+    if databases is None:
+        databases = {
+            "canonical": {
+                "oid": 41,
+                "owner": "taskman",
+                "migration_table_present": True,
+                "applied_migrations": [MIGRATION],
+            },
+            "temporary": None,
+            "retired": None,
+        }
+    state = {
+        "selected_release_id": current,
+        "last_successful_selection_id": None if selection is None else selection_filename(selection),
+        "last_successful_selection": None if selection is None else selection.to_mapping(),
+        "previous_successful_selection": None,
+        "applied_migrations": (
+            None
+            if databases["canonical"] is None
+            or not databases["canonical"]["migration_table_present"]
+            else list(databases["canonical"]["applied_migrations"])
+        ),
+        "service_state": "failed",
+        "database_state": "absent" if databases["canonical"] is None else "ready",
+        "backup_protections": [],
+        "backup_protection_sha256": PROTECTION_SHA,
+        "scheduled_backup_sha256": SCHEDULER_SHA,
+        "backup_timer_enabled": True,
+        "backup_timer_state": "active",
+        "restore_target": (
+            None
+            if target is None
+            else {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+        ),
+        "restore_database_state": databases,
+    }
+    return release, backup, selection, state
+
+
+def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutations):
+    monkeypatch.setattr("taskman_ops.workflows.restore.validate_restore_preflight", lambda *_: type("Facts", (), {"available_disk_bytes": 10_000, "backup_available_disk_bytes": 20_000})())
+    monkeypatch.setattr("taskman_ops.workflows.restore.temporary_scheduled_backup_helper_package", _scheduler_package)
+    release_records = [release.to_mapping()]
+    selected = discoveries[0]["selected_release_id"]
+    if selected == FAILED_CURRENT:
+        failed_manifest = release.artifact_manifest.to_mapping()
+        failed_manifest.update(
+            application_version="0.3.0",
+            source_revision="d" * 40,
+            release_id=FAILED_CURRENT,
+            artifact_sha256="d" * 64,
+        )
+        release_records.append(
+            ReleaseRecord(
+                FAILED_CURRENT,
+                "d" * 40,
+                "d" * 64,
+                tuple(item.to_mapping() for item in release.artifact_manifest.migrations),
+                2,
+                ArtifactManifest.from_mapping(failed_manifest),
+            ).to_mapping()
+        )
+    backup_records = [backup.to_mapping()]
+    target = discoveries[0]["restore_target"]
+    if target is not None:
+        if target["backup_id"] != backup.backup_id:
+            backup_records.append(
+                BackupRecord(
+                    target["backup_id"],
+                    datetime(2026, 9, 14, 9, 0, tzinfo=UTC),
+                    target["dump_sha256"],
+                    target["source_release_id"],
+                    (MIGRATION,),
+                    1024,
+                ).to_mapping()
+            )
+        known = {item["backup_id"] for item in backup_records}
+        for attempt in target["safety_backup_attempts"]:
+            if attempt["backup_id"] not in known:
+                backup_records.append(
+                    BackupRecord(
+                        attempt["backup_id"],
+                        datetime(2026, 9, 14, 9, 30, tzinfo=UTC),
+                        "b" * 64,
+                        release.release_id,
+                        (MIGRATION,),
+                        1024,
+                    ).to_mapping()
+                )
+                known.add(attempt["backup_id"])
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.collect_inventory",
+        lambda _remote, _config, operation, **_kwargs: (
+            tuple(release_records) if operation == "list_releases" else tuple(backup_records)
+        ),
+    )
+
+    def discover(_remote, request):
+        assert request.operation == "discover"
+        assert request.parameters["mode"] == "restore"
+        assert request.parameters["backup_id"] == BACKUP
+        state = discoveries.pop(0)
+        return HostResult(PROTOCOL_VERSION, "discover", request.correlation_id, "succeeded", "observed", state, ())
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_request", discover)
+
+    def mutate(_remote, _config, **kwargs):
+        mutations.append(kwargs)
+        result = kwargs.pop("result") if "result" in kwargs else None
+        if result is not None:
+            return result
+        source = release.release_id
+        observations = {
+            "selected_release_id": source,
+            "last_successful_selection_id": "selection-" + "9" * 64 + ".json",
+            "applied_migrations": [MIGRATION],
+            "protected_backup_ids": [],
+            "backup_protection_sha256": PROTECTION_SHA,
+            "restore_target_sha256": None,
+            "database_state": "ready",
+            "service_state": "running",
+            "scheduled_backup_sha256": DESIRED_SCHEDULER_SHA,
+            "backup_timer_enabled": True,
+            "backup_timer_state": "active",
+            "restore_database_state": {
+                "canonical": {
+                    "oid": 42,
+                    "owner": "taskman",
+                    "migration_table_present": True,
+                    "applied_migrations": [MIGRATION],
+                },
+                "temporary": None,
+                "retired": None,
+            },
+        }
+        request = kwargs["request"]
+        return HostResult(
+            PROTOCOL_VERSION,
+            "restore",
+            request.correlation_id,
+            "succeeded",
+            "converged",
+            {
+                "mutation_state": "changed",
+                "exit_code": 0,
+                "failed_boundary": None,
+                "observations": observations,
+                "unavailable_fields": [],
+                "inspection_error": None,
+                "report": successful_verification_report(source),
+                "desired_release_id": source,
+                "backup_id": BACKUP,
+                "pre_restore_backup_id": SAFETY,
+            },
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_restore_request", mutate)
+
+
+@pytest.mark.parametrize(
+    ("current", "with_success"),
+    ((FAILED_CURRENT, True), (None, False), (FAILED_CURRENT, False)),
+)
+def test_restore_plans_from_restore_specific_authority_after_failed_or_first_install(
+    tmp_path, monkeypatch, current, with_success
+):
+    release, backup, selection, state = _authority(
+        tmp_path, current=current, with_success=with_success
+    )
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.exit_status is ExitStatus.OK
+    assert outcome.stage == "planned"
+    assert outcome.facts["physical_current_release_id"] == current
+    assert outcome.facts["last_successful_selection"] == (
+        None if selection is None else selection.to_mapping()
+    )
+    assert outcome.facts["canonical_applied_migrations"] == [MIGRATION]
+    assert outcome.facts["requested_backup"] == backup.to_mapping()
+    assert outcome.facts["typed_confirmation"] == f"restore production {BACKUP}"
+    assert outcome.facts["scheduler_refresh_required"] is True
+    assert outcome.facts["planned_pre_restore_backup"] is True
+    assert mutations == []
+
+
+def test_restore_dispatches_exact_v3_state_and_parameters_and_preserves_result_evidence(
+    tmp_path, monkeypatch
+):
+    release, backup, _selection, state = _authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(
+        object(), config(), BACKUP, confirm=lambda plan: plan["typed_confirmation"] == f"restore production {BACKUP}"
+    )
+
+    sent = mutations[0]
+    request = sent["request"]
+    assert set(request.expected_state) == {
+        "selected_release_id", "last_successful_selection_id", "applied_migrations",
+        "backup_protection_sha256", "scheduled_backup_sha256", "backup_timer_enabled",
+        "backup_id", "restore_target_sha256", "restore_database_state",
+    }
+    assert set(request.parameters) == {
+        "backup_id", "credentials_path", "database", "verification", "backup_helper",
+        "prune_backup_ids", "replace_unfinished", "reapply",
+    }
+    assert request.parameters["backup_helper"] == {
+        "sha256": DESIRED_SCHEDULER_SHA,
+        "upload_path": "pending-controller-upload",
+    }
+    assert outcome.stage == "restored"
+    assert outcome.facts["mutation_state"] == "changed"
+    assert outcome.facts["starting_state"] == mutable(request.expected_state)
+    assert outcome.facts["observations"]["selected_release_id"] == release.release_id
+    assert outcome.facts["report"]["status"] == "ok"
+
+
+def test_different_unfinished_backup_preview_names_required_flag_but_execution_refuses(
+    tmp_path, monkeypatch
+):
+    release, backup, selection, state = _authority(tmp_path)
+    target = RestoreTarget(
+        1, "backup-" + "7" * 32, "7" * 64, release.release_id,
+        selection_filename(selection), FAILED_CURRENT, 41, None, True,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state, state], mutations)
+
+    preview = restore(object(), config(), BACKUP, dry_run=True)
+    execution = restore(object(), config(), BACKUP, confirm=lambda _plan: True)
+
+    assert preview.stage == "planned"
+    assert preview.facts["replace_unfinished_required"] is True
+    assert "--replace-unfinished" in preview.next_action
+    assert execution.exit_status is ExitStatus.SAFETY
+    assert "--replace-unfinished" in execution.next_action
+    assert mutations == []
+
+
+def test_reapply_refuses_an_unfinished_binding_before_mutation(tmp_path, monkeypatch):
+    release, backup, selection, state = _authority(tmp_path)
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        selection_filename(selection), FAILED_CURRENT, 41, 42, False,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    state["restore_database_state"]["temporary"] = {
+        "oid": 42, "owner": "taskman", "migration_table_present": False, "applied_migrations": None,
+    }
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, reapply=True, confirm=lambda _plan: True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert "ordinary retry" in outcome.next_action
+    assert mutations == []
+
+
+def test_unfinished_restore_refuses_when_its_base_selection_no_longer_matches_authority(
+    tmp_path, monkeypatch
+):
+    release, backup, _selection, state = _authority(tmp_path)
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        "selection-" + "8" * 64 + ".json", FAILED_CURRENT, 41, 42, False,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    state["restore_database_state"]["temporary"] = {
+        "oid": 42, "owner": "taskman", "migration_table_present": False, "applied_migrations": None,
+    }
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, confirm=lambda _plan: True)
+
+    assert outcome.exit_status is ExitStatus.SAFETY
+    assert outcome.stage == "safety-refused"
+    assert outcome.facts["backup_id"] == BACKUP
+    assert mutations == []
+
+
+def test_retired_only_same_backup_retry_is_planned_as_remaining_load_and_swap(
+    tmp_path, monkeypatch
+):
+    retired = {
+        "canonical": None,
+        "temporary": None,
+        "retired": {
+            "oid": 41,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+    }
+    release, backup, selection, state = _authority(tmp_path, databases=retired)
+    target = RestoreTarget(
+        1, BACKUP, backup.dump_sha256, release.release_id,
+        selection_filename(selection), FAILED_CURRENT, 41, 42, True,
+        SAFETY, None, ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    state["restore_target"] = {**target.to_mapping(), "sha256": restore_target_sha256(target)}
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    outcome = restore(object(), config(), BACKUP, dry_run=True)
+
+    assert outcome.stage == "planned"
+    assert outcome.facts["physical_database_arrangement"] == ["retired"]
+    assert outcome.facts["canonical_applied_migrations"] is None
+    assert outcome.facts["remaining_restore_bytes"] == 2048
+    assert "load-temporary" in outcome.facts["remaining_consequences"]
+
+
+def test_unknown_dispatched_restore_reply_preserves_starting_state_and_unknown_observations(
+    tmp_path, monkeypatch
+):
+    release, backup, _selection, state = _authority(tmp_path)
+    mutations = []
+    _install_controller_fakes(monkeypatch, release, backup, [state], mutations)
+
+    def lost(_remote, _config, **kwargs):
+        request = kwargs["request"]
+        unavailable = {
+            "starting_state": dict(request.expected_state),
+            "mutation_state": "unknown",
+            "failed_boundary": "helper",
+            "inspection_error": None,
+            "report": None,
+            "observations": {
+                "selected_release_id": None, "last_successful_selection_id": None,
+                "applied_migrations": None, "protected_backup_ids": None,
+                "backup_protection_sha256": None, "restore_target_sha256": None,
+                "database_state": "unknown", "service_state": "unknown",
+                "scheduled_backup_sha256": None, "backup_timer_enabled": None,
+                "backup_timer_state": "unknown", "restore_database_state": None,
+            },
+            "unavailable_fields": [
+                "applied_migrations", "backup_protection_sha256", "backup_timer_enabled",
+                "database_state", "last_successful_selection_id", "protected_backup_ids",
+                "restore_database_state", "restore_target_sha256", "scheduled_backup_sha256",
+                "selected_release_id", "service_state", "backup_timer_state",
+            ],
+            "desired_release_id": None,
+            "backup_id": BACKUP,
+            "pre_restore_backup_id": None,
+        }
+        raise OpsError(
+            ExitStatus.SAFETY, "helper", "restore reply was unavailable", True,
+            state=unavailable, next_action="inspect the observed host state before retrying",
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.restore.run_restore_request", lost)
+
+    outcome = restore(object(), config(), BACKUP, confirm=lambda _plan: True)
+
+    assert outcome.changed is True
+    assert outcome.facts["mutation_state"] == "unknown"
+    assert outcome.facts["starting_state"]["backup_id"] == BACKUP
+    assert outcome.facts["observations"]["restore_database_state"] is None
+
+
+def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_plan(
+    tmp_path, monkeypatch
+):
+    completed_databases = {
+        "canonical": {
+            "oid": 42,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+        "temporary": None,
+        "retired": {
+            "oid": 41,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [MIGRATION],
+        },
+    }
+    release, backup, selection, completed = _authority(
+        tmp_path,
+        current=None,
+        databases=completed_databases,
+    )
+    completed["selected_release_id"] = release.release_id
+    target = RestoreTarget(
+        1,
+        BACKUP,
+        backup.dump_sha256,
+        release.release_id,
+        selection_filename(selection),
+        None,
+        41,
+        42,
+        False,
+        SAFETY,
+        None,
+        ({"backup_id": SAFETY, "attempt_number": 0},),
+    )
+    completed["restore_target"] = {
+        **target.to_mapping(),
+        "sha256": restore_target_sha256(target),
+    }
+    fresh = dict(completed)
+    fresh["restore_target"] = None
+    fresh["restore_database_state"] = {
+        "canonical": completed_databases["canonical"],
+        "temporary": None,
+        "retired": None,
+    }
+    mutations = []
+    _install_controller_fakes(
+        monkeypatch,
+        release,
+        backup,
+        [completed, fresh],
+        mutations,
+    )
+    confirmations = []
+
+    outcome = restore(
+        object(),
+        config(),
+        BACKUP,
+        reapply=True,
+        confirm=lambda plan: confirmations.append(plan) or True,
+    )
+
+    assert outcome.stage == "reapplied"
+    assert len(mutations) == 2
+    assert mutations[0]["request"].parameters["reapply"] is True
+    assert mutations[0]["request"].parameters["backup_helper"]["upload_path"] is None
+    assert mutations[1]["request"].parameters["reapply"] is True
+    assert len(confirmations) == 1
+    assert confirmations[0]["planned_pre_restore_backup"] is True

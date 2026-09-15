@@ -155,6 +155,19 @@ test "$margin" -ge 67108864 || margin=67108864
 required=$(( database_bytes + margin ))
 test "$available_bytes" -ge "$required"
 '''
+_RESTORE_DATABASE_PREFLIGHT = r'''set -eu
+database_port=$1; database_role=$2; backup_root=$3; pgpass=$4
+test -f "$pgpass" && test ! -L "$pgpass"
+test "$(stat -c '%U:%G:%a' -- "$pgpass")" = root:root:600
+command -v psql >/dev/null 2>&1
+command -v runuser >/dev/null 2>&1
+runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --command 'SELECT 1' >/dev/null 2>&1
+role_ok=$(runuser -u postgres -- psql --no-psqlrc --host /var/run/postgresql --port "$database_port" --username postgres --dbname postgres --no-password --tuples-only --no-align --set=role="$database_role" --command "SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin" 2>/dev/null)
+test "$role_ok" = 1
+available_bytes=$(df -B1 --output=avail "$backup_root" 2>/dev/null | awk 'NR > 1 && $1 ~ /^[0-9]+$/ { value=$1 } END { print value }')
+case "$available_bytes" in ''|*[!0-9]*) exit 1;; esac
+test "$available_bytes" -ge 67108864
+'''
 _TASKMAN_SERVICE_AUTHORITY_SCRIPT = r'''set -eu
 emit() { printf '%s=%s\n' "$1" "$2"; }
 root=$1
@@ -505,6 +518,42 @@ def collect_operational_preflight(
     return runtime, database
 
 
+def collect_restore_preflight(
+    remote: Remote, config: EnvironmentConfig
+) -> tuple[CommandResult, CommandResult]:
+    """Collect restore prerequisites without connecting to the canonical database."""
+
+    runtime = remote.run(
+        (
+            "sh",
+            "-ceu",
+            _RUNTIME_PREFLIGHT,
+            "taskman-runtime-preflight",
+            _RUNTIME_ENVIRONMENT,
+            *_REQUIRED_RUNTIME_KEYS,
+        ),
+        sudo=True,
+        stdin=None,
+        sensitive=True,
+    )
+    database = remote.run(
+        (
+            "sh",
+            "-ceu",
+            _RESTORE_DATABASE_PREFLIGHT,
+            "taskman-restore-database-preflight",
+            str(config.database_port),
+            config.database_role,
+            config.backup_root.as_posix(),
+            _PGPASS,
+        ),
+        sudo=True,
+        stdin=None,
+        sensitive=True,
+    )
+    return runtime, database
+
+
 def _capacity(remote: Remote, root: PurePosixPath) -> CommandResult:
     """Read available bytes from the nearest existing ancestor without mutation."""
 
@@ -810,4 +859,5 @@ __all__ = [
     "MINIMUM_DISK_BYTES",
     "MINIMUM_MEMORY_BYTES",
     "collect_host_facts",
+    "collect_restore_preflight",
 ]

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..host.acceptance import validate_operational_host
-from ..host.facts import HostFacts, collect_operational_preflight
+from ..host.facts import HostFacts, collect_operational_preflight, collect_restore_preflight
 from ..remote import Remote
 
 
@@ -39,6 +39,29 @@ def validate_operational_preflight(
     return facts
 
 
+def validate_restore_preflight(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    host_validator: HostValidator | None = None,
+) -> HostFacts | object:
+    """Validate restore access through PostgreSQL's maintenance database."""
+
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("restore preflight requires an environment configuration")
+    facts = (host_validator or validate_operational_host)(remote, config)
+    runtime, database = collect_restore_preflight(remote, config)
+    if not runtime.succeeded:
+        raise _preflight(
+            "runtime environment ownership, mode, required keys, or distro Python is invalid"
+        )
+    if not database.succeeded:
+        raise _preflight(
+            "PostgreSQL maintenance access, database role, or restore capacity preflight failed"
+        )
+    return facts
+
+
 def _preflight(message: str) -> OpsError:
     return OpsError(
         ExitStatus.REMOTE_PREFLIGHT,
@@ -49,4 +72,4 @@ def _preflight(message: str) -> OpsError:
     )
 
 
-__all__ = ["validate_operational_preflight"]
+__all__ = ["validate_operational_preflight", "validate_restore_preflight"]

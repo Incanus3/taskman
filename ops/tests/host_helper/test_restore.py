@@ -95,6 +95,8 @@ class Runtime:
         self.verification_failure = False
         self.verification_lost = False
         self.cleanup_failure: str | None = None
+        self.safety_count = 0
+        self.later_write: str | None = None
         original = {"oid": 101, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
         restored = {"oid": 202, "owner": "taskman", "migration_table_present": True, "applied_migrations": (VERSION,)}
         empty = {"oid": 202, "owner": "taskman", "migration_table_present": False, "applied_migrations": None}
@@ -122,7 +124,9 @@ class Runtime:
 
     def safety_backup(self, state, paths, database, *_args, **_kwargs):
         self.events.append(f"backup:{database['name']}")
-        return _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+        backup_id = "backup-" + chr(ord("c") + self.safety_count) * 32
+        self.safety_count += 1
+        return _backup(paths, backup_id, state.selected_release_id or CURRENT, f"safety-{self.safety_count}".encode())
 
     def create_temporary(self, *_args):
         self.events.append("create")
@@ -152,6 +156,7 @@ class Runtime:
 
     def load(self, target, *_args):
         self.events.append("load")
+        self.later_write = None
         temporary = self.databases["temporary"]
         assert temporary is not None and temporary["oid"] == target.restored_database_oid and not target.temporary_creation_pending
         temporary.update(migration_table_present=True, applied_migrations=(VERSION,))
@@ -418,14 +423,91 @@ def test_retry_after_durable_success_only_finishes_cleanup(failure, tmp_path, mo
     assert observe_host_state(paths).restore_target is None
 
 
-@pytest.mark.parametrize("flag", ["replace_unfinished", "reapply"])
-def test_deferred_restore_modes_are_refused_without_mutation(flag, tmp_path, monkeypatch):
+def test_deferred_replacement_mode_is_refused_without_mutation(tmp_path, monkeypatch):
     paths, _source = _seed(tmp_path)
     runtime = Runtime()
     _install(monkeypatch, runtime)
     request = _request(paths, runtime)
 
-    result = restore_module.restore(replace(request, parameters={**request.parameters, flag: True}))
+    result = restore_module.restore(replace(request, parameters={**request.parameters, "replace_unfinished": True}))
 
     assert result.outcome == "refused" and result.state["failed_boundary"] == "input"
     assert runtime.events == []
+
+
+def test_reapply_after_completed_restore_takes_fresh_safety_backup_and_appends_success(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "succeeded"
+    first_selection = observe_host_state(paths).latest_successful_selection_filename
+    runtime.events.clear()
+
+    request = _request(paths, runtime)
+    reapplied = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+
+    assert reapplied.outcome == "succeeded"
+    assert "backup:taskman" in runtime.events and "load" in runtime.events
+    assert reapplied.state["pre_restore_backup_id"] == "backup-" + "d" * 32
+    reapply_state = observe_host_state(paths)
+    assert reapply_state.latest_successful_selection_filename != first_selection
+    assert reapply_state.latest_successful_selection.backup_id == "backup-" + "d" * 32
+
+
+def test_failed_reapply_binding_resumes_as_an_ordinary_restore(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    assert restore_module.restore(_request(paths, runtime)).outcome == "succeeded"
+    runtime.verification_failure = True
+    request = _request(paths, runtime)
+    failed = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+    assert failed.outcome == "retryable"
+    runtime.verification_failure = False
+    runtime.events.clear()
+
+    resumed = restore_module.restore(_request(paths, runtime))
+
+    assert resumed.outcome == "succeeded"
+    assert "backup:taskman" not in runtime.events and "load" not in runtime.events
+    assert observe_host_state(paths).restore_target is None
+
+
+def test_reapply_refuses_an_unfinished_restore_binding(tmp_path, monkeypatch):
+    paths, source = _seed(tmp_path)
+    runtime = Runtime("canonical+temporary")
+    _backup(paths, "backup-" + "c" * 32, CURRENT, b"safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+    request = _request(paths, runtime)
+
+    result = restore_module.restore(
+        replace(request, parameters={**request.parameters, "reapply": True})
+    )
+
+    assert result.outcome == "refused"
+    assert result.state["failed_boundary"] == "input"
+    assert runtime.events == []
+
+
+def test_ordinary_completed_retry_preserves_later_application_writes(tmp_path, monkeypatch):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    _install(monkeypatch, runtime)
+    assert restore_module.restore(_request(paths, runtime)).outcome == "succeeded"
+    runtime.later_write = "preserved"
+    history = observe_host_state(paths).latest_successful_selection_filename
+    runtime.events.clear()
+
+    retried = restore_module.restore(_request(paths, runtime))
+
+    assert retried.outcome == "succeeded"
+    assert retried.state["mutation_state"] == "unchanged"
+    assert "load" not in runtime.events and "backup:taskman" not in runtime.events
+    assert runtime.later_write == "preserved"
+    assert observe_host_state(paths).latest_successful_selection_filename == history
