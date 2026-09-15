@@ -51,9 +51,9 @@ deletion, provider action, or new provisioning is authorized by this documentati
 
 ## Checkpoint, scope, and execution
 
-Local implementation and verification are complete on GitButler branch
-`dedicated-host-deployment-automation`. Beads is the authoritative delivery state and records
-`tas-sr4b.11` and `tas-6dkg` closed after final documentation review; the
+Local implementation is present on GitButler branch `dedicated-host-deployment-automation`, but the
+final scoped re-review retains one load-bearing clean-source drift finding. Beads is the
+authoritative delivery state and records `tas-sr4b.11` in progress and `tas-6dkg` open; the
 [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation checkpoint.
 The original approved checkpoint was `df3e47b304161e251a65e0b642fa743f80679c70`; the subsequent
 compatibility amendment is committed and governs the implementation.
@@ -574,13 +574,16 @@ the reconciliation specification status/checklist, and affected handoffs after e
 implemented behavior. Keep detailed acceptance evidence in `tas-sr4b.11`; durable operator semantics
 belong in the design/runbook. Do not create a second architecture narrative.
 
-- [ ] Address the reopened final whole-branch review corrections, then have a distinct verifier trace
+- [ ] Resolve or explicitly accept the remaining clean-source drift defect. The single final-review
+  fix wave addressed three of four Important findings; scoped re-review found that production
+  resolution can still fail before bounded refresh and that interactive post-confirmation drift can
+  continue contrary to the runbook. Then have a distinct verifier trace
   the public entry paths and actual record/DB consequences against
   every acceptance family below. Reproduce focused checks independently; identify untested or
   simulated boundaries explicitly. Fix scoped findings, then reverify changed boundaries.
-- [x] Run the required local gates from the repository root. On the final committed implementation,
-  `uv sync --locked --project ops`, compileall, shell syntax, help checks, and `mix precommit`
-  succeeded; the final operations suite passed 1,439 tests in 337.95 seconds:
+- [x] Run the required local gates from the repository root. At the final implementation checkpoint,
+  `uv sync --locked --project ops`, shell syntax, help checks, and `mix precommit` succeeded. At the
+  reviewed fix head, compileall and the final operations suite passed 1,452 tests in 323.91 seconds:
 
   ```sh
   uv sync --locked --project ops
