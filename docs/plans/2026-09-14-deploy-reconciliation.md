@@ -1,7 +1,7 @@
 # Desired-target deployment reconciliation implementation plan
 
 Status: approved by the operator on 2026-09-14, including the subsequently approved one-time
-compatibility break; implementation not started. Created: 2026-09-14.
+compatibility break; implementation in progress. Created: 2026-09-14. Updated: 2026-09-15.
 
 Scoped independent review and focused amendment review completed on 2026-09-14. The manual-backup
 admission finding is resolved; no outstanding review blocker. Evidence is recorded in `tas-sr4b`.
@@ -50,25 +50,18 @@ deletion, provider action, or new provisioning is authorized by this documentati
 
 ## Checkpoint, scope, and execution
 
-The approved design/plan checkpoint on GitButler branch `dedicated-host-deployment-automation`
-is committed as `df3e47b304161e251a65e0b642fa743f80679c70`. Only the subsequent compatibility
-amendment and its task/reference updates remain uncommitted.
-Reconciliation is unimplemented. Specification approval is recorded in `tas-sr4b`, comment 208.
-The parent issue's stale approval-pending description/notes were reconciled during resumption.
-The [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation state.
+Implementation is in progress on GitButler branch `dedicated-host-deployment-automation`.
+Beads is the authoritative delivery state; the
+[readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation checkpoint.
+The original approved checkpoint was `df3e47b304161e251a65e0b642fa743f80679c70`; the subsequent
+compatibility amendment is committed and governs the implementation.
 
-The existing failure is reproduced structurally by `workflows/deploy.py` calling strict discovery
-before helper reconciliation. Its helper drops a failed verification report and returns old state
-on several failures. `host_helper/state.py` caps directory inventories at 4096 entries; discovery
-exports whole histories. `cli.py` resolves local deploy artifacts before SSH. Provisioning admission
-and convergence read/write the retired marker. These are implementation targets, not new scope.
-
-Plan approval is recorded; begin in a fresh implementation session using the updated handoff. Use the
-repository's delegated implementation workflow with a distinct verifier for consequential changes.
-Run task-local test cycles and review between tasks. Do not implement from an isolated task excerpt:
-each worker receives the complete specification, this plan, and relevant preceding interface changes.
-Beads tracks completion; checkboxes below track implementation steps. Commits require separate
-operator authorization; do not turn a task's completion into an automatic commit or publication.
+Use the repository's delegated implementation workflow with a distinct verifier for consequential
+changes. Run task-local test cycles and review between tasks. Do not implement from an isolated
+task excerpt: each worker receives the complete specification, this plan, and relevant preceding
+interface changes. Beads tracks completion; the task checklists below define the implementation
+requirements. Standing operator authorization permits local commits as needed; it does not authorize
+push, merge, publication, or host actions.
 
 All tasks are one coordinated local change. Intermediate states are not deployable controller
 versions. Protocol-v3 cutover may temporarily break consumers assigned to subsequent tasks; record
@@ -642,4 +635,4 @@ Native PostgreSQL/systemd behavior and full destructive restore still need separ
 host acceptance; local fakes, packages, and container builds cannot establish that evidence.
 
 The operator approved this plan on 2026-09-14. The handoff records the clean-session boundary;
-implementation starts after resumption, with task 1 and the complete approved specification.
+continue the remaining Beads tasks after resumption, using the complete approved specification.

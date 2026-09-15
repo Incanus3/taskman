@@ -12,13 +12,14 @@ deployment, publication, or changes to an external host.
 The approved [desired-target deployment reconciliation design](2026-09-09-deploy-reconciliation-design.md)
 has an [approved implementation plan](../plans/2026-09-14-deploy-reconciliation.md), approved on 2026-09-14.
 It specifies changes to deployment recovery, artifact identity, backup
-protection, and confirmation; those changes are not yet implemented or a replacement for this baseline.
+protection, and confirmation. Implementation is in progress; that specification supersedes the
+affected historical baseline sections below. Beads and the readiness handoff track verified delivery.
 
 The operator's 2026-09-14 [one-time compatibility decision](2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
 supersedes this baseline's historical-format/runtime compatibility requirements for implementation
 of reconciliation. The old staging installation will not be upgraded or repaired by the new
-controller. The descriptions below remain evidence of currently implemented behavior until that
-implementation lands; future supported upgrades still require compatibility and recovery support.
+controller. The superseded descriptions below retain historical design context until integrated documentation
+is updated after verification; future supported upgrades still require compatibility and recovery support.
 
 ## Purpose and supported scope
 

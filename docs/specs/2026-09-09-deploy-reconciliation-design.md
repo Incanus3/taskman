@@ -1,7 +1,8 @@
 # Desired-target deployment reconciliation
 
 Status: approved specification; complete written design approved on 2026-09-14, including the
-ops development constraints. Not yet implemented. Updated: 2026-09-14. Tracking: `tas-sr4b`.
+ops development constraints. Implementation is in progress; Beads tracks delivery and verification.
+Updated: 2026-09-15. Tracking: `tas-sr4b`.
 
 The operator approved the one-time compatibility break below on 2026-09-14 after design and plan
 approval. It supersedes the earlier requirement to preserve pre-reconciliation artifacts and
@@ -1913,9 +1914,9 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
    ops-specific simplicity/reliability and Python-first rules, with Beads delivery tasks, scoped
    ownership, tests, and an independent verification task. Identify concrete safety reasons for
    nontrivial coordination or persistent state; avoid speculative branches and substantial shell.
-   No implementation has begun.
-3. Update the readiness handoff and start a clean implementation session by default. Refresh actual
-   repository and host state before relying on the recorded baseline.
+   Implementation is in progress; refresh Beads and the readiness handoff before selecting remaining work.
+3. Resume from the readiness handoff and refresh actual repository/task state. Refresh host state
+   only when the separately authorized acceptance action requires it.
 4. Implement and verify locally; then obtain exact authorization for clean staging recreation and
    fresh provisioning/readiness acceptance. Do not recover the old installation, manually append
    selection records, or repoint current to bypass the controller.

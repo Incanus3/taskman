@@ -33,10 +33,11 @@ merge, deployment, or publication has occurred or is authorized.
 
 ## Next action
 
-Plan Task 9 (`tas-sr4b.9`), **Unfinished restore replacement and bounded safety copies**, is the
-next unblocked increment. Start by refreshing the complete approved specification, baseline design,
-plan, and `docs/development.md`; then execute with delegated implementation and a distinct
-independent reviewer.
+Plan Task 9 (`tas-sr4b.9`), **Unfinished restore replacement and bounded safety copies**, is in
+progress from `33bdbd71`. The complete approved specification, baseline design, plan, and development
+guide were refreshed. Host replacement/admission/retention is the first bounded continuation; public
+planning/confirmation and packaged recovery integration follow, then a distinct combined reviewer.
+Refresh live implementation state before restarting either continuation.
 
 Task 9 must add exact replacement intent, pending/third-target normalization, the abandoned-input
 content exception, and bounded safety-attempt pruning. It must support replacement after a failed
