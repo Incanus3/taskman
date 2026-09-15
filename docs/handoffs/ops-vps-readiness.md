@@ -12,7 +12,7 @@ does not authorize a host reset, provider/DNS change, deployment, publication, p
   [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
   [operator runbook](../deployment.md).
 - Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
-  are ready for tracker closure; the parent remains open for external acceptance.
+  are closed; the parent remains open for external acceptance.
 
 ## Current checkpoint
 

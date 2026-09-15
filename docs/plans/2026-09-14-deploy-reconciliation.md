@@ -52,8 +52,8 @@ deletion, provider action, or new provisioning is authorized by this documentati
 ## Checkpoint, scope, and execution
 
 Local implementation and verification are complete on GitButler branch
-`dedicated-host-deployment-automation`. Beads is the authoritative delivery state and currently
-retains `tas-sr4b.11` in progress and `tas-6dkg` open pending final documentation review; the
+`dedicated-host-deployment-automation`. Beads is the authoritative delivery state and records
+`tas-sr4b.11` and `tas-6dkg` closed after final documentation review; the
 [readiness handoff](../handoffs/ops-vps-readiness.md) owns the current continuation checkpoint.
 The original approved checkpoint was `df3e47b304161e251a65e0b642fa743f80679c70`; the subsequent
 compatibility amendment is committed and governs the implementation.
