@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 import json
 
@@ -280,6 +281,7 @@ def test_json_and_dry_run_reach_dispatch_invocation(capsys: pytest.CaptureFixtur
             environment="production",
             json=True,
             dry_run=True,
+            interactive=False,
         )
     ]
     captured = capsys.readouterr()
@@ -287,6 +289,29 @@ def test_json_and_dry_run_reach_dispatch_invocation(capsys: pytest.CaptureFixtur
     assert canary not in captured.out
     assert canary not in captured.err
     assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "stdin"),
+    (
+        (["deploy", "production", "--json"], StringIO()),
+        (["deploy", "production"], StringIO()),
+    ),
+)
+def test_main_refuses_unattended_deploy_without_yes_without_dispatching_or_prompting(
+    argv: list[str], stdin: StringIO, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """JSON and non-TTY execution cannot turn an implicit prompt into consent."""
+
+    assert main(
+        argv,
+        stdin=stdin,
+        dispatch_fn=lambda _invocation: pytest.fail("missing consent must stop before dispatch"),
+    ) == ExitStatus.SAFETY
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "confirmation" in captured.err
 
 
 def test_public_verify_dispatch_uses_optional_current_release_authority(

@@ -16,7 +16,7 @@ from ..host_protocol import HostResult
 from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
 from ..host_helper.records import ReleaseRecord, SelectionRecord
-from ..host_helper.backup_protection import BackupProtection
+from ..host_helper.backup_protection import BackupProtection, protection_prune_ids
 from ..releases.source_order import compare_sources
 from ..migrations import validate_migration_versions
 from ..output import WorkflowResult, redact, render_human
@@ -90,12 +90,16 @@ def deploy(
     clean_inputs: CleanInputs | None = None,
     refresh_clean_target: Callable[[], tuple[DeploymentTarget, CleanInputs]] | None = None,
     dry_run: bool = False,
+    interactive: bool = True,
 ) -> WorkflowResult:
     """Present, confirm, and invoke one replayable host deployment."""
 
     if not isinstance(config, EnvironmentConfig) or not isinstance(target, (DeploymentTarget, VerifiedArtifact)):
         raise TypeError("deployment requires validated configuration and artifact")
-    if not all(type(value) is bool for value in (dry_run, manual_adoption_confirmed, yes, allow_downgrade)):
+    if not all(
+        type(value) is bool
+        for value in (dry_run, manual_adoption_confirmed, yes, allow_downgrade, interactive)
+    ):
         raise TypeError("deployment flags must be boolean")
     if migration_policy is not None and migration_policy not in _POLICIES:
         raise ValueError("deployment requires a valid migration policy")
@@ -107,10 +111,24 @@ def deploy(
     try:
         if manual_adoption_confirmed:
             raise _safety("manual lifecycle adoption is not part of replayable deployment")
+        if not dry_run and not yes and not interactive:
+            raise _safety("unattended deployment requires --yes; JSON is never confirmation")
         validate_operational_preflight(remote, config)
         while True:
-            previous, current_migrations, applied_versions = _planning_authority(remote, config)
-            if migration_policy is None and current_migrations != deployment_target.manifest.migrations:
+            previous, _previous_migrations, applied_versions = _planning_authority(remote, config)
+            expected_state = _confirmed_expected_state(remote, config)
+            if (
+                previous != expected_state["selected_release_id"]
+                or applied_versions != tuple(expected_state["applied_migrations"])
+            ):
+                # Planning itself crossed an observation boundary.  Nothing
+                # has been presented or authorized yet, so discard it and
+                # collect a coherent admission cycle.
+                continue
+            pending_versions = _pending_migration_versions(
+                applied_versions, deployment_target.manifest.migrations
+            )
+            if migration_policy is None and pending_versions:
                 raise OpsError(
                     ExitStatus.INVALID,
                     "deploy",
@@ -122,64 +140,90 @@ def deploy(
                     ),
                 )
             policy = migration_policy or "no-change"
-            _validate_migration_policy(current_migrations, deployment_target.manifest.migrations, policy)
+            _validate_migration_policy(applied_versions, deployment_target.manifest.migrations, policy)
             downgrade_required, downgrade_reasons = _downgrade_acknowledgment(
                 remote, config, deployment_target, repo
             )
-            plan = _redacted_plan(_plan(config, deployment_target, previous, policy))
-            plan["source_dirty"] = deployment_target.source_dirty
-            plan["requires_downgrade_acknowledgment"] = downgrade_required
-            plan["downgrade_reasons"] = downgrade_reasons
-            if dry_run:
-                return WorkflowResult(
-                    "deploy", config.name or "", False, "planned",
-                    {**plan, "previous_release_id": previous, "selected_release_id": previous},
-                    next_action="review the redacted deployment plan and rerun without --dry-run only after confirmation",
+            prune_backup_ids = _planned_prune_backup_ids(remote, config, expected_state)
+            with temporary_scheduled_backup_helper_package() as scheduler_package:
+                scheduler_refresh_required = (
+                    expected_state["scheduled_backup_sha256"] != scheduler_package.sha256
                 )
-            (present_plan or _present_plan)(plan)
-            if clean_inputs is not None and repo is not None and not clean_inputs_match(repo, clean_inputs):
-                if refresh_clean_target is None:
-                    raise _safety("automatic clean source inputs changed before confirmation")
-                deployment_target, clean_inputs = refresh_clean_target()
-                candidate = deployment_target.release_id
-                continue
-            if not yes and not (confirm or _confirm)(plan):
-                return WorkflowResult(
-                    "deploy", config.name or "", False, "confirmation-cancelled",
-                    {**plan, "previous_release_id": previous, "selected_release_id": previous,
-                     "database_state": "unchanged", "service_state": "unknown"},
-                    next_action="review the exact deployment plan and confirm a later run when ready",
-                )
-            if downgrade_required and not allow_downgrade:
-                if yes:
-                    raise _safety("deployment ordering requires --allow-downgrade acknowledgement")
-                if not _confirm_downgrade(plan):
-                    return WorkflowResult(
-                        "deploy", config.name or "", False, "downgrade-acknowledgment-cancelled",
-                        {**plan, "previous_release_id": previous, "selected_release_id": previous},
-                        next_action="review the downgrade or unknown-order evidence before retrying",
+                plan = _redacted_plan(
+                    _plan(
+                        config,
+                        deployment_target,
+                        previous,
+                        policy,
+                        expected_state=expected_state,
+                        pending_versions=pending_versions,
+                        prune_backup_ids=prune_backup_ids,
+                        scheduler_sha256=scheduler_package.sha256,
+                        scheduler_refresh_required=scheduler_refresh_required,
                     )
-            expected_state = _confirmed_expected_state(remote, config)
-            break
-        with temporary_scheduled_backup_helper_package() as scheduler_package:
-            scheduler_upload = (
-                None
-                if expected_state["scheduled_backup_sha256"] == scheduler_package.sha256
-                else "pending-controller-upload"
-            )
-            result = run_deployment_request(
-                remote,
-                config,
-                deployment_target,
-                expected_state=expected_state,
-                migration_policy=policy,
-                backup_helper={"sha256": scheduler_package.sha256, "upload_path": scheduler_upload},
-                prune_backup_ids=(),
-                backup_helper_package=scheduler_package,
-            )
+                )
+                plan["source_dirty"] = deployment_target.source_dirty
+                plan["requires_downgrade_acknowledgment"] = downgrade_required
+                plan["downgrade_reasons"] = downgrade_reasons
+                if dry_run:
+                    return WorkflowResult(
+                        "deploy", config.name or "", False, "planned",
+                        {**plan, "previous_release_id": previous, "selected_release_id": previous},
+                        next_action="review the redacted deployment plan and rerun without --dry-run only after confirmation",
+                    )
+                if clean_inputs is not None and repo is not None and not clean_inputs_match(repo, clean_inputs):
+                    if yes:
+                        raise _safety("clean deployment inputs changed; rerun to acknowledge the refreshed plan")
+                    if refresh_clean_target is None:
+                        raise _safety("automatic clean source inputs changed before confirmation")
+                    deployment_target, clean_inputs = refresh_clean_target()
+                    candidate = deployment_target.release_id
+                    continue
+                if interactive:
+                    (present_plan or _present_plan)(plan)
+                if not yes and not (confirm or _confirm)(plan):
+                    return WorkflowResult(
+                        "deploy", config.name or "", False, "confirmation-cancelled",
+                        {**plan, "previous_release_id": previous, "selected_release_id": previous,
+                         "database_state": "unchanged", "service_state": "unknown"},
+                        next_action="review the exact deployment plan and confirm a later run when ready",
+                    )
+                if downgrade_required and not allow_downgrade:
+                    if yes or not interactive:
+                        raise _safety("deployment ordering requires --allow-downgrade acknowledgement")
+                    if not _confirm_downgrade(plan):
+                        return WorkflowResult(
+                            "deploy", config.name or "", False, "downgrade-acknowledgment-cancelled",
+                            {**plan, "previous_release_id": previous, "selected_release_id": previous},
+                            next_action="review the downgrade or unknown-order evidence before retrying",
+                        )
+                reobserved_state = _confirmed_expected_state(remote, config)
+                if reobserved_state != expected_state:
+                    if yes:
+                        raise _safety("deployment authority changed after confirmation; rerun to acknowledge a new plan")
+                    # The previous consent applies only to its displayed
+                    # material facts.  Re-enter through identification,
+                    # discovery, resolution, policy, and acknowledgment.
+                    if clean_inputs is not None and refresh_clean_target is not None:
+                        deployment_target, clean_inputs = refresh_clean_target()
+                        candidate = deployment_target.release_id
+                    continue
+                scheduler_upload = None if not scheduler_refresh_required else "pending-controller-upload"
+                result = run_deployment_request(
+                    remote,
+                    config,
+                    deployment_target,
+                    expected_state=expected_state,
+                    migration_policy=policy,
+                    backup_helper={"sha256": scheduler_package.sha256, "upload_path": scheduler_upload},
+                    prune_backup_ids=prune_backup_ids,
+                    backup_helper_package=scheduler_package,
+                )
+                break
         if result.outcome != "succeeded":
             raise result_error(result, starting_state=expected_state)
-        return _payload_result(config, candidate, policy, result, previous_release_id=previous)
+        payload = _payload_result(config, candidate, policy, result, previous_release_id=previous)
+        return _with_artifact_source(payload, deployment_target.source)
     except OpsError as error:
         return _failure_result(config, error, candidate=candidate)
 
@@ -490,7 +534,18 @@ def _failure_result(
     )
 
 
-def _plan(config: EnvironmentConfig, target: DeploymentTarget, previous: str, policy: str) -> dict[str, object]:
+def _plan(
+    config: EnvironmentConfig,
+    target: DeploymentTarget,
+    previous: str,
+    policy: str,
+    *,
+    expected_state: Mapping[str, object],
+    pending_versions: tuple[int, ...],
+    prune_backup_ids: tuple[str, ...],
+    scheduler_sha256: str,
+    scheduler_refresh_required: bool,
+) -> dict[str, object]:
     return {
         "environment": config.name or "",
         "ssh_destination": f"{config.ssh_user}@{config.ssh_host}:{config.ssh_port}",
@@ -501,7 +556,18 @@ def _plan(config: EnvironmentConfig, target: DeploymentTarget, previous: str, po
         "artifact_sha256": target.artifact_sha256,
         "artifact_source": target.source,
         "migration_policy": policy,
-        "planned_backup": policy != "no-change",
+        "applied_migrations": list(expected_state["applied_migrations"]),
+        "pending_migration_versions": list(pending_versions),
+        "planned_backup": bool(pending_versions),
+        "last_successful_selection_id": expected_state["last_successful_selection_id"],
+        "backup_protection_sha256": expected_state["backup_protection_sha256"],
+        "prune_backup_ids": list(prune_backup_ids),
+        "scheduled_backup": {
+            "observed_sha256": expected_state["scheduled_backup_sha256"],
+            "desired_sha256": scheduler_sha256,
+            "refresh_required": scheduler_refresh_required,
+            "timer_enabled": expected_state["backup_timer_enabled"],
+        },
         "services_affected": ("taskman.service",),
         "expected_maintenance_window": "brief Taskman service interruption after backup",
     }
@@ -554,16 +620,74 @@ def _migration_fingerprints(value: object) -> tuple[MigrationFingerprint, ...]:
     return values
 
 
+def _pending_migration_versions(
+    applied_versions: tuple[int, ...], candidate: tuple[MigrationFingerprint, ...]
+) -> tuple[int, ...]:
+    """Validate the live schema as a prefix and return only missing versions."""
+
+    candidate_versions = tuple(int(item.filename[:14]) for item in candidate)
+    if candidate_versions != tuple(sorted(set(candidate_versions))):
+        raise _safety("candidate migration versions are invalid")
+    if candidate_versions[: len(applied_versions)] != applied_versions:
+        raise _safety("live migrations are not a prefix of the desired release")
+    return candidate_versions[len(applied_versions) :]
+
+
+def _planned_prune_backup_ids(
+    remote: Remote,
+    config: EnvironmentConfig,
+    expected_state: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Derive the exact attempt retirements authorized by one displayed plan."""
+
+    result = run_request(remote, discovery_request(config, mode="deploy"))
+    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+        raise _safety("deployment planning helper refused backup-protection authority")
+    state = mutable(result.state)
+    if not isinstance(state, Mapping):
+        raise _safety("deployment planning helper returned invalid backup-protection authority")
+    try:
+        observed = {key: state[key] for key in expected_state}
+        if observed != dict(expected_state):
+            raise ValueError
+        protections = tuple(BackupProtection.from_mapping(item) for item in state["backup_protections"])
+        return protection_prune_ids(
+            protections,
+            expected_state["last_successful_selection_id"],
+        )
+    except (KeyError, TypeError, ValueError):
+        raise _safety("deployment backup-protection authority changed during planning") from None
+
+
 def _validate_migration_policy(
-    current: tuple[MigrationFingerprint, ...],
+    current: tuple[MigrationFingerprint, ...] | tuple[int, ...],
     candidate: tuple[MigrationFingerprint, ...],
     policy: str,
 ) -> None:
-    if current == candidate and policy == "no-change":
+    if current and isinstance(current[0], MigrationFingerprint):
+        applied = tuple(int(item.filename[:14]) for item in current)
+    else:
+        applied = validate_migration_versions(current)
+    pending = _pending_migration_versions(applied, candidate)
+    if not pending and policy in {"no-change", "backward-compatible"}:
         return
-    if current != candidate and policy in {"backward-compatible", "restore-required"}:
+    if pending and policy == "backward-compatible":
         return
     raise _safety("confirmed migration policy does not match completed release authority")
+
+
+def _with_artifact_source(result: WorkflowResult, source: str) -> WorkflowResult:
+    return WorkflowResult(
+        result.command,
+        result.environment,
+        result.changed,
+        result.stage,
+        {**result.facts, "artifact_source": source},
+        result.warnings,
+        result.next_action,
+        result.exit_status,
+        result.process_status,
+    )
 
 
 __all__ = ["DeploymentAdmissionAuthority", "deploy", "deploy_first_release", "deployment_admission_authority"]

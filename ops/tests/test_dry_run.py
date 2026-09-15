@@ -93,7 +93,20 @@ def test_deploy_dry_run_reads_completed_authority_without_uploading_or_deploying
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._planning_authority", lambda *_args: (current_release, (), ())
     )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._confirmed_expected_state",
+        lambda *_args: {
+            "selected_release_id": current_release,
+            "last_successful_selection_id": "selection-" + "a" * 64 + ".json",
+            "applied_migrations": (),
+            "backup_protection_sha256": "b" * 64,
+            "scheduled_backup_sha256": "c" * 64,
+            "backup_timer_enabled": True,
+            "downgrade_baseline_sha256": "d" * 64,
+        },
+    )
     monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args: ())
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
         lambda *_args, **_kwargs: pytest.fail("dry-run must not upload or deploy"),

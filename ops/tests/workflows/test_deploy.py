@@ -44,6 +44,7 @@ def _valid_operational_preflights(monkeypatch: pytest.MonkeyPatch) -> None:
 def _confirmed_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: _EXPECTED)
     monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args: ())
 
 
 def _success(*, mutation_state: str = "changed") -> HostResult:
@@ -100,20 +101,22 @@ def test_changed_migrations_require_explicit_policy_before_confirmation_or_uploa
     assert result.exit_status is ExitStatus.INVALID
 
 
-def test_dry_run_does_not_need_confirmation_or_apply_reobservation(
+def test_dry_run_observes_material_authority_but_does_not_need_confirmation_or_apply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from taskman_ops.workflows.deploy import deploy
 
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    observed: list[str] = []
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._confirmed_expected_state",
-        lambda *_args: pytest.fail("dry-run cannot reobserve an apply snapshot"),
+        lambda *_args: observed.append("observed") or _EXPECTED,
     )
     result = deploy(object(), config(), deployment_artifact(tmp_path), dry_run=True)
 
     assert result.exit_status is ExitStatus.OK
     assert result.stage == "planned"
+    assert observed == ["observed"]
 
 
 def test_deploy_consumes_exact_v3_mutation_success_and_preserves_final_observations(
@@ -173,8 +176,111 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
 
     result = deploy(object(), config(), target, repo=tmp_path, clean_inputs=inputs, yes=True, refresh_clean_target=lambda: (target, inputs))
 
+    assert result.exit_status is ExitStatus.SAFETY
+    assert mutations == []
+
+
+def test_apply_time_authority_drift_after_yes_requires_a_new_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A --yes confirmation cannot silently adopt a changed host authority."""
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    observed = iter((_EXPECTED, {**_EXPECTED, "backup_protection_sha256": "e" * 64}))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: next(observed)
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach the helper"),
+    )
+
+    result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
+def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty request must not stand in for a planned protection retirement."""
+    from taskman_ops.workflows.deploy import deploy
+
+    prune_ids = (
+        "backup-00000000000000000000000000000001",
+        "backup-00000000000000000000000000000002",
+    )
+    sent: list[tuple[str, ...]] = []
+    displayed: list[dict[str, object]] = []
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args: prune_ids, raising=False
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **kwargs: sent.append(kwargs["prune_backup_ids"]) or _success(),
+    )
+
+    result = deploy(
+        object(),
+        config(),
+        deployment_artifact(tmp_path),
+        yes=True,
+        present_plan=lambda plan: displayed.append(dict(plan)),
+    )
+
     assert result.stage == "deployed"
-    assert mutations == ["apply"]
+    assert sent == [prune_ids]
+    assert displayed[0]["prune_backup_ids"] == list(prune_ids)
+    assert displayed[0]["applied_migrations"] == []
+    assert displayed[0]["scheduled_backup"]["refresh_required"] is True
+
+
+def test_migration_policy_uses_the_live_applied_prefix_not_the_previous_release_schema() -> None:
+    """A target that omits a live migration is never backward compatible."""
+    from taskman_ops.workflows.deploy import _validate_migration_policy
+
+    first = MigrationFingerprint("20260905120000_create_tasks.exs", "a" * 64)
+    second = MigrationFingerprint("20260906120000_add_projects.exs", "b" * 64)
+
+    with pytest.raises(Exception) as raised:
+        _validate_migration_policy((first,), (second,), "backward-compatible")
+
+    assert getattr(raised.value, "status", None) is ExitStatus.SAFETY
+
+    with pytest.raises(Exception) as raised:
+        _validate_migration_policy((first,), (first, second), "restore-required")
+
+    assert getattr(raised.value, "status", None) is ExitStatus.SAFETY
+
+
+def test_json_mode_requires_a_downgrade_flag_without_prompting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A JSON request cannot obtain its separate downgrade consent from stdin."""
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._downgrade_acknowledgment",
+        lambda *_args: (True, ("source-unavailable",)),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._confirm_downgrade",
+        lambda _plan: pytest.fail("JSON mode must never call input"),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("missing downgrade consent must prevent mutation"),
+    )
+
+    result = deploy(
+        object(), config(), deployment_artifact(tmp_path), yes=True, interactive=False
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
 
 
 def test_unattended_unknown_baseline_requires_independent_downgrade_acknowledgment(

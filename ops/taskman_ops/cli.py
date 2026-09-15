@@ -80,6 +80,7 @@ class Invocation:
     allow_downgrade: bool = False
     json: bool = False
     dry_run: bool = False
+    interactive: bool | None = None
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -332,8 +333,12 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
                 yes=invocation.yes,
                 allow_downgrade=invocation.allow_downgrade,
                 dry_run=invocation.dry_run,
+                interactive=(not invocation.json if invocation.interactive is None else invocation.interactive),
             )
-            return replace(result, facts={**result.facts, "artifact_source": target.source})
+            return replace(
+                result,
+                facts={**result.facts, "artifact_source": result.facts.get("artifact_source", target.source)},
+            )
         remote = connect(environment)
         clean_inputs = None
         if invocation.artifact is None:
@@ -379,8 +384,12 @@ def dispatch(invocation: Invocation) -> WorkflowResult:
             clean_inputs=clean_inputs,
             refresh_clean_target=refresh_clean_target if clean_inputs is not None else None,
             dry_run=invocation.dry_run,
+            interactive=(not invocation.json if invocation.interactive is None else invocation.interactive),
         )
-        return replace(result, facts={**result.facts, "artifact_source": target.source})
+        return replace(
+            result,
+            facts={**result.facts, "artifact_source": result.facts.get("artifact_source", target.source)},
+        )
     if invocation.command == "rollback":
         from .config import load_environment
         from .remote import connect
@@ -442,11 +451,13 @@ def main(
     dispatch_fn: Callable[[Invocation], Any] | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
 ) -> int:
     """Run the command boundary and return one documented exit code."""
 
     output_stream = stdout or sys.stdout
     error_stream = stderr or sys.stderr
+    input_stream = stdin or sys.stdin
     parse_errors = StringIO()
     try:
         # argparse writes diagnostics directly to sys.stderr.  Capture that
@@ -463,8 +474,23 @@ def main(
             error_stream.write(str(redact(parse_errors.getvalue())))
         return int(code)
 
+    interactive = not invocation.json and bool(getattr(input_stream, "isatty", lambda: False)())
+    invocation = replace(invocation, interactive=interactive)
     runner = dispatch_fn or dispatch
     try:
+        if (
+            invocation.command in {"deploy", "provision"}
+            and not invocation.dry_run
+            and not invocation.yes
+            and not invocation.interactive
+        ):
+            raise OpsError(
+                ExitStatus.SAFETY,
+                "confirmation",
+                "unattended deployment or provisioning requires --yes; JSON is never confirmation",
+                changed=False,
+                next_action="review the plan interactively or rerun with --yes after independent review",
+            )
         dispatched = runner(invocation)
         result = _coerce_result(invocation, dispatched)
         # Result shape validation happens while rendering (including mapping
