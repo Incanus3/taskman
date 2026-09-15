@@ -35,6 +35,7 @@ from tests.host_helper import test_cleanup as host_cleanup_tests
 from tests.host_helper import test_deploy as host_deploy_tests
 from tests.host_helper import test_restore as host_restore_tests
 from tests.support.environments import valid_environment
+from tests.workflows.test_operational_preflight import _managed_host_facts
 
 
 def test_helper_deployment_failure_preserves_primary_stage_and_redacts_residue() -> None:
@@ -186,6 +187,155 @@ def test_public_cleanup_executes_controller_plan_through_packaged_helper(
     assert not Path(paths.local(paths.release_root / host_cleanup_tests.STALE_RELEASE)).exists()
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    ("low_capacity", "unavailable_database", "mismatched_selection", "unfinished_genesis"),
+)
+def test_public_cleanup_recovery_matrix_uses_real_filesystem_only_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scenario: str
+) -> None:
+    """Recovery-state cleanup must reach the packaged helper without a DB/capacity probe."""
+
+    from taskman_ops.workflows import cleanup as cleanup_workflow
+    from taskman_ops.workflows import helper, operational_preflight
+
+    if scenario == "unfinished_genesis":
+        paths = host_cleanup_tests.managed_paths(tmp_path / scenario)
+        host_cleanup_tests._release(
+            paths,
+            host_cleanup_tests.RELEASE,
+            host_cleanup_tests.CURRENT_REVISION,
+            host_cleanup_tests.CURRENT_DIGEST,
+        )
+        root = Path(paths.local(paths.backup_root))
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = root / ("backup-" + "f" * 32 + ".dump")
+        temporary.write_bytes(b"partial")
+        temporary.chmod(0o600)
+    else:
+        paths = host_cleanup_tests._seed(tmp_path / scenario)
+        if scenario == "mismatched_selection":
+            Path(paths.local(paths.current_link)).unlink()
+            temporary = Path(paths.local(paths.backup_root)) / (
+                "backup-" + "e" * 32 + ".dump"
+            )
+            temporary.write_bytes(b"partial")
+            temporary.chmod(0o600)
+
+    config = _controller_config(
+        {
+            "install_root": paths.install_root.as_posix(),
+            "backup_root": paths.backup_root.as_posix(),
+        }
+    )
+    facts = _managed_host_facts()
+    if scenario == "low_capacity":
+        facts = replace(
+            facts,
+            available_disk_bytes=0,
+            backup_available_disk_bytes=0,
+            failed_checks=("install-root disk", "backup-root disk"),
+        )
+    elif scenario == "unavailable_database":
+        facts = replace(facts, existing_databases=())
+
+    class CleanupRemote(_ControllerRemote):
+        def facts(self):
+            return facts
+
+        def run(self, *_args: object, **_kwargs: object) -> CommandResult:
+            pytest.fail("cleanup preflight must not run database or capacity commands")
+
+    def forbidden(*_args: object, **_kwargs: object):
+        pytest.fail("cleanup must not use operational database or capacity preflight")
+
+    monkeypatch.setattr(operational_preflight, "collect_operational_preflight", forbidden)
+    monkeypatch.setattr(operational_preflight, "collect_restore_preflight", forbidden)
+    monkeypatch.setattr(operational_preflight, "collect_restore_inspection_preflight", forbidden)
+    package = build_helper_package(tmp_path / f"taskman-cleanup-{scenario}.pyz")
+    runtime_path = tmp_path / f"isolated-cleanup-{scenario}.json"
+    runtime_path.write_text("{}")
+    remote = CleanupRemote()
+    real_run_request = helper.run_request
+
+    def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        return real_run_request(
+            _remote,
+            request,
+            package=package,
+            invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
+                wire_request, selected, runtime_path
+            ),
+        )
+
+    monkeypatch.setattr(cleanup_workflow, "run_request", dispatch)
+    result = cleanup_workflow.cleanup(remote, config, confirm=lambda _plan: True)
+
+    assert result.stage == "cleaned"
+    assert result.facts["completed_targets"]
+
+
+def test_public_cleanup_partial_batch_keeps_proved_completion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A packaged same-batch failure must retain the earlier native deletion as changed."""
+
+    from taskman_ops.workflows import cleanup as cleanup_workflow
+    from taskman_ops.workflows import helper
+
+    paths = host_cleanup_tests._seed(tmp_path / "partial-cleanup")
+    for index in range(3):
+        revision = f"{index + 32:040x}"
+        digest = f"{index + 32:064x}"
+        release_id = host_cleanup_tests.build_release_id(
+            f"3.0.{index}", revision, artifact_sha256=digest, source_dirty=False
+        )
+        host_cleanup_tests._release(paths, release_id, revision, digest)
+    config = _controller_config(
+        {
+            "install_root": paths.install_root.as_posix(),
+            "backup_root": paths.backup_root.as_posix(),
+        }
+    )
+
+    class CleanupRemote(_ControllerRemote):
+        def facts(self):
+            return _managed_host_facts()
+
+        def run(self, *_args: object, **_kwargs: object) -> CommandResult:
+            pytest.fail("cleanup preflight must not run database or capacity commands")
+
+    package = build_helper_package(tmp_path / "taskman-cleanup-partial.pyz")
+    runtime_path = tmp_path / "isolated-cleanup-partial.json"
+    runtime_path.write_text(json.dumps({"cleanup_fail_delete_at": 2}))
+    remote = CleanupRemote()
+    real_run_request = helper.run_request
+
+    def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        return real_run_request(
+            _remote,
+            request,
+            package=package,
+            invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
+                wire_request, selected, runtime_path
+            ),
+        )
+
+    monkeypatch.setattr(cleanup_workflow, "run_request", dispatch)
+    result = cleanup_workflow.cleanup(remote, config, confirm=lambda _plan: True)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.changed is True
+    assert result.facts["mutation_state"] == "changed"
+    assert len(result.facts["completed_targets"]) == 1
+    assert set(result.facts["unavailable_fields"]) == {
+        "selected_release_id",
+        "last_successful_selection_id",
+        "backup_protection_sha256",
+        "restore_target_sha256",
+    }
+
+
 _ISOLATED_HELPER_HARNESS = r'''
 import hashlib
 import json
@@ -204,6 +354,7 @@ from taskman_ops.host_helper import __main__ as entrypoint
 from taskman_ops.host_helper import backup_helper, services, state as state_module
 from taskman_ops.host_helper import restore_database as restore_database_module
 from taskman_ops.host_helper.operations import deploy as deploy_module
+from taskman_ops.host_helper.operations import cleanup as cleanup_module
 from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper.operations import restore as restore_module
 from taskman_ops.host_helper.records import BackupRecord, write_backup_manifest
@@ -543,6 +694,16 @@ def delete_backup(paths, record):
 restore_module.replace_restore_target = replace_target
 restore_module.retire_safety_attempts = retire_attempts
 restore_module.delete_completed_backup = delete_backup
+
+_cleanup_delete = cleanup_module._delete_target
+def cleanup_delete(target, state, paths):
+    value = read_state()
+    value["cleanup_delete_count"] = value.get("cleanup_delete_count", 0) + 1
+    write_state(value)
+    if value.get("cleanup_fail_delete_at") == value["cleanup_delete_count"]:
+        raise OSError("injected cleanup deletion failure")
+    return _cleanup_delete(target, state, paths)
+cleanup_module._delete_target = cleanup_delete
 
 os.write(ready_fd, b"R")
 os.close(ready_fd)

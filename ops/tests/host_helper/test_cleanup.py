@@ -442,3 +442,112 @@ def test_inspect_requires_empty_expected_state_and_execute_requires_exact_four_f
     )
     assert cleanup_module.cleanup(malformed_inspect).outcome == "refused"
     assert cleanup_module.cleanup(malformed_execute).outcome == "refused"
+
+
+def test_cleanup_preserves_every_release_referenced_by_full_successful_history(
+    tmp_path: Path,
+) -> None:
+    paths = managed_paths(tmp_path)
+    releases = []
+    for index, marker in enumerate(("a", "b", "c", "d")):
+        revision = marker * 40
+        digest = marker * 64
+        release_id = build_release_id(
+            f"2.0.{index}", revision, artifact_sha256=digest, source_dirty=False
+        )
+        _release(paths, release_id, revision, digest)
+        releases.append(release_id)
+    for index, release_id in enumerate(releases[:3]):
+        previous = None if index == 0 else releases[index - 1]
+        append_selection(
+            paths,
+            SelectionRecord(
+                release_id,
+                previous,
+                None,
+                BACKUP_AT + timedelta(minutes=index),
+                2,
+                previous,
+                (),
+            ),
+        )
+    Path(paths.local(paths.current_link)).symlink_to(
+        Path(paths.local(paths.release_root / releases[2]))
+    )
+
+    inspected = _inspect(paths)
+    targets = tuple(dict(item) for item in inspected.state["targets"])
+    result = cleanup_module.cleanup(
+        _request(
+            paths, action="execute", targets=targets, expected_state=_facts(inspected)
+        )
+    )
+
+    assert {
+        target["identifier"] for target in targets if target["kind"] == "release"
+    } == {releases[3]}
+    assert result.outcome == "succeeded"
+    assert all(
+        Path(paths.local(paths.release_root / release_id)).is_dir()
+        for release_id in releases[:3]
+    )
+    assert observe_host_state(paths).selected_release_id == releases[2]
+
+
+def test_inspection_pages_every_recognized_temporary_beyond_projection_limit(
+    tmp_path: Path,
+) -> None:
+    paths = _seed(tmp_path)
+    expected = set()
+    root = Path(paths.local(paths.backup_root))
+    for index in range(65):
+        backup_id = f"backup-{index + 16:032x}"
+        path = root / f"{backup_id}.dump"
+        path.write_bytes(b"partial")
+        path.chmod(0o600)
+        expected.add(path.as_posix())
+
+    pages = []
+    cursor = None
+    digests = set()
+    while True:
+        result = _inspect(paths, cursor=cursor)
+        pages.extend(result.state["targets"])
+        digests.add(result.state["inventory_sha256"])
+        cursor = result.state["next_cursor"]
+        if cursor is None:
+            break
+
+    assert expected <= {target["path"] for target in pages}
+    assert len(digests) == 1
+
+
+def test_execute_keeps_changed_after_later_target_failure_in_same_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _seed(tmp_path)
+    inspected = _inspect(paths)
+    targets = tuple(dict(item) for item in inspected.state["targets"][:2])
+    original = cleanup_module._delete_target
+    calls = 0
+
+    def fail_second(target, state, managed):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second deletion failure")
+        original(target, state, managed)
+
+    monkeypatch.setattr(cleanup_module, "_delete_target", fail_second)
+    result = cleanup_module.cleanup(
+        _request(
+            paths, action="execute", targets=targets, expected_state=_facts(inspected)
+        )
+    )
+
+    assert result.outcome == "retryable"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["completed_targets"] == (targets[0],)
+    assert result.state["unavailable_fields"] == tuple(
+        sorted(cleanup_module._EXPECTED_KEYS)
+    )

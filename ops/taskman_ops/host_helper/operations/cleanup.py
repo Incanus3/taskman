@@ -70,7 +70,11 @@ def cleanup(request: HostRequest) -> HostResult:
         paths = ManagedPaths.from_mapping(request.paths)
         _validate_authoritative_paths(paths)
         with lifecycle_lock(paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
-            state = observe_host_state(paths, allow_selection_transition=True)
+            state = observe_host_state(
+                paths,
+                allow_selection_transition=True,
+                full_temporary_paths=True,
+            )
             planned, plan_warnings = _plan(
                 state, paths, release_retention, backup_retention
             )
@@ -88,11 +92,16 @@ def cleanup(request: HostRequest) -> HostResult:
             active = _confirmed_targets(requested, planned, paths)
             for target, absent in active:
                 if not absent:
-                    mutation_state = "unknown"
+                    if mutation_state == "unchanged":
+                        mutation_state = "unknown"
                     _delete_target(target, state, paths)
                     mutation_state = "changed"
                 completed.append(target)
-            final_state = observe_host_state(paths, allow_selection_transition=True)
+            final_state = observe_host_state(
+                paths,
+                allow_selection_transition=True,
+                full_temporary_paths=True,
+            )
         final_warnings = tuple(sorted({*final_state.warnings, *plan_warnings}))[
             :MAX_COLLECTION_ITEMS
         ]
@@ -268,6 +277,7 @@ def _plan(
         if unfinished
         else {state.selected_release_id}
     )
+    protected_releases.update(state.successful_release_ids)
     recent = state.selections[-release_retention:]
     protected_releases.update(record.release_id for record in recent)
     protected_releases.update(

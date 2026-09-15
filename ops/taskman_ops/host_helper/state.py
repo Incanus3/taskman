@@ -87,19 +87,28 @@ class HostState:
     successful_backup_ids: frozenset[str] = frozenset()
     retiring_backup_protections: tuple[BackupProtection, ...] = ()
     initial_database_empty: bool = False
+    successful_release_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        if self.selected_release_id is not None and not isinstance(self.selected_release_id, str):
+        if self.selected_release_id is not None and not isinstance(
+            self.selected_release_id, str
+        ):
             raise StateAmbiguityError("invalid selected release")
         if self.service_state not in {"running", "stopped", "failed", "unknown"}:
             raise StateAmbiguityError("invalid service state")
         if self.database_state not in {"ready", "absent", "unknown"}:
             raise StateAmbiguityError("invalid database state")
-        if not isinstance(self.releases, tuple) or not all(isinstance(item, ReleaseRecord) for item in self.releases):
+        if not isinstance(self.releases, tuple) or not all(
+            isinstance(item, ReleaseRecord) for item in self.releases
+        ):
             raise StateAmbiguityError("invalid release state")
-        if not isinstance(self.backups, tuple) or not all(isinstance(item, BackupRecord) for item in self.backups):
+        if not isinstance(self.backups, tuple) or not all(
+            isinstance(item, BackupRecord) for item in self.backups
+        ):
             raise StateAmbiguityError("invalid backup state")
-        if not isinstance(self.selections, tuple) or not all(isinstance(item, SelectionRecord) for item in self.selections):
+        if not isinstance(self.selections, tuple) or not all(
+            isinstance(item, SelectionRecord) for item in self.selections
+        ):
             raise StateAmbiguityError("invalid selection state")
         if not isinstance(self.applied_migrations, tuple) or any(
             type(item) is not int or item < 0 for item in self.applied_migrations
@@ -111,16 +120,21 @@ class HostState:
             isinstance(item, PurePosixPath) for item in self.temporary_paths
         ):
             raise StateAmbiguityError("invalid temporary paths")
-        if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) for item in self.warnings):
+        if not isinstance(self.warnings, tuple) or not all(
+            isinstance(item, str) for item in self.warnings
+        ):
             raise StateAmbiguityError("invalid state warnings")
         if not isinstance(self.backup_protections, tuple) or not all(
             isinstance(item, BackupProtection) for item in self.backup_protections
         ):
             raise StateAmbiguityError("invalid backup protection state")
-        if self.restore_target is not None and not isinstance(self.restore_target, RestoreTarget):
+        if self.restore_target is not None and not isinstance(
+            self.restore_target, RestoreTarget
+        ):
             raise StateAmbiguityError("invalid restore target state")
         if not isinstance(self.retiring_backup_protections, tuple) or not all(
-            isinstance(item, BackupProtection) for item in self.retiring_backup_protections
+            isinstance(item, BackupProtection)
+            for item in self.retiring_backup_protections
         ):
             raise StateAmbiguityError("invalid retiring backup protection state")
         if not self.selection_filenames and self.selections:
@@ -132,7 +146,9 @@ class HostState:
         if (
             not isinstance(self.selection_filenames, tuple)
             or len(self.selection_filenames) != len(self.selections)
-            or not all(_SELECTION_FILE_RE.fullmatch(item) for item in self.selection_filenames)
+            or not all(
+                _SELECTION_FILE_RE.fullmatch(item) for item in self.selection_filenames
+            )
         ):
             raise StateAmbiguityError("invalid successful selection filenames")
         if not self.successful_backup_ids and self.selections:
@@ -143,15 +159,50 @@ class HostState:
                     backup_id
                     for selection in self.selections
                     for backup_id in (
-                        *((selection.backup_id,) if selection.backup_id is not None else ()),
+                        *(
+                            (selection.backup_id,)
+                            if selection.backup_id is not None
+                            else ()
+                        ),
                         *selection.recovery_backup_ids,
                     )
                 ),
             )
         if not isinstance(self.successful_backup_ids, frozenset) or not all(
-            type(item) is str and BACKUP_ID_RE.fullmatch(item) for item in self.successful_backup_ids
+            type(item) is str and BACKUP_ID_RE.fullmatch(item)
+            for item in self.successful_backup_ids
         ):
             raise StateAmbiguityError("invalid successful backup references")
+        if not self.successful_release_ids and self.selections:
+            object.__setattr__(
+                self,
+                "successful_release_ids",
+                frozenset(
+                    release_id
+                    for selection in self.selections
+                    for release_id in (
+                        selection.release_id,
+                        *(
+                            (selection.previous_release_id,)
+                            if selection.previous_release_id
+                            else ()
+                        ),
+                        *(
+                            (selection.observed_previous_release_id,)
+                            if selection.observed_previous_release_id
+                            else ()
+                        ),
+                    )
+                ),
+            )
+        try:
+            valid_release_references = isinstance(
+                self.successful_release_ids, frozenset
+            ) and all(validate_release_id(item) for item in self.successful_release_ids)
+        except (TypeError, ValueError):
+            valid_release_references = False
+        if not valid_release_references:
+            raise StateAmbiguityError("invalid successful release references")
         if type(self.initial_database_empty) is not bool:
             raise StateAmbiguityError("invalid initial database evidence")
 
@@ -169,7 +220,9 @@ class HostState:
 
     @property
     def previous_successful_selection_filename(self) -> str | None:
-        return self.selection_filenames[-2] if len(self.selection_filenames) > 1 else None
+        return (
+            self.selection_filenames[-2] if len(self.selection_filenames) > 1 else None
+        )
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -182,8 +235,12 @@ class HostState:
             "database_state": self.database_state,
             "temporary_paths": [item.as_posix() for item in self.temporary_paths],
             "warnings": list(self.warnings),
-            "backup_protections": [item.to_mapping() for item in self.backup_protections],
-            "restore_target": None if self.restore_target is None else self.restore_target.to_mapping(),
+            "backup_protections": [
+                item.to_mapping() for item in self.backup_protections
+            ],
+            "restore_target": None
+            if self.restore_target is None
+            else self.restore_target.to_mapping(),
         }
 
 
@@ -319,6 +376,7 @@ class _SuccessfulHistory:
     projection: tuple[SelectionRecord, ...] = ()
     projection_filenames: tuple[str, ...] = ()
     successful_backup_ids: frozenset[str] = frozenset()
+    successful_release_ids: frozenset[str] = frozenset()
 
     def close(self) -> None:
         self.database.close()
@@ -339,7 +397,11 @@ class _SuccessfulHistory:
             "SELECT payload FROM selections WHERE filename = ?", (filename,)
         ).fetchone()
         _require_history_deadline(deadline)
-        return None if row is None else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        return (
+            None
+            if row is None
+            else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        )
 
     def successor(self, filename: str, deadline: float) -> SelectionRecord | None:
         _require_history_deadline(deadline)
@@ -355,7 +417,11 @@ class _SuccessfulHistory:
             (filename,),
         ).fetchone()
         _require_history_deadline(deadline)
-        return None if row is None else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        return (
+            None
+            if row is None
+            else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        )
 
     def first(self, deadline: float) -> SelectionRecord | None:
         _require_history_deadline(deadline)
@@ -363,7 +429,11 @@ class _SuccessfulHistory:
             "SELECT payload FROM selections ORDER BY selected_at, filename LIMIT 1"
         ).fetchone()
         _require_history_deadline(deadline)
-        return None if row is None else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        return (
+            None
+            if row is None
+            else SelectionRecord.from_mapping(json.loads(str(row[0])))
+        )
 
 
 def observe_host_state(
@@ -372,6 +442,7 @@ def observe_host_state(
     database: Mapping[str, object] | None = None,
     include_runtime: bool = False,
     allow_selection_transition: bool = False,
+    full_temporary_paths: bool = False,
     deadline: float | None = None,
 ) -> HostState:
     """Observe completed host records, optionally exposing one deploy transition.
@@ -384,6 +455,8 @@ def observe_host_state(
 
     if not isinstance(paths, ManagedPaths):
         raise TypeError("host-state observation needs managed paths")
+    if type(full_temporary_paths) is not bool:
+        raise TypeError("full temporary-path projection flag must be boolean")
     if deadline is None:
         deadline = time.monotonic() + _STATE_LOADING_TIMEOUT_SECONDS
     if type(deadline) not in {int, float}:
@@ -410,12 +483,9 @@ def observe_host_state(
     if restore_target is not None:
         optional_restore_inputs.add(restore_target.backup_id)
         if restore_target.replacement is not None:
-            optional_restore_inputs.add(
-                str(restore_target.replacement["backup_id"])
-            )
+            optional_restore_inputs.add(str(restore_target.replacement["backup_id"]))
         optional_restore_inputs.difference_update(
-            str(item["backup_id"])
-            for item in restore_target.safety_backup_attempts
+            str(item["backup_id"]) for item in restore_target.safety_backup_attempts
         )
         optional_restore_inputs.discard(restore_target.safety_backup_id)
     releases = _read_releases(release_root, owner_uid, temporary, warnings)
@@ -449,10 +519,14 @@ def observe_host_state(
             Path(paths.local(paths.backup_root / f"{item.backup_id}.dump"))
             for item in retiring_backup_protections
         }
-        temporary[:] = [item for item in temporary if Path(item) not in retiring_dump_paths]
+        temporary[:] = [
+            item for item in temporary if Path(item) not in retiring_dump_paths
+        ]
         _require_history_deadline(float(deadline))
         _validate_backup_sources(backup_by_id, release_by_id, float(deadline))
-        _validate_selection_history(history, release_by_id, backup_by_id, float(deadline))
+        _validate_selection_history(
+            history, release_by_id, backup_by_id, float(deadline)
+        )
         _validate_backup_protections(
             backup_protections,
             release_by_id,
@@ -483,14 +557,15 @@ def observe_host_state(
         if restore_target is not None:
             independently_required.add(restore_target.safety_backup_id)
             independently_required.update(
-                str(item["backup_id"])
-                for item in restore_target.safety_backup_attempts
+                str(item["backup_id"]) for item in restore_target.safety_backup_attempts
             )
         if unavailable_restore_inputs.intersection(independently_required):
             raise StateAmbiguityError(
                 "an unavailable restore input is independently required for recovery"
             )
-        selected_from_history = history.projection[-1].release_id if history.projection else None
+        selected_from_history = (
+            history.projection[-1].release_id if history.projection else None
+        )
     except Exception:
         history.close()
         raise
@@ -502,11 +577,15 @@ def observe_host_state(
             elif allow_selection_transition:
                 selected = selected_from_link
             else:
-                raise StateAmbiguityError("current selection contradicts completed selection history")
+                raise StateAmbiguityError(
+                    "current selection contradicts completed selection history"
+                )
         else:
             selected = selected_from_history
 
-        applied_migrations, database_state, initial_database_empty = _database_state(database)
+        applied_migrations, database_state, initial_database_empty = _database_state(
+            database
+        )
         service_state = _service_state(include_runtime)
         temporary.sort(key=lambda item: item.as_posix())
         warnings = sorted(set(warnings))[:MAX_WARNINGS]
@@ -518,12 +597,17 @@ def observe_host_state(
             applied_migrations=applied_migrations,
             service_state=service_state,
             database_state=database_state,
-            temporary_paths=tuple(temporary[:MAX_TEMPORARY_PATHS]),
+            temporary_paths=tuple(
+                temporary if full_temporary_paths else temporary[:MAX_TEMPORARY_PATHS]
+            ),
             warnings=tuple(warnings),
-            backup_protections=tuple(sorted(backup_protections, key=lambda item: item.backup_id)),
+            backup_protections=tuple(
+                sorted(backup_protections, key=lambda item: item.backup_id)
+            ),
             restore_target=restore_target,
             selection_filenames=history.projection_filenames,
             successful_backup_ids=history.successful_backup_ids,
+            successful_release_ids=history.successful_release_ids,
             retiring_backup_protections=tuple(
                 sorted(retiring_backup_protections, key=lambda item: item.backup_id)
             ),
@@ -602,14 +686,18 @@ def _read_releases(
                 entry_details = entry.lstat()
                 if stat.S_ISDIR(entry_details.st_mode):
                     manifest_details = (entry / ".taskman-release.json").lstat()
-                    if stat.S_ISLNK(manifest_details.st_mode) or stat.S_ISREG(manifest_details.st_mode):
+                    if stat.S_ISLNK(manifest_details.st_mode) or stat.S_ISREG(
+                        manifest_details.st_mode
+                    ):
                         raise StateAmbiguityError("unsupported release authority")
             except FileNotFoundError:
                 pass
             except StateAmbiguityError:
                 raise
             except OSError as error:
-                raise StateAmbiguityError("unable to inspect release authority") from error
+                raise StateAmbiguityError(
+                    "unable to inspect release authority"
+                ) from error
             warnings.append(f"unknown release entry: {entry.name}")
             continue
         details = _lstat(entry, "release directory")
@@ -632,7 +720,9 @@ def _read_releases(
             )
         )
         if result[-1].release_id != release_id:
-            raise StateAmbiguityError("release manifest identity conflicts with its path")
+            raise StateAmbiguityError(
+                "release manifest identity conflicts with its path"
+            )
     return result
 
 
@@ -664,7 +754,9 @@ def _read_backups(
                     temporary.append(PurePosixPath(entry.as_posix()))
                     continue
                 except OSError as error:
-                    raise StateAmbiguityError("unable to inspect backup manifest") from error
+                    raise StateAmbiguityError(
+                        "unable to inspect backup manifest"
+                    ) from error
             if BACKUP_ID_RE.fullmatch(identifier) is None:
                 warnings.append(f"unknown backup entry: {entry.name}")
             continue
@@ -675,22 +767,24 @@ def _read_backups(
             warnings.append(f"unknown backup entry: {entry.name}")
             continue
         try:
-            record = _read_record(entry, BackupRecord.from_mapping, "backup manifest", owner_uid)
+            record = _read_record(
+                entry, BackupRecord.from_mapping, "backup manifest", owner_uid
+            )
         except StateAmbiguityError:
             raise
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup identity")
         if record.backup_id != entry.stem:
-            raise StateAmbiguityError("backup manifest identity conflicts with its path")
+            raise StateAmbiguityError(
+                "backup manifest identity conflicts with its path"
+            )
         seen.add(record.backup_id)
         dump = root / f"{entry.stem}.dump"
         try:
             details = _lstat(dump, "backup dump")
         except StateAmbiguityError:
             unavailable.add(record.backup_id)
-            warnings.append(
-                f"completed backup dump is unavailable: {record.backup_id}"
-            )
+            warnings.append(f"completed backup dump is unavailable: {record.backup_id}")
             result.append(record)
             continue
         if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
@@ -700,8 +794,7 @@ def _read_backups(
         if record.backup_id in optional_dump_ids:
             try:
                 available = (
-                    details.st_size > 0
-                    and sha256_file(dump) == record.dump_sha256
+                    details.st_size > 0 and sha256_file(dump) == record.dump_sha256
                 )
             except OSError:
                 available = False
@@ -747,11 +840,15 @@ def _read_selections(
                 if len(warnings) < MAX_WARNINGS:
                     warnings.append(f"unknown selection entry: {entry.name}")
                 continue
-            record = _read_record(entry, SelectionRecord.from_mapping, "selection record", owner_uid)
+            record = _read_record(
+                entry, SelectionRecord.from_mapping, "selection record", owner_uid
+            )
             _require_history_deadline(deadline)
             _validate_selection_record_references(record, releases, backups)
             if entry.name != selection_filename(record):
-                raise StateAmbiguityError("selection record identity conflicts with its path")
+                raise StateAmbiguityError(
+                    "selection record identity conflicts with its path"
+                )
             identity = json.dumps(
                 [
                     record.release_id,
@@ -761,7 +858,9 @@ def _read_selections(
                 ],
                 separators=(",", ":"),
             )
-            payload = json.dumps(record.to_mapping(), separators=(",", ":"), sort_keys=True)
+            payload = json.dumps(
+                record.to_mapping(), separators=(",", ":"), sort_keys=True
+            )
             try:
                 database.execute(
                     "INSERT INTO selections VALUES (?, ?, ?, ?)",
@@ -852,7 +951,9 @@ def _read_backup_protections(
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup protection identity")
         if record.backup_id != entry.stem:
-            raise StateAmbiguityError("backup protection identity conflicts with its path")
+            raise StateAmbiguityError(
+                "backup protection identity conflicts with its path"
+            )
         seen.add(record.backup_id)
         result.append(record)
     return result
@@ -927,7 +1028,11 @@ def _validate_temporary(
     details = _lstat(path, label)
     if (
         stat.S_ISLNK(details.st_mode)
-        or not (stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode))
+        or not (
+            stat.S_ISDIR(details.st_mode)
+            if directory
+            else stat.S_ISREG(details.st_mode)
+        )
         or details.st_uid != owner_uid
         or details.st_mode & 0o7022
     ):
@@ -956,7 +1061,13 @@ def _read_record(
     try:
         value = json.loads(raw.decode("utf-8"))
         return parser(value)  # type: ignore[operator]
-    except (UnicodeDecodeError, json.JSONDecodeError, RecordError, ValueError, TypeError) as error:
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecordError,
+        ValueError,
+        TypeError,
+    ) as error:
         raise StateAmbiguityError(f"{label} is invalid") from error
 
 
@@ -976,9 +1087,7 @@ def _entries(root: Path, owner_uid: int, label: str) -> tuple[Path, ...]:
         with os.scandir(root) as entries:
             for index, entry in enumerate(entries, start=1):
                 if index > MAX_INVENTORY_ENTRIES:
-                    raise StateAmbiguityError(
-                        f"{label} inventory exceeds safe bound"
-                    )
+                    raise StateAmbiguityError(f"{label} inventory exceeds safe bound")
                 paths.append(Path(entry.path))
         return tuple(sorted(paths, key=lambda item: item.name))
     except StateAmbiguityError:
@@ -1007,6 +1116,7 @@ def _validate_selection_history(
     projection: list[SelectionRecord] = []
     projection_filenames: list[str] = []
     successful_backup_ids: set[str] = set()
+    successful_release_ids: set[str] = set()
     for index, (filename, selection) in enumerate(history.ordered_rows(deadline)):
         _require_history_deadline(deadline)
         if selection.release_id not in releases:
@@ -1017,15 +1127,21 @@ def _validate_selection_history(
             selection.observed_previous_release_id is not None
             and selection.observed_previous_release_id not in releases
         ):
-            raise StateAmbiguityError("selection references an unknown observed release")
+            raise StateAmbiguityError(
+                "selection references an unknown observed release"
+            )
         if any(backup_id not in backups for backup_id in selection.recovery_backup_ids):
             raise StateAmbiguityError("selection references an unknown recovery backup")
         if index == 0 and selection.previous_release_id is not None:
-            raise StateAmbiguityError("first selection cannot name a previous successful release")
+            raise StateAmbiguityError(
+                "first selection cannot name a previous successful release"
+            )
         if index and selection.previous_release_id != previous:
             raise StateAmbiguityError("selection history is contradictory")
         if index and selection.observed_previous_release_id is None:
-            raise StateAmbiguityError("later selection must record its observed previous release")
+            raise StateAmbiguityError(
+                "later selection must record its observed previous release"
+            )
         if index and selection.selected_at <= previous_selected_at:
             raise StateAmbiguityError("selection history is not chronological")
         previous = selection.release_id
@@ -1038,14 +1154,22 @@ def _validate_selection_history(
         if selection.backup_id is not None:
             successful_backup_ids.add(selection.backup_id)
         successful_backup_ids.update(selection.recovery_backup_ids)
+        successful_release_ids.add(selection.release_id)
+        if selection.previous_release_id is not None:
+            successful_release_ids.add(selection.previous_release_id)
+        if selection.observed_previous_release_id is not None:
+            successful_release_ids.add(selection.observed_previous_release_id)
     history.projection = tuple(projection)
     history.projection_filenames = tuple(projection_filenames)
     history.successful_backup_ids = frozenset(successful_backup_ids)
+    history.successful_release_ids = frozenset(successful_release_ids)
     _require_history_deadline(deadline)
 
 
 def _validate_backup_sources(
-    backups: Mapping[str, BackupRecord], releases: Mapping[str, ReleaseRecord], deadline: float
+    backups: Mapping[str, BackupRecord],
+    releases: Mapping[str, ReleaseRecord],
+    deadline: float,
 ) -> None:
     for backup in backups.values():
         _require_history_deadline(deadline)
@@ -1053,8 +1177,13 @@ def _validate_backup_sources(
         if source is None:
             raise StateAmbiguityError("backup references an unknown source release")
         source_versions = _release_migration_versions(source)
-        if backup.migration_versions != source_versions[: len(backup.migration_versions)]:
-            raise StateAmbiguityError("backup migration provenance contradicts its source release")
+        if (
+            backup.migration_versions
+            != source_versions[: len(backup.migration_versions)]
+        ):
+            raise StateAmbiguityError(
+                "backup migration provenance contradicts its source release"
+            )
 
 
 def _release_migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
@@ -1062,7 +1191,9 @@ def _release_migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
         versions = tuple(int(item["filename"][:14]) for item in record.migrations)
         return validate_migration_versions(versions)
     except (KeyError, TypeError, ValueError):
-        raise StateAmbiguityError("installed release migration provenance is invalid") from None
+        raise StateAmbiguityError(
+            "installed release migration provenance is invalid"
+        ) from None
 
 
 def _release_migration_fingerprints(
@@ -1074,7 +1205,9 @@ def _release_migration_fingerprints(
             for item in record.migrations
         }
     except (KeyError, TypeError, ValueError):
-        raise StateAmbiguityError("installed release migration provenance is invalid") from None
+        raise StateAmbiguityError(
+            "installed release migration provenance is invalid"
+        ) from None
 
 
 def _validate_release_fingerprint_agreement(
@@ -1084,7 +1217,9 @@ def _validate_release_fingerprint_agreement(
     target_fingerprints = _release_migration_fingerprints(target)
     for version in versions:
         if source_fingerprints.get(version) != target_fingerprints.get(version):
-            raise StateAmbiguityError("backup protection migration fingerprints conflict")
+            raise StateAmbiguityError(
+                "backup protection migration fingerprints conflict"
+            )
 
 
 def _validate_backup_protections(
@@ -1105,39 +1240,62 @@ def _validate_backup_protections(
             raise StateAmbiguityError("backup protection references an unknown backup")
         target = releases.get(protection.target_release_id)
         if target is None:
-            raise StateAmbiguityError("backup protection references an unknown target release")
+            raise StateAmbiguityError(
+                "backup protection references an unknown target release"
+            )
         if protection.base_selection_id is None:
-            if first_selection and protection.backup_id not in first_selection.recovery_backup_ids:
+            if (
+                first_selection
+                and protection.backup_id not in first_selection.recovery_backup_ids
+            ):
                 raise StateAmbiguityError(
                     "null-baseline backup protection is unresolved after successful history"
                 )
         else:
             baseline = history.record(protection.base_selection_id, deadline)
             if baseline is None:
-                raise StateAmbiguityError("backup protection references an unknown selection")
+                raise StateAmbiguityError(
+                    "backup protection references an unknown selection"
+                )
             successor = history.successor(protection.base_selection_id, deadline)
-            if successor is not None and protection.backup_id not in successor.recovery_backup_ids:
+            if (
+                successor is not None
+                and protection.backup_id not in successor.recovery_backup_ids
+            ):
                 raise StateAmbiguityError(
                     "backup protection was not resolved by the next successful selection"
                 )
 
         target_versions = _release_migration_versions(target)
-        if backup.migration_versions != target_versions[: len(backup.migration_versions)]:
-            raise StateAmbiguityError("backup protection migration provenance is contradictory")
+        if (
+            backup.migration_versions
+            != target_versions[: len(backup.migration_versions)]
+        ):
+            raise StateAmbiguityError(
+                "backup protection migration provenance is contradictory"
+            )
         source = releases.get(backup.source_release_id)
         if source is None:
-            raise StateAmbiguityError("backup protection source provenance is unavailable")
-        _validate_release_fingerprint_agreement(source, target, backup.migration_versions)
+            raise StateAmbiguityError(
+                "backup protection source provenance is unavailable"
+            )
+        _validate_release_fingerprint_agreement(
+            source, target, backup.migration_versions
+        )
 
         attempts = attempts_by_baseline.setdefault(protection.base_selection_id, set())
         if protection.attempt_number in attempts:
-            raise StateAmbiguityError("backup protection attempt numbers are duplicated")
+            raise StateAmbiguityError(
+                "backup protection attempt numbers are duplicated"
+            )
         attempts.add(protection.attempt_number)
 
     for attempt_numbers in attempts_by_baseline.values():
         _require_history_deadline(deadline)
         if 0 not in attempt_numbers:
-            raise StateAmbiguityError("backup protection is missing its original attempt")
+            raise StateAmbiguityError(
+                "backup protection is missing its original attempt"
+            )
 
 
 def _validate_retiring_backup_protections(
@@ -1155,21 +1313,34 @@ def _validate_retiring_backup_protections(
             raise StateAmbiguityError("backup protection is both active and retiring")
         target = releases.get(protection.target_release_id)
         if target is None:
-            raise StateAmbiguityError("retiring protection references an unknown target release")
+            raise StateAmbiguityError(
+                "retiring protection references an unknown target release"
+            )
         if (
             protection.base_selection_id is not None
             and history.record(protection.base_selection_id, deadline) is None
         ):
-            raise StateAmbiguityError("retiring protection references an unknown selection")
+            raise StateAmbiguityError(
+                "retiring protection references an unknown selection"
+            )
         backup = backups.get(protection.backup_id)
         if backup is not None:
             target_versions = _release_migration_versions(target)
-            if backup.migration_versions != target_versions[: len(backup.migration_versions)]:
-                raise StateAmbiguityError("retiring protection migration provenance is contradictory")
+            if (
+                backup.migration_versions
+                != target_versions[: len(backup.migration_versions)]
+            ):
+                raise StateAmbiguityError(
+                    "retiring protection migration provenance is contradictory"
+                )
             source = releases.get(backup.source_release_id)
             if source is None:
-                raise StateAmbiguityError("retiring protection source provenance is unavailable")
-            _validate_release_fingerprint_agreement(source, target, backup.migration_versions)
+                raise StateAmbiguityError(
+                    "retiring protection source provenance is unavailable"
+                )
+            _validate_release_fingerprint_agreement(
+                source, target, backup.migration_versions
+            )
 
 
 def _validate_restore_target(
@@ -1202,7 +1373,9 @@ def _validate_restore_target(
         target.observed_previous_release_id is not None
         and target.observed_previous_release_id not in releases
     ):
-        raise StateAmbiguityError("restore target references an unknown observed release")
+        raise StateAmbiguityError(
+            "restore target references an unknown observed release"
+        )
 
     if backups.get(target.safety_backup_id) is None:
         raise StateAmbiguityError("restore target references an unknown safety backup")
@@ -1210,21 +1383,32 @@ def _validate_restore_target(
         _require_history_deadline(deadline)
         backup = backups.get(str(attempt["backup_id"]))
         if backup is None:
-            raise StateAmbiguityError("restore target references an unknown safety attempt")
+            raise StateAmbiguityError(
+                "restore target references an unknown safety attempt"
+            )
     if target.replacement is not None:
         replacement_backup = backups.get(str(target.replacement["backup_id"]))
         if replacement_backup is None:
-            raise StateAmbiguityError("restore target references an unknown replacement backup")
+            raise StateAmbiguityError(
+                "restore target references an unknown replacement backup"
+            )
         if (
             replacement_backup.dump_sha256 != target.replacement["dump_sha256"]
-            or replacement_backup.source_release_id != target.replacement["source_release_id"]
+            or replacement_backup.source_release_id
+            != target.replacement["source_release_id"]
         ):
-            raise StateAmbiguityError("restore target replacement backup identity disagrees")
+            raise StateAmbiguityError(
+                "restore target replacement backup identity disagrees"
+            )
         if target.replacement["source_release_id"] not in releases:
-            raise StateAmbiguityError("restore target replacement references an unknown source release")
+            raise StateAmbiguityError(
+                "restore target replacement references an unknown source release"
+            )
 
 
-def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -> str | None:
+def _selected_link(
+    paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]
+) -> str | None:
     current = Path(paths.local(paths.current_link))
     try:
         details = current.lstat()
@@ -1242,7 +1426,9 @@ def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -
     try:
         relative = target.relative_to(root)
     except ValueError as error:
-        raise StateAmbiguityError("current selection points outside release root") from error
+        raise StateAmbiguityError(
+            "current selection points outside release root"
+        ) from error
     if len(relative.parts) != 1:
         raise StateAmbiguityError("current selection target is ambiguous")
     release_id = relative.parts[0]
@@ -1251,13 +1437,17 @@ def _selected_link(paths: ManagedPaths, releases: Mapping[str, ReleaseRecord]) -
     return release_id
 
 
-def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, ...], str, bool]:
+def _database_state(
+    database: Mapping[str, object] | None,
+) -> tuple[tuple[int, ...], str, bool]:
     if database is None:
         return (), "unknown", False
     if not isinstance(database, Mapping):
         raise StateAmbiguityError("database observation is invalid")
     if set(database) - {"state", "applied_migrations", "initial_empty"}:
-        raise StateAmbiguityError("database observation contains duplicate or unknown facts")
+        raise StateAmbiguityError(
+            "database observation contains duplicate or unknown facts"
+        )
     state = database.get("state", "unknown")
     if type(state) is not str or state not in {"ready", "absent", "unknown"}:
         raise StateAmbiguityError("database state is invalid")
@@ -1265,11 +1455,15 @@ def _database_state(database: Mapping[str, object] | None) -> tuple[tuple[int, .
     try:
         migrations = validate_migration_versions(raw_migrations)
     except MigrationOrderError:
-        raise StateAmbiguityError("applied migrations are not sorted and unique") from None
+        raise StateAmbiguityError(
+            "applied migrations are not sorted and unique"
+        ) from None
     except ValueError:
         raise StateAmbiguityError("applied migrations are invalid") from None
     initial_empty = database.get("initial_empty", False)
-    if type(initial_empty) is not bool or (initial_empty and (state != "ready" or migrations)):
+    if type(initial_empty) is not bool or (
+        initial_empty and (state != "ready" or migrations)
+    ):
         raise StateAmbiguityError("initial database evidence is invalid")
     return migrations, state, initial_empty
 
