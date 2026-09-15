@@ -69,7 +69,28 @@ def test_helper_deployment_noop_is_successful_without_mutation_claim() -> None:
 class _ControllerRemote:
     """Local transport seam preserving the controller's real request flow."""
 
-    def run(self, *_args: object, **_kwargs: object) -> CommandResult:
+    def __init__(self, *, credentials: dict[str, bytes] | None = None, credential_mismatch: bool = False) -> None:
+        self.credentials = {} if credentials is None else dict(credentials)
+        self.credential_mismatch = credential_mismatch
+        self.credential_checks: list[tuple[str, bytes]] = []
+
+    def run(self, args: object, **kwargs: object) -> CommandResult:
+        stdin = kwargs.get("stdin")
+        if isinstance(args, tuple) and len(args) >= 4 and args[:3] == ("sh", "-ceu", args[2]):
+            label = args[3]
+            if label == "taskman-credential-authority" and isinstance(stdin, bytes):
+                self.credential_checks.append((str(args[2]), stdin))
+                path = args[4] if len(args) > 4 else None
+                credential = {
+                    "/etc/taskman/taskman.env": "runtime",
+                    "/etc/taskman/pgpass": "pgpass",
+                }.get(path)
+                if self.credential_mismatch or (
+                    credential is not None
+                    and self.credentials
+                    and self.credentials.get(credential) != stdin
+                ):
+                    return CommandResult(1)
         return CommandResult(0)
 
     def put(self, source: Path, destination: Path | PurePosixPath, **_kwargs: object) -> UploadReceipt:
@@ -160,8 +181,10 @@ def command(argv, **_kwargs):
     value = read_state()
     if argv[:2] == ("systemctl", "stop"):
         value["service_running"] = False
+        value["events"].append("service-stop")
     elif argv[:2] == ("systemctl", "start"):
         value["service_running"] = True
+        value["events"].append("service-start")
     elif argv[0] == "systemd-run":
         value["migrations"] = value["migration_result"]
     write_state(value)
@@ -238,6 +261,37 @@ backup_helper.observe_backup_timer = lambda **_kwargs: (
     read_state()["backup_timer_enabled"], read_state()["backup_timer_state"]
 )
 backup_helper._verified_executable_checksum = lambda: read_state()["scheduler_sha256"]
+def stop_timer(**_kwargs):
+    value = read_state()
+    value["backup_timer_state"] = "inactive"
+    value["events"].append("scheduler-stop")
+    write_state(value)
+def start_timer(**_kwargs):
+    value = read_state()
+    value["backup_timer_state"] = "active"
+    value["events"].append("scheduler-start")
+    write_state(value)
+def wait_backup(*_args, **_kwargs):
+    value = read_state()
+    value["events"].append("scheduler-wait")
+    write_state(value)
+def replace_helper(_upload, digest):
+    value = read_state()
+    value["scheduler_sha256"] = digest
+    value["events"].append("scheduler-replace")
+    write_state(value)
+backup_helper.stop_backup_timer = stop_timer
+backup_helper.start_backup_timer = start_timer
+backup_helper._wait_for_backup_service = wait_backup
+backup_helper._validate_upload = lambda *_args, **_kwargs: None
+backup_helper._replace_executable = replace_helper
+_select_current = deploy_module.select_current
+def select_current(paths, release_id):
+    value = read_state()
+    value["events"].append("current-swap")
+    write_state(value)
+    return _select_current(paths, release_id)
+deploy_module.select_current = select_current
 
 os.write(ready_fd, b"R")
 os.close(ready_fd)
@@ -343,6 +397,7 @@ def _install_public_controller(
     migrations: tuple[int, ...] = (),
     migration_result: tuple[int, ...] | None = None,
     scheduler_resources: dict[str, bool] | None = None,
+    remote: _ControllerRemote | None = None,
 ) -> tuple[_ControllerRemote, Path]:
     """Keep discovery/admission real while replacing only native and transport edges."""
 
@@ -350,7 +405,7 @@ def _install_public_controller(
     from taskman_ops.workflows import helper, inventory
 
     package = build_helper_package(tmp_path / "taskman-host.pyz")
-    remote = _ControllerRemote()
+    remote = _ControllerRemote() if remote is None else remote
     runtime_path = tmp_path / "isolated-helper-state.json"
     scheduler = build_scheduled_backup_package(tmp_path / "taskman-backup.pyz")
     runtime_path.write_text(json.dumps({
@@ -371,11 +426,16 @@ def _install_public_controller(
         "backup_timer_state": "active",
         "service_running": False,
         "verification": verification,
+        "events": [],
+        "database_contents": "durable-database-contents",
+        "authority_calls": 0,
     }))
 
     real_run_request = helper.run_request
 
     def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        from taskman_ops.errors import ExitStatus, HelperTransportError, OpsError
+
         result = real_run_request(
             _remote,
             request,
@@ -384,6 +444,21 @@ def _install_public_controller(
                 wire_request, selected, runtime_path
             ),
         )
+        operation = getattr(request, "operation", None)
+        runtime = json.loads(runtime_path.read_text())
+        if operation == "provision_authority":
+            runtime["authority_calls"] += 1
+            drift_after = runtime.get("drift_after_authority_calls")
+            if runtime["authority_calls"] == drift_after:
+                runtime["scheduler_sha256"] = "f" * 64
+            runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+        if operation == "genesis" and runtime.get("lose_genesis_result_once"):
+            runtime["lose_genesis_result_once"] = False
+            runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+            raise HelperTransportError(
+                OpsError(ExitStatus.REMOTE_PREFLIGHT, "helper", "isolated result lost"),
+                helper_entry_dispatched=True,
+            )
         return result
 
     monkeypatch.setattr(deploy_workflow, "validate_operational_preflight", lambda *_args: None)
@@ -436,6 +511,290 @@ def _converge_native_provision_writers(runtime_path: Path):
         return ChangeSet(changed=True, operations=("pyinfra", "postgresql", "scheduler"))
 
     return converge
+
+
+def _configure_default_public_provision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    request: object,
+    remote: _ControllerRemote,
+    runtime_path: Path,
+    *,
+    archive_name: str,
+) -> tuple[EnvironmentConfig, Path, DeploymentTarget]:
+    """Run default provision through real authority, planning, and genesis.
+
+    The caller supplies only host-side state.  This fixture deliberately leaves
+    the public controller and package entrypoint intact, replacing the native
+    host convergence boundary with its isolated stateful equivalent.
+    """
+
+    from taskman_ops.host import acceptance as host_acceptance
+    from taskman_ops.host.facts import CaddyState, HostFacts
+    from taskman_ops.workflows import provision as provision_module
+
+    from taskman_ops.host_protocol import HostRequest
+
+    assert isinstance(request, HostRequest)
+    target = _artifact_target(request)
+    config = _controller_config(dict(request.paths))
+    archive = tmp_path / archive_name
+    shutil.copyfile(target.artifact.archive, archive)
+    stem = archive.name[: -len(".tar.gz")]
+    archive.with_name(f"{stem}.manifest.json").write_text(
+        json.dumps(target.manifest.to_mapping(), sort_keys=True)
+    )
+    archive.with_name(f"{archive.name}.sha256").write_text(
+        f"{target.artifact_sha256}  {archive.name}\n"
+    )
+    facts = HostFacts(
+        "ubuntu", "26.04", "amd64", "systemd", True, False, None, config.ssh_port,
+        8 * 1024**3, 40 * 1024**3, 40 * 1024**3, (config.public_ipv4,), (), (), (),
+        CaddyState.ABSENT, (), (), False, (), (),
+    )
+    monkeypatch.setattr(host_acceptance, "collect_host_facts", lambda *_args, **_kwargs: facts)
+    monkeypatch.setattr(provision_module, "load_environment", lambda _name: config)
+    monkeypatch.setattr(
+        provision_module,
+        "decrypt_secrets",
+        lambda _name: SimpleNamespace(database_password="test-password"),
+    )
+    monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
+    monkeypatch.setattr(provision_module, "render_pgpass", lambda *_args: b"pgpass\n")
+    monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
+    monkeypatch.setattr(
+        provision_module,
+        "build_caddy_plan",
+        lambda _config: CaddyPlan(
+            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
+            (), ("caddy",), "taskman.example.test {\n}\n",
+        ),
+    )
+    monkeypatch.setattr(
+        provision_module,
+        "converge_provisioning",
+        _converge_native_provision_writers(runtime_path),
+    )
+    return config, archive, target
+
+
+def _default_provision(archive: Path, *, migration_policy: str = "backward-compatible") -> Invocation:
+    return Invocation(
+        command="provision",
+        environment="production",
+        yes=True,
+        artifact=archive,
+        migration_policy=migration_policy,
+    )
+
+
+def test_default_public_provision_refreshes_an_existing_scheduler_under_genesis_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing pause/wait/replace/resume would overwrite a live scheduler unsafely."""
+
+    request = host_deploy_tests._request(tmp_path / "scheduler-refresh", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+    )
+    _config, archive, target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="scheduler-refresh.tar.gz"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["scheduler_sha256"] = "e" * 64
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = provision(_default_provision(archive))
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert _state(dict(request.paths), runtime_path).selected_release_id == target.release_id
+    assert runtime["native_provision_writes"] == 1
+    assert runtime["scheduler_sha256"] != "e" * 64
+    assert runtime["events"].index("scheduler-stop") < runtime["events"].index("scheduler-wait")
+    assert runtime["events"].index("scheduler-wait") < runtime["events"].index("scheduler-replace")
+    assert runtime["events"].index("scheduler-replace") < runtime["events"].index("scheduler-start")
+
+
+def test_default_public_provision_refuses_unattended_post_confirmation_authority_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the second authority comparison would let --yes mutate a changed host."""
+
+    request = host_deploy_tests._request(tmp_path / "authority-drift", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    _config, archive, _target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="authority-drift.tar.gz"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["drift_after_authority_calls"] = 1
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = provision(_default_provision(archive))
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.SAFETY
+    assert runtime.get("native_provision_writes", 0) == 0
+    assert runtime["events"] == []
+
+
+def test_default_public_provision_records_physical_failed_predecessor_before_equal_schema_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting the stop or physical predecessor would make same-schema recovery unsafe."""
+
+    b_request = host_deploy_tests._request(
+        tmp_path / "physical-b", operation="genesis", previous=None, migrations=(host_deploy_tests.MIGRATION,)
+    )
+    c_request = replace(
+        host_deploy_tests._request(
+            tmp_path / "physical-c", operation="genesis", previous=None,
+            migrations=(host_deploy_tests.MIGRATION,), application_version="0.3.0",
+        ),
+        paths=b_request.paths,
+    )
+    host_deploy_tests._install_unselected_candidate(b_request)
+    b_target = _artifact_target(b_request)
+    paths = host_deploy.ManagedPaths.from_mapping(dict(b_request.paths))
+    install = Path(paths.local(paths.install_root))
+    (install / "current").symlink_to(install / "releases" / b_target.release_id)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        verification="passing",
+        migrations=(20260905120000,),
+        migration_result=(20260905120000,),
+    )
+    _config, archive, c_target = _configure_default_public_provision(
+        monkeypatch, tmp_path, c_request, remote, runtime_path, archive_name="physical-c.tar.gz"
+    )
+
+    result = provision(_default_provision(archive, migration_policy="no-change"))
+
+    state = _state(dict(b_request.paths), runtime_path)
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert state.selected_release_id == c_target.release_id
+    assert len(state.selections) == 1
+    assert state.selections[0].previous_release_id is None
+    assert state.selections[0].observed_previous_release_id == b_target.release_id
+    assert runtime["events"].index("service-stop") < runtime["events"].index("current-swap")
+
+
+def test_default_public_provision_replays_only_the_exact_completed_lost_genesis_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treating a lost result as a fresh install would duplicate or invent history."""
+
+    request = host_deploy_tests._request(tmp_path / "lost-genesis", operation="genesis", previous=None)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    _config, archive, target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="lost-genesis.tar.gz"
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["lose_genesis_result_once"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    lost = provision(_default_provision(archive))
+    recovered = provision(_default_provision(archive))
+
+    state = _state(dict(request.paths), runtime_path)
+    assert lost.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert lost.facts["mutation_state"] == "changed"
+    assert recovered.exit_status is ExitStatus.OK, recovered.facts
+    assert state.selected_release_id == target.release_id
+    assert [selection.release_id for selection in state.selections] == [target.release_id]
+    assert state.selections[0].previous_release_id is None
+    assert state.backup_protections == ()
+
+    changed_request = replace(
+        host_deploy_tests._request(
+            tmp_path / "lost-genesis-changed", operation="genesis", previous=None,
+            application_version="0.3.0",
+        ),
+        paths=request.paths,
+    )
+    _changed_config, changed_archive, _changed_target = _configure_default_public_provision(
+        monkeypatch, tmp_path, changed_request, remote, runtime_path, archive_name="lost-genesis-changed.tar.gz"
+    )
+    changed = provision(_default_provision(changed_archive))
+
+    assert changed.exit_status is ExitStatus.SAFETY
+    assert [selection.release_id for selection in _state(dict(request.paths), runtime_path).selections] == [target.release_id]
+
+
+def test_default_public_provision_preserves_existing_credentials_and_database_before_partial_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing admitted credentials or data would destroy partial-recovery authority."""
+
+    request = host_deploy_tests._request(
+        tmp_path / "credential-recovery", operation="genesis", previous=None,
+        applied_migrations=(20260905120000,),
+        migrations=(host_deploy_tests.MIGRATION, host_deploy_tests.SECOND_MIGRATION),
+    )
+    host_deploy_tests._install_unselected_candidate(request)
+    preserved = {"runtime": b"RUNTIME=value\n", "pgpass": b"pgpass\n"}
+    remote = _ControllerRemote(credentials=preserved)
+    remote, runtime_path = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        remote=remote,
+        verification="passing",
+        migrations=(20260905120000,),
+        migration_result=(20260905120000, 20260906120000),
+    )
+    _config, archive, _target = _configure_default_public_provision(
+        monkeypatch, tmp_path, request, remote, runtime_path, archive_name="credential-recovery.tar.gz"
+    )
+    before = json.loads(runtime_path.read_text())
+
+    result = provision(_default_provision(archive))
+
+    after = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert remote.credentials == preserved
+    assert {content for _script, content in remote.credential_checks} == set(preserved.values())
+    assert after["database_contents"] == before["database_contents"]
+
+
+def test_default_public_provision_refuses_credential_mismatch_before_partial_recovery_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping credential admission would permit replacement before recovery is proved safe."""
+
+    preserved = {"runtime": b"RUNTIME=value\n", "pgpass": b"pgpass\n"}
+    mismatch_remote = _ControllerRemote(credentials=preserved, credential_mismatch=True)
+    mismatch_remote, mismatch_state = _install_public_controller(
+        monkeypatch,
+        tmp_path,
+        remote=mismatch_remote,
+        verification="passing",
+        migrations=(20260905120000,),
+        migration_result=(20260905120000, 20260906120000),
+    )
+    mismatch_request = host_deploy_tests._request(
+        tmp_path / "mismatch-request", operation="genesis", previous=None,
+        applied_migrations=(20260905120000,),
+        migrations=(host_deploy_tests.MIGRATION, host_deploy_tests.SECOND_MIGRATION),
+    )
+    host_deploy_tests._install_unselected_candidate(mismatch_request)
+    _mismatch_config, mismatch_archive, _mismatch_target = _configure_default_public_provision(
+        monkeypatch, tmp_path, mismatch_request, mismatch_remote, mismatch_state,
+        archive_name="credential-mismatch.tar.gz",
+    )
+    mismatch_before = json.loads(mismatch_state.read_text())
+
+    refused = provision(_default_provision(mismatch_archive))
+
+    mismatch_after = json.loads(mismatch_state.read_text())
+    assert refused.exit_status is ExitStatus.SAFETY
+    assert mismatch_after.get("native_provision_writes", 0) == 0
+    assert mismatch_after["events"] == []
+    assert mismatch_after["database_contents"] == mismatch_before["database_contents"]
 
 
 def test_public_controller_retries_a_selected_unverified_release_without_synthetic_success(
