@@ -567,6 +567,131 @@ def test_automatic_deploy_retries_a_clean_build_drift_during_production_resoluti
     assert admissions == [(remote, environment), (remote, environment)]
 
 
+def test_automatic_deploy_refuses_after_exhausting_initial_clean_resolution_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing the initial resolution guard would turn an unstable checkout into an unbounded loop."""
+    from taskman_ops.releases.artifacts import CleanInputs
+    from taskman_ops.releases.manifests import OTP_VERSION
+    from taskman_ops.workflows.deploy import DeploymentAdmissionAuthority
+
+    environment = object()
+    remote = object()
+    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    identified = 0
+    resolutions = 0
+    admissions: list[object] = []
+
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
+
+    def identify(_repo: Path) -> CleanInputs:
+        nonlocal identified
+        identified += 1
+        return inputs
+
+    def resolve(*_args: object, **_kwargs: object) -> DeploymentTarget:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions > 4:
+            pytest.fail("initial clean resolution retried beyond its bounded attempt budget")
+        raise OpsError(
+            ExitStatus.INVALID,
+            "artifact",
+            "source inputs changed before the fresh build completed",
+            changed=False,
+        )
+
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", identify)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_target", resolve)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deployment_admission_authority",
+        lambda actual_remote, actual_environment: admissions.append((actual_remote, actual_environment))
+        or DeploymentAdmissionAuthority((), None, None),
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deploy",
+        lambda *_args, **_kwargs: pytest.fail("exhausted resolution must not enter deployment planning"),
+    )
+
+    with pytest.raises(OpsError) as raised:
+        dispatch(Invocation(command="deploy", environment="production"))
+
+    assert raised.value.status is ExitStatus.SAFETY
+    assert resolutions == 4
+    assert identified == 4
+    assert admissions == [(remote, environment)] * 4
+
+
+def test_automatic_deploy_shares_initial_retry_budget_with_workflow_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the CLI-to-workflow count handoff would permit extra unstable clean refreshes."""
+    from taskman_ops.releases.artifacts import CleanInputs
+    from taskman_ops.releases.manifests import OTP_VERSION
+    from taskman_ops.workflows.deploy import DeploymentAdmissionAuthority
+    from tests.support.environments import environment_config
+    from tests.workflows.support import deployment_artifact
+
+    environment = environment_config()
+    remote = object()
+    artifact = deployment_artifact(tmp_path)
+    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    resolutions = 0
+    expected = {
+        "selected_release_id": artifact.manifest.release_id,
+        "last_successful_selection_id": None,
+        "applied_migrations": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": "b" * 64,
+        "backup_timer_enabled": True,
+        "downgrade_baseline_sha256": "c" * 64,
+    }
+
+    monkeypatch.setattr("taskman_ops.config.load_environment", lambda _name: environment)
+    monkeypatch.setattr("taskman_ops.remote.connect", lambda _environment: remote)
+    monkeypatch.setattr("taskman_ops.releases.artifacts.identify_clean_inputs", lambda _repo: inputs)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.deployment_admission_authority",
+        lambda *_args: DeploymentAdmissionAuthority((), None, None),
+    )
+
+    def resolve(*_args: object, **_kwargs: object) -> DeploymentTarget:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions <= 2:
+            raise OpsError(
+                ExitStatus.INVALID,
+                "artifact",
+                "source inputs changed before the fresh build completed",
+                changed=False,
+            )
+        if resolutions > 4:
+            pytest.fail("workflow refresh exceeded the shared clean retry budget")
+        return DeploymentTarget(artifact=artifact, release_record=None, source="built")
+
+    monkeypatch.setattr("taskman_ops.releases.artifacts.resolve_deploy_target", resolve)
+    monkeypatch.setattr("taskman_ops.workflows.deploy.validate_operational_preflight", lambda *_args: None)
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (artifact.manifest.release_id, (), ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: expected)
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids",
+        lambda *_args, **_kwargs: ((), {"protections": (), "independent_backup_ids": frozenset()}),
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: False)
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("unstable clean source must not mutate"),
+    )
+
+    result = dispatch(Invocation(command="deploy", environment="production", yes=True))
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+    assert resolutions == 4
+
+
 def test_malformed_dispatch_result_maps_to_stable_secret_free_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

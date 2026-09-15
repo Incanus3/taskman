@@ -9,7 +9,13 @@ import pytest
 
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host_helper.records import ReleaseRecord
-from taskman_ops.releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_match, resolve_deploy_target
+from taskman_ops.releases.artifacts import (
+    CleanInputs,
+    DeploymentTarget,
+    clean_inputs_drifted,
+    clean_inputs_match,
+    resolve_deploy_target,
+)
 from taskman_ops.releases.build import SourceState
 from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import (
@@ -214,6 +220,40 @@ def test_target_resolution_does_not_match_a_record_when_any_clean_provenance_inp
             clean_inputs=inputs, artifact_root=tmp_path / "cache", builder=lambda _repo, _root: artifact,
         )
     assert raised.value.status is ExitStatus.INVALID
+
+
+def test_clean_input_drift_classifier_accepts_only_the_actual_fresh_build_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrying ordinary artifact failures could hide a broken local build behind source churn."""
+    expected = _artifact(tmp_path / "expected")
+    changed = _artifact(tmp_path / "changed", revision="b" * 40)
+    _clean_checkout(monkeypatch)
+
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo",
+            None,
+            installed_records=(),
+            selected_release_id=None,
+            last_successful_release_id=None,
+            clean_inputs=_inputs(expected),
+            artifact_root=tmp_path / "cache",
+            builder=lambda _repo, _root: changed,
+        )
+
+    assert clean_inputs_drifted(raised.value) is True
+
+    unrelated = OpsError(
+        ExitStatus.INVALID,
+        "artifact",
+        "automatic clean resolution needs preidentified clean inputs",
+        changed=False,
+    )
+    failed_build = OpsError(ExitStatus.LOCAL_PREREQUISITE, "artifact", "release builder failed")
+
+    assert clean_inputs_drifted(unrelated) is False
+    assert clean_inputs_drifted(failed_build) is False
 
 
 def test_invalid_cache_is_preserved_while_a_fresh_target_is_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

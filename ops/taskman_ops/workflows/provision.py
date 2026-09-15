@@ -267,8 +267,8 @@ def provision(
                     ))
 
             # Confirmation authorizes only the observed resource authority. A
-            # drifted snapshot is discarded and re-planned before pyinfra can
-            # receive any managed-write request, including under --yes.
+            # drifted snapshot is refused; a later invocation must collect and
+            # confirm a new plan before pyinfra receives a managed-write request.
             refreshed_discovery = cap.discover(
                 remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256
             )

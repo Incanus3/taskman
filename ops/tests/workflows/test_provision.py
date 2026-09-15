@@ -866,6 +866,47 @@ def test_provision_retries_clean_build_drift_during_target_resolution(
     assert host.events == ["discovery", "discovery", "plan", "discovery", "provisioning"]
 
 
+def test_provision_refuses_after_exhausting_clean_resolution_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing provision's exhaustion guard would keep rediscovering an unstable checkout."""
+    from taskman_ops.workflows import provision as provision_module
+
+    host = Host()
+    identified = 0
+    resolutions = 0
+
+    def identify(_repo: Path) -> object:
+        nonlocal identified
+        identified += 1
+        return object()
+
+    def resolve(*_args: object) -> object:
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions > 4:
+            pytest.fail("provision resolution retried beyond its bounded attempt budget")
+        raise OpsError(
+            ExitStatus.INVALID,
+            "artifact",
+            "source inputs changed before the fresh build completed",
+            changed=False,
+        )
+
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", identify)
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "target_resolution": resolve}
+    )
+
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "provisioning-incomplete"
+    assert resolutions == 4
+    assert identified == 4
+    assert host.events == ["discovery"] * 4
+
+
 def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -> None:
     host = Host()
 
