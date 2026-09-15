@@ -227,7 +227,9 @@ def restore(request: HostRequest) -> HostResult:
                     ) as error:
                         raise _Retryable("backup") from error
                     changed = True
-                    target = append_safety_attempt(target, safety.backup_id)
+                    target = append_safety_attempt(
+                        target, safety.backup_id, promote_original=True
+                    )
                     try:
                         replace_restore_target(inputs.paths, target)
                     except (OSError, RecordError) as error:
@@ -492,7 +494,7 @@ def _require_initial_arrangement(databases: Mapping[str, object]) -> None:
 
 
 def _original_writes_cannot_be_excluded(
-    state: HostState,
+    _state: HostState,
     databases: Mapping[str, object],
     target: RestoreTarget,
 ) -> bool:
@@ -502,7 +504,6 @@ def _original_writes_cannot_be_excluded(
     return (
         isinstance(canonical, Mapping)
         and canonical["oid"] == target.original_database_oid
-        and state.service_state != "stopped"
     )
 
 
@@ -693,6 +694,11 @@ def _cleanup_completed(
         raise RestoreManual("restore success is unavailable")
     required = tuple(sorted({target.backup_id, *(str(item["backup_id"]) for item in target.safety_backup_attempts)}))
     known_changed = False
+
+    def protection_removed() -> None:
+        nonlocal known_changed
+        known_changed = True
+
     try:
         _record, protection_changed = complete_successful_selection(
             inputs.paths,
@@ -701,9 +707,13 @@ def _cleanup_completed(
             observed_previous_release_id=target.observed_previous_release_id,
             backup_id=target.safety_backup_id,
             recovery_backup_ids=required,
+            on_protection_removed=protection_removed,
         )
     except (OSError, RecordError, ValueError) as error:
-        raise _Retryable("history") from error
+        raise _Retryable(
+            "history",
+            known_changed=known_changed or bool(getattr(error, "changed", False)),
+        ) from error
     known_changed = known_changed or protection_changed
     retired = databases["retired"]
     if retired is not None:

@@ -88,6 +88,7 @@ def _state(
     protections: tuple[BackupProtection, ...] = (),
     backups: tuple[BackupRecord, ...] = (),
     retiring: tuple[BackupProtection, ...] = (),
+    successful_backup_ids: frozenset[str] = frozenset(),
 ) -> HostState:
     return HostState(
         selected_release_id=TARGET,
@@ -101,6 +102,7 @@ def _state(
         warnings=(),
         backup_protections=protections,
         retiring_backup_protections=retiring,
+        successful_backup_ids=successful_backup_ids,
     )
 
 
@@ -621,6 +623,51 @@ def test_explicit_completed_retry_removes_stale_protection_without_duplicate_his
     assert record == latest
     assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
     assert len(list(Path(paths.local(paths.selection_root)).glob("selection-*.json"))) == 1
+
+
+def test_completed_retry_reports_partial_resolved_protection_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = managed_paths(tmp_path)
+    latest = SelectionRecord(TARGET, None, BACKUP, AT, 2, None, (BACKUP, OTHER_BACKUP))
+    append_selection(paths, latest)
+    protections = (
+        _protection(backup_id=BACKUP, base_selection_id=None, attempt_number=0),
+        _protection(backup_id=OTHER_BACKUP, base_selection_id=None, attempt_number=1),
+    )
+    for protection in protections:
+        write_backup_protection(paths, protection)
+    unlink = os.unlink
+    removals = 0
+
+    def interrupted(path, *args, **kwargs):
+        nonlocal removals
+        removals += 1
+        if removals == 2:
+            raise OSError("interrupted after first fsync")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(protection_module.os, "unlink", interrupted)
+
+    with pytest.raises(RecordError) as raised:
+        protection_module.complete_successful_selection(
+            paths,
+            _state(
+                selections=(latest,),
+                protections=protections,
+                backups=(_backup(BACKUP), _backup(OTHER_BACKUP)),
+                successful_backup_ids=frozenset({BACKUP, OTHER_BACKUP}),
+            ),
+            release_id=TARGET,
+            observed_previous_release_id=None,
+            backup_id=BACKUP,
+            recovery_backup_ids=(BACKUP, OTHER_BACKUP),
+        )
+
+    assert raised.value.changed is True
+    assert not Path(paths.local(paths.backup_protection(BACKUP))).exists()
+    assert Path(paths.local(paths.backup_protection(OTHER_BACKUP))).exists()
 
 
 def test_same_release_physical_transition_appends_meaningful_success(tmp_path: Path) -> None:

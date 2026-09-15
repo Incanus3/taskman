@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -90,6 +90,14 @@ def _format_timestamp(value: object) -> str:
     if not isinstance(value, datetime) or value.tzinfo != UTC or value.microsecond:
         raise RecordError("invalid protection creation time")
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+class ProtectionCleanupError(RecordError):
+    """Resolved-protection cleanup failed after a known number of removals."""
+
+    def __init__(self, message: str, *, changed: bool) -> None:
+        super().__init__(message)
+        self.changed = changed
 
 
 @dataclass(frozen=True)
@@ -621,6 +629,7 @@ def complete_successful_selection(
     backup_id: str | None = None,
     recovery_backup_ids: Iterable[str] = (),
     selected_at: datetime | None = None,
+    on_protection_removed: Callable[[], None] | None = None,
 ) -> tuple[SelectionRecord, bool]:
     """Publish verified success, then retire protections whose references are durable.
 
@@ -698,7 +707,7 @@ def complete_successful_selection(
         and set(referenced_ids).issubset(latest.recovery_backup_ids)
     )
     if generic_no_op or exact_completed_retry:
-        _remove_resolved_protections(paths, resolved)
+        _remove_with_callback(paths, resolved, on_protection_removed)
         return latest, False
 
     if latest is None:
@@ -721,35 +730,55 @@ def complete_successful_selection(
         referenced_ids,
     )
     append_selection(paths, record)
-    _remove_resolved_protections(paths, (*resolved, *unresolved))
+    _remove_with_callback(paths, (*resolved, *unresolved), on_protection_removed)
     return record, True
+
+
+def _remove_with_callback(
+    paths: ManagedPaths,
+    protections: Iterable[BackupProtection],
+    callback: Callable[[], None] | None,
+) -> bool:
+    if callback is None:
+        return _remove_resolved_protections(paths, protections)
+    return _remove_resolved_protections(paths, protections, on_removed=callback)
 
 
 def _remove_resolved_protections(
     paths: ManagedPaths,
     protections: Iterable[BackupProtection],
-) -> None:
+    *,
+    on_removed: Callable[[], None] | None = None,
+) -> bool:
     protections = tuple(sorted(protections, key=lambda item: item.backup_id))
     if not protections:
-        return
+        return False
     paths, owner_uid, root = _prepare_paths(paths)
     try:
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as error:
         raise RecordError("unable to open backup protection directory") from error
+    changed = False
     try:
         for protection in protections:
             target = Path(paths.local(paths.backup_protection(protection.backup_id)))
             _safe_file(target, owner_uid=owner_uid)
             os.unlink(target.name, dir_fd=descriptor)
             os.fsync(descriptor)
+            changed = True
+            if on_removed is not None:
+                on_removed()
     except (OSError, RecordError) as error:
-        raise RecordError("unable to remove resolved backup protection") from error
+        raise ProtectionCleanupError(
+            "unable to remove resolved backup protection", changed=changed
+        ) from error
     finally:
         os.close(descriptor)
+    return changed
 
 __all__ = [
     "BackupProtection",
+    "ProtectionCleanupError",
     "allocate_protection_attempt",
     "backup_protection_sha256",
     "backup_protection_retirement_path",

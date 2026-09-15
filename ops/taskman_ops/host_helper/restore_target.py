@@ -191,8 +191,8 @@ class RestoreTarget:
                     raise RecordError("replacement cannot discard the original database")
         object.__setattr__(self, "replacement", replacement)
         attempts = _attempts(self.safety_backup_attempts)
-        if attempts[-1]["backup_id"] != self.safety_backup_id:
-            raise RecordError("active safety backup is not the newest registered attempt")
+        if not any(item["backup_id"] == self.safety_backup_id for item in attempts):
+            raise RecordError("active original-database safety backup is not registered")
         object.__setattr__(self, "safety_backup_attempts", attempts)
         _record_json(self.to_mapping())
 
@@ -281,7 +281,12 @@ def allocate_safety_attempt(record: RestoreTarget) -> int:
     return max(int(item["attempt_number"]) for item in record.safety_backup_attempts) + 1
 
 
-def append_safety_attempt(record: RestoreTarget, backup_id: str) -> RestoreTarget:
+def append_safety_attempt(
+    record: RestoreTarget,
+    backup_id: str,
+    *,
+    promote_original: bool = False,
+) -> RestoreTarget:
     """Build the next safety-attempt binding without publishing it yet.
 
     The restore workflow creates and validates the fresh backup first, then
@@ -300,9 +305,11 @@ def append_safety_attempt(record: RestoreTarget, backup_id: str) -> RestoreTarge
             {"backup_id": backup_id, "attempt_number": allocate_safety_attempt(record)}
         ),
     )
+    if type(promote_original) is not bool:
+        raise TypeError("original safety promotion must be a boolean")
     return replace(
         record,
-        safety_backup_id=backup_id,
+        safety_backup_id=backup_id if promote_original else record.safety_backup_id,
         safety_backup_attempts=attempts,
     )
 

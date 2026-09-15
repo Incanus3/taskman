@@ -791,6 +791,29 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
         [completed, fresh],
         mutations,
     )
+    preflight_calls = []
+
+    def preflight(*_args):
+        preflight_calls.append(True)
+        sufficient = len(preflight_calls) > 1
+        return type(
+            "Facts",
+            (),
+            {
+                "available_disk_bytes": 10_000,
+                "backup_available_disk_bytes": 10_000 if sufficient else 1,
+                "database_available_disk_bytes": 10_000 if sufficient else 1,
+                "database_size_bytes": {
+                    "canonical": 4096,
+                    "temporary": None,
+                    "retired": None,
+                },
+            },
+        )()
+
+    monkeypatch.setattr(
+        "taskman_ops.workflows.restore.validate_restore_preflight", preflight
+    )
     confirmations = []
 
     outcome = restore(
@@ -808,3 +831,5 @@ def test_reapply_finishes_completed_binding_then_rediscovers_and_confirms_fresh_
     assert mutations[1]["request"].parameters["reapply"] is True
     assert len(confirmations) == 1
     assert confirmations[0]["planned_pre_restore_backup"] is True
+    assert len(preflight_calls) == 2
+    assert confirmations[0]["available_database_bytes"] == 10_000

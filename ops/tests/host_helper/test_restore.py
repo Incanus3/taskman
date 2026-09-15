@@ -367,6 +367,27 @@ def test_bound_retry_with_writable_original_registers_fresh_safety_before_stop_a
     assert {first_safety.backup_id, latest.backup_id}.issubset(latest.recovery_backup_ids)
 
 
+def test_bound_retry_refreshes_original_safety_even_when_service_is_now_stopped(
+    tmp_path, monkeypatch
+):
+    """Current stopped state cannot exclude writes since the binding was published."""
+
+    paths, source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.service_state = "stopped"
+    first_safety = _backup(paths, "backup-" + "c" * 32, CURRENT, b"stale safety")
+    _binding(paths, source, runtime)
+    _install(monkeypatch, runtime)
+
+    result = restore_module.restore(_request(paths, runtime))
+
+    assert result.outcome == "succeeded"
+    assert runtime.events.index("backup:taskman") < runtime.events.index("stop")
+    latest = observe_host_state(paths).latest_successful_selection
+    assert latest is not None and latest.backup_id != first_safety.backup_id
+    assert {first_safety.backup_id, latest.backup_id}.issubset(latest.recovery_backup_ids)
+
+
 def test_apply_time_dump_mode_drift_refuses_without_repair_or_scheduler(
     tmp_path, monkeypatch
 ):
@@ -589,6 +610,32 @@ def test_cleanup_retired_drop_is_known_changed_when_binding_removal_then_fails(
     assert interrupted.outcome == "retryable"
     assert runtime.events[:2] == ["drop-retired", "remove-binding"]
     assert interrupted.state["mutation_state"] == "changed"
+
+
+def test_completed_cleanup_protection_removal_is_known_when_retired_drop_fails(
+    tmp_path, monkeypatch
+):
+    paths, _source = _seed(tmp_path)
+    runtime = Runtime()
+    runtime.cleanup_failure = "retired"
+    _install(monkeypatch, runtime)
+    first = restore_module.restore(_request(paths, runtime))
+    assert first.outcome == "retryable"
+    state = observe_host_state(paths, allow_selection_transition=True)
+    write_backup_protection(
+        paths,
+        BackupProtection(
+            1, INPUT_BACKUP, state.latest_successful_selection_filename,
+            TARGET, 0, datetime(2026, 9, 14, 12, tzinfo=UTC),
+        ),
+    )
+    runtime.cleanup_failure = "retired"
+
+    interrupted = restore_module.restore(_request(paths, runtime))
+
+    assert interrupted.outcome == "retryable"
+    assert interrupted.state["mutation_state"] == "changed"
+    assert not Path(paths.local(paths.backup_protection(INPUT_BACKUP))).exists()
 
 
 @pytest.mark.parametrize(

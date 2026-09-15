@@ -159,7 +159,11 @@ def test_safety_attempt_reference_is_published_before_exact_retirement(tmp_path:
     paths = managed_paths(tmp_path)
     first = _target()
     write_restore_target(paths, first)
-    fresh = append_safety_attempt(first, "backup-00000000000000000000000000000002")
+    fresh = append_safety_attempt(
+        first,
+        "backup-00000000000000000000000000000002",
+        promote_original=True,
+    )
 
     updated = retire_safety_attempts(paths, fresh, ())
 
@@ -180,7 +184,11 @@ def test_sixty_five_safety_attempts_converge_to_original_newest_and_three_recent
     write_restore_target(paths, record)
 
     for attempt_number in range(1, 66):
-        record = append_safety_attempt(record, f"backup-{attempt_number + 1:032x}")
+        record = append_safety_attempt(
+            record,
+            f"backup-{attempt_number + 1:032x}",
+            promote_original=True,
+        )
         replace_restore_target(paths, record)
         record = retire_safety_attempts(paths, record, safety_attempt_prune_ids(record))
 
@@ -195,6 +203,20 @@ def test_sixty_five_safety_attempts_converge_to_original_newest_and_three_recent
         json.loads(Path(paths.local(paths.restore_target_path)).read_text(encoding="utf-8"))
     )
     assert persisted == record
+
+
+def test_newer_failed_restore_backup_does_not_replace_original_safety_reference() -> None:
+    """Task 9 may append another safety kind without changing the original copy."""
+
+    original = _target()
+    failed_restore = append_safety_attempt(
+        original,
+        "backup-00000000000000000000000000000002",
+        promote_original=False,
+    )
+
+    assert failed_restore.safety_backup_id == original.safety_backup_id
+    assert failed_restore.safety_backup_attempts[-1]["backup_id"] != original.safety_backup_id
 
 
 def test_restore_target_replacement_has_an_exact_discard_intent() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from io import StringIO
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -17,7 +18,7 @@ import sys
 import pytest
 
 from taskman_ops.cli import Invocation, main
-from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.errors import ExitStatus, HelperTransportError, OpsError
 from taskman_ops.output import WorkflowResult, register_secret, clear_secrets
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.helper_client.package import build_helper_package, build_scheduled_backup_package
@@ -315,8 +316,9 @@ def restore_databases(*_args, **_kwargs):
 def create_temporary(*_args, **_kwargs):
     value = read_state()
     value["events"].append("temporary-created")
+    value["next_restore_oid"] += 1
     value["restore_databases"]["temporary"] = {
-        "oid": 202,
+        "oid": value["next_restore_oid"],
         "owner": "taskman",
         "migration_table_present": False,
         "applied_migrations": None,
@@ -326,14 +328,17 @@ def create_temporary(*_args, **_kwargs):
 def register_temporary(paths, target, *_args, **_kwargs):
     value = read_state()
     value["events"].append("temporary-registered")
-    updated = replace(target, restored_database_oid=202, temporary_creation_pending=False)
+    temporary = value["restore_databases"]["temporary"]
+    assert temporary is not None and temporary["migration_table_present"] is False
+    updated = replace(target, restored_database_oid=temporary["oid"], temporary_creation_pending=False)
     replace_restore_target(paths, updated)
     write_state(value)
     return updated
 
 def load_temporary(target, *_args, **_kwargs):
     value = read_state()
-    assert target.restored_database_oid == 202 and not target.temporary_creation_pending
+    assert not target.temporary_creation_pending
+    assert value["restore_databases"]["temporary"]["oid"] == target.restored_database_oid
     value["events"].append("dump-loaded")
     value["restore_databases"]["temporary"].update(
         migration_table_present=True,
@@ -360,12 +365,36 @@ def drop_retired(_database, _credentials, oid):
         value["restore_databases"]["retired"] = None
         write_state(value)
 
+def begin_rebuild(paths, target):
+    value = read_state()
+    value["events"].append("rebuild-pending")
+    write_state(value)
+    updated = replace(target, temporary_creation_pending=True)
+    replace_restore_target(paths, updated)
+    return updated
+
+def drop_temporary(_database, _credentials, oid):
+    value = read_state()
+    temporary = value["restore_databases"]["temporary"]
+    if temporary is not None:
+        assert temporary["oid"] == oid
+        value["events"].append("temporary-dropped")
+        value["restore_databases"]["temporary"] = None
+        write_state(value)
+
 _write_restore_target = restore_module.write_restore_target
 def write_binding(paths, target):
     value = read_state()
     value["events"].append("binding-published")
     write_state(value)
     return _write_restore_target(paths, target)
+
+_remove_restore_target = restore_module.remove_restore_target
+def remove_binding(paths):
+    value = read_state()
+    value["events"].append("binding-removed")
+    write_state(value)
+    return _remove_restore_target(paths)
 
 discover_module.observe_restore_databases = restore_databases
 discover_module.run_command = command
@@ -375,10 +404,13 @@ restore_module.observe_database_available_bytes = lambda *_args: read_state()["d
 restore_module.create_validated_backup = backup
 restore_module.create_temporary_database = create_temporary
 restore_module.register_restored_database = register_temporary
+restore_module.begin_temporary_rebuild = begin_rebuild
+restore_module.drop_registered_temporary = drop_temporary
 restore_module.load_registered_temporary = load_temporary
 restore_module.rename_registered_database = rename_database
 restore_module.drop_registered_retired = drop_retired
 restore_module.write_restore_target = write_binding
+restore_module.remove_restore_target = remove_binding
 restore_module.run_command = command
 restore_module._terminate_connections = lambda *_args: None
 restore_module.verify = verify
@@ -579,6 +611,7 @@ def _install_public_restore_controller(
     tmp_path: Path,
     *,
     scheduler_failure: bool,
+    state_family: str = "initial",
 ) -> tuple[EnvironmentConfig, Path, object, _ControllerRemote, Path]:
     """Keep public restore and the packaged helper real; replace only native effects."""
 
@@ -586,7 +619,64 @@ def _install_public_restore_controller(
     from taskman_ops.workflows import restore as restore_workflow
     from taskman_ops.workflows.operational_preflight import RestorePreflightFacts
 
+    from taskman_ops.host_helper.records import SelectionRecord, append_selection
+    from taskman_ops.host_helper.restore_target import replace_restore_target
+
     paths, source = host_restore_tests._seed(tmp_path / "public-restore")
+    restore_databases = host_restore_tests.Runtime().observe_databases()
+    target = None
+    if state_family != "initial":
+        arrangement = {
+            "binding": "canonical",
+            "created": "canonical+temporary",
+            "registered": "canonical+temporary",
+            "partial": "canonical+temporary",
+            "temporary-retired": "temporary+retired",
+            "retired": "retired",
+            "swapped": "canonical+retired",
+            "durable-retired": "canonical+retired",
+            "durable-canonical": "canonical+retired",
+        }[state_family]
+        model = host_restore_tests.Runtime(arrangement)
+        restore_databases = model.observe_databases()
+        host_restore_tests._backup(
+            paths, "backup-" + "c" * 32, host_restore_tests.CURRENT, b"stale safety"
+        )
+        target = host_restore_tests._binding(paths, source, model)
+        if state_family == "created":
+            target = replace(
+                target, restored_database_oid=None, temporary_creation_pending=True
+            )
+            replace_restore_target(paths, target)
+        if state_family == "partial":
+            restore_databases["temporary"].update(
+                migration_table_present=True, applied_migrations=[]
+            )
+        if state_family == "retired":
+            target = replace(
+                target, restored_database_oid=202, temporary_creation_pending=True
+            )
+            replace_restore_target(paths, target)
+        if state_family.startswith("durable-"):
+            append_selection(
+                paths,
+                SelectionRecord(
+                    host_restore_tests.TARGET,
+                    host_restore_tests.CURRENT,
+                    target.safety_backup_id,
+                    datetime(2026, 9, 14, 12, tzinfo=UTC),
+                    2,
+                    host_restore_tests.CURRENT,
+                    tuple(sorted({source.backup_id, target.safety_backup_id})),
+                ),
+            )
+            current = Path(paths.local(paths.current_link))
+            current.unlink()
+            current.symlink_to(
+                Path(paths.local(paths.release_root / host_restore_tests.TARGET))
+            )
+            if state_family == "durable-canonical":
+                restore_databases["retired"] = None
     config = EnvironmentConfig.model_validate(valid_environment(ssh_port=22)).model_copy(
         update={"install_root": paths.install_root, "backup_root": paths.backup_root}
     )
@@ -599,16 +689,8 @@ def _install_public_restore_controller(
                 "backup_count": 16,
                 "migrations": [host_restore_tests.VERSION],
                 "database_state": "ready",
-                "restore_databases": {
-                    "canonical": {
-                        "oid": 101,
-                        "owner": "taskman",
-                        "migration_table_present": True,
-                        "applied_migrations": [host_restore_tests.VERSION],
-                    },
-                    "temporary": None,
-                    "retired": None,
-                },
+                "restore_databases": restore_databases,
+                "next_restore_oid": 202 if target is not None and target.restored_database_oid is not None else 201,
                 "database_capacity": 1_000_000,
                 "scheduler_sha256": "e" * 64,
                 "scheduler_resources": {
@@ -631,13 +713,28 @@ def _install_public_restore_controller(
     real_run_request = helper.run_request
 
     def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        def invoke(_transport, selected, wire_request, **_options):
+            result = _wire_helper(wire_request, selected, runtime_path)
+            runtime = json.loads(runtime_path.read_text())
+            if wire_request.operation == "restore" and runtime.get("lose_restore_reply"):
+                runtime["lose_restore_reply"] = False
+                runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+                raise HelperTransportError(
+                    OpsError(
+                        ExitStatus.SAFETY,
+                        "helper",
+                        "restore helper reply was lost",
+                        True,
+                    ),
+                    helper_entry_dispatched=True,
+                )
+            return result
+
         return real_run_request(
             _remote,
             request,
             package=package,
-            invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
-                wire_request, selected, runtime_path
-            ),
+            invoker=invoke,
         )
 
     monkeypatch.setattr(
@@ -672,7 +769,13 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
         scheduler_failure=scheduler_failure,
     )
 
-    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+    plans = []
+    result = restore(
+        remote,
+        config,
+        source.backup_id,
+        confirm=lambda plan: plans.append(plan) or True,
+    )
 
     runtime = json.loads(runtime_path.read_text())
     binding = Path(paths.local(paths.restore_target_path))
@@ -696,6 +799,194 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
             "events"
         ].index("binding-published")
         assert not binding.exists()
+
+
+@pytest.mark.parametrize(
+    ("family", "required_events", "forbidden_events"),
+    (
+        (
+            "binding",
+            {"safety-backup", "temporary-created", "temporary-registered", "dump-loaded"},
+            set(),
+        ),
+        (
+            "created",
+            {"safety-backup", "temporary-registered", "dump-loaded"},
+            {"temporary-created"},
+        ),
+        (
+            "registered",
+            {"safety-backup", "rebuild-pending", "temporary-dropped", "dump-loaded"},
+            set(),
+        ),
+        (
+            "partial",
+            {"safety-backup", "rebuild-pending", "temporary-dropped", "dump-loaded"},
+            set(),
+        ),
+        (
+            "temporary-retired",
+            {"rebuild-pending", "temporary-dropped", "dump-loaded"},
+            {"safety-backup"},
+        ),
+        ("retired", {"temporary-created", "dump-loaded"}, {"safety-backup"}),
+        ("swapped", {"retired-dropped", "binding-removed"}, {"dump-loaded"}),
+        (
+            "durable-retired",
+            {"retired-dropped", "binding-removed"},
+            {"dump-loaded", "scheduler-replace"},
+        ),
+        (
+            "durable-canonical",
+            {"binding-removed"},
+            {"dump-loaded", "retired-dropped", "scheduler-replace"},
+        ),
+    ),
+)
+def test_public_packaged_restore_converges_each_durable_database_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    family: str,
+    required_events: set[str],
+    forbidden_events: set[str],
+) -> None:
+    """Real controller/package admission resumes each distinct durable family."""
+
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False, state_family=family
+    )
+    if family == "binding":
+        runtime = json.loads(runtime_path.read_text())
+        runtime["service_running"] = False
+        runtime["writes_after_binding"] = True
+        runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    plans = []
+    result = restore(
+        remote,
+        config,
+        source.backup_id,
+        confirm=lambda plan: plans.append(plan) or True,
+    )
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert required_events.issubset(runtime["events"])
+    assert forbidden_events.isdisjoint(runtime["events"])
+    assert not Path(paths.local(paths.restore_target_path)).exists()
+    if family == "binding":
+        assert plans[0]["planned_pre_restore_backup"] is True
+        assert runtime["events"].index("safety-backup") < runtime["events"].index(
+            "service-stop"
+        )
+
+
+def test_public_packaged_reapply_cleans_then_creates_one_fresh_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False, state_family="durable-retired"
+    )
+
+    result = restore(
+        remote, config, source.backup_id, reapply=True, confirm=lambda _plan: True
+    )
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.OK, result.facts
+    assert runtime["events"].count("binding-removed") == 2
+    assert runtime["events"].count("dump-loaded") == 1
+    assert runtime["events"].index("retired-dropped") < runtime["events"].index(
+        "safety-backup"
+    )
+    assert not Path(paths.local(paths.restore_target_path)).exists()
+
+
+def test_public_ordinary_retry_preserves_writes_after_durable_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, _paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False
+    )
+    first = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+    assert first.exit_status is ExitStatus.OK
+    runtime = json.loads(runtime_path.read_text())
+    runtime["later_write"] = "must survive"
+    runtime["events"] = []
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    retry = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    assert retry.exit_status is ExitStatus.OK, retry.facts
+    assert runtime["later_write"] == "must survive"
+    assert "dump-loaded" not in runtime["events"]
+    assert "safety-backup" not in runtime["events"]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("original-oid", "restored-oid", "owner", "unregistered-not-empty"),
+)
+def test_public_packaged_restore_refuses_database_identity_or_empty_proof_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    from taskman_ops.workflows.restore import restore
+
+    family = "registered" if drift == "restored-oid" else "binding"
+    config, runtime_path, _paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False, state_family=family
+    )
+    runtime = json.loads(runtime_path.read_text())
+    if drift == "original-oid":
+        runtime["restore_databases"]["canonical"]["oid"] = 999
+    elif drift == "restored-oid":
+        runtime["restore_databases"]["temporary"]["oid"] = 999
+    elif drift == "owner":
+        runtime["restore_databases"]["canonical"]["owner"] = "foreign"
+    else:
+        runtime["restore_databases"]["temporary"] = {
+            "oid": 202,
+            "owner": "taskman",
+            "migration_table_present": True,
+            "applied_migrations": [host_restore_tests.VERSION],
+        }
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = restore(remote, config, source.backup_id, dry_run=True)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert json.loads(runtime_path.read_text())["events"] == []
+
+
+def test_public_packaged_restore_lost_reply_reports_unknown_after_real_consequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taskman_ops.workflows.restore import restore
+
+    config, runtime_path, _paths, remote, source = _install_public_restore_controller(
+        monkeypatch, tmp_path, scheduler_failure=False
+    )
+    runtime = json.loads(runtime_path.read_text())
+    runtime["lose_restore_reply"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+    result = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
+
+    runtime = json.loads(runtime_path.read_text())
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.changed is True
+    assert result.facts["mutation_state"] == "unknown"
+    assert runtime["restore_databases"]["canonical"]["oid"] == 202
+    assert "dump-loaded" in runtime["events"]
 
 
 def _converge_native_provision_writers(runtime_path: Path):

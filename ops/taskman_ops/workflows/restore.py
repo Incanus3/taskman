@@ -119,6 +119,58 @@ def restore(
                     replace_unfinished=replace_unfinished,
                     reapply=reapply,
                 )
+                # A completed binding is cleanup authority, not permission to
+                # start a fresh reapply from stale capacity or confirmation.
+                # Finish it first, then recollect preflight and restore facts.
+                if (
+                    not dry_run
+                    and reapply
+                    and authority.target is not None
+                    and _durably_completed(authority)
+                ):
+                    if cleanup_cycles:
+                        raise _safety("completed restore cleanup did not converge")
+                    cleanup_source = _source_for_id(
+                        authority.backups,
+                        authority.releases,
+                        authority.target.backup_id,
+                    )
+                    cleanup_expected = {
+                        **authority.expected_state,
+                        "backup_id": cleanup_source.backup_id,
+                    }
+                    cleanup_request = _request(
+                        config,
+                        cleanup_expected,
+                        cleanup_source.backup_id,
+                        backup_helper={
+                            "sha256": scheduler_package.sha256,
+                            "upload_path": None,
+                        },
+                        replace_unfinished=False,
+                        reapply=True,
+                    )
+                    cleanup_result = run_restore_request(
+                        remote,
+                        config,
+                        request=cleanup_request,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    if cleanup_result.outcome != "succeeded":
+                        raise result_error(
+                            cleanup_result,
+                            starting_state=cleanup_expected,
+                            prior_mutation_state=prior_mutation_state,
+                        )
+                    cleanup_facts = mutation_result_facts(
+                        cleanup_result,
+                        starting_state=cleanup_expected,
+                        prior_mutation_state=prior_mutation_state,
+                    )
+                    prior_mutation_state = str(cleanup_facts["mutation_state"])
+                    cleanup_cycles += 1
+                    preflight = validate_restore_preflight(remote, config)
+                    continue
                 if plan["remaining_capacity_sufficient"] is not True:
                     raise _safety(
                         "remaining restore capacity is insufficient",
@@ -156,41 +208,6 @@ def restore(
                         "a different unfinished restore target is already bound",
                         "preview it with --dry-run, then use --replace-unfinished with fresh typed confirmation",
                     )
-
-                # Never turn a durable cleanup tail into a fresh restore under
-                # stale observations. Complete it, then rediscover/reconfirm.
-                if reapply and authority.target is not None and _durably_completed(authority):
-                    if cleanup_cycles:
-                        raise _safety("completed restore cleanup did not converge")
-                    cleanup_source = _source_for_id(
-                        authority.backups, authority.releases, authority.target.backup_id
-                    )
-                    cleanup_expected = {**authority.expected_state, "backup_id": cleanup_source.backup_id}
-                    cleanup_request = _request(
-                        config,
-                        cleanup_expected,
-                        cleanup_source.backup_id,
-                        backup_helper={"sha256": scheduler_package.sha256, "upload_path": None},
-                        replace_unfinished=False,
-                        reapply=True,
-                    )
-                    cleanup_result = run_restore_request(
-                        remote, config, request=cleanup_request, prior_mutation_state=prior_mutation_state
-                    )
-                    if cleanup_result.outcome != "succeeded":
-                        raise result_error(
-                            cleanup_result,
-                            starting_state=cleanup_expected,
-                            prior_mutation_state=prior_mutation_state,
-                        )
-                    cleanup_facts = mutation_result_facts(
-                        cleanup_result,
-                        starting_state=cleanup_expected,
-                        prior_mutation_state=prior_mutation_state,
-                    )
-                    prior_mutation_state = str(cleanup_facts["mutation_state"])
-                    cleanup_cycles += 1
-                    continue
 
                 if not (confirm or _confirm)(plan):
                     return WorkflowResult(
@@ -513,7 +530,6 @@ def _plan(
         or target is not None
         and isinstance(authority.databases["canonical"], Mapping)
         and authority.databases["canonical"]["oid"] == target.original_database_oid
-        and authority.service_state != "stopped"
     )
     if target is not None and completed and not reapply:
         consequences = ["cleanup-retired", "cleanup-binding"]
