@@ -96,11 +96,15 @@ def run_scheduled_backup(inputs: ScheduledBackupInputs) -> None:
         raise TypeError("scheduled backup inputs are invalid")
     with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS):
         prepare_backup_root(inputs.paths)
-        initial_state = observe_host_state(inputs.paths)
+        initial_state = observe_host_state(
+            inputs.paths, allow_selection_transition=True
+        )
         normalize_temporary_dumps(inputs.paths, initial_state)
         validate_credentials(inputs.credentials_path)
         facts = observe_database_migrations(inputs.database, inputs.credentials_path)
-        state = observe_host_state(inputs.paths, database=facts)
+        state = observe_host_state(
+            inputs.paths, database=facts, allow_selection_transition=True
+        )
         validate_completed_backups(state, inputs.paths)
         create_validated_backup(
             state,
@@ -109,7 +113,9 @@ def run_scheduled_backup(inputs: ScheduledBackupInputs) -> None:
             inputs.credentials_path,
             purpose="scheduled",
         )
-        completed = observe_host_state(inputs.paths, database=facts)
+        completed = observe_host_state(
+            inputs.paths, database=facts, allow_selection_transition=True
+        )
         prune_backups(inputs.paths, completed, inputs.retention)
 
 

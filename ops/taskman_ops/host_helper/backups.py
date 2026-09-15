@@ -252,7 +252,14 @@ def prune_backups(paths: ManagedPaths, state: HostState, retention: int) -> Host
         if record.backup_id in keep:
             continue
         delete_completed_backup(paths, record)
-    return observe_host_state(paths, database={"state": state.database_state, "applied_migrations": state.applied_migrations})
+    return observe_host_state(
+        paths,
+        database={
+            "state": state.database_state,
+            "applied_migrations": state.applied_migrations,
+        },
+        allow_selection_transition=True,
+    )
 
 
 def delete_completed_backup(paths: ManagedPaths, record: BackupRecord) -> None:
