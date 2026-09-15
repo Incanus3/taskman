@@ -196,6 +196,26 @@ def test_restore_inspection_admits_low_or_unobservable_capacity_for_cleanup(
     assert observed is facts
 
 
+def test_cleanup_preflight_uses_host_facts_without_runtime_or_database_commands() -> None:
+    facts = replace(
+        _managed_host_facts(),
+        available_disk_bytes=0,
+        backup_available_disk_bytes=0,
+        failed_checks=("install-root disk", "backup-root disk"),
+    )
+
+    class FactRemote(RecordingRemote):
+        def facts(self) -> HostFacts:
+            return facts
+
+    remote = FactRemote([])
+
+    observed = preflight_module.validate_cleanup_preflight(remote, config())
+
+    assert observed is facts
+    assert remote.calls == []
+
+
 @pytest.mark.parametrize("database_bytes", (40 * 1024**3, 8 * 1024**3))
 def test_restore_preflight_uses_native_postgres_volume_capacity_even_when_filesystems_differ(
     database_bytes: int,

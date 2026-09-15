@@ -31,6 +31,7 @@ from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.provision import ProvisionCapabilities, provision
+from tests.host_helper import test_cleanup as host_cleanup_tests
 from tests.host_helper import test_deploy as host_deploy_tests
 from tests.host_helper import test_restore as host_restore_tests
 from tests.support.environments import valid_environment
@@ -141,6 +142,48 @@ def _wire_helper(request: object, package: object, runtime_path: Path) -> object
     assert package.path.is_file()
     assert isinstance(request, HostRequest)
     return _run_isolated_helper(package, request, runtime_path)
+
+
+def test_public_cleanup_executes_controller_plan_through_packaged_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The public cleanup path keeps paging, confirmation, and host deletion on the v3 wire."""
+
+    from taskman_ops.workflows import cleanup as cleanup_workflow
+    from taskman_ops.workflows import helper
+
+    paths = host_cleanup_tests._seed(tmp_path / "public-cleanup")
+    config = _controller_config(
+        {
+            "install_root": paths.install_root.as_posix(),
+            "backup_root": paths.backup_root.as_posix(),
+        }
+    )
+    package = build_helper_package(tmp_path / "taskman-cleanup-host.pyz")
+    runtime_path = tmp_path / "isolated-cleanup-state.json"
+    runtime_path.write_text("{}")
+    remote = _ControllerRemote()
+    real_run_request = helper.run_request
+
+    def dispatch(_remote: object, request: object, **_kwargs: object) -> object:
+        return real_run_request(
+            _remote,
+            request,
+            package=package,
+            invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
+                wire_request, selected, runtime_path
+            ),
+        )
+
+    monkeypatch.setattr(cleanup_workflow, "validate_cleanup_preflight", lambda *_args: object())
+    monkeypatch.setattr(cleanup_workflow, "run_request", dispatch)
+
+    result = cleanup_workflow.cleanup(remote, config, confirm=lambda _plan: True)
+
+    assert result.stage == "cleaned"
+    assert result.facts["starting_state"] is not None
+    assert result.facts["completed_targets"]
+    assert not Path(paths.local(paths.release_root / host_cleanup_tests.STALE_RELEASE)).exists()
 
 
 _ISOLATED_HELPER_HARNESS = r'''

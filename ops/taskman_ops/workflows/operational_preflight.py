@@ -138,6 +138,19 @@ def validate_restore_inspection_preflight(
     return facts
 
 
+def validate_cleanup_preflight(
+    remote: Remote,
+    config: EnvironmentConfig,
+    *,
+    host_validator: HostValidator | None = None,
+) -> HostFacts | object:
+    """Validate filesystem cleanup authority without querying runtime or database state."""
+
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("cleanup preflight requires an environment configuration")
+    return (host_validator or validate_restore_inspection_host)(remote, config)
+
+
 def _preflight(message: str) -> OpsError:
     return OpsError(
         ExitStatus.REMOTE_PREFLIGHT,
@@ -150,6 +163,7 @@ def _preflight(message: str) -> OpsError:
 
 __all__ = [
     "RestorePreflightFacts",
+    "validate_cleanup_preflight",
     "validate_operational_preflight",
     "validate_restore_inspection_preflight",
     "validate_restore_preflight",
