@@ -572,10 +572,12 @@ the reconciliation specification status/checklist, and affected handoffs after e
 implemented behavior. Keep detailed acceptance evidence in `tas-sr4b.11`; durable operator semantics
 belong in the design/runbook. Do not create a second architecture narrative.
 
-- [ ] Have a distinct verifier trace the public entry paths and actual record/DB consequences against
+- [x] Have a distinct verifier trace the public entry paths and actual record/DB consequences against
   every acceptance family below. Reproduce focused checks independently; identify untested or
   simulated boundaries explicitly. Fix scoped findings, then reverify changed boundaries.
-- [ ] Run the required local gates from the repository root:
+- [x] Run the required local gates from the repository root. On the final committed implementation,
+  `uv sync --locked --project ops`, compileall, shell syntax, help checks, and `mix precommit`
+  succeeded; the final operations suite passed 1,439 tests in 337.95 seconds:
 
   ```sh
   uv sync --locked --project ops
@@ -585,26 +587,26 @@ belong in the design/runbook. Do not create a second architecture narrative.
   mix precommit
   ```
 
-- [ ] Exercise `./ops/taskman build --help`, `deploy --help`, `provision --help`, `restore --help`,
+- [x] Exercise `./ops/taskman build --help`, `deploy --help`, `provision --help`, `restore --help`,
   and `cleanup --help`; assert parser/interactive/unattended/dry-run cases in tests. Inspect actual
   CLI consumers before editing completion/skill surfaces: the application CLI and bundled API skill
   are separate from this operations CLI and must not acquire unrelated operations commands.
-- [ ] Build from a clean identified checkout of the final implementation, then build a controlled
+- [x] Build from a clean identified checkout of the final implementation, then build a controlled
   dirty snapshot using `./ops/taskman build --allow-dirty`. Verify actual archive/checksum/manifest,
   full digest ID, source class, toolchain/builder identity, prospective record/request budgets, clean
   exact-input cache reuse, and dirty exclusion of a synthetic ignored canary. Use private temporary
   storage; no real credentials. Do not connect to a host. If obtaining a clean implementation
   revision requires an unapproved commit, report that specific remaining build gate for authorization.
-- [ ] Execute both generated packages with `python3 -I -S`; run the packaged terminal test with
+- [x] Execute both generated packages with `python3 -I -S`; run the packaged terminal test with
   `TASKMAN_TEST_RELEASE=/absolute/path/to/extracted/taskman uv run --project ops pytest
   ops/tests/test_terminal.py`. Inspect native systemd test diagnostics as well as status. Record
   exact implementation revision/content identity and commands, not an inherited historical pass.
-- [ ] Update operator examples and superseded baseline sections for source resolution/identity,
+- [x] Update operator examples and superseded baseline sections for source resolution/identity,
   provision resources, discovery/protocol, confirmations, recovery/pruning, restore retry/replacement/
   reapply, cleanup availability, and failure observations. Keep partial-schema and unsupported-state
   refusal caveats explicit. Mark prior staging upgrade instructions superseded for this transition;
   fresh staging provisioning follows separately authorized host recreation. Preserve remaining external acceptance gates and dated staging evidence.
-- [ ] Check local Markdown links/anchors, whitespace, and planning terminology in changed production,
+- [x] Check local Markdown links/anchors, whitespace, and planning terminology in changed production,
   tests, command output/help, and user-facing docs. Review canonical references for contradictions.
   Close child tasks and `tas-6dkg` only with evidence; retain readiness parent/handoff for the next
   authorized staging action. Local completion does not establish real VPS acceptance.
@@ -639,5 +641,6 @@ OID/backup ordering across interruption. The task gates above address those boun
 Native PostgreSQL/systemd behavior and full destructive restore still need separately authorized
 host acceptance; local fakes, packages, and container builds cannot establish that evidence.
 
-The operator approved this plan on 2026-09-14. The handoff records the clean-session boundary;
-continue the remaining Beads tasks after resumption, using the complete approved specification.
+The operator approved this plan on 2026-09-14. Local implementation and its final verification
+completed on 2026-09-15; the readiness handoff retains only separately authorized fresh-host
+acceptance. Beads records the final task closure evidence.

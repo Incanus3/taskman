@@ -1,8 +1,8 @@
 # Desired-target deployment reconciliation
 
-Status: approved specification; complete written design approved on 2026-09-14, including the
-ops development constraints. Implementation is in progress; Beads tracks delivery and verification.
-Updated: 2026-09-15. Tracking: `tas-sr4b`.
+Status: approved specification; locally implemented and verified on 2026-09-15. Separately
+authorized fresh-host acceptance remains open. Beads tracks delivery evidence and external
+acceptance. Updated: 2026-09-15. Tracking: `tas-sr4b`.
 
 The operator approved the one-time compatibility break below on 2026-09-14 after design and plan
 approval. It supersedes the earlier requirement to preserve pre-reconciliation artifacts and
@@ -14,8 +14,8 @@ This specification changes existing-host `taskman deploy` from exact-attempt rec
 reconciliation with the operator's desired release. It is self-contained for planning together with
 the [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md), which continues to own
 host topology, credentials, archive safety, locking, provisioning, rollback, and restore.
-The [runbook](../deployment.md) owns implemented operator instructions; do not document these new
-options as available until implemented. The [development guide](../development.md) owns checks.
+The [runbook](../deployment.md) owns implemented operator instructions. The
+[development guide](../development.md) owns checks.
 
 For implementation planning, this approved specification supersedes the older design's source-only release identity,
 clean-only local release builds, artifact-resolution-before-SSH ordering, exact-attempt-only
@@ -1981,18 +1981,12 @@ do not survive host loss. Full destructive recovery acceptance remains separatel
 
 ## Next-session checklist
 
-1. Read this complete approved specification and its referenced development constraints before
-   implementation; approval does not mean the proposed behavior is already implemented.
-2. Read the [approved implementation plan](../plans/2026-09-14-deploy-reconciliation.md)
-   (operator approval: 2026-09-14) using the complete design and the development guide's
-   ops-specific simplicity/reliability and Python-first rules, with Beads delivery tasks, scoped
-   ownership, tests, and an independent verification task. Identify concrete safety reasons for
-   nontrivial coordination or persistent state; avoid speculative branches and substantial shell.
-   Implementation is in progress; refresh Beads and the readiness handoff before selecting remaining work.
-3. Resume from the readiness handoff and refresh actual repository/task state. Refresh host state
-   only when the separately authorized acceptance action requires it.
-4. Implement and verify locally; then obtain exact authorization for clean staging recreation and
-   fresh provisioning/readiness acceptance. Do not recover the old installation, manually append
+1. Before any future change, read this complete specification, the
+   [implemented plan](../plans/2026-09-14-deploy-reconciliation.md), and the development guide's
+   ops-specific simplicity/reliability and Python-first rules.
+2. Obtain exact authorization before recreating a clean staging host and running fresh
+   provisioning/readiness acceptance. Do not recover the old installation, manually append
    selection records, or repoint current to bypass the controller.
-5. Administrator/login acceptance and deployment completion are separate outcomes. Track their
-   current acceptance status in the readiness handoff; neither establishes the other.
+3. Refresh host state only for that separately authorized acceptance action. Administrator/login
+   acceptance and deployment completion remain separate outcomes; the readiness handoff records
+   their current state.
