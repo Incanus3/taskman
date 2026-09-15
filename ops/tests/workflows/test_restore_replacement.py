@@ -34,6 +34,26 @@ from tests.workflows.test_restore_recovery import (
 )
 
 
+_INSPECTION_EVENTS = (
+    "restore-preflight-credentials",
+    "restore-preflight-role-login",
+)
+_CAPACITY_EVENTS = (
+    *_INSPECTION_EVENTS,
+    "restore-preflight-credentials",
+    "restore-preflight-role-login",
+    "restore-preflight-capacity",
+    "restore-preflight-statvfs",
+    "restore-preflight-database-size-query",
+    "restore-preflight-database-sizes",
+)
+
+
+def _assert_read_only_preflight_events(runtime_path, expected_events):
+    runtime = json.loads(runtime_path.read_text())
+    assert runtime["events"] == list(expected_events)
+
+
 def _replacement_authority(tmp_path):
     databases = {
         "canonical": {
@@ -530,7 +550,7 @@ def test_public_packaged_dry_run_previews_replacement_without_flag_or_writes(
     assert result.stage == "planned"
     assert result.facts["replace_unfinished_required"] is True
     assert "--replace-unfinished" in result.next_action
-    assert json.loads(runtime_path.read_text())["events"] == []
+    _assert_read_only_preflight_events(runtime_path, _CAPACITY_EVENTS)
 
 
 def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconfirms(
@@ -667,7 +687,7 @@ def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_write
         "cleanup-retired",
         "cleanup-binding",
     ]
-    assert json.loads(runtime_path.read_text())["events"] == []
+    _assert_read_only_preflight_events(runtime_path, _CAPACITY_EVENTS)
 
 
 @pytest.mark.parametrize("failure", ("checksum", "list"))
@@ -700,7 +720,7 @@ def test_public_restore_preview_refuses_invalid_required_safety_content(
     result = restore(remote, config_value, old_source.backup_id, dry_run=True)
 
     assert result.exit_status is ExitStatus.BACKUP
-    assert json.loads(runtime_path.read_text())["events"] == []
+    _assert_read_only_preflight_events(runtime_path, _INSPECTION_EVENTS)
 
 
 @pytest.mark.parametrize("role", ("canonical", "retired"))
@@ -803,7 +823,7 @@ def test_public_packaged_replacement_refuses_unusable_required_safety_role(
     )
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert json.loads(runtime_path.read_text())["events"] == []
+    _assert_read_only_preflight_events(runtime_path, _INSPECTION_EVENTS)
 
 
 def test_public_packaged_failed_restored_safety_failure_precedes_discard(
