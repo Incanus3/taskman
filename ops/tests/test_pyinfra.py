@@ -7,6 +7,7 @@ import importlib
 from io import StringIO
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -50,18 +51,82 @@ def test_missing_pgpass_requires_a_sensitive_supplied_credential_proof_before_wr
             config=EnvironmentConfig.model_validate(valid_environment()),
             caddy_plan=_CADDY_PLAN,
             runtime_environment=b"RUNTIME=value\n",
-            pgpass=b"127.0.0.1:5432:*:taskman:secret\n",
+            pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
             role_password_input=b"role-password-input\n",
         ),
     )
 
     pgpass_call = next(call for call in calls if call[0][3] == "taskman-credential-authority" and call[0][4] == "/etc/taskman/pgpass")
     script, kwargs = pgpass_call[0][2], pgpass_call[1]
-    assert "PGPASSFILE=/dev/stdin" in script
+    assert "PGPASSFILE=/dev/stdin" not in script
+    assert "PGPASSWORD" in script
+    assert "execve" in script
     assert "mktemp" not in script
     assert "--command 'SELECT 1'" in script
     assert kwargs["sensitive"] is True
-    assert kwargs["stdin"] == b"127.0.0.1:5432:*:taskman:secret\n"
+    assert kwargs["stdin"] == b"127.0.0.1:5432:taskman_prod:taskman:secret\n"
+
+
+def test_missing_pgpass_wrapper_executes_psql_with_only_parsed_password_and_no_write(
+    tmp_path: Path,
+) -> None:
+    """The no-write admission wrapper must use libpq's password environment channel."""
+
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql = fake_bin / "psql"
+    psql.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, sys\n"
+        "sys.exit(0 if os.environ.get('PGPASSWORD') == 'secret' and set(os.environ) <= {'PGPASSWORD', 'LC_CTYPE'} and all('secret' not in value for value in sys.argv) else 23)\n",
+        encoding="utf-8",
+    )
+    psql.chmod(0o755)
+    missing = tmp_path / "pgpass"
+    before = set(tmp_path.iterdir())
+
+    result = subprocess.run(
+        ("sh", "-ceu", provisioning._PGPASS_REUSE_SCRIPT, "taskman-credential-authority", str(missing),
+         "127.0.0.1", "5432", "taskman", "taskman"),
+        input=b"127.0.0.1:5432:taskman:taskman:secret\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"},
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == b""
+    assert result.stderr == b""
+    assert not missing.exists()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_missing_pgpass_wrapper_refuses_a_mismatched_line_without_writing(tmp_path: Path) -> None:
+    """A supplied pgpass line for another connection cannot be repurposed."""
+
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    missing = tmp_path / "pgpass"
+    before = set(tmp_path.iterdir())
+
+    result = subprocess.run(
+        ("sh", "-ceu", provisioning._PGPASS_REUSE_SCRIPT, "taskman-credential-authority", str(missing),
+         "127.0.0.1", "5432", "taskman", "taskman"),
+        input=b"127.0.0.1:5432:*:other:secret\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "PATH": "/usr/bin:/bin"},
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert result.stderr == b""
+    assert not missing.exists()
+    assert set(tmp_path.iterdir()) == before
 
 
 def test_existing_scheduler_units_and_environment_require_exact_rendered_bytes() -> None:

@@ -507,6 +507,9 @@ def _converge_native_provision_writers(runtime_path: Path):
         }
         for path in scheduler_create:
             runtime["scheduler_resources"][paths[path]] = True
+        if "/etc/systemd/system/taskman-backup.timer" in scheduler_create:
+            runtime["backup_timer_enabled"] = True
+            runtime["backup_timer_state"] = "inactive"
         runtime["database_state"] = "ready"
         if "post_pyinfra_migrations" in runtime:
             runtime["migrations"] = runtime["post_pyinfra_migrations"]
@@ -654,7 +657,9 @@ def test_default_public_partial_scheduler_never_starts_an_old_helper_before_lock
     }
     assert runtime["events"][:3] == ["scheduler-stop", "scheduler-wait", "scheduler-replace"]
     assert runtime["events"].index("scheduler-replace") < runtime["events"].index("current-swap")
-    assert "scheduler-start" not in runtime["events"]
+    assert runtime["events"].index("scheduler-replace") < runtime["events"].index("scheduler-start")
+    assert runtime["backup_timer_enabled"] is True
+    assert runtime["backup_timer_state"] == "active"
 
 
 def test_default_public_provision_refuses_unattended_post_confirmation_authority_drift(

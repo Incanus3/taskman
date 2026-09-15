@@ -129,6 +129,11 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
             timer_path in scheduler_create and create_all_scheduler_resources
         ):
             systemd.service(service, running=True, enabled=True, name=f"Enable and start {service}")
+        elif timer_path in scheduler_create:
+            # A newly created timer beside an older scheduler must be enabled,
+            # but not started until genesis has refreshed the executable while
+            # holding the lifecycle lock.
+            systemd.service(service, running=None, enabled=True, name=f"Enable {service} without starting")
     return plan
 
 

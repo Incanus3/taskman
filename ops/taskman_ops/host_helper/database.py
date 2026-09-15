@@ -14,10 +14,59 @@ _DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
 _MIGRATION_FILENAME_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
 _MIGRATION_VERSION_RE = re.compile(rb"[0-9]+\Z")
 _COMMAND_TIMEOUT_SECONDS = 60.0
+_PRISTINE_LANGUAGE_KEYS = frozenset(
+    {"name", "trusted", "handler", "inline_handler", "validator", "owner", "acl"}
+)
+_PRISTINE_LANGUAGES = (
+    ("internal", False, None, None, "pg_catalog.fmgr_internal_validator", "postgres", None),
+    ("c", False, None, None, "pg_catalog.fmgr_c_validator", "postgres", None),
+    ("sql", True, None, None, "pg_catalog.fmgr_sql_validator", "postgres", None),
+    ("plpgsql", True, "pg_catalog.plpgsql_call_handler", "pg_catalog.plpgsql_inline_handler", "pg_catalog.plpgsql_validator", "postgres", None),
+)
 
 
 class DatabaseObservationError(ValueError):
     """The selected database does not provide authoritative migration facts."""
+
+
+def pristine_language_rows_match(rows: object) -> bool:
+    """Compare a projected ``pg_language`` catalog against the empty template."""
+
+    if not isinstance(rows, (tuple, list)) or len(rows) != len(_PRISTINE_LANGUAGES):
+        return False
+    observed: list[tuple[object, ...]] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != _PRISTINE_LANGUAGE_KEYS:
+            return False
+        value = tuple(row[key] for key in ("name", "trusted", "handler", "inline_handler", "validator", "owner", "acl"))
+        if type(value[0]) is not str or type(value[1]) is not bool:
+            return False
+        if any(item is not None and type(item) is not str for item in value[2:]):
+            return False
+        observed.append(value)
+    return tuple(sorted(observed)) == tuple(sorted(_PRISTINE_LANGUAGES))
+
+
+def _pristine_language_values_sql() -> str:
+    """Render the fixed controlled-empty language template without inputs."""
+
+    def sql_text(value: str | None, cast: str = "text") -> str:
+        return f"NULL::{cast}" if value is None else "'" + value + "'"
+
+    return ",".join(
+        "(" + ",".join(
+            (
+                sql_text(name),
+                "true" if trusted else "false",
+                sql_text(handler),
+                sql_text(inline_handler),
+                sql_text(validator),
+                sql_text(owner),
+                sql_text(acl, "aclitem[]"),
+            )
+        ) + ")"
+        for name, trusted, handler, inline_handler, validator, owner, acl in _PRISTINE_LANGUAGES
+    )
 
 
 def database_mapping(value: object) -> Mapping[str, object]:
@@ -166,19 +215,17 @@ def _initial_database_empty(database: Mapping[str, object], credentials: Path | 
             "WHERE extension.extname <> 'plpgsql' "
             "OR extension.extversion <> '1.0' "
             "OR extension.extnamespace <> 'pg_catalog'::pg_catalog.regnamespace "
-            "UNION ALL SELECT 1 FROM (VALUES "
-            "('internal',false,NULL::text,NULL::text,NULL::text),"
-            "('c',false,NULL::text,NULL::text,NULL::text),"
-            "('sql',true,NULL::text,NULL::text,NULL::text),"
-            "('plpgsql',true,'pg_catalog.plpgsql_call_handler','pg_catalog.plpgsql_inline_handler','pg_catalog.plpgsql_validator')"
-            ") AS expected_language(name,trusted,handler,inline_handler,validator) "
+            "OR pg_catalog.pg_get_userbyid(extension.extowner) <> 'postgres' "
+            "UNION ALL SELECT 1 FROM (VALUES " + _pristine_language_values_sql() +
+            ") AS expected_language(name,trusted,handler,inline_handler,validator,owner,acl) "
             "FULL JOIN pg_catalog.pg_language language ON language.lanname = expected_language.name "
             "WHERE expected_language.name IS NULL OR language.lanname IS NULL "
             "OR language.lanpltrusted IS DISTINCT FROM expected_language.trusted "
             "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.lanplcallfoid) IS DISTINCT FROM expected_language.handler "
             "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.laninline) IS DISTINCT FROM expected_language.inline_handler "
             "OR (SELECT namespace.nspname || '.' || procedure.proname FROM pg_catalog.pg_proc procedure JOIN pg_catalog.pg_namespace namespace ON namespace.oid = procedure.pronamespace WHERE procedure.oid = language.lanvalidator) IS DISTINCT FROM expected_language.validator "
-            "OR (language.lanname = 'plpgsql' AND pg_catalog.pg_get_userbyid(language.lanowner) <> 'postgres') "
+            "OR pg_catalog.pg_get_userbyid(language.lanowner) IS DISTINCT FROM expected_language.owner "
+            "OR language.lanacl IS DISTINCT FROM expected_language.acl "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_event_trigger "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_default_acl "
             "UNION ALL SELECT 1 FROM pg_catalog.pg_largeobject_metadata "
@@ -272,5 +319,6 @@ __all__ = [
     "observe_database_state",
     "observe_database_state_or_empty",
     "observe_database_state_or_empty_as_admin",
+    "pristine_language_rows_match",
     "release_migration_versions",
 ]

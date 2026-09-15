@@ -31,12 +31,55 @@ _PGPASS_REUSE_SCRIPT = r'''set -eu
 path=$1 host=$2 port=$3 role=$4 database=$5
 if [ ! -e "$path" ] && [ ! -L "$path" ]; then
   # A missing managed pgpass is the one supported partial-install boundary.
-  # Prove the supplied bytes authenticate before the later protected write.
-  # libpq parses the protected stdin directly as a pgpass file; no temporary
-  # file or managed host state is created during this read-only admission.
-  export PGPASSFILE=/dev/stdin
-  exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --no-password --host "$host" --port "$port" \
-    --username "$role" --dbname "$database" --command 'SELECT 1' >/dev/null 2>&1
+  # libpq rejects a pipe as PGPASSFILE. Parse exactly the rendered line and
+  # give psql only its password environment variable; no passfile is written.
+  exec timeout 60s /usr/bin/python3 -c '
+import os
+import shutil
+import sys
+
+def refuse():
+    raise SystemExit(1)
+
+def parse(raw):
+    if not raw.endswith(b"\n") or raw[:-1].find(b"\n") >= 0 or b"\r" in raw:
+        refuse()
+    fields = []
+    field = bytearray()
+    escaped = False
+    for byte in raw[:-1]:
+        if escaped:
+            if byte not in (58, 92):
+                refuse()
+            field.append(byte)
+            escaped = False
+        elif byte == 92:
+            escaped = True
+        elif byte == 58:
+            fields.append(bytes(field))
+            field.clear()
+        else:
+            field.append(byte)
+    if escaped:
+        refuse()
+    fields.append(bytes(field))
+    if len(fields) != 5 or not fields[4]:
+        refuse()
+    return fields
+
+fields = parse(sys.stdin.buffer.read())
+expected = [item.encode("utf-8") for item in sys.argv[1:]]
+if len(expected) != 4 or fields[:4] != expected:
+    refuse()
+try:
+    password = fields[4].decode("utf-8")
+except UnicodeDecodeError:
+    refuse()
+psql = shutil.which("psql")
+if psql is None:
+    refuse()
+os.execve(psql, [psql, "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--no-password", "--host", sys.argv[1], "--port", sys.argv[2], "--username", sys.argv[4], "--dbname", sys.argv[3], "--command", "SELECT 1"], {"PGPASSWORD": password})
+' "$host" "$port" "$database" "$role" >/dev/null 2>&1
 fi
 test -f "$path" && test ! -L "$path"
 test "$(stat --format='%U:%G:%a' -- "$path")" = root:root:600

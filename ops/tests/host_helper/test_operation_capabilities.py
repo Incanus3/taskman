@@ -98,6 +98,31 @@ def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
         assert language in query
 
 
+def test_pristine_language_template_accepts_real_builtin_rows_and_refuses_identity_drift() -> None:
+    """Catalog comparison must admit PostgreSQL's actual built-in language rows."""
+
+    database = _capability("database")
+    pristine = (
+        {"name": "internal", "trusted": False, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_internal_validator", "owner": "postgres", "acl": None},
+        {"name": "c", "trusted": False, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_c_validator", "owner": "postgres", "acl": None},
+        {"name": "sql", "trusted": True, "handler": None, "inline_handler": None,
+         "validator": "pg_catalog.fmgr_sql_validator", "owner": "postgres", "acl": None},
+        {"name": "plpgsql", "trusted": True, "handler": "pg_catalog.plpgsql_call_handler",
+         "inline_handler": "pg_catalog.plpgsql_inline_handler", "validator": "pg_catalog.plpgsql_validator",
+         "owner": "postgres", "acl": None},
+    )
+
+    assert database.pristine_language_rows_match(pristine)
+    assert not database.pristine_language_rows_match(
+        ({**pristine[0], "validator": None}, *pristine[1:])
+    )
+    assert not database.pristine_language_rows_match(
+        (*pristine[:3], {**pristine[3], "acl": "=U/postgres"})
+    )
+
+
 @pytest.mark.parametrize(
     "raw_versions",
     (

@@ -302,13 +302,13 @@ def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(
             return False
 
     puts: list[str] = []
-    services: list[str] = []
+    services: list[tuple[str, dict[str, object]]] = []
     from pyinfra.operations import files, server, systemd
 
     monkeypatch.setattr(files, "put", lambda _source, destination, **_kwargs: puts.append(destination) or Result())
     monkeypatch.setattr(server, "shell", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(systemd, "daemon_reload", lambda **_kwargs: None)
-    monkeypatch.setattr(systemd, "service", lambda service, **_kwargs: services.append(service))
+    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
     taskman_systemd.declare_systemd(
         ProvisioningInputs(
             config=environment_config(),
@@ -324,7 +324,13 @@ def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(
     assert "/usr/local/lib/taskman/taskman-backup.pyz" not in puts
     assert "/etc/systemd/system/taskman-backup.service" not in puts
     assert "/etc/taskman/taskman-backup.env" not in puts
-    assert services == ["taskman.service"]
+    assert services == [
+        ("taskman.service", {"running": None, "enabled": True, "name": "Enable taskman.service"}),
+        (
+            "taskman-backup.timer",
+            {"running": None, "enabled": True, "name": "Enable taskman-backup.timer without starting"},
+        ),
+    ]
 
 
 def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
