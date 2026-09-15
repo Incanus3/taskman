@@ -124,6 +124,21 @@ def test_explicit_artifact_does_not_bypass_invalid_installed_authority(tmp_path:
     assert raised.value.status is ExitStatus.SAFETY
 
 
+def test_explicit_artifact_does_not_bypass_incomplete_installed_authority(
+    tmp_path: Path,
+) -> None:
+    artifact = _artifact(tmp_path / "supplied")
+    with pytest.raises(OpsError) as raised:
+        resolve_deploy_target(
+            tmp_path / "repo",
+            artifact.archive,
+            installed_records=(),
+            selected_release_id=artifact.manifest.release_id,
+            last_successful_release_id=None,
+        )
+    assert raised.value.status is ExitStatus.SAFETY
+
+
 def test_dirty_automatic_resolution_builds_before_reusing_an_exact_installed_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Checking installed records before freezing dirty bytes can deploy a different checkout."""
     artifact = _artifact(tmp_path / "built")

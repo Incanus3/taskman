@@ -54,5 +54,8 @@ def test_record_limit_and_unknown_database_defaults_remain_local() -> None:
     assert _migration_versions(list(range(512))) == tuple(range(512))
     with pytest.raises(RecordError, match="^invalid migration versions$"):
         _migration_versions(list(range(513)))
-    assert _database_state(None) == ((), "unknown")
-    assert _database_state({}) == ((), "unknown")
+    assert _database_state(None) == ((), "unknown", False)
+    assert _database_state({}) == ((), "unknown", False)
+    assert _database_state(
+        {"state": "ready", "applied_migrations": (), "initial_empty": True}
+    ) == ((), "ready", True)

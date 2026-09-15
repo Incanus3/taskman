@@ -20,7 +20,10 @@ from taskman_ops.releases import build as build_module
 
 
 REVISION = "c" * 40
-RELEASE_ID = "0.2.0-cccccccccccc-ubuntu26.04-amd64-otp29.0.6"
+ARTIFACT_SHA256 = "a" * 64
+RELEASE_ID = build_release_id(
+    "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=True
+)
 
 
 def write_release_tree(destination: Path, *, source_revision: str = REVISION) -> None:
@@ -492,30 +495,38 @@ def test_build_command_reports_the_verified_artifact_paths(
     manifest = tmp_path / "taskman.manifest.json"
     checksum = tmp_path / "taskman.tar.gz.sha256"
     artifact = SimpleNamespace(
-        manifest=SimpleNamespace(release_id=RELEASE_ID, source_revision=REVISION),
-        sha256="a" * 64,
+        manifest=SimpleNamespace(
+            release_id=RELEASE_ID,
+            source_revision=REVISION,
+            artifact_sha256=ARTIFACT_SHA256,
+            source_dirty=True,
+        ),
+        sha256=ARTIFACT_SHA256,
         archive=archive,
         manifest_path=manifest,
         checksum=checksum,
     )
     output = tmp_path / "shared-artifacts"
-    seen: list[Path] = []
+    seen: list[tuple[Path, bool]] = []
     monkeypatch.setattr("taskman_ops.releases.build.default_artifact_root", lambda: output)
     monkeypatch.setattr(
         "taskman_ops.releases.build.build_release",
-        lambda _repo, actual_output: seen.append(actual_output) or artifact,
+        lambda _repo, actual_output, *, allow_dirty: seen.append(
+            (actual_output, allow_dirty)
+        )
+        or artifact,
     )
 
-    result = dispatch(Invocation(command="build"))
+    result = dispatch(Invocation(command="build", allow_dirty=True))
 
-    assert seen == [output]
+    assert seen == [(output, True)]
     assert result.command == "build"
     assert result.changed is True
     assert result.stage == "built"
     assert result.facts == {
         "release_id": RELEASE_ID,
         "source_revision": REVISION,
-        "artifact_sha256": "a" * 64,
+        "artifact_sha256": ARTIFACT_SHA256,
         "archive": str(archive),
         "manifest": str(manifest),
         "checksum": str(checksum),
