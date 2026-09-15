@@ -790,6 +790,56 @@ def test_completed_pending_prune_without_safe_reuse_returns_changed_retryable_ob
     assert runtime.backup_calls == 0
 
 
+def test_completed_pending_prune_is_changed_when_immediate_reobservation_is_ambiguous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed post-retirement observation cannot erase the completed deletion."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    initial_inputs = deploy_module._inputs(request, first_release=False)
+    initial_state = deploy_module._observe(initial_inputs)
+    assert deploy_module._stage_or_reuse(initial_inputs, initial_state) is True
+    deploy_module.select_current(initial_inputs.paths, initial_inputs.candidate.release_id)
+
+    request = _replanned_request(request, runtime)
+    inputs = deploy_module._inputs(request, first_release=False)
+    observed = deploy_module._observe(inputs)
+    observe_calls: list[bool] = []
+
+    def fail_immediate_reobservation(
+        _inputs: object,
+        *,
+        include_runtime: bool = False,
+        allow_selection_transition: bool = True,
+    ) -> deploy_module.HostState:
+        del allow_selection_transition
+        observe_calls.append(include_runtime)
+        if len(observe_calls) == 4:
+            raise deploy_module.StateAmbiguityError("post-prune observation is ambiguous")
+        return observed
+
+    monkeypatch.setattr(deploy_module, "_observe", fail_immediate_reobservation)
+    monkeypatch.setattr(deploy_module, "_finish_confirmed_pruning", lambda *_args: True)
+
+    result = deploy(request)
+    state = validate_mutation_state("deploy", result.outcome, result.state)
+
+    assert result.outcome == "retryable"
+    assert state["mutation_state"] == "changed"
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "protection"
+    assert state["observations"]["selected_release_id"] == inputs.candidate.release_id
+    assert state["observations"]["applied_migrations"] == []
+    assert state["unavailable_fields"] == []
+    assert state["inspection_error"] is None
+    assert observe_calls == [False, False, False, False, True]
+    assert runtime.backup_calls == 0
+    assert runtime.events == []
+
+
 def test_successful_history_failure_keeps_the_report_and_history_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

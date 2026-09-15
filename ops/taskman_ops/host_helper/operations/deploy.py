@@ -192,10 +192,10 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                     raise DeploymentManualError("applied migrations do not identify a safe candidate transition")
                 try:
                     reusable_backup, pruned = _finish_pending_pruning_or_reuse(inputs, state)
+                    changed = changed or pruned
                     state = _observe(inputs)
                 except (RecordError, OSError, ValueError) as error:
                     raise _RetryableError("protection") from error
-                changed = changed or pruned
                 if pruned:
                     reusable_backup = _newest_reusable_protection_backup(inputs, state)
                 if reusable_backup is not None:
