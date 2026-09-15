@@ -196,8 +196,16 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 except (RecordError, OSError, ValueError) as error:
                     raise _RetryableError("protection") from error
                 changed = changed or pruned
+                if pruned:
+                    reusable_backup = _newest_reusable_protection_backup(inputs, state)
                 if reusable_backup is not None:
                     backup = reusable_backup
+                elif pruned:
+                    # The prior confirmed retirement changed durable
+                    # authority.  A fresh backup would create a different
+                    # conditional retirement set, so return a fresh
+                    # retryable observation for controller re-planning.
+                    raise _RetryableError("protection", may_have_mutated=False)
                 else:
                     try:
                         backup = create_validated_backup(
@@ -807,14 +815,11 @@ def _finish_confirmed_pruning(inputs: _Inputs, state: HostState) -> bool:
 def _finish_pending_pruning_or_reuse(
     inputs: _Inputs, state: HostState
 ) -> tuple[BackupRecord | None, bool]:
-    """Finish a prior authorized retirement before reusing its newest protection."""
+    """Finish a prior authorized retirement before reobserving its authority."""
 
     if not _finish_confirmed_pruning(inputs, state):
         return None, False
-    backup = _newest_reusable_protection_backup(inputs, state)
-    if backup is None:
-        raise DeploymentManualError("completed protection retirement has no reusable newest backup")
-    return backup, True
+    return None, True
 
 
 def _newest_reusable_protection_backup(inputs: _Inputs, state: HostState) -> BackupRecord | None:
@@ -822,12 +827,16 @@ def _newest_reusable_protection_backup(inputs: _Inputs, state: HostState) -> Bac
         item
         for item in state.backup_protections
         if item.base_selection_id == state.latest_successful_selection_filename
-        and item.target_release_id == inputs.candidate.release_id
     )
     if not protected:
         return None
     newest = max(protected, key=lambda item: item.attempt_number)
-    return next((item for item in state.backups if item.backup_id == newest.backup_id), None)
+    if newest.target_release_id != inputs.candidate.release_id:
+        return None
+    backup = next((item for item in state.backups if item.backup_id == newest.backup_id), None)
+    if backup is None or backup.migration_versions != inputs.expected_migrations:
+        return None
+    return backup
 
 
 def _retire_newly_eligible_protections(inputs: _Inputs, state: HostState) -> None:

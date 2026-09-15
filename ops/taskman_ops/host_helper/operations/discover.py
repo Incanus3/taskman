@@ -273,6 +273,10 @@ def _deployment_projection(
         )
     )
     protection_rows = tuple(item.to_mapping() for item in protections)
+    protected_backup_ids = frozenset(item.backup_id for item in protections)
+    independently_held_protection_ids = tuple(
+        sorted(independent_backup_ids(state).intersection(protected_backup_ids))
+    )
     baseline_ids = {
         *(
             (state.selected_release_id,)
@@ -300,7 +304,11 @@ def _deployment_projection(
         )
     return {
         "backup_protections": protection_rows,
-        "independently_held_backup_ids": tuple(sorted(independent_backup_ids(state))),
+        # Successful history and restore records may grow independently of
+        # deploy's bounded protection projection.  Only their intersection
+        # can alter an attempt-retirement decision, so do not duplicate the
+        # whole history as an ordinary protocol array.
+        "independently_held_backup_ids": independently_held_protection_ids,
         "backup_protection_sha256": hashlib.sha256(_canonical_ascii(protection_rows)).hexdigest(),
         "downgrade_baseline_sha256": hashlib.sha256(
             _canonical_ascii(sorted(baseline_ids))

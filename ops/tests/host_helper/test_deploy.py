@@ -694,8 +694,100 @@ def test_pending_retirement_reuses_its_validated_newest_protection_before_migrat
         lambda *_args: seen.append("reused") or reusable,
     )
 
-    assert deploy_module._finish_pending_pruning_or_reuse(request, state) == (reusable, True)
-    assert seen == ["finished", "reused"]
+    assert deploy_module._finish_pending_pruning_or_reuse(request, state) == (None, True)
+    assert seen == ["finished"]
+
+
+@pytest.mark.parametrize(
+    ("candidate_schema", "other_is_newest", "candidate_present", "expected"),
+    (
+        ((), True, True, None),
+        ((20260905120000,), False, True, None),
+        ((), False, False, None),
+        ((), False, True, "candidate"),
+    ),
+)
+def test_pending_prune_reuse_requires_the_global_newest_candidate_protection_and_confirmed_schema(
+    tmp_path: Path,
+    candidate_schema: tuple[int, ...],
+    other_is_newest: bool,
+    candidate_present: bool,
+    expected: str | None,
+) -> None:
+    """An older target match or wrong-schema backup cannot authorize a migration retry."""
+
+    request = _request(tmp_path)
+    inputs = deploy_module._inputs(request, first_release=False)
+    selection = SelectionRecord(CURRENT, None, None, datetime(2026, 9, 7, tzinfo=UTC), 2, None, ())
+    baseline = selection_filename(selection)
+    candidate_backup = BackupRecord(
+        "backup-" + "1" * 32,
+        datetime(2026, 9, 7, tzinfo=UTC),
+        "a" * 64,
+        CURRENT,
+        candidate_schema,
+        1,
+    )
+    other_backup = BackupRecord(
+        "backup-" + "2" * 32,
+        datetime(2026, 9, 7, tzinfo=UTC),
+        "b" * 64,
+        CURRENT,
+        (),
+        1,
+    )
+    candidate_attempt = 1 if other_is_newest else 2
+    other_attempt = 2 if other_is_newest else 1
+    state = deploy_module.HostState(
+        selected_release_id=CURRENT,
+        releases=(),
+        backups=(candidate_backup, other_backup),
+        selections=(selection,),
+        applied_migrations=(),
+        service_state="stopped",
+        database_state="ready",
+        temporary_paths=(),
+        warnings=(),
+        backup_protections=tuple(
+            item
+            for item in (
+                (
+                    BackupProtection(1, candidate_backup.backup_id, baseline, inputs.candidate.release_id, candidate_attempt, datetime(2026, 9, 7, tzinfo=UTC))
+                    if candidate_present
+                    else None
+                ),
+                BackupProtection(1, other_backup.backup_id, baseline, CURRENT, other_attempt, datetime(2026, 9, 7, tzinfo=UTC)),
+            )
+            if item is not None
+        ),
+    )
+
+    reusable = deploy_module._newest_reusable_protection_backup(inputs, state)
+
+    assert (None if reusable is None else reusable.backup_id) == (
+        None if expected is None else candidate_backup.backup_id
+    )
+
+
+def test_completed_pending_prune_without_safe_reuse_returns_changed_retryable_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed retirement needs a newly confirmed fresh-backup plan, not manual refusal."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(deploy_module, "_finish_confirmed_pruning", lambda *_args: True)
+    monkeypatch.setattr(deploy_module, "_newest_reusable_protection_backup", lambda *_args: None)
+
+    result = deploy(request)
+
+    assert result.outcome == "retryable"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["failed_boundary"] == "protection"
+    assert result.state["observations"]["selected_release_id"] == CURRENT
+    assert runtime.backup_calls == 0
 
 
 def test_successful_history_failure_keeps_the_report_and_history_boundary(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 
@@ -191,6 +191,59 @@ def test_deploy_discovery_projects_protection_scheduler_and_downgrade_digests(
     assert result.state["backup_timer_state"] == "active"
     assert "releases" not in result.state
     assert "backups" not in result.state
+
+
+def test_deploy_discovery_bounds_history_to_the_protection_reference_intersection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mature history must not make deploy discovery exceed its wire budget."""
+
+    held_protection = "backup-" + "a" * 32
+    unheld_protection = "backup-" + "b" * 32
+    protections = (
+        BackupProtection(1, held_protection, None, RELEASE_ID, 0, SELECTED_AT),
+        BackupProtection(1, unheld_protection, None, RELEASE_ID, 1, SELECTED_AT),
+    )
+    selections = tuple(
+        SelectionRecord(
+            RELEASE_ID,
+            None,
+            f"backup-{index:032x}",
+            SELECTED_AT + timedelta(minutes=index),
+            2,
+            None,
+            (),
+        )
+        for index in range(65)
+    )
+    selections = selections[:-1] + (
+        SelectionRecord(
+            RELEASE_ID,
+            None,
+            held_protection,
+            selections[-1].selected_at,
+            2,
+            None,
+            (),
+        ),
+    )
+    observed = HostState(
+        **{
+            **_state().__dict__,
+            "selections": selections,
+            "selection_filenames": (),
+            "successful_backup_ids": frozenset(),
+            "backup_protections": (protections[1],),
+            "retiring_backup_protections": (protections[0],),
+        }
+    )
+    _install_observer(monkeypatch, observed)
+
+    result = discover_module.discover(_request(mode="deploy"))
+
+    assert result.outcome == "succeeded"
+    assert result.state["independently_held_backup_ids"] == (held_protection,)
+    assert result.state["backup_protections"] == tuple(item.to_mapping() for item in protections)
 
 
 def test_unfinished_provision_downgrade_digest_includes_release_proving_live_prefix(

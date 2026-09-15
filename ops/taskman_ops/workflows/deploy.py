@@ -173,6 +173,7 @@ def deploy(
                         material_evidence=_material_plan_evidence(
                             recovery_evidence["protections"],
                             recovery_evidence["independent_backup_ids"],
+                            prune_backup_ids,
                             _downgrade_evidence_rows(downgrade_evidence),
                         ),
                     )
@@ -691,7 +692,16 @@ def _planned_prune_backup_ids(
         if observed != mutable(dict(expected_state)):
             raise ValueError
         protections = tuple(BackupProtection.from_mapping(item) for item in state["backup_protections"])
-        independent = frozenset(state["independently_held_backup_ids"])
+        independent_values = state["independently_held_backup_ids"]
+        if (
+            not isinstance(independent_values, (list, tuple))
+            or tuple(independent_values) != tuple(sorted(set(independent_values)))
+            or any(type(item) is not str for item in independent_values)
+        ):
+            raise ValueError
+        independent = frozenset(independent_values)
+        if not independent.issubset({item.backup_id for item in protections}):
+            raise ValueError
         current = protection_prune_ids(
             protections,
             expected_state["last_successful_selection_id"],
@@ -752,19 +762,27 @@ def _downgrade_evidence_rows(
 def _material_plan_evidence(
     protections: tuple[BackupProtection, ...],
     independently_held_backup_ids: frozenset[str] | set[str],
+    prune_backup_ids: tuple[str, ...],
     downgrade_baselines: tuple[tuple[str, str, tuple[str, ...]], ...],
 ) -> dict[str, object]:
-    """Render named recovery and order facts rather than opaque acknowledgments."""
+    """Render the bounded protection disposition and named order evidence."""
 
     held = frozenset(independently_held_backup_ids)
+    pruned = frozenset(prune_backup_ids)
+    protection_ids = frozenset(item.backup_id for item in protections)
+    if not held.issubset(protection_ids) or not pruned.issubset(protection_ids):
+        raise _safety("deployment recovery projection is inconsistent")
     return {
-        "retained_recovery_points": [
+        "recovery_protection_points": [
             {
                 "backup_id": protection.backup_id,
                 "attempt_number": protection.attempt_number,
                 "base_selection_id": protection.base_selection_id,
                 "target_release_id": protection.target_release_id,
                 "independently_referenced": protection.backup_id in held,
+                "disposition": (
+                    "prune-authorized" if protection.backup_id in pruned else "retained"
+                ),
             }
             for protection in sorted(protections, key=lambda item: item.backup_id)
         ],

@@ -238,11 +238,57 @@ def test_apply_time_named_recovery_or_baseline_drift_requires_a_new_invocation(
     assert result.exit_status is ExitStatus.SAFETY
 
 
+def test_apply_time_protection_projection_drift_requires_a_new_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing a bounded recovery row cannot retain the former confirmation."""
+    from taskman_ops.host_helper.backup_protection import BackupProtection
+    from taskman_ops.workflows.deploy import deploy
+
+    baseline = _EXPECTED["last_successful_selection_id"]
+    assert isinstance(baseline, str)
+    first = BackupProtection(
+        1,
+        "backup-" + "1" * 32,
+        baseline,
+        CURRENT,
+        0,
+        datetime(2026, 9, 7, tzinfo=UTC),
+    )
+    changed = BackupProtection(
+        1,
+        first.backup_id,
+        baseline,
+        CURRENT,
+        1,
+        datetime(2026, 9, 7, tzinfo=UTC),
+    )
+    evidence = iter(
+        (
+            ((), {"protections": (first,), "independent_backup_ids": frozenset()}),
+            ((), {"protections": (changed,), "independent_backup_ids": frozenset()}),
+        )
+    )
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy._planned_prune_backup_ids", lambda *_args, **_kwargs: next(evidence)
+    )
+    monkeypatch.setattr(
+        "taskman_ops.workflows.deploy.run_deployment_request",
+        lambda *_args, **_kwargs: pytest.fail("changed protection projection must not reach the helper"),
+    )
+
+    result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
+
+    assert result.exit_status is ExitStatus.SAFETY
+
+
 def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty request must not stand in for a planned protection retirement."""
     from taskman_ops.workflows.deploy import deploy
+    from taskman_ops.host_helper.backup_protection import BackupProtection
 
     prune_ids = (
         "backup-00000000000000000000000000000001",
@@ -250,10 +296,24 @@ def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     )
     sent: list[tuple[str, ...]] = []
     displayed: list[dict[str, object]] = []
+    protections = tuple(
+        BackupProtection(
+            1,
+            backup_id,
+            _EXPECTED["last_successful_selection_id"],
+            CURRENT,
+            index,
+            datetime(2026, 9, 7, 12, index, tzinfo=UTC),
+        )
+        for index, backup_id in enumerate(prune_ids)
+    )
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._planned_prune_backup_ids",
-        lambda *_args, **_kwargs: (prune_ids, {"protections": (), "independent_backup_ids": frozenset()}),
+        lambda *_args, **_kwargs: (
+            prune_ids,
+            {"protections": protections, "independent_backup_ids": frozenset()},
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -293,19 +353,22 @@ def test_material_plan_names_retained_recovery_points_and_each_acknowledged_base
     evidence = _material_plan_evidence(
         protections,
         {second},
+        (first,),
         ((CURRENT, "unknown", ("source-unavailable",)),),
     )
 
-    assert evidence["retained_recovery_points"] == [
-        {"backup_id": first, "attempt_number": 0, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": False},
-        {"backup_id": second, "attempt_number": 1, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": True},
+    assert evidence["recovery_protection_points"] == [
+        {"backup_id": first, "attempt_number": 0, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": False, "disposition": "prune-authorized"},
+        {"backup_id": second, "attempt_number": 1, "base_selection_id": baseline, "target_release_id": CURRENT, "independently_referenced": True, "disposition": "retained"},
     ]
     assert evidence["downgrade_baselines"] == [
         {"release_id": CURRENT, "order": "unknown", "reasons": ["source-unavailable"]}
     ]
     rendered_json = json.loads(render_json(WorkflowResult("deploy", "test", False, "planned", evidence)))
     assert rendered_json["facts"] == evidence
-    assert first in render_human(WorkflowResult("deploy", "test", False, "planned", evidence))
+    human = render_human(WorkflowResult("deploy", "test", False, "planned", evidence))
+    assert first in human
+    assert "prune-authorized" in human
 
 
 def test_controller_plans_the_real_post_backup_retirement_set_with_independent_references(
