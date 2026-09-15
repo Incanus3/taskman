@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -452,6 +453,7 @@ def test_deploy_post_history_observation_proves_success_without_entrypoint_reins
     )
     inputs = deploy_module._Inputs(
         paths=object(),
+        expected_state={},
         previous_release_id=None,
         expected_migrations=(),
         candidate=SimpleNamespace(release_id=RELEASE),
@@ -462,6 +464,8 @@ def test_deploy_post_history_observation_proves_success_without_entrypoint_reins
         credentials=Path("/etc/taskman/pgpass"),
         database={},
         verification={},
+        backup_helper={},
+        prune_backup_ids=(),
     )
     observation_calls: list[dict[str, object]] = []
 
@@ -499,7 +503,7 @@ def test_deploy_post_history_observation_proves_success_without_entrypoint_reins
         CORRELATION,
         {},
         {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-        {"candidate_release_id": RELEASE},
+        {"target": {"kind": "upload", "manifest": {"release_id": RELEASE}}},
     )
     raw_result = deploy_module._result(
         request,
@@ -514,13 +518,18 @@ def test_deploy_post_history_observation_proves_success_without_entrypoint_reins
         final_unavailable=unavailable,
         final_inspection_error=inspection_error,
     )
+    raw_result = replace(
+        raw_result,
+        state={**raw_result.state, "desired_release_id": RELEASE},
+    )
     monkeypatch.setattr(
         entrypoint,
         "_observe_final_mutation",
         lambda _request: pytest.fail("success must reuse the post-history observation"),
     )
 
-    result = entrypoint._legacy_mutation_result(request, raw_result)
+    monkeypatch.setitem(entrypoint._DISPATCH, "deploy", lambda _request: raw_result)
+    result = entrypoint._dispatch(request)
 
     assert validate_mutation_state("deploy", "succeeded", result.state)[
         "observations"
