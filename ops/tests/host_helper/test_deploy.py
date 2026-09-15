@@ -108,6 +108,17 @@ def _archive(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_host_archive_member_validation_rejects_parent_component_symlink() -> None:
+    """Host staging must retain the same strict link admission as local verification."""
+
+    member = tarfile.TarInfo("taskman/lib/current")
+    member.type = tarfile.SYMTYPE
+    member.linkname = "../lib/runtime"
+
+    with pytest.raises(ValueError, match="release archive inventory is unsafe"):
+        deploy_module._validate_archive_members([member])
+
+
 def _roots(tmp_path: Path) -> dict[str, str]:
     return {"install_root": str(tmp_path / "install"), "backup_root": str(tmp_path / "backups")}
 

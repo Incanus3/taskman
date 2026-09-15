@@ -401,10 +401,6 @@ def _symlink_target(parts: tuple[str, ...], linkname: object) -> tuple[str, ...]
     return tuple(target)
 
 
-def _hardlink_target(linkname: object) -> tuple[str, ...]:
-    return _member_parts(linkname)
-
-
 def validate_release_archive_members(members: object) -> None:
     """Apply the shared host/local archive safety and resource bounds."""
 

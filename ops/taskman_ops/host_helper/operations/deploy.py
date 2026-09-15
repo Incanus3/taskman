@@ -16,6 +16,7 @@ import tarfile
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.host_protocol.mutation_results import unavailable_observations
+from taskman_ops.errors import OpsError
 from taskman_ops.releases.manifests import (
     ArtifactManifest,
     MAX_RELEASE_ARCHIVE_BYTES,
