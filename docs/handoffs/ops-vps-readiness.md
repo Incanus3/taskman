@@ -50,9 +50,10 @@ compileall, shell syntax, verify help and scoped documentation/terminology check
 
 ## Immediate next increment
 
-Step 2 is complete. Package reuse and the history split are verified; the operator explicitly
-accepted the measured startup disposition and deferred import changes to step 3. Do not revive
-the earlier approval gates, direct-write proposal or unselected selective-import experiment.
+Step 2 of the agreed pre-merge sequence is complete. Package reuse and the history split are
+verified; the operator explicitly accepted the measured startup disposition and deferred import
+changes to pre-merge step 3. Do not revive the earlier approval gates, direct-write proposal or
+unselected selective-import experiment.
 The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
 that selected it does not complete the step-3 audit. No startup change or mutation-adapter removal
 is selected. The operator clarified the complete step-3 sequence below and requested that the
