@@ -20,7 +20,7 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
 - Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
   candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete in `tas-sr4b.18`, committed as `d4335ffe`;
   candidate 3 producer correction is complete in `tas-sr4b.19`, committed as `664926a7`; translator removal
-  and candidates 4–8 await disposition.
+  and candidates 4–8 await disposition. Proposed remaining design: `tas-sr4b.20`.
 
 ## Current checkpoint
 
@@ -89,6 +89,19 @@ gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix pre
 tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
 Translator-removal design is next, separately gated; the producer correction is committed as `664926a7`.
 
+## Translator-removal design checkpoint
+
+The operator requested design only. The proposed
+[exact helper failure design](../specs/2026-09-16-exact-helper-failure-design.md) owns the
+in-process evidence policy, report precedence, one final observer, encoding fallback, additional
+service-stop producer correction and fixture/verification map. Distinct scoped design review
+closed two corrected findings with no remaining blockers. Markdown/gate checks passed; fresh
+`mix precommit` passed 805 tests in 43.4 seconds. No implementation is authorized.
+Next: operator approves or revises this design, then prepare and review its implementation plan.
+After both approvals, update this handoff and resume in a fresh session before implementation.
+Deferring retains the translator and tracked stop-category defect; candidates 4–8 still require
+ordered explicit disposition. Steps 4–6 and all external gates below remain unfinished.
+
 ## Immediate next increment
 
 Step 2 of the agreed pre-merge sequence is complete. Package reuse and the history split are
@@ -99,8 +112,8 @@ The approved verification simplification is complete in `tas-sr4b.15`. The bound
 that selected it preceded the broader audit, now recorded in the linked register. No startup change,
 mutation-adapter removal or implementation beyond candidate 3's producer correction is approved.
 
-1. Resolve candidate 3 translator-removal failure policy and fixture mapping against the
-   accepted specification before its separate approval. The register owns both proposed increments;
+1. Review the linked candidate 3 translator-removal design against the
+   accepted specification and obtain its separate approval before planning. The register owns both proposed increments;
    only the producer correction is approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
    The audit, ranking and candidates 1–2 delivery are recorded; remaining increments require approval. Follow the register's
