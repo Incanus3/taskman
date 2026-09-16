@@ -1,6 +1,6 @@
 # Operations simplification candidate register
 
-Status: candidates 1–2 and candidate 3 producer correction complete; translator-removal design and later review pending. Updated: 2026-09-16.
+Status: candidates 1–2 and candidate 3 producer correction complete; translator-removal design and plan approved; implementation and later review pending. Updated: 2026-09-16.
 Workstream: [Operations VPS readiness](../handoffs/ops-vps-readiness.md), pre-merge step 3.
 Tracking: `tas-sr4b.16`; parent `tas-sr4b` remains open for hardening and external acceptance.
 
@@ -60,7 +60,7 @@ cost. Small changes with clear shared consumers lead; larger safety-sensitive re
 | --- | --- | --- | --- | --- |
 | 1 | Give migration-version extraction a neutral owner | Clear shared invariant; fewer parsing variants and host database imports | Small / low to moderate | Completed 2026-09-16 (`tas-sr4b.17`) |
 | 2 | Narrow the SOPS runner/result contract | Remove unused result forms and retry dispatch | Small to moderate / moderate, secrets boundary | Completed 2026-09-16 (`tas-sr4b.18`) |
-| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Producer correction completed (`tas-sr4b.19`); translator-removal policy pending |
+| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Producer correction completed (`tas-sr4b.19`); translator-removal design/plan approved; execution pending |
 | 4 | Make provisioning injection use the production evidence contract | Remove compatibility branches and implicit all-create authority | Moderate / high, resource/scheduler authority | Unreviewed |
 | 5 | Give confirmed systemd asset bytes one owner | Fewer representations; bind validation and installation to the same rendered content | Moderate / moderate | Unreviewed |
 | 6 | Remove unused internal compatibility names | Smaller supported internal surface | Small / low | Unreviewed |
@@ -183,8 +183,8 @@ verification reports, known change followed by malformed evidence, unavailable o
 contention, inspect-only cleanup and completed cleanup targets. Preserve the existing no-success-
 reinspection assertion. Run complete local gates and distinct correctness review. The [bounded failure design](../specs/2026-09-16-exact-helper-failure-design.md) now
 defines the evidence policy and fixture migration; the operator approved it on 2026-09-16.
-The [implementation plan](../plans/2026-09-16-exact-helper-failure.md) awaits approval in `tas-sr4b.21`. It includes correcting the additionally discovered service-stop producer to
-service/8 before translator removal. No remaining implementation is approved.
+The [implementation plan](../plans/2026-09-16-exact-helper-failure.md) was approved on 2026-09-16 in `tas-sr4b.21`. It includes correcting the additionally discovered service-stop producer to
+service/8 before translator removal. The bounded plan sequence is authorized for fresh-session execution.
 
 **Next proposed increment (2026-09-16).** Split delivery so the demonstrated producer defect is
 corrected before removing translation. First, host deploy's `CommandError` observation failure
@@ -194,7 +194,7 @@ and warning evidence. Verify the production failure branch and exact result thro
 without translation or a second observation, including a proved change and unavailable final facts.
 Run scoped host/protocol/controller failure tests, complete local gates and distinct correctness review.
 The operator approved this bounded producer correction on 2026-09-16; it is implemented and verified
-locally in `tas-sr4b.19`. Translator removal remains a separate unapproved increment.
+locally in `tas-sr4b.19`. Translator removal is a separate increment now authorized through the approved plan.
 
 Implementation discovery: the general protocol category table admits `inspection`/5, but its
 deploy/genesis override only admits 8. Producing the approved valid exact `inspection`/5 state
@@ -328,8 +328,8 @@ local gates. No startup change is approved.
 ## Continuation and verification record
 
 Current position: candidates 1–2 are committed (`15602d43`, `d4335ffe`); candidate 3's approved
-producer correction is committed as `664926a7`. Resolve translator-removal failure policy before its
-separate approval. The remainder of candidate 3 and candidates 4–8 remain pending. After each explicit
+producer correction is committed as `664926a7`. Translator-removal design and plan are approved;
+execute the plan in a fresh session, task 1 first. Candidate 3 delivery and candidates 4–8 remain pending. After each explicit
 disposition, update this register and its tracking issue; retain unreviewed entries in order.
 Approved changes require their bounded design, meaningful tests, complete local gates and distinct
 scoped verification. Production stability precedes step-4 test overlap removal, then authorized

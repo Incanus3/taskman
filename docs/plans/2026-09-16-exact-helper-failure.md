@@ -1,6 +1,6 @@
 # Exact helper failure handling implementation plan
 
-Status: proposed; design approved by the operator on 2026-09-16. Plan approval pending.
+Status: design and implementation plan approved by the operator on 2026-09-16.
 Tracking: `tas-sr4b.21`; delivery remains within `tas-sr4b.16` candidate 3.
 
 **Goal:** Remove legacy mutation-result translation while preserving independently valid internal
@@ -224,7 +224,7 @@ task 3 covers exact recovery, observation, report precedence, serialization and 
 task 4 closes full verification and durable continuation. Interface names and prerequisites are
 explicit; no runtime size or simplification benefit has yet been established.
 
-Plan approval selects this sequence. After approval, encourage `$resume ops-vps-readiness` in a
+The operator approved this sequence on 2026-09-16. Continue with `$resume ops-vps-readiness` in a
 fresh session and default to delegated execution. Revising changes task boundaries or acceptance
 before work; deferring leaves current source behavior intact. The approved design remains valid
 independently of implementation scheduling.

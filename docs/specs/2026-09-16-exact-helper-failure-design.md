@@ -1,6 +1,6 @@
 # Exact helper failure handling
 
-Status: approved by the operator on 2026-09-16. Implementation plan approval pending.
+Status: approved by the operator on 2026-09-16. Implementation plan approved on 2026-09-16.
 Tracking: `tas-sr4b.20`, within candidate 3 of the
 [ordered register](../research/2026-09-16-operations-simplification-candidates.md).
 
