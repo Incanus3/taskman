@@ -1,6 +1,6 @@
 # Exact helper failure handling
 
-Status: proposed, awaiting operator approval. Date: 2026-09-16.
+Status: approved by the operator on 2026-09-16. Implementation plan approval pending.
 Tracking: `tas-sr4b.20`, within candidate 3 of the
 [ordered register](../research/2026-09-16-operations-simplification-candidates.md).
 
@@ -11,7 +11,7 @@ reports, final observations, cleanup authority and transport uncertainty. The
 [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md) and
 [runbook](../deployment.md) retain their authority. This proposal changes only recovery from an
 invalid in-process mutation handler result. It does not relax validation of replies received by
-controllers. Approval would amend the reconciliation design's helper failure boundary in this
+controllers. Operator approval amends the reconciliation design's helper failure boundary in this
 bounded respect; existing wire schema and controller failure rules remain unchanged.
 
 Baseline: source tip `ff24d0089c6b7d073a16fd1d47314150ea5dd432` on
@@ -194,7 +194,8 @@ source checkpoint passed 1,530 cases, as recorded in the handoff.
 
 ## Approval and next-session checklist
 
-This written design must be approved before writing an implementation plan. Approval selects the
+The operator approved this written design on 2026-09-16 after discussing risks and consequences.
+Approval selects the
 in-process evidence policy, failed-report precedence, whole-group observation rejection and bounded
 encoding fallback. Revision changes those decisions before planning; deferral leaves the translator
 and stop defect tracked. After approved design and approved plan, update the handoff and resume in
@@ -202,6 +203,6 @@ a fresh session before implementation by default. Local checkpoint commits are a
 push, history rewriting, merge and host actions retain their separate gates.
 
 Next session: read this complete design and canonical reconciliation specification; confirm current
-source/Beads state; prepare and review the bounded implementation plan if approved; retain ordered
+source/Beads state; review the [bounded implementation plan](../plans/2026-09-16-exact-helper-failure.md); retain ordered
 candidate review 4–8 and pre-merge steps 4–6 from the
 [workstream handoff](../handoffs/ops-vps-readiness.md). Do not implement from a proposed design.

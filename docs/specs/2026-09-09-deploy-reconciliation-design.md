@@ -1434,6 +1434,12 @@ loopback topology, journal, readiness, and HSTS checks as uploaded artifacts.
 
 ## Failures and reporting
 
+Approved amendment (2026-09-16): the
+[exact helper failure design](2026-09-16-exact-helper-failure-design.md) governs recovery from
+malformed matching in-process handler results and encoding failure. It supersedes generic
+evidence-erasing fallback in that bounded scope; wire schema, controller whole-reply rejection
+and the failure/authorization rules below remain authoritative. Implementation is pending.
+
 Preserve the bounded verification report on exit 9, including checks actually attempted; do not
 replace it with an empty report. If follow-up inspection also fails, keep the original failure as
 the main reported error and report the inspection failure separately.

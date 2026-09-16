@@ -20,7 +20,7 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
 - Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
   candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete in `tas-sr4b.18`, committed as `d4335ffe`;
   candidate 3 producer correction is complete in `tas-sr4b.19`, committed as `664926a7`; translator removal
-  and candidates 4–8 await disposition. Proposed remaining design: `tas-sr4b.20`.
+  and candidates 4–8 await disposition. Approved remaining design: `tas-sr4b.20`; proposed implementation plan: `tas-sr4b.21`.
 
 ## Current checkpoint
 
@@ -91,14 +91,17 @@ Translator-removal design is next, separately gated; the producer correction is 
 
 ## Translator-removal design checkpoint
 
-The operator requested design only. The proposed
+The operator approved the design on 2026-09-16 after discussing risks and trade-offs. The approved
 [exact helper failure design](../specs/2026-09-16-exact-helper-failure-design.md) owns the
 in-process evidence policy, report precedence, one final observer, encoding fallback, additional
 service-stop producer correction and fixture/verification map. Distinct scoped design review
 closed two corrected findings with no remaining blockers. Markdown/gate checks passed; fresh
 `mix precommit` passed 805 tests in 43.4 seconds. No implementation is authorized.
-Next: operator approves or revises this design, then prepare and review its implementation plan.
-After both approvals, update this handoff and resume in a fresh session before implementation.
+Next: approve or revise the [implementation plan](../plans/2026-09-16-exact-helper-failure.md).
+Its order is producer/fixture correction, shared cleanup validation, coupled recovery/encoding,
+then integrated acceptance; commit each verified checkpoint. Distinct scoped plan review approved
+without blockers; fresh `mix precommit` passed 805 tests in 43.7 seconds. Plan approval is pending.
+After plan approval, resume in a fresh session before delegated implementation.
 Deferring retains the translator and tracked stop-category defect; candidates 4–8 still require
 ordered explicit disposition. Steps 4–6 and all external gates below remain unfinished.
 
@@ -112,12 +115,11 @@ The approved verification simplification is complete in `tas-sr4b.15`. The bound
 that selected it preceded the broader audit, now recorded in the linked register. No startup change,
 mutation-adapter removal or implementation beyond candidate 3's producer correction is approved.
 
-1. Review the linked candidate 3 translator-removal design against the
-   accepted specification and obtain its separate approval before planning. The register owns both proposed increments;
-   only the producer correction is approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
+1. Review the linked candidate 3 implementation plan and obtain approval before implementation. The register owns both proposed increments;
+   the earlier producer correction is delivered and the remaining design is approved, with plan approval pending. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
    The audit, ranking and candidates 1–2 delivery are recorded; remaining increments require approval. Follow the register's
-   evidence and verification constraints, including candidate 3's unresolved failure-policy design.
+   evidence and verification constraints, including candidate 3's approved failure policy and pending plan gate.
 2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
    import the graph; selected read imports have a smaller closure, mutations retain most of it.
    No end-to-end import saving is established. Native-effect seams are inventoried in the research.

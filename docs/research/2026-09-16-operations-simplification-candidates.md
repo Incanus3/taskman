@@ -182,8 +182,8 @@ tests and public packaged failures must cover exact history failure with a passi
 verification reports, known change followed by malformed evidence, unavailable observation, lock
 contention, inspect-only cleanup and completed cleanup targets. Preserve the existing no-success-
 reinspection assertion. Run complete local gates and distinct correctness review. The [bounded failure design](../specs/2026-09-16-exact-helper-failure-design.md) now
-defines the proposed evidence policy and fixture migration; it awaits operator approval in
-`tas-sr4b.20`. It includes correcting the additionally discovered service-stop producer to
+defines the evidence policy and fixture migration; the operator approved it on 2026-09-16.
+The [implementation plan](../plans/2026-09-16-exact-helper-failure.md) awaits approval in `tas-sr4b.21`. It includes correcting the additionally discovered service-stop producer to
 service/8 before translator removal. No remaining implementation is approved.
 
 **Next proposed increment (2026-09-16).** Split delivery so the demonstrated producer defect is
