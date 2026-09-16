@@ -257,7 +257,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 try:
                     change_service("stop")
                 except CommandError as error:
-                    raise _RetryableError("stop") from error
+                    raise _RetryableError("service") from error
                 changed = True
 
             if migration_needed and not migration_done:
@@ -298,7 +298,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 try:
                     change_service("start")
                 except CommandError as error:
-                    raise _RetryableError("start") from error
+                    raise _RetryableError("service") from error
                 changed = True
             verification = _verify(request, inputs)
             report = verification.state.get("report") or None
@@ -1251,15 +1251,11 @@ def _result(
             "protection": 8,
             "migration": 7,
             "selection": 8,
-            "start": 8,
             "service": 8,
             "verification": _verification_exit_code(report),
             "history": 8,
-            "observation": 5,
             "inspection": 5,
         }.get(failed_boundary, 10)
-        if failed_boundary == "start":
-            failed_boundary = "service"
     if final_observations is None:
         observations, unavailable = unavailable_observations(request.operation)
         inspection_error = "unsafe-observation"

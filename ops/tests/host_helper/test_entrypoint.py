@@ -21,7 +21,9 @@ from taskman_ops.host_protocol import (
     ProtocolError,
     decode_result,
     encode_request,
+    unavailable_observations,
     validate_mutation_state,
+    validate_verification_report,
 )
 from taskman_ops.host_helper import __main__ as entrypoint
 from taskman_ops.host_helper.operations import deploy as deploy_module
@@ -65,7 +67,7 @@ def passing_report() -> dict[str, object]:
         "public-readiness",
         "public-hsts",
     )
-    return {
+    report = {
         "schema_version": 1,
         "status": "ok",
         "exit_status": 0,
@@ -82,6 +84,7 @@ def passing_report() -> dict[str, object]:
         ],
         "next_action": None,
     }
+    return validate_verification_report(report)
 
 
 def request_bytes(
@@ -296,12 +299,35 @@ def test_entrypoint_dispatches_final_rollback_and_restore_without_a_legacy_bridg
     def final_result(request: object) -> HostResult:
         assert isinstance(request, HostRequest)
         received.append(request)
-        return HostResult(3, operation, request.correlation_id, "refused", "unsafe", {}, ())
+        if operation == "restore":
+            observations, unavailable = unavailable_observations("restore")
+            state = {
+                "mutation_state": "unchanged",
+                "exit_code": 2,
+                "failed_boundary": "input",
+                "observations": observations,
+                "unavailable_fields": unavailable,
+                "inspection_error": "lock-unavailable",
+                "report": None,
+                "desired_release_id": None,
+                "backup_id": None,
+                "pre_restore_backup_id": None,
+            }
+            validate_mutation_state("restore", "refused", state)
+        else:
+            state = {}
+        return HostResult(3, operation, request.correlation_id, "refused", "unsafe", state, ())
 
     with invoke_entrypoint(request_bytes(operation=operation), final_result, operation=operation) as stdout:
         assert entrypoint.main() == 0
 
-    assert decode_result(stdout.buffer.getvalue()).outcome == "refused"
+    result = decode_result(stdout.buffer.getvalue())
+    assert result.outcome == "refused"
+    if operation == "restore":
+        state = validate_mutation_state("restore", result.outcome, result.state)
+        assert state["mutation_state"] == "unchanged"
+        assert state["exit_code"] == 2
+        assert state["failed_boundary"] == "input"
     assert received[0].operation == operation
 
 
@@ -358,10 +384,16 @@ def test_mutation_exception_emits_exact_unknown_evidence_after_one_final_observa
 def test_entrypoint_preserves_verification_report_on_later_history_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    observer_calls: list[str] = []
+
+    def observe(request: HostRequest):
+        observer_calls.append(request.operation)
+        return mutation_observations(), (), None
+
     monkeypatch.setattr(
         entrypoint,
         "_observe_final_mutation",
-        lambda _request: (mutation_observations(), (), None),
+        observe,
     )
 
     def history_failure(request: HostRequest) -> HostResult:
@@ -370,9 +402,14 @@ def test_entrypoint_preserves_verification_report_on_later_history_failure(
             "retryable",
             "deployment history publication failed",
             {
-                "changed": True,
+                "mutation_state": "changed",
+                "exit_code": 8,
                 "failed_boundary": "history",
+                "observations": mutation_observations(),
+                "unavailable_fields": (),
+                "inspection_error": None,
                 "backup_id": None,
+                "desired_release_id": RELEASE,
                 "report": passing_report(),
             },
         )
@@ -388,6 +425,8 @@ def test_entrypoint_preserves_verification_report_on_later_history_failure(
     assert state["exit_code"] == 8
     assert state["failed_boundary"] == "history"
     assert state["report"] == passing_report()
+    assert state["desired_release_id"] == RELEASE
+    assert observer_calls == []
 
 
 def test_failed_cleanup_inspection_is_exact_and_cannot_claim_a_mutation(
@@ -593,28 +632,33 @@ def test_deploy_post_history_observation_proves_success_without_entrypoint_reins
         raw_result,
         state={**raw_result.state, "desired_release_id": RELEASE},
     )
-    monkeypatch.setattr(
-        entrypoint,
-        "_observe_final_mutation",
-        lambda _request: pytest.fail("success must reuse the post-history observation"),
-    )
+    entrypoint_observer_calls: list[str] = []
+
+    def observe_final(request: HostRequest):
+        entrypoint_observer_calls.append(request.operation)
+        return mutation_observations(), (), None
+
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", observe_final)
 
     monkeypatch.setitem(entrypoint._DISPATCH, "deploy", lambda _request: raw_result)
     result = entrypoint._dispatch(request)
 
-    assert validate_mutation_state("deploy", "succeeded", result.state)[
-        "observations"
-    ]["service_state"] == "running"
+    state = validate_mutation_state("deploy", "succeeded", result.state)
+    assert state["observations"]["service_state"] == "running"
+    assert state["desired_release_id"] == RELEASE
+    assert entrypoint_observer_calls == []
 
 
-def test_translator_reuses_operation_owned_final_observation_without_reacquiring_lock(
+def test_exact_failure_reuses_operation_owned_final_observation_without_reacquiring_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        entrypoint,
-        "_observe_final_mutation",
-        lambda _request: pytest.fail("translator must reuse the operation observation"),
-    )
+    observer_calls: list[str] = []
+
+    def observe_final(request: HostRequest):
+        observer_calls.append(request.operation)
+        return mutation_observations(), (), None
+
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", observe_final)
 
     def operation_result(request: HostRequest) -> HostResult:
         return HostResult.for_request(
@@ -622,13 +666,15 @@ def test_translator_reuses_operation_owned_final_observation_without_reacquiring
             "retryable",
             "history failed",
             {
-                "changed": True,
+                "mutation_state": "changed",
+                "exit_code": 8,
                 "failed_boundary": "history",
+                "observations": mutation_observations(),
+                "unavailable_fields": (),
+                "inspection_error": None,
                 "backup_id": None,
+                "desired_release_id": RELEASE,
                 "report": passing_report(),
-                "final_observations": mutation_observations(),
-                "final_unavailable_fields": (),
-                "final_inspection_error": None,
             },
         )
 
@@ -641,3 +687,5 @@ def test_translator_reuses_operation_owned_final_observation_without_reacquiring
         "deploy", "retryable", decode_result(stdout.buffer.getvalue()).state
     )
     assert state["observations"]["selected_release_id"] == RELEASE
+    assert state["desired_release_id"] == RELEASE
+    assert observer_calls == []

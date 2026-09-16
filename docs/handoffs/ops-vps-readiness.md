@@ -27,7 +27,7 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
 Latest planning checkpoint: `67c44511133ca14a799f206f3baf633ca9595027` on
 `dedicated-host-deployment-automation`; design and reviewed implementation plan approved.
 The subsequent handoff correction is committed as `2a74908a`. Operator plan approval on
-2026-09-16 authorizes the bounded sequence; resume in a fresh session before implementation.
+2026-09-16 authorizes the bounded sequence; the operator explicitly authorized implementation in this session.
 Earlier implementation evidence follows. This checkpoint includes
 the verified package/history optimizations and report-validator simplification; its preceding tip
 was `42ea507651206c7bab706486c15878608619f127`. Package reuse is implemented and independently
@@ -92,7 +92,7 @@ alongside existing inspection/8; other categories remain restricted. Distinct sc
 gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix precommit` passed 805
 tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
 The producer correction is committed as `664926a7`; remaining translator removal is approved through
-the reviewed implementation plan below and awaits fresh-session execution.
+the reviewed implementation plan below and awaits approved execution.
 
 ## Translator-removal design checkpoint
 
@@ -109,7 +109,7 @@ without blockers; fresh `mix precommit` passed 805 tests in 43.7 seconds. Plan a
 Approval-checkpoint verification: scoped links, whitespace, approval consistency and retained
 six-step sequence/gates passed; fresh `mix precommit` passed 805 tests in 42.7 seconds.
 No runtime source or external state changed.
-Resume in a fresh session before delegated implementation, starting with task 1.
+The operator authorized continuing this session; task 1 is implemented and independently reviewed in `tas-sr4b.22`; task 2 is next.
 Until execution, the translator and tracked stop-category defect remain; candidates 4–8 still require
 ordered explicit disposition. Steps 4–6 and all external gates below remain unfinished.
 
@@ -124,8 +124,8 @@ that selected it preceded the broader audit, now recorded in the linked register
 Candidate 3 translator removal is approved only within the linked plan. No startup change
 or other implementation is approved.
 
-1. In a fresh session, execute the approved candidate 3 implementation plan sequentially, beginning
-   with task 1 producer/fixture correction. The earlier producer correction is delivered; the remaining
+1. Execute the approved candidate 3 implementation plan sequentially in `tas-sr4b.22`, beginning
+   with task 2 shared cleanup validation; task 1 producer/fixture correction is complete. The earlier producer correction is delivered; the remaining
    design and plan are approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
    The audit, ranking and candidates 1–2 delivery are recorded; candidates 4–8 require approval. Follow the register's
@@ -213,3 +213,8 @@ staging host and follow the [runbook](../deployment.md):
 Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot and destructive restore
 remain unproven by local fakes, packages or builds. Do not run the new controller against the
 unsupported historical staging installation.
+
+Task 1 checkpoint: canonical service/8 producers and exact fixtures delivered; focused gate
+116 passed in 5.34 seconds, compileall passed. Distinct scoped review approved spec compliance
+and quality without findings. Task 2 shared cleanup validation precedes coupled recovery/encoding
+and integrated acceptance in the approved plan. No translator removal or host acceptance yet.

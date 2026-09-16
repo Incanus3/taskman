@@ -206,3 +206,11 @@ Next session: read this complete design and canonical reconciliation specificati
 source/Beads state; review the [bounded implementation plan](../plans/2026-09-16-exact-helper-failure.md); retain ordered
 candidate review 4–8 and pre-merge steps 4–6 from the
 [workstream handoff](../handoffs/ops-vps-readiness.md). Do not implement from a proposed design.
+
+## Implementation evidence
+
+Task 1 delivered canonical service/8 stop/start failures and exact validator-checked fixtures.
+New stop regressions rejected stop/10 before the correction, then passed as service/8 while
+retaining unknown/changed classification and native event order. Focused gate: 116 passed in
+5.34 seconds; compileall passed. Distinct scoped producer/fixture review approved without
+findings. Shared cleanup validation and coupled recovery/encoding remain unfinished.
