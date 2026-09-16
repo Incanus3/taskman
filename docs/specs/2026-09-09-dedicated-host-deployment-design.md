@@ -82,8 +82,8 @@ Paths below are relative to `ops/taskman_ops/` unless otherwise stated.
 | `host_helper/commands.py`, `services.py`, `selection.py`, `filesystem.py` | Bounded host subprocesses, service control, atomic selection, and directory synchronization |
 | `host_helper/verification.py` | Fresh service/release/listener/readiness proof and its request construction |
 | `host_helper/operations/` | Command-specific procedures, confirmation relevance, and final state projection |
-| `workflows/`, including `helper.py` and `verification_results.py` | Operator orchestration, validated report translation, and request/result integration |
-| `checksums.py`, `migrations.py`, `host/pyinfra_support.py` | Neutral streaming SHA-256, migration-version invariants, and controller-only pyinfra mechanics |
+| `workflows/`, including `helper.py` and `verify.py` | Operator orchestration, validated report translation, and request/result integration |
+| `checksums.py`, `migrations.py`, `host/pyinfra_support.py` | Neutral streaming SHA-256, migration filename/version invariants, and controller-only pyinfra mechanics |
 | `host_helper/scheduled_backup.py`, `services/backups.py` | Host-side scheduled environment/status adapter and controller-side installation, calendar, and unit contracts |
 | `ops/builder/`, `ops/systemd/`, `ops/caddy/` | Pinned builder and reviewed native assets |
 | `lib/taskman/health.ex`, `lib/taskman_web/controllers/health_controller.ex` | Public database-readiness capability and fixed HTTP response |
@@ -242,6 +242,10 @@ identity while callers explicitly choose outcome, message, state, and warnings. 
 share frozen-value conversion and first-occurrence warning deduplication; callers retain schema
 validation and error translation.
 
+The shared protocol validator owns verification-report schema and check-order/success/failure
+rules. Controller workflows consume its validated report mapping directly and retain their
+operation-specific outcome and expected-release checks, without a second typed report model.
+
 ## Completed state and replayable recovery
 
 One `HostState` observes selected release, completed releases/backups/selections, live applied
@@ -356,6 +360,15 @@ packages, authenticated Caddy package source, accounts, directories, non-secret 
 installation, reload/enablement, and unattended security updates without automatic reboot. It repairs
 ordinary owned drift and reports no declarative changes on a converged rerun. Deploy definitions
 must not branch during prepare on mutable facts that earlier queued operations will change.
+
+Each provisioning material-plan cycle owns one immutable rendered systemd plan. Pre-convergence
+resource digests, post-confirmation authority checks and pyinfra installation use its exact asset
+bytes without rendering again. A pre-confirmation clean-source retry constructs a new plan;
+post-confirmation source or material host drift retains the refusal above. Configuration, secrets
+and asset bytes remain frozen through confirmation; with explicit-artifact or allowed-dirty input,
+later local asset edits require a new invocation to apply them. Create-only scheduler authority
+continues to come from fresh host observation. Genesis separately owns lifecycle-locked refresh of
+an existing scheduler; the provisioning snapshot does not replace that lifecycle.
 
 Three native custom operations are retained for specific material risks:
 

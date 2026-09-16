@@ -19,6 +19,7 @@ from taskman_ops.host_helper.state import HostState, StateAmbiguityError
 from taskman_ops.host_protocol import HostRequest
 from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ArtifactManifest
+from taskman_ops.services.systemd import build_systemd_plan
 from taskman_ops.provisioning import ProvisioningInputs, validate_preconvergence_authority
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
 from tests.support.environments import environment_config
@@ -579,6 +580,7 @@ def test_real_provision_authority_projection_passes_the_production_controller_sc
     config = environment_config()
     inputs = ProvisioningInputs(
         config=config,
+        systemd_plan=build_systemd_plan(config),
         caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/key", "deb example"), (), (), ""),
         runtime_environment=b"runtime", pgpass=b"pgpass", role_password_input=b"password",
     )

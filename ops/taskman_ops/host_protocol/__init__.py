@@ -24,6 +24,7 @@ from .mutation_results import (
     MUTATION_OPERATIONS,
     MUTATION_STATES,
     unavailable_observations,
+    validate_cleanup_completion,
     validate_mutation_state,
     validate_verification_report,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "ProtocolError",
     "validate_correlation_id",
     "unavailable_observations",
+    "validate_cleanup_completion",
     "validate_mutation_state",
     "validate_verification_report",
     "decode_request",

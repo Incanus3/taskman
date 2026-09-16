@@ -41,21 +41,6 @@ class ProvisioningDiscovery:
     caddy_state: CaddyState
 
 
-def validate_supported_host(
-    remote: Remote,
-    config: EnvironmentConfig,
-    *,
-    resolver: Callable[[str], Iterable[str]] | None = None,
-) -> HostFacts:
-    """Return validated host facts or refuse before any managed-state adoption."""
-
-    facts = collect_host_facts(remote, config, resolver=resolver)
-    _validate_host_platform(facts, config)
-    if _managed_conflicts(facts, config) or facts.caddy_state is not CaddyState.ABSENT:
-        raise _safety("existing managed state is ambiguous and will not be adopted")
-    return facts
-
-
 def validate_operational_host(
     remote: Remote,
     config: EnvironmentConfig,
@@ -296,17 +281,6 @@ def _expected_addresses(config: EnvironmentConfig) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
-def _managed_conflicts(facts: HostFacts, config: EnvironmentConfig) -> bool:
-    reserved_ports = {80, 443, config.application_port, config.distribution_port, config.database_port}
-    return bool(
-        any(listener.port in reserved_ports for listener in facts.listeners)
-        or facts.existing_paths
-        or facts.existing_units
-        or facts.existing_accounts
-        or facts.existing_databases
-    )
-
-
 def _unsupported(message: str) -> OpsError:
     return OpsError(
         status=ExitStatus.INVALID,
@@ -342,5 +316,4 @@ __all__ = [
     "ProvisioningState",
     "validate_operational_host",
     "validate_provisionable_host",
-    "validate_supported_host",
 ]

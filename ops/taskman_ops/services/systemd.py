@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
 import re
 import shlex
@@ -24,18 +24,20 @@ _PROTECTED_WRITE_CHANGED = 3
 
 @dataclass(frozen=True)
 class SystemdAsset:
-    source: Path | None
-    content: str | None
+    content: bytes
     destination: str
     mode: int
-    binary_content: bytes | None = None
     sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.content, bytes):
+            raise TypeError("systemd asset content must be exact bytes")
 
 
 @dataclass(frozen=True)
 class SystemdPlan:
     assets: tuple[SystemdAsset, ...]
-    backup_environment_content: str
+    backup_environment_content: bytes
     backup_environment_path: str
     enable_without_start: tuple[str, ...]
     enable_and_start: tuple[str, ...]
@@ -52,10 +54,14 @@ def build_systemd_plan(
     backup_timer = render_backup_timer(config, calendar_validator=calendar_validator)
     return SystemdPlan(
         assets=(
-            SystemdAsset(None, render_taskman_service(config), "/etc/systemd/system/taskman.service", 0o644),
+            SystemdAsset(
+                render_taskman_service(config).encode("utf-8"),
+                "/etc/systemd/system/taskman.service",
+                0o644,
+            ),
             *_backup_assets(config, backup_contract, backup_timer),
         ),
-        backup_environment_content=_backup_environment(backup_contract),
+        backup_environment_content=_backup_environment(backup_contract).encode("utf-8"),
         backup_environment_path="/etc/taskman/taskman-backup.env",
         enable_without_start=("taskman.service",),
         enable_and_start=("taskman-backup.timer",),
@@ -67,7 +73,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
 
     from pyinfra.operations import files, server, systemd
 
-    plan = build_systemd_plan(inputs.config)
+    plan = inputs.systemd_plan
     scheduler_create = inputs.scheduler_create
     changed_unit_files: list[object] = []
     for asset in plan.assets:
@@ -75,15 +81,8 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
             # A pre-existing scheduler is never a generic convergence target.
             # Its controlled pause/wait/checksum refresh belongs to genesis.
             continue
-        source: Path | StringIO | BytesIO
-        if asset.source is not None:
-            source = asset.source
-        elif asset.binary_content is not None:
-            source = BytesIO(asset.binary_content)
-        else:
-            source = StringIO(asset.content or "")
         result = files.put(
-            source,
+            BytesIO(asset.content),
             asset.destination,
             user="root",
             group="root",
@@ -96,7 +95,7 @@ def declare_systemd(inputs: ProvisioningInputs) -> SystemdPlan:
         _verify_installed_checksum(server, asset)
     if plan.backup_environment_path in scheduler_create:
         files.put(
-            StringIO(plan.backup_environment_content),
+            BytesIO(plan.backup_environment_content),
             plan.backup_environment_path,
             user="root",
             group="root",
@@ -250,16 +249,14 @@ def _backup_assets(
     command, service, _timer = contract.assets
     return (
         SystemdAsset(
-            command.source,
-            None,
+            command.content,
             str(command.destination),
             command.mode,
-            binary_content=command.content,
             sha256=command.sha256,
         ),
-        SystemdAsset(None, "", f"{config.install_root.as_posix()}/lifecycle.lock", 0o600),
-        SystemdAsset(None, render_backup_service(config), str(service.destination), service.mode),
-        SystemdAsset(None, timer, str(_timer.destination), _timer.mode),
+        SystemdAsset(b"", f"{config.install_root.as_posix()}/lifecycle.lock", 0o600),
+        SystemdAsset(render_backup_service(config).encode("utf-8"), str(service.destination), service.mode),
+        SystemdAsset(timer.encode("utf-8"), str(_timer.destination), _timer.mode),
     )
 
 

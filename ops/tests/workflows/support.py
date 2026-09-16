@@ -3,7 +3,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from taskman_ops.errors import ExitStatus
 from taskman_ops.releases.manifests import (
     ArtifactManifest,
     BUILDER_BASE_DIGEST,
@@ -17,11 +16,6 @@ from taskman_ops.releases.manifests import (
     VerifiedArtifact,
 )
 from taskman_ops.releases.identifiers import build_release_id
-from taskman_ops.workflows.verification_results import (
-    CheckStatus,
-    VerificationCheck,
-    VerificationReport,
-)
 
 
 _ARTIFACT_SHA256 = "c" * 64
@@ -40,13 +34,23 @@ _CHECKS = (
 
 
 def successful_verification_report(release_id: str) -> dict[str, object]:
-    return VerificationReport(
-        ExitStatus.OK,
-        release_id,
-        release_id,
-        tuple(VerificationCheck(name, CheckStatus.PASSED, "passed") for name in _CHECKS),
-        None,
-    ).to_mapping()
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "exit_status": 0,
+        "release_id": release_id,
+        "expected_release_id": release_id,
+        "checks": [
+            {
+                "schema_version": 1,
+                "name": name,
+                "status": "passed",
+                "summary": "passed",
+            }
+            for name in _CHECKS
+        ],
+        "next_action": None,
+    }
 
 
 def deployment_artifact(

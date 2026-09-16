@@ -32,7 +32,10 @@ from taskman_ops.host_helper.records import (
 )
 from taskman_ops.helper_client.package import build_helper_package
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION, decode_result, encode_request
-from taskman_ops.host_protocol.mutation_results import validate_mutation_state
+from taskman_ops.host_protocol.mutation_results import (
+    validate_mutation_state,
+    validate_verification_report,
+)
 from taskman_ops.releases.manifests import (
     ARCHITECTURE,
     APPLICATION,
@@ -327,7 +330,69 @@ class _Runtime:
 
     def verify(self, request: HostRequest, **_kwargs: object) -> HostResult:
         self.events.append("verify")
-        return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "succeeded", "verified", {"report": {"ok": True}}, ())
+        release_id = request.expected_state["expected_release_id"]
+        assert isinstance(release_id, str)
+        return HostResult(
+            PROTOCOL_VERSION,
+            "verify",
+            request.correlation_id,
+            "succeeded",
+            "verified",
+            {"report": _passing_verification_report(release_id)},
+            (),
+        )
+
+
+def _passing_verification_report(release_id: str) -> dict[str, object]:
+    report = {
+        "schema_version": 1,
+        "status": "ok",
+        "exit_status": 0,
+        "release_id": release_id,
+        "expected_release_id": release_id,
+        "checks": [
+            {
+                "schema_version": 1,
+                "name": name,
+                "status": "passed",
+                "summary": "checked",
+            }
+            for name in (
+                "taskman-service",
+                "release-identity",
+                "caddy-service",
+                "listener-topology",
+                "startup-journal",
+                "local-readiness",
+                "public-readiness",
+                "public-hsts",
+            )
+        ],
+        "next_action": None,
+    }
+    return validate_verification_report(report)
+
+
+def _failed_lifecycle_verification_report(release_id: str) -> dict[str, object]:
+    report = {
+        "schema_version": 1,
+        "status": "failed",
+        "exit_status": 8,
+        "release_id": release_id,
+        "expected_release_id": release_id,
+        "checks": [
+            {
+                "schema_version": 1,
+                "name": "taskman-service",
+                "status": "failed",
+                "summary": "checked",
+            }
+        ],
+        "next_action": (
+            "inspect the fixed verification summaries and correct the reported host state before retrying"
+        ),
+    }
+    return validate_verification_report(report)
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: _Runtime) -> None:
@@ -388,6 +453,64 @@ def _replanned_request(request: HostRequest, runtime: _Runtime) -> HostRequest:
     )
 
 
+def test_deploy_stop_command_failure_is_unknown_without_prior_proved_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost stop result remains uncertain when this invocation proved no earlier change."""
+
+    request = _request(
+        tmp_path, operation="genesis", previous=None, policy="restore-required"
+    )
+    _install_unselected_candidate(request)
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def fail_stop(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if argv == ("systemctl", "stop", "taskman.service"):
+            runtime.events.append("stop")
+            raise deploy_module.CommandError("stop reply lost")
+        return runtime.command(argv)
+
+    monkeypatch.setattr(service_capability, "run_command", fail_stop)
+
+    result = genesis(request)
+    state = validate_mutation_state("genesis", result.outcome, result.state)
+
+    assert result.outcome == "retryable"
+    assert state["mutation_state"] == "unknown"
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "service"
+    assert runtime.events == ["stop"]
+
+
+def test_deploy_stop_command_failure_keeps_earlier_proved_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost stop result does not erase a completed pre-deploy backup."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def fail_stop(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if argv == ("systemctl", "stop", "taskman.service"):
+            runtime.events.append("stop")
+            raise deploy_module.CommandError("stop reply lost")
+        return runtime.command(argv)
+
+    monkeypatch.setattr(service_capability, "run_command", fail_stop)
+
+    result = deploy(request)
+    state = validate_mutation_state("deploy", result.outcome, result.state)
+
+    assert result.outcome == "retryable"
+    assert state["mutation_state"] == "changed"
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "service"
+    assert runtime.events == ["backup", "stop"]
+
+
 def test_deploy_refusal_keeps_the_complete_v3_mutation_evidence(tmp_path: Path) -> None:
     """A pre-mutation refusal cannot omit the result fields the controller validates."""
 
@@ -419,6 +542,126 @@ def test_deploy_refusal_keeps_the_complete_v3_mutation_evidence(tmp_path: Path) 
     result = deploy_module._result(request, "refused", "unsafe", None)
 
     assert validate_mutation_state("deploy", result.outcome, result.state)["mutation_state"] == "unchanged"
+
+
+@pytest.mark.parametrize(
+    ("operation", "final_available"),
+    (("deploy", False), ("deploy", True), ("genesis", False)),
+)
+def test_command_observation_failure_keeps_operation_evidence_through_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, final_available: bool,
+) -> None:
+    """An invalid observation category must not erase proved change or completed verification."""
+
+    from taskman_ops.host_helper import __main__ as entrypoint
+    from taskman_ops.host_protocol import unavailable_observations
+    from tests.host_helper.test_entrypoint import invoke_entrypoint, passing_report
+
+    request = _request(
+        tmp_path, operation=operation, previous=CURRENT if operation == "deploy" else None,
+        policy="backward-compatible" if operation == "deploy" else "restore-required",
+    )
+    if operation == "deploy":
+        _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    report = {
+        **passing_report(),
+        "release_id": _candidate_id(request),
+        "expected_release_id": _candidate_id(request),
+    }
+    original_observe = deploy_module._observe
+    observation_failures = 0
+
+    def verified(live_request: HostRequest, **_kwargs: object) -> HostResult:
+        runtime.events.append("verify")
+        return HostResult.for_request(live_request, "succeeded", "verified", {"report": report})
+
+    def observe_after_verification(*args: object, **kwargs: object) -> deploy_module.HostState:
+        nonlocal observation_failures
+        if "verify" in runtime.events and (not final_available or observation_failures == 0):
+            observation_failures += 1
+            raise deploy_module.CommandError("private observation command failed")
+        return original_observe(*args, **kwargs)
+
+    entrypoint_observer_calls: list[str] = []
+
+    def observe_entrypoint(request: HostRequest) -> tuple[dict[str, object], tuple[str, ...], str]:
+        entrypoint_observer_calls.append(request.operation)
+        observations, unavailable = unavailable_observations(request.operation)
+        return observations, tuple(unavailable), "inspection-failed"
+
+    monkeypatch.setattr(deploy_module, "verify", verified)
+    monkeypatch.setattr(deploy_module, "_observe", observe_after_verification)
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", observe_entrypoint)
+
+    result = converge_deployment(request, first_release=operation == "genesis")
+
+    assert runtime.migrations == (20260905120000,)
+    assert (Path(request.paths["install_root"]) / "current").resolve().name == _candidate_id(request)
+    assert result.outcome == "retryable"
+    assert result.message == "deployment observation did not complete; rerun to converge"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["failed_boundary"] == "inspection"
+    assert result.state["exit_code"] == 5
+    assert deploy_module._mutable(result.state["report"]) == report
+    assert result.state["backup_id"] == (
+        "backup-00000000000000000000000000000001" if operation == "deploy" else None
+    )
+    assert "unknown deployment entry: uploads" in result.warnings
+    if final_available:
+        assert observation_failures == 1
+        assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
+        assert result.state["observations"]["service_state"] == "running"
+        assert result.state["observations"]["applied_migrations"] == (20260905120000,)
+        assert result.state["unavailable_fields"] == ()
+        assert result.state["inspection_error"] is None
+    else:
+        assert observation_failures == 2
+        observations, unavailable = unavailable_observations(operation)
+        assert result.state["observations"] == observations
+        assert result.state["unavailable_fields"] == tuple(unavailable)
+        assert result.state["inspection_error"] == "unsafe-observation"
+    exact_state = validate_mutation_state(operation, result.outcome, result.state)
+
+    with invoke_entrypoint(encode_request(request), lambda _request: result, operation=operation) as stdout:
+        assert entrypoint.main() == 0
+    wire_result = decode_result(stdout.buffer.getvalue())
+    assert wire_result.operation == operation
+    assert wire_result.correlation_id == request.correlation_id
+    assert wire_result.outcome == result.outcome
+    assert wire_result.message == result.message
+    assert wire_result.warnings == result.warnings
+    assert validate_mutation_state(operation, wire_result.outcome, wire_result.state) == exact_state
+    assert entrypoint_observer_calls == []
+
+
+def test_command_observation_failure_before_mutation_keeps_unchanged_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observation command failure does not invent an operation mutation."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def unavailable_database(*_args: object, **_kwargs: object) -> None:
+        raise deploy_module.CommandError("private database observation command failed")
+
+    monkeypatch.setattr(deploy_module, "observe_database_state_or_empty", unavailable_database)
+
+    result = deploy(request)
+
+    exact = validate_mutation_state("deploy", result.outcome, result.state)
+    assert exact["mutation_state"] == "unchanged"
+    assert exact["failed_boundary"] == "inspection"
+    assert exact["exit_code"] == 5
+    assert exact["report"] is None
+    assert exact["backup_id"] is None
+    assert runtime.events == []
+    assert runtime.migrations == ()
+    assert (Path(request.paths["install_root"]) / "current").resolve().name == CURRENT
 
 
 def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -674,7 +917,17 @@ def test_verified_start_is_retained_when_verification_fails(
         deploy_module,
         "verify",
         lambda verify_request, **_kwargs: HostResult(
-            PROTOCOL_VERSION, "verify", verify_request.correlation_id, "retryable", "failed", {"report": {"ok": False}}, ()
+            PROTOCOL_VERSION,
+            "verify",
+            verify_request.correlation_id,
+            "retryable",
+            "failed",
+            {
+                "report": _failed_lifecycle_verification_report(
+                    verify_request.expected_state["expected_release_id"]
+                )
+            },
+            (),
         ),
     )
 
@@ -682,7 +935,9 @@ def test_verified_start_is_retained_when_verification_fails(
 
     assert result.outcome == "retryable"
     assert result.state["mutation_state"] == "changed"
-    assert result.state["report"] == {"ok": False}
+    assert deploy_module._mutable(result.state["report"]) == _failed_lifecycle_verification_report(
+        _candidate_id(request)
+    )
 
 
 def test_confirmed_protection_pruning_finishes_before_another_backup(
@@ -912,7 +1167,9 @@ def test_successful_history_failure_keeps_the_report_and_history_boundary(
 
     assert result.outcome == "retryable"
     assert result.state["failed_boundary"] == "history"
-    assert result.state["report"] == {"ok": True}
+    assert deploy_module._mutable(result.state["report"]) == _passing_verification_report(
+        _candidate_id(request)
+    )
 
 
 def test_deploy_reuses_an_installed_target_after_its_uploaded_archive_is_lost(
@@ -988,7 +1245,11 @@ def test_interrupted_late_deploy_replans_from_its_fresh_final_observation(
                     verify_request.correlation_id,
                     "retryable",
                     "not ready",
-                    {"report": {"ok": False}},
+                    {
+                        "report": _failed_lifecycle_verification_report(
+                            verify_request.expected_state["expected_release_id"]
+                        )
+                    },
                     (),
                 )
 

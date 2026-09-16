@@ -22,6 +22,7 @@ from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.restore import restore
 from tests.host_helper import test_restore as host_restore_tests
+from tests.support.integration_packages import integration_packages
 from tests.test_end_to_end import _install_public_restore_controller
 from tests.workflows.test_deploy import config
 from tests.workflows.test_helper import _exact_failure_state
@@ -491,14 +492,14 @@ def test_completed_cleanup_then_cancel_has_no_confirmed_starting_state(
     ),
 )
 def test_public_packaged_replacement_converges_each_unfinished_arrangement(
-    family, safety_copy_required, tmp_path, monkeypatch
+    family, safety_copy_required, tmp_path, monkeypatch, integration_packages
 ):
     """The real controller and packaged helper must reach every admitted arrangement."""
 
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family=family,
         )
@@ -528,12 +529,12 @@ def test_public_packaged_replacement_converges_each_unfinished_arrangement(
 
 
 def test_public_packaged_dry_run_previews_replacement_without_flag_or_writes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -554,12 +555,12 @@ def test_public_packaged_dry_run_previews_replacement_without_flag_or_writes(
 
 
 def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconfirms(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="replacement-pending",
         )
@@ -607,12 +608,12 @@ def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconf
 
 
 def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="durable-retired",
         )
@@ -655,12 +656,12 @@ def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
 
 
 def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_writes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, _paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="durable-retired",
         )
@@ -692,12 +693,12 @@ def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_write
 
 @pytest.mark.parametrize("failure", ("checksum", "list"))
 def test_public_restore_preview_refuses_invalid_required_safety_content(
-    failure, tmp_path, monkeypatch
+    failure, tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -792,12 +793,12 @@ def _seed_prunable_safety_attempts(paths):
 
 
 def test_public_packaged_replacement_refuses_unusable_required_safety_role(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -827,12 +828,12 @@ def test_public_packaged_replacement_refuses_unusable_required_safety_role(
 
 
 def test_public_packaged_failed_restored_safety_failure_precedes_discard(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="swapped",
         )
@@ -872,13 +873,13 @@ def test_public_packaged_failed_restored_safety_failure_precedes_discard(
     ),
 )
 def test_public_packaged_replacement_preserves_interrupted_reference_evidence(
-    fault, event, expected_mutation, tmp_path, monkeypatch
+    fault, event, expected_mutation, tmp_path, monkeypatch, integration_packages
 ):
     family = "binding" if fault == "lose_registration_reply" else "swapped"
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family=family,
         )
@@ -914,48 +915,88 @@ def test_public_packaged_replacement_preserves_interrupted_reference_evidence(
         )
 
 
-def test_public_packaged_more_than_sixty_four_replacements_remain_bounded_during_clock_rollback(
-    tmp_path, monkeypatch
+def _seed_public_replacement_retention_boundary(paths, runtime_path):
+    # After 64 failed replacements, the original attempt and attempts 61-64
+    # remain, while the database OID and backup counter have each advanced 64.
+    target_path = Path(paths.local(paths.restore_target_path))
+    target = RestoreTarget.from_mapping(json.loads(target_path.read_text()))
+    previous_source = host_restore_tests._backup(
+        paths,
+        f"backup-{4096 + 63:032x}",
+        host_restore_tests.TARGET,
+        b"replacement source 63",
+    )
+    attempts = [dict(target.safety_backup_attempts[0])]
+    for attempt_number, backup_count in zip(range(61, 65), range(77, 81), strict=True):
+        backup_id = f"backup-{backup_count:032x}"
+        host_restore_tests._backup(
+            paths,
+            backup_id,
+            host_restore_tests.TARGET,
+            b"archive-backup",
+        )
+        attempts.append(
+            {"backup_id": backup_id, "attempt_number": attempt_number}
+        )
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            backup_id=previous_source.backup_id,
+            dump_sha256=previous_source.dump_sha256,
+            source_release_id=previous_source.source_release_id,
+            restored_database_oid=266,
+            safety_backup_attempts=tuple(attempts),
+        ),
+    )
+
+    runtime = json.loads(runtime_path.read_text())
+    runtime["backup_count"] = 80
+    runtime["next_restore_oid"] = 266
+    runtime["restore_databases"]["canonical"]["oid"] = 266
+    runtime["verification"] = "failing"
+    runtime["backup_clock_rollback"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+
+def test_public_packaged_sixty_fifth_replacement_remains_bounded_during_clock_rollback(
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="swapped",
         )
     )
-    runtime = json.loads(runtime_path.read_text())
-    runtime["verification"] = "failing"
-    runtime["backup_clock_rollback"] = True
-    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+    _seed_public_replacement_retention_boundary(paths, runtime_path)
     displayed_prunes = []
 
-    for index in range(65):
-        replacement = host_restore_tests._backup(
-            paths,
-            f"backup-{4096 + index:032x}",
-            host_restore_tests.TARGET,
-            f"replacement source {index}".encode("ascii"),
+    replacement = host_restore_tests._backup(
+        paths,
+        f"backup-{4096 + 64:032x}",
+        host_restore_tests.TARGET,
+        b"replacement source 64",
+    )
+    result = restore(
+        remote,
+        config_value,
+        replacement.backup_id,
+        replace_unfinished=True,
+        confirm=lambda plan: displayed_prunes.append(
+            tuple(plan["prune_backup_ids"])
         )
-        result = restore(
-            remote,
-            config_value,
-            replacement.backup_id,
-            replace_unfinished=True,
-            confirm=lambda plan: displayed_prunes.append(
-                tuple(plan["prune_backup_ids"])
-            )
-            or True,
-        )
-        assert result.exit_status is ExitStatus.READINESS, (index, result.facts)
-        runtime = json.loads(runtime_path.read_text())
-        runtime["events"] = []
-        runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+        or True,
+    )
 
     target = RestoreTarget.from_mapping(
         json.loads(Path(paths.local(paths.restore_target_path)).read_text())
     )
+    assert result.exit_status is ExitStatus.READINESS, result.facts
     assert len(target.safety_backup_attempts) == 5
+    assert tuple(
+        attempt["attempt_number"] for attempt in target.safety_backup_attempts
+    ) == (0, 62, 63, 64, 65)
     assert target.backup_id == f"backup-{4096 + 64:032x}"
-    assert any(displayed_prunes)
+    assert displayed_prunes == [(f"backup-{77:032x}",)]

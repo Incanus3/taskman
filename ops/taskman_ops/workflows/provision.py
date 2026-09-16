@@ -11,20 +11,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass, replace
 import hashlib
 from pathlib import Path
-import os
-import tempfile
 from typing import Protocol
 
-from ..releases.build import build_release
 from ..config import EnvironmentConfig, load_environment
 from ..errors import ExitStatus, OpsError
+from ..migrations import versions_from_filenames
 from ..host.acceptance import validate_provisionable_host
-from ..releases.manifests import VerifiedArtifact, verify_artifact
 from ..host_helper.backup_protection import (
     BackupProtection,
     protection_prune_ids,
     protection_prune_ids_after_fresh_attempt,
 )
+from ..host_helper.records import RecordError
 from ..releases.artifacts import (
     CleanInputs,
     DeploymentTarget,
@@ -42,6 +40,7 @@ from ..provisioning import (
 from ..remote import ChangeSet, connect
 from ..secrets import SecretConfig, decrypt_secrets, render_pgpass, render_runtime_environment
 from ..services.caddy import CaddyPlan, build_caddy_plan
+from ..services.systemd import build_systemd_plan
 from ..services.postgresql import (
     build_postgresql_plan,
     render_role_password_input,
@@ -85,10 +84,9 @@ class ProvisionCapabilities:
 
     load_environment: Callable[[str], EnvironmentConfig]
     decrypt_secrets: Callable[[str], SecretConfig]
-    resolve_artifact: Callable[[object], VerifiedArtifact]
     render_runtime_environment: Callable[[EnvironmentConfig, SecretConfig], bytes]
     render_pgpass: Callable[[EnvironmentConfig, SecretConfig], bytes]
-    render_plan: Callable[[EnvironmentConfig, VerifiedArtifact], Mapping[str, object]]
+    render_plan: Callable[[EnvironmentConfig, DeploymentTarget], Mapping[str, object]]
     present_plan: Callable[[Mapping[str, object]], None]
     confirm: Callable[[Mapping[str, object]], bool]
     connect: Callable[[EnvironmentConfig], object]
@@ -97,8 +95,9 @@ class ProvisionCapabilities:
     provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
     caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
     genesis: Callable[..., WorkflowResult]
-    preflight: Callable[[object, ProvisioningInputs], Mapping[str, object] | None] | None = None
-    target_resolution: Callable[[object, EnvironmentConfig, object, CleanInputs | None], DeploymentTarget] | None = None
+    preflight: Callable[[object, ProvisioningInputs], Mapping[str, object]]
+    target_resolution: Callable[[object, EnvironmentConfig, object, CleanInputs | None], DeploymentTarget]
+    downgrade_authority: Callable[[object, EnvironmentConfig, DeploymentTarget], tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]]
 
 
 def provision(
@@ -126,11 +125,7 @@ def provision(
     # installed-release authority; a later clean-input mismatch restarts the
     # whole material-plan cycle below.
     clean_inputs: CleanInputs | None = None
-    artifact: VerifiedArtifact | None = None
-    if cap.target_resolution is None:
-        artifact = cap.resolve_artifact(invocation)
-        _validate_artifact_target(config, artifact)
-    elif getattr(invocation, "artifact", None) is None:
+    if getattr(invocation, "artifact", None) is None:
         try:
             clean_inputs = identify_clean_inputs(_repository_root())
         except OpsError:
@@ -145,13 +140,6 @@ def provision(
     role_password_input = cap.render_role_password_input(database_plan.role, secrets.database_password)
     caddy_plan = cap.caddy_plan(config)
     expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
-    inputs = ProvisioningInputs(
-        config=config,
-        caddy_plan=caddy_plan,
-        runtime_environment=runtime_environment,
-        pgpass=pgpass,
-        role_password_input=role_password_input,
-    )
 
     remote = cap.connect(config)
     confirmed_starting_state: dict[str, object] | None = None
@@ -164,11 +152,7 @@ def provision(
             # package installation.
             discovery = cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
             try:
-                release_input = (
-                    cap.target_resolution(remote, config, invocation, clean_inputs)
-                    if cap.target_resolution is not None
-                    else artifact
-                )
+                release_input = cap.target_resolution(remote, config, invocation, clean_inputs)
             except OpsError as error:
                 if clean_inputs is None or not clean_inputs_drifted(error):
                     raise
@@ -183,7 +167,6 @@ def provision(
                 clean_inputs = identify_clean_inputs(_repository_root())
                 clean_reresolutions += 1
                 continue
-            assert release_input is not None
             _validate_artifact_target(config, release_input)
             if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
                 # Unlike an explicit artifact or frozen dirty source, a clean
@@ -201,19 +184,31 @@ def provision(
                 clean_inputs = identify_clean_inputs(_repository_root())
                 clean_reresolutions += 1
                 continue
-            authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
-            warnings = merge_warnings(warnings, tuple(getattr(authority, "warnings", ())))
-            starting_state = _starting_state(authority, discovery, release_input)
-            plan = _redacted_plan(cap.render_plan(config, release_input))
-            downgrade_required, downgrade_evidence = _provision_downgrade_authority(
-                remote, config, release_input
+            # A stable material plan owns these rendered assets through refreshed
+            # authority and installation; source retries above have no asset plan.
+            inputs = ProvisioningInputs(
+                config=config,
+                caddy_plan=caddy_plan,
+                systemd_plan=build_systemd_plan(config),
+                runtime_environment=runtime_environment,
+                pgpass=pgpass,
+                role_password_input=role_password_input,
             )
+            authority_evidence = cap.preflight(remote, inputs)
+            warnings = merge_warnings(
+                warnings, tuple(getattr(authority_evidence, "warnings", ()))
+            )
+            authority = _required_authority(authority_evidence)
+            convergence_inputs = _scheduler_authorized_inputs(inputs, authority)
+            starting_state = _starting_state(authority, discovery, release_input)
+            plan_effects = _provision_plan_effects(starting_state, release_input, invocation)
+            plan = _redacted_plan(cap.render_plan(config, release_input))
+            downgrade_required, downgrade_evidence = cap.downgrade_authority(remote, config, release_input)
             plan = {
                 **plan,
                 "requires_downgrade_acknowledgment": downgrade_required,
                 "downgrade_baselines": _downgrade_plan_rows(downgrade_evidence),
             }
-            plan_effects = _provision_plan_effects(starting_state, release_input, invocation)
             plan = {**plan, **plan_effects, "starting_state": starting_state}
             cap.present_plan(plan)
             if dry_run:
@@ -273,11 +268,7 @@ def provision(
                 remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256
             )
             try:
-                refreshed_input = (
-                    cap.target_resolution(remote, config, invocation, clean_inputs)
-                    if cap.target_resolution is not None
-                    else artifact
-                )
+                refreshed_input = cap.target_resolution(remote, config, invocation, clean_inputs)
             except OpsError as error:
                 if clean_inputs is None or not clean_inputs_drifted(error):
                     raise
@@ -288,7 +279,6 @@ def provision(
                     changed=False,
                     next_action="restore the intended clean checkout and rerun provision to review a new plan",
                 ) from None
-            assert refreshed_input is not None
             if clean_inputs is not None and not clean_inputs_match(_repository_root(), clean_inputs):
                 raise OpsError(
                     ExitStatus.SAFETY,
@@ -297,11 +287,13 @@ def provision(
                     changed=False,
                     next_action="restore the intended clean checkout and rerun provision to review a new plan",
                 )
-            refreshed_authority = cap.preflight(remote, inputs) if cap.preflight is not None else None
+            refreshed_authority_evidence = cap.preflight(remote, inputs)
             warnings = merge_warnings(
-                warnings, tuple(getattr(refreshed_authority, "warnings", ()))
+                warnings, tuple(getattr(refreshed_authority_evidence, "warnings", ()))
             )
-            refreshed_downgrade_required, refreshed_downgrade_evidence = _provision_downgrade_authority(
+            refreshed_authority = _required_authority(refreshed_authority_evidence)
+            _scheduler_authorized_inputs(inputs, refreshed_authority)
+            refreshed_downgrade_required, refreshed_downgrade_evidence = cap.downgrade_authority(
                 remote, config, refreshed_input
             )
             refreshed_starting_state = _starting_state(
@@ -325,7 +317,6 @@ def provision(
                     changed=False,
                     next_action="inspect the refreshed plan and rerun provision with a new confirmation",
                 )
-            convergence_inputs = _with_scheduler_create_delta(inputs, authority)
             provisioning_changed = _changed(cap.provisioning(remote, convergence_inputs))
             break
     except OpsError as error:
@@ -368,9 +359,7 @@ def provision(
         planned_prune_ids = plan_effects.get("prune_backup_ids")
         if isinstance(planned_prune_ids, tuple):
             genesis_kwargs["prune_backup_ids"] = planned_prune_ids
-        scheduler_create = _scheduler_create_delta(authority)
-        if scheduler_create is not None:
-            genesis_kwargs["scheduler_create"] = scheduler_create
+        genesis_kwargs["scheduler_create"] = _scheduler_create_delta(authority)
         release = cap.genesis(
             remote,
             config,
@@ -479,7 +468,6 @@ def _default_capabilities() -> ProvisionCapabilities:
     return ProvisionCapabilities(
         load_environment=load_environment,
         decrypt_secrets=decrypt_secrets,
-        resolve_artifact=_resolve_artifact,
         render_runtime_environment=render_runtime_environment,
         render_pgpass=render_pgpass,
         render_plan=_render_plan,
@@ -493,6 +481,7 @@ def _default_capabilities() -> ProvisionCapabilities:
         genesis=deploy_first_release,
         preflight=validate_existing_authority,
         target_resolution=_resolve_deployment_target,
+        downgrade_authority=_provision_downgrade_authority,
     )
 
 
@@ -531,31 +520,7 @@ def _resolve_deployment_target(
     return target
 
 
-def _resolve_artifact(invocation: object) -> VerifiedArtifact:
-    supplied = getattr(invocation, "artifact", None)
-    if supplied is not None:
-        archive = Path(supplied)
-        if not archive.name.endswith(".tar.gz"):
-            raise OpsError(
-                ExitStatus.LOCAL_PREREQUISITE,
-                "artifact",
-                "provision artifact must be a release archive",
-                changed=False,
-                next_action="supply one verified Taskman release archive or omit --artifact to build it",
-            )
-        stem = archive.name[: -len(".tar.gz")]
-        return verify_artifact(
-            archive,
-            archive.with_name(f"{stem}.manifest.json"),
-            archive.with_name(f"{archive.name}.sha256"),
-        )
-
-    repo = Path(__file__).resolve().parents[3]
-    artifact_root = Path(tempfile.gettempdir()) / f"taskman-artifacts-{os.getuid()}"
-    return build_release(repo, artifact_root)
-
-
-def _validate_artifact_target(config: EnvironmentConfig, artifact: VerifiedArtifact | DeploymentTarget) -> None:
+def _validate_artifact_target(config: EnvironmentConfig, artifact: DeploymentTarget) -> None:
     manifest = artifact.manifest
     if manifest.target_os != config.target_os or manifest.architecture != config.architecture:
         raise OpsError(
@@ -567,40 +532,35 @@ def _validate_artifact_target(config: EnvironmentConfig, artifact: VerifiedArtif
         )
 
 
-def _render_plan(config: EnvironmentConfig, artifact: VerifiedArtifact | DeploymentTarget) -> Mapping[str, object]:
+def _render_plan(config: EnvironmentConfig, artifact: DeploymentTarget) -> Mapping[str, object]:
     return {
         "environment": config.name or "",
         "ssh_destination": f"{config.ssh_user}@{config.ssh_host}:{config.ssh_port}",
         "public_hostname": config.public_hostname,
         "candidate_release_id": artifact.manifest.release_id,
         "artifact_sha256": _artifact_sha256(artifact),
-        "artifact_source": artifact.source if isinstance(artifact, DeploymentTarget) else "explicit",
-        "source_dirty": artifact.source_dirty if isinstance(artifact, DeploymentTarget) else artifact.manifest.source_dirty,
+        "artifact_source": artifact.source,
+        "source_dirty": artifact.source_dirty,
         "services": ("PostgreSQL", "taskman.service", "taskman-backup.timer", "Caddy"),
         "planned_backup": "validated local PostgreSQL backup timer",
     }
 
 
-def _release_id(value: VerifiedArtifact | DeploymentTarget) -> str:
+def _release_id(value: DeploymentTarget) -> str:
     return value.manifest.release_id
 
 
-def _artifact_sha256(value: VerifiedArtifact | DeploymentTarget) -> str:
-    return value.artifact_sha256 if isinstance(value, DeploymentTarget) else value.sha256
+def _artifact_sha256(value: DeploymentTarget) -> str:
+    return value.artifact_sha256
 
 
 def _provision_downgrade_authority(
     remote: object,
     config: EnvironmentConfig,
-    target: VerifiedArtifact | DeploymentTarget,
+    target: DeploymentTarget,
 ) -> tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]:
     """Use deploy's complete baseline classifier for public genesis too."""
 
-    if not isinstance(target, DeploymentTarget):
-        # Legacy capability fakes intentionally provide only a verified
-        # archive and have no paged host-record boundary.  Production's
-        # default resolver always produces DeploymentTarget.
-        return False, ()
     return _downgrade_acknowledgment(
         remote, config, target, _repository_root(), mode="provision"
     )
@@ -620,42 +580,29 @@ def _noninteractive(invocation: object) -> bool:
 
 
 def _starting_state(
-    authority: Mapping[str, object] | None,
+    authority: Mapping[str, object],
     discovery: object,
-    target: VerifiedArtifact | DeploymentTarget,
+    target: DeploymentTarget,
 ) -> dict[str, object]:
-    """Preserve only the pre-convergence authority that was actually observed.
-
-    Compatibility injectors used by narrow workflow tests predate the bounded
-    projection and return ``None``.  Production always supplies the exact
-    helper mapping; accepting ``None`` here avoids inventing facts for those
-    focused boundaries while retaining their existing contract.
-    """
+    """Preserve the pre-convergence authority that was actually observed."""
 
     result: dict[str, object] = {
         "authority": "validated",
         "candidate_release_id": _release_id(target),
     }
-    if isinstance(target, DeploymentTarget):
-        result.update(
-            artifact_sha256=target.artifact_sha256,
-            artifact_source=target.source,
-            source_dirty=target.source_dirty,
-        )
-    if isinstance(authority, Mapping):
-        result["host_authority"] = _copy_authority(authority)
-    resource_authority = _authority_mapping(discovery)
-    if resource_authority is not None:
-        # Host admission contains only checked resource facts; it never
-        # contains credentials.  Preserve it so convergence cannot silently
-        # change the resource snapshot the operator confirmed.
-        result["resource_authority"] = resource_authority
+    result.update(
+        artifact_sha256=target.artifact_sha256,
+        artifact_source=target.source,
+        source_dirty=target.source_dirty,
+        host_authority=_copy_authority(authority),
+        resource_authority=_required_resource_authority(discovery),
+    )
     return result
 
 
 def _provision_plan_effects(
     starting_state: Mapping[str, object],
-    target: VerifiedArtifact | DeploymentTarget,
+    target: DeploymentTarget,
     invocation: object,
 ) -> dict[str, object]:
     """Project the bounded recovery consequences the operator confirms.
@@ -670,37 +617,32 @@ def _provision_plan_effects(
         "target": {
             "release_id": _release_id(target),
             "artifact_sha256": _artifact_sha256(target),
-            "provenance": target.source if isinstance(target, DeploymentTarget) else "explicit",
-            "source_dirty": (
-                target.source_dirty
-                if isinstance(target, DeploymentTarget)
-                else bool(getattr(target.manifest, "source_dirty", False))
-            ),
+            "provenance": target.source,
+            "source_dirty": target.source_dirty,
         },
         "resource_convergence": {
             "host": starting_state.get("resource_authority"),
-            "scheduler_create": list(_scheduler_create_delta(authority) or ()),
+            "scheduler_create": list(_scheduler_create_delta(authority)),
             "scheduler_refresh": "genesis-owned",
         },
     }
-    if not isinstance(authority, Mapping):
-        return effects
-    applied = authority.get("applied_migrations")
-    if not isinstance(applied, tuple) or any(type(version) is not int for version in applied):
-        return effects
-    candidate_versions = tuple(int(item.filename[:14]) for item in target.manifest.migrations)
+    if not isinstance(authority, Mapping):  # pragma: no cover - _starting_state requires mapping
+        raise TypeError("provisioning authority must be a mapping")
+    try:
+        applied = authority["applied_migrations"]
+        protections = _plan_protections(authority)
+        independent_ids = tuple(authority["independently_held_backup_ids"])
+        baseline = authority["last_successful_selection_id"]
+        selected_release_id = authority["selected_release_id"]
+        latest_selection = authority["last_successful_selection"]
+        previous_selection = authority["previous_successful_selection"]
+        scheduled_backup_sha256 = authority["scheduled_backup_sha256"]
+        backup_timer_enabled = authority["backup_timer_enabled"]
+        backup_timer_state = authority["backup_timer_state"]
+    except (KeyError, TypeError, RecordError):
+        raise _projection_error() from None
+    candidate_versions = versions_from_filenames(tuple(item.filename for item in target.manifest.migrations))
     pending = candidate_versions[len(applied) :] if candidate_versions[: len(applied)] == applied else ()
-    protections = _plan_protections(authority)
-    independent = authority.get("independently_held_backup_ids")
-    independent_ids = (
-        tuple(independent)
-        if isinstance(independent, tuple) and all(isinstance(item, str) for item in independent)
-        else ()
-    )
-    baseline = authority.get("last_successful_selection_id")
-    if baseline is not None and not isinstance(baseline, str):
-        baseline = None
-    prune_backup_ids: tuple[str, ...] = ()
     try:
         prune_backup_ids = (
             protection_prune_ids_after_fresh_attempt(
@@ -711,18 +653,16 @@ def _provision_plan_effects(
                 protections, baseline, independently_held_backup_ids=independent_ids
             )
         )
-    except ValueError:
-        # The host still validates the complete record graph.  Do not claim a
-        # prune decision when an injected legacy projection lacks it.
-        prune_backup_ids = ()
+    except RecordError:
+        raise _projection_error() from None
     effects.update(
         {
-            "physical_current_release_id": authority.get("selected_release_id"),
+            "physical_current_release_id": selected_release_id,
             "durable_history": {
-                "latest_selection_id": authority.get("last_successful_selection_id"),
-                "latest_selection": authority.get("last_successful_selection"),
-                "previous_selection": authority.get("previous_successful_selection"),
-                "first_history_publication": authority.get("last_successful_selection_id") is None,
+                "latest_selection_id": baseline,
+                "latest_selection": latest_selection,
+                "previous_selection": previous_selection,
+                "first_history_publication": baseline is None,
             },
             "applied_migrations": list(applied),
             "pending_migration_versions": list(pending),
@@ -735,9 +675,9 @@ def _provision_plan_effects(
             },
             "prune_backup_ids": prune_backup_ids,
             "scheduled_backup": {
-                "observed_sha256": authority.get("scheduled_backup_sha256"),
-                "timer_enabled": authority.get("backup_timer_enabled"),
-                "timer_state": authority.get("backup_timer_state"),
+                "observed_sha256": scheduled_backup_sha256,
+                "timer_enabled": backup_timer_enabled,
+                "timer_state": backup_timer_state,
                 "effects": ("pause", "refresh-if-needed", "resume-if-enabled"),
             },
         }
@@ -745,14 +685,10 @@ def _provision_plan_effects(
     return effects
 
 
-def _scheduler_create_delta(authority: Mapping[str, object] | None) -> tuple[str, ...] | None:
+def _scheduler_create_delta(authority: Mapping[str, object]) -> tuple[str, ...]:
     """Read the validated, explicitly planned create-only scheduler delta."""
 
-    if not isinstance(authority, Mapping):
-        return None
     value = authority.get("scheduler_create")
-    if value is None:
-        return None
     if (
         not isinstance(value, tuple)
         or value != tuple(sorted(set(value)))
@@ -769,32 +705,43 @@ def _scheduler_create_delta(authority: Mapping[str, object] | None) -> tuple[str
 
 
 def _with_scheduler_create_delta(
-    inputs: ProvisioningInputs, authority: Mapping[str, object] | None
+    inputs: ProvisioningInputs, authority: Mapping[str, object]
 ) -> ProvisioningInputs:
     delta = _scheduler_create_delta(authority)
-    if delta is None:
-        return inputs
     return replace(inputs, scheduler_create=frozenset(delta))
 
 
-def _plan_protections(authority: Mapping[str, object]) -> tuple[BackupProtection, ...]:
-    values = authority.get("backup_protections")
-    if not isinstance(values, tuple):
-        return ()
+def _scheduler_authorized_inputs(
+    inputs: ProvisioningInputs, authority: Mapping[str, object]
+) -> ProvisioningInputs:
     try:
-        return tuple(BackupProtection.from_mapping(value) for value in values)
-    except (TypeError, ValueError):
-        return ()
+        return _with_scheduler_create_delta(inputs, authority)
+    except ValueError:
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "authority-preflight",
+            "pre-convergence scheduler creation authority is invalid",
+            changed=False,
+            next_action="inspect the existing scheduler resources before retrying",
+        ) from None
+
+
+def _projection_error() -> OpsError:
+    return OpsError(
+        ExitStatus.SAFETY,
+        "authority-preflight",
+        "pre-convergence authority observation returned invalid projection evidence",
+        changed=False,
+        next_action="inspect the existing record and PostgreSQL authority before retrying",
+    )
+
+
+def _plan_protections(authority: Mapping[str, object]) -> tuple[BackupProtection, ...]:
+    return tuple(BackupProtection.from_mapping(value) for value in authority["backup_protections"])
 
 
 def _authority_mapping(value: object) -> dict[str, object] | None:
-    """Normalize only bounded, value-shaped discovery evidence for a plan.
-
-    Production resource discovery is a dataclass while narrow legacy fakes
-    often return ``None``.  Treat both mapping and frozen dataclass evidence
-    as facts; do not stringify arbitrary objects into an apparently reviewed
-    plan.
-    """
+    """Normalize bounded, value-shaped discovery evidence for a plan."""
 
     if isinstance(value, Mapping):
         return _copy_authority(value)
@@ -803,6 +750,32 @@ def _authority_mapping(value: object) -> dict[str, object] | None:
         if isinstance(projected, dict):
             return _copy_authority(projected)
     return None
+
+
+def _required_authority(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "authority-preflight",
+            "pre-convergence authority observation returned missing evidence",
+            changed=False,
+            next_action="inspect the existing record and PostgreSQL authority before retrying",
+        )
+    _scheduler_create_delta(value)
+    return value
+
+
+def _required_resource_authority(value: object) -> dict[str, object]:
+    authority = _authority_mapping(value)
+    if authority is None:
+        raise OpsError(
+            ExitStatus.SAFETY,
+            "host-preflight",
+            "provision host observation returned missing resource evidence",
+            changed=False,
+            next_action="inspect the supported host resources before retrying",
+        )
+    return authority
 
 
 def _copy_authority(value: Mapping[str, object]) -> dict[str, object]:

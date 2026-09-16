@@ -8,12 +8,16 @@ from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..helper_client.package import HelperPackage
 from ..helper_client.runner import invoke_helper
-from ..host_protocol import HostRequest, HostResult
+from ..host_protocol import (
+    HostRequest,
+    HostResult,
+    ProtocolError,
+    validate_verification_report,
+)
 from ..output import WorkflowResult
 from ..releases.identifiers import validate_release_id
 from ..remote import Remote
 from .helper import mutable, request as helper_request, result_error, run_request
-from .verification_results import VerificationReport
 
 
 HelperInvoker = Callable[[Remote, HelperPackage, HostRequest], HostResult]
@@ -55,16 +59,16 @@ def run_verify(
     if result.outcome != "succeeded":
         _raise_host_preflight(result)
         # A helper can complete all verification checks and still report a
-        # failed release/readiness proof.  Preserve that typed report rather
+        # failed release/readiness proof.  Preserve that validated report rather
         # than reducing it to a generic transport error.  Lock/refusal and
         # reportless outcomes remain ordinary helper failures.
         if result.operation != "verify" or result.outcome == "refused" or result.state.get("locked") is True:
             raise result_error(result)
         try:
-            report = VerificationReport.from_mapping(mutable(result.state.get("report")))
-        except (TypeError, ValueError):
+            report = validate_verification_report(mutable(result.state.get("report")))
+        except ProtocolError:
             raise result_error(result)
-        if report.successful:
+        if report["exit_status"] == ExitStatus.OK:
             raise result_error(result)
         _validate_report_release(report, expected_release_id)
         return WorkflowResult(
@@ -72,16 +76,16 @@ def run_verify(
             environment=config.name,
             changed=False,
             stage="verification-failed",
-            facts={"verification": report.to_mapping()},
+            facts={"verification": report},
             warnings=tuple(result.warnings),
-            next_action=report.next_action,
-            exit_status=report.exit_status,
+            next_action=report["next_action"],
+            exit_status=ExitStatus(report["exit_status"]),
         )
     try:
-        report = VerificationReport.from_mapping(mutable(result.state.get("report")))
-    except (TypeError, ValueError):
+        report = validate_verification_report(mutable(result.state.get("report")))
+    except ProtocolError:
         raise _failure("verification returned invalid observed state") from None
-    if not report.successful:
+    if report["exit_status"] != ExitStatus.OK:
         raise _failure("verification returned unsuccessful state")
     _validate_report_release(report, expected_release_id)
     return WorkflowResult(
@@ -89,20 +93,23 @@ def run_verify(
         environment=config.name,
         changed=False,
         stage="verified",
-        facts={"verification": report.to_mapping()},
+        facts={"verification": report},
         warnings=tuple(result.warnings),
-        next_action=report.next_action,
-        exit_status=report.exit_status,
+        next_action=report["next_action"],
+        exit_status=ExitStatus(report["exit_status"]),
     )
 
 
-def _validate_report_release(report: VerificationReport, expected_release_id: str | None) -> None:
+def _validate_report_release(
+    report: Mapping[str, object], expected_release_id: str | None
+) -> None:
     try:
-        actual_release_id = validate_release_id(report.release_id)
+        actual_release_id = validate_release_id(report["release_id"])
     except (TypeError, ValueError):
         raise _failure("verification returned invalid observed state") from None
     if expected_release_id is not None and (
-        report.expected_release_id != expected_release_id or actual_release_id != expected_release_id
+        report["expected_release_id"] != expected_release_id
+        or actual_release_id != expected_release_id
     ):
         raise _failure("verification returned an unrelated release")
 

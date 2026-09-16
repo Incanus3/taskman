@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,9 +14,13 @@ from tests.support.environments import environment_config
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.migrations import MigrationOrderError
 from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.releases.artifacts import DeploymentTarget
+from taskman_ops.releases.manifests import ArtifactManifest, MigrationFingerprint, VerifiedArtifact
+from tests.workflows import support as workflow_support
 from taskman_ops.workflows.provision import ProvisionCapabilities, _present_plan, provision
 from taskman_ops.workflows.deploy import (
     _matches_confirmed_preconvergence,
@@ -22,15 +28,48 @@ from taskman_ops.workflows.deploy import (
 )
 
 
-def artifact(*, migrations: tuple[object, ...] = ()) -> object:
-    return SimpleNamespace(
-        manifest=SimpleNamespace(
-            target_os="ubuntu26.04",
-            architecture="amd64",
-            release_id="0.2.0-bbbbbbbbbbbb-ubuntu26.04-amd64-otp27.3.4.6",
-            migrations=migrations,
+@pytest.fixture(autouse=True)
+def controlled_clean_source_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep orchestration tests independent of this checkout's source state."""
+
+    from taskman_ops.workflows import provision as provision_module
+
+    monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: object())
+    monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: True)
+
+
+def artifact(*, migrations: tuple[object, ...] = ()) -> DeploymentTarget:
+    manifest = ArtifactManifest(
+        3,
+        "taskman",
+        "0.2.0",
+        "b" * 40,
+        workflow_support.CANDIDATE,
+        datetime(2026, 9, 5, 12, 0, tzinfo=UTC),
+        "ubuntu26.04",
+        "amd64",
+        workflow_support.OTP_VERSION,
+        workflow_support.ELIXIR_VERSION,
+        workflow_support.NODE_VERSION,
+        workflow_support.BUILDER_BASE_TAG,
+        workflow_support.BUILDER_BASE_DIGEST,
+        migrations,
+        "taskman",
+        workflow_support.HEX_VERSION,
+        workflow_support.REBAR3_VERSION,
+        workflow_support._ARTIFACT_SHA256,
+        False,
+    )
+    return DeploymentTarget(
+        artifact=VerifiedArtifact(
+            Path("/nonexistent/taskman.tar.gz"),
+            Path("/nonexistent/taskman.manifest.json"),
+            Path("/nonexistent/taskman.tar.gz.sha256"),
+            workflow_support._ARTIFACT_SHA256,
+            manifest,
         ),
-        sha256="a" * 64,
+        release_record=None,
+        source="built",
     )
 
 
@@ -89,7 +128,7 @@ def test_provision_builds_the_material_plan_after_all_preconvergence_authority()
     capabilities = ProvisionCapabilities(
         **{
             **capabilities.__dict__,
-            "preflight": lambda _remote, _inputs: host.events.append("preflight"),
+            "preflight": lambda _remote, _inputs: host.events.append("preflight") or _authority(),
         }
     )
 
@@ -116,7 +155,7 @@ def test_provision_retains_admission_cleanup_warning_without_plan_drift() -> Non
 
     capabilities = _capabilities(host)
     capabilities = ProvisionCapabilities(
-        **{**capabilities.__dict__, "preflight": lambda *_args: Authority()}
+        **{**capabilities.__dict__, "preflight": lambda *_args: Authority(_authority())}
     )
 
     result = provision(
@@ -126,6 +165,127 @@ def test_provision_retains_admission_cleanup_warning_without_plan_drift() -> Non
 
     assert result.stage == "planned"
     assert result.warnings == ("transient helper cleanup was incomplete",)
+
+
+def test_provision_refuses_missing_preflight_authority_before_plan_or_mutation() -> None:
+    """Missing creation authority cannot fall through to generic convergence."""
+
+    host = Host()
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "preflight": lambda *_args: None}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["discovery"]
+    assert "plan" not in host.events
+    assert "provisioning" not in host.events
+
+
+def test_provision_refuses_missing_scheduler_creation_delta_before_plan_or_mutation() -> None:
+    """Creation needs an explicit empty or absent-resource scheduler delta."""
+
+    host = Host()
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "preflight": lambda *_args: {"authority": "validated"},
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["discovery"]
+    assert "plan" not in host.events
+    assert "provisioning" not in host.events
+
+
+@pytest.mark.parametrize(
+    "authority_factory",
+    (
+        lambda: {**_authority(), "scheduler_create": ("/unmanaged/path",)},
+        lambda: {"scheduler_create": ()},
+        lambda: {**_authority(), "backup_protections": ({"invalid": "record"},)},
+        lambda: {**_authority(), "independently_held_backup_ids": ("invalid",)},
+    ),
+)
+def test_provision_refuses_invalid_first_observation_evidence_before_plan_or_mutation(
+    authority_factory,
+) -> None:
+    """Projection evidence must fail safely before an operator can confirm it."""
+
+    host = Host()
+
+    class Authority(dict):
+        warnings = ("observer cleanup warning",)
+
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "preflight": lambda *_args: Authority(authority_factory())}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.warnings == ("observer cleanup warning",)
+    assert host.events == ["discovery"]
+    assert "plan" not in host.events
+    assert "provisioning" not in host.events
+
+
+def test_provision_refuses_invalid_refreshed_evidence_with_confirmed_snapshot_and_warning() -> None:
+    """A refreshed invalid scheduler delta cannot lose the plan already confirmed."""
+
+    host = Host()
+
+    class Authority(dict):
+        warnings = ("observer cleanup warning",)
+
+    authorities = iter((
+        Authority(_authority()),
+        Authority({**_authority(), "scheduler_create": ("/unmanaged/path",)}),
+    ))
+    capabilities = ProvisionCapabilities(
+        **{**_capabilities(host).__dict__, "preflight": lambda *_args: next(authorities)}
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.warnings == ("observer cleanup warning",)
+    assert result.facts["starting_state"] == _expected_starting_state()
+    assert host.events == ["discovery", "plan", "discovery"]
+    assert "provisioning" not in host.events
+
+
+def test_provision_refuses_missing_host_resource_evidence_before_plan_or_mutation() -> None:
+    """Unprojectable discovery is missing evidence, not an empty host state."""
+
+    host = Host()
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda *_args, **_kwargs: host.events.append("discovery") or None,
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production"), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["discovery"]
+    assert "plan" not in host.events
+    assert "provisioning" not in host.events
 
 
 def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation() -> None:
@@ -187,7 +347,7 @@ def test_default_preflight_checks_packaged_resources_before_the_secret_writers(
     monkeypatch.setattr(
         provisioning_module,
         "validate_preconvergence_authority",
-        lambda *_args: checks.append("observer"),
+        lambda *_args: checks.append("observer") or _authority(),
     )
 
     monkeypatch.setattr(
@@ -219,7 +379,7 @@ def test_default_preflight_observes_record_and_postgresql_authority_before_local
     monkeypatch.setattr(
         provisioning_module,
         "validate_preconvergence_authority",
-        lambda *_args: checks.append("observer"),
+        lambda *_args: checks.append("observer") or _authority(),
         raising=False,
     )
     monkeypatch.setattr(
@@ -280,12 +440,13 @@ def test_presented_plan_says_confirmation_precedes_host_convergence(capsys) -> N
 
 def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability() -> None:
     host = Host()
-    migration = SimpleNamespace(filename="20260905120000_create_tasks.exs", sha256="d" * 64)
+    migration = MigrationFingerprint(filename="20260905120000_create_tasks.exs", sha256="d" * 64)
     value = artifact(migrations=(migration,))
 
     def release(_remote: object, _config: EnvironmentConfig, supplied: object) -> WorkflowResult:
         assert supplied is value
         assert supplied.manifest.migrations == (migration,)
+        assert supplied.manifest.to_mapping()["migrations"] == [migration.to_mapping()]
         return WorkflowResult(
             command="deploy",
             environment="production",
@@ -307,6 +468,25 @@ def test_provision_passes_a_migrating_artifact_to_the_public_genesis_capability(
     assert result.stage == "provisioned"
     assert result.facts["release"]["migration_policy"] == "restore-required"
     assert result.facts["release"]["backup_id"] is None
+
+
+def test_provision_preserves_invalid_migration_order_exit() -> None:
+    """Invalid migration ordering remains the distinct local input classification."""
+
+    host = Host()
+    target = artifact(migrations=(
+        MigrationFingerprint("20260905120000_create_lists.exs", "e" * 64),
+        MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64),
+    ))
+    assert ArtifactManifest.from_mapping(target.manifest.to_mapping()) == target.manifest
+
+    with pytest.raises(MigrationOrderError, match="migration versions must be sorted and unique"):
+        provision(
+            Invocation(command="provision", environment="production", artifact=target.artifact.archive),
+            capabilities=_capabilities(host, artifact_value=target),
+        )
+    assert host.events == ["discovery"]
+    assert host.closed == 1
 
 
 def test_provision_passes_migration_and_acknowledgement_authority_to_genesis() -> None:
@@ -338,6 +518,8 @@ def test_provision_passes_migration_and_acknowledgement_authority_to_genesis() -
         "yes": True,
         "allow_downgrade": True,
         "dry_run": False,
+        "prune_backup_ids": (),
+        "scheduler_create": _authority()["scheduler_create"],
     }
     assert observed["starting_state"]["authority"] == "validated"
 
@@ -480,10 +662,7 @@ def test_provision_aggregates_convergence_mutation_before_unknown_genesis_result
 
     assert result.changed is True
     assert result.facts["mutation_state"] == "changed"
-    assert result.facts["starting_state"] == {
-        "authority": "validated",
-        "candidate_release_id": artifact().manifest.release_id,
-    }
+    assert result.facts["starting_state"] == _expected_starting_state()
 
 
 def test_provision_preserves_the_confirmed_preconvergence_snapshot_through_genesis() -> None:
@@ -505,10 +684,7 @@ def test_provision_preserves_the_confirmed_preconvergence_snapshot_through_genes
     capabilities = ProvisionCapabilities(**{**_capabilities(host).__dict__, "genesis": genesis})
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
-    assert received["starting_state"] == {
-        "authority": "validated",
-        "candidate_release_id": artifact().manifest.release_id,
-    }
+    assert received["starting_state"] == _expected_starting_state()
     assert result.facts["starting_state"] == received["starting_state"]
 
 
@@ -525,6 +701,7 @@ def test_provision_binds_dataclass_resource_authority_and_full_host_snapshot_int
     host = Host()
     presented: list[dict[str, object]] = []
     authority = {
+        **_authority(),
         "authority": "validated",
         "selected_release_id": None,
         "last_successful_selection_id": None,
@@ -571,6 +748,7 @@ def test_provision_passes_only_confirmed_absent_scheduler_resources_to_pyinfra_a
     observed_inputs: list[object] = []
     genesis_kwargs: dict[str, object] = {}
     authority = {
+        **_authority(),
         "authority": "validated",
         "selected_release_id": None,
         "last_successful_selection_id": None,
@@ -682,17 +860,14 @@ def test_provision_preserves_confirmed_starting_state_when_pyinfra_refuses_befor
     )
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert result.facts["starting_state"] == {
-        "authority": "validated",
-        "candidate_release_id": artifact().manifest.release_id,
-    }
+    assert result.facts["starting_state"] == _expected_starting_state()
 
 
 def test_provision_refuses_authority_drift_after_interactive_confirmation() -> None:
     """Interactive consent cannot be reused after the displayed host authority changes."""
 
     host = Host()
-    discoveries = iter(("first", "changed", "changed", "changed"))
+    discoveries = iter(({"state": "first"}, {"state": "changed"}, {"state": "changed"}, {"state": "changed"}))
     presented: list[object] = []
 
     capabilities = _capabilities(
@@ -718,7 +893,7 @@ def test_provision_yes_refuses_material_drift_after_confirmation_before_pyinfra(
     """`--yes` confirms one plan, not a later resource snapshot."""
 
     host = Host()
-    discoveries = iter(("first", "changed"))
+    discoveries = iter(({"state": "first"}, {"state": "changed"}))
     capabilities = ProvisionCapabilities(
         **{
             **_capabilities(host).__dict__,
@@ -747,6 +922,17 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
     identified = iter((old_inputs, fresh_inputs))
     matches = iter((False, True, True))
     resolved: list[object] = []
+    from taskman_ops.services import systemd
+    original_build = systemd.build_systemd_plan
+    plans = []
+
+    def build(config):
+        assert resolved == [old_inputs, fresh_inputs]
+        plan = original_build(config)
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(provision_module, "build_systemd_plan", build, raising=False)
     monkeypatch.setattr(provision_module, "identify_clean_inputs", lambda _repo: next(identified))
     monkeypatch.setattr(provision_module, "clean_inputs_match", lambda *_args: next(matches), raising=False)
     capabilities = ProvisionCapabilities(
@@ -760,6 +946,8 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
 
     assert result.exit_status is ExitStatus.OK
     assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
+    # Unstable source candidates never produce authority or rendered assets.
+    assert len(plans) == 1
     assert host.events.count("plan") == 1
     assert host.events.count("provisioning") == 1
 
@@ -942,9 +1130,10 @@ def test_provision_uses_one_rendered_caddy_plan_for_discovery_and_convergence() 
         renderer_calls += 1
         return rendered
 
-    def discover(_remote: object, _config: EnvironmentConfig, *, expected_caddyfile_sha256: str) -> None:
+    def discover(_remote: object, _config: EnvironmentConfig, *, expected_caddyfile_sha256: str) -> dict[str, str]:
         assert expected_caddyfile_sha256 == expected_digest
         host.events.append("discovery")
+        return {"admission": "validated"}
 
     def provisioning(_remote: object, inputs: object) -> ChangeSet:
         assert inputs.caddy_plan is rendered
@@ -962,6 +1151,40 @@ def test_provision_uses_one_rendered_caddy_plan_for_discovery_and_convergence() 
     assert renderer_calls == 1
 
 
+def test_provision_freezes_systemd_bytes_through_confirmation(monkeypatch) -> None:
+    """Re-rendering after confirmation would install bytes the operator never reviewed."""
+    from taskman_ops.services import systemd
+
+    host = Host()
+    admitted = []
+
+    def preflight(_remote, inputs):
+        admitted.append(inputs.systemd_plan)
+        # Source renderers may change after preparation, especially for dirty
+        # source or explicit artifacts. Neither authority refresh nor installation
+        # is allowed to consult them again.
+        monkeypatch.setattr(systemd, "render_taskman_service", lambda _config: "changed source")
+        return _authority()
+
+    def provisioning(_remote, inputs):
+        assert inputs.systemd_plan is admitted[0]
+        content = inputs.systemd_plan.assets[0].content
+        assert b"ExecStart=" in content
+        assert b"changed source" not in content
+        return host.converge("provisioning")
+
+    capabilities = _capabilities(host, provisioning=provisioning)
+    capabilities = ProvisionCapabilities(**{**capabilities.__dict__, "preflight": preflight})
+    result = provision(
+        Invocation(command="provision", environment="production", artifact=Path("explicit.tar.gz")),
+        capabilities=capabilities,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert len(admitted) == 2
+    assert admitted[0] is admitted[1]
+
+
 def _capabilities(
     host: Host,
     *,
@@ -975,7 +1198,6 @@ def _capabilities(
     return ProvisionCapabilities(
         load_environment=lambda _name: environment_config(),
         decrypt_secrets=lambda _name: SimpleNamespace(database_password="database-password"),
-        resolve_artifact=lambda _invocation: value,
         render_runtime_environment=lambda _config, _secrets: b"RUNTIME=value\n",
         render_pgpass=lambda _config, _secrets: b"pgpass\n",
         render_role_password_input=lambda _role, _password: b"role-password-input\n",
@@ -983,7 +1205,7 @@ def _capabilities(
         present_plan=present_plan or (lambda _plan: None),
         confirm=confirm or (lambda _plan: True),
         connect=lambda _config: host,
-        discover=lambda _remote, _config, **_kwargs: host.events.append("discovery"),
+        discover=lambda _remote, _config, **_kwargs: host.events.append("discovery") or {"admission": "validated"},
         provisioning=provisioning or (lambda _remote, _inputs: host.converge("provisioning")),
         caddy_plan=lambda _config: CaddyPlan(
             CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
@@ -998,4 +1220,50 @@ def _capabilities(
             command="deploy", environment="production", changed=False, stage="already-current", facts={}
             )
         ),
+        preflight=lambda _remote, _inputs: _authority(),
+        target_resolution=lambda _remote, _config, _invocation, _clean_inputs: value,
+        downgrade_authority=lambda _remote, _config, _target: (False, ()),
     )
+
+
+def _authority() -> dict[str, object]:
+    return {
+        "authority": "validated",
+        "initial_database_empty": False,
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "last_successful_selection": None,
+        "previous_successful_selection": None,
+        "applied_migrations": (),
+        "service_state": "stopped",
+        "database_state": "ready",
+        "backup_protections": (),
+        "independently_held_backup_ids": (),
+        "backup_protection_sha256": "a" * 64,
+        "scheduled_backup_sha256": None,
+        "backup_timer_enabled": False,
+        "backup_timer_state": "inactive",
+        "downgrade_baseline_sha256": "b" * 64,
+        "installed_release_count": 0,
+        "installed_release_sha256": "c" * 64,
+        "scheduler_resources": {"helper": False, "service": False, "timer": False, "environment": False},
+        "scheduler_create": (
+            "/etc/systemd/system/taskman-backup.service",
+            "/etc/systemd/system/taskman-backup.timer",
+            "/etc/taskman/taskman-backup.env",
+            "/usr/local/lib/taskman/taskman-backup.pyz",
+        ),
+    }
+
+
+def _expected_starting_state() -> dict[str, object]:
+    target = artifact()
+    return {
+        "authority": "validated",
+        "candidate_release_id": target.release_id,
+        "artifact_sha256": target.artifact_sha256,
+        "artifact_source": "built",
+        "source_dirty": False,
+        "host_authority": _authority(),
+        "resource_authority": {"admission": "validated"},
+    }

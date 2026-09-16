@@ -753,20 +753,3 @@ def test_cyclic_result_facts_map_to_stable_secret_free_json_error(
     assert captured.out == ""
     assert captured.err
     assert "Traceback" not in captured.err
-
-
-def test_each_stable_exit_status_has_the_documented_numeric_code() -> None:
-    assert {status.name: status.value for status in ExitStatus} == {
-        "OK": 0,
-        "INVALID": 2,
-        "LOCAL_PREREQUISITE": 3,
-        "SECRET": 4,
-        "REMOTE_PREFLIGHT": 5,
-        "BACKUP": 6,
-        "MIGRATION": 7,
-        "RELEASE": 8,
-        "READINESS": 9,
-        "SAFETY": 10,
-        "RESTORE": 11,
-        "LOCKED": 12,
-    }

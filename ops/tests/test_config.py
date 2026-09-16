@@ -125,8 +125,6 @@ def test_database_identifiers_use_the_postgresql_allowlist(field: str, identifie
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"backup_root": "/opt/taskman"},
-        {"backup_root": "/opt/taskman/backups"},
         {"backup_root": "/opt/taskman/current"},
         {"backup_root": "/opt/taskman/releases/backups"},
         {"install_root": "/var/lib/taskman"},

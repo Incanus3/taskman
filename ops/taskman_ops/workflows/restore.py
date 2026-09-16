@@ -12,8 +12,7 @@ import time
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..host_helper.backup_protection import BackupProtection
-from ..host_helper.database import release_migration_versions
-from ..host_helper.records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, selection_filename
+from ..host_helper.records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, selection_filename, migration_record_versions
 from ..host_helper.restore_database import RestoreDatabaseError, validate_restore_database_state
 from ..host_helper.restore_target import (
     REPLACEMENT_RECONFIRM_MESSAGE,
@@ -484,7 +483,7 @@ def _source_for_id(backups: tuple[BackupRecord, ...], releases: tuple[ReleaseRec
     if source is None:
         raise ValueError("selected backup is unavailable")
     release = next((item for item in releases if item.release_id == source.source_release_id), None)
-    if release is None or release_migration_versions(release.migrations) != source.migration_versions:
+    if release is None or migration_record_versions(release.migrations) != source.migration_versions:
         raise ValueError("selected backup source authority is inconsistent")
     return source
 

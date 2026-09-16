@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+from io import BytesIO
 from pathlib import Path
 import stat
 import subprocess
@@ -35,6 +37,7 @@ def test_systemd_plan_uses_builtin_non_secret_assets_and_never_starts_taskman() 
     ]
     assert plan.enable_without_start == ("taskman.service",)
     assert plan.enable_and_start == ("taskman-backup.timer",)
+    assert all(type(asset.content) is bytes for asset in plan.assets)
     service = render_taskman_service(environment_config(install_root="/srv/taskman"))
     assert set(service.splitlines()) >= {
         "User=taskman",
@@ -204,6 +207,7 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
     taskman_systemd.declare_systemd(
         ProvisioningInputs(
             config=environment_config(),
+            systemd_plan=build_systemd_plan(environment_config()),
             caddy_plan=CaddyPlan(
                 CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
                 (),
@@ -213,6 +217,12 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
             runtime_environment=b"RUNTIME=value\n",
             pgpass=b"pgpass\n",
             role_password_input=b"role-password-input\n",
+            scheduler_create=frozenset({
+                "/usr/local/lib/taskman/taskman-backup.pyz",
+                "/etc/systemd/system/taskman-backup.service",
+                "/etc/systemd/system/taskman-backup.timer",
+                "/etc/taskman/taskman-backup.env",
+            }),
         )
     )
 
@@ -227,7 +237,7 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
         def did_change(self) -> bool:
             return False
 
-    puts: list[tuple[str, str, dict[str, object]]] = []
+    puts: list[tuple[object, str, dict[str, object]]] = []
     reloads: list[dict[str, object]] = []
     services: list[tuple[str, dict[str, object]]] = []
     from pyinfra.operations import files, server, systemd
@@ -235,7 +245,7 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     monkeypatch.setattr(
         files,
         "put",
-        lambda _source, destination, **kwargs: puts.append(("", destination, kwargs)) or Result(),
+        lambda source, destination, **kwargs: puts.append((source, destination, kwargs)) or Result(),
     )
     monkeypatch.setattr(systemd, "daemon_reload", lambda **kwargs: reloads.append(kwargs))
     monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
@@ -247,6 +257,7 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     )
     inputs = ProvisioningInputs(
         config=environment_config(),
+        systemd_plan=build_systemd_plan(environment_config()),
         caddy_plan=CaddyPlan(
             CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
             (),
@@ -256,13 +267,23 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"pgpass\n",
         role_password_input=b"role-password-input\n",
+        scheduler_create=frozenset({
+            "/usr/local/lib/taskman/taskman-backup.pyz",
+            "/etc/systemd/system/taskman-backup.service",
+            "/etc/systemd/system/taskman-backup.timer",
+            "/etc/taskman/taskman-backup.env",
+        }),
     )
 
+    monkeypatch.setattr(
+        taskman_systemd, "build_systemd_plan",
+        lambda *_args: pytest.fail("declaration reconstructed the confirmed plan"),
+    )
     plan = taskman_systemd.declare_systemd(inputs)
 
     assert [
         (destination, int(str(ensure_mode_int(kwargs["mode"])), 8))
-        for _content, destination, kwargs in puts
+        for _source, destination, kwargs in puts
     ] == [
         *((asset.destination, asset.mode) for asset in plan.assets),
         (plan.backup_environment_path, 0o600),
@@ -291,6 +312,11 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     assert backup_asset.destination in commands
     assert backup_asset.sha256 in commands
     assert kwargs == {"name": f"Verify checksum for {backup_asset.destination}", "_sudo": True}
+    installed_assets = puts[: len(plan.assets)]
+    assert all(type(source) is BytesIO for source, _destination, _kwargs in installed_assets)
+    uploaded = {destination: source.read() for source, destination, _kwargs in installed_assets}
+    assert uploaded == {asset.destination: asset.content for asset in plan.assets}
+    assert hashlib.sha256(uploaded[backup_asset.destination]).hexdigest() == backup_asset.sha256
 
 
 def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(monkeypatch) -> None:
@@ -312,6 +338,7 @@ def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(
     taskman_systemd.declare_systemd(
         ProvisioningInputs(
             config=environment_config(),
+            systemd_plan=build_systemd_plan(environment_config()),
             caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/keyring", "deb example"), (), (), ""),
             runtime_environment=b"runtime",
             pgpass=b"pgpass",
@@ -361,6 +388,7 @@ def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
     monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: None)
     inputs = ProvisioningInputs(
         config=config,
+        systemd_plan=build_systemd_plan(config),
         caddy_plan=CaddyPlan(
             CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
             (),
@@ -370,6 +398,12 @@ def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"pgpass\n",
         role_password_input=b"role-password-input\n",
+        scheduler_create=frozenset({
+            "/usr/local/lib/taskman/taskman-backup.pyz",
+            "/etc/systemd/system/taskman-backup.service",
+            "/etc/systemd/system/taskman-backup.timer",
+            "/etc/taskman/taskman-backup.env",
+        }),
     )
 
     @deploy("Systemd mode semantics")
@@ -382,10 +416,12 @@ def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
     add_deploy(state, converge)
     run_ops(state)
 
-    plan = build_systemd_plan(config)
+    plan = inputs.systemd_plan
     for asset in plan.assets:
         asset_path = Path(remote_path(asset.destination))
         assert stat.S_IMODE(asset_path.stat().st_mode) == asset.mode
+        assert asset_path.read_bytes() == asset.content
 
     environment_path = Path(remote_path(plan.backup_environment_path))
     assert stat.S_IMODE(environment_path.stat().st_mode) == 0o600
+    assert environment_path.read_bytes() == plan.backup_environment_content

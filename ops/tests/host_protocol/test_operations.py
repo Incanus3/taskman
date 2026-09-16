@@ -56,7 +56,7 @@ def result_for(operation: str) -> HostResult:
     )
 
 
-@pytest.mark.parametrize("operation", OPERATION_NAMES)
+@pytest.mark.parametrize("operation", sorted(OPERATION_NAMES))
 def test_each_declared_operation_round_trips_through_both_codecs(operation: str) -> None:
     """Removing an operation from either codec would strand its later helper policy."""
 

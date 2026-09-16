@@ -477,57 +477,6 @@ class EnvironmentConfig(BaseModel):
             raise ValueError("IPv6 database host requires explicit public IPv6 configuration")
         return self
 
-    # Compatibility aliases used by future host/service capabilities.  They
-    # are properties rather than duplicate model fields, so ``extra=forbid``
-    # and the serialized schema remain unambiguous.
-    @property
-    def environment(self) -> str | None:
-        return self.name
-
-    @property
-    def ssh_hostname(self) -> str:
-        return self.ssh_host
-
-    @property
-    def administrator_user(self) -> str:
-        return self.ssh_user
-
-    @property
-    def pinned_host_key_fingerprint(self) -> str:
-        return self.host_key_fingerprint
-
-    @property
-    def expected_public_ipv4(self) -> str:
-        return self.public_ipv4
-
-    @property
-    def expected_public_ipv6(self) -> str | None:
-        return self.public_ipv6
-
-    @property
-    def app_port(self) -> int:
-        return self.application_port
-
-    @property
-    def erlang_distribution_port(self) -> int:
-        return self.distribution_port
-
-    @property
-    def database(self) -> str:
-        return self.database_name
-
-    @property
-    def database_user(self) -> str:
-        return self.database_role
-
-    @property
-    def target_architecture(self) -> str:
-        return self.architecture
-
-    @property
-    def os_release(self) -> str:
-        return self.target_os
-
     @property
     def release_root(self) -> PurePosixPath:
         return self.install_root / "releases"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from io import StringIO
 import json
 
@@ -7,15 +8,11 @@ import pytest
 
 from taskman_ops.cli import Invocation, dispatch, main
 from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus
+from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.output import WorkflowResult, register_secret
 from taskman_ops.host_protocol import HostRequest, HostResult
 from taskman_ops.workflows.verify import run_verify
-from taskman_ops.workflows.verification_results import (
-    CheckStatus,
-    VerificationCheck,
-    VerificationReport,
-)
+from tests.support.environments import environment_config
 from tests.support.secrets import no_registered_secrets_between_tests as clear_output_secrets
 
 
@@ -58,8 +55,13 @@ def test_cli_human_and_json_use_identical_redacted_verification_facts() -> None:
     canary = "verify-envelope-canary-93dc"
     register_secret(canary)
     checks = list(successful_checks())
-    checks[0] = VerificationCheck("taskman-service", CheckStatus.PASSED, f"service active {canary}")
-    report = VerificationReport(ExitStatus.OK, RELEASE_ID, RELEASE_ID, tuple(checks), None)
+    checks[0] = {
+        "schema_version": 1,
+        "name": "taskman-service",
+        "status": "passed",
+        "summary": f"service active {canary}",
+    }
+    report = verification_report(0, RELEASE_ID, RELEASE_ID, checks, None)
     result = workflow_result(report)
     human = StringIO()
     machine = StringIO()
@@ -106,7 +108,7 @@ def test_verify_dispatch_connects_and_returns_a_read_only_workflow_result(
         }
     )
     remote = object()
-    report = VerificationReport(ExitStatus.OK, RELEASE_ID, None, successful_checks(), None)
+    report = verification_report(0, RELEASE_ID, None, successful_checks(), None)
     expected = workflow_result(report)
     seen: list[tuple[object, EnvironmentConfig]] = []
     monkeypatch.setattr("taskman_ops.config.load_environment", lambda name: environment if name == "production" else None)
@@ -122,39 +124,75 @@ def test_verify_dispatch_connects_and_returns_a_read_only_workflow_result(
     assert seen == [(remote, environment)]
 
 
-def successful_checks() -> tuple[VerificationCheck, ...]:
-    return tuple(VerificationCheck(name, CheckStatus.PASSED, f"{name} passed") for name in CHECK_NAMES)
+def successful_checks() -> list[dict[str, object]]:
+    return [
+        {
+            "schema_version": 1,
+            "name": name,
+            "status": "passed",
+            "summary": f"{name} passed",
+        }
+        for name in CHECK_NAMES
+    ]
 
 
-def readiness_report() -> VerificationReport:
-    checks = list(successful_checks()[:6])
-    checks[-1] = VerificationCheck("local-readiness", CheckStatus.FAILED, "local readiness failed")
-    return VerificationReport(ExitStatus.READINESS, RELEASE_ID, None, tuple(checks), FAILED_NEXT_ACTION)
+def readiness_report() -> dict[str, object]:
+    checks = successful_checks()[:6]
+    checks[-1] = {
+        "schema_version": 1,
+        "name": "local-readiness",
+        "status": "failed",
+        "summary": "local readiness failed",
+    }
+    return verification_report(ExitStatus.READINESS, RELEASE_ID, None, checks, FAILED_NEXT_ACTION)
 
 
-def release_report() -> VerificationReport:
-    checks = list(successful_checks()[:5])
-    checks[-1] = VerificationCheck("startup-journal", CheckStatus.FAILED, "startup journal failed")
-    return VerificationReport(ExitStatus.RELEASE, RELEASE_ID, None, tuple(checks), FAILED_NEXT_ACTION)
+def release_report() -> dict[str, object]:
+    checks = successful_checks()[:5]
+    checks[-1] = {
+        "schema_version": 1,
+        "name": "startup-journal",
+        "status": "failed",
+        "summary": "startup journal failed",
+    }
+    return verification_report(ExitStatus.RELEASE, RELEASE_ID, None, checks, FAILED_NEXT_ACTION)
 
 
-def workflow_result(report: VerificationReport) -> WorkflowResult:
+def verification_report(
+    exit_status: int,
+    release_id: str,
+    expected_release_id: str | None,
+    checks: list[dict[str, object]],
+    next_action: str | None,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "ok" if exit_status == 0 else "failed",
+        "exit_status": int(exit_status),
+        "release_id": release_id,
+        "expected_release_id": expected_release_id,
+        "checks": checks,
+        "next_action": next_action,
+    }
+
+
+def workflow_result(report: Mapping[str, object]) -> WorkflowResult:
     return WorkflowResult(
         command="verify",
         environment="production",
         changed=False,
-        stage="verified" if report.successful else "verification-failed",
-        facts={"verification": report.to_mapping()},
+        stage="verified" if report["exit_status"] == 0 else "verification-failed",
+        facts={"verification": dict(report)},
         warnings=(),
-        next_action=report.next_action,
-        exit_status=report.exit_status,
+        next_action=report["next_action"],
+        exit_status=ExitStatus(report["exit_status"]),
     )
 
 
 def test_verify_accepts_completed_report_with_observation_projection_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    report = VerificationReport(ExitStatus.OK, RELEASE_ID, RELEASE_ID, successful_checks(), None)
+    report = verification_report(ExitStatus.OK, RELEASE_ID, RELEASE_ID, successful_checks(), None)
 
     def invoke(_remote: object, request: object, **_kwargs: object) -> HostResult:
         assert isinstance(request, HostRequest)
@@ -166,7 +204,7 @@ def test_verify_accepts_completed_report_with_observation_projection_and_warning
             "succeeded",
             "verification completed",
             {
-                "report": report.to_mapping(),
+                "report": report,
                 "selected_release_id": RELEASE_ID,
                 "service_state": "running",
                 "database_state": "ready",
@@ -214,7 +252,7 @@ def test_verify_preserves_failed_reports_and_exit_categories(
             "retryable",
             "verification failed",
             {
-                "report": report.to_mapping(),
+                "report": report,
                 "selected_release_id": RELEASE_ID,
                 "service_state": "failed",
                 "database_state": "ready",
@@ -242,6 +280,63 @@ def test_verify_preserves_failed_reports_and_exit_categories(
     }))
 
     assert result.stage == "verification-failed"
-    assert result.exit_status is report.exit_status
+    assert result.exit_status is ExitStatus(report["exit_status"])
     assert result.facts["verification"]["checks"][-1]["status"] == "failed"
     assert result.warnings == ("journal evidence incomplete",)
+
+
+def test_verify_rejects_a_malformed_success_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incomplete helper report must remain a fixed safety failure."""
+
+    report = verification_report(0, RELEASE_ID, RELEASE_ID, [], None)
+
+    def invoke(_remote: object, request: HostRequest, **_kwargs: object) -> HostResult:
+        return HostResult(
+            3,
+            request.operation,
+            request.correlation_id,
+            "succeeded",
+            "verification completed",
+            {"report": report},
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.verify.run_request", invoke)
+
+    with pytest.raises(OpsError) as raised:
+        run_verify(object(), environment_config(), expected_release_id=RELEASE_ID)
+
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.stage == "verification"
+    assert raised.value.message == "verification returned invalid observed state"
+
+
+def test_verify_rejects_a_successful_report_for_another_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid report for another release cannot satisfy the requested proof."""
+
+    other_release = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "c" * 64
+    report = verification_report(0, RELEASE_ID, RELEASE_ID, successful_checks(), None)
+
+    def invoke(_remote: object, request: HostRequest, **_kwargs: object) -> HostResult:
+        return HostResult(
+            3,
+            request.operation,
+            request.correlation_id,
+            "succeeded",
+            "verification completed",
+            {"report": report},
+            (),
+        )
+
+    monkeypatch.setattr("taskman_ops.workflows.verify.run_request", invoke)
+
+    with pytest.raises(OpsError) as raised:
+        run_verify(object(), environment_config(), expected_release_id=other_release)
+
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.stage == "verification"
+    assert raised.value.message == "verification returned an unrelated release"
