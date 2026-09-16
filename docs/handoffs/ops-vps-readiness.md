@@ -225,3 +225,8 @@ GREEN 6 passed; focused gate 94 passed in 0.64 seconds. Module export follow-up 
 6 cases and import identity/export checks. Distinct scoped review approved after correcting the
 export list and retracting a raw-index finding against authoritative GitButler modified-file evidence.
 Task 3 coupled recovery/encoding and task 4 acceptance remain in order.
+
+Task 3 checkpoint: exact recovery/encoding delivered; focused 249 passed in 9.08 seconds,
+compileall/isolated archive passed. Four review findings were corrected with red/green regressions;
+distinct re-review approved. Canonical design owns proof/bound evidence. Task 4 integrated acceptance
+is next; no new source edits or application builds may overlap the operations gate.

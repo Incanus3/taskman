@@ -19,9 +19,11 @@ from taskman_ops.host_protocol import (
     decode_request,
     encode_result,
     unavailable_observations,
+    validate_cleanup_completion,
     validate_mutation_state,
     validate_verification_report,
 )
+from taskman_ops.host_protocol.envelope import validate_result_for_request
 from taskman_ops.host_helper.credentials import validate_credentials
 from taskman_ops.host_helper.database import database_mapping, observe_database_state
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
@@ -51,6 +53,8 @@ from taskman_ops.releases.identifiers import validate_release_id
 
 _FALLBACK_OPERATION = "discover"
 _FALLBACK_CORRELATION_ID = "op-00000000000000000000000000000000"
+_INVALID_MUTATION_WARNING = "invalid internal mutation evidence was rejected"
+_ENCODING_WARNING = "helper result encoding failed; final observations are unavailable"
 
 
 def _failure_result(
@@ -84,11 +88,9 @@ def _mutation_failure_result(
 ) -> HostResult:
     """Return exact invocation evidence without exposing the exception."""
 
-    cleanup_inspection = (
-        request.operation == "cleanup" and request.parameters.get("action") == "inspect"
-    )
+    cleanup_inspection = request.operation == "cleanup" and request.parameters.get("action") == "inspect"
     if outcome is None:
-        outcome = "refused" if cleanup_inspection else "retryable"
+        outcome = "refused" if request.operation == "cleanup" else "retryable"
     if mutation_state is None:
         mutation_state = "unchanged" if cleanup_inspection else "unknown"
     observations, unavailable = unavailable_observations(request.operation)
@@ -121,6 +123,16 @@ def _mutation_failure_result(
         )
     else:
         state["completed_targets"] = ()
+    try:
+        state = validate_mutation_state(request.operation, outcome, state)
+    except ProtocolError:
+        observations, unavailable = unavailable_observations(request.operation)
+        state.update(
+            observations=observations,
+            unavailable_fields=unavailable,
+            inspection_error="inspection-failed",
+        )
+        state = validate_mutation_state(request.operation, outcome, state)
     return HostResult.for_request(request, outcome, message, state)
 
 
@@ -238,98 +250,20 @@ def _exit_code(operation: str, boundary: str) -> int:
     return 8
 
 
-def _legacy_mutation_result(request: HostRequest, result: HostResult) -> HostResult:
-    """Translate current in-process handlers before their exact state crosses the wire."""
-
-    state = result.state
-    boundary_value = state.get("failed_boundary")
-    boundary = boundary_value if type(boundary_value) is str else None
-    boundary = {"start": "service", "stop": "service", "observation": "inspection"}.get(
-        boundary, boundary
-    )
-    if result.outcome == "succeeded":
-        boundary = None
-    elif state.get("locked") is True:
-        boundary = "lock"
-    elif boundary is None:
-        boundary = "input" if result.outcome == "refused" and not state else "authority"
-    if {
-        "final_observations",
-        "final_unavailable_fields",
-        "final_inspection_error",
-    } <= set(state):
-        observations = state["final_observations"]
-        unavailable = state["final_unavailable_fields"]
-        inspection_error = state["final_inspection_error"]
-    else:
-        observations, unavailable, inspection_error = _observe_final_mutation_safely(request)
-    changed_value = state.get("changed")
-    if changed_value is True:
-        mutation_state = "changed"
-    elif result.outcome == "succeeded":
-        mutation_state = "unchanged" if changed_value is False else "unknown"
-    elif boundary in {"input", "lock", "authority", "expected_state"}:
-        mutation_state = "unchanged"
-    else:
-        mutation_state = "unknown"
-    exact: dict[str, object] = {
-        "mutation_state": mutation_state,
-        "exit_code": (
-            0
-            if result.outcome == "succeeded"
-            else _exit_code(request.operation, boundary)
-        ),
-        "failed_boundary": boundary,
-        "observations": observations,
-        "unavailable_fields": unavailable,
-        "inspection_error": inspection_error,
-        "report": state.get("report") or None,
-    }
-    if request.operation in {"deploy", "genesis"}:
-        exact.update(
-            desired_release_id=_requested_release(request),
-            backup_id=state.get("backup_id"),
-        )
-    elif request.operation == "restore":
-        exact.update(
-            desired_release_id=state.get("intended_release_id"),
-            backup_id=state.get("backup_id") or _requested_backup(request),
-            pre_restore_backup_id=state.get("pre_restore_backup_id"),
-        )
-    else:
-        exact["completed_targets"] = state.get("completed_targets", ())
-    try:
-        exact = validate_mutation_state(request.operation, result.outcome, exact)
-    except ProtocolError:
-        report = state.get("report") or None
-        if report is not None:
-            try:
-                report = validate_verification_report(report)
-            except ProtocolError:
-                report = None
-        return _mutation_failure_from_observation(
-            request,
-            observations,
-            unavailable,
-            inspection_error,
-            mutation_state=mutation_state,
-            report=report,
-            message=result.message,
-        )
-    return HostResult.for_request(
-        request,
-        result.outcome,
-        result.message,
-        exact,
-        result.warnings,
-    )
-
-
 def _observe_final_mutation_safely(
     request: HostRequest,
 ) -> tuple[dict[str, object], tuple[str, ...], str | None]:
     try:
-        return _observe_final_mutation(request)
+        observed = _observe_final_mutation(request)
+        if (
+            not isinstance(observed, tuple)
+            or len(observed) != 3
+            or not isinstance(observed[0], Mapping)
+            or not isinstance(observed[1], (list, tuple))
+            or observed[2] is not None and type(observed[2]) is not str
+        ):
+            raise ValueError("final mutation observation is invalid")
+        return dict(observed[0]), tuple(observed[1]), observed[2]
     except LifecycleLockContention:
         observations, unavailable = unavailable_observations(request.operation)
         return observations, tuple(unavailable), "lock-unavailable"
@@ -338,46 +272,231 @@ def _observe_final_mutation_safely(
         return observations, tuple(unavailable), "inspection-failed"
 
 
-def _mutation_failure_from_observation(
+def _with_warning(result: HostResult, warning: str) -> HostResult:
+    return HostResult(
+        result.protocol_version,
+        result.operation,
+        result.correlation_id,
+        result.outcome,
+        result.message,
+        result.state,
+        (warning,),
+    )
+
+
+def _operation_failure_base(request: HostRequest, *, observe: bool) -> HostResult:
+    return _mutation_failure_result(
+        request,
+        message="helper internal failure",
+        observe=observe,
+    )
+
+
+def _state_projection(
     request: HostRequest,
-    observations: Mapping[str, object],
-    unavailable: tuple[str, ...],
-    inspection_error: str | None,
-    *,
-    mutation_state: str,
-    report: Mapping[str, object] | None,
-    message: str,
-) -> HostResult:
-    state: dict[str, object] = {
-        "mutation_state": mutation_state,
-        "exit_code": 8 if request.operation != "restore" else 11,
-        "failed_boundary": "inspection",
-        "observations": observations,
-        "unavailable_fields": unavailable,
-        "inspection_error": inspection_error,
-        "report": report,
-    }
-    if request.operation in {"deploy", "genesis"}:
-        state.update(desired_release_id=_requested_release(request), backup_id=None)
-    elif request.operation == "restore":
-        state.update(
-            desired_release_id=None,
-            backup_id=_requested_backup(request),
-            pre_restore_backup_id=None,
+    outcome: str,
+    state: Mapping[str, object],
+    base: Mapping[str, object],
+    keys: tuple[str, ...],
+) -> dict[str, object] | None:
+    candidate = dict(base)
+    for key in keys:
+        if key not in state:
+            return None
+        candidate[key] = state[key]
+    try:
+        return validate_mutation_state(request.operation, outcome, candidate)
+    except ProtocolError:
+        return None
+
+
+def _matching_completion(
+    request: HostRequest,
+    state: Mapping[str, object],
+    base: Mapping[str, object],
+    outcome: str,
+) -> object:
+    candidate = _state_projection(
+        request, outcome, state, base, ("completed_targets",)
+    )
+    if candidate is None:
+        return base["completed_targets"]
+    try:
+        validate_cleanup_completion(request, outcome, candidate)
+    except ProtocolError:
+        return base["completed_targets"]
+    return candidate["completed_targets"]
+
+
+def _matching_report(request: HostRequest, state: Mapping[str, object]) -> dict[str, object] | None:
+    if request.operation == "cleanup":
+        return None
+    value = state.get("report")
+    if value is None:
+        return None
+    try:
+        return validate_verification_report(value)
+    except ProtocolError:
+        return None
+
+
+def _primary_failure(
+    request: HostRequest,
+    result: HostResult,
+    state: Mapping[str, object],
+    recovered: Mapping[str, object],
+    base: HostResult,
+    report: dict[str, object] | None,
+) -> tuple[str, str, int, str, str]:
+    """Choose only a full-validator-approved primary failure tuple."""
+
+    if report is not None and report["status"] == "failed":
+        candidate = {
+            **recovered,
+            "report": report,
+            "exit_code": report["exit_status"],
+            "failed_boundary": "verification",
+        }
+        if (
+            result.outcome != "succeeded"
+            and state.get("exit_code") == report["exit_status"]
+            and state.get("failed_boundary") == "verification"
+        ):
+            try:
+                validate_mutation_state(request.operation, result.outcome, candidate)
+            except ProtocolError:
+                pass
+            else:
+                return (
+                    result.outcome,
+                    result.message,
+                    int(report["exit_status"]),
+                    "verification",
+                    "original",
+                )
+        return (
+            "retryable",
+            "helper internal failure",
+            int(report["exit_status"]),
+            "verification",
+            "repaired",
         )
+
+    candidate = dict(recovered)
+    candidate["report"] = report
+    for key in ("exit_code", "failed_boundary"):
+        if key not in state:
+            return (
+                base.outcome,
+                base.message,
+                int(base.state["exit_code"]),
+                str(base.state["failed_boundary"]),
+                "base",
+            )
+        candidate[key] = state[key]
+    if result.outcome != "succeeded":
+        try:
+            validate_mutation_state(request.operation, result.outcome, candidate)
+        except ProtocolError:
+            pass
+        else:
+            return (
+                result.outcome,
+                result.message,
+                int(candidate["exit_code"]),
+                str(candidate["failed_boundary"]),
+                "original",
+            )
+    return (
+        base.outcome,
+        base.message,
+        int(base.state["exit_code"]),
+        str(base.state["failed_boundary"]),
+        "base",
+    )
+
+
+def _invalid_mutation_result(request: HostRequest, result: HostResult) -> HostResult:
+    """Recover independent exact evidence from one request-correlated invalid result."""
+
+    base = _operation_failure_base(request, observe=False)
+    raw_state = result.state if isinstance(result.state, Mapping) else {}
+    state = dict(raw_state)
+    recovered = dict(base.state)
+
+    cleanup_inspection = (
+        request.operation == "cleanup" and request.parameters.get("action") == "inspect"
+    )
+    if cleanup_inspection:
+        recovered["mutation_state"] = "unchanged"
+        recovered["completed_targets"] = []
     else:
-        state.update(
-            mutation_state=(
-                "unchanged"
-                if request.parameters.get("action") == "inspect"
-                else "unknown"
-            ),
-            exit_code=10,
-            completed_targets=(),
-            report=None,
+        classification = _state_projection(
+            request, base.outcome, state, recovered, ("mutation_state",)
         )
-    outcome = "refused" if request.operation == "cleanup" else "retryable"
-    return HostResult.for_request(request, outcome, message, state)
+        if classification is not None:
+            recovered["mutation_state"] = classification["mutation_state"]
+
+    identity_keys = (
+        ("desired_release_id", "backup_id")
+        if request.operation in {"deploy", "genesis"}
+        else ("desired_release_id", "backup_id", "pre_restore_backup_id")
+        if request.operation == "restore"
+        else ()
+    )
+    if identity_keys:
+        identities = _state_projection(
+            request, base.outcome, state, recovered, identity_keys
+        )
+        if identities is not None:
+            for key in identity_keys:
+                recovered[key] = identities[key]
+
+    if request.operation == "cleanup" and not cleanup_inspection:
+        recovered["completed_targets"] = _matching_completion(
+            request, state, recovered, base.outcome
+        )
+
+    report = _matching_report(request, state)
+    recovered["report"] = report
+    outcome, message, exit_code, boundary, _source = _primary_failure(
+        request, result, state, recovered, base, report
+    )
+    recovered["exit_code"] = exit_code
+    recovered["failed_boundary"] = boundary
+
+    facts = _state_projection(
+        request,
+        outcome,
+        state,
+        recovered,
+        ("observations", "unavailable_fields", "inspection_error"),
+    )
+    if facts is not None:
+        for key in ("observations", "unavailable_fields", "inspection_error"):
+            recovered[key] = facts[key]
+    else:
+        observations, unavailable, inspection_error = _observe_final_mutation_safely(request)
+        observed = {
+            **recovered,
+            "observations": observations,
+            "unavailable_fields": unavailable,
+            "inspection_error": inspection_error,
+        }
+        try:
+            observed = validate_mutation_state(request.operation, outcome, observed)
+        except ProtocolError:
+            pass
+        else:
+            for key in ("observations", "unavailable_fields", "inspection_error"):
+                recovered[key] = observed[key]
+
+    validated = validate_mutation_state(request.operation, outcome, recovered)
+    if request.operation == "cleanup":
+        validate_cleanup_completion(request, outcome, validated)
+    return HostResult.for_request(
+        request, outcome, message, validated, (_INVALID_MUTATION_WARNING,)
+    )
 
 
 _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
@@ -406,17 +525,45 @@ def _encode_or_internal_failure(
     correlation_id: str,
     request: HostRequest | None = None,
 ) -> bytes:
-    """Reduce serialization failures to the fixed, known-small internal result."""
+    """Encode once, then retain validated mutation proof in one reduced envelope."""
 
     try:
         return encode_result(result)
     except Exception:
         if request is not None and request.operation in MUTATION_OPERATIONS:
+            if (
+                request.operation == "cleanup"
+                and request.parameters.get("action") == "inspect"
+                and result.outcome == "succeeded"
+            ):
+                return encode_result(
+                    _with_warning(_operation_failure_base(request, observe=False), _ENCODING_WARNING)
+                )
+            exact = validate_mutation_state(request.operation, result.outcome, result.state)
+            if request.operation == "cleanup":
+                validate_cleanup_completion(request, result.outcome, exact)
+            base = _operation_failure_base(request, observe=False)
+            reduced = dict(exact)
+            reduced.update(
+                observations=base.state["observations"],
+                unavailable_fields=base.state["unavailable_fields"],
+                inspection_error=base.state["inspection_error"],
+            )
+            outcome = result.outcome
+            if outcome == "succeeded":
+                outcome = base.outcome
+                reduced["exit_code"] = base.state["exit_code"]
+                reduced["failed_boundary"] = base.state["failed_boundary"]
+            validated = validate_mutation_state(request.operation, outcome, reduced)
+            if request.operation == "cleanup":
+                validate_cleanup_completion(request, outcome, validated)
             return encode_result(
-                _mutation_failure_result(
+                HostResult.for_request(
                     request,
-                    message="helper internal failure",
-                    observe=False,
+                    outcome,
+                    "helper internal failure",
+                    validated,
+                    (_ENCODING_WARNING,),
                 )
             )
         return encode_result(
@@ -436,17 +583,21 @@ def _dispatch(request: HostRequest) -> HostResult:
     except KeyError as error:
         raise ValueError("helper operation is unsupported") from error
     result = handler(request)
-    if not isinstance(result, HostResult):
-        raise TypeError("helper returned an invalid result")
+    try:
+        result = validate_result_for_request(request, result)
+    except ProtocolError:
+        return _with_warning(_operation_failure_base(request, observe=True), _INVALID_MUTATION_WARNING)
     if request.operation in MUTATION_OPERATIONS and not (
         request.operation == "cleanup"
         and request.parameters.get("action") == "inspect"
         and result.outcome == "succeeded"
     ):
         try:
-            validate_mutation_state(request.operation, result.outcome, result.state)
+            exact = validate_mutation_state(request.operation, result.outcome, result.state)
+            if request.operation == "cleanup":
+                validate_cleanup_completion(request, result.outcome, exact)
         except ProtocolError:
-            return _legacy_mutation_result(request, result)
+            return _invalid_mutation_result(request, result)
     return result
 
 

@@ -213,9 +213,27 @@ Task 1 delivered canonical service/8 stop/start failures and exact validator-che
 New stop regressions rejected stop/10 before the correction, then passed as service/8 while
 retaining unknown/changed classification and native event order. Focused gate: 116 passed in
 5.34 seconds; compileall passed. Distinct scoped producer/fixture review approved without
-findings. Shared cleanup validation is delivered; coupled recovery/encoding remains unfinished.
+findings. Shared cleanup validation is delivered; coupled recovery/encoding is delivered below.
 
 Task 2 moved confirmed-batch cleanup completion authority into the shared protocol validator.
 Direct missing-export RED then 6 GREEN; focused gate 94 passed in 0.64 seconds. Public module
 export follow-up passed 6 direct cases and import/export checks. Distinct scoped review approved;
 controller schema-before-membership order and prior-batch aggregation remain intact.
+
+Task 3 delivered exact correlation-gated recovery and encoding fallback; the legacy reader and
+its retired-key inference are removed. Complete validator projections preserve independent proof,
+coherent outcomes/messages and report precedence. Invalid observer shape or facts produce one
+validated unavailable group; cleanup inspection forces unchanged/no completion and retains normal
+pagination. Its encoding failure emits an exact refused failure with no observer. Required proof
+survives a two-attempt encoding boundary, including former success converted to failure.
+
+Independent review reproduced four interactions: inspection encoding, original outcome coherence,
+invalid observer shape/group and forbidden inspection classification. Six new red regressions
+reproduced them before correction; all passed after correction. Distinct scoped re-review approved
+spec compliance and quality without remaining findings. Final focused helper/protocol/controller
+gate passed 249 tests in 9.08 seconds; compileall and the actual isolated `python -I -S` archive
+case passed. Maximum escaped reduced envelopes decoded and fully validated: restore with eight
+4096-byte control-character summaries and 255-byte release identities is 199,289 bytes; cleanup
+with 64 confirmed 1024-byte escaped paths and 255-byte temporary identifiers is 491,606 bytes.
+Neither requires proof truncation or a changed limit. Actual large-integer serialization failure
+is covered. Integrated local gates follow; native host acceptance remains unproved.
