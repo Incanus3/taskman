@@ -15,15 +15,14 @@ from ..errors import ExitStatus, OpsError
 from ..host_protocol import HostResult
 from ..releases.artifacts import CleanInputs, DeploymentTarget, clean_inputs_drifted, clean_inputs_match
 from ..releases.manifests import MigrationFingerprint, VerifiedArtifact
-from ..host_helper.records import ReleaseRecord, SelectionRecord
+from ..host_helper.records import ReleaseRecord, SelectionRecord, migration_record_versions
 from ..host_helper.backup_protection import (
     BackupProtection,
     protection_prune_ids,
     protection_prune_ids_after_fresh_attempt,
 )
 from ..releases.source_order import compare_sources
-from ..migrations import validate_migration_versions
-from ..host_helper.database import release_migration_versions
+from ..migrations import MigrationOrderError, validate_migration_versions, versions_from_filenames
 from ..output import WorkflowResult, redact, render_human
 from ..remote import Remote
 from ..releases.identifiers import validate_release_id
@@ -644,7 +643,7 @@ def _downgrade_acknowledgment(
             baseline_ids.update(
                 release_id
                 for release_id, record in records.items()
-                if applied.intersection(release_migration_versions(record.migrations))
+                if applied.intersection(migration_record_versions(record.migrations))
             )
         expected_digest = hashlib.sha256(
             json.dumps(sorted(baseline_ids), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
@@ -894,9 +893,10 @@ def _pending_migration_versions(
 ) -> tuple[int, ...]:
     """Validate the live schema as a prefix and return only missing versions."""
 
-    candidate_versions = tuple(int(item.filename[:14]) for item in candidate)
-    if candidate_versions != tuple(sorted(set(candidate_versions))):
-        raise _safety("candidate migration versions are invalid")
+    try:
+        candidate_versions = versions_from_filenames(tuple(item.filename for item in candidate))
+    except MigrationOrderError:
+        raise _safety("candidate migration versions are invalid") from None
     if candidate_versions[: len(applied_versions)] != applied_versions:
         raise _safety("live migrations are not a prefix of the desired release")
     return candidate_versions[len(applied_versions) :]
@@ -1029,7 +1029,7 @@ def _validate_migration_policy(
     policy: str,
 ) -> None:
     if current and isinstance(current[0], MigrationFingerprint):
-        applied = tuple(int(item.filename[:14]) for item in current)
+        applied = versions_from_filenames(tuple(item.filename for item in current))
     else:
         applied = validate_migration_versions(current)
     pending = _pending_migration_versions(applied, candidate)

@@ -15,12 +15,11 @@ from ..database import (
     DatabaseObservationError,
     database_mapping,
     observe_database_state,
-    release_migration_versions,
 )
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..backup_protection import complete_successful_selection
-from ..records import BackupRecord, RecordError
+from ..records import BackupRecord, RecordError, migration_record_versions
 from ..selection import SelectionAmbiguityError, select_current
 from ..services import change_service
 from ..state import HostState, StateAmbiguityError, observe_host_state
@@ -256,7 +255,7 @@ def _require_target_schema(state: HostState, inputs: _Inputs) -> None:
     if record is None:
         raise RollbackRefused("target release is not installed")
     try:
-        target_migrations = release_migration_versions(record.migrations)
+        target_migrations = migration_record_versions(record.migrations)
     except ValueError as error:
         raise RollbackManual("release migration record is invalid") from error
     if target_migrations != state.applied_migrations:

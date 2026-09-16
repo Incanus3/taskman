@@ -15,7 +15,6 @@ from taskman_ops.host.acceptance import (
     _loopback,
     _provisioning_state,
     validate_provisionable_host,
-    validate_supported_host,
 )
 from taskman_ops.host.facts import (
     MINIMUM_DISK_BYTES,
@@ -188,12 +187,19 @@ def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
     return responses
 
 
-def test_valid_supported_host_returns_only_normalized_immutable_facts() -> None:
+def test_provisionable_pristine_host_returns_normalized_immutable_facts() -> None:
     remote = ScriptedRemote.from_responses(fact_responses())
 
-    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    discovery = validate_provisionable_host(
+        remote,
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+    facts = discovery.facts
 
     assert isinstance(facts, HostFacts)
+    assert discovery.state is ProvisioningState.PRISTINE
     assert facts.os_id == "ubuntu"
     assert facts.ubuntu_release == "26.04"
     assert facts.architecture == "amd64"
@@ -579,15 +585,18 @@ def test_resource_based_caddy_installation_partial_states_remain_safe_to_retry(
     assert discovery.caddy_state.value == expected_state
 
 
-def test_pristine_only_validation_still_refuses_contradictory_caddy_evidence() -> None:
+def test_provisioning_refuses_contradictory_caddy_evidence() -> None:
     """Conflicting immutable unit evidence must prevent a clean-host classification."""
 
     responses = fact_responses()
     responses[-1] = caddy_evidence()
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(
-            ScriptedRemote.from_responses(responses), environment_config(), resolver=direct_dns
+        validate_provisionable_host(
+            ScriptedRemote.from_responses(responses),
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
         )
 
     assert raised.value.status is ExitStatus.SAFETY
@@ -599,7 +608,12 @@ def test_unsupported_platform_is_refused_only_after_all_facts_are_collected() ->
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.INVALID
     assert not remote.responses
@@ -622,7 +636,12 @@ def test_unsupported_host_facts_map_to_status_two(index: int, result: CommandRes
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.INVALID
 
@@ -642,7 +661,12 @@ def test_privilege_or_active_connection_port_failures_map_to_status_five(
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
 
@@ -653,7 +677,12 @@ def test_failed_required_fact_command_maps_to_status_five_after_the_snapshot() -
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert not remote.responses
@@ -676,7 +705,12 @@ def test_inability_to_inspect_non_database_managed_state_refuses_preflight(
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert not remote.responses
@@ -685,7 +719,13 @@ def test_inability_to_inspect_non_database_managed_state_refuses_preflight(
 def test_pristine_host_skips_postgresql_sudo_and_database_discovery() -> None:
     remote = ScriptedRemote.from_responses(fact_responses())
 
-    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    discovery = validate_provisionable_host(
+        remote,
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+    facts = discovery.facts
 
     assert facts.postgres_available is False
     assert facts.postgres_sudo_available is None
@@ -716,7 +756,13 @@ def test_absent_managed_units_pass_native_systemd_discovery(
         return response
 
     monkeypatch.setattr(remote, "run", run)
-    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    discovery = validate_provisionable_host(
+        remote,
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+    facts = discovery.facts
     assert facts.existing_units == ()
     assert facts.failed_checks == ()
 
@@ -740,7 +786,13 @@ def test_absent_postgresql_passes_shell_discovery(
         return response
 
     monkeypatch.setattr(remote, "run", run)
-    facts = validate_supported_host(remote, environment_config(), resolver=direct_dns)
+    discovery = validate_provisionable_host(
+        remote,
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+    facts = discovery.facts
     assert facts.postgres_available is False
     assert facts.failed_checks == ()
 
@@ -751,7 +803,12 @@ def test_present_postgresql_requires_sudo_and_detects_a_managed_database() -> No
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.SAFETY
 
@@ -762,7 +819,12 @@ def test_partial_postgresql_installation_refuses_without_running_privileged_insp
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert ("sudo", "-n", "-u", "postgres", "true") not in [argv for argv, _kwargs in remote.calls]
@@ -784,7 +846,12 @@ def test_inability_to_inspect_present_postgresql_refuses_preflight(
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
 
@@ -798,7 +865,12 @@ def test_preflight_requests_integer_memory_and_nearest_existing_ancestor_capacit
     )
     remote = ScriptedRemote.from_responses(fact_responses())
 
-    validate_supported_host(remote, nested_config, resolver=direct_dns)
+    validate_provisionable_host(
+        remote,
+        nested_config,
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
 
     memory_command, _kwargs = remote.calls[4]
     managed_disk_command, _kwargs = remote.calls[5]
@@ -828,7 +900,12 @@ def test_direct_public_dns_must_include_only_the_configured_vps_address() -> Non
     remote = ScriptedRemote.from_responses(fact_responses())
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=lambda _hostname: ("198.51.100.7",))
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=lambda _hostname: ("198.51.100.7",),
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.INVALID
 
@@ -843,7 +920,7 @@ def test_direct_public_dns_must_include_only_the_configured_vps_address() -> Non
         (12, CommandResult(0, "taskman:x:1000:1000::/nonexistent:/usr/sbin/nologin\n")),
     ],
 )
-def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_refusal(
+def test_foreign_or_unverifiable_managed_listener_path_unit_or_account_is_a_safety_refusal(
     index: int, result: CommandResult
 ) -> None:
     responses = fact_responses()
@@ -851,7 +928,12 @@ def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_ref
     remote = ScriptedRemote.from_responses(responses)
 
     with pytest.raises(OpsError) as raised:
-        validate_supported_host(remote, environment_config(), resolver=direct_dns)
+        validate_provisionable_host(
+            remote,
+            environment_config(),
+            resolver=direct_dns,
+            expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        )
 
     assert raised.value.status is ExitStatus.SAFETY
 
@@ -859,12 +941,15 @@ def test_existing_managed_listener_path_unit_account_or_database_is_a_safety_ref
 def test_taskman_listener_requires_the_exact_managed_beam_process() -> None:
     """A loopback port plus a unit file cannot authorize a foreign process."""
 
-    base = validate_supported_host(
-        ScriptedRemote.from_responses(fact_responses()), environment_config(), resolver=direct_dns
+    base = validate_provisionable_host(
+        ScriptedRemote.from_responses(fact_responses()),
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     listener = Listener("127.0.0.1", 4000)
     managed = replace(
-        base,
+        base.facts,
         listeners=(listener,),
         existing_paths=(PurePosixPath("/etc/systemd/system/taskman.service"),),
         path_metadata=((PurePosixPath("/etc/systemd/system/taskman.service"), "regular file:root:root:644"),),

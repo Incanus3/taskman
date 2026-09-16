@@ -42,10 +42,13 @@
 - [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment design](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Desired-target deployment reconciliation (approved; locally implemented)](specs/2026-09-09-deploy-reconciliation-design.md)
+- [Exact helper failure handling (approved)](specs/2026-09-16-exact-helper-failure-design.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 - [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
 ## Active implementation plans
+
+- [Exact helper failure handling (proposed plan)](plans/2026-09-16-exact-helper-failure.md)
 
 - [Desired-target deployment reconciliation (approved; locally complete)](plans/2026-09-14-deploy-reconciliation.md)
 - [Authenticated hosted access and release deployment](plans/2026-09-02-authenticated-hosted-access.md)
@@ -58,6 +61,9 @@
 
 ## Research
 
+- [Operations test overlap review (delivered)](research/2026-09-17-operations-test-overlap.md)
+- [Operations simplification candidate register](research/2026-09-16-operations-simplification-candidates.md)
+- [Operations test parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
 - [Cosmos capabilities](research/cosmos-capabilities.md)
 - [Emdash and Auggie capabilities](research/emdash-auggie-capabilities.md)
 

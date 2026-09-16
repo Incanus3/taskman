@@ -17,7 +17,7 @@ from .services.postgresql import (
     build_postgresql_plan,
     converge_database,
 )
-from .services.systemd import build_systemd_plan, install_runtime_environment
+from .services.systemd import SystemdPlan, install_runtime_environment
 
 
 _RUNTIME_REUSE_SCRIPT = r'''set -eu
@@ -45,26 +45,28 @@ _SCHEDULER_RESOURCE_NAMES = {
 
 @dataclass(frozen=True)
 class ProvisioningInputs:
-    """Validated non-secret configuration plus already-rendered secret bytes."""
+    """Validated configuration, frozen service plans, and rendered secret bytes."""
 
     config: EnvironmentConfig
     caddy_plan: CaddyPlan
+    systemd_plan: SystemdPlan
     runtime_environment: bytes
     pgpass: bytes
     role_password_input: bytes
     # Only resources that were observed absent before confirmation may be
     # created by the generic pyinfra boundary.  Scheduler replacement remains
     # the locked genesis helper's responsibility.
-    # Compatibility callers which have not performed the provision admission
-    # retain the historic all-create declaration.  The public provision path
-    # always replaces this with its confirmed create-only delta.
-    scheduler_create: frozenset[str] = _SCHEDULER_RESOURCE_PATHS
+    # Creation authority is supplied only after pre-convergence observation.
+    # Preparation without that authority cannot create scheduler resources.
+    scheduler_create: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.config, EnvironmentConfig):
             raise TypeError("provisioning inputs require an environment configuration")
         if not isinstance(self.caddy_plan, CaddyPlan):
             raise TypeError("provisioning inputs require a preconfirmed Caddy plan")
+        if not isinstance(self.systemd_plan, SystemdPlan):
+            raise TypeError("provisioning inputs require a preconfirmed systemd plan")
         for field_name in ("runtime_environment", "pgpass", "role_password_input"):
             value = getattr(self, field_name)
             if not isinstance(value, bytes) or not value:
@@ -187,10 +189,6 @@ def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> M
 
     authority = validate_preconvergence_authority(remote, inputs)
     credential_receipt = validate_existing_credential_authority(remote, inputs)
-    # Narrow legacy capability tests may replace the observer with a receipt.
-    # Production's closed observer cannot return ``None``.
-    if authority is None:
-        return {}
     return ProvisionAuthority(
         {**authority, "scheduler_create": _scheduler_create_authority(authority)},
         (*getattr(authority, "warnings", ()), *getattr(credential_receipt, "warnings", ())),
@@ -235,8 +233,8 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
     from .workflows.helper import request, result_error, run_request
 
     plan = build_postgresql_plan(inputs.config)
-    systemd = build_systemd_plan(inputs.config)
-    assets = {asset.destination: _systemd_asset_sha256(asset) for asset in systemd.assets}
+    systemd = inputs.systemd_plan
+    assets = {asset.destination: _sha256(asset.content) for asset in systemd.assets}
     authority_request = request(
         "provision_authority",
         inputs.config,
@@ -250,7 +248,7 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             "postgres_package_track": plan.package_track,
             "resource_digests": {
                 "taskman_service": assets["/etc/systemd/system/taskman.service"],
-                "backup_environment": _sha256(systemd.backup_environment_content.encode("utf-8")),
+                "backup_environment": _sha256(systemd.backup_environment_content),
                 "backup_service": assets["/etc/systemd/system/taskman-backup.service"],
                 "backup_timer": assets["/etc/systemd/system/taskman-backup.timer"],
             },
@@ -329,20 +327,6 @@ def validate_preconvergence_authority(remote: object, inputs: ProvisioningInputs
             next_action="inspect the existing record and PostgreSQL authority before retrying",
         ) from None
     return ProvisionAuthority(state, result.warnings)
-
-
-def _systemd_asset_sha256(asset: object) -> str:
-    content = getattr(asset, "binary_content", None)
-    if content is None:
-        text = getattr(asset, "content", None)
-        if text is not None:
-            content = text.encode("utf-8")
-        else:
-            source = getattr(asset, "source", None)
-            content = source.read_bytes() if source is not None else None
-    if not isinstance(content, bytes):
-        raise TypeError("systemd asset has no exact bytes")
-    return _sha256(content)
 
 
 def _sha256(content: bytes) -> str:

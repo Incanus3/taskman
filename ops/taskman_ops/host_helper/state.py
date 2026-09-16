@@ -15,7 +15,7 @@ import sqlite3
 import time
 
 from ..checksums import sha256_file
-from ..migrations import MigrationOrderError, validate_migration_versions
+from ..migrations import MigrationOrderError, validate_migration_versions, versions_from_filenames
 from taskman_ops.releases.identifiers import RELEASE_ID_RE, validate_release_id
 from .backup_protection import BackupProtection, backup_protection_retirement_root
 from .paths import ManagedPaths, PathAuthorityError
@@ -1188,8 +1188,7 @@ def _validate_backup_sources(
 
 def _release_migration_versions(record: ReleaseRecord) -> tuple[int, ...]:
     try:
-        versions = tuple(int(item["filename"][:14]) for item in record.migrations)
-        return validate_migration_versions(versions)
+        return versions_from_filenames(tuple(item["filename"] for item in record.migrations))
     except (KeyError, TypeError, ValueError):
         raise StateAmbiguityError(
             "installed release migration provenance is invalid"
@@ -1200,9 +1199,10 @@ def _release_migration_fingerprints(
     record: ReleaseRecord,
 ) -> dict[int, tuple[str, str]]:
     try:
+        versions = versions_from_filenames(tuple(item["filename"] for item in record.migrations))
         return {
-            int(item["filename"][:14]): (item["filename"], item["sha256"])
-            for item in record.migrations
+            version: (item["filename"], item["sha256"])
+            for version, item in zip(versions, record.migrations, strict=True)
         }
     except (KeyError, TypeError, ValueError):
         raise StateAmbiguityError(

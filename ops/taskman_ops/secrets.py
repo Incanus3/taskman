@@ -135,14 +135,6 @@ class SecretConfig(BaseModel):
             raise ValueError("signing secrets must be distinct")
         return self
 
-    @property
-    def ash_signing_secret(self) -> str:
-        return self.ash_authentication_token_signing_secret
-
-    @property
-    def token_signing_secret(self) -> str:
-        return self.ash_authentication_token_signing_secret
-
     def __repr__(self) -> str:
         return "SecretConfig(<protected values>)"
 
@@ -211,11 +203,7 @@ def _as_buffer(value: object) -> bytearray:
         return value
     if isinstance(value, bytes):
         return bytearray(value)
-    if isinstance(value, str):
-        return bytearray(value.encode("utf-8", errors="replace"))
-    if isinstance(value, memoryview):
-        return bytearray(value.tobytes())
-    return bytearray(str(value).encode("utf-8", errors="replace"))
+    raise TypeError("SOPS captures must be binary")
 
 
 def _wipe_buffer(buffer: bytearray) -> None:
@@ -223,44 +211,15 @@ def _wipe_buffer(buffer: bytearray) -> None:
     buffer.clear()
 
 
-def _result_parts(result: object) -> tuple[int, object, object]:
-    if isinstance(result, (bytes, bytearray, memoryview, str)):
-        return 0, result, b""
-    if isinstance(result, subprocess.CompletedProcess):
-        return int(result.returncode), result.stdout, result.stderr
-    if isinstance(result, Mapping):
-        return int(result.get("returncode", result.get("code", 0))), result.get("stdout"), result.get("stderr")
-    if isinstance(result, tuple):
-        if len(result) == 3:
-            return int(result[0]), result[1], result[2]
-        if len(result) == 2:
-            return 0, result[0], result[1]
-        if len(result) == 1:
-            return 0, result[0], b""
-    return int(getattr(result, "returncode", getattr(result, "code", 0))), getattr(result, "stdout", b""), getattr(
-        result, "stderr", b""
-    )
-
-
-def _call_runner(runner: object, argv: list[str]) -> object:
-    if runner is None:
-        return subprocess.run(argv, check=False, capture_output=True)
-    if callable(runner):
-        return runner(argv)
-    run = getattr(runner, "run", None)
-    if callable(run):
-        try:
-            return run(argv)
-        except TypeError:
-            return run(argv, capture_output=True, check=False)
-    raise TypeError("runner must be callable or expose run()")
-
-
 def decrypt_secrets(
     name: str,
-    runner: Callable[[list[str]], object] | object | None = None,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[bytes | bytearray]] | None = None,
 ) -> SecretConfig:
     """Decrypt one SOPS file using stdout only and return validated secrets.
+
+    An injected callable receives argv once and returns ``CompletedProcess``
+    with bytes/bytearray captures (or None for an absent capture). The default
+    uses binary ``subprocess.run`` captures without raising on nonzero exit.
 
     The external age identity is resolved by SOPS from its normal environment;
     this function never receives or persists a private identity itself.
@@ -273,20 +232,21 @@ def decrypt_secrets(
         raise _secret_error("encrypted environment secrets are unavailable")
 
     argv = ["sops", "decrypt", "--output-type", "yaml", str(path)]
-    result: object | None = None
+    result: subprocess.CompletedProcess[bytes | bytearray] | None = None
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
     payload: object | None = None
     try:
         try:
-            result = _call_runner(runner, argv)
-            returncode, stdout, stderr = _result_parts(result)
-            stdout_buffer = _as_buffer(stdout)
-            stderr_buffer = _as_buffer(stderr)
+            result = subprocess.run(argv, check=False, capture_output=True) if runner is None else runner(argv)
+            if not isinstance(result, subprocess.CompletedProcess):
+                raise TypeError("SOPS runner must return CompletedProcess")
+            stdout_buffer = _as_buffer(result.stdout)
+            stderr_buffer = _as_buffer(result.stderr)
         except Exception:
             raise _secret_error() from None
 
-        if returncode != 0 or not stdout_buffer:
+        if result.returncode != 0 or not stdout_buffer:
             raise _secret_error()
         try:
             text = bytes(stdout_buffer).decode("utf-8")
@@ -300,31 +260,16 @@ def decrypt_secrets(
             # and may contain a credential canary.
             raise _secret_error() from None
     finally:
-        # Wipe mutable captures and clear fields on common result containers.
-        # A CompletedProcess is only a transport object; replacing its output
-        # attributes prevents an accidental caller-held result from retaining
-        # plaintext after this function returns.
+        # Clear both CompletedProcess captures even when conversion failed before
+        # assigning a local buffer. Wipe caller-held mutable captures as well.
         _wipe_buffer(stdout_buffer)
         _wipe_buffer(stderr_buffer)
-        if result is not None:
-            if isinstance(result, dict):
-                for attribute in ("stdout", "stderr"):
-                    try:
-                        raw = result.get(attribute)
-                        if isinstance(raw, bytearray):
-                            _wipe_buffer(raw)
-                        result[attribute] = b""
-                    except Exception:
-                        pass
+        if isinstance(result, subprocess.CompletedProcess):
             for attribute in ("stdout", "stderr"):
-                try:
-                    raw = getattr(result, attribute)
-                    if isinstance(raw, bytearray):
-                        _wipe_buffer(raw)
-                    else:
-                        setattr(result, attribute, b"")
-                except Exception:
-                    pass
+                raw = getattr(result, attribute)
+                if isinstance(raw, bytearray):
+                    _wipe_buffer(raw)
+                setattr(result, attribute, b"")
         payload = None
 
 
@@ -399,16 +344,10 @@ def render_pgpass(config: EnvironmentConfig, secrets: SecretConfig) -> bytes:
     return (line + "\n").encode("utf-8")
 
 
-render_pgpass_file = render_pgpass
-render_runtime_pgpass = render_pgpass
-
-
 __all__ = [
     "SECRETS_DIR",
     "SecretConfig",
     "decrypt_secrets",
     "render_pgpass",
-    "render_pgpass_file",
-    "render_runtime_pgpass",
     "render_runtime_environment",
 ]

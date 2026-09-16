@@ -5,6 +5,13 @@
 This checkout is not a Jujutsu repository. Use `but` for repository and version-control operations;
 do not run `jj` commands here.
 
+Commit verified work after each bounded task or material checkpoint. This grants standing
+authorization for local commits; pushing, merging, deployment and history rewriting retain their
+separate authorization gates.
+
+When stopping, state the next concrete step, the decision it requires, and the consequences of
+each available choice. Distinguish design approval from implementation and external-action approval.
+
 ## Work tracking
 
 Use the repository-local Beads store for implementation planning and delivery work. The completed
@@ -29,11 +36,31 @@ Do not include:
   instructions; place those in `AGENTS.md`, `docs/development.md`, or `README.md` as appropriate;
 - copied product specifications, implementation plans, or broad project history; link to their
   canonical documents instead;
-- speculative backlog beyond the next increment;
+- speculative backlog beyond the next increment; operator-agreed remaining work is not speculative
+  backlog;
 - stale completed instructions or generic agent workflow checklists.
 
 Update a handoff when the workstream advances so its state, task IDs, blockers, and next action
 remain current.
+
+Preserve the operator-agreed execution sequence, dependencies, pending decisions, and
+authorization or verification gates across handoff updates. Agreed remaining work is not
+speculative backlog.
+
+Every updated handoff must include the agreed remaining steps in order and the current position,
+or link to a canonical document containing the complete sequence. Keep agreed unfinished steps
+even when they lie beyond the immediate next increment. Preserve each step's dependencies and gates.
+When asked to shorten a handoff, compress each agreed unfinished step rather than omitting it.
+
+Update the current position and retire completed instructions without dropping unfinished
+commitments. Concision must not erase information needed to continue the agreed work.
+
+Before removing or materially shortening such information, verify that it is completed,
+explicitly superseded, or preserved in a canonical document linked from the handoff. Repository
+history alone is not sufficient preservation.
+
+Review the handoff diff before finishing: account for every removed commitment or gate and verify
+that the remaining sequence is still discoverable.
 
 ## Development guidance
 

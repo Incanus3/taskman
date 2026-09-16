@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import importlib
 from io import StringIO
 import os
@@ -21,9 +22,10 @@ from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.provisioning import ProvisioningInputs
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.services.systemd import build_systemd_plan
 from tests.support.environments import environment_config, valid_environment
 from tests.support.shell import write_shell_script
-from tests.workflows.test_provision import artifact
+from tests.workflows.test_provision import _authority, artifact
 
 
 _CADDY_PLAN = CaddyPlan(
@@ -32,6 +34,62 @@ _CADDY_PLAN = CaddyPlan(
     packages=("caddy",),
     caddyfile="taskman.acme.tld {\n}\n",
 )
+
+
+def test_preconvergence_authority_hashes_the_exact_rendered_systemd_bytes(monkeypatch) -> None:
+    """A digest that differs from the rendered byte payload would admit the wrong host state."""
+
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    helper = importlib.import_module("taskman_ops.workflows.helper")
+    captured = []
+
+    class CapturedAuthorityRequest(Exception):
+        pass
+
+    def capture_request(_remote, request):
+        captured.append(request)
+        raise CapturedAuthorityRequest
+
+    monkeypatch.setattr(helper, "run_request", capture_request)
+    inputs = ProvisioningInputs(
+        config=environment_config(install_root="/srv/taskman"),
+        systemd_plan=build_systemd_plan(environment_config(install_root="/srv/taskman")),
+        caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"pgpass\n",
+        role_password_input=b"role-password-input\n",
+    )
+
+    monkeypatch.setattr(
+        provisioning, "build_systemd_plan",
+        lambda *_args: pytest.fail("authority reconstructed the confirmed plan"),
+        raising=False,
+    )
+
+    with pytest.raises(CapturedAuthorityRequest):
+        provisioning.validate_preconvergence_authority(object(), inputs)
+
+    plan = inputs.systemd_plan
+    rendered = {asset.destination: asset.content for asset in plan.assets}
+    assert captured[0].parameters["resource_digests"] == {
+        "taskman_service": hashlib.sha256(rendered["/etc/systemd/system/taskman.service"]).hexdigest(),
+        "backup_environment": hashlib.sha256(plan.backup_environment_content).hexdigest(),
+        "backup_service": hashlib.sha256(rendered["/etc/systemd/system/taskman-backup.service"]).hexdigest(),
+        "backup_timer": hashlib.sha256(rendered["/etc/systemd/system/taskman-backup.timer"]).hexdigest(),
+    }
+
+
+def test_provisioning_inputs_without_confirmed_scheduler_authority_create_nothing() -> None:
+    inputs = ProvisioningInputs(
+        config=environment_config(),
+        systemd_plan=build_systemd_plan(environment_config()),
+        caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"pgpass\n",
+        role_password_input=b"role-password-input\n",
+    )
+
+    assert inputs.scheduler_create == frozenset()
 
 
 def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(monkeypatch) -> None:
@@ -49,6 +107,7 @@ def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(mon
     )
     inputs = ProvisioningInputs(
         config=EnvironmentConfig.model_validate(valid_environment()), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
         role_password_input=b"role-password-input\n",
@@ -136,7 +195,6 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(provisioning, "install_runtime_environment", lambda *_args, **_kwargs: ChangeSet(changed=False))
     monkeypatch.setattr(workflow, "load_environment", lambda _name: environment_config())
     monkeypatch.setattr(workflow, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="database-password"))
-    monkeypatch.setattr(workflow, "_resolve_artifact", lambda _invocation: artifact())
     # Provision now resolves automatic targets only after read-only host
     # admission.  This pyinfra-boundary test intentionally isolates that
     # separate public resolution concern.
@@ -154,8 +212,9 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "_present_plan", lambda _plan: None)
     monkeypatch.setattr(workflow, "_confirm", lambda _plan: True)
     monkeypatch.setattr(workflow, "connect", lambda _config: remote)
-    monkeypatch.setattr(workflow, "validate_provisionable_host", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(workflow, "validate_existing_authority", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workflow, "validate_provisionable_host", lambda *_args, **_kwargs: {"admission": "validated"})
+    monkeypatch.setattr(workflow, "validate_existing_authority", lambda *_args, **_kwargs: _authority())
+    monkeypatch.setattr(workflow, "_provision_downgrade_authority", lambda *_args: (False, ()))
     monkeypatch.setattr(
         workflow,
         "deploy_first_release",
@@ -217,6 +276,7 @@ def test_real_taskman_deploy_converges_declared_state_then_repairs_drift(monkeyp
         )
         inputs = ProvisioningInputs(
             config=EnvironmentConfig.model_validate(valid_environment()),
+            systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
             caddy_plan=_CADDY_PLAN,
             runtime_environment=b"RUNTIME=value\n",
             pgpass=b"pgpass\n",
@@ -257,6 +317,7 @@ def test_converge_provisioning_orders_secret_and_database_boundaries_after_the_d
         remote,
         ProvisioningInputs(
             config=EnvironmentConfig.model_validate(valid_environment()),
+            systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
             caddy_plan=_CADDY_PLAN,
             runtime_environment=b"RUNTIME=value\n",
             pgpass=b"pgpass\n",
@@ -288,6 +349,7 @@ def test_converge_provisioning_stops_later_mutation_after_a_database_refusal(mon
             remote,
             ProvisioningInputs(
                 config=EnvironmentConfig.model_validate(valid_environment()),
+                systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
                 runtime_environment=b"RUNTIME=value\n",
                 pgpass=b"pgpass\n",
@@ -322,6 +384,7 @@ def test_converge_provisioning_reports_deploy_changes_when_database_fails(monkey
             remote,
             ProvisioningInputs(
                 config=EnvironmentConfig.model_validate(valid_environment()),
+                systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
                 runtime_environment=b"RUNTIME=value\n",
                 pgpass=b"pgpass\n",
@@ -370,6 +433,7 @@ def test_converge_provisioning_reports_database_changes_when_runtime_fails(monke
             remote,
             ProvisioningInputs(
                 config=EnvironmentConfig.model_validate(valid_environment()),
+                systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
                 runtime_environment=b"RUNTIME=value\n",
                 pgpass=b"pgpass\n",
@@ -410,6 +474,7 @@ def test_converge_provisioning_keeps_unchanged_for_pre_mutation_refusal(monkeypa
             remote,
             ProvisioningInputs(
                 config=EnvironmentConfig.model_validate(valid_environment()),
+                systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
                 runtime_environment=b"RUNTIME=value\n",
                 pgpass=b"pgpass\n",

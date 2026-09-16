@@ -1434,6 +1434,13 @@ loopback topology, journal, readiness, and HSTS checks as uploaded artifacts.
 
 ## Failures and reporting
 
+Approved amendment (2026-09-16): the
+[exact helper failure design](2026-09-16-exact-helper-failure-design.md) governs recovery from
+malformed matching in-process handler results and encoding failure. It supersedes generic
+evidence-erasing fallback in that bounded scope; wire schema, controller whole-reply rejection
+and the failure/authorization rules below remain authoritative. The amendment is locally
+implemented and verified; its linked design owns evidence.
+
 Preserve the bounded verification report on exit 9, including checks actually attempted; do not
 replace it with an empty report. If follow-up inspection also fails, keep the original failure as
 the main reported error and report the inspection failure separately.
@@ -1484,7 +1491,7 @@ fields in the following table. Required fields are never omitted on an error pat
 | `observations` | Exact final-observation mapping for the operation, defined below |
 | `unavailable_fields` | Sorted unique array of keys in `observations` whose final values could not be established |
 | `inspection_error` | Null, or a safe code: `lock-unavailable`, `inspection-failed`, `inspection-timed-out`, or `unsafe-observation`; follow-up observation trouble, never a replacement for the primary failure |
-| `report` | Null when no validated report is available from this invocation, otherwise the existing strictly parsed `VerificationReport` mapping |
+| `report` | Null when no validated report is available from this invocation, otherwise the verification-report mapping validated by shared protocol `validate_verification_report` |
 
 | Operation | Exact additional state fields |
 | --- | --- |
@@ -1682,9 +1689,19 @@ artifact publication or host mutation; unsupported formats must not gain a compa
 
 #### Growing inventories and bounded responses
 
-Exercise more than 64 and more than 4096 successful selections without rewriting or dropping
-history: public deploy/restore discovery must remain representable and validate all protection and
-rollback relationships. Cover byte-driven pages below 64 entries, complete public listings,
+Exercise more than 64 and more than 4096 successful selections in focused observer regressions,
+without rewriting or dropping history, validating protection and rollback relationships across
+complete history. Public packaged deploy/restore integration coverage uses a small history whose
+oldest backup reference lies outside the latest/predecessor projection: discovery must remain
+representable, preserve that backup authority and refuse when the required dump is absent.
+
+This coverage split was accepted on 2026-09-16. It retains real >4096 observer coverage while
+avoiding repeated large-history scans in every packaged integration call; it accepts losing the
+combined large-count packaged-consumer exercise. The
+[measurement evidence](../research/2026-09-16-operations-test-parallelism.md) owns its rationale and
+verification results.
+
+Cover byte-driven pages below 64 entries, complete public listings,
 invalid cursors, inventory drift between pages, bounded retries, and no partial-success output.
 Exercise automatic target resolution and downgrade classification across multiple release pages,
 and cleanup plans/execution spanning multiple byte-bounded batches with interruption and newly

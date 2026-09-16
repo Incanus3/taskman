@@ -21,7 +21,9 @@ from ..host_protocol import (
     HostResult,
     PROTOCOL_VERSION,
     unavailable_observations,
+    validate_cleanup_completion,
     validate_mutation_state,
+    validate_verification_report,
 )
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
@@ -29,7 +31,6 @@ from ..releases.identifiers import validate_release_id
 from ..releases.artifacts import DeploymentTarget
 from ..remote import Remote, UploadReceipt
 from ..services.backups import scheduled_backup_helper
-from .verification_results import VerificationReport
 
 
 _MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
@@ -185,7 +186,7 @@ def run_request(
         try:
             validated = validate_mutation_state(result.operation, result.outcome, result.state)
             if request.operation == "cleanup":
-                _validate_cleanup_completion(request, result.outcome, validated)
+                validate_cleanup_completion(request, result.outcome, validated)
         except ProtocolError:
             if _mutating_request(request):
                 raise _mutation_protocol_error(
@@ -327,16 +328,16 @@ def successful_verification(value: object, expected_release_id: str) -> dict[str
     """Validate the complete fresh readiness proof for a mutation success."""
 
     try:
-        report = VerificationReport.from_mapping(mutable(value))
-    except (TypeError, ValueError):
+        report = validate_verification_report(mutable(value))
+    except ProtocolError:
         raise ValueError("verification report is invalid") from None
     if (
-        not report.successful
-        or report.release_id != expected_release_id
-        or report.expected_release_id != expected_release_id
+        report["exit_status"] != ExitStatus.OK
+        or report["release_id"] != expected_release_id
+        or report["expected_release_id"] != expected_release_id
     ):
         raise ValueError("verification report does not prove the selected release")
-    return report.to_mapping()
+    return report
 
 
 def _has_observed_migrations(state: Mapping[str, object]) -> bool:
@@ -767,36 +768,6 @@ def _merge_completed_targets(
             raise ValueError("completed cleanup target is invalid")
         combined[identity] = dict(item)
     return [combined[identity] for identity in sorted(combined)]
-
-
-def _validate_cleanup_completion(
-    request_value: HostRequest,
-    outcome: str,
-    state: Mapping[str, object],
-) -> None:
-    raw_targets = request_value.parameters.get("targets")
-    if not isinstance(raw_targets, (list, tuple)):
-        raise ProtocolError("cleanup request targets are invalid")
-    requested = {
-        tuple(item.get(key) for key in ("kind", "identifier", "path"))
-        for item in raw_targets
-        if isinstance(item, Mapping)
-    }
-    if len(requested) != len(raw_targets):
-        raise ProtocolError("cleanup request targets are invalid")
-    completed = {
-        tuple(item[key] for key in ("kind", "identifier", "path"))
-        for item in state["completed_targets"]  # type: ignore[union-attr]
-    }
-    action = request_value.parameters.get("action")
-    if action == "inspect" and (
-        completed or state["mutation_state"] != "unchanged"
-    ):
-        raise ProtocolError("cleanup inspection cannot claim mutation completion")
-    if not completed <= requested:
-        raise ProtocolError("cleanup completion exceeds confirmed targets")
-    if outcome == "succeeded" and completed != requested:
-        raise ProtocolError("cleanup success does not account for its batch")
 
 
 def _safety(operation: str, message: str, *, warnings: tuple[str, ...] = ()) -> OpsError:
