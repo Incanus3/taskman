@@ -213,4 +213,9 @@ Task 1 delivered canonical service/8 stop/start failures and exact validator-che
 New stop regressions rejected stop/10 before the correction, then passed as service/8 while
 retaining unknown/changed classification and native event order. Focused gate: 116 passed in
 5.34 seconds; compileall passed. Distinct scoped producer/fixture review approved without
-findings. Shared cleanup validation and coupled recovery/encoding remain unfinished.
+findings. Shared cleanup validation is delivered; coupled recovery/encoding remains unfinished.
+
+Task 2 moved confirmed-batch cleanup completion authority into the shared protocol validator.
+Direct missing-export RED then 6 GREEN; focused gate 94 passed in 0.64 seconds. Public module
+export follow-up passed 6 direct cases and import/export checks. Distinct scoped review approved;
+controller schema-before-membership order and prior-batch aggregation remain intact.

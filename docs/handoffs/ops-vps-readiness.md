@@ -109,7 +109,7 @@ without blockers; fresh `mix precommit` passed 805 tests in 43.7 seconds. Plan a
 Approval-checkpoint verification: scoped links, whitespace, approval consistency and retained
 six-step sequence/gates passed; fresh `mix precommit` passed 805 tests in 42.7 seconds.
 No runtime source or external state changed.
-The operator authorized continuing this session; task 1 is implemented and independently reviewed in `tas-sr4b.22`; task 2 is next.
+The operator authorized continuing this session; task 1 is implemented and independently reviewed in `tas-sr4b.22`; task 2 is complete; coupled recovery/encoding is next.
 Until execution, the translator and tracked stop-category defect remain; candidates 4–8 still require
 ordered explicit disposition. Steps 4–6 and all external gates below remain unfinished.
 
@@ -125,7 +125,7 @@ Candidate 3 translator removal is approved only within the linked plan. No start
 or other implementation is approved.
 
 1. Execute the approved candidate 3 implementation plan sequentially in `tas-sr4b.22`, beginning
-   with task 2 shared cleanup validation; task 1 producer/fixture correction is complete. The earlier producer correction is delivered; the remaining
+   with task 3 coupled recovery/encoding; tasks 1–2 are complete. The earlier producer correction is delivered; the remaining
    design and plan are approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
    The audit, ranking and candidates 1–2 delivery are recorded; candidates 4–8 require approval. Follow the register's
@@ -218,3 +218,10 @@ Task 1 checkpoint: canonical service/8 producers and exact fixtures delivered; f
 116 passed in 5.34 seconds, compileall passed. Distinct scoped review approved spec compliance
 and quality without findings. Task 2 shared cleanup validation precedes coupled recovery/encoding
 and integrated acceptance in the approved plan. No translator removal or host acceptance yet.
+
+Task 2 checkpoint: shared cleanup completion validator now owns confirmed-batch membership
+for helper and controller; controller keeps full schema validation first. Direct RED missing export,
+GREEN 6 passed; focused gate 94 passed in 0.64 seconds. Module export follow-up passed direct
+6 cases and import identity/export checks. Distinct scoped review approved after correcting the
+export list and retracting a raw-index finding against authoritative GitButler modified-file evidence.
+Task 3 coupled recovery/encoding and task 4 acceptance remain in order.

@@ -4,7 +4,13 @@ from copy import deepcopy
 
 import pytest
 
-from taskman_ops.host_protocol import HostResult, ProtocolError, validate_mutation_state
+from taskman_ops.host_protocol import (
+    HostRequest,
+    HostResult,
+    ProtocolError,
+    validate_cleanup_completion,
+    validate_mutation_state,
+)
 
 
 RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
@@ -406,6 +412,130 @@ def cleanup_state(*, completed_targets: list[dict[str, object]]) -> dict[str, ob
         "report": None,
         "completed_targets": completed_targets,
     }
+
+
+def cleanup_request(
+    targets: tuple[dict[str, object], ...], *, action: str = "execute"
+) -> HostRequest:
+    return HostRequest(
+        3,
+        "cleanup",
+        CORRELATION,
+        {"selected_release_id": RELEASE},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {
+            "action": action,
+            "targets": targets,
+            "release_retention": 3,
+            "backup_retention": 7,
+        },
+    )
+
+
+def cleanup_target(*, identifier: str = BACKUP) -> dict[str, object]:
+    return {
+        "kind": "backup",
+        "identifier": identifier,
+        "path": f"/var/backups/taskman/{identifier}.dump",
+    }
+
+
+def validated_cleanup_state(
+    *,
+    completed_targets: list[dict[str, object]],
+    outcome: str,
+    mutation_state: str | None = None,
+) -> dict[str, object]:
+    state = cleanup_state(completed_targets=completed_targets)
+    if outcome != "succeeded":
+        state.update(exit_code=10, failed_boundary="cleanup")
+    if mutation_state is not None:
+        state["mutation_state"] = mutation_state
+    return validate_mutation_state("cleanup", outcome, state)
+
+
+def test_cleanup_completion_accepts_a_valid_failed_subset() -> None:
+    """Rejecting a requested failed subset would erase independently proved deletion."""
+
+    completed = cleanup_target()
+    pending = cleanup_target(identifier=OTHER_BACKUP)
+    state = validated_cleanup_state(
+        completed_targets=[completed], outcome="retryable", mutation_state="changed"
+    )
+
+    validate_cleanup_completion(
+        cleanup_request((completed, pending)), "retryable", state
+    )
+
+
+def test_cleanup_completion_accepts_unchanged_already_absent_target() -> None:
+    """An already-absent target remains completion proof without a new mutation."""
+
+    completed = cleanup_target()
+    state = validated_cleanup_state(
+        completed_targets=[completed], outcome="retryable", mutation_state="unchanged"
+    )
+
+    validate_cleanup_completion(cleanup_request((completed,)), "retryable", state)
+
+
+def test_cleanup_completion_rejects_an_out_of_batch_target() -> None:
+    """A valid target outside the confirmed request must not authorize a deletion claim."""
+
+    requested = cleanup_target()
+    unrelated = cleanup_target(identifier=OTHER_BACKUP)
+    state = validated_cleanup_state(
+        completed_targets=[unrelated], outcome="retryable", mutation_state="changed"
+    )
+
+    with pytest.raises(ProtocolError, match="exceeds confirmed targets"):
+        validate_cleanup_completion(cleanup_request((requested,)), "retryable", state)
+
+
+def test_cleanup_completion_rejects_duplicate_request_identity() -> None:
+    """Repeated request targets would make one completion appear to satisfy two deletions."""
+
+    completed = cleanup_target()
+    state = validated_cleanup_state(
+        completed_targets=[completed], outcome="retryable", mutation_state="changed"
+    )
+
+    with pytest.raises(ProtocolError, match="request targets are invalid"):
+        validate_cleanup_completion(cleanup_request((completed, completed)), "retryable", state)
+
+
+@pytest.mark.parametrize(
+    ("completed_targets", "mutation_state"),
+    (([], "changed"), ([cleanup_target()], "unchanged")),
+)
+def test_cleanup_inspection_rejects_mutation_or_completion_claims(
+    completed_targets: list[dict[str, object]], mutation_state: str
+) -> None:
+    """Inspection may paginate authority but cannot claim a deletion or mutation."""
+
+    state = validated_cleanup_state(
+        completed_targets=completed_targets,
+        outcome="retryable",
+        mutation_state=mutation_state,
+    )
+
+    with pytest.raises(ProtocolError, match="inspection cannot claim mutation completion"):
+        validate_cleanup_completion(
+            cleanup_request(tuple(completed_targets), action="inspect"), "retryable", state
+        )
+
+
+def test_cleanup_completion_rejects_success_without_every_requested_target() -> None:
+    """A successful cleanup must account for the complete confirmed batch."""
+
+    completed = cleanup_target()
+    pending = cleanup_target(identifier=OTHER_BACKUP)
+    state = validated_cleanup_state(
+        completed_targets=[completed], outcome="succeeded", mutation_state="changed"
+    )
+
+    with pytest.raises(ProtocolError, match="does not account for its batch"):
+        validate_cleanup_completion(cleanup_request((completed, pending)), "succeeded", state)
 
 
 def test_cleanup_completions_are_exact_sorted_unique_targets() -> None:

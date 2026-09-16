@@ -21,6 +21,7 @@ from ..host_protocol import (
     HostResult,
     PROTOCOL_VERSION,
     unavailable_observations,
+    validate_cleanup_completion,
     validate_mutation_state,
     validate_verification_report,
 )
@@ -185,7 +186,7 @@ def run_request(
         try:
             validated = validate_mutation_state(result.operation, result.outcome, result.state)
             if request.operation == "cleanup":
-                _validate_cleanup_completion(request, result.outcome, validated)
+                validate_cleanup_completion(request, result.outcome, validated)
         except ProtocolError:
             if _mutating_request(request):
                 raise _mutation_protocol_error(
@@ -767,36 +768,6 @@ def _merge_completed_targets(
             raise ValueError("completed cleanup target is invalid")
         combined[identity] = dict(item)
     return [combined[identity] for identity in sorted(combined)]
-
-
-def _validate_cleanup_completion(
-    request_value: HostRequest,
-    outcome: str,
-    state: Mapping[str, object],
-) -> None:
-    raw_targets = request_value.parameters.get("targets")
-    if not isinstance(raw_targets, (list, tuple)):
-        raise ProtocolError("cleanup request targets are invalid")
-    requested = {
-        tuple(item.get(key) for key in ("kind", "identifier", "path"))
-        for item in raw_targets
-        if isinstance(item, Mapping)
-    }
-    if len(requested) != len(raw_targets):
-        raise ProtocolError("cleanup request targets are invalid")
-    completed = {
-        tuple(item[key] for key in ("kind", "identifier", "path"))
-        for item in state["completed_targets"]  # type: ignore[union-attr]
-    }
-    action = request_value.parameters.get("action")
-    if action == "inspect" and (
-        completed or state["mutation_state"] != "unchanged"
-    ):
-        raise ProtocolError("cleanup inspection cannot claim mutation completion")
-    if not completed <= requested:
-        raise ProtocolError("cleanup completion exceeds confirmed targets")
-    if outcome == "succeeded" and completed != requested:
-        raise ProtocolError("cleanup success does not account for its batch")
 
 
 def _safety(operation: str, message: str, *, warnings: tuple[str, ...] = ()) -> OpsError:

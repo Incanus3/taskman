@@ -12,6 +12,7 @@ import re
 
 from taskman_ops.releases.identifiers import validate_release_id
 
+from .envelope import HostRequest
 from .identifiers import ProtocolError, validate_absolute_path, validate_string
 
 
@@ -237,6 +238,36 @@ def validate_mutation_state(
     result["unavailable_fields"] = unavailable
     result["report"] = verification_report
     return result
+
+
+def validate_cleanup_completion(
+    request_value: HostRequest, outcome: str, state: Mapping[str, object]
+) -> None:
+    """Validate request-dependent completion after exact cleanup state validation."""
+
+    raw_targets = request_value.parameters.get("targets")
+    if not isinstance(raw_targets, (list, tuple)):
+        raise ProtocolError("cleanup request targets are invalid")
+    requested = {
+        tuple(item.get(key) for key in ("kind", "identifier", "path"))
+        for item in raw_targets
+        if isinstance(item, Mapping)
+    }
+    if len(requested) != len(raw_targets):
+        raise ProtocolError("cleanup request targets are invalid")
+    completed = {
+        tuple(item[key] for key in ("kind", "identifier", "path"))
+        for item in state["completed_targets"]  # type: ignore[union-attr]
+    }
+    action = request_value.parameters.get("action")
+    if action == "inspect" and (
+        completed or state["mutation_state"] != "unchanged"
+    ):
+        raise ProtocolError("cleanup inspection cannot claim mutation completion")
+    if not completed <= requested:
+        raise ProtocolError("cleanup completion exceeds confirmed targets")
+    if outcome == "succeeded" and completed != requested:
+        raise ProtocolError("cleanup success does not account for its batch")
 
 
 def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bool:
@@ -673,6 +704,7 @@ __all__ = [
     "MUTATION_OPERATIONS",
     "MUTATION_STATES",
     "unavailable_observations",
+    "validate_cleanup_completion",
     "validate_mutation_state",
     "validate_verification_report",
 ]
