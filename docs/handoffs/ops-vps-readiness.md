@@ -24,7 +24,9 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
 
 ## Current checkpoint
 
-Resume from the latest tip of `dedicated-host-deployment-automation`. This checkpoint includes
+Latest planning checkpoint: `67c44511133ca14a799f206f3baf633ca9595027` on
+`dedicated-host-deployment-automation`; design approved, reviewed implementation plan awaiting
+operator approval. Earlier implementation evidence follows. This checkpoint includes
 the verified package/history optimizations and report-validator simplification; its preceding tip
 was `42ea507651206c7bab706486c15878608619f127`. Package reuse is implemented and independently
 reviewed: immutable worker-local bytes/metadata, private installer copies, fresh packaged execution;
@@ -58,7 +60,7 @@ against clean tip `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The operator appro
 neutral migration-version extraction, and it is implemented locally in `tas-sr4b.17` with distinct
 scoped review approval, committed as `15602d43` before candidate 2 at operator request. Candidate 2
 is implemented, verified and committed as `d4335ffe`; candidate 3 producer correction is approved;
-translator-removal design and candidates 4–8 remain pending. The register owns
+translator-removal design is now approved; its plan approval and candidates 4–8 remain pending. The register owns
 evidence, boundaries, ranking rationale, trade-offs and proposed verification. A synthetic local
 probe also established mutation-evidence degradation through invalid-result translation; candidate 3
 retains its required failure-policy analysis. No production/test implementation or external action
@@ -78,7 +80,7 @@ Distinct scoped secret-handling review approved without blocking findings: 35 te
 boundary checks passed independently. Fresh local gates passed 1,514 operations tests in 62.92 seconds
 with 157 known warnings and 805 tests through `mix precommit` in 44.1 seconds. Locked sync, compileall,
 shell syntax and scoped checks passed; 94 focused cases passed. Candidate 3's failure-policy design
-remains pending; the approved producer correction is completed below.
+is now approved, with plan approval pending; the earlier producer correction is completed below.
 
 The producer correction is now verified locally in `tas-sr4b.19`: canonical deploy/genesis
 `inspection`/5 results retain operation-owned mutation/report/backup/warning/final-fact evidence
@@ -87,7 +89,8 @@ alongside existing inspection/8; other categories remain restricted. Distinct sc
 16 regressions and 224 category combinations without findings; 139 focused cases passed. Fresh
 gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix precommit` passed 805
 tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
-Translator-removal design is next, separately gated; the producer correction is committed as `664926a7`.
+The producer correction is committed as `664926a7`; remaining translator removal awaits approval
+of the reviewed implementation plan below.
 
 ## Translator-removal design checkpoint
 
@@ -145,7 +148,7 @@ repair, or run the new controller against it.
 ## Agreed pre-merge sequence
 
 This is the agreed workstream order; checkpoint updates must preserve it and its gates.
-We are now at step 3, candidate 3 translator-removal design: candidates 1–2 are committed, the producer
+We are now at step 3, candidate 3 implementation-plan approval: candidates 1–2 are committed, the producer
 correction is committed and verified, the broader
 audit/register is recorded; package reuse and
 the approved history coverage split are verified, and startup investigation has its accepted
