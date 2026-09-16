@@ -1,6 +1,6 @@
 # Operations simplification candidate register
 
-Status: candidate 1 implemented and verified; candidates 2–8 await review. Updated: 2026-09-16.
+Status: candidates 1–2 complete; candidates 3–8 await review. Updated: 2026-09-16.
 Workstream: [Operations VPS readiness](../handoffs/ops-vps-readiness.md), pre-merge step 3.
 Tracking: `tas-sr4b.16`; parent `tas-sr4b` remains open for hardening and external acceptance.
 
@@ -11,7 +11,8 @@ at `dedicated-host-deployment-automation` revision
 `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The checkout was clean before the audit.
 It is an ordered discussion agenda, not an approved specification or implementation plan.
 Candidate 1's bounded design was approved and implemented on 2026-09-16; `tas-sr4b.17` owns delivery evidence.
-No other candidate is authorized for implementation. Review candidates in the order below, record the
+Candidate 2 was approved and delivered after a commit-first checkpoint (`15602d43`); `tas-sr4b.18` owns evidence.
+No later candidate is authorized for implementation. Review candidates in the order below, record the
 operator's disposition, and implement only an explicitly approved bounded design. Refresh consumers
 and affected authority before implementation; reconsider ranking if an earlier change alters the evidence.
 
@@ -57,7 +58,7 @@ cost. Small changes with clear shared consumers lead; larger safety-sensitive re
 | Rank | Candidate | Expected benefit | Cost / risk | Disposition |
 | --- | --- | --- | --- | --- |
 | 1 | Give migration-version extraction a neutral owner | Clear shared invariant; fewer parsing variants and host database imports | Small / low to moderate | Completed 2026-09-16 (`tas-sr4b.17`) |
-| 2 | Narrow the SOPS runner/result contract | Remove unused result forms and retry dispatch | Small to moderate / moderate, secrets boundary | Unreviewed |
+| 2 | Narrow the SOPS runner/result contract | Remove unused result forms and retry dispatch | Small to moderate / moderate, secrets boundary | Completed 2026-09-16 (`tas-sr4b.18`) |
 | 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Unreviewed; failure policy must be resolved |
 | 4 | Make provisioning injection use the production evidence contract | Remove compatibility branches and implicit all-create authority | Moderate / high, resource/scheduler authority | Unreviewed |
 | 5 | Give confirmed systemd asset bytes one owner | Fewer representations; bind validation and installation to the same rendered content | Moderate / moderate | Unreviewed |
@@ -132,6 +133,24 @@ buffer cleanup, secret registration/redaction, and fixed error output. Callable 
 trigger an unintended second invocation. Exercise `test_secrets.py` and provision workflow tests,
 including nonzero exit, runner exceptions and canary/buffer assertions, then complete local gates.
 Do not replace `SecretConfig` or alter the encrypted document/runtime rendering contract.
+
+**Approved bounded scope.** The operator approved this design on 2026-09-16 with a commit-first
+condition; candidate 1 and audit artifacts were committed as `15602d43` with a clean workspace.
+The fresh injection inventory contains only the callable `CapturedRunner` in secrets tests and
+the default production decrypt capability in provisioning. Use `CompletedProcess` with binary
+`bytes`/`bytearray` captures; `None` is empty capture. Text, memoryview and arbitrary capture values
+need no coercion compatibility. Invalid captures still require fixed secret refusal and wiping any
+mutable sibling capture. Injected callable failures receive no second invocation. `tas-sr4b.18`
+owns test-first implementation, full local gates and distinct scoped secret-handling review.
+
+**Delivered disposition.** The two private runner/result helpers and arbitrary output coercion are
+removed. `decrypt_secrets` directly invokes the default subprocess or the injected callable once;
+only `CompletedProcess` results and the approved binary captures are accepted. Both transport fields
+are cleared and mutable captures wiped on success and supported refusal, including invalid sibling
+capture cases. Unsupported result objects receive fixed refusal without generic mutation cleanup.
+SecretConfig, rendering and unused aliases remain unchanged. Twenty-two new tests retain existing
+coverage. The guarantee remains mutable capture wiping/reference clearing, not erasure of immutable
+Python values. Full local and independent verification evidence follows below.
 
 ## 3. Exact mutation failures without old-shape translation
 
@@ -279,7 +298,9 @@ local gates. No startup change is approved.
 
 ## Continuation and verification record
 
-Current position: candidate 1 is complete; discuss candidate 2 with the operator. Candidates 2–8 remain unreviewed. After each explicit
+Current position: candidate 1 is committed; candidate 2 is implemented and verified locally. Discuss
+candidate 3 and resolve its failure-policy design before seeking implementation approval.
+Candidates 3–8 remain unreviewed. After each explicit
 disposition, update this register and its tracking issue; retain unreviewed entries in order.
 Approved changes require their bounded design, meaningful tests, complete local gates and distinct
 scoped verification. Production stability precedes step-4 test overlap removal, then authorized
@@ -302,4 +323,13 @@ A distinct scoped reviewer inspected the implementation directly and approved it
 findings; the earlier invalid-history refusal above is explicitly disclosed. Consumer and scoped
 terminology searches passed. Documentation links, anchors, whitespace and handoff commitments were
 checked. No native host acceptance, timing improvement, push, merge or history rewrite is established.
-Candidates 2–8 retain their explicit approval gates.
+Candidate 2 approval is satisfied; candidates 3–8 retain their explicit approval gates.
+
+Candidate 2 delivery evidence: 94 focused secret/provision/output/pyinfra cases passed. Distinct
+scoped secret-handling review approved without blocking findings, independently passing 35 secret
+tests and five exception/coercion/sibling-cleanup checks. Fresh locked sync, complete compileall,
+shell syntax, consumer and scoped terminology/whitespace checks passed. Complete four-worker pytest
+passed 1,514 tests with 157 gevent/PTY deprecation warnings in 62.92 seconds; `mix precommit` passed
+805 tests in 44.1 seconds. Documentation/reference and handoff-gate checks passed. No real SOPS,
+native host acceptance or timing saving was established. Prior work was committed first as requested;
+candidate 2 remains local. No push, merge or history rewrite occurred.

@@ -18,7 +18,8 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
   Optimization task: `tas-sr4b.14` is complete (package reuse/history split verified; startup
   measured and explicitly deferred to step 3 on 2026-09-16).
 - Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
-  candidate 1 is complete in `tas-sr4b.17`; candidates 2–8 await disposition.
+  candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete locally in `tas-sr4b.18`;
+  candidates 3–8 await disposition.
 
 ## Current checkpoint
 
@@ -54,7 +55,8 @@ The broader step-3 structural audit is now recorded in the
 [ranked candidate register](../research/2026-09-16-operations-simplification-candidates.md),
 against clean tip `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The operator approved candidate 1,
 neutral migration-version extraction, and it is implemented locally in `tas-sr4b.17` with distinct
-scoped review approval. Candidate 2 is next; candidates 2–8 remain unreviewed. The register owns
+scoped review approval, committed as `15602d43` before candidate 2 at operator request. Candidate 2
+is implemented and verified locally; candidates 3–8 remain unreviewed. The register owns
 evidence, boundaries, ranking rationale, trade-offs and proposed verification. A synthetic local
 probe also established mutation-evidence degradation through invalid-result translation; candidate 3
 retains its required failure-policy analysis. No production/test implementation or external action
@@ -68,6 +70,14 @@ convergence; the register records exact refusal semantics and accepted scope. Fr
 43.0 seconds; locked sync, compileall and shell syntax passed. Focused coverage passed 496 distinct
 tests including both actual isolated archives. No host action or history consolidation occurred.
 
+Candidate 2 narrows SOPS to one callable/CompletedProcess binary contract, removes alternate result
+conversion and dispatch, and preserves fixed secret refusal, redaction and mutable capture cleanup.
+Distinct scoped secret-handling review approved without blocking findings: 35 tests and five extra
+boundary checks passed independently. Fresh local gates passed 1,514 operations tests in 62.92 seconds
+with 157 known warnings and 805 tests through `mix precommit` in 44.1 seconds. Locked sync, compileall,
+shell syntax and scoped checks passed; 94 focused cases passed. Candidate 3's failure-policy design
+is next; no implementation beyond candidate 2 is approved.
+
 ## Immediate next increment
 
 Step 2 of the agreed pre-merge sequence is complete. Package reuse and the history split are
@@ -76,11 +86,12 @@ changes to pre-merge step 3. Do not revive the earlier approval gates, direct-wr
 unselected selective-import experiment.
 The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
 that selected it preceded the broader audit, now recorded in the linked register. No startup change,
-mutation-adapter removal or implementation beyond candidate 1 is approved.
+mutation-adapter removal or implementation beyond candidate 2 is approved.
 
-1. Discuss candidate 2, narrowing the SOPS runner/result contract. Continue candidates 2–8 in recorded order,
+1. Discuss candidate 3, exact mutation failures without old-shape translation; resolve its failure
+   policy against the accepted specification before implementation approval. Continue candidates 3–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
-   The audit, ranking and candidate 1 delivery are recorded; candidates 2–8 require approval. Follow the register's
+   The audit, ranking and candidates 1–2 delivery are recorded; candidates 3–8 require approval. Follow the register's
    evidence and verification constraints, including candidate 3's unresolved failure-policy design.
 2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
    import the graph; selected read imports have a smaller closure, mutations retain most of it.
@@ -107,7 +118,7 @@ repair, or run the new controller against it.
 ## Agreed pre-merge sequence
 
 This is the agreed workstream order; checkpoint updates must preserve it and its gates.
-We are now at step 3, candidate 2 discussion: candidate 1 is implemented and verified, the broader
+We are now at step 3, candidate 3 discussion: candidate 1 is committed, candidate 2 is verified locally, the broader
 audit/register is recorded; package reuse and
 the approved history coverage split are verified, and startup investigation has its accepted
 measured disposition. Candidate review/approved simplification and steps 4–6 remain unfinished.
