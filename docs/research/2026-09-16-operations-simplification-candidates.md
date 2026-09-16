@@ -326,7 +326,7 @@ local gates. No startup change is approved.
 ## Continuation and verification record
 
 Current position: candidates 1–2 are committed (`15602d43`, `d4335ffe`); candidate 3's approved
-producer correction is verified locally. Resolve translator-removal failure policy before its
+producer correction is committed as `664926a7`. Resolve translator-removal failure policy before its
 separate approval. The remainder of candidate 3 and candidates 4–8 remain pending. After each explicit
 disposition, update this register and its tracking issue; retain unreviewed entries in order.
 Approved changes require their bounded design, meaningful tests, complete local gates and distinct
@@ -371,6 +371,6 @@ without findings, independently running the 16 regressions and checking 224 cate
 Fresh locked sync, complete compileall, shell syntax, scoped whitespace/terminology and documentation
 checks passed. Complete four-worker pytest passed 1,530 tests with 157 known deprecation warnings in
 58.67 seconds; `mix precommit` passed 805 tests in 42.8 seconds. No translator or generic fallback
-change occurred. The correction remains uncommitted; no native host acceptance or timing saving is
+change occurred. The correction was committed as `664926a7`; no native host acceptance or timing saving is
 established. Translator-removal policy and its separate approval remain next, followed by candidates
 4–8 and the unchanged steps 4–6 gates.

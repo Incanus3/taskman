@@ -19,7 +19,7 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
   measured and explicitly deferred to step 3 on 2026-09-16).
 - Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
   candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete in `tas-sr4b.18`, committed as `d4335ffe`;
-  candidate 3 producer correction is complete locally in `tas-sr4b.19`; translator removal
+  candidate 3 producer correction is complete in `tas-sr4b.19`, committed as `664926a7`; translator removal
   and candidates 4–8 await disposition.
 
 ## Current checkpoint
@@ -87,7 +87,7 @@ alongside existing inspection/8; other categories remain restricted. Distinct sc
 16 regressions and 224 category combinations without findings; 139 focused cases passed. Fresh
 gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix precommit` passed 805
 tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
-Translator-removal design is next, separately gated; the producer correction remains uncommitted.
+Translator-removal design is next, separately gated; the producer correction is committed as `664926a7`.
 
 ## Immediate next increment
 
@@ -131,7 +131,7 @@ repair, or run the new controller against it.
 
 This is the agreed workstream order; checkpoint updates must preserve it and its gates.
 We are now at step 3, candidate 3 translator-removal design: candidates 1–2 are committed, the producer
-correction is verified locally, the broader
+correction is committed and verified, the broader
 audit/register is recorded; package reuse and
 the approved history coverage split are verified, and startup investigation has its accepted
 measured disposition. Candidate review/approved simplification and steps 4–6 remain unfinished.

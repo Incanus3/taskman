@@ -5,6 +5,13 @@
 This checkout is not a Jujutsu repository. Use `but` for repository and version-control operations;
 do not run `jj` commands here.
 
+Commit verified work after each bounded task or material checkpoint. This grants standing
+authorization for local commits; pushing, merging, deployment and history rewriting retain their
+separate authorization gates.
+
+When stopping, state the next concrete step, the decision it requires, and the consequences of
+each available choice. Distinguish design approval from implementation and external-action approval.
+
 ## Work tracking
 
 Use the repository-local Beads store for implementation planning and delivery work. The completed
