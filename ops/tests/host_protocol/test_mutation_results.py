@@ -231,6 +231,25 @@ def test_operation_category_controls_shared_failure_boundary_exit_code() -> None
         validate_mutation_state("deploy", "retryable", deploy)
 
 
+@pytest.mark.parametrize("operation", ("deploy", "genesis"))
+@pytest.mark.parametrize("mutation_state", ("changed", "unknown", "unchanged"))
+def test_deployment_inspection_failure_retains_discovery_exit_five(operation: str, mutation_state: str) -> None:
+    state = deploy_state(mutation_state=mutation_state, exit_code=5, failed_boundary="inspection")
+
+    exact = validate_mutation_state(operation, "retryable", state)
+    assert exact["exit_code"] == 5
+    assert exact["mutation_state"] == mutation_state
+
+
+@pytest.mark.parametrize("operation", ("deploy", "genesis"))
+@pytest.mark.parametrize("boundary", ("selection", "service", "history"))
+def test_release_lifecycle_failures_cannot_use_discovery_exit_five(operation: str, boundary: str) -> None:
+    state = deploy_state(exit_code=5, failed_boundary=boundary)
+
+    with pytest.raises(ProtocolError):
+        validate_mutation_state(operation, "retryable", state)
+
+
 def test_verification_command_failure_can_report_unavailable_report() -> None:
     """A lost verification reply must not fabricate check results."""
 

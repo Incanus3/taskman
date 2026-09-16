@@ -18,8 +18,9 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
   Optimization task: `tas-sr4b.14` is complete (package reuse/history split verified; startup
   measured and explicitly deferred to step 3 on 2026-09-16).
 - Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
-  candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete locally in `tas-sr4b.18`;
-  candidates 3–8 await disposition.
+  candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete in `tas-sr4b.18`, committed as `d4335ffe`;
+  candidate 3 producer correction is complete locally in `tas-sr4b.19`; translator removal
+  and candidates 4–8 await disposition.
 
 ## Current checkpoint
 
@@ -56,7 +57,8 @@ The broader step-3 structural audit is now recorded in the
 against clean tip `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The operator approved candidate 1,
 neutral migration-version extraction, and it is implemented locally in `tas-sr4b.17` with distinct
 scoped review approval, committed as `15602d43` before candidate 2 at operator request. Candidate 2
-is implemented and verified locally; candidates 3–8 remain unreviewed. The register owns
+is implemented, verified and committed as `d4335ffe`; candidate 3 producer correction is approved;
+translator-removal design and candidates 4–8 remain pending. The register owns
 evidence, boundaries, ranking rationale, trade-offs and proposed verification. A synthetic local
 probe also established mutation-evidence degradation through invalid-result translation; candidate 3
 retains its required failure-policy analysis. No production/test implementation or external action
@@ -76,7 +78,16 @@ Distinct scoped secret-handling review approved without blocking findings: 35 te
 boundary checks passed independently. Fresh local gates passed 1,514 operations tests in 62.92 seconds
 with 157 known warnings and 805 tests through `mix precommit` in 44.1 seconds. Locked sync, compileall,
 shell syntax and scoped checks passed; 94 focused cases passed. Candidate 3's failure-policy design
-is next; no implementation beyond candidate 2 is approved.
+remains pending; the approved producer correction is completed below.
+
+The producer correction is now verified locally in `tas-sr4b.19`: canonical deploy/genesis
+`inspection`/5 results retain operation-owned mutation/report/backup/warning/final-fact evidence
+without translation or entrypoint reinspection. A narrow validator correction admits that status
+alongside existing inspection/8; other categories remain restricted. Distinct scoped review passed
+16 regressions and 224 category combinations without findings; 139 focused cases passed. Fresh
+gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix precommit` passed 805
+tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
+Translator-removal design is next, separately gated; the producer correction remains uncommitted.
 
 ## Immediate next increment
 
@@ -86,12 +97,13 @@ changes to pre-merge step 3. Do not revive the earlier approval gates, direct-wr
 unselected selective-import experiment.
 The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
 that selected it preceded the broader audit, now recorded in the linked register. No startup change,
-mutation-adapter removal or implementation beyond candidate 2 is approved.
+mutation-adapter removal or implementation beyond candidate 3's producer correction is approved.
 
-1. Discuss candidate 3, exact mutation failures without old-shape translation; resolve its failure
-   policy against the accepted specification before implementation approval. Continue candidates 3–8 in recorded order,
+1. Resolve candidate 3 translator-removal failure policy and fixture mapping against the
+   accepted specification before its separate approval. The register owns both proposed increments;
+   only the producer correction is approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
    retaining each explicit disposition and implementing only its approved bounded design.
-   The audit, ranking and candidates 1–2 delivery are recorded; candidates 3–8 require approval. Follow the register's
+   The audit, ranking and candidates 1–2 delivery are recorded; remaining increments require approval. Follow the register's
    evidence and verification constraints, including candidate 3's unresolved failure-policy design.
 2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
    import the graph; selected read imports have a smaller closure, mutations retain most of it.
@@ -118,7 +130,8 @@ repair, or run the new controller against it.
 ## Agreed pre-merge sequence
 
 This is the agreed workstream order; checkpoint updates must preserve it and its gates.
-We are now at step 3, candidate 3 discussion: candidate 1 is committed, candidate 2 is verified locally, the broader
+We are now at step 3, candidate 3 translator-removal design: candidates 1–2 are committed, the producer
+correction is verified locally, the broader
 audit/register is recorded; package reuse and
 the approved history coverage split are verified, and startup investigation has its accepted
 measured disposition. Candidate review/approved simplification and steps 4–6 remain unfinished.

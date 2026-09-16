@@ -1,6 +1,6 @@
 # Operations simplification candidate register
 
-Status: candidates 1–2 complete; candidates 3–8 await review. Updated: 2026-09-16.
+Status: candidates 1–2 and candidate 3 producer correction complete; translator-removal design and later review pending. Updated: 2026-09-16.
 Workstream: [Operations VPS readiness](../handoffs/ops-vps-readiness.md), pre-merge step 3.
 Tracking: `tas-sr4b.16`; parent `tas-sr4b` remains open for hardening and external acceptance.
 
@@ -12,6 +12,7 @@ at `dedicated-host-deployment-automation` revision
 It is an ordered discussion agenda, not an approved specification or implementation plan.
 Candidate 1's bounded design was approved and implemented on 2026-09-16; `tas-sr4b.17` owns delivery evidence.
 Candidate 2 was approved and delivered after a commit-first checkpoint (`15602d43`); `tas-sr4b.18` owns evidence.
+Candidate 3's first producer correction is approved in `tas-sr4b.19`; translator removal remains unapproved.
 No later candidate is authorized for implementation. Review candidates in the order below, record the
 operator's disposition, and implement only an explicitly approved bounded design. Refresh consumers
 and affected authority before implementation; reconsider ranking if an earlier change alters the evidence.
@@ -59,7 +60,7 @@ cost. Small changes with clear shared consumers lead; larger safety-sensitive re
 | --- | --- | --- | --- | --- |
 | 1 | Give migration-version extraction a neutral owner | Clear shared invariant; fewer parsing variants and host database imports | Small / low to moderate | Completed 2026-09-16 (`tas-sr4b.17`) |
 | 2 | Narrow the SOPS runner/result contract | Remove unused result forms and retry dispatch | Small to moderate / moderate, secrets boundary | Completed 2026-09-16 (`tas-sr4b.18`) |
-| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Unreviewed; failure policy must be resolved |
+| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Producer correction completed (`tas-sr4b.19`); translator-removal policy pending |
 | 4 | Make provisioning injection use the production evidence contract | Remove compatibility branches and implicit all-create authority | Moderate / high, resource/scheduler authority | Unreviewed |
 | 5 | Give confirmed systemd asset bytes one owner | Fewer representations; bind validation and installation to the same rendered content | Moderate / moderate | Unreviewed |
 | 6 | Remove unused internal compatibility names | Smaller supported internal surface | Small / low | Unreviewed |
@@ -183,6 +184,32 @@ contention, inspect-only cleanup and completed cleanup targets. Preserve the exi
 reinspection assertion. Run complete local gates and distinct correctness review. A fuller bounded
 failure design is required; this entry is not that design.
 
+**Next proposed increment (2026-09-16).** Split delivery so the demonstrated producer defect is
+corrected before removing translation. First, host deploy's `CommandError` observation failure
+must emit canonical `inspection` (accepted with exit 5), not unsupported `observation`. Preserve
+the operation-owned mutation classification, final observation/availability, report, backup identity
+and warning evidence. Verify the production failure branch and exact result through the entrypoint
+without translation or a second observation, including a proved change and unavailable final facts.
+Run scoped host/protocol/controller failure tests, complete local gates and distinct correctness review.
+The operator approved this bounded producer correction on 2026-09-16; it is implemented and verified
+locally in `tas-sr4b.19`. Translator removal remains a separate unapproved increment.
+
+Implementation discovery: the general protocol category table admits `inspection`/5, but its
+deploy/genesis override only admits 8. Producing the approved valid exact `inspection`/5 state
+therefore also requires narrowly accepting 5 alongside existing 8 for deploy/genesis inspection.
+Selection/service/history remain 8; restore inspection remains 11 and cleanup remains 10. This is
+necessary for the approved result contract, not a broader category change. Scoped protocol tests
+must protect those exclusions, alongside the actual handler/entrypoint regression.
+
+Second, complete the failure-policy design and test mapping for removing `_legacy_mutation_result`.
+Valid exact results must pass directly; malformed results must never become success or fabricated
+unchanged state. Resolve which independently validated exact mutation/report/completion evidence
+can be retained, preserve primary failure versus follow-up inspection failure, and preserve bounded
+safe observation/lock behavior. Older injected result shapes must be replaced with exact fixtures
+without losing consequential assertions. This second increment has its own approval gate; the
+producer correction does not authorize removing translation. Retaining the translator permanently
+leaves duplicate interpretation and demonstrated evidence loss; deleting it first is rejected.
+
 ## 4. Production-shaped provisioning evidence
 
 **Evidence and boundaries.** [provisioning.py](../../ops/taskman_ops/provisioning.py)
@@ -298,9 +325,9 @@ local gates. No startup change is approved.
 
 ## Continuation and verification record
 
-Current position: candidate 1 is committed; candidate 2 is implemented and verified locally. Discuss
-candidate 3 and resolve its failure-policy design before seeking implementation approval.
-Candidates 3–8 remain unreviewed. After each explicit
+Current position: candidates 1–2 are committed (`15602d43`, `d4335ffe`); candidate 3's approved
+producer correction is verified locally. Resolve translator-removal failure policy before its
+separate approval. The remainder of candidate 3 and candidates 4–8 remain pending. After each explicit
 disposition, update this register and its tracking issue; retain unreviewed entries in order.
 Approved changes require their bounded design, meaningful tests, complete local gates and distinct
 scoped verification. Production stability precedes step-4 test overlap removal, then authorized
@@ -323,7 +350,7 @@ A distinct scoped reviewer inspected the implementation directly and approved it
 findings; the earlier invalid-history refusal above is explicitly disclosed. Consumer and scoped
 terminology searches passed. Documentation links, anchors, whitespace and handoff commitments were
 checked. No native host acceptance, timing improvement, push, merge or history rewrite is established.
-Candidate 2 approval is satisfied; candidates 3–8 retain their explicit approval gates.
+Candidates 1–2 and candidate 3 producer approval are satisfied; remaining increments retain their approval gates.
 
 Candidate 2 delivery evidence: 94 focused secret/provision/output/pyinfra cases passed. Distinct
 scoped secret-handling review approved without blocking findings, independently passing 35 secret
@@ -332,4 +359,18 @@ shell syntax, consumer and scoped terminology/whitespace checks passed. Complete
 passed 1,514 tests with 157 gevent/PTY deprecation warnings in 62.92 seconds; `mix precommit` passed
 805 tests in 44.1 seconds. Documentation/reference and handoff-gate checks passed. No real SOPS,
 native host acceptance or timing saving was established. Prior work was committed first as requested;
-candidate 2 remains local. No push, merge or history rewrite occurred.
+candidate 2 was subsequently committed as `d4335ffe` at operator request. No push, merge or history
+rewrite was performed by the agent.
+
+Candidate 3 producer delivery evidence: actual deploy/genesis `CommandError` results now emit
+canonical `inspection`/5, preserving proved mutation, passing report, backup identity, warnings and
+operation-owned final observations or truthful unavailable facts. The protocol narrowly accepts
+deploy/genesis inspection/5 alongside existing 8; other operation/category restrictions remain.
+Sixteen new regressions and 139 focused cases passed. Distinct scoped correctness review passed
+without findings, independently running the 16 regressions and checking 224 category combinations.
+Fresh locked sync, complete compileall, shell syntax, scoped whitespace/terminology and documentation
+checks passed. Complete four-worker pytest passed 1,530 tests with 157 known deprecation warnings in
+58.67 seconds; `mix precommit` passed 805 tests in 42.8 seconds. No translator or generic fallback
+change occurred. The correction remains uncommitted; no native host acceptance or timing saving is
+established. Translator-removal policy and its separate approval remain next, followed by candidates
+4–8 and the unchanged steps 4–6 gates.

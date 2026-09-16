@@ -421,6 +421,122 @@ def test_deploy_refusal_keeps_the_complete_v3_mutation_evidence(tmp_path: Path) 
     assert validate_mutation_state("deploy", result.outcome, result.state)["mutation_state"] == "unchanged"
 
 
+@pytest.mark.parametrize(
+    ("operation", "final_available"),
+    (("deploy", False), ("deploy", True), ("genesis", False)),
+)
+def test_command_observation_failure_keeps_operation_evidence_through_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, final_available: bool,
+) -> None:
+    """An invalid observation category must not erase proved change or completed verification."""
+
+    from taskman_ops.host_helper import __main__ as entrypoint
+    from taskman_ops.host_protocol import unavailable_observations
+    from tests.host_helper.test_entrypoint import invoke_entrypoint, passing_report
+
+    request = _request(
+        tmp_path, operation=operation, previous=CURRENT if operation == "deploy" else None,
+        policy="backward-compatible" if operation == "deploy" else "restore-required",
+    )
+    if operation == "deploy":
+        _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    report = {
+        **passing_report(),
+        "release_id": _candidate_id(request),
+        "expected_release_id": _candidate_id(request),
+    }
+    original_observe = deploy_module._observe
+    observation_failures = 0
+
+    def verified(live_request: HostRequest, **_kwargs: object) -> HostResult:
+        runtime.events.append("verify")
+        return HostResult.for_request(live_request, "succeeded", "verified", {"report": report})
+
+    def observe_after_verification(*args: object, **kwargs: object) -> deploy_module.HostState:
+        nonlocal observation_failures
+        if "verify" in runtime.events and (not final_available or observation_failures == 0):
+            observation_failures += 1
+            raise deploy_module.CommandError("private observation command failed")
+        return original_observe(*args, **kwargs)
+
+    def forbidden_fallback(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("exact operation evidence must not be translated or observed by entrypoint")
+
+    monkeypatch.setattr(deploy_module, "verify", verified)
+    monkeypatch.setattr(deploy_module, "_observe", observe_after_verification)
+    monkeypatch.setattr(entrypoint, "_legacy_mutation_result", forbidden_fallback)
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", forbidden_fallback)
+
+    result = converge_deployment(request, first_release=operation == "genesis")
+
+    assert runtime.migrations == (20260905120000,)
+    assert (Path(request.paths["install_root"]) / "current").resolve().name == _candidate_id(request)
+    assert result.outcome == "retryable"
+    assert result.message == "deployment observation did not complete; rerun to converge"
+    assert result.state["mutation_state"] == "changed"
+    assert result.state["failed_boundary"] == "inspection"
+    assert result.state["exit_code"] == 5
+    assert deploy_module._mutable(result.state["report"]) == report
+    assert result.state["backup_id"] == (
+        "backup-00000000000000000000000000000001" if operation == "deploy" else None
+    )
+    assert "unknown deployment entry: uploads" in result.warnings
+    if final_available:
+        assert observation_failures == 1
+        assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
+        assert result.state["observations"]["service_state"] == "running"
+        assert result.state["observations"]["applied_migrations"] == (20260905120000,)
+        assert result.state["unavailable_fields"] == ()
+        assert result.state["inspection_error"] is None
+    else:
+        assert observation_failures == 2
+        observations, unavailable = unavailable_observations(operation)
+        assert result.state["observations"] == observations
+        assert result.state["unavailable_fields"] == tuple(unavailable)
+        assert result.state["inspection_error"] == "unsafe-observation"
+    exact_state = validate_mutation_state(operation, result.outcome, result.state)
+
+    with invoke_entrypoint(encode_request(request), lambda _request: result, operation=operation) as stdout:
+        assert entrypoint.main() == 0
+    wire_result = decode_result(stdout.buffer.getvalue())
+    assert wire_result.operation == operation
+    assert wire_result.correlation_id == request.correlation_id
+    assert wire_result.outcome == result.outcome
+    assert wire_result.message == result.message
+    assert wire_result.warnings == result.warnings
+    assert validate_mutation_state(operation, wire_result.outcome, wire_result.state) == exact_state
+
+
+def test_command_observation_failure_before_mutation_keeps_unchanged_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observation command failure does not invent an operation mutation."""
+
+    request = _request(tmp_path)
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    def unavailable_database(*_args: object, **_kwargs: object) -> None:
+        raise deploy_module.CommandError("private database observation command failed")
+
+    monkeypatch.setattr(deploy_module, "observe_database_state_or_empty", unavailable_database)
+
+    result = deploy(request)
+
+    exact = validate_mutation_state("deploy", result.outcome, result.state)
+    assert exact["mutation_state"] == "unchanged"
+    assert exact["failed_boundary"] == "inspection"
+    assert exact["exit_code"] == 5
+    assert exact["report"] is None
+    assert exact["backup_id"] is None
+    assert runtime.events == []
+    assert runtime.migrations == ()
+    assert (Path(request.paths["install_root"]) / "current").resolve().name == CURRENT
+
+
 def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
     _install_current(dict(request.paths))

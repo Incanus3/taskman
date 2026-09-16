@@ -353,7 +353,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     except CommandError:
         return _failure_result(
             request, "retryable", "deployment observation did not complete; rerun to converge", state, inputs,
-            boundary="observation", changed=changed, backup_id=None if backup is None else backup.backup_id,
+            boundary="inspection", changed=changed, backup_id=None if backup is None else backup.backup_id,
             report=report,
         )
     except (PathAuthorityError, TypeError, ValueError):

@@ -240,6 +240,8 @@ def validate_mutation_state(
 
 
 def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bool:
+    if boundary == "inspection" and operation in {"deploy", "genesis"} and exit_code == 5:
+        return True
     expected = _EXIT_CODES_BY_BOUNDARY[boundary]
     if boundary in {"selection", "service", "history", "inspection"}:
         expected = {
