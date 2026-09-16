@@ -58,6 +58,7 @@
 
 ## Research
 
+- [Operations test parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
 - [Cosmos capabilities](research/cosmos-capabilities.md)
 - [Emdash and Auggie capabilities](research/emdash-auggie-capabilities.md)
 

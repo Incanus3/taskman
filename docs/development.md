@@ -228,10 +228,16 @@ Run operations-package checks from the repository root:
 ```sh
 uv sync --locked --project ops
 uv run --project ops python -m compileall -q ops/taskman_ops ops/tests
-uv run --project ops pytest ops/tests
+uv run --project ops pytest ops/tests -n 4 --dist worksteal --max-worker-restart=0
 bash -n ops/taskman ops/caddy/render-caddyfile
 mix precommit
 ```
+
+The operations gate uses four explicit workers; pytest's default remains serial. Run
+`uv run --project ops pytest ops/tests` for serial diagnosis. Avoid concurrent source edits or
+application builds while running the operations suite: administrator bridge tests share Mix build
+output. See the [parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
+for the audit, workstation timings, and fork/thread warning caveats.
 
 For changed command or documentation surfaces, also exercise the relevant
 `./ops/taskman COMMAND --help` output, check local Markdown links and whitespace, and check that

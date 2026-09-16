@@ -19,6 +19,7 @@ where = ["."]
 [dependency-groups]
 dev = [
   "pytest>=8,<9",
+  "pytest-xdist>=3.8,<4",
 ]
 
 [tool.pytest.ini_options]

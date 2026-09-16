@@ -13,23 +13,82 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
   [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
   [operator runbook](../deployment.md).
 - Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
-  are closed; the parent remains open for external acceptance.
+  are closed; the parent remains open for pre-merge hardening and external acceptance.
+  Parallelism investigation `tas-sr4b.13` is closed; xdist adoption was accepted on 2026-09-16.
+  Active task: `tas-sr4b.14` (three remaining candidates; package-reuse design accepted).
 
 ## Current checkpoint
 
-The locally verified head is `934baff3c282627efb58fd77bde3325807147973` on
-`dedicated-host-deployment-automation`. The final-review corrections preserve failed-verification
-evidence, remove finalized helper uploads, align local/host archive validation, and reconcile
-clean-source drift. Production deploy and provision now retry resolution-time drift through the
-complete pre-confirmation cycle within one shared bound; source or material-host drift after
-confirmation requires a new invocation. A distinct scoped reviewer approved the correction.
+Resume from the latest tip of `dedicated-host-deployment-automation`. The handoff checkpoint
+commit includes the previously verified retention optimization, deterministic parametrization
+correction, approved xdist adoption, measurements, and package-reuse approval. Its preceding
+stack tip was `8f1918614123fcba78fd874d45c20d1c9d51cfb4`; locally verified production
+implementation head is `934baff3c282627efb58fd77bde3325807147973`. No production behavior
+changed in the optimization checkpoint. Refresh workspace state before continuing.
 
-Latest local evidence: compileall and `pytest ops/tests` passed at the reviewed head, with 1,462 tests
-in 344.70 seconds; `mix precommit` passed 805 tests. The preceding final implementation checkpoint
-also passed locked dependency synchronization, shell syntax, and command-help surfaces. Clean and
-controlled-dirty release builds passed there, including exact-input cache
-reuse and ignored-canary exclusion. Both helper packages ran under `python3 -I -S`; the extracted
-release terminal test and systemd diagnostic tests passed.
+The recorded serial baseline is 1,462 passing tests in 219.61 seconds. Two workers passed in
+114.77 and 113.27 seconds; four workers passed in 55.47 and 59.54 seconds. Final local checks
+passed: locked uv sync, compileall, shell syntax, focused serial codec tests, Markdown inspection,
+and `mix precommit` with 805 tests. Audit, reproduction commands, environmental limits, and exact results
+are owned by [parallelism measurements](../research/2026-09-16-operations-test-parallelism.md)
+and `tas-sr4b.13`. The operator approved the xdist dev dependency and explicit four-worker gate.
+`ops/pyproject.toml`, its lock, and the development guide now contain that change. Locked
+installation passed; the final uninstrumented suite passed 1,462 tests in 63.11 seconds with
+158 fork/thread warnings. Under-60 timing is not consistently established. Pytest's default
+remains serial.
+
+## Immediate next increment
+
+The operator approved the bounded package-reuse design on 2026-09-16 and requested a clean
+session before implementation. Continue `tas-sr4b.14` with that implementation; do not ask again
+for the same design approval. Read the complete [accepted design and evidence](../research/2026-09-16-operations-test-parallelism.md#immutable-integration-packages).
+
+1. Add a focused explicit session fixture under `ops/tests/support/` that captures helper and
+   scheduled-helper archive bytes/checksum/protocol/mode once per worker, then writes private
+   copies for each integration test. Pass it through the two installers in
+   `ops/tests/test_end_to_end.py` and their direct consumer fixtures/tests; import shared fixtures
+   explicitly. Keep production builders and packaging/source-mutation tests uncached.
+2. Verify private-copy identity/mode and actual isolated execution; run focused consumers, then
+   all 1,462 operations tests with the documented four-worker gate. Compare repeated uninstrumented
+   timing with the latest 63.11-second baseline, retain serial diagnosis, and run the remaining
+   repository gates. Avoid concurrent application builds while measuring operations timing.
+3. Record actual savings and the package-reuse disposition in the evidence document/task, then
+   continue the remaining candidates below. Temporary probes are not implementation assets and
+   are not required to resume.
+
+Preserve every behavioral assertion, private mutable state, fresh authority checks, and actual
+`python -I -S` packaged execution. The operator wants all remaining candidates investigated
+despite already meeting the timing target; do not stop at the timing bar.
+
+Remaining candidates, in investigation order:
+
+1. **Immutable integration package reuse.** Measure suite-wide build count and cost, then consider
+   sharing immutable archive bytes with private test copies in `_install_public_controller` and
+   `_install_public_restore_controller`. Keep builder, source-mutation, allowlist, checksum,
+   determinism, and packaging tests uncached. Prior large-history profile: three builds cost
+   0.77 seconds, including 0.67 seconds of import validation. New suite measurement: 243 builds
+   cost 38.14–40.23 aggregate worker-seconds; the two installers account for 71 builds / 14.75
+   seconds. Explicit immutable session fixture/private copies is accepted; implementation is next.
+2. **Isolated archive startup.** Separate child import, decompression, compilation, and real
+   observation costs. Prior profile: 14 fresh helper calls cost 10.76 of 15.95 seconds. Preserve
+   fresh authority and archive isolation; do not cache discovery or reuse mutable process state.
+   New 14-child cProfile: 12.74 of 16.19 profiled seconds
+   were real observation, source compilation 2.24 seconds, decompression 0.10 seconds. Keep open
+   for a bounded import/compilation design after package reuse; no durable startup change yet.
+3. **Large-history fixture construction.** Measure replacing repeated publication mechanics with
+   controlled valid record construction. Prior 4,097-selection construction cost 2.35 seconds.
+   New temporary direct-record probe passed the complete regression and reduced construction from
+   1.03 to 0.39 seconds; no durable fixture change yet. Retain 4,097 real records, oldest-only
+   backup protection, and every public success/refusal and bounded-projection assertion.
+   Keep publication mechanics covered by their focused tests.
+
+Retain the distinct lost-genesis replay/changed-target refusal outcomes and all large-history
+consumer assertions. These candidates are under investigation, not completed or silently dropped.
+Evidence and accepted decisions belong in the [measurement document](../research/2026-09-16-operations-test-parallelism.md)
+and `tas-sr4b.14`; keep this list current until each candidate has an explicit disposition.
+
+Production simplification follows this investigation under canonical operations-development
+guidance. Host acceptance and history consolidation retain their separate authorization gates.
 
 The old staging installation is outside the supported format/runtime boundary. Its dated DNS,
 email, administrator, and failed-upgrade observations are historical evidence only. Do not migrate,

@@ -914,7 +914,51 @@ def test_public_packaged_replacement_preserves_interrupted_reference_evidence(
         )
 
 
-def test_public_packaged_more_than_sixty_four_replacements_remain_bounded_during_clock_rollback(
+def _seed_public_replacement_retention_boundary(paths, runtime_path):
+    # After 64 failed replacements, the original attempt and attempts 61-64
+    # remain, while the database OID and backup counter have each advanced 64.
+    target_path = Path(paths.local(paths.restore_target_path))
+    target = RestoreTarget.from_mapping(json.loads(target_path.read_text()))
+    previous_source = host_restore_tests._backup(
+        paths,
+        f"backup-{4096 + 63:032x}",
+        host_restore_tests.TARGET,
+        b"replacement source 63",
+    )
+    attempts = [dict(target.safety_backup_attempts[0])]
+    for attempt_number, backup_count in zip(range(61, 65), range(77, 81), strict=True):
+        backup_id = f"backup-{backup_count:032x}"
+        host_restore_tests._backup(
+            paths,
+            backup_id,
+            host_restore_tests.TARGET,
+            b"archive-backup",
+        )
+        attempts.append(
+            {"backup_id": backup_id, "attempt_number": attempt_number}
+        )
+    replace_restore_target(
+        paths,
+        replace(
+            target,
+            backup_id=previous_source.backup_id,
+            dump_sha256=previous_source.dump_sha256,
+            source_release_id=previous_source.source_release_id,
+            restored_database_oid=266,
+            safety_backup_attempts=tuple(attempts),
+        ),
+    )
+
+    runtime = json.loads(runtime_path.read_text())
+    runtime["backup_count"] = 80
+    runtime["next_restore_oid"] = 266
+    runtime["restore_databases"]["canonical"]["oid"] = 266
+    runtime["verification"] = "failing"
+    runtime["backup_clock_rollback"] = True
+    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+
+
+def test_public_packaged_sixty_fifth_replacement_remains_bounded_during_clock_rollback(
     tmp_path, monkeypatch
 ):
     config_value, runtime_path, paths, remote, _old_source = (
@@ -925,37 +969,33 @@ def test_public_packaged_more_than_sixty_four_replacements_remain_bounded_during
             state_family="swapped",
         )
     )
-    runtime = json.loads(runtime_path.read_text())
-    runtime["verification"] = "failing"
-    runtime["backup_clock_rollback"] = True
-    runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+    _seed_public_replacement_retention_boundary(paths, runtime_path)
     displayed_prunes = []
 
-    for index in range(65):
-        replacement = host_restore_tests._backup(
-            paths,
-            f"backup-{4096 + index:032x}",
-            host_restore_tests.TARGET,
-            f"replacement source {index}".encode("ascii"),
+    replacement = host_restore_tests._backup(
+        paths,
+        f"backup-{4096 + 64:032x}",
+        host_restore_tests.TARGET,
+        b"replacement source 64",
+    )
+    result = restore(
+        remote,
+        config_value,
+        replacement.backup_id,
+        replace_unfinished=True,
+        confirm=lambda plan: displayed_prunes.append(
+            tuple(plan["prune_backup_ids"])
         )
-        result = restore(
-            remote,
-            config_value,
-            replacement.backup_id,
-            replace_unfinished=True,
-            confirm=lambda plan: displayed_prunes.append(
-                tuple(plan["prune_backup_ids"])
-            )
-            or True,
-        )
-        assert result.exit_status is ExitStatus.READINESS, (index, result.facts)
-        runtime = json.loads(runtime_path.read_text())
-        runtime["events"] = []
-        runtime_path.write_text(json.dumps(runtime, sort_keys=True))
+        or True,
+    )
 
     target = RestoreTarget.from_mapping(
         json.loads(Path(paths.local(paths.restore_target_path)).read_text())
     )
+    assert result.exit_status is ExitStatus.READINESS, result.facts
     assert len(target.safety_backup_attempts) == 5
+    assert tuple(
+        attempt["attempt_number"] for attempt in target.safety_backup_attempts
+    ) == (0, 62, 63, 64, 65)
     assert target.backup_id == f"backup-{4096 + 64:032x}"
-    assert any(displayed_prunes)
+    assert displayed_prunes == [(f"backup-{77:032x}",)]
