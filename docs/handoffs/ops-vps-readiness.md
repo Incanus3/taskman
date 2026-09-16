@@ -4,229 +4,89 @@ Status: active. Updated: 2026-09-16. Resume: `$resume ops-vps-readiness`.
 
 ## Objective and authority
 
-Prepare the dedicated-host controller for merge by simplifying the operations implementation within
-its accepted reliability boundary, reducing redundant or disproportionately slow tests, consolidating
-branch history, and completing clean staging provisioning/deployment acceptance. This handoff does
-not authorize a host reset, provider/DNS change, deployment, history rewrite, push, or merge.
+Prepare the dedicated-host controller for merge through bounded production simplification,
+proved test-overlap reduction, authorized history consolidation and clean real-VPS acceptance.
+This handoff grants no host reset, provider/DNS change, deployment, destructive restore,
+history rewrite, push or merge authorization.
 
 - Canonical behavior: [reconciliation specification](../specs/2026-09-09-deploy-reconciliation-design.md),
-  [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md), and
-  [operator runbook](../deployment.md).
-- Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
-  are closed; the parent remains open for pre-merge hardening and external acceptance.
-  Parallelism investigation `tas-sr4b.13` is closed; xdist adoption was accepted on 2026-09-16.
-  Optimization task: `tas-sr4b.14` is complete (package reuse/history split verified; startup
-  measured and explicitly deferred to step 3 on 2026-09-16).
-- Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
-  candidate 1 is complete in `tas-sr4b.17`; candidate 2 is complete in `tas-sr4b.18`, committed as `d4335ffe`;
-  candidate 3 producer correction is complete in `tas-sr4b.19`, committed as `664926a7`; translator removal
-  awaits execution; candidates 4–8 await disposition. Approved remaining design: `tas-sr4b.20`; approved implementation plan: `tas-sr4b.21`.
+  [dedicated-host design](../specs/2026-09-09-dedicated-host-deployment-design.md),
+  and [operator runbook](../deployment.md).
+- Ordered candidates/dispositions: [register](../research/2026-09-16-operations-simplification-candidates.md).
+- Optimization evidence and accepted coverage trade-offs:
+  [measurements](../research/2026-09-16-operations-test-parallelism.md).
+- Delivered candidate 3: [exact failure design/evidence](../specs/2026-09-16-exact-helper-failure-design.md#implementation-evidence)
+  and [completed plan](../plans/2026-09-16-exact-helper-failure.md).
+- Parent `tas-sr4b` remains open; ordered review `tas-sr4b.16` remains in progress.
+  Delivery `tas-sr4b.22` is complete. Earlier optimization/audit/candidate checkpoints are
+  recorded in the register and their issues; do not reopen their fulfilled approval gates.
 
-## Current checkpoint
+## Current implemented checkpoint
 
-Latest planning checkpoint: `67c44511133ca14a799f206f3baf633ca9595027` on
-`dedicated-host-deployment-automation`; design and reviewed implementation plan approved.
-The subsequent handoff correction is committed as `2a74908a`. Operator plan approval on
-2026-09-16 authorizes the bounded sequence; the operator explicitly authorized implementation in this session.
-Earlier implementation evidence follows. This checkpoint includes
-the verified package/history optimizations and report-validator simplification; its preceding tip
-was `42ea507651206c7bab706486c15878608619f127`. Package reuse is implemented and independently
-reviewed: immutable worker-local bytes/metadata, private installer copies, fresh packaged execution;
-production builders and packaging/source-mutation coverage stay uncached.
+Current source checkpoint: `6bd7e23d96e3869063e2a1c8884804990c7a1bf6` on
+`dedicated-host-deployment-automation`. Candidates 1–3 are locally committed: migration extraction,
+narrow SOPS runner, canonical service/inspection producers, exact fixtures, shared cleanup
+completion authority and exact failure recovery/encoding. The translator is removed. Distinct
+scoped reviews approved; four failure-policy findings were corrected with red/green regressions
+and independently re-reviewed. The linked design owns proof/size details.
 
-The operator approved and implementation completed the history coverage split. The packaged
-public deploy/restore test now uses three selections with oldest-only backup authority outside
-the final-two projection; all public outcome/retention/bounded/no-export assertions remain.
-Both real >4,096 observer regressions are unchanged. This supersedes the unaccepted direct-write
-fixture proposal; no configurable limit or serializer was introduced. Independent task review
-passed without findings. Canonical coverage allocation is in the reconciliation specification;
-[measurements and disposition](../research/2026-09-16-operations-test-parallelism.md) own the evidence.
+Fresh integrated baseline: 1,572 operations tests passed with 158 known fork/thread warnings in
+58.77 seconds; `mix precommit` passed 805 tests in 42.2 seconds and changed no files.
+Locked sync, compileall, shell syntax and scoped terminology checks passed. No native-host,
+release-build, history consolidation or external acceptance occurred in this increment.
 
-Focused integration timing dropped from 14.42 to 4.96 seconds; the two >4,096 observer cases passed
-in 1.23 seconds. Two complete four-worker suites passed 1,463 tests with 158 warnings in 55.21
-and 54.65 seconds, roughly unchanged from the package-reuse checkpoint's 55.01/55.20 seconds.
-Retain the split for focused cost reduction and clear test ownership; no extra full-suite wall-time
-saving is established. Locked sync, compileall, shell syntax and Markdown checks passed;
-`mix precommit` passed 805 tests in 43.2 seconds. No external actions or history consolidation occurred.
+Package reuse and the approved three-selection history split are delivered. Real >4,096 observer
+regressions remain; the accepted split loses direct combined large-history packaged-consumer
+coverage. The rejected direct-write fixture and unselected import experiment are not approved.
+Startup investigation is complete; import changes were deferred to candidate 8. Use the linked
+current workload measurements/native-effect inventory, not historical large-fixture timings.
+No end-to-end import saving or startup design approval is established. Preserve lost-genesis
+replay and changed-target refusal outcomes.
 
-The first production simplification (`tas-sr4b.15`) is complete; scoped independent review approved
-runtime parity and closed its stale-documentation finding after follow-up. Controller verification
-now uses the shared report validator directly. Fresh local gates:
-1,464 operations tests passed in 52.01 seconds with 158 known warnings; `mix precommit` passed
-805 tests in 42.9 seconds. Focused controller/protocol coverage passed 209 tests. Locked sync,
-compileall, shell syntax, verify help and scoped documentation/terminology checks passed.
+## Immediate next action and agreed remaining sequence
 
-The broader step-3 structural audit is now recorded in the
-[ranked candidate register](../research/2026-09-16-operations-simplification-candidates.md),
-against clean tip `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The operator approved candidate 1,
-neutral migration-version extraction, and it is implemented locally in `tas-sr4b.17` with distinct
-scoped review approval, committed as `15602d43` before candidate 2 at operator request. Candidate 2
-is implemented, verified and committed as `d4335ffe`; candidate 3 producer correction is approved;
-translator-removal design is now approved; implementation and candidates 4–8 remain pending. The register owns
-evidence, boundaries, ranking rationale, trade-offs and proposed verification. A synthetic local
-probe also established mutation-evidence degradation through invalid-result translation; candidate 3
-retains its required failure-policy analysis. No production/test implementation or external action
-occurred during the audit.
+We are at pre-merge step 3, **candidate 4 operator discussion**. Candidate 3's four-task plan is
+complete; no implementation decision remains for it. The operator explicitly authorized its
+execution in the approval session.
 
-The shared filename/version extractor now serves record, manifest and fingerprint consumers;
-the database parser is removed. Supported valid behavior and record error/limit boundaries remain.
-Duplicate timestamp aliases now refuse earlier in provision planning, before confirmation or
-convergence; the register records exact refusal semantics and accepted scope. Fresh gates passed:
-1,492 operations tests in 59.06 seconds with 158 known warnings; `mix precommit` passed 805 tests in
-43.0 seconds; locked sync, compileall and shell syntax passed. Focused coverage passed 496 distinct
-tests including both actual isolated archives. No host action or history consolidation occurred.
+The complete agreed pre-merge order is:
 
-Candidate 2 narrows SOPS to one callable/CompletedProcess binary contract, removes alternate result
-conversion and dispatch, and preserves fixed secret refusal, redaction and mutable capture cleanup.
-Distinct scoped secret-handling review approved without blocking findings: 35 tests and five extra
-boundary checks passed independently. Fresh local gates passed 1,514 operations tests in 62.92 seconds
-with 157 known warnings and 805 tests through `mix precommit` in 44.1 seconds. Locked sync, compileall,
-shell syntax and scoped checks passed; 94 focused cases passed. Candidate 3's failure-policy design
-and its implementation plan are now approved; the earlier producer correction is completed below.
-
-The producer correction is now verified locally in `tas-sr4b.19`: canonical deploy/genesis
-`inspection`/5 results retain operation-owned mutation/report/backup/warning/final-fact evidence
-without translation or entrypoint reinspection. A narrow validator correction admits that status
-alongside existing inspection/8; other categories remain restricted. Distinct scoped review passed
-16 regressions and 224 category combinations without findings; 139 focused cases passed. Fresh
-gates: 1,530 operations tests in 58.67 seconds with 157 known warnings; `mix precommit` passed 805
-tests in 42.8 seconds; locked sync, compileall, shell syntax and scoped/documentation checks passed.
-The producer correction is committed as `664926a7`; remaining translator removal is approved through
-the reviewed implementation plan below and awaits approved execution.
-
-## Translator-removal design checkpoint
-
-The operator approved the design on 2026-09-16 after discussing risks and trade-offs. The approved
-[exact helper failure design](../specs/2026-09-16-exact-helper-failure-design.md) owns the
-in-process evidence policy, report precedence, one final observer, encoding fallback, additional
-service-stop producer correction and fixture/verification map. Distinct scoped design review
-closed two corrected findings with no remaining blockers. Markdown/gate checks passed; fresh
-`mix precommit` passed 805 tests in 43.4 seconds. The operator subsequently approved the implementation plan on 2026-09-16.
-Next: execute the approved [implementation plan](../plans/2026-09-16-exact-helper-failure.md).
-Its order is producer/fixture correction, shared cleanup validation, coupled recovery/encoding,
-then integrated acceptance; commit each verified checkpoint. Distinct scoped plan review approved
-without blockers; fresh `mix precommit` passed 805 tests in 43.7 seconds. Plan approval is recorded.
-Approval-checkpoint verification: scoped links, whitespace, approval consistency and retained
-six-step sequence/gates passed; fresh `mix precommit` passed 805 tests in 42.7 seconds.
-No runtime source or external state changed.
-The operator authorized continuing this session; task 1 is implemented and independently reviewed in `tas-sr4b.22`; task 2 is complete; coupled recovery/encoding is next.
-Until execution, the translator and tracked stop-category defect remain; candidates 4–8 still require
-ordered explicit disposition. Steps 4–6 and all external gates below remain unfinished.
-
-## Immediate next increment
-
-Step 2 of the agreed pre-merge sequence is complete. Package reuse and the history split are
-verified; the operator explicitly accepted the measured startup disposition and deferred import
-changes to pre-merge step 3. Do not revive the earlier approval gates, direct-write proposal or
-unselected selective-import experiment.
-The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
-that selected it preceded the broader audit, now recorded in the linked register.
-Candidate 3 translator removal is approved only within the linked plan. No startup change
-or other implementation is approved.
-
-1. Execute the approved candidate 3 implementation plan sequentially in `tas-sr4b.22`, beginning
-   with task 3 coupled recovery/encoding; tasks 1–2 are complete. The earlier producer correction is delivered; the remaining
-   design and plan are approved. Continue the remainder of candidate 3 and candidates 4–8 in recorded order,
-   retaining each explicit disposition and implementing only its approved bounded design.
-   The audit, ranking and candidates 1–2 delivery are recorded; candidates 4–8 require approval. Follow the register's
-   evidence and verification constraints, including candidate 3's approved failure policy and checkpoint verification gates.
-2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
-   import the graph; selected read imports have a smaller closure, mutations retain most of it.
-   No end-to-end import saving is established. Native-effect seams are inventoried in the research.
-3. Preserve fresh children, actual archive entrypoint, `python -I -S`, readiness/timeout cleanup,
-   fresh authority and every consumer assertion. No startup design is approved yet. Consider
-   production lazy imports during later simplification without an indirect dispatcher justified
-   only by unmeasured test savings. Fresh focused checks passed: historical-authority case in
-   4.67 seconds; failed deploy retry and successful restore in 8.38 seconds. Production/test sources
-   remain unchanged by this investigation; full-suite timing remains the preceding checkpoint.
-   Final `mix precommit` passed 805 tests in 44.5 seconds after starting the stopped local database.
-
-Startup investigation is complete; import changes remain a step-3 consideration.
-Retain lost-genesis replay/changed-target refusal outcomes. The accepted history split loses direct
-combined >4,096 packaged-consumer coverage; focused observers retain real large-history evidence.
-
-Production simplification follows this investigation under canonical operations-development
-guidance. Host acceptance and history consolidation retain their separate authorization gates.
-
-The old staging installation is outside the supported format/runtime boundary. Its dated DNS,
-email, administrator, and failed-upgrade observations are historical evidence only. Do not migrate,
-repair, or run the new controller against it.
-
-## Agreed pre-merge sequence
-
-This is the agreed workstream order; checkpoint updates must preserve it and its gates.
-We are now at step 3, candidate 3 approved-plan execution boundary: candidates 1–2 are committed, the producer
-correction is committed and verified, the broader
-audit/register is recorded; package reuse and
-the approved history coverage split are verified, and startup investigation has its accepted
-measured disposition. Candidate review/approved simplification and steps 4–6 remain unfinished.
-
-1. **Profile the current operations suite.** Map overlapping coverage without deleting tests.
-   Use measurements to identify expensive fixtures, repeated production seams and duplicated
-   state transitions. Existing measurements are in the linked research document; refresh them
-   when the relevant workload changes.
-2. **Apply coverage-retaining test optimizations.** Reduce repeated builds, package assembly,
-   subprocess work and filesystem setup; improve safe parallelism where measurements justify it.
-   Keep the broad regression net intact. The explicitly approved history coverage split retains
-   real >4,096 observer regressions and public packaged backup-authority assertions; it is not
-   authorization for general test removal. Complete: startup was measured and import changes
-   explicitly deferred to step 3.
-3. **Review and simplify the ops implementation** under
-   [Operations development](../development.md#operations-development), in this order:
-   audit the current production implementation for simplification and other architecture-improvement
-   candidates; record candidates with enough context in a durable repository file; rank them from
-   highest expected return to lower, weighing benefit, implementation/maintenance cost and risk;
-   then review each candidate with the operator in that order and implement only after its explicit
-   approval. Record each candidate's affected boundaries, evidence, proposed change, behavior/safety
-   trade-offs, verification and disposition so the process can resume outside the selecting session.
-   The [register](../research/2026-09-16-operations-simplification-candidates.md) is now created;
-   retain unreviewed candidates and pending decisions.
-   The approved `tas-sr4b.15` increment is complete and precedes this broader audit;
-   it does not establish that the remaining implementation has been audited. Read complete relevant
-   specifications before proposing changes to accepted behavior. Preserve current operator
-   behavior, destructive-target controls, backup/reference safety, migration compatibility, secret
-   protection, truthful failure evidence and supported interruption recovery. Prefer safe refusal
-   over machinery for unsupported theoretical combinations. Verify each bounded change against
-   the existing comprehensive suite.
-4. **With production structure stable, review test overlap and remove only proved duplicate
-   coverage.** Retain focused public-boundary tests and one clear owner for each consequential
-   invariant. Rerun complete local gates and clean/dirty build/package checks.
-5. **Agree on a reasonable set of durable commit groups and squash with GitButler.** History
-   rewriting and any required remote update need explicit operator authorization. Release identity
-   embeds the source revision, so rebuild and repeat identity-sensitive local gates after squashing.
-6. **Run clean real-VPS provisioning/deployment acceptance against the exact post-squash head.**
-   Obtain the separate external authorization below first. Do not change production code after
-   acceptance without rerunning the affected local and host gates.
+1. **Profile operations coverage:** complete; evidence is in the linked measurements.
+2. **Apply coverage-retaining optimizations:** complete (xdist, immutable package reuse,
+   history split, measured startup disposition). This does not authorize general test removal.
+3. **Review and simplify production:** the ranked audit/register and candidates 1–3 are complete.
+   Review remaining candidates in order: **4** production-shaped provisioning evidence;
+   **5** one owner of systemd asset bytes; **6** unused internal names; **7** unused pristine
+   admission after mapping tests; **8** selected-handler imports. Obtain each explicit disposition
+   and approved bounded design before implementation; keep unreviewed candidates discoverable.
+   Preserve operator behavior, destructive targets, backup/reference safety, migration compatibility,
+   secret protection, truthful failure evidence and supported interruption recovery. Verify and
+   independently review each approved increment against the existing comprehensive suite.
+   For candidate 8, preserve fresh children, real archive entrypoint, `python -I -S`, native-effect
+   substitutions, readiness markers/timeout cleanup, fresh authority and every consumer assertion;
+   measure focused public cases before/after without adding a dispatcher for unproved savings.
+4. **After production structure is stable, map overlap and remove only proved duplicate tests.**
+   Retain focused public-boundary coverage and one owner per consequential invariant; run full
+   local gates and clean/dirty build/package checks. No general test deletion is approved yet.
+5. **Agree durable commit groups, then squash with GitButler.** History rewriting and any remote
+   update require explicit authorization. Source revision is embedded in release identity: rebuild
+   and repeat identity-sensitive local checks after squashing.
+6. **Run clean real-VPS acceptance on the exact post-squash head.** Obtain the external gate below
+   first. Source changes after acceptance require affected local and host checks to be repeated.
 
 ## External gate — authorization required
 
-Before acting, obtain explicit operator authorization identifying the disposable target, permitted
-host/provider/DNS changes, access path and destructive restore scope. Recreate a clean supported
-staging host and follow the [runbook](../deployment.md):
+Obtain explicit authorization identifying the disposable target, permitted host/provider/DNS
+changes, access path and destructive restore scope. Establish a clean supported staging host,
+then follow the runbook in order:
 
 1. Provision twice; inspect HTTPS, HSTS, listeners, firewall and reboot behavior.
-2. Perform administrator/login, invitation email, API key and LiveView acceptance.
-3. Exercise a second release, rollback, forward deployment, controlled migration failure, backup
+2. Accept administrator/login, invitation email, API key and LiveView behavior.
+3. Exercise second release, rollback, forward deploy, controlled migration failure, backup
    and destructive restore.
 4. Inspect canary-secret and release-cookie leakage before recording external acceptance.
 
-Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot and destructive restore
-remain unproven by local fakes, packages or builds. Do not run the new controller against the
-unsupported historical staging installation.
-
-Task 1 checkpoint: canonical service/8 producers and exact fixtures delivered; focused gate
-116 passed in 5.34 seconds, compileall passed. Distinct scoped review approved spec compliance
-and quality without findings. Task 2 shared cleanup validation precedes coupled recovery/encoding
-and integrated acceptance in the approved plan. No translator removal or host acceptance yet.
-
-Task 2 checkpoint: shared cleanup completion validator now owns confirmed-batch membership
-for helper and controller; controller keeps full schema validation first. Direct RED missing export,
-GREEN 6 passed; focused gate 94 passed in 0.64 seconds. Module export follow-up passed direct
-6 cases and import identity/export checks. Distinct scoped review approved after correcting the
-export list and retracting a raw-index finding against authoritative GitButler modified-file evidence.
-Task 3 coupled recovery/encoding and task 4 acceptance remain in order.
-
-Task 3 checkpoint: exact recovery/encoding delivered; focused 249 passed in 9.08 seconds,
-compileall/isolated archive passed. Four review findings were corrected with red/green regressions;
-distinct re-review approved. Canonical design owns proof/bound evidence. Task 4 integrated acceptance
-is next; no new source edits or application builds may overlap the operations gate.
+Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot and complete destructive
+restore remain unproven by local suites/fakes/archives. The historical staging installation is
+outside the supported format/runtime boundary: do not migrate, repair or run the new controller
+against it. Its dated DNS/email/admin/upgrade observations are historical only.

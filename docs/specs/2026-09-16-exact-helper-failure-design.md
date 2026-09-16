@@ -1,6 +1,6 @@
 # Exact helper failure handling
 
-Status: approved by the operator on 2026-09-16. Implementation plan approved on 2026-09-16.
+Status: approved by the operator on 2026-09-16. Implementation plan approved and locally implemented/verified on 2026-09-16.
 Tracking: `tas-sr4b.20`, within candidate 3 of the
 [ordered register](../research/2026-09-16-operations-simplification-candidates.md).
 
@@ -17,7 +17,7 @@ bounded respect; existing wire schema and controller failure rules remain unchan
 Baseline: source tip `ff24d0089c6b7d073a16fd1d47314150ea5dd432` on
 `dedicated-host-deployment-automation`. Inspection/5 producer correction is committed as
 `664926a7`; migration extraction and SOPS narrowing are complete. The workspace uses protocol 3.
-No host action, translator removal or new failure recovery has been implemented by this design.
+Implementation and verification are recorded below. No host action is authorized by this design.
 
 `host_helper/__main__.py` is the sole production consumer of `_legacy_mutation_result`.
 Handlers already emit exact state, but translation reads retired `changed`,
@@ -202,10 +202,9 @@ and stop defect tracked. After approved design and approved plan, update the han
 a fresh session before implementation by default. Local checkpoint commits are authorized;
 push, history rewriting, merge and host actions retain their separate gates.
 
-Next session: read this complete design and canonical reconciliation specification; confirm current
-source/Beads state; review the [bounded implementation plan](../plans/2026-09-16-exact-helper-failure.md); retain ordered
-candidate review 4–8 and pre-merge steps 4–6 from the
-[workstream handoff](../handoffs/ops-vps-readiness.md). Do not implement from a proposed design.
+The approved sequence is delivered. Continue ordered review at candidate 4 in the
+[register](../research/2026-09-16-operations-simplification-candidates.md); the
+[workstream handoff](../handoffs/ops-vps-readiness.md) preserves later verification and external gates.
 
 ## Implementation evidence
 
@@ -237,3 +236,11 @@ case passed. Maximum escaped reduced envelopes decoded and fully validated: rest
 with 64 confirmed 1024-byte escaped paths and 255-byte temporary identifiers is 491,606 bytes.
 Neither requires proof truncation or a changed limit. Actual large-integer serialization failure
 is covered. Integrated local gates follow; native host acceptance remains unproved.
+
+Integrated acceptance on source checkpoint `6bd7e23`: locked sync, compileall and shell syntax
+exited 0; four-worker operations gate passed 1,572 tests with 158 existing gevent fork/forkpty
+warnings in 58.77 seconds. `mix precommit` exited 0 with 805 tests in 42.2 seconds; it changed
+no files. Scoped terminology checks found no leaked planning identifiers or remaining translator
+reader. The controller's boolean changed fallback applies only outside `MUTATION_OPERATIONS`;
+exact mutation failures return through validated classification first. Local acceptance does
+not establish release-build, native systemd/PostgreSQL/UFW/ACME/email/reboot or destructive restore.

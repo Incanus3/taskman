@@ -1,6 +1,6 @@
 # Operations simplification candidate register
 
-Status: candidates 1–2 and candidate 3 producer correction complete; translator-removal design and plan approved; implementation and later review pending. Updated: 2026-09-16.
+Status: candidates 1–3 complete; candidates 4–8 await ordered operator review. Updated: 2026-09-16.
 Workstream: [Operations VPS readiness](../handoffs/ops-vps-readiness.md), pre-merge step 3.
 Tracking: `tas-sr4b.16`; parent `tas-sr4b` remains open for hardening and external acceptance.
 
@@ -60,7 +60,7 @@ cost. Small changes with clear shared consumers lead; larger safety-sensitive re
 | --- | --- | --- | --- | --- |
 | 1 | Give migration-version extraction a neutral owner | Clear shared invariant; fewer parsing variants and host database imports | Small / low to moderate | Completed 2026-09-16 (`tas-sr4b.17`) |
 | 2 | Narrow the SOPS runner/result contract | Remove unused result forms and retry dispatch | Small to moderate / moderate, secrets boundary | Completed 2026-09-16 (`tas-sr4b.18`) |
-| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Producer correction completed (`tas-sr4b.19`); translator-removal design/plan approved; execution pending |
+| 3 | Retire old-shape mutation translation with truthful exact failure handling | Remove a second result interpretation path; address demonstrated evidence degradation | Moderate / high, failure evidence | Completed (`tas-sr4b.19`, `tas-sr4b.22`) |
 | 4 | Make provisioning injection use the production evidence contract | Remove compatibility branches and implicit all-create authority | Moderate / high, resource/scheduler authority | Unreviewed |
 | 5 | Give confirmed systemd asset bytes one owner | Fewer representations; bind validation and installation to the same rendered content | Moderate / moderate | Unreviewed |
 | 6 | Remove unused internal compatibility names | Smaller supported internal surface | Small / low | Unreviewed |
@@ -184,9 +184,9 @@ contention, inspect-only cleanup and completed cleanup targets. Preserve the exi
 reinspection assertion. Run complete local gates and distinct correctness review. The [bounded failure design](../specs/2026-09-16-exact-helper-failure-design.md) now
 defines the evidence policy and fixture migration; the operator approved it on 2026-09-16.
 The [implementation plan](../plans/2026-09-16-exact-helper-failure.md) was approved on 2026-09-16 in `tas-sr4b.21`. It includes correcting the additionally discovered service-stop producer to
-service/8 before translator removal. The bounded plan sequence is authorized for fresh-session execution.
+service/8 before translator removal. The bounded sequence is delivered in `tas-sr4b.22`; the operator explicitly chose execution in the approval session.
 
-**Next proposed increment (2026-09-16).** Split delivery so the demonstrated producer defect is
+**Delivered producer correction (2026-09-16).** Split delivery so the demonstrated producer defect is
 corrected before removing translation. First, host deploy's `CommandError` observation failure
 must emit canonical `inspection` (accepted with exit 5), not unsupported `observation`. Preserve
 the operation-owned mutation classification, final observation/availability, report, backup identity
@@ -203,14 +203,18 @@ Selection/service/history remain 8; restore inspection remains 11 and cleanup re
 necessary for the approved result contract, not a broader category change. Scoped protocol tests
 must protect those exclusions, alongside the actual handler/entrypoint regression.
 
-Second, complete the failure-policy design and test mapping for removing `_legacy_mutation_result`.
-Valid exact results must pass directly; malformed results must never become success or fabricated
-unchanged state. Resolve which independently validated exact mutation/report/completion evidence
-can be retained, preserve primary failure versus follow-up inspection failure, and preserve bounded
-safe observation/lock behavior. Older injected result shapes must be replaced with exact fixtures
-without losing consequential assertions. This second increment has its own approval gate; the
-producer correction does not authorize removing translation. Retaining the translator permanently
-leaves duplicate interpretation and demonstrated evidence loss; deleting it first is rejected.
+**Delivered translator removal (2026-09-16).** The separately approved design and plan
+were implemented in `tas-sr4b.22`, after the producer correction. Exact handler results pass directly;
+invalid matching results retain independent validator-approved proof, coherent primary outcomes
+and report precedence. One validated observer replaces invalid final groups. Two encoding attempts
+retain required proof without truncation; cleanup inspection remains unchanged with no completions.
+Retired fields, aliases and translation are removed; exact fixtures retain consequential assertions.
+Retaining duplicate interpretation/evidence loss or deleting translation before failure-policy design
+remain rejected alternatives. The [design implementation evidence](../specs/2026-09-16-exact-helper-failure-design.md#implementation-evidence)
+owns regression/review/size details. Four independent-review findings were fixed and re-reviewed
+without remaining blockers. Final focused gate: 249 passed; integrated operations: 1,572 passed
+with 158 known warnings in 58.77 seconds; `mix precommit`: 805 passed in 42.2 seconds.
+Locked sync, compileall and shell syntax passed. No release-build or native-host acceptance follows.
 
 ## 4. Production-shaped provisioning evidence
 
@@ -327,14 +331,15 @@ local gates. No startup change is approved.
 
 ## Continuation and verification record
 
-Current position: candidates 1–2 are committed (`15602d43`, `d4335ffe`); candidate 3's approved
-producer correction is committed as `664926a7`. Translator-removal design and plan are approved;
-execute the plan in a fresh session, task 1 first. Candidate 3 delivery and candidates 4–8 remain pending. After each explicit
-disposition, update this register and its tracking issue; retain unreviewed entries in order.
-Approved changes require their bounded design, meaningful tests, complete local gates and distinct
-scoped verification. Production stability precedes step-4 test overlap removal, then authorized
-commit grouping/squash and identity-sensitive rebuild, then separately authorized exact-head VPS
-acceptance. The handoff preserves the complete sequence and external gates.
+Current position: candidates 1–3 are delivered and locally committed. Candidate 3's
+producer correction is `664926a7`; task checkpoints are `956ce27` (service/fixtures), `f00f904`
+(shared cleanup authority) and `6bd7e23` (exact recovery/encoding). Next: discuss candidate 4's
+production-shaped provisioning evidence. Candidates 4–8 remain unreviewed and require ordered
+explicit disposition before bounded implementation. Approved changes require their design,
+meaningful tests, complete local gates and distinct scoped verification. Production stability
+precedes step-4 test overlap removal, then explicitly authorized commit grouping/squash and
+identity-sensitive rebuild, then separately authorized exact-head VPS acceptance. The handoff
+preserves the complete sequence and external gates.
 
 Initial audit evidence (before source changes): live GitButler/task refresh, source/consumer inventory and direct boundary/test
 inspection; the synthetic mutation-category probe above reproduced without host or native effects.
