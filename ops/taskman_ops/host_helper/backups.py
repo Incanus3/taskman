@@ -15,6 +15,7 @@ from .commands import CommandError, run_command
 from .credentials import CredentialError, validate_credentials
 from .database import database_mapping
 from ..checksums import sha256_file
+from ..migrations import versions_from_filenames
 from .filesystem import fsync_directory
 from .paths import ManagedPaths
 from .records import MAX_RECORD_BYTES, BackupRecord, RecordError, ReleaseRecord, write_backup_manifest
@@ -94,14 +95,13 @@ def _release_migration_fingerprints(
     record: ReleaseRecord,
 ) -> tuple[tuple[int, str, str], ...]:
     try:
+        versions = versions_from_filenames(tuple(item["filename"] for item in record.migrations))
         result = tuple(
-            (int(item["filename"][:14]), item["filename"], item["sha256"])
-            for item in record.migrations
+            (version, item["filename"], item["sha256"])
+            for version, item in zip(versions, record.migrations, strict=True)
         )
     except (KeyError, TypeError, ValueError) as error:
         raise BackupAuthorityError("installed release migration provenance is invalid") from error
-    if tuple(item[0] for item in result) != tuple(sorted({item[0] for item in result})):
-        raise BackupAuthorityError("installed release migration provenance is invalid")
     return result
 
 

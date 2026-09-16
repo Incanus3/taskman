@@ -18,6 +18,7 @@ from typing import Protocol
 from ..releases.build import build_release
 from ..config import EnvironmentConfig, load_environment
 from ..errors import ExitStatus, OpsError
+from ..migrations import versions_from_filenames
 from ..host.acceptance import validate_provisionable_host
 from ..releases.manifests import VerifiedArtifact, verify_artifact
 from ..host_helper.backup_protection import (
@@ -688,7 +689,7 @@ def _provision_plan_effects(
     applied = authority.get("applied_migrations")
     if not isinstance(applied, tuple) or any(type(version) is not int for version in applied):
         return effects
-    candidate_versions = tuple(int(item.filename[:14]) for item in target.manifest.migrations)
+    candidate_versions = versions_from_filenames(tuple(item.filename for item in target.manifest.migrations))
     pending = candidate_versions[len(applied) :] if candidate_versions[: len(applied)] == applied else ()
     protections = _plan_protections(authority)
     independent = authority.get("independently_held_backup_ids")

@@ -31,9 +31,9 @@ from ..database import (
     database_mapping,
     migration_versions,
     observe_database_state_or_empty,
-    release_migration_versions,
 )
 from ...checksums import sha256_file
+from ...migrations import versions_from_filenames
 from ..filesystem import fsync_directory
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..operations.backup import create_validated_backup
@@ -47,7 +47,7 @@ from ..backup_protection import (
     retire_protection_attempts,
 )
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection
+from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection, migration_record_versions
 from ..selection import SelectionAmbiguityError, select_current
 from ..services import change_service
 from ..state import (
@@ -505,7 +505,7 @@ def _validate_request_operation(request: HostRequest, first_release: bool) -> No
 
 def _migration_versions_from_manifest(manifest: ArtifactManifest) -> tuple[int, ...]:
     try:
-        return migration_versions(tuple(int(item.filename.split("_", 1)[0]) for item in manifest.migrations))
+        return versions_from_filenames(tuple(item.filename for item in manifest.migrations))
     except (TypeError, ValueError) as error:
         raise ValueError("invalid candidate migrations") from error
 
@@ -598,7 +598,7 @@ def _validate_expected_state(state: HostState, inputs: _Inputs, *, first_release
         expected_baselines.update(
             record.release_id
             for record in state.releases
-            if applied.intersection(release_migration_versions(record.migrations))
+            if applied.intersection(migration_record_versions(record.migrations))
         )
     expected_baseline_digest = __import__("hashlib").sha256(
         json.dumps(
@@ -692,9 +692,18 @@ def _genesis_migration_provenance_matches(state: HostState, inputs: _Inputs) -> 
         record for record in relevant_records
         if _migration_versions_from_manifest(record.artifact_manifest)[:prefix_size] == state.applied_migrations
     )
+    candidate_versions = versions_from_filenames(tuple(item["filename"] for item in candidate_prefix))
     return bool(complete_records) and all(
-        tuple(dict(item) for item in record.migrations if int(item["filename"][:14]) in state.applied_migrations)
-        == tuple(item for item in candidate_prefix if int(item["filename"][:14]) in _migration_versions_from_manifest(record.artifact_manifest))
+        tuple(
+            dict(item)
+            for version, item in zip(migration_record_versions(record.migrations), record.migrations, strict=True)
+            if version in state.applied_migrations
+        )
+        == tuple(
+            item
+            for version, item in zip(candidate_versions, candidate_prefix, strict=True)
+            if version in _migration_versions_from_manifest(record.artifact_manifest)
+        )
         for record in relevant_records
     )
 

@@ -20,12 +20,12 @@ from ..backup_protection import complete_successful_selection
 from ..backups import BackupAuthorityError, delete_completed_backup
 from ..commands import CommandError, run_command
 from ..credentials import validate_credentials
-from ..database import database_mapping, release_migration_versions
+from ..database import database_mapping
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..operations.backup import create_validated_backup
 from ..operations.discover import _scheduler_facts
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import BackupRecord, RecordError
+from ..records import BackupRecord, RecordError, migration_record_versions
 from ..restore_database import (
     RestoreDatabaseError,
     begin_temporary_rebuild,
@@ -540,7 +540,7 @@ def _source_record(state: HostState, inputs: _Inputs) -> BackupRecord:
     release = next((item for item in state.releases if item.release_id == source.source_release_id), None)
     if release is None:
         raise RestoreManual("backup source release is unavailable")
-    if release_migration_versions(release.migrations) != source.migration_versions:
+    if migration_record_versions(release.migrations) != source.migration_versions:
         raise RestoreManual("backup source migrations are contradictory")
     return source
 
@@ -562,7 +562,7 @@ def _bound_source_record(state: HostState, target: RestoreTarget) -> BackupRecor
     )
     if (
         release is None
-        or release_migration_versions(release.migrations)
+        or migration_record_versions(release.migrations)
         != source.migration_versions
         or (source.dump_sha256, source.source_release_id)
         != (target.dump_sha256, target.source_release_id)

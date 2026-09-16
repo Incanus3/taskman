@@ -83,7 +83,7 @@ Paths below are relative to `ops/taskman_ops/` unless otherwise stated.
 | `host_helper/verification.py` | Fresh service/release/listener/readiness proof and its request construction |
 | `host_helper/operations/` | Command-specific procedures, confirmation relevance, and final state projection |
 | `workflows/`, including `helper.py` and `verify.py` | Operator orchestration, validated report translation, and request/result integration |
-| `checksums.py`, `migrations.py`, `host/pyinfra_support.py` | Neutral streaming SHA-256, migration-version invariants, and controller-only pyinfra mechanics |
+| `checksums.py`, `migrations.py`, `host/pyinfra_support.py` | Neutral streaming SHA-256, migration filename/version invariants, and controller-only pyinfra mechanics |
 | `host_helper/scheduled_backup.py`, `services/backups.py` | Host-side scheduled environment/status adapter and controller-side installation, calendar, and unit contracts |
 | `ops/builder/`, `ops/systemd/`, `ops/caddy/` | Pinned builder and reviewed native assets |
 | `lib/taskman/health.ex`, `lib/taskman_web/controllers/health_controller.ex` | Public database-readiness capability and fixed HTTP response |

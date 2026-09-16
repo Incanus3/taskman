@@ -32,7 +32,12 @@ from taskman_ops.releases.manifests import ArtifactManifest
 
 from .paths import ManagedPaths, PathAuthorityError
 from ..checksums import sha256_file
-from ..migrations import MigrationOrderError, validate_migration_versions
+from ..migrations import (
+    MIGRATION_FILENAME_RE,
+    MigrationOrderError,
+    validate_migration_versions,
+    versions_from_filenames,
+)
 from .filesystem import fsync_directory
 
 
@@ -40,7 +45,6 @@ MAX_RECORD_BYTES = 64 * 1024
 MAX_RELEASE_RECORD_BYTES = 256 * 1024
 MAX_MIGRATIONS = 256
 MAX_MIGRATION_VERSIONS = 512
-MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 
@@ -50,6 +54,24 @@ class RecordError(ValueError):
 
 
 CompletedRecordError = RecordError
+
+
+def migration_record_versions(migrations: object) -> tuple[int, ...]:
+    """Project a release's tuple of migration mappings into ordered versions."""
+
+    if not isinstance(migrations, tuple):
+        raise ValueError("release migration records are invalid")
+    filenames: list[str] = []
+    for migration in migrations:
+        if not isinstance(migration, Mapping) or type(migration.get("filename")) is not str:
+            raise ValueError("release migration records are invalid")
+        filenames.append(migration["filename"])
+    try:
+        return versions_from_filenames(filenames)
+    except MigrationOrderError:
+        raise ValueError("migration versions are invalid") from None
+    except ValueError:
+        raise ValueError("release migration records are invalid") from None
 
 
 def _exact(value: object, keys: frozenset[str], label: str) -> Mapping[str, object]:
@@ -548,6 +570,7 @@ __all__ = [
     "ReleaseRecord",
     "SelectionRecord",
     "append_selection",
+    "migration_record_versions",
     "selection_filename",
     "write_backup_manifest",
     "write_release_manifest",

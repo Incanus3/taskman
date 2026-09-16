@@ -17,6 +17,8 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
   Parallelism investigation `tas-sr4b.13` is closed; xdist adoption was accepted on 2026-09-16.
   Optimization task: `tas-sr4b.14` is complete (package reuse/history split verified; startup
   measured and explicitly deferred to step 3 on 2026-09-16).
+- Audit and ordered candidate review: `tas-sr4b.16` is in progress; the register is recorded,
+  candidate 1 is complete in `tas-sr4b.17`; candidates 2–8 await disposition.
 
 ## Current checkpoint
 
@@ -48,6 +50,24 @@ now uses the shared report validator directly. Fresh local gates:
 805 tests in 42.9 seconds. Focused controller/protocol coverage passed 209 tests. Locked sync,
 compileall, shell syntax, verify help and scoped documentation/terminology checks passed.
 
+The broader step-3 structural audit is now recorded in the
+[ranked candidate register](../research/2026-09-16-operations-simplification-candidates.md),
+against clean tip `437cb1d217dfa39784436c3c3ebc93b269ff9160`. The operator approved candidate 1,
+neutral migration-version extraction, and it is implemented locally in `tas-sr4b.17` with distinct
+scoped review approval. Candidate 2 is next; candidates 2–8 remain unreviewed. The register owns
+evidence, boundaries, ranking rationale, trade-offs and proposed verification. A synthetic local
+probe also established mutation-evidence degradation through invalid-result translation; candidate 3
+retains its required failure-policy analysis. No production/test implementation or external action
+occurred during the audit.
+
+The shared filename/version extractor now serves record, manifest and fingerprint consumers;
+the database parser is removed. Supported valid behavior and record error/limit boundaries remain.
+Duplicate timestamp aliases now refuse earlier in provision planning, before confirmation or
+convergence; the register records exact refusal semantics and accepted scope. Fresh gates passed:
+1,492 operations tests in 59.06 seconds with 158 known warnings; `mix precommit` passed 805 tests in
+43.0 seconds; locked sync, compileall and shell syntax passed. Focused coverage passed 496 distinct
+tests including both actual isolated archives. No host action or history consolidation occurred.
+
 ## Immediate next increment
 
 Step 2 of the agreed pre-merge sequence is complete. Package reuse and the history split are
@@ -55,14 +75,13 @@ verified; the operator explicitly accepted the measured startup disposition and 
 changes to pre-merge step 3. Do not revive the earlier approval gates, direct-write proposal or
 unselected selective-import experiment.
 The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
-that selected it does not complete the step-3 audit. No startup change or mutation-adapter removal
-is selected. The operator clarified the complete step-3 sequence below and requested that the
-broader audit not begin during this increment; it remains the next continuation action.
+that selected it preceded the broader audit, now recorded in the linked register. No startup change,
+mutation-adapter removal or implementation beyond candidate 1 is approved.
 
-1. Audit the current production implementation and persist the contextual ranked candidate register
-   described in step 3 below, then review candidates with the operator in order. Treat observations
-   about the mutation adapter and migration-version extraction as unassessed leads, not approved
-   candidates or an established ranking. No further implementation is approved.
+1. Discuss candidate 2, narrowing the SOPS runner/result contract. Continue candidates 2–8 in recorded order,
+   retaining each explicit disposition and implementing only its approved bounded design.
+   The audit, ranking and candidate 1 delivery are recorded; candidates 2–8 require approval. Follow the register's
+   evidence and verification constraints, including candidate 3's unresolved failure-policy design.
 2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
    import the graph; selected read imports have a smaller closure, mutations retain most of it.
    No end-to-end import saving is established. Native-effect seams are inventoried in the research.
@@ -88,8 +107,10 @@ repair, or run the new controller against it.
 ## Agreed pre-merge sequence
 
 This is the agreed workstream order; checkpoint updates must preserve it and its gates.
-We are now at step 3: package reuse and the approved history coverage split are verified,
-and startup investigation has its accepted measured disposition. Steps 3–6 remain unfinished.
+We are now at step 3, candidate 2 discussion: candidate 1 is implemented and verified, the broader
+audit/register is recorded; package reuse and
+the approved history coverage split are verified, and startup investigation has its accepted
+measured disposition. Candidate review/approved simplification and steps 4–6 remain unfinished.
 
 1. **Profile the current operations suite.** Map overlapping coverage without deleting tests.
    Use measurements to identify expensive fixtures, repeated production seams and duplicated
@@ -109,7 +130,8 @@ and startup investigation has its accepted measured disposition. Steps 3–6 rem
    then review each candidate with the operator in that order and implement only after its explicit
    approval. Record each candidate's affected boundaries, evidence, proposed change, behavior/safety
    trade-offs, verification and disposition so the process can resume outside the selecting session.
-   Link the register here when created and retain unreviewed candidates and pending decisions.
+   The [register](../research/2026-09-16-operations-simplification-candidates.md) is now created;
+   retain unreviewed candidates and pending decisions.
    The approved `tas-sr4b.15` increment is complete and precedes this broader audit;
    it does not establish that the remaining implementation has been audited. Read complete relevant
    specifications before proposing changes to accepted behavior. Preserve current operator

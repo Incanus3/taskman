@@ -11,6 +11,7 @@ import re
 import tarfile
 
 from ..checksums import sha256_file
+from ..migrations import MIGRATION_FILENAME_RE
 from ..errors import ExitStatus, OpsError
 from .identifiers import (
     build_release_id,
@@ -43,7 +44,6 @@ MAX_MIGRATION_FILENAME_BYTES = 255
 MAX_RELEASE_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RELEASE_EXPANDED_BYTES = 10 * 1024 * 1024 * 1024
 MAX_RELEASE_ARCHIVE_MEMBERS = 16_384
-MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
 _CHECKSUM_LINE_RE = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)\n\Z")
 _ERTS_DIRECTORY_RE = re.compile(r"taskman/erts-[0-9][A-Za-z0-9._-]*\Z")
 _MANIFEST_FIELDS = frozenset(

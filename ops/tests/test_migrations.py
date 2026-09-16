@@ -59,3 +59,82 @@ def test_record_limit_and_unknown_database_defaults_remain_local() -> None:
     assert _database_state(
         {"state": "ready", "applied_migrations": (), "initial_empty": True}
     ) == ((), "ready", True)
+
+
+@pytest.mark.parametrize("filenames, expected", (
+    ([], ()),
+    ((), ()),
+    (["00000000000000_initial.exs", "20260907120001_create_tasks.exs"], (0, 20260907120001)),
+    (("20260907120001_create_tasks.exs", "20260907120002_add_index.exs"), (20260907120001, 20260907120002)),
+))
+def test_extracts_versions_from_filename_sequences(filenames, expected) -> None:
+    from taskman_ops import migrations
+
+    assert migrations.versions_from_filenames(filenames) == expected
+
+
+@pytest.mark.parametrize("filenames", (
+    None, {}, "20260907120001_create_tasks.exs", {"20260907120001_create_tasks.exs"},
+    [None], [True], [20260907120001],
+    ["2026090712001_short.exs"], ["202609071200011_long.exs"],
+    ["20260907120001_.exs"], ["20260907120001_Upper.exs"],
+    ["20260907120001_name.exs\n"], ["path/20260907120001_name.exs"],
+))
+def test_rejects_malformed_filename_sequences(filenames) -> None:
+    from taskman_ops import migrations
+
+    with pytest.raises(ValueError, match="^invalid migration filenames$"):
+        migrations.versions_from_filenames(filenames)
+
+
+@pytest.mark.parametrize("filenames", (
+    ("20260907120001_a.exs", "20260907120001_b.exs"),
+    ("20260907120002_b.exs", "20260907120001_a.exs"),
+))
+def test_rejects_filename_version_order_without_normalizing(filenames) -> None:
+    from taskman_ops import migrations
+
+    with pytest.raises(MigrationOrderError, match="^migration versions must be sorted and unique$"):
+        migrations.versions_from_filenames(filenames)
+
+
+@pytest.mark.parametrize("records, message", (
+    ([], "release migration records are invalid"),
+    ((None,), "release migration records are invalid"),
+    (({},), "release migration records are invalid"),
+    (({"filename": "20260907120001_.exs"},), "release migration records are invalid"),
+    (({"filename": "20260907120002_b.exs"}, {"filename": "20260907120001_a.exs"}), "migration versions are invalid"),
+    (({"filename": "20260907120001_a.exs"}, {"filename": "20260907120001_b.exs"}), "migration versions are invalid"),
+))
+def test_release_mapping_extraction_preserves_shape_and_error_categories(records, message) -> None:
+    from taskman_ops.host_helper.records import migration_record_versions
+
+    with pytest.raises(ValueError) as failure:
+        migration_record_versions(records)
+    assert str(failure.value) == message
+
+
+def test_release_mapping_extraction_keeps_empty_and_record_limits_local() -> None:
+    from taskman_ops.host_helper.records import migration_record_versions
+
+    assert migration_record_versions(()) == ()
+    records = tuple({"filename": f"{version:014d}_migration.exs"} for version in range(513))
+    assert migration_record_versions(records) == tuple(range(513))
+
+
+@pytest.mark.parametrize("filenames", (
+    ("20260907120001_a.exs", "20260907120001_b.exs"),
+    ("20260907120002_b.exs", "20260907120001_a.exs"),
+))
+def test_deployment_boundaries_keep_candidate_order_refusals(filenames) -> None:
+    from types import SimpleNamespace
+    from taskman_ops.errors import OpsError
+    from taskman_ops.host_helper.operations.deploy import _migration_versions_from_manifest
+    from taskman_ops.releases.manifests import MigrationFingerprint
+    from taskman_ops.workflows.deploy import _pending_migration_versions
+
+    candidate = tuple(MigrationFingerprint(filename, "a" * 64) for filename in filenames)
+    with pytest.raises(ValueError, match="^invalid candidate migrations$"):
+        _migration_versions_from_manifest(SimpleNamespace(migrations=candidate))
+    with pytest.raises(OpsError, match="^candidate migration versions are invalid$"):
+        _pending_migration_versions((), candidate)

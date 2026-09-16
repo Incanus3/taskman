@@ -30,14 +30,13 @@ from ..database import (
     observe_database_state,
     observe_database_state_or_empty,
     observe_database_state_or_empty_as_admin,
-    release_migration_versions,
 )
 from ..restore_database import observe_restore_databases
 from ..restore_target import restore_target_sha256
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..backup_protection import independent_backup_ids
 from ..paths import ManagedPaths, PathAuthorityError
-from ..records import MAX_RECORD_BYTES, BackupRecord, RecordError
+from ..records import MAX_RECORD_BYTES, BackupRecord, RecordError, migration_record_versions
 from ..state import HostState, StateAmbiguityError, observe_host_state
 
 
@@ -401,7 +400,7 @@ def _observe(
                 if (
                     observed != requested_backup
                     or source is None
-                    or release_migration_versions(source.migrations)
+                    or migration_record_versions(source.migrations)
                     != requested_backup.migration_versions
                 ):
                     raise _RestoreBackupFailure(
@@ -649,7 +648,7 @@ def _deployment_projection(
         baseline_ids.update(
             record.release_id
             for record in state.releases
-            if applied.intersection(release_migration_versions(record.migrations))
+            if applied.intersection(migration_record_versions(record.migrations))
         )
     return {
         "backup_protections": protection_rows,

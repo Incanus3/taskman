@@ -11,7 +11,6 @@ from ..migrations import validate_migration_versions
 
 
 _DATABASE_KEYS = frozenset({"host", "port", "role", "name"})
-_MIGRATION_FILENAME_RE = re.compile(r"([0-9]{14})_[a-z0-9_]+\.exs\Z")
 _MIGRATION_VERSION_RE = re.compile(rb"[0-9]+\Z")
 _COMMAND_TIMEOUT_SECONDS = 60.0
 _PRISTINE_LANGUAGE_KEYS = frozenset(
@@ -95,23 +94,6 @@ def migration_versions(value: object) -> tuple[int, ...]:
         return validate_migration_versions(value)
     except ValueError:
         raise ValueError("migration versions are invalid") from None
-
-
-def release_migration_versions(migrations: object) -> tuple[int, ...]:
-    """Read the immutable migration versions encoded by one release record."""
-
-    if not isinstance(migrations, tuple):
-        raise ValueError("release migration records are invalid")
-    versions: list[int] = []
-    for migration in migrations:
-        if not isinstance(migration, Mapping):
-            raise ValueError("release migration records are invalid")
-        filename = migration.get("filename")
-        match = _MIGRATION_FILENAME_RE.fullmatch(filename) if type(filename) is str else None
-        if match is None:
-            raise ValueError("release migration records are invalid")
-        versions.append(int(match.group(1)))
-    return migration_versions(tuple(versions))
 
 
 def observe_database_state(database: Mapping[str, object], credentials: Path) -> dict[str, object]:
@@ -320,5 +302,4 @@ __all__ = [
     "observe_database_state_or_empty",
     "observe_database_state_or_empty_as_admin",
     "pristine_language_rows_match",
-    "release_migration_versions",
 ]
