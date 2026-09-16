@@ -304,9 +304,10 @@ Do not weaken existing process cleanup or transport deadlines in order to draw p
 
 ## Failure evidence and protocol scope
 
-Reconciliation implements `tas-6dkg`, retaining a failed `VerificationReport` through helper,
+Reconciliation implements `tas-6dkg`, retaining a failed verification-report mapping through helper,
 workflow mapping, and public results. This increment presents that evidence through the common
-human renderer and preserves it in JSON. Accept reports only through the strict report parser;
+human renderer and preserves it in JSON. Accept reports only through the shared protocol
+`validate_verification_report` validator;
 do not fabricate a report for preflight, transport loss, or failures before verification.
 
 Consume reconciliation's exact mutation-result contract, including `mutation_state`, explicit

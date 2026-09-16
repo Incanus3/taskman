@@ -22,6 +22,7 @@ from ..host_protocol import (
     PROTOCOL_VERSION,
     unavailable_observations,
     validate_mutation_state,
+    validate_verification_report,
 )
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
@@ -29,7 +30,6 @@ from ..releases.identifiers import validate_release_id
 from ..releases.artifacts import DeploymentTarget
 from ..remote import Remote, UploadReceipt
 from ..services.backups import scheduled_backup_helper
-from .verification_results import VerificationReport
 
 
 _MIGRATION_FILENAME_RE = re.compile(r"[0-9]{14}_[a-z0-9_]+\.exs\Z")
@@ -327,16 +327,16 @@ def successful_verification(value: object, expected_release_id: str) -> dict[str
     """Validate the complete fresh readiness proof for a mutation success."""
 
     try:
-        report = VerificationReport.from_mapping(mutable(value))
-    except (TypeError, ValueError):
+        report = validate_verification_report(mutable(value))
+    except ProtocolError:
         raise ValueError("verification report is invalid") from None
     if (
-        not report.successful
-        or report.release_id != expected_release_id
-        or report.expected_release_id != expected_release_id
+        report["exit_status"] != ExitStatus.OK
+        or report["release_id"] != expected_release_id
+        or report["expected_release_id"] != expected_release_id
     ):
         raise ValueError("verification report does not prove the selected release")
-    return report.to_mapping()
+    return report
 
 
 def _has_observed_migrations(state: Mapping[str, object]) -> bool:

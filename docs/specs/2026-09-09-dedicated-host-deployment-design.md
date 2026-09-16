@@ -82,7 +82,7 @@ Paths below are relative to `ops/taskman_ops/` unless otherwise stated.
 | `host_helper/commands.py`, `services.py`, `selection.py`, `filesystem.py` | Bounded host subprocesses, service control, atomic selection, and directory synchronization |
 | `host_helper/verification.py` | Fresh service/release/listener/readiness proof and its request construction |
 | `host_helper/operations/` | Command-specific procedures, confirmation relevance, and final state projection |
-| `workflows/`, including `helper.py` and `verification_results.py` | Operator orchestration, validated report translation, and request/result integration |
+| `workflows/`, including `helper.py` and `verify.py` | Operator orchestration, validated report translation, and request/result integration |
 | `checksums.py`, `migrations.py`, `host/pyinfra_support.py` | Neutral streaming SHA-256, migration-version invariants, and controller-only pyinfra mechanics |
 | `host_helper/scheduled_backup.py`, `services/backups.py` | Host-side scheduled environment/status adapter and controller-side installation, calendar, and unit contracts |
 | `ops/builder/`, `ops/systemd/`, `ops/caddy/` | Pinned builder and reviewed native assets |
@@ -241,6 +241,10 @@ The wire envelope remains separate from operation evidence. `HostResult.for_requ
 identity while callers explicitly choose outcome, message, state, and warnings. Workflow utilities
 share frozen-value conversion and first-occurrence warning deduplication; callers retain schema
 validation and error translation.
+
+The shared protocol validator owns verification-report schema and check-order/success/failure
+rules. Controller workflows consume its validated report mapping directly and retain their
+operation-specific outcome and expected-release checks, without a second typed report model.
 
 ## Completed state and replayable recovery
 

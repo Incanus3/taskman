@@ -15,77 +15,67 @@ not authorize a host reset, provider/DNS change, deployment, history rewrite, pu
 - Parent tracking issue: `tas-sr4b`. Local final-verification tasks `tas-sr4b.11` and `tas-6dkg`
   are closed; the parent remains open for pre-merge hardening and external acceptance.
   Parallelism investigation `tas-sr4b.13` is closed; xdist adoption was accepted on 2026-09-16.
-  Active task: `tas-sr4b.14` (three remaining candidates; package-reuse design accepted).
+  Optimization task: `tas-sr4b.14` is complete (package reuse/history split verified; startup
+  measured and explicitly deferred to step 3 on 2026-09-16).
 
 ## Current checkpoint
 
-Resume from the latest tip of `dedicated-host-deployment-automation`. The handoff checkpoint
-commit includes the previously verified retention optimization, deterministic parametrization
-correction, approved xdist adoption, measurements, and package-reuse approval. Its preceding
-stack tip was `8f1918614123fcba78fd874d45c20d1c9d51cfb4`; locally verified production
-implementation head is `934baff3c282627efb58fd77bde3325807147973`. No production behavior
-changed in the optimization checkpoint. Refresh workspace state before continuing.
+Resume from the latest tip of `dedicated-host-deployment-automation`. This checkpoint includes
+the verified package/history optimizations and report-validator simplification; its preceding tip
+was `42ea507651206c7bab706486c15878608619f127`. Package reuse is implemented and independently
+reviewed: immutable worker-local bytes/metadata, private installer copies, fresh packaged execution;
+production builders and packaging/source-mutation coverage stay uncached.
 
-The recorded serial baseline is 1,462 passing tests in 219.61 seconds. Two workers passed in
-114.77 and 113.27 seconds; four workers passed in 55.47 and 59.54 seconds. Final local checks
-passed: locked uv sync, compileall, shell syntax, focused serial codec tests, Markdown inspection,
-and `mix precommit` with 805 tests. Audit, reproduction commands, environmental limits, and exact results
-are owned by [parallelism measurements](../research/2026-09-16-operations-test-parallelism.md)
-and `tas-sr4b.13`. The operator approved the xdist dev dependency and explicit four-worker gate.
-`ops/pyproject.toml`, its lock, and the development guide now contain that change. Locked
-installation passed; the final uninstrumented suite passed 1,462 tests in 63.11 seconds with
-158 fork/thread warnings. Under-60 timing is not consistently established. Pytest's default
-remains serial.
+The operator approved and implementation completed the history coverage split. The packaged
+public deploy/restore test now uses three selections with oldest-only backup authority outside
+the final-two projection; all public outcome/retention/bounded/no-export assertions remain.
+Both real >4,096 observer regressions are unchanged. This supersedes the unaccepted direct-write
+fixture proposal; no configurable limit or serializer was introduced. Independent task review
+passed without findings. Canonical coverage allocation is in the reconciliation specification;
+[measurements and disposition](../research/2026-09-16-operations-test-parallelism.md) own the evidence.
+
+Focused integration timing dropped from 14.42 to 4.96 seconds; the two >4,096 observer cases passed
+in 1.23 seconds. Two complete four-worker suites passed 1,463 tests with 158 warnings in 55.21
+and 54.65 seconds, roughly unchanged from the package-reuse checkpoint's 55.01/55.20 seconds.
+Retain the split for focused cost reduction and clear test ownership; no extra full-suite wall-time
+saving is established. Locked sync, compileall, shell syntax and Markdown checks passed;
+`mix precommit` passed 805 tests in 43.2 seconds. No external actions or history consolidation occurred.
+
+The first production simplification (`tas-sr4b.15`) is complete; scoped independent review approved
+runtime parity and closed its stale-documentation finding after follow-up. Controller verification
+now uses the shared report validator directly. Fresh local gates:
+1,464 operations tests passed in 52.01 seconds with 158 known warnings; `mix precommit` passed
+805 tests in 42.9 seconds. Focused controller/protocol coverage passed 209 tests. Locked sync,
+compileall, shell syntax, verify help and scoped documentation/terminology checks passed.
 
 ## Immediate next increment
 
-The operator approved the bounded package-reuse design on 2026-09-16 and requested a clean
-session before implementation. Continue `tas-sr4b.14` with that implementation; do not ask again
-for the same design approval. Read the complete [accepted design and evidence](../research/2026-09-16-operations-test-parallelism.md#immutable-integration-packages).
+Step 2 is complete. Package reuse and the history split are verified; the operator explicitly
+accepted the measured startup disposition and deferred import changes to step 3. Do not revive
+the earlier approval gates, direct-write proposal or unselected selective-import experiment.
+The approved verification simplification is complete in `tas-sr4b.15`. The bounded inspection
+that selected it does not complete the step-3 audit. No startup change or mutation-adapter removal
+is selected. The operator clarified the complete step-3 sequence below and requested that the
+broader audit not begin during this increment; it remains the next continuation action.
 
-1. Add a focused explicit session fixture under `ops/tests/support/` that captures helper and
-   scheduled-helper archive bytes/checksum/protocol/mode once per worker, then writes private
-   copies for each integration test. Pass it through the two installers in
-   `ops/tests/test_end_to_end.py` and their direct consumer fixtures/tests; import shared fixtures
-   explicitly. Keep production builders and packaging/source-mutation tests uncached.
-2. Verify private-copy identity/mode and actual isolated execution; run focused consumers, then
-   all 1,462 operations tests with the documented four-worker gate. Compare repeated uninstrumented
-   timing with the latest 63.11-second baseline, retain serial diagnosis, and run the remaining
-   repository gates. Avoid concurrent application builds while measuring operations timing.
-3. Record actual savings and the package-reuse disposition in the evidence document/task, then
-   continue the remaining candidates below. Temporary probes are not implementation assets and
-   are not required to resume.
+1. Audit the current production implementation and persist the contextual ranked candidate register
+   described in step 3 below, then review candidates with the operator in order. Treat observations
+   about the mutation adapter and migration-version extraction as unassessed leads, not approved
+   candidates or an established ranking. No further implementation is approved.
+2. Use the current startup measurements if simplifying imports: both entrypoint and harness eagerly
+   import the graph; selected read imports have a smaller closure, mutations retain most of it.
+   No end-to-end import saving is established. Native-effect seams are inventoried in the research.
+3. Preserve fresh children, actual archive entrypoint, `python -I -S`, readiness/timeout cleanup,
+   fresh authority and every consumer assertion. No startup design is approved yet. Consider
+   production lazy imports during later simplification without an indirect dispatcher justified
+   only by unmeasured test savings. Fresh focused checks passed: historical-authority case in
+   4.67 seconds; failed deploy retry and successful restore in 8.38 seconds. Production/test sources
+   remain unchanged by this investigation; full-suite timing remains the preceding checkpoint.
+   Final `mix precommit` passed 805 tests in 44.5 seconds after starting the stopped local database.
 
-Preserve every behavioral assertion, private mutable state, fresh authority checks, and actual
-`python -I -S` packaged execution. The operator wants all remaining candidates investigated
-despite already meeting the timing target; do not stop at the timing bar.
-
-Remaining candidates, in investigation order:
-
-1. **Immutable integration package reuse.** Measure suite-wide build count and cost, then consider
-   sharing immutable archive bytes with private test copies in `_install_public_controller` and
-   `_install_public_restore_controller`. Keep builder, source-mutation, allowlist, checksum,
-   determinism, and packaging tests uncached. Prior large-history profile: three builds cost
-   0.77 seconds, including 0.67 seconds of import validation. New suite measurement: 243 builds
-   cost 38.14–40.23 aggregate worker-seconds; the two installers account for 71 builds / 14.75
-   seconds. Explicit immutable session fixture/private copies is accepted; implementation is next.
-2. **Isolated archive startup.** Separate child import, decompression, compilation, and real
-   observation costs. Prior profile: 14 fresh helper calls cost 10.76 of 15.95 seconds. Preserve
-   fresh authority and archive isolation; do not cache discovery or reuse mutable process state.
-   New 14-child cProfile: 12.74 of 16.19 profiled seconds
-   were real observation, source compilation 2.24 seconds, decompression 0.10 seconds. Keep open
-   for a bounded import/compilation design after package reuse; no durable startup change yet.
-3. **Large-history fixture construction.** Measure replacing repeated publication mechanics with
-   controlled valid record construction. Prior 4,097-selection construction cost 2.35 seconds.
-   New temporary direct-record probe passed the complete regression and reduced construction from
-   1.03 to 0.39 seconds; no durable fixture change yet. Retain 4,097 real records, oldest-only
-   backup protection, and every public success/refusal and bounded-projection assertion.
-   Keep publication mechanics covered by their focused tests.
-
-Retain the distinct lost-genesis replay/changed-target refusal outcomes and all large-history
-consumer assertions. These candidates are under investigation, not completed or silently dropped.
-Evidence and accepted decisions belong in the [measurement document](../research/2026-09-16-operations-test-parallelism.md)
-and `tas-sr4b.14`; keep this list current until each candidate has an explicit disposition.
+Startup investigation is complete; import changes remain a step-3 consideration.
+Retain lost-genesis replay/changed-target refusal outcomes. The accepted history split loses direct
+combined >4,096 packaged-consumer coverage; focused observers retain real large-history evidence.
 
 Production simplification follows this investigation under canonical operations-development
 guidance. Host acceptance and history consolidation retain their separate authorization gates.
@@ -94,42 +84,60 @@ The old staging installation is outside the supported format/runtime boundary. I
 email, administrator, and failed-upgrade observations are historical evidence only. Do not migrate,
 repair, or run the new controller against it.
 
-## Pre-merge sequence
+## Agreed pre-merge sequence
 
-1. Profile the operations suite and map overlapping coverage without deleting tests. Use the
-   measurements to identify expensive fixtures, repeated production seams, and duplicated state
-   transitions.
-2. Apply coverage-preserving speed improvements while the broad regression net remains intact.
-   Reduce repeated builds, package assembly, subprocess work, filesystem setup, and other expensive
-   fixtures; improve safe parallelism where measurements justify it. Do not remove behavioral
-   assertions or state-transition coverage in this step.
-3. Review and simplify operations code under the
-   [Operations development](../development.md#operations-development) rules. Preserve current
-   operator behavior, destructive-target controls, backup/reference safety, migration compatibility,
-   secret protection, truthful failure evidence, and supported interruption recovery. Prefer safe
-   refusal over machinery for unsupported theoretical combinations; verify each bounded change
-   against the existing comprehensive suite.
-4. With production structure stable, re-evaluate overlap and remove only proved duplicate coverage.
-   Retain focused public-boundary tests and one clear owner for each consequential invariant. Then
-   rerun the complete local gates and clean/dirty build/package checks.
-5. Agree on a small set of durable commit groups and squash with GitButler. History rewriting and
-   any required remote update need explicit operator authorization. Because release identity embeds
-   the source revision, rebuild and repeat the identity-sensitive local gates after the squash.
-6. Obtain the external authorization below and run clean staging provisioning/deployment acceptance
-   against the exact post-squash head. Do not change production code after acceptance without
-   rerunning the affected local and host gates.
+This is the agreed workstream order; checkpoint updates must preserve it and its gates.
+We are now at step 3: package reuse and the approved history coverage split are verified,
+and startup investigation has its accepted measured disposition. Steps 3–6 remain unfinished.
+
+1. **Profile the current operations suite.** Map overlapping coverage without deleting tests.
+   Use measurements to identify expensive fixtures, repeated production seams and duplicated
+   state transitions. Existing measurements are in the linked research document; refresh them
+   when the relevant workload changes.
+2. **Apply coverage-retaining test optimizations.** Reduce repeated builds, package assembly,
+   subprocess work and filesystem setup; improve safe parallelism where measurements justify it.
+   Keep the broad regression net intact. The explicitly approved history coverage split retains
+   real >4,096 observer regressions and public packaged backup-authority assertions; it is not
+   authorization for general test removal. Complete: startup was measured and import changes
+   explicitly deferred to step 3.
+3. **Review and simplify the ops implementation** under
+   [Operations development](../development.md#operations-development), in this order:
+   audit the current production implementation for simplification and other architecture-improvement
+   candidates; record candidates with enough context in a durable repository file; rank them from
+   highest expected return to lower, weighing benefit, implementation/maintenance cost and risk;
+   then review each candidate with the operator in that order and implement only after its explicit
+   approval. Record each candidate's affected boundaries, evidence, proposed change, behavior/safety
+   trade-offs, verification and disposition so the process can resume outside the selecting session.
+   Link the register here when created and retain unreviewed candidates and pending decisions.
+   The approved `tas-sr4b.15` increment is complete and precedes this broader audit;
+   it does not establish that the remaining implementation has been audited. Read complete relevant
+   specifications before proposing changes to accepted behavior. Preserve current operator
+   behavior, destructive-target controls, backup/reference safety, migration compatibility, secret
+   protection, truthful failure evidence and supported interruption recovery. Prefer safe refusal
+   over machinery for unsupported theoretical combinations. Verify each bounded change against
+   the existing comprehensive suite.
+4. **With production structure stable, review test overlap and remove only proved duplicate
+   coverage.** Retain focused public-boundary tests and one clear owner for each consequential
+   invariant. Rerun complete local gates and clean/dirty build/package checks.
+5. **Agree on a reasonable set of durable commit groups and squash with GitButler.** History
+   rewriting and any required remote update need explicit operator authorization. Release identity
+   embeds the source revision, so rebuild and repeat identity-sensitive local gates after squashing.
+6. **Run clean real-VPS provisioning/deployment acceptance against the exact post-squash head.**
+   Obtain the separate external authorization below first. Do not change production code after
+   acceptance without rerunning the affected local and host gates.
 
 ## External gate — authorization required
 
-Before acting, obtain explicit operator authorization that identifies the disposable target,
-permitted host/provider/DNS changes, access path, and destructive restore scope. Then recreate a
-clean supported staging host and follow the runbook's fresh provisioning/readiness acceptance:
+Before acting, obtain explicit operator authorization identifying the disposable target, permitted
+host/provider/DNS changes, access path and destructive restore scope. Recreate a clean supported
+staging host and follow the [runbook](../deployment.md):
 
-1. provision twice and inspect HTTPS, HSTS, listeners, firewall, and reboot behavior;
-2. perform administrator/login, invitation email, API key, and LiveView acceptance;
-3. exercise a second release, rollback, forward deployment, controlled migration failure, backup,
-   and destructive restore; and
-4. inspect canary-secret and release-cookie leakage before recording external acceptance.
+1. Provision twice; inspect HTTPS, HSTS, listeners, firewall and reboot behavior.
+2. Perform administrator/login, invitation email, API key and LiveView acceptance.
+3. Exercise a second release, rollback, forward deployment, controlled migration failure, backup
+   and destructive restore.
+4. Inspect canary-secret and release-cookie leakage before recording external acceptance.
 
-Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot, and destructive restore
-remain unproven by local fakes, packages, or builds. Preserve the explicit external boundary.
+Native PostgreSQL, systemd PID 1, UFW, DNS/ACME, email delivery, reboot and destructive restore
+remain unproven by local fakes, packages or builds. Do not run the new controller against the
+unsupported historical staging installation.

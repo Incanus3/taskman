@@ -36,6 +36,7 @@ from tests.host_helper import test_cleanup as host_cleanup_tests
 from tests.host_helper import test_deploy as host_deploy_tests
 from tests.host_helper import test_restore as host_restore_tests
 from tests.support.environments import valid_environment
+from tests.support.integration_packages import IntegrationPackages, integration_packages
 from tests.workflows.test_operational_preflight import _managed_host_facts
 
 
@@ -1011,6 +1012,7 @@ def test_isolated_helper_runner_requires_a_bounded_readiness_handshake(tmp_path:
 def _install_public_controller(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    integration_packages: IntegrationPackages,
     *,
     verification: str = "failing",
     database_state: str = "ready",
@@ -1024,10 +1026,12 @@ def _install_public_controller(
     from taskman_ops.workflows import deploy as deploy_workflow
     from taskman_ops.workflows import helper, inventory
 
-    package = build_helper_package(tmp_path / "taskman-host.pyz")
+    package = integration_packages.materialize_helper(tmp_path / "taskman-host.pyz")
     remote = _ControllerRemote() if remote is None else remote
     runtime_path = tmp_path / "isolated-helper-state.json"
-    scheduler = build_scheduled_backup_package(tmp_path / "taskman-backup.pyz")
+    scheduler = integration_packages.materialize_scheduled_backup(
+        tmp_path / "taskman-backup.pyz"
+    )
     runtime_path.write_text(json.dumps({
         "backup_count": 0,
         "migrations": list(migrations),
@@ -1098,8 +1102,8 @@ def _state(paths: dict[str, str], runtime_path: Path):
     )
 
 
-def _replace_with_large_successful_history(paths: object, old_backup_id: str) -> None:
-    """Publish 4,097 valid selections with recovery authority held only by the first."""
+def _replace_with_historical_backup_authority(paths: object, old_backup_id: str) -> None:
+    """Publish three valid selections with recovery authority held only by the first."""
 
     from taskman_ops.host_helper.records import SelectionRecord, append_selection
     from taskman_ops.host_helper.state import observe_host_state
@@ -1112,7 +1116,7 @@ def _replace_with_large_successful_history(paths: object, old_backup_id: str) ->
 
     selected_release_id = state.selected_release_id
     selected_at = datetime(2026, 9, 15, tzinfo=UTC)
-    for index in range(4097):
+    for index in range(3):
         previous_release_id = None if index == 0 else selected_release_id
         append_selection(
             paths,
@@ -1126,13 +1130,13 @@ def _replace_with_large_successful_history(paths: object, old_backup_id: str) ->
                 (),
             ),
         )
-    assert len(tuple(selection_root.glob("selection-*.json"))) == 4097
+    assert len(tuple(selection_root.glob("selection-*.json"))) == 3
 
 
-def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_public_deploy_and_restore_respect_historical_backup_authority_without_exporting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
-    """Would catch an observer that truncates at 4,096 or trusts latest/predecessor only.
+    """Would catch a public consumer that trusts latest/predecessor records only.
 
     Independently derived expectations: the old selection's backup remains protected by
     full host history, while each public discovery response contains only its bounded
@@ -1147,7 +1151,7 @@ def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
 
     config, _runtime_path, paths, remote, source = _install_public_restore_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         scheduler_failure=False,
     )
     old_backup_id = "backup-" + "f" * 32
@@ -1157,7 +1161,7 @@ def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
         host_restore_tests.CURRENT,
         b"retained only by the oldest successful selection",
     )
-    _replace_with_large_successful_history(paths, old_backup_id)
+    _replace_with_historical_backup_authority(paths, old_backup_id)
 
     captured_discoveries: list[tuple[object, object]] = []
     package_dispatch = helper.run_request
@@ -1174,7 +1178,7 @@ def test_public_deploy_and_restore_validate_large_history_without_exporting_it(
     monkeypatch.setattr(inventory, "run_request", capture_dispatch)
     monkeypatch.setattr(helper, "run_request", capture_dispatch)
 
-    deploy_request = host_deploy_tests._request(tmp_path / "large-history-deploy")
+    deploy_request = host_deploy_tests._request(tmp_path / "historical-authority-deploy")
     deploy_result = deploy_workflow.deploy(
         remote,
         config,
@@ -1244,6 +1248,7 @@ def _set_verification(runtime_path: Path, value: str) -> None:
 def _install_public_restore_controller(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    integration_packages: IntegrationPackages,
     *,
     scheduler_failure: bool,
     state_family: str = "initial",
@@ -1365,7 +1370,9 @@ def _install_public_restore_controller(
     config = EnvironmentConfig.model_validate(valid_environment(ssh_port=22)).model_copy(
         update={"install_root": paths.install_root, "backup_root": paths.backup_root}
     )
-    package = build_helper_package(tmp_path / "taskman-restore-host.pyz")
+    package = integration_packages.materialize_helper(
+        tmp_path / "taskman-restore-host.pyz"
+    )
     remote = _ControllerRemote()
     remote.facts = _managed_host_facts
     runtime_path = tmp_path / "isolated-restore-state.json"
@@ -1450,6 +1457,7 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scheduler_failure: bool,
+    integration_packages,
 ) -> None:
     """Skipping controller upload or packaged convergence would publish too early."""
 
@@ -1457,7 +1465,7 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         scheduler_failure=scheduler_failure,
     )
 
@@ -1497,7 +1505,7 @@ def test_public_restore_runs_old_scheduler_to_quiescence_before_packaged_binding
 def test_public_packaged_restore_creates_first_success_from_null_baseline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    current_present: bool,
+    current_present: bool, integration_packages,
 ) -> None:
     """Dropping null-baseline reference transfer would lose pre-first-success recovery."""
 
@@ -1506,7 +1514,7 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         scheduler_failure=False,
         first_success=True,
         current_present=current_present,
@@ -1654,7 +1662,7 @@ def test_public_packaged_restore_creates_first_success_from_null_baseline(
 
 
 def test_public_packaged_null_baseline_restore_retries_after_lost_completion_reply(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     """A lost post-completion reply must retain original recovery and avoid duplicate success."""
 
@@ -1663,7 +1671,7 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         scheduler_failure=False,
         first_success=True,
         current_present=True,
@@ -1813,14 +1821,14 @@ def test_public_packaged_restore_converges_each_durable_database_family(
     monkeypatch: pytest.MonkeyPatch,
     family: str,
     required_events: set[str],
-    forbidden_events: set[str],
+    forbidden_events: set[str], integration_packages,
 ) -> None:
     """Real controller/package admission resumes each distinct durable family."""
 
     from taskman_ops.workflows.restore import restore
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False, state_family=family
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False, state_family=family
     )
     if family == "binding":
         runtime = json.loads(runtime_path.read_text())
@@ -1849,12 +1857,12 @@ def test_public_packaged_restore_converges_each_durable_database_family(
 
 
 def test_public_packaged_reapply_cleans_then_creates_one_fresh_restore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     from taskman_ops.workflows.restore import restore
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False, state_family="durable-retired"
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False, state_family="durable-retired"
     )
     from taskman_ops.workflows import restore as restore_workflow
 
@@ -1884,12 +1892,12 @@ def test_public_packaged_reapply_cleans_then_creates_one_fresh_restore(
 
 
 def test_public_ordinary_retry_preserves_writes_after_durable_restore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     from taskman_ops.workflows.restore import restore
 
     config, runtime_path, _paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False
     )
     first = restore(remote, config, source.backup_id, confirm=lambda _plan: True)
     assert first.exit_status is ExitStatus.OK
@@ -1914,13 +1922,13 @@ def test_public_ordinary_retry_preserves_writes_after_durable_restore(
 def test_public_packaged_restore_refuses_database_identity_or_empty_proof_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    drift: str,
+    drift: str, integration_packages,
 ) -> None:
     from taskman_ops.workflows.restore import restore
 
     family = "registered" if drift == "restored-oid" else "binding"
     config, runtime_path, _paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False, state_family=family
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False, state_family=family
     )
     runtime = json.loads(runtime_path.read_text())
     if drift == "original-oid":
@@ -1951,12 +1959,12 @@ def test_public_packaged_restore_refuses_database_identity_or_empty_proof_drift(
 def test_public_packaged_restore_refuses_unregistered_temporary_without_empty_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: str,
+    failure: str, integration_packages,
 ) -> None:
     from taskman_ops.workflows.restore import restore
 
     config, runtime_path, paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False, state_family="created"
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False, state_family="created"
     )
     runtime = json.loads(runtime_path.read_text())
     runtime["temporary_active_writers"] = failure == "active-writers"
@@ -1974,12 +1982,12 @@ def test_public_packaged_restore_refuses_unregistered_temporary_without_empty_pr
 
 
 def test_public_packaged_restore_lost_reply_reports_unknown_after_real_consequence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     from taskman_ops.workflows.restore import restore
 
     config, runtime_path, _paths, remote, source = _install_public_restore_controller(
-        monkeypatch, tmp_path, scheduler_failure=False
+        monkeypatch, tmp_path, integration_packages, scheduler_failure=False
     )
     runtime = json.loads(runtime_path.read_text())
     runtime["lose_restore_reply"] = True
@@ -2110,14 +2118,14 @@ def _default_provision(archive: Path, *, migration_policy: str = "backward-compa
 
 
 def test_default_public_provision_refreshes_an_existing_scheduler_under_genesis_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Removing pause/wait/replace/resume would overwrite a live scheduler unsafely."""
 
     request = host_deploy_tests._request(tmp_path / "scheduler-refresh", operation="genesis", previous=None)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
     )
     _config, archive, target = _configure_default_public_provision(
@@ -2140,14 +2148,14 @@ def test_default_public_provision_refreshes_an_existing_scheduler_under_genesis_
 
 
 def test_default_public_partial_scheduler_never_starts_an_old_helper_before_locked_refresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """An absent timer must not launch the existing helper during generic convergence."""
 
     request = host_deploy_tests._request(tmp_path / "partial-scheduler", operation="genesis", previous=None)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
         scheduler_resources={"helper": True, "service": True, "timer": False, "environment": True},
     )
@@ -2176,12 +2184,12 @@ def test_default_public_partial_scheduler_never_starts_an_old_helper_before_lock
 
 
 def test_default_public_provision_refuses_unattended_post_confirmation_authority_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Dropping the second authority comparison would let --yes mutate a changed host."""
 
     request = host_deploy_tests._request(tmp_path / "authority-drift", operation="genesis", previous=None)
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages, verification="passing")
     _config, archive, _target = _configure_default_public_provision(
         monkeypatch, tmp_path, request, remote, runtime_path, archive_name="authority-drift.tar.gz"
     )
@@ -2198,7 +2206,7 @@ def test_default_public_provision_refuses_unattended_post_confirmation_authority
 
 
 def test_default_public_provision_records_physical_failed_predecessor_before_equal_schema_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Omitting the stop or physical predecessor would make same-schema recovery unsafe."""
 
@@ -2219,7 +2227,7 @@ def test_default_public_provision_records_physical_failed_predecessor_before_equ
     (install / "current").symlink_to(install / "releases" / b_target.release_id)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
         migrations=(20260905120000,),
         migration_result=(20260905120000,),
@@ -2241,12 +2249,12 @@ def test_default_public_provision_records_physical_failed_predecessor_before_equ
 
 
 def test_default_public_provision_replays_only_the_exact_completed_lost_genesis_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Treating a lost result as a fresh install would duplicate or invent history."""
 
     request = host_deploy_tests._request(tmp_path / "lost-genesis", operation="genesis", previous=None)
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages, verification="passing")
     _config, archive, target = _configure_default_public_provision(
         monkeypatch, tmp_path, request, remote, runtime_path, archive_name="lost-genesis.tar.gz"
     )
@@ -2283,7 +2291,7 @@ def test_default_public_provision_replays_only_the_exact_completed_lost_genesis_
 
 
 def test_default_public_provision_preserves_existing_credentials_and_database_before_partial_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Replacing admitted credentials or data would destroy partial-recovery authority."""
 
@@ -2300,7 +2308,7 @@ def test_default_public_provision_preserves_existing_credentials_and_database_be
     remote = _ControllerRemote(credentials=preserved)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         remote=remote,
         verification="passing",
         migrations=(20260905120000,),
@@ -2321,7 +2329,7 @@ def test_default_public_provision_preserves_existing_credentials_and_database_be
 
 
 def test_default_public_provision_refuses_credential_mismatch_before_partial_recovery_writes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Skipping credential admission would permit replacement before recovery is proved safe."""
 
@@ -2332,7 +2340,7 @@ def test_default_public_provision_refuses_credential_mismatch_before_partial_rec
     mismatch_remote = _ControllerRemote(credentials=preserved, credential_mismatch=True)
     mismatch_remote, mismatch_state = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         remote=mismatch_remote,
         verification="passing",
         migrations=(20260905120000,),
@@ -2360,14 +2368,14 @@ def test_default_public_provision_refuses_credential_mismatch_before_partial_rec
 
 
 def test_public_controller_retries_a_selected_unverified_release_without_synthetic_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     """Publishing B before its verification succeeds must break this recovery path."""
     from taskman_ops.workflows.deploy import deploy
 
     request = host_deploy_tests._request(tmp_path / "b")
     host_deploy_tests._install_current(dict(request.paths))
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages)
     target = _artifact_target(request)
     failed = deploy(
         remote, _controller_config(dict(request.paths)), target,
@@ -2391,7 +2399,7 @@ def test_public_controller_retries_a_selected_unverified_release_without_synthet
 
 
 def test_public_deploy_advances_migration_protections_past_attempt_64(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     """One public migration beyond 64 retains only the exact bounded recovery set.
 
@@ -2425,7 +2433,7 @@ def test_public_deploy_advances_migration_protections_past_attempt_64(
     Path(request.paths["backup_root"]).rmdir()
     host_deploy_tests._install_unselected_candidate(request)
     remote, runtime_path = _install_public_controller(
-        monkeypatch, tmp_path, verification="passing"
+        monkeypatch, tmp_path, integration_packages, verification="passing"
     )
     paths = host_deploy.ManagedPaths.from_mapping(dict(request.paths))
     target = _artifact_target(request)
@@ -2611,7 +2619,7 @@ def test_public_deploy_advances_migration_protections_past_attempt_64(
 
 
 def test_public_controller_replaces_an_unhealthy_selected_release_without_publishing_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages
 ) -> None:
     """Treating an unhealthy B as successful would make C inherit the wrong predecessor."""
     from taskman_ops.workflows.deploy import deploy
@@ -2619,7 +2627,7 @@ def test_public_controller_replaces_an_unhealthy_selected_release_without_publis
     b_request = host_deploy_tests._request(tmp_path / "b")
     c_request = replace(host_deploy_tests._request(tmp_path / "c", application_version="0.3.0"), paths=b_request.paths)
     host_deploy_tests._install_current(dict(b_request.paths))
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path)
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages)
     b_target = _artifact_target(b_request)
     c_target = _artifact_target(c_request)
 
@@ -2642,14 +2650,14 @@ def test_public_controller_replaces_an_unhealthy_selected_release_without_publis
 
 
 def test_public_provision_executes_genesis_through_the_packaged_helper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Provision reaches real genesis after its bounded local convergence seam."""
 
     from taskman_ops.workflows.deploy import deploy_first_release
 
     request = host_deploy_tests._request(tmp_path / "genesis", operation="genesis", previous=None)
-    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, verification="passing")
+    remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages, verification="passing")
     target = _artifact_target(request)
     config = _controller_config(dict(request.paths))
     capabilities = ProvisionCapabilities(
@@ -2691,7 +2699,7 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
 
 
 def test_default_public_provision_creates_confirmed_absent_scheduler_through_packaged_genesis(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """A fresh timer must cross default authority, writers, and genesis intact."""
 
@@ -2702,7 +2710,7 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
     request = host_deploy_tests._request(tmp_path / "default-genesis", operation="genesis", previous=None)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
         database_state="absent",
         migration_result=(20260905120000,),
@@ -2777,14 +2785,14 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
 
 
 def test_default_public_fresh_database_refuses_post_pyinfra_schema_drift_before_genesis_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Creating PostgreSQL cannot reauthorize a changed schema after confirmation."""
 
     request = host_deploy_tests._request(tmp_path / "fresh-post-pyinfra-drift", operation="genesis", previous=None)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
         database_state="absent",
         migration_result=(20260905120000,),
@@ -2806,7 +2814,7 @@ def test_default_public_fresh_database_refuses_post_pyinfra_schema_drift_before_
 
 
 def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_backup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, integration_packages,
 ) -> None:
     """Removing genesis's null-baseline backup or prune authority breaks recovery."""
 
@@ -2824,7 +2832,7 @@ def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_b
     host_deploy_tests._install_unselected_candidate(request)
     remote, runtime_path = _install_public_controller(
         monkeypatch,
-        tmp_path,
+        tmp_path, integration_packages,
         verification="passing",
         migrations=(20260905120000,),
         migration_result=(20260905120000, 20260906120000),

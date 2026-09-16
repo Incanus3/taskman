@@ -271,16 +271,21 @@ use it. Protection publication/pruning and successful reference transfer belong 
 
 ## Task 4: Protocol v3, bounded discovery, and result evidence
 
+Maintenance note (2026-09-16): the controller's `verification_results.py` typed models and their
+standalone parser test are superseded by direct use of shared protocol
+`validate_verification_report`. Current file and runnable coverage lists below reflect that
+behavior-preserving simplification; the original delivery and verification remain completed.
+
 Files: modify `ops/taskman_ops/host_protocol/{envelope,identifiers,operations,__init__}.py`,
 `ops/taskman_ops/host_helper/{__main__,state}.py`,
 `ops/taskman_ops/host_helper/operations/discover.py`,
 `ops/taskman_ops/helper_client/runner.py`, and
-`ops/taskman_ops/workflows/{helper,releases,backups,rollback,verify,backup,verification_results}.py`.
+`ops/taskman_ops/workflows/{helper,releases,backups,rollback,verify,backup}.py`.
 Create `ops/taskman_ops/host_protocol/mutation_results.py` for shared exact result validation
 and `ops/taskman_ops/workflows/inventory.py` for bounded controller page collection.
 Update package allowlists. Tests: `ops/tests/host_protocol/`,
 `ops/tests/host_helper/{test_discovery,test_entrypoint,test_package}.py`,
-`ops/tests/test_helper_runner.py`, `ops/tests/workflows/{test_helper,test_discovery,test_helper_read_only,test_backup,test_verification_results}.py`.
+`ops/tests/test_helper_runner.py`, `ops/tests/workflows/{test_helper,test_discovery,test_helper_read_only,test_backup,test_verify}.py`.
 
 Interfaces: `discovery_request(config, *, mode="strict", backup_id=None)` builds the exact
 mode-specific request. Release/backup list operations return specification page mappings;
@@ -330,7 +335,7 @@ returns the exact validated result mapping or raises `ProtocolError`. Mutation c
   ops/tests/host_helper/test_discovery.py ops/tests/host_helper/test_entrypoint.py
   ops/tests/host_helper/test_package.py ops/tests/workflows/test_helper.py
   ops/tests/workflows/test_discovery.py ops/tests/workflows/test_helper_read_only.py
-  ops/tests/workflows/test_backup.py ops/tests/workflows/test_verification_results.py`.
+  ops/tests/workflows/test_backup.py ops/tests/workflows/test_verify.py`.
   Public manual-backup tests must cover current/history mismatch, a selected release that no longer
   covers the partial live prefix but a protected target does, and conflicting-provenance refusal.
   Assert exact backup source/versions without changing current or history.

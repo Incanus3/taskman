@@ -22,6 +22,7 @@ from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.restore import restore
 from tests.host_helper import test_restore as host_restore_tests
+from tests.support.integration_packages import integration_packages
 from tests.test_end_to_end import _install_public_restore_controller
 from tests.workflows.test_deploy import config
 from tests.workflows.test_helper import _exact_failure_state
@@ -491,14 +492,14 @@ def test_completed_cleanup_then_cancel_has_no_confirmed_starting_state(
     ),
 )
 def test_public_packaged_replacement_converges_each_unfinished_arrangement(
-    family, safety_copy_required, tmp_path, monkeypatch
+    family, safety_copy_required, tmp_path, monkeypatch, integration_packages
 ):
     """The real controller and packaged helper must reach every admitted arrangement."""
 
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family=family,
         )
@@ -528,12 +529,12 @@ def test_public_packaged_replacement_converges_each_unfinished_arrangement(
 
 
 def test_public_packaged_dry_run_previews_replacement_without_flag_or_writes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -554,12 +555,12 @@ def test_public_packaged_dry_run_previews_replacement_without_flag_or_writes(
 
 
 def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconfirms(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="replacement-pending",
         )
@@ -607,12 +608,12 @@ def test_public_packaged_third_target_skips_unusable_abandoned_inputs_and_reconf
 
 
 def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="durable-retired",
         )
@@ -655,12 +656,12 @@ def test_public_packaged_completed_restore_cleans_before_confirming_new_backup(
 
 
 def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_writes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, _paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="durable-retired",
         )
@@ -692,12 +693,12 @@ def test_public_reapply_dry_run_previews_cleanup_and_fresh_restore_without_write
 
 @pytest.mark.parametrize("failure", ("checksum", "list"))
 def test_public_restore_preview_refuses_invalid_required_safety_content(
-    failure, tmp_path, monkeypatch
+    failure, tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -792,12 +793,12 @@ def _seed_prunable_safety_attempts(paths):
 
 
 def test_public_packaged_replacement_refuses_unusable_required_safety_role(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="registered",
         )
@@ -827,12 +828,12 @@ def test_public_packaged_replacement_refuses_unusable_required_safety_role(
 
 
 def test_public_packaged_failed_restored_safety_failure_precedes_discard(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="swapped",
         )
@@ -872,13 +873,13 @@ def test_public_packaged_failed_restored_safety_failure_precedes_discard(
     ),
 )
 def test_public_packaged_replacement_preserves_interrupted_reference_evidence(
-    fault, event, expected_mutation, tmp_path, monkeypatch
+    fault, event, expected_mutation, tmp_path, monkeypatch, integration_packages
 ):
     family = "binding" if fault == "lose_registration_reply" else "swapped"
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family=family,
         )
@@ -959,12 +960,12 @@ def _seed_public_replacement_retention_boundary(paths, runtime_path):
 
 
 def test_public_packaged_sixty_fifth_replacement_remains_bounded_during_clock_rollback(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integration_packages
 ):
     config_value, runtime_path, paths, remote, _old_source = (
         _install_public_restore_controller(
             monkeypatch,
-            tmp_path,
+            tmp_path, integration_packages,
             scheduler_failure=False,
             state_family="swapped",
         )
