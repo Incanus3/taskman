@@ -40,19 +40,23 @@ repair, or run the new controller against it.
 1. Profile the operations suite and map overlapping coverage without deleting tests. Use the
    measurements to identify expensive fixtures, repeated production seams, and duplicated state
    transitions.
-2. Review and simplify operations code under the
+2. Apply coverage-preserving speed improvements while the broad regression net remains intact.
+   Reduce repeated builds, package assembly, subprocess work, filesystem setup, and other expensive
+   fixtures; improve safe parallelism where measurements justify it. Do not remove behavioral
+   assertions or state-transition coverage in this step.
+3. Review and simplify operations code under the
    [Operations development](../development.md#operations-development) rules. Preserve current
    operator behavior, destructive-target controls, backup/reference safety, migration compatibility,
    secret protection, truthful failure evidence, and supported interruption recovery. Prefer safe
    refusal over machinery for unsupported theoretical combinations; verify each bounded change
    against the existing comprehensive suite.
-3. With production structure stable, optimize the suite and remove only proved duplicate coverage.
-   Retain focused public-boundary tests and one clear owner for each consequential invariant, then
+4. With production structure stable, re-evaluate overlap and remove only proved duplicate coverage.
+   Retain focused public-boundary tests and one clear owner for each consequential invariant. Then
    rerun the complete local gates and clean/dirty build/package checks.
-4. Agree on a small set of durable commit groups and squash with GitButler. History rewriting and
+5. Agree on a small set of durable commit groups and squash with GitButler. History rewriting and
    any required remote update need explicit operator authorization. Because release identity embeds
    the source revision, rebuild and repeat the identity-sensitive local gates after the squash.
-5. Obtain the external authorization below and run clean staging provisioning/deployment acceptance
+6. Obtain the external authorization below and run clean staging provisioning/deployment acceptance
    against the exact post-squash head. Do not change production code after acceptance without
    rerunning the affected local and host gates.
 
