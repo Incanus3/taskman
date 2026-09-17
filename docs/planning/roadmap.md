@@ -9,7 +9,7 @@ it is next or close to next.
 
 ## Delivery approach
 
-The durable project-wide working and architecture rules live in the [development guide](../development.md).
+The durable project-wide working and architecture rules live in the [development guide](../guides/development.md).
 This roadmap applies them to the MVP delivery sequence:
 
 - Work top-down through user-visible vertical slices.
@@ -180,7 +180,7 @@ permanent Ecto/Ash hybrid.
 production compilation/assets/release assembly, staged-root systemd validation, and Caddy 2.11.4
 configuration validation have passed. See the
 [`authenticated hosted access specification`](../specs/2026-09-02-authenticated-hosted-access-design.md)
-and [`implementation plan`](../plans/2026-09-02-authenticated-hosted-access.md).
+and [`archived implementation plan`](../archive/plans/2026-09-02-authenticated-hosted-access.md).
 
 ### 5. Task relationships
 

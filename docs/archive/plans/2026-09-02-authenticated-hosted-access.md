@@ -1,8 +1,13 @@
 # Authenticated Hosted Access Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use
-> superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement
-> this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Historical implementation plan. Delivery is complete; archived on 2026-09-18.
+The original steps and unchecked boxes below preserve planning provenance, not remaining work.
+Current account behavior belongs to the
+[accepted specification](../../specs/2026-09-02-authenticated-hosted-access-design.md).
+Later host automation and recovery supersede the original host examples; use the
+[deployment architecture](../../specs/2026-09-09-dedicated-host-deployment-design.md),
+[operations contracts](../../specs/2026-09-18-operations-contracts.md) and
+[runbook](../../guides/deployment.md).
 
 **Goal:** Gate Taskman's shared browser workspace and JSON API behind AshAuthentication, add
 complete user and administrator account lifecycle management, authenticate the CLI with persistent
@@ -20,7 +25,7 @@ Argon2 Elixir 4.1, Swoosh/Resend, Req, systemd, Caddy, ExUnit, LazyHTML.
 
 **Spec:** `docs/specs/2026-09-02-authenticated-hosted-access-design.md`
 
-**Status:** Approved
+**Status:** Completed; archived
 
 **Delivery tracking:** Feature `tas-authenticated-hosted-access-2a8`
 
@@ -42,7 +47,7 @@ Argon2 Elixir 4.1, Swoosh/Resend, Req, systemd, Caddy, ExUnit, LazyHTML.
 
 ## Global Constraints
 
-- Read the complete approved specification, `AGENTS.md`, and `docs/development.md` before starting
+- Read the complete approved specification, `AGENTS.md`, and `docs/guides/development.md` before starting
   any task.
 - Use stable package lines only: `ash ~> 3.32`, `ash_postgres ~> 2.13`,
   `ash_phoenix ~> 2.3`, `ash_authentication ~> 4.14`,
@@ -190,7 +195,7 @@ API-key operations are:
 - `rel/overlays/bin/migrate` and `rel/overlays/bin/create-admin` invoke release functions.
 - Phoenix's generated release support provides `rel/overlays/bin/server`.
 - `ops/systemd/taskman.service` and `ops/caddy/Caddyfile` are deployable examples.
-- `docs/deployment.md` is the build, install, migrate, bootstrap, start, verify, and rollback
+- `docs/guides/deployment.md` is the build, install, migrate, bootstrap, start, verify, and rollback
   runbook.
 
 ---
@@ -1065,10 +1070,10 @@ but commit -b authenticated-hosted-access -m "Package Taskman as an operable rel
 
 - Create: `ops/systemd/taskman.service`
 - Create: `ops/caddy/Caddyfile`
-- Create: `docs/deployment.md`
+- Create: `docs/guides/deployment.md`
 - Modify: `README.md`
 - Modify: `docs/README.md`
-- Modify: `docs/development.md`
+- Modify: `docs/guides/development.md`
 - Modify: `docs/planning/roadmap.md`
 - Modify: `test/taskman/cli/end_to_end_test.exs`
 - Create: `test/taskman_web/authenticated_hosted_access_test.exs`

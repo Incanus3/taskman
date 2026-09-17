@@ -24,7 +24,7 @@ Req-backed JSON API and CLI, ExUnit, LazyHTML.
 ## Global Constraints
 
 - Read the complete approved specification before implementing any task.
-- Follow `AGENTS.md` and `docs/development.md`; keep persistence and Ecto queries out of
+- Follow `AGENTS.md` and `docs/guides/development.md`; keep persistence and Ecto queries out of
   `TaskmanWeb`.
 - Use `but` for version-control writes; never run `jj` or raw Git write commands.
 - Generate the migration with `mix ecto.gen.migration add_lock_version_to_tasks`; do not invent its

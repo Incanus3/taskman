@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved.
+Approved; decomposition is not implemented. Updated: 2026-09-18.
 
 ## Context
 
@@ -24,8 +24,10 @@ event handlers and socket orchestration for every workflow. The result is diffic
 makes otherwise independent changes collide in one file.
 
 The existing LiveView behavior is well covered by the tests under
-`test/taskman_web/live/project_live/`. The repository-wide baseline at the start of this design is
-758 passing tests.
+`test/taskman_web/live/project_live/`. The
+[implementation plan](../plans/2026-09-04-project-live-decomposition.md) defines the extraction tasks.
+If the separately designed directory removal runs first, preserve its then-current Project
+form/navigation contract; neither workstream requires the other.
 
 ## Goals
 
@@ -367,6 +369,7 @@ ProjectLive
   └── Reconciliation
 
 Reconciliation
+  ├── Tasks.Creation
   ├── Workspace
   ├── Tasks.Listing
   ├── Tasks.ParentSelection
@@ -381,6 +384,12 @@ Tasks.ParentSelection
   ├── Tasks.Editing
   └── Tasks.Listing
 
+Tasks.Creation
+  └── Tasks.Listing
+
+Tasks.Editing
+  └── Tasks.Listing
+
 Workspace
   ├── Tasks.Listing
   └── Tasks.Movement
@@ -392,6 +401,8 @@ All workflow modules
 ```
 
 The diagram expresses allowed direction, not a requirement that every listed dependency exist.
+Creation and Editing may refresh Listing after their successful mutations; Listing must not depend
+on either workflow. These edges preserve the approved plan's refresh calls without introducing cycles.
 `Paths` and the socket-free state modules must never depend on a workflow module.
 `Reconciliation` is a top-level coordinator and no workflow module may depend on it.
 
@@ -452,6 +463,32 @@ updated by earlier operations.
 ## Error and conflict behavior
 
 This refactor does not introduce new error semantics.
+
+### Missing-location behavior follow-up
+
+On 2026-09-18 the operator agreed to track a separate behavior review/fix in this workstream.
+Current external List reconciliation marks a missing selected location, hides its Task creation/
+detail surfaces, and clears the Task stream and empty flags; it retains transient creation and
+movement state. Existing route lookup has a different boundary: an unavailable route clears modal
+state. Extraction must describe these existing boundaries accurately, without interpreting draft
+retention as proof that the behavior is correct.
+
+After the approved extraction sequence, review missing-location handling as a separately scoped
+behavior increment. The preferred direction is to invalidate actions tied to the missing location,
+explain what disappeared, and preserve recoverable user input. Specify whether/how drafts remain
+accessible, how the human chooses a new location or discards input, and which pending actions must
+stop. Do not silently redirect a save into the Project root or erase drafts as a convenience.
+
+Reproduce external disappearance with creation, detail and movement active, including stale browser
+events or pending work after the surface hides. Creation currently retains a List struct while
+persistence enforces its foreign-key boundary; movement refetches Task/destination authority on
+submit. Those guards do not establish a complete recovery UX. List deletion is not currently a
+supported product mutation, so controlled disappearance fixtures must not expand this follow-up
+into implementing deletion. Add outcome-focused regression coverage for the agreed behavior before
+fixing it. A bounded behavior design and operator approval remain required; the preferred direction
+does not authorize implementation or alter the approved nine-task extraction dependency order.
+
+### Preserved extraction outcomes
 
 - Invalid identifiers continue to produce the existing not-found state or route recovery.
 - List validation and persistence errors remain attached to `ListEdit`.

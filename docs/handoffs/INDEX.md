@@ -3,10 +3,11 @@
 This is the complete index of current repository handoffs.
 
 - [ProjectLive decomposition](project-live-decomposition.md) — parked — Split the workspace
-  LiveView into explicit workflow modules — `$resume project-live-decomposition`
-- [Projects without primary directories](projects-without-primary-directories.md) — active —
-  Remove machine-specific Project paths without selecting a replacement agent model —
+  LiveView into workflow modules; approved plan, target selection and completion gates; separate missing-location follow-up after extraction — `$resume project-live-decomposition`
+- [Projects without primary directories](projects-without-primary-directories.md) — parked —
+  Remove machine-specific Project paths; direction approved; written-design review approval pending before planning —
   `$resume projects-without-primary-directories`
-- [Operations VPS readiness](ops-vps-readiness.md) — active — Step 5: agree commit groups; verified three-case removal and build gates complete — `$resume ops-vps-readiness`
-- [Operations CLI UX](operations-cli-ux.md) — active — Finish readable progress, outcome, and provisioning-rerun design — `$resume operations-cli-ux`
-- [PostgreSQL host-side Python](postgresql-host-python.md) — parked — Finalize the approved-scope refactor specification and plan when selected — `$resume postgresql-host-python`
+- [Operations CLI UX](operations-cli-ux.md) — parked — Finish readable progress, outcome, and provisioning-rerun design after the operations merge — `$resume operations-cli-ux`
+- [PostgreSQL host-side Python](postgresql-host-python.md) — parked — Revised protocol/native identity/failure contract needs scoped review and written-spec approval before planning — `$resume postgresql-host-python`
+
+- [Operations lock coverage](operations-lock-coverage.md) — parked — Independently reviewed admission/recovery design; full design/plan approval pending; dedicated branch after operations merge; no longer blocks current readiness — `$resume operations-lock-coverage`

@@ -17,6 +17,15 @@ each available choice. Distinguish design approval from implementation and exter
 Use the repository-local Beads store for implementation planning and delivery work. The completed
 product-discovery Wayfinder map belonged to another repository and is historical only.
 
+## Documentation guidance
+
+Before creating, editing, moving or retiring repository documentation, read and follow
+[documentation guide](docs/guides/documentation.md), including its documentation roles and
+placement and retirement rules. These rules are binding alongside this file. Use the
+[documentation index](docs/README.md) to find the relevant canonical owners, and update affected
+indexes and references when documentation changes. Keep the detailed
+placement rules in that document rather than duplicating them here.
+
 ## Handoffs
 
 Handoffs are short-lived transfer documents for the current workstream. Keep them concise and
@@ -33,7 +42,7 @@ Include:
 Do not include:
 
 - project-wide development, tooling, model, version-control, work-tracking, or local-setup
-  instructions; place those in `AGENTS.md`, `docs/development.md`, or `README.md` as appropriate;
+  instructions; place those in `AGENTS.md`, `docs/guides/development.md`, or `README.md` as appropriate;
 - copied product specifications, implementation plans, or broad project history; link to their
   canonical documents instead;
 - speculative backlog beyond the next increment; operator-agreed remaining work is not speculative
@@ -64,7 +73,7 @@ that the remaining sequence is still discoverable.
 
 ## Development guidance
 
-Read and follow [docs/development.md](docs/development.md). It contains durable project-wide
+Read and follow [docs/guides/development.md](docs/guides/development.md). It contains durable project-wide
 engineering guidance that is binding alongside this file; do not duplicate its rules here.
 
 ## Project guidelines

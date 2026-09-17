@@ -57,8 +57,17 @@ def _safe_directory(path: Path, owner_uid: int) -> None:
     try:
         details = path.lstat()
     except FileNotFoundError:
-        path.mkdir(mode=0o750, parents=True, exist_ok=True)
-        details = path.lstat()
+        try:
+            path.mkdir(mode=0o755, parents=True)
+            os.chmod(path, 0o755)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise LifecycleLockContention("unable to prepare lifecycle lock directory") from error
+        try:
+            details = path.lstat()
+        except OSError as error:
+            raise LifecycleLockContention("unable to inspect lifecycle lock directory") from error
     except OSError as error:
         raise LifecycleLockContention("unable to inspect lifecycle lock directory") from error
     if (

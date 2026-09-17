@@ -17,7 +17,7 @@ ExUnit, Phoenix.LiveViewTest, and LazyHTML.
 
 ## Global Constraints
 
-- Follow the project-wide architecture and working rules in `docs/development.md`, including its
+- Follow the project-wide architecture and working rules in `docs/guides/development.md`, including its
   application-boundary rules.
 - Project ownership is assigned from a `%Project{}` argument, never cast from Task form params.
 - Begin every LiveView template with `<Layouts.app flash={@flash} current_scope={nil}>`.

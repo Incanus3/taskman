@@ -15,6 +15,50 @@ from taskman_ops.host_protocol import HostRequest
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
 
 
+def test_absent_database_pgpass_admission_omits_only_authentication(tmp_path, monkeypatch):
+    raw = b"127.0.0.1:5432:taskman_prod:taskman:secret\n"
+    path = tmp_path / "pgpass"
+    monkeypatch.setattr(preflight_module, "_PGPASS_PATH", path)
+    monkeypatch.setattr(preflight_module, "run_command", lambda *_args, **_kwargs: pytest.fail("absent database cannot authenticate"))
+    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent")
+
+    assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 0
+    assert not path.exists()
+    assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw.replace(b"taskman_prod", b"other"))) == 10
+
+
+@pytest.mark.parametrize("mode,uid,gid,contents,expected", [
+    (stat.S_IFREG | 0o600, 0, 0, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 0),
+    (stat.S_IFREG | 0o600, 0, 0, b"different\n", 10),
+    (stat.S_IFREG | 0o640, 0, 0, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 10),
+    (stat.S_IFLNK | 0o600, 0, 0, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 10),
+    (stat.S_IFDIR | 0o600, 0, 0, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 10),
+    (stat.S_IFREG | 0o600, 1000, 0, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 10),
+    (stat.S_IFREG | 0o600, 0, 1000, b"127.0.0.1:5432:taskman_prod:taskman:secret\n", 10),
+])
+def test_absent_database_retains_exact_pgpass_file_authority(monkeypatch, mode, uid, gid, contents, expected):
+    retained = SimpleNamespace(
+        lstat=lambda: SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid),
+        read_bytes=lambda: contents,
+    )
+    monkeypatch.setattr(preflight_module, "_PGPASS_PATH", retained)
+    monkeypatch.setattr(preflight_module, "run_command", lambda *_args, **_kwargs: pytest.fail("absent database cannot authenticate"))
+    assert preflight_module.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent"),
+        BytesIO(b"127.0.0.1:5432:taskman_prod:taskman:secret\n"),
+    ) == expected
+
+
+@pytest.mark.parametrize("database_state", ["unknown", "", "ABSENT"])
+def test_pgpass_private_entry_refuses_invalid_presence_without_reading_secret(database_state):
+    class UnreadableSecret:
+        def read(self, _limit):
+            pytest.fail("invalid presence cannot consume secret input")
+    assert preflight_module.provision_pgpass_authority(
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", database_state), UnreadableSecret(),
+    ) == 2
+
+
 def _request(tmp_path: Path, *, mode: str = "inspection") -> HostRequest:
     return HostRequest(
         3,
@@ -127,21 +171,29 @@ def test_native_capacity_uses_postgres_data_directory_and_exact_database_roles(
     assert ("/srv/postgresql/data",) in calls
 
 
-def test_native_database_query_uses_the_parser_fixed_tab_separator(
+def test_admin_query_feeds_quoted_variables_to_psql_file_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, ...]] = []
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
-    def run(argv, **_kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
 
     monkeypatch.setattr(preflight_module, "run_command", run)
     database = {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}
 
-    preflight_module._admin_query(database, "SELECT 1")
+    assert preflight_module._admin_query(
+        database, "SELECT :'role'", variables=("role", "taskman")
+    ) == b"1\n"
 
-    assert "--field-separator=\t" in calls[0]
+    argv, kwargs = calls[0]
+    assert "--field-separator=\t" in argv
+    assert "--set=ON_ERROR_STOP=1" in argv
+    assert "--set=role=taskman" in argv
+    assert "--file=-" in argv
+    assert "--command" not in argv
+    assert kwargs["stdin"] == b"SELECT :'role'\n"
 
 
 def test_pgpass_private_entry_refuses_mismatched_connection_without_writes(
@@ -156,7 +208,7 @@ def test_pgpass_private_entry_refuses_mismatched_connection_without_writes(
 
     monkeypatch.setattr(preflight_module, "authenticate_pgpass", authenticate)
     status = preflight_module.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
         BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
     )
 
@@ -196,7 +248,7 @@ def test_pgpass_private_entry_validates_retained_file_before_using_pgpassfile(
 
     monkeypatch.setattr(preflight_module, "_PGPASS_PATH", retained)
     monkeypatch.setattr(preflight_module, "run_command", run)
-    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod")
+    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready")
 
     assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 0
     assert calls[0][1]["env"] == {"PGPASSFILE": "/etc/taskman/pgpass"}

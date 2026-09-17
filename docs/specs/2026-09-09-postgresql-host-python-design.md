@@ -1,13 +1,11 @@
 # PostgreSQL host-side Python configuration
 
 Status: parked proposal; scope and invocation boundary approved, written review pending.
-Updated: 2026-09-09.
+Updated: 2026-09-18.
 
 Workstream task: `tas-sidn`. Resume state: [PostgreSQL host-side Python](../handoffs/postgresql-host-python.md).
 
-The operator chose to finish VPS provisioning using the verified current implementation before
-this refactor. This proposal is not a provisioning prerequisite. Resume design approval and
-planning later against the observed running-host baseline.
+This proposal is not a provisioning prerequisite.
 
 ## Purpose and authority
 
@@ -16,24 +14,26 @@ focused host-side Python procedure. Preserve supported behavior, safety refusals
 and recovery consequences. This is not a general shell-removal project.
 
 The [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md) remains the canonical
-deployment architecture. This document specifies a bounded extension to its helper vocabulary
+deployment architecture. The [operations contracts](2026-09-18-operations-contracts.md) own the
+implemented protocol, mutation evidence and credential authority. This document specifies a
+bounded extension to its helper vocabulary
 and the implementation of its PostgreSQL custom operation. Until implemented and verified, it
-does not describe the running product. The [runbook](../deployment.md) owns operator recovery;
-the [development guide](../development.md) owns verification commands and the general
-[ops development policy](../development.md#operations-development). Python-first workflows now
+does not describe the running product. The [runbook](../guides/deployment.md) owns operator recovery;
+the [development guide](../guides/development.md) owns verification commands and the general
+[ops development policy](../guides/development.md#operations-development). Python-first workflows now
 apply to future ops work generally; this proposal remains the bounded, separately scheduled
 refactor of the existing PostgreSQL workflow, not a prerequisite for adopting that policy.
 
-The operator approved PostgreSQL-first extraction, reuse of the existing transient helper and
+The accepted scope is PostgreSQL-first extraction, reuse of the existing transient helper and
 authenticated connection, two narrow inspect/configure operations, unchanged protected password
 handling, and preservation of native-HBA validation and its accepted crash window.
 
 ## Starting state and evidence
 
-The corrections baseline is local commit `8266656` on
-`dedicated-host-deployment-automation`. Prior verification recorded 886 operations tests and 805
-Elixir tests through `mix precommit`, plus pinned-runtime configuration checks. These are historical
-baseline results, not verification of this refactor. No refactor code exists at specification time.
+The executable compatibility baseline is the corrected PostgreSQL shell from native acceptance,
+retained in `d6369f3156ac9f0776891af3155210ac64129d72`, and protocol-v3 helper validation/recovery.
+No PostgreSQL Python refactor is implemented. Identified source/artifact/native qualifications
+belong to the acceptance report.
 
 `services/postgresql.py` currently owns desired-state dataclasses, pyinfra package/staged-file
 declarations, generated shell inspection and configuration, and separate protected role/database
@@ -45,10 +45,8 @@ pyinfra SSH connector. `helper_client/runner.py` already provides bounded, check
 private transient helper transfer and correlated JSON results. Reuse those mechanisms; do not
 create another SSH connection, upload implementation, or arbitrary-code executor.
 
-The VPS readiness work remains paused separately in
-[its handoff](../handoffs/ops-vps-readiness.md), tracked by `tas-b7kd`. Its failed immutable release
-must not be edited or retried; replacement build and exact recoverable retirement remain separate
-work. This design authorizes neither host mutation nor release retirement, push, merge, or publication.
+The
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#authenticated-retained-database-acceptance) owns identified release/recovery evidence and its dated qualifications. This design authorizes neither host mutation nor release retirement, push, merge, or publication.
 
 ## Scope and exclusions
 
@@ -60,7 +58,9 @@ Keep unchanged:
 
 - Package selection, root/configuration inputs, staged HBA content and mode, and native topology.
 - Role/database adoption policy, least privilege, password creation, protected pgpass installation,
-  and application connection verification after declarative provisioning.
+  and application connection verification after declarative provisioning. Preserve current ready/absent
+  admission: only proven absence of both native identities may skip impossible pre-creation
+  authentication; existing ready authority still authenticates. Runtime validation stays unconditional.
 - Caddy, UFW, systemd, release procedures, builder/toolchain, and unrelated short shell commands.
 - Public CLI commands, confirmations, dry-run semantics, output schema, and error categories.
 
@@ -78,7 +78,8 @@ Paths below are relative to `ops/taskman_ops/`.
 | `host_helper/postgresql.py` | Own selected-cluster observation, native command policy, desired-state checks, and the explicit configuration/recovery procedure |
 | `host_helper/operations/postgresql.py` | Validate narrow requests, take lifecycle lock, invoke the capability and project bounded final results |
 | `host_helper/commands.py` | Add opt-in cancellation for PostgreSQL; preserve defaults and behavior of existing consumers |
-| `host_protocol/operations.py`, `host_helper/__main__.py` | Add exact operation names and dispatch |
+| `host_protocol/postgresql.py` | Own exact PostgreSQL request/result validation; no second parser in the controller or capability |
+| `host_protocol/operations.py`, `host_helper/__main__.py` | Add exact operation names, dispatch validation and PostgreSQL-specific safe failure/encoding projection |
 | `helper_client/package.py` | Include the new modules only in the transient package; preserve scheduled-backup least authority |
 | `provisioning.py` | Pass validated non-secret configuration to the operation adapter where needed; retain declaration/consequence order |
 
@@ -105,7 +106,7 @@ inspection generator merely to change accounting. Test the distinction explicitl
 ## Request and result contract
 
 Add `inspect_postgresql` and `configure_postgresql` to the finite transient vocabulary. Keep the
-version-2 envelope and bounds: this is an additive operation extension, not an envelope redesign.
+version-3 envelope and bounds: this is an additive operation extension, not an envelope redesign.
 The matching helper is packaged and transferred for each invocation; old helpers reject the new
 names. There is no installed transient-helper compatibility fallback.
 
@@ -129,18 +130,26 @@ or inability to acquire the lock is an error, not ordinary drift.
 
 Successful configuration state is exactly `changed: <boolean>`. Failures carry `changed`,
 `failed_boundary: "postgresql"`, and a fixed `reason` selected from `invalid_request`,
-`unsafe_state`, `command_failed`, `recovery_required`, or `lock_unavailable`; only lock failure
-also carries `locked: true`. Outcomes are `refused` for invalid/unsafe authority, `manual` when
+`unsafe_state`, `command_failed`, `recovery_required`, `lock_unavailable`, or `internal_failure`;
+only lock failure
+also carries `locked: true`. Every failure additionally carries `mutation_state`, exactly
+`unchanged`, `changed`, or `unknown`; `changed` is false exactly for `unchanged` and true for the
+other two states. Successful states keep the exact boolean schemas above. Outcomes are
+`refused` for invalid/unsafe authority, `manual` when
 recovery material needs inspection, and `retryable` for command failure without such material or
 lock failure. Messages and
 warnings are fixed and contain no raw subprocess output, configuration contents, or exceptions.
-Validate exact operation-specific successful state at the controller boundary.
+Validate the entire exact operation-specific state, outcome and reason at both helper dispatch
+and controller consumption. Unknown fields, inconsistent boolean/classification, inappropriate
+lock markers and mismatched envelopes invalidate the complete wire reply.
 
-Preserve status `10` for cluster/runtime safety refusal and the existing provisioning failure
+Invalid requests map to status `2`. Preserve status `10` for cluster/runtime safety refusal
+and the existing provisioning failure
 translation (status `5`) for ordinary command/transport errors, including restart/postcheck command
 failure even when recovery material remains; lock contention maps to `12`. `manual` with
 `recovery_required` maps to `10` when preexisting evidence prevents safe action or restoration
 cannot be completed (failed restoration takes precedence over the original command error).
+Unexpected internal/encoding failure uses `reason: internal_failure` and status `5`.
 On other native command failures, retain `reason: command_failed` and status `5`
 even when the outcome is `manual` because evidence requires inspection. Preserve
 pyinfra's categorized-error propagation. Never use helper process status `0` as proof of success:
@@ -151,6 +160,37 @@ lost or invalid result means possible mutation and must not become `changed: fal
 transport loss alone does not prove a PostgreSQL mutation. The enclosing deploy retains its
 existing conservative possible-change reporting once execution has begun. Preserve cleanup warnings through
 pyinfra and the public error boundary. Transient upload cleanup is not a managed configuration change.
+
+### Internal failure and encoding integration
+
+These operations have their own exact state schemas; do not add them blindly to the existing
+`MUTATION_OPERATIONS` set whose validators require deploy/genesis/restore/cleanup observations.
+Use explicit PostgreSQL dispatch and encoding branches with the shared PostgreSQL validator.
+Preserve those four operations' existing independent evidence groups and encoding guarantees.
+
+The capability accumulates actual mutation before raising or returning a categorized failure.
+Known configuration/HBA changes survive later command, restoration or inspection failure.
+A proved pre-mutation refusal is unchanged; uncertain consequence is unknown. Inspection itself
+never mutates configuration and all its failures are unchanged. Unexpected configuration exceptions
+and invalid internal replies default to unknown, with fixed retryable `internal_failure` and public
+status 5. Only a matching in-process result may preserve independently validated positive change
+from an otherwise invalid result. An unchanged claim requires a completely valid result or a
+locally proved pre-mutation refusal; malformed siblings must not manufacture unchanged or success.
+No observer, handler retry or configuration/recovery action is performed merely to repair a result.
+HBA restoration remains exclusively the capability procedure described below.
+
+At encoding, try the completed result once. If it cannot encode within the current envelope bounds,
+make one bounded PostgreSQL failure projection and one final encoding attempt: inspection is
+unchanged; configuration retains validated positive change, and otherwise is unknown unless the
+complete valid original result established unchanged. Use fixed redacted `internal_failure`/status 5;
+a former success becomes failure. If no valid final reply arrives, the controller uses the same
+complete-wire rejection policy as transport loss. It never salvages fields from malformed wire JSON.
+
+Map configuration unknown to conservative public `changed: true`, while retaining classification
+in available public facts. Aggregate earlier controller/provisioning changes using the current
+command-wide rules: changed dominates unknown, which dominates unchanged. Native safety/status 10,
+ordinary provisioning/status 5 and lock/status 12 precedence above remain unchanged. These proposed
+branches are not a generic recovery framework or changes to the implemented operations contracts.
 
 ## Observation and native command semantics
 
@@ -163,7 +203,11 @@ Read the data directory with `pg_conftool -s VERSION CLUSTER show data_directory
 absolute, canonical, restricted-path check. Validate native configuration directory and regular
 non-link configuration/HBA files without changing parent metadata. Parse the eight-line
 `postmaster.pid`, including PID, data directory, start epoch, live port, socket and ready status.
-Require `pg_ctlcluster VERSION CLUSTER status` and cross-check live SQL port/data/start identity.
+Require `pg_ctlcluster VERSION CLUSTER status` and cross-check live SQL port/data/parent-PID
+identity. The third SQL value is `(regexp_match(pg_read_file('/proc/self/status'),
+'^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]`, compared with the first `postmaster.pid` line.
+Continue validating the numeric start-epoch line locally, but do not compare it with rounded
+`pg_postmaster_start_time()` SQL: native acceptance corrected that unreliable comparison.
 
 Administrative SQL uses `runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align
 --field-separator | --host /var/run/postgresql --port LIVE_PORT --username postgres
@@ -261,6 +305,10 @@ Required coverage:
   transitions; explicit argv and bounded output/timeout/process cleanup.
 - Exact request/result schemas, invalid or extra parameters, forbidden path/secret input, malformed
   or mismatched results, transport loss, cleanup warnings, and partial-change aggregation.
+- Matching internal positive-change evidence with invalid sibling fields, wrong type/envelope,
+  unexpected exceptions, inspection unchanged failure, encoding failure after success/change,
+  at most two encodes and complete malformed-wire rejection; existing four-operation recovery
+  and scheduled executable boundaries remain unchanged.
 - Real programmatic pyinfra prepare/execute, first change, converged second run, drift and dry-run;
   connection reuse and no nested deploy or prepare-time host mutation.
 - Both deterministic zipapps execute with `python3 -I -S`; transient package includes new code
@@ -275,20 +323,3 @@ Local fakes and subprocess tests do not prove real PostgreSQL/systemd behavior. 
 authorized supported-host acceptance check must exercise native parsing, ownership, first and
 second convergence and custom-port behavior; report its absence as uncertainty. Do not inject
 failure, change ports, or restart the existing VPS merely to satisfy this design's test matrix.
-
-## Next-session checklist
-
-Design verification on 2026-09-09: independent scoped review approved the corrected pyinfra
-accounting, cancellation seam and error precedence. Local links, placeholders and whitespace
-checks passed; `mix precommit` passed 805 tests. No refactor implementation or host acceptance
-has been performed. These checks do not replace the operator's written-spec approval.
-
-1. Obtain written-spec approval, then write and review the implementation plan; create bounded
-   repository-local Beads work through `br` linked to `tas-b7kd` before implementation.
-2. Update the active handoff and use the approved-plan clean-session boundary. No implementation
-   begins in this design session unless the operator explicitly asks to continue here.
-3. Recheck the actual checkout and applicable guidance, read this entire spec and the canonical
-   deployment design, then execute the plan with characterization, implementation and review.
-4. Preserve the VPS/artifact checkpoint. After verification, update the canonical deployment
-   vocabulary/ownership description and runbook only where behavior or diagnostics require it;
-   mark this proposal implemented with evidence rather than leaving competing current guidance.

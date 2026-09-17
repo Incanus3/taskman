@@ -26,7 +26,7 @@ UMask=0077
 RuntimeDirectory=taskman
 RuntimeDirectoryMode=0750
 StateDirectory=taskman
-StateDirectoryMode=0750
+StateDirectoryMode=0700
 
 # The release is immutable at runtime. State and short-lived runtime files have
 # dedicated writable directories; database and loopback network access remain available.

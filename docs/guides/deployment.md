@@ -5,14 +5,15 @@ repository-owned controller under `ops/` is the primary path for building, provi
 deploying, inspecting, backing up, rolling back, restoring, and cleaning up the installation.
 Manual recovery remains documented below for use when the controller is unavailable.
 
-The [deployment design](specs/2026-09-09-dedicated-host-deployment-design.md) defines the architecture,
+The [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) defines the architecture,
 authority boundaries, and rationale behind these procedures.
 
-The [reconciliation compatibility boundary](specs/2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
-sets a new supported artifact and record baseline. Old-format staging will be replaced through
-separately authorized clean provisioning; it cannot be upgraded or repaired with this controller.
-The dated staging observations below remain historical evidence. Do not reset or delete staging
-based on this runbook. Future supported upgrades retain the recovery guarantees described here.
+Only the [supported artifact and record baseline](../specs/2026-09-18-operations-contracts.md#one-time-compatibility-boundary)
+is accepted. Do not convert, adopt or delete unsupported authority to make a command pass.
+Dated acceptance findings belong to the
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md); environment observations and obligations belong
+to the [environment inventory](../inventories/operations-environments.md). Neither is proof of current host state
+or authorization for reset, provider changes or deletion.
 
 The supported topology is deliberately narrow. The paths below are the defaults; alternate
 absolute roots are supported only when they pass the configuration topology checks described
@@ -67,49 +68,28 @@ The launcher always uses the checked-in lock:
 
 ### Operator shell environment
 
-Before running host commands, set the age identity used to decrypt deployment secrets
-and the SSH agent socket used to authenticate to the VPS:
+Set the external age identity and the actual SSH agent socket for your workstation:
 
 ```sh
-export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/taskman.txt"
-export SSH_AUTH_SOCK="/run/user/$(id -u)/ssh-agent.socket"
-./ops/taskman provision staging --artifact /secure/artifacts/EXACT_RELEASE.tar.gz --dry-run
+export SOPS_AGE_KEY_FILE=/secure/operator-owned/taskman.agekey
+export SSH_AUTH_SOCK=/path/to/your/ssh-agent.socket
+ssh-add -l
 ```
 
-These paths match the current staging workstation setup; use the actual identity file
-and agent socket on another workstation. Exports apply to the current shell and commands
-started from it. A shell opened elsewhere needs the same settings. `build` is local and
-does not need either variable; read-only host commands need SSH authentication but do
-not necessarily decrypt secrets.
+Exports apply only to that shell and its child commands. `build` needs neither variable;
+read-only host commands need SSH authentication but do not necessarily decrypt secrets.
+The controller uses environment YAML and pinned host-key authority with
+`ssh_config_file=/dev/null`; it does not inherit an SSH alias's `IdentityAgent` setting.
+If alias-based SSH works but the controller reports `strict SSH connection setup failed`,
+inspect `ssh -G YOUR_HOST_ALIAS` and set `SSH_AUTH_SOCK` to the intended agent. Both variables
+contain paths, never credential bytes. Keep the private age identity outside the repository.
 
-The controller uses explicit environment YAML and pinned host-key authority with
-`ssh_config_file=/dev/null`. It therefore does not inherit the `deploy` alias's
-`IdentityAgent` setting. OpenSSH may work through that alias while the controller fails
-with `strict SSH connection setup failed` until `SSH_AUTH_SOCK` points to the same agent.
-Inspect `ssh -G deploy` for its `identityagent` setting; `ssh-add -l` checks whether the
-current shell can reach its configured agent. Keep the private identity outside the
-repository; neither variable should contain secret values, only paths.
-
-The target must boot Ubuntu 26.04 LTS `amd64` with systemd as PID 1. The configured SSH
-administrator must already be able to use the required `sudo` operations. The supported host
-baseline includes Ubuntu's `python3-minimal` package. The controller uses it only to run a
-deterministic, standard-library-only transient helper for one invocation; it never installs the
-controller package, a resident agent, a listener, or a background process on the host. Provisioning
-rejects unsupported platforms, ambiguous existing users/files/services/databases, mismatched host
-keys, indirect public DNS, and conflicting listeners rather than overwriting them.
-
-The build runs in the reviewed tag-and-digest pair in `ops/builder/Containerfile`:
-
-```text
-ubuntu:resolute-20260811.1
-sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
-```
-
-The readable dated tag identifies the selected Ubuntu image release, while the digest fixes its
-content if a registry tag is reassigned. The artifact manifest records both values and rejects a
-different builder base. The host receives only the built OTP release, managed runtime assets, and
-the explicit Ubuntu runtime prerequisites—not source, Mix, Node, controller Python packages,
-pyinfra, SOPS, age, Docker, or the build toolchain.
+The host must boot Ubuntu 26.04 LTS `amd64` with systemd as PID 1, Ubuntu's
+`python3-minimal`, and an administrator able to perform the required sudo operations.
+Provisioning refuses unsupported platforms, ambiguous existing resources, mismatched host keys,
+indirect public DNS and conflicting listeners. The host receives an OTP release, managed assets
+and runtime prerequisites; it does not need source, Mix, Node, Docker or controller dependencies.
+See [architecture and ownership](../specs/2026-09-09-dedicated-host-deployment-design.md#architecture-and-ownership).
 
 ## Configure SOPS and age
 
@@ -171,44 +151,24 @@ install_root: /opt/taskman
 backup_root: /var/backups/taskman
 ```
 
-`install_root/releases`, `install_root/deployments`, `install_root/current`, and
-`install_root/deployments/uploads` are derived from the validated `install_root`; they are not
-configuration keys and have no legacy aliases. `install_root` and `backup_root` must have no
-equality, ancestor, or descendant collision. Managed paths also cannot overlap Taskman's reserved
-configuration, state, lock, or installed-program roots. The administrator command is derived from
-the validated `install_root/current`; changing a root does not fall back to `/opt/taskman`.
-Installation roots cannot contain single or double quotes, ASCII control characters, or DEL:
-systemd rejects those characters in executable paths even after escaping. Invalid installation
-roots fail configuration validation with status 2 before SSH. Quoted backup roots remain supported;
-their filesystem-access paths are escaped for systemd's path-list syntax. This distinction follows
-[systemd's executable-path validation](https://github.com/systemd/systemd/blob/v259/src/core/load-fragment.c),
-not shell quoting rules.
-Interactive SSH shell-quotes the administrator command's arguments so path characters
-are passed literally rather than interpreted as remote shell syntax.
+Release, deployment, upload, lock and `current` paths derive from `install_root`.
+Do not configure subordinate roots or legacy aliases. Both roots must be normalized absolute paths,
+disjoint from each other and reserved managed locations. Installation roots exclude whitespace,
+backslash, `%`, quotes, ASCII controls and DEL; backup roots may contain quotes.
+Invalid configuration returns status 2 before SSH. See
+[path authority](../specs/2026-09-09-dedicated-host-deployment-design.md#configuration-and-path-authority).
 
-## Short-lived helper and persistent scheduled executable
+## Helper cleanup and scheduled backups
 
-Interactive controller commands build the deterministic `taskman-host.pyz` helper from the checked
-controller revision. Each invocation transfers it through a unique private directory, verifies its
-SHA-256 before and after installing the same bytes as `root:root` mode `0500` below
-`/run/taskman-ops`, sends one bounded JSON request, accepts only the matching bounded and redacted
-result, and performs exact-path best-effort cleanup. Its correlation identifier belongs only to
-that transport exchange; it is not a durable operation record, stage history, or recovery
-program. The helper is not an installed host agent and does not remain running between commands.
+Host commands use a checksum-verified, short-lived standard-library helper; no resident agent
+or background recovery process remains. Read-only commands and dry runs still need temporary
+transport infrastructure. Provisioning separately installs the root-owned scheduled-backup
+executable and systemd timer. See
+[helper packaging](../specs/2026-09-09-dedicated-host-deployment-design.md#helper-packaging-and-protocol).
 
-Scheduled backups use a different least-authority boundary. Provisioning installs the deterministic
-`/usr/local/lib/taskman/taskman-backup.pyz` as `root:root` mode `0750`. The zipapp persists so
-systemd can execute it later, but each `Type=oneshot` timer invocation is a short-lived process.
-It contains only the standard-library code needed to read its fixed non-secret environment, take
-the shared host lock, observe validated release/migration/recovery authority, create and validate
-a backup, apply retention, print
-one fixed journal message, and exit. It contains no deploy, rollback, restore, SSH,
-secrets-decryption, or interactive-controller code.
-
-A `transient helper cleanup was incomplete` warning means only that exact-path best-effort cleanup
-did not finish. It does not authorize recursive deletion under `/tmp/taskman-ops` or
-`/run/taskman-ops`; first establish that no invocation still uses an entry and verify its owner,
-mode, and type.
+A `transient helper cleanup was incomplete` warning does not undo the command's primary result
+or authorize recursive deletion under `/tmp/taskman-ops` or `/run/taskman-ops`. Before manual
+cleanup, prove an exact entry is unused and verify its owner, mode and type.
 
 ## Preview before changing a host
 
@@ -251,25 +211,15 @@ Build the current clean, identified revision:
 ./ops/taskman build
 ```
 
-The pinned Ubuntu 26.04 `linux/amd64` builder uses Elixir `1.20.4` and OTP `29.0.6` from
-checksum-verified [HexPM builds](https://github.com/hexpm/bob#erlang-builds), rather than Ubuntu's
-older Elixir/Erlang packages. It runs production dependency resolution, compilation with warnings
-as errors, asset deployment, and OTP release assembly. Node `22.22.1`, Hex `2.5.1`, and Rebar3
-`3.24.0` remain exact build inputs. The existing versioned Rebar3 binary, compiled for OTP 27,
-also runs on OTP 29 and remains checked against its recorded SHA-512 digest; do not replace it
-with an unpinned `mix local.rebar` download. The resulting archive, manifest, and detached SHA-256 file
-identify the exact source, migration fingerprints, platform, OTP/Elixir/Node/Hex/Rebar3 inputs,
-and archive bytes. Treat the archive as a credential because it contains the Erlang distribution
-cookie.
-
-Before packaging, a bounded, network-isolated release `eval` checks runtime configuration on
-the pinned VM using synthetic values. It does not start Taskman or test database/email access;
-its temporary configuration stays outside the release tree. A successful build still requires
-real-host readiness and acceptance checks.
-
-Only the current supported runtime and record formats are accepted. The historical OTP 27
-artifacts and digestless IDs are not a transition path to this baseline. The separate
-[Alpine CI restriction](specs/2026-08-10-alpine-elixir-ci-design.md) remains documented independently.
+The pinned Ubuntu 26.04 `linux/amd64` builder produces an archive, adjacent manifest and
+detached SHA-256 file identifying source, migrations, platform, toolchain and exact bytes.
+[Build architecture](../specs/2026-09-09-dedicated-host-deployment-design.md#build-and-artifact-identity)
+and `ops/builder/Containerfile` own exact pins; do not substitute unpinned toolchain downloads.
+A bounded, isolated runtime-configuration check uses synthetic values without starting Taskman;
+build success does not establish database, email or real-host readiness.
+Treat the archive as a credential because it contains the Erlang distribution cookie.
+Only the supported runtime/formats are accepted; old OTP 27 artifacts and digestless IDs
+are not an upgrade path.
 
 Release IDs include the full archive SHA-256 after the source/target/runtime fields. A dirty
 snapshot adds a terminal `-dirty` marker. Rebuilding the same revision may produce different bytes
@@ -283,18 +233,16 @@ does not strand a retry of an already installed exact target. Invalid cache entr
 and preserved. Results identify whether the target was installed, cached, built or explicit.
 
 For deliberate local changes, use `build --allow-dirty`, `deploy --allow-dirty`, or
-`provision --allow-dirty`. The controller freezes tracked files and nonignored untracked files in
-private storage, honoring tracked deletions and excluding ignored files, repository metadata and
-controller state. It refuses unsafe member types and changes during capture. Dirty automatic
-resolution builds before identity can be known; it does not reuse a base revision as if it proved
-identical bytes. Explicitly choosing a dirty artifact implies dirty-source allowance; adding
-`--allow-dirty` to an explicitly selected clean artifact is invalid.
+`provision --allow-dirty`. The controller freezes tracked changes/deletions and nonignored
+untracked files privately, excludes ignored files/metadata/controller state, and refuses unsafe
+members or changes during capture. Dirty automatic resolution builds before identity is known.
+Explicit dirty artifacts acknowledge their provenance; `--allow-dirty` with an explicit clean
+artifact is invalid.
 
-Automatic clean source inputs are rechecked before confirmation and execution. Before confirmation,
-drift discards the stale target and repeats clean-input identification, host discovery, resolution,
-and planning (including with `--yes`); repeated instability refuses. After a plan has been
-confirmed, any source or host-authority drift refuses and requires a new invocation, including
-under `--yes`. An already frozen dirty artifact remains the exact target of its plan.
+Automatic clean source drift before confirmation repeats identification, discovery and planning,
+including under `--yes`; repeated instability refuses. After confirmation, source or material
+host-authority drift requires a new invocation. Frozen dirty bytes remain the exact planned target.
+See [target resolution](../specs/2026-09-18-operations-contracts.md#target-resolution-and-immutable-identity).
 
 To retry exact bytes after a failure, pass the archive reported by that attempt:
 
@@ -313,30 +261,23 @@ After reviewing a dry run:
 ./ops/taskman provision production
 ```
 
-Provisioning presents a redacted plan and requires ordinary interactive confirmation. One real
-programmatic pyinfra deployment converges the stable desired state: required packages, unattended
-security updates without automatic reboot, the `taskman` account and managed directories,
-non-secret configuration and units, Caddy, systemd enablement, and the root-owned scheduled backup
-zipapp and timer. Ordinary package, file, and service drift is declarative. Three direct custom
-actions remain because they guard material consequences: UFW activation revalidates the active SSH
-path, Caddy validates the candidate configuration immediately before installation, and PostgreSQL
-validates the selected cluster before changing its native HBA file, then validates HBA syntax
-before reload/restart. Database role/password authority plus private runtime and pgpass installation stay
-outside pyinfra's logged command path so secret bytes are not exposed.
+Provisioning presents a redacted plan and requires ordinary confirmation; `--yes` supplies
+that confirmation only. Downgrade/unknown ordering needs separate acknowledgment, and pending
+migrations need an explicit compatibility policy as described under deployment below.
+Provisioning converges packages, unattended security updates without automatic reboot, managed
+accounts/directories/configuration/units, Caddy and scheduled backups. UFW activation protects
+the active SSH path; Caddy validates configuration; PostgreSQL validates cluster/HBA authority.
+Secret installation stays outside logged pyinfra commands. See
+[provisioning admission](../specs/2026-09-09-dedicated-host-deployment-design.md#provisioning-and-admission).
 
-PostgreSQL retains the selected cluster's native `pg_hba.conf` location. Its live rules view
-can validate changed file contents before they are loaded, but cannot validate an arbitrary
-file path. Provisioning keeps a recoverable copy of the prior HBA bytes and metadata on the host and
-restores it if validation fails. It refuses to replace authentication configuration when it
-cannot verify the running cluster and native HBA path. The operator accepted the brief
-crash/power-loss window after candidate installation and before validation/restoration;
-after an interrupted attempt, inspect the HBA file and recovery copy before manually restarting
-PostgreSQL. The recovery directory is beside the native file as `pg_hba.conf.taskman-backup`,
-containing the previous `pg_hba.conf` and its `metadata`. A leftover directory blocks another
-attempt until manually reconciled. Parser failure restores the prior file; a later
-restart or verification failure retains the recovery copy for inspection rather than silently
-changing disk configuration back underneath the running process. An isolated validation
-instance is not part of this workflow.
+PostgreSQL keeps its native `pg_hba.conf` path. Before reload/restart it validates installed
+candidate contents and restores prior bytes/metadata on parser failure. An interrupted attempt
+requires inspection: the brief installation-to-validation crash/power-loss window is accepted.
+Recovery is beside the native file in `pg_hba.conf.taskman-backup` (`pg_hba.conf` plus `metadata`);
+a leftover directory blocks another attempt until manually reconciled. Later restart/verification
+failure retains the copy, rather than reverting configuration under a running process.
+Do not restart PostgreSQL blindly or relocate HBA; see
+[HBA rationale and validation boundary](../specs/2026-09-09-dedicated-host-deployment-design.md#provisioning-and-admission).
 
 The transient helper reconciles the desired first release from validated resources, records and
 live migrations. Before the first durable successful selection, a rerun may retry or replace the
@@ -344,31 +285,49 @@ target while preserving compatible partial state. Missing managed resources can 
 confirmation; conflicting present resources refuse. Resource inspection and confirmed convergence
 do not adopt an unknown installation or invent provenance for applied migrations.
 
+Fresh database creation requires both the configured PostgreSQL role and database to be absent.
+A retained role with a missing database refuses before mutation; inspect that partial authority
+deliberately before retrying. When both identities already exist, preflight requires the exact
+least-authority role, its owned database, compatible protected credentials, and successful
+application database authentication.
+
 The first successful selection is the command boundary. Once it exists, release replacement uses
 `deploy`, even if the controller lost the successful response. Replaying the exact completed first
 installation remains available only under its existing first-install constraints. Compatible
 scheduler code is refreshed under the lifecycle lock before publishing dependent recovery state.
+Provisioning resource/database/runtime convergence currently runs outside that lock; interactive
+`create-admin` also has no lifecycle admission. Helper procedures release lifecycle during scheduler
+waits, so even manual helper commands do not have whole-command exclusivity. Status 12 means a
+particular lifecycle acquisition was unavailable, not that every conflicting invocation is rejected.
+The lock is installation-root-specific, not one fixed host-wide guard.
 
-Installed releases are `root:taskman`: directories/executables are `0750`, regular data and
-the completed manifest are `0640`. The service account can read and execute but cannot modify
-the release. Do not fix an execution-permission failure by granting world access or adding
+Exclusive provisioning maintenance must currently be coordinated by the operator. Do not assume
+stopping the backup timer and draining a backup protects the full command: provisioning can create
+or restart the timer before it finishes, and it does not guarantee continued suspension after
+failure or caller loss. Current tooling cannot enforce the desired exclusive interval. Avoid
+concurrent provisioning/admin/manual mutation and scheduled backup activity; inspect actual timer
+and job state throughout maintenance rather than relying on command-start observations.
+After an uncertain interruption, inspect outstanding remote commands and systemd migration/admin/
+backup work and establish quiescence before retrying or restarting backups; a free lifecycle lock
+or exited controller does not prove remote work has stopped. No durable provisioning reservation,
+host-wide whole-command conflict refusal or reservation-based recovery command exists yet. The
+[admission and recovery design](../specs/2026-09-18-provisioning-lock-coverage-proposal.md) is future
+work in its [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md).
+
+Installed releases are `root:taskman`: directories/executables are `0750`, regular data is
+`0640`, and the completed manifest is `0600`. The service account can read and execute application
+files but cannot modify the release. Do not fix an execution-permission failure by granting world access or adding
 `taskman` to the root group; inspect the exact release metadata and preserve immutable contents.
 
-Run the same command again after success. A converged host reports no declarative changes apart
-from procedural verification. The scheduled-backup checksum check runs every time and pyinfra
-counts that executed check as changed; consequently the top-level `changed` can remain `true`
-while `release.changed` is `false` and no desired-state replacement is needed. Do not infer a
-new release deployment from that aggregate boolean alone. Before the first release procedure, a failure retains compatible
-partial state for a safe rerun rather than removing packages, the database, firewall rules, or
-generated secrets.
+Repeat provisioning with the same exact artifact/source inputs after success to check convergence.
+Read release-level facts separately from aggregate `changed`: a procedural checksum check may be
+counted as changed without a new release selection. Do not assume the current checkout resolves
+to the originally installed bytes.
 
-Provisioning deliberately does not perform the interactive administrator step. Do it after
-readiness succeeds as described below.
-
-After successful admission and confirmation, provisioning converges only the validated managed
-resources. A failed convergence after execution begins can report `changed=true` conservatively:
-inspect the partial host state before retrying. A later rerun again uses resource inspection and
-confirmed convergence; it does not adopt unknown existing resources.
+Failure preserves compatible partial resources rather than removing packages, data, firewall rules
+or secrets. If execution began, mutation evidence can be conservative: inspect before retrying.
+A rerun still validates resources and refuses unknown authority. Provisioning does not create an
+administrator; use the real-terminal procedure after readiness succeeds.
 
 ## Deploy an existing host
 
@@ -425,12 +384,11 @@ by completed Taskman records, and `provision` requires an unambiguous clean host
 Bring an existing manually managed installation into automation only through a separately reviewed
 procedure.
 
-The helper has four fixed outcomes: `succeeded`, `refused`, `retryable`, and `manual`.
-Recognizable interrupted state can be reconciled by another reviewed deployment of the desired
-compatible target. Contradictory migration, database, path or record authority requires inspection.
-Automation does not roll back committed migrations, restart incompatible old code or manufacture
-successful history to hide an earlier failure. Read the final mutation evidence and observations
-before selecting a rerun.
+Recognizable interruption can converge through a reviewed retry/replacement with a compatible
+exact target. Contradictory migration, database, path or record authority requires manual inspection.
+Automation does not reverse migrations, restart incompatible old code or invent successful history.
+Use the result's mutation evidence and fresh observations to select a rerun; see
+[admission contracts](../specs/2026-09-18-operations-contracts.md#observed-state-and-deployment-admission).
 
 ## Inspect releases and backups
 
@@ -441,16 +399,11 @@ Do not infer rollback or restore identifiers from filenames or directory listing
 ./ops/taskman backups production
 ```
 
-Both commands take the shared host-operation lock and read validated metadata. Releases include
-complete source, artifact, runtime and migration provenance; backups include exact ID, timestamp,
-dump digest, source release, observed migrations and recorded database size. Listings collect all
-count/byte-bounded pages before reporting success. Drift between pages refuses or restarts the
-bounded observation; a partial inventory is not presented as complete.
-
-Old-format or contradictory authoritative metadata refuses. Unknown storage is preserved with
-warnings. Backup listings do not validate every dump body; a damaged unreferenced remainder may
-be listed with a warning while remaining ineligible for automatic deletion. Restore performs the
-stronger content and required-safety validation before destructive work.
+Both commands take the shared lock and collect a complete bounded inventory from validated
+metadata. Partial pages are not reported as complete. Old-format or contradictory authority refuses;
+unknown storage is preserved with warnings. Backup listings do not validate every dump body:
+restore performs stronger content/safety validation before destructive work. Use exact reported
+IDs rather than filesystem guesses.
 
 Create an extra validated local dump without changing Taskman:
 
@@ -468,17 +421,12 @@ maps outcomes to fixed process statuses: `0` for completed backup/retention, `2`
 installed configuration, `6` for a recognizable retryable backup failure, `10` for unsafe or
 ambiguous state requiring manual attention, and `12` when the shared lock is unavailable.
 
-Retention protects exact backups referenced by complete successful history, active or retiring
-migration protections, and restore bindings, then keeps the configured number of newest eligible
-unprotected completed backups. Independent references do not consume ordinary retention slots.
-Recovery attempts keep original and newest plus three eligible recent intermediates; successful
-new safety publication precedes confirmed pruning. Clock rollback does not weaken these references.
-
-Before unlinking a pair, retention revalidates path/type/ownership/mode, manifest, size, SHA-256 and
-file identity; manifest deletion precedes dump deletion. Unknown or damaged storage is preserved,
-and conflicting authority refuses. A backup after a partial migration is attributed only to a
-validated installed release covering the observed prefix, which need not be the physical current
-release.
+Retention preserves exact successful-history, migration-protection and restore references, then
+keeps configured ordinary unprotected backups. Recovery attempts retain original/newest safety
+and bounded intermediates; new validated safety precedes pruning. Unknown/damaged storage is
+preserved, conflicting authority refuses, and metadata is removed before dump bytes.
+A partial-migration dump may need manual recovery rather than automatic restore. See
+[backup protection](../specs/2026-09-18-operations-contracts.md#backup-protection-and-successful-history).
 
 ## Roll back, restore, and clean up
 
@@ -575,16 +523,10 @@ Run this only from a real local terminal:
 ```
 
 The controller allocates a strict SSH TTY and invokes only the `bin/create-admin` wrapper below
-the validated `install_root/current`. For the default installation root, the constrained boundary is:
-
-```sh
-sudo -- systemd-run --wait --pipe --collect \
-  --property=User=taskman \
-  --property=Group=taskman \
-  --property=WorkingDirectory=/opt/taskman/current \
-  --property=EnvironmentFile=/etc/taskman/taskman.env \
-  -- /opt/taskman/current/bin/create-admin
-```
+the validated `install_root/current`. The constrained `systemd-run` bridge runs as `taskman`,
+using that same configured current release for its working directory and the protected
+`/etc/taskman/taskman.env` environment.
+See [interactive administration](../specs/2026-09-09-dedicated-host-deployment-design.md#interactive-administration).
 
 The email and password travel only through the terminal prompts; they are not arguments,
 environment variables, decrypted deployment data, or structured results. The controller refuses
@@ -596,7 +538,8 @@ Afterward:
 
 1. sign in over HTTPS;
 2. invite a controlled address and receive the Resend email;
-3. complete the invited account setup;
+3. open the signed setup link, choose and confirm a password of at least eight characters,
+   then sign in after account activation;
 4. create and use an API key;
 5. navigate a LiveView route and confirm its WebSocket remains connected; and
 6. copy a verified backup off-host.
@@ -616,7 +559,7 @@ Afterward:
 | `9` | Post-start readiness or public verification failure |
 | `10` | Safety refusal, state conflict, or incompatible rollback |
 | `11` | Database restore or restored-database validation failure |
-| `12` | Another host operation holds the shared lock |
+| `12` | A lifecycle-lock acquisition was unavailable; this is not whole-command conflict detection |
 
 The interactive `create-admin` bridge returns the remote command status after it has successfully
 opened the session.
@@ -629,11 +572,14 @@ mutation. The public `changed` boolean is true for changed or unknown. Proved ch
 uncertainty, but final observations may still be unavailable. `facts.starting_state` is the first
 accepted plan's exact authority, or null before any confirmation; it is not the final host state.
 
-`facts.observations` and `facts.unavailable_fields` distinguish proved absence from observation
-failure. Lost or invalid replies do not reuse earlier final observations or the desired target as
-proof. Failed verification retains its bounded report when one was produced, including failing
-checks, without raw command output or credentials. Completed restore cleanup can succeed without
-a new readiness report; this does not claim the application is currently healthy.
+`facts.observations` and `facts.unavailable_fields` distinguish proved absence from failed
+observation. Lost or invalid replies do not make earlier facts or desired targets current evidence.
+A failed verification report retains fixed failing checks without raw output. Verification checks
+selected release/service identity, Caddy, loopback topology/no EPMD, startup journal, exact local/public
+readiness and HSTS within a bounded startup budget. Unsafe topology fails immediately.
+See [verification details](../specs/2026-09-09-dedicated-host-deployment-design.md#verification-and-reporting)
+and [failure/result contracts](../specs/2026-09-18-operations-contracts.md#failures-and-reporting).
+Completed restore cleanup may succeed without new readiness; that does not establish current health.
 
 Use those facts and the failed boundary to choose the next action:
 
@@ -643,7 +589,7 @@ Use those facts and the failed boundary to choose the next action:
 | Upload or staging interrupted | Keep the current release and database, then retry the desired exact target. Deterministic staging and completed records distinguish reusable work from ambiguity. |
 | Migration failed | Keep Taskman stopped. Preserve the pre-deploy backup and determine whether committed migrations allow forward repair or require restore. |
 | Selection or startup failed | Do not automatically select old code. Inspect `current`, completed selections, service state, the fresh backup, and live migrations. Rerun only when those facts describe a recognized transition. |
-| Local readiness failed | Keep the unhealthy service stopped and inspect the fixed verification summaries and journal. |
+| Local readiness failed | Inspect fresh service state, fixed verification summaries and journal. Verification failure does not automatically stop Taskman; stop it explicitly if needed while investigating. Do not assume the previous release is schema-compatible. |
 | Public HTTPS failed after local readiness | Preserve the selected healthy local release; repair DNS/provider firewall/Caddy/ACME without exposing Phoenix directly. |
 | Lock is held | Wait for the other controller command or scheduled backup to finish. The lock file contains no operation identity; do not remove it merely because the path exists. |
 | Metadata is contradictory | Stop mutation. Reconcile managed records and exact paths before retrying. |
@@ -654,57 +600,92 @@ Use those facts and the failed boundary to choose the next action:
 
 ## Manual recovery without the controller
 
-Start with read-only inspection:
+Use the reviewed environment YAML to set these non-secret values on the host; do not infer them
+from historical staging information. Substitute the actual configured roots, ports, database and
+public hostname before running the examples:
 
 ```sh
+install_root=/opt/taskman
+backup_root=/var/backups/taskman
+application_port=4000
+distribution_port=6789
+database_port=5432
+database_name=taskman_prod
+public_hostname=YOUR_TASKMAN_HOST
+
 sudo systemctl status taskman.service --no-pager
 sudo systemctl status caddy.service --no-pager
 sudo journalctl --unit taskman.service --boot --no-pager --lines=100
-sudo readlink -f /opt/taskman/current
+sudo readlink -f "$install_root/current"
 sudo ss -ltnp
 ```
 
-Confirm that Phoenix is only on `127.0.0.1:4000`, distribution only on
-`127.0.0.1:6789`, PostgreSQL only on loopback, and no ordinary EPMD listener exists. Do not make a
-service appear healthy by exposing one of those ports.
+Confirm the configured application/distribution ports bind only to `127.0.0.1`, PostgreSQL
+only to loopback at its configured port, and no ordinary EPMD listener exists. Never expose managed
+ports to make health checks succeed. Coordinate a maintenance window: stop Taskman and its backup
+timer, wait for any running backup/controller operation to finish, and retain Caddy. Manual steps
+must not overlap controller or scheduled mutation; do not remove a lock file to bypass contention.
 
-Before any manual release change, preserve the current selection and create a custom-format dump
-outside release directories:
-
-```sh
-sudo install -d -o postgres -g postgres -m 0700 /var/backups/taskman/manual
-sudo -u postgres pg_dump --format=custom \
-  --file /var/backups/taskman/manual/taskman-recovery.dump taskman_prod
-sudo -u postgres pg_restore --list \
-  /var/backups/taskman/manual/taskman-recovery.dump >/dev/null
-```
-
-Use an exact, previously verified release directory. Never edit a selected immutable release:
+Before any release change, record the current selection privately and create a new custom-format
+dump outside release directories. Choose the validated cluster through its configured port:
 
 ```sh
-sudo ln -s releases/EXACT_RELEASE_ID /opt/taskman/current.next
-sudo mv -Tf /opt/taskman/current.next /opt/taskman/current
+sudo systemctl stop taskman-backup.timer taskman.service
+sudo install -d -o root -g root -m 0700 "$backup_root/manual"
+recovery_dir=$(sudo mktemp -d "$backup_root/manual/recovery.XXXXXXXX")
+selected_release=$(sudo readlink -f "$install_root/current")
+printf '%s\n' "$selected_release" | sudo tee "$recovery_dir/selected-release" >/dev/null
+sudo chmod 0600 "$recovery_dir/selected-release"
+sudo sh -c 'umask 077; sudo -u postgres pg_dump --host /var/run/postgresql \
+  --port "$2" --format=custom "$3" > "$1/database.dump"' \
+  sh "$recovery_dir" "$database_port" "$database_name"
+sudo sh -c 'sudo -u postgres pg_restore --list < "$1/database.dump" > /dev/null' \
+  sh "$recovery_dir"
 ```
 
-Start old code only after reviewing every intervening migration declaration and database state. A
-migration failure may have committed earlier migrations. If compatibility is uncertain, keep
-Taskman stopped and restore into a new temporary database first; validate its schema and intended
-release before renaming databases. Retain the old canonical database until the restored
-installation passes local and public verification. Do not drop either database during incident
-response merely to make the names look tidy.
+Root creates the recovery directory and opens the dump files; PostgreSQL tools run as `postgres`
+and use inherited standard output/input without traversing the private backup root. The dump is
+root-owned mode 0600 from creation. These commands preserve the PostgreSQL tool exit status.
+Check each command succeeds before proceeding; a failed dump can leave a partial file and is not
+a usable recovery point. Preserve protected configuration, selection/recovery
+records and existing backup pairs as well as the new dump. These manual files are not controller
+backup records: do not manufacture metadata or pass them as `BACKUP_ID`. Copy recovery material to
+protected off-host storage.
 
-Validate and control services directly:
+Use an exact previously verified release whose migrations are compatible with the live database.
+Never edit immutable release contents. If `current.next` already exists, inspect it and the recorded
+selection; do not overwrite or delete it blindly. With an absent temporary link:
+
+```sh
+release_id=EXACT_RELEASE_ID
+sudo ln -s "releases/$release_id" "$install_root/current.next"
+sudo mv -Tf "$install_root/current.next" "$install_root/current"
+```
+
+A migration failure may have committed earlier migrations. Review every intervening declaration and
+live schema before starting old code. If compatibility is uncertain, keep Taskman stopped and load
+a trusted dump into a fresh temporary database first. Validate its schema and intended release before
+renaming databases; retain the old canonical database until local/public verification succeeds.
+Do not drop either database simply to tidy names. Temporary/retired database authentication may
+require local PostgreSQL administrator authority; see
+[restore authentication](../specs/2026-09-18-operations-contracts.md#authentication-for-restore-databases).
+It is a trusted-backup workflow, not a sandbox for arbitrary dumps.
+
+Validate and control services:
 
 ```sh
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl daemon-reload
 sudo systemctl start taskman.service
-curl --fail --silent --show-error http://127.0.0.1:4000/healthz
-curl --fail --silent --show-error https://YOUR_TASKMAN_HOST/healthz
+curl --fail --silent --show-error "http://127.0.0.1:$application_port/healthz"
+curl --fail --silent --show-error --dump-header - "https://$public_hostname/healthz"
 ```
 
-The local response must be exactly `ready`; public verification must also retain HSTS. Keep Caddy
-running during a Taskman maintenance window.
+Both readiness bodies must be exactly `ready`; public HTTPS must retain HSTS. Also verify service/
+release identity, journal and loopback topology. Restart the backup timer only after reconciling
+release/database/recovery/scheduler authority. Manual selection/database edits can leave controller
+records inconsistent: stop automated mutation until a separately reviewed reconciliation procedure
+establishes supported authority. Manual recovery does not create successful controller history.
 
 ## Release command trust boundary
 
@@ -724,77 +705,49 @@ them like deployment credentials, remove transferred copies after verified insta
 put them in tickets, logs, or user-readable artifact stores. The loopback distribution channel uses
 cookie authentication rather than TLS and must never be bound or forwarded beyond loopback.
 
-For break-glass inspection only, root may run:
+For break-glass inspection only, root may use the configured `install_root` from the manual
+recovery example:
 
 ```sh
-sudo -u taskman -- /opt/taskman/current/bin/taskman remote
+sudo -u taskman -- "$install_root/current/bin/taskman" remote
 ```
 
 That shell has application authority and may expose secrets or mutate state. Prefer fixed
 `systemctl`, `journalctl`, verification, and controller commands; review any captured diagnostic
 output before sharing it.
 
-## Current staging external state
+## Recorded acceptance and future commissioning
 
-The observations below predate the approved one-time compatibility break. Preserve them as
-diagnostic/acceptance evidence; continuation now requires separately authorized host recreation
-and fresh provisioning after local reconciliation implementation. Do not attempt to migrate the
-old records or resume its failed deployment using the new controller.
+[Identified acceptance](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries)
+completed authenticated operations on an earlier retained database and first/repeat provisioning on
+a later empty database. The last recorded fresh installation had no administrator; refresh state
+and create fresh accounts before use. Never reuse archived passwords, signed links or bootstrap
+material. The closing artifact was verified/dry-run inspected but was not selected on the host.
+Later documentation changes are outside its artifact/CI proof.
 
-The staging hostname is `taskman.page`. The domain is registered through Cloudflare Registrar
-through 2027-09-05 with WHOIS redaction and registrar lock enabled. Auto-renew is disabled, so
-renew the domain or explicitly enable auto-renew before that date if it should be retained.
+The inventory retains [staging/provider/mail observations](../inventories/operations-environments.md#taskman-host)
+and [reset recovery obligations](../inventories/operations-environments.md#staging-recovery-retention).
+Keep protected off-host copies, root-only quarantine and all six original backup pairs; no recovery
+point was pruned. This runbook grants no authority to reset/delete that environment.
 
-Cloudflare DNS is active and publishes DNS-only apex `A` and `AAAA` records for `2.29.47.77` and
-`2a01:4f9:c015:6045::1`. The authoritative nameservers and public `1.1.1.1` resolution returned
-those addresses when last verified on 2026-09-06. On 2026-09-09 the operator opened the
-Hetzner provider firewall for public TCP 80/443. Caddy obtained a valid certificate;
-external IPv4 checks confirmed HTTP-to-HTTPS redirection, exact HTTPS readiness, and HSTS.
-Host-side HTTPS checks also succeeded over both IPv4 and IPv6; independent external IPv6
-reachability has not been established from the current workstation.
+### Future-installation commissioning checklist
 
-Provisioning and standalone verification subsequently succeeded for release
-`0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6`, including all ten migrations and the completed
-selection record. The controller at local revision `730c002` includes the scoped-listener and
-empty-HTTP-reason-phrase verification corrections. Repeat provisioning preserved the release;
-its only reported pyinfra operation was the scheduled-backup checksum verification. This is
-readiness evidence, not completion of the broader acceptance checklist below.
+For each separately authorized installation or affected native change, identify the exact source,
+artifact, target and permitted external actions. Keep final findings/results/limits in the acceptance
+report and current execution/verification continuation in the workstream handoff:
 
-Later on 2026-09-09, the authorized OTP 29 upgrade selected and started
-`0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6` but failed before successful-selection history was
-published. Fresh individual checks confirmed the exact running release, all ten unchanged migrations,
-loopback topology, clean journal, local/public readiness, and HSTS. The deployment-record mismatch
-remains unresolved; do not repeat first-install provisioning or manufacture a selection record.
+1. first and second provisioning with the same exact target;
+2. HTTPS/HSTS, real-terminal administrator creation, sign-in/logout, invitation/recovery email,
+   API key/CLI and connected LiveView;
+3. another release, typed rollback, forward deployment and controlled migration failure/recovery;
+4. validated backup, protected off-host copy and typed restore;
+5. firewall/listener inspection and service/release/journal proof; and
+6. bounded canary-secret/release-cookie leakage inspection.
 
-Administrator acceptance subsequently succeeded independently: the operator privately created the
-account and signed in, browser inspection confirmed active administrator access at `/admin`, and
-normal logout followed by fresh `/admin` and `/` requests required sign-in again. No password or
-token was captured. This closes the initial administrator/login/logout gate, not deployment
-reconciliation or the remaining email, API, backup, and restore acceptance. Current continuation
-state is in the [VPS readiness handoff](handoffs/ops-vps-readiness.md).
-
-On 2026-09-09, `notify.taskman.page` was created in Resend's `eu-west-1` region
-for sending only, with open/click tracking disabled. The intended sender is
-`no-reply@notify.taskman.page`. Cloudflare now contains Resend's DKIM TXT at
-`resend._domainkey.notify.taskman.page` and its return-path MX (priority 10,
-`feedback-smtp.eu-west-1.amazonses.com`) and SPF TXT
-(`v=spf1 include:amazonses.com ~all`) at `send.notify.taskman.page`.
-DNS publication was checked; Resend subsequently verified the domain and all three
-records on 2026-09-09. The API key has been supplied through the protected deployment
-secrets workflow. Actual email delivery remains to be tested.
-
-## Unresolved disposable-host acceptance
-
-Repository tests and container builds do not prove systemd PID 1, UFW, DNS, ACME, email, reboot, or
-full restore behavior on a real host. Full readiness still requires a separately authorized,
-disposable Ubuntu 26.04 `amd64` VPS run covering:
-
-1. first and second provisioning;
-2. HTTPS, HSTS, interactive administrator creation, sign-in, invitation email, API key, and
-   LiveView;
-3. a second release, rollback, forward deployment, and controlled migration failure;
-4. backup creation, validation, and restore;
-5. firewall and listener inspection; and
-6. canary-secret and release-cookie leakage inspection.
+Repository/container success does not prove native systemd, UFW, DNS, ACME, mail, reboot or restore.
+Retained compatible OS services do not establish pristine-OS/package/firewall/ACME installation.
+Record any authorized reboot evidence against its own baseline; encrypted copy transport alone
+does not establish a durable tested disaster-recovery policy. Prior acceptance is historical,
+not unresolved work or proof for a new environment.
 
 This runbook does not authorize or perform that external acceptance run.

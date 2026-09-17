@@ -1,24 +1,24 @@
 # Operations CLI progress and outcome design
 
-Status: proposed specification; command behavior approved, written-spec approval pending.
-Updated: 2026-09-14. Design task: `tas-7ncz`. Reconciliation-owned diagnostics: `tas-6dkg`.
+Status: parked proposal; command behavior approved, written-spec approval pending.
+Updated: 2026-09-18. Design task: `tas-7ncz`. Reconciliation-owned diagnostics: `tas-6dkg`.
 
 ## Purpose and authority
 
 Make the existing operations controller understandable while it runs and decisive when it stops.
-The operator approved visible safe progress, pyinfra operation presentation, readable plans and
-results, separate JSON output, early provisioning admission, and useful bounded failure reasons.
+The proposed behavior includes visible safe progress, pyinfra operation presentation, readable
+plans and results, separate JSON output, early provisioning admission and bounded failure reasons.
 This document specifies that increment; it does not authorize implementation or host actions.
 
 The [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md) continues to own host
 safety, immutable release identity, confirmation, recovery, and protocol bounds. The
-[runbook](../deployment.md) owns current commands; [development guidance](../development.md) owns
+[runbook](../guides/deployment.md) owns current commands; [development guidance](../guides/development.md) owns
 engineering and verification rules. The [PostgreSQL Python proposal](2026-09-09-postgresql-host-python-design.md)
 remains parked and is not a prerequisite.
 
-The [reconciliation specification](2026-09-09-deploy-reconciliation-design.md) owns the next
+The [operations contract reference](2026-09-18-operations-contracts.md) owns the implemented
 protocol baseline (version 3), artifact identity, dirty-source support, deploy/provision `--yes`,
-independent downgrade acknowledgment for deploy and provision, and failed-verification evidence under `tas-6dkg`.
+independent downgrade acknowledgment for deploy and provision, and failed-verification evidence.
 It also owns desired-release recovery of an unfinished first installation, including provision's
 migration-policy declaration and null-baseline backup protections.
 Its five-attempt-backup retention policy requires plans to list the exact superseded intermediate
@@ -46,48 +46,65 @@ that execution requires the flag and typed confirmation. Previewing a fresh same
 requires `--reapply`, since it selects a different operation rather than merely acknowledging it.
 Provisioning admission is based on validated resources and plan confirmation; the historical
 provisioning marker is neither required nor sufficient and is no longer written.
-This UX work builds on that baseline. Earlier requirements here to retain protocol version 2,
-clean-only builds, and confirmation exclusively through stdin are superseded for those overlapping
-surfaces. The complete reconciliation specification was approved on 2026-09-14 but is not yet
-implemented. This does not approve the separate CLI UX specification.
+This UX proposal builds on the implemented contracts and qualified evidence in the operations
+reference and [acceptance report](../research/2026-09-17-operations-vps-acceptance.md).
 
-Reconciliation's approved one-time compatibility break also applies: only its supported artifact,
+The one-time compatibility boundary also applies: only the supported artifact,
 runtime, and record baseline is a valid UX input. Do not add old-staging adoption or conversion
 paths. Future supported upgrades and their scheduler/recovery guarantees remain required.
 
-On implementation, this specification supersedes the older design's unconditional build-before-SSH
-ordering for **provision only**, its flat human renderer, and mixed JSON/prompt/error streams.
+On implementation, this specification adds credential-free completed-install inspection and refusal
+before secret decryption and target resolution for **provision only**, and replaces the current flat
+human renderer and mixed JSON/prompt/error streams. Current provisioning already discovers the
+host before target resolution/build; it still decrypts secrets before connecting and does not provide
+the proposed early completed-install refusal.
 It does not change deploy artifact resolution, release selection policy, migration compatibility,
 destructive confirmation, secret suppression, or the meaning of existing numeric status categories.
 Until then, the existing runbook describes implemented behavior.
 
 ## Evidence and repository baseline
 
-The inspected checkout is clean application/controller revision `027f44e3ceb2f435d40c35f9c3d924dafe948de6`
-before these design/tracker edits. It includes the reviewed provisioning/runtime fixes and two
-verifier corrections. The last full checks passed 904 operations tests and 805 application tests.
-Those checks are baseline evidence, not verification of this proposed change.
+The original incident baseline was clean application/controller revision
+`027f44e3ceb2f435d40c35f9c3d924dafe948de6`. The following incident is historical evidence,
+not the current implementation baseline or verification of this proposed change.
 
 The operator ran bare `provision staging` from a checkout producing source `5e00e0c7b233`. It
 built a different candidate, converged host operations, then failed in the first-install procedure
 against the existing selected `8266656863ad` release. Subsequent read-only standalone verification
 passed all eight checks on that existing release. No later deployment is implied by this evidence.
 
-Relevant implementation findings:
+Historical incident findings:
 
 - `workflows/provision.py` decrypts secrets and resolves/builds an artifact before SSH discovery.
   Its presentation occurs only after those potentially slow steps. It then always invokes
   `deploy_first_release`, including on a completed installation.
-- `releases/build.py::_run_command` captures subprocess output rather than showing progress.
-- `remote.py` constructs pyinfra programmatically without the CLI output setup. Sensitive remote
-  commands suppress both input and output intentionally; that protection must remain.
-- `output.py::render_human` serializes nested facts as JSON on one line. `cli.py` emits normal
-  results on stdout but exception results on stderr; provisioning prints plans/prompts directly.
 - `host_helper/operations/deploy.py` accepts exact first-install replay, not an arbitrary later
   source revision. Its failed verification path loses the already available bounded report.
 - Repeat provisioning with the exact installed artifact succeeded. Only the backup executable's
   read-only checksum operation was reported changed by pyinfra. This does not establish that bare
   provisioning from a changed checkout is a useful or safe update command.
+
+Implemented baseline, observed on 2026-09-18:
+
+- `workflows/provision.py` decrypts/renders secrets and freezes clean source identity before SSH.
+  It connects and discovers supported host resources before desired-target resolution, which may
+  reuse installed/cache authority or build. It presents/confirms the plan, refreshes authority,
+  converges resources, and invokes genesis. No credential-free completed-install refusal precedes
+  secret decryption and resolution; that remains this proposal's ordering change.
+- Reconciliation retains failed verification reports through helper results, validated mutation
+  mapping, and public facts. UX must present and preserve this evidence, not reimplement retention.
+  Exact completed-first-install replay remains constrained; later release replacement uses deploy.
+- `releases/build.py::_run_command` captures subprocess output rather than showing progress.
+- `remote.py` constructs pyinfra programmatically without the CLI output setup. Sensitive remote
+  commands suppress both input and output intentionally; that protection must remain.
+- `output.py::render_human` serializes nested facts as JSON on one line. `cli.py` emits normal
+  results on stdout but exception results on stderr; provisioning prints plans/prompts directly.
+
+The [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified source,
+artifact, native and CI evidence. Historical incident identities above do not establish acceptance
+of the current source or the proposed UX. The separate
+[lock-coverage proposal](2026-09-18-provisioning-lock-coverage-proposal.md) belongs to its [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md);
+early UX inspection does not itself serialize provisioning convergence.
 
 The lock pins pyinfra **3.10.0**. Installed-source inspection established:
 
@@ -304,8 +321,8 @@ Do not weaken existing process cleanup or transport deadlines in order to draw p
 
 ## Failure evidence and protocol scope
 
-Reconciliation implements `tas-6dkg`, retaining a failed verification-report mapping through helper,
-workflow mapping, and public results. This increment presents that evidence through the common
+The implemented baseline retains a failed verification-report mapping through helper,
+workflow mapping and public results. This increment presents that evidence through the common
 human renderer and preserves it in JSON. Accept reports only through the shared protocol
 `validate_verification_report` validator;
 do not fabricate a report for preflight, transport loss, or failures before verification.
@@ -326,9 +343,9 @@ Build on reconciliation's protocol version 3, its exact envelope, 1-MiB message 
 schema-specific migration collection limits, and one request/one result per internal page.
 Public listings collect snapshot-consistent pages before emitting their single final result. The narrow
 inspection operation is an additive vocabulary entry and is packaged with its matching controller;
-operation-specific validation covers its exact fields. Existing deployment result state already
-has a report seam; fix its failure path and validate optional failed evidence without relaxing
-successful-verification requirements. No per-step remote event stream, durable state, protocol
+operation-specific validation covers its exact fields. Preserve the implemented optional failed-report
+validation and retention without relaxing successful-verification requirements. No per-step remote
+event stream, durable state, protocol
 compatibility fallback, or additional scheduled-backup capability expansion is introduced by UX.
 
 ## Expected file responsibilities
@@ -345,7 +362,7 @@ Paths below are under `ops/taskman_ops/` unless otherwise stated.
 | `host_helper/lock.py` if required | Non-creating inspection lock option; preserve mutating callers |
 | `host_protocol/operations.py`, helper dispatch/package allowlist | Exact added operation and isolated packaging coverage |
 | `releases/build.py`, artifact resolution, helper client | Activity scopes around real existing work; unchanged artifact and wire semantics |
-| `host_helper/operations/deploy.py`, `workflows/helper.py`, verification mapping | Retain safe failure reasons and failed reports |
+| `host_helper/operations/deploy.py`, `workflows/helper.py`, verification mapping | Consume existing failed-report retention; preserve safe reasons and validated evidence while adapting presentation |
 | Existing workflow confirmation owners | Use invocation-owned prompt stream without changing the requested confirmation |
 | `ops/tests/`, runbook, canonical design and index | Regression evidence and implemented contract documentation |
 
@@ -393,9 +410,9 @@ to judge readability; snapshots and test counts alone are not UX acceptance. Exi
 can be exercised on staging only with explicit read-only authorization; provisioning/deployment or
 destructive acceptance is not authorized by this document.
 
-## Trade-offs and next-session checklist
+## Trade-offs
 
-The operator chose explicit command boundaries over an implicit provision-to-deploy switch or a
+The proposal uses explicit command boundaries over an implicit provision-to-deploy switch or a
 new independent infrastructure-maintenance mode. Bare provision deliberately refuses on a
 completed host; this is clearer but requires an explicit original artifact for supported reconvergence.
 Keep this restriction visible in command help and the runbook.
@@ -404,14 +421,3 @@ Progress provides liveness, not a reliable estimate or granular remote phase rep
 pyinfra formatting is reused only through a safe adapter; unrestricted logging was rejected.
 Plain JSON progress stays on stderr so pipes remain useful; no quiet/verbose option is added now.
 Safety refuses ambiguity rather than guessing that a host is new or that a failed command did nothing.
-
-Before implementation:
-
-1. Obtain written-spec approval and resolve review findings in this document.
-2. Write and review a bounded implementation plan for `tas-7ncz`, consuming reconciliation's
-   protocol v3 and completed `tas-6dkg` evidence contract.
-3. Update the existing workstream handoff; use the approved-plan clean-session boundary by default.
-4. In the implementation session, reread this specification and current repository guidance,
-   refresh actual branch/host assumptions, and use delegated implementation plus independent review.
-5. After implementation, update canonical design/runbook claims and indexes, record verification
-   and remaining acceptance, and retire proposal wording without erasing the rationale.

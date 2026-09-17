@@ -51,3 +51,5 @@ __pycache__/
 /ops/environments/*.secrets.yaml
 /ops/environments/*.decrypted.yaml
 *.agekey
+# br doctor per-run artifacts
+.doctor/

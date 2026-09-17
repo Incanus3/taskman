@@ -1,6 +1,9 @@
 # Operations CLI UX
 
-Status: active. Updated: 2026-09-10. Resume: `$resume operations-cli-ux`.
+Status: parked. Updated: 2026-09-18. Resume: `$resume operations-cli-ux`.
+
+Resume only after the current operations branch is merged and this workstream is selected.
+Use its own dedicated branch from refreshed main; retain the written-spec review and plan gates below.
 
 ## Objective and authority
 
@@ -9,34 +12,27 @@ safety or release authority. Design task: `tas-7ncz`. Reconciliation owns `tas-6
 UX consumes its retained failure reports.
 The [proposed specification](../specs/2026-09-09-operations-cli-ux-design.md) owns the design;
 the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) and
-[runbook](../deployment.md) still own implemented behavior.
+[runbook](../guides/deployment.md) still own implemented behavior.
 
 ## Current checkpoint
 
-- Reconciliation owns protocol v3, artifact/source rules, deploy/provision acknowledgments, and
-  failed-verification evidence. The UX specification now defers to that baseline; full written
-  approval of the CLI UX specification remains pending. The complete reconciliation specification
-  and implementation plan were approved on 2026-09-14, including the subsequent one-time break
-  from old staging formats. Future upgrade support remains; do not add old-installation conversion.
-- Before first success, provision may reconcile a different desired artifact and recover from
-  archive loss. Early inspection now accommodates multiple valid candidates; credentialed live
-  schema/protection checks remain decisive. The exact completed-first-install replay exception
-  remains constrained; later replacement uses deploy.
+Command/output direction is approved; scoped independent review requested changes. Full written-
+spec approval and an implementation plan remain pending. No UX code is implemented.
 
-- The operator approved the command/output proposal, including early bare-provision refusal on
-  completed installations and preservation of exact original first-install artifact replay.
-- The written specification is drafted; scoped independent review requested changes. Written-spec
-  approval and an implementation plan remain pending. No UX code has been implemented.
-- The triggering bare-provision run built a new source candidate and failed late against an
-  existing installation. Standalone verification subsequently passed on the old selected release.
-  Prior successful repeat provisioning used the same explicit artifact, not a changed checkout.
-- The spec uses a thin safe pyinfra presentation adapter, an invocation-owned progress reporter,
-  stdout/stderr separation, and read-only early metadata inspection. No raw secret/exception logs,
-  guessed remote phases, implicit deployment, or PostgreSQL refactor.
-- Source baseline: `027f44e3`. Documentation links/whitespace checks passed and the unchanged
-  application passed `mix precommit` with 805 tests during drafting; these do not verify new UX.
+Implemented reconciliation owns protocol v3, artifact/source and acknowledgment rules, live-schema
+safety and retained failure reports. Before first success, provision may reconcile a different
+artifact or recover from archive loss; credentialed checks remain decisive. Exact completed-first-
+install replay stays constrained; later replacement uses deploy. Future upgrade support remains,
+without conversion of old staging formats.
 
-## Next actions
+Current provision discovers the host before target resolution/build but decrypts secrets first.
+Credential-free completed-install refusal and presentation remain proposed. The specification
+owns the historical incident and presentation architecture; documentation checks do not verify UX.
+The separate [lock-coverage workstream](operations-lock-coverage.md) is parked for its own
+dedicated branch after the operations merge. No PostgreSQL refactor or
+host changes are authorized here.
+
+## Next actions when selected after the operations merge
 
 1. Resolve the scoped architecture/security review recorded on `tas-7ncz`: non-throwing presentation
    callbacks without global hook changes, terminal-control sanitization, staging-only identity
@@ -46,7 +42,12 @@ the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md)
 2. Ask the operator to review the finished specification, then write and review its bounded plan.
 3. Update this handoff at the approved-plan boundary; continue implementation in a clean session
    by default. Consume reconciliation's protocol v3 and `tas-6dkg` results.
+4. In the implementation session, reread the complete specification and current repository
+   guidance, refresh actual branch/host assumptions, and use delegated implementation plus
+   independent review. This parked workstream is not selected by the current documentation cleanup.
+5. After implementation, update canonical design/runbook claims and indexes, record verification
+   and remaining acceptance, and retire proposal wording without erasing the rationale.
 
 No host changes are authorized by this design work. The separate
-[VPS readiness workstream](ops-vps-readiness.md) owns host acceptance and exact artifact context;
+[VPS acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns completed host acceptance and exact artifact context;
 the [PostgreSQL refactor](postgresql-host-python.md) remains parked.

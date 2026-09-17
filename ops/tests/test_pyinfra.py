@@ -36,6 +36,52 @@ _CADDY_PLAN = CaddyPlan(
 )
 
 
+@pytest.mark.parametrize("database_state", ["absent", "ready"])
+def test_validated_database_presence_reaches_sensitive_credential_admission(monkeypatch, database_state):
+    from taskman_ops import provisioning
+    private = []
+    runtime = []
+    config = environment_config()
+    inputs = ProvisioningInputs(
+        config=config, systemd_plan=build_systemd_plan(config), caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n",
+        pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", role_password_input=b"password\n",
+    )
+    class Remote:
+        def run(self, argv, **kwargs):
+            runtime.append((argv, kwargs))
+            return SimpleNamespace(succeeded=True)
+    monkeypatch.setattr(provisioning, "validate_preconvergence_authority", lambda *_: {**_authority(), "database_state": database_state})
+    monkeypatch.setattr("taskman_ops.helper_client.runner.invoke_sensitive_pgpass_authority", lambda *_args, **kwargs: private.append(kwargs) or SimpleNamespace(exit_status=0, warnings=()))
+
+    authority = provisioning.validate_existing_authority(Remote(), inputs)
+
+    assert authority["database_state"] == database_state
+    assert private[0]["database_state"] == database_state
+    assert runtime[0][1]["stdin"] == b"RUNTIME=value\n"
+    assert runtime[0][1]["sensitive"] is True
+
+
+def test_absent_database_does_not_bypass_runtime_credential_refusal(monkeypatch):
+    from taskman_ops import provisioning
+
+    config = environment_config()
+    inputs = ProvisioningInputs(
+        config=config, systemd_plan=build_systemd_plan(config), caddy_plan=_CADDY_PLAN,
+        runtime_environment=b"RUNTIME=value\n", pgpass=b"pgpass\n", role_password_input=b"password\n",
+    )
+    class Remote:
+        def run(self, argv, **kwargs):
+            return SimpleNamespace(succeeded=False)
+    monkeypatch.setattr(provisioning, "validate_preconvergence_authority", lambda *_: {**_authority(), "database_state": "absent"})
+    monkeypatch.setattr("taskman_ops.helper_client.runner.invoke_sensitive_pgpass_authority", lambda *_args, **_kwargs: pytest.fail("runtime refusal precedes pgpass admission"))
+
+    with pytest.raises(OpsError) as refused:
+        provisioning.validate_existing_authority(Remote(), inputs)
+    assert refused.value.status is ExitStatus.SAFETY
+    assert refused.value.changed is False
+
+
 def test_preconvergence_authority_hashes_the_exact_rendered_systemd_bytes(monkeypatch) -> None:
     """A digest that differs from the rendered byte payload would admit the wrong host state."""
 
@@ -113,7 +159,7 @@ def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(mon
         role_password_input=b"role-password-input\n",
     )
 
-    provisioning.validate_existing_credential_authority(Remote(), inputs)
+    provisioning.validate_existing_credential_authority(Remote(), inputs, database_state="ready")
 
     private = next(value for kind, value in calls if kind == "private")
     assert private["pgpass"] == inputs.pgpass
@@ -129,7 +175,7 @@ def test_private_pgpass_parser_accepts_escaped_password_without_writes(tmp_path,
     monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *args, **kwargs: observed.append((args, kwargs)))
 
     status = preflight.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
         BytesIO(br"127.0.0.1:5432:taskman_prod:taskman:sec\:ret\\value" + b"\n"),
     )
 
@@ -145,7 +191,7 @@ def test_private_pgpass_parser_refuses_mismatched_connection(tmp_path, monkeypat
     monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *_args, **_kwargs: pytest.fail("must not authenticate"))
 
     status = preflight.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
         BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
     )
 

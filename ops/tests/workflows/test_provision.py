@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
@@ -353,7 +353,7 @@ def test_default_preflight_checks_packaged_resources_before_the_secret_writers(
     monkeypatch.setattr(
         provisioning_module,
         "validate_existing_credential_authority",
-        lambda *_args: checks.append("credentials"),
+        lambda *_args, **_kwargs: checks.append("credentials"),
     )
 
     result = provision(
@@ -385,7 +385,7 @@ def test_default_preflight_observes_record_and_postgresql_authority_before_local
     monkeypatch.setattr(
         provisioning_module,
         "validate_existing_credential_authority",
-        lambda *_args: checks.append("credentials"),
+        lambda *_args, **_kwargs: checks.append("credentials"),
     )
 
     result = provision(
@@ -906,6 +906,158 @@ def test_provision_yes_refuses_material_drift_after_confirmation_before_pyinfra(
     )
 
     assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan"]
+
+
+def test_provision_accepts_refreshed_free_space_counter_changes_after_confirmation() -> None:
+    """Filesystem activity must not invalidate a plan when fresh admission still succeeds."""
+
+    @dataclass(frozen=True)
+    class DiscoveryFacts:
+        available_disk_bytes: int
+        backup_available_disk_bytes: int
+        managed_path: str
+
+    @dataclass(frozen=True)
+    class Discovery:
+        facts: DiscoveryFacts
+        state: str
+
+    host = Host()
+    first_discovery = Discovery(
+        DiscoveryFacts(40 * 1024**3, 41 * 1024**3, "/opt/taskman"), "partial"
+    )
+    refreshed_discovery = Discovery(
+        DiscoveryFacts(40 * 1024**3 - 4096, 41 * 1024**3 - 4096, "/opt/taskman"), "partial"
+    )
+    discoveries = iter((first_discovery, refreshed_discovery))
+    presented: list[object] = []
+    capabilities = _capabilities(host, present_plan=lambda plan: presented.append(plan))
+    capabilities = ProvisionCapabilities(
+        **{
+            **capabilities.__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert host.events == ["plan", "provisioning"]
+    assert presented[0]["starting_state"]["resource_authority"] == {
+        "facts": {
+            "available_disk_bytes": 40 * 1024**3,
+            "backup_available_disk_bytes": 41 * 1024**3,
+            "managed_path": "/opt/taskman",
+        },
+        "state": "partial",
+    }
+    assert presented[0]["resource_convergence"]["host"] == {
+        "facts": {
+            "available_disk_bytes": 40 * 1024**3,
+            "backup_available_disk_bytes": 41 * 1024**3,
+            "managed_path": "/opt/taskman",
+        },
+        "state": "partial",
+    }
+
+
+def test_provision_refuses_non_capacity_resource_drift_after_confirmation() -> None:
+    """Ignoring transient capacity counters must not waive other resource authority."""
+
+    host = Host()
+    discoveries = iter(
+        (
+            {
+                "facts": {
+                    "available_disk_bytes": 40 * 1024**3,
+                    "backup_available_disk_bytes": 41 * 1024**3,
+                    "managed_path": "/opt/taskman",
+                },
+                "state": "partial",
+            },
+            {
+                "facts": {
+                    "available_disk_bytes": 40 * 1024**3,
+                    "backup_available_disk_bytes": 41 * 1024**3,
+                    "managed_path": "/unexpected-path",
+                },
+                "state": "partial",
+            },
+        )
+    )
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": lambda _remote, _config, **_kwargs: next(discoveries),
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert host.events == ["plan"]
+
+
+@pytest.mark.parametrize(
+    "capacity_field", ("available_disk_bytes", "backup_available_disk_bytes")
+)
+def test_provision_refuses_refreshed_subthreshold_capacity_through_host_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    capacity_field: str,
+) -> None:
+    """The confirmation refresh invokes host admission before capacity comparison."""
+
+    from taskman_ops.host import acceptance as host_acceptance
+    from taskman_ops.host.facts import CaddyState, HostFacts, MINIMUM_DISK_BYTES
+
+    host = Host()
+    config = environment_config()
+    admitted_facts = HostFacts(
+        os_id="ubuntu",
+        ubuntu_release="26.04",
+        architecture="amd64",
+        pid1="systemd",
+        sudo_available=True,
+        postgres_available=False,
+        postgres_sudo_available=None,
+        active_ssh_port=config.ssh_port,
+        memory_bytes=4 * 1024**3,
+        available_disk_bytes=MINIMUM_DISK_BYTES,
+        backup_available_disk_bytes=MINIMUM_DISK_BYTES,
+        dns_addresses=(config.public_ipv4,),
+        listeners=(),
+        existing_paths=(),
+        path_metadata=(),
+        caddy_state=CaddyState.ABSENT,
+        existing_units=(),
+        existing_accounts=(),
+        taskman_account_compatible=False,
+        existing_databases=(),
+        failed_checks=(),
+    )
+    refreshed_facts = replace(
+        admitted_facts,
+        **{capacity_field: MINIMUM_DISK_BYTES - 1},
+    )
+    facts = iter((admitted_facts, refreshed_facts))
+    monkeypatch.setattr(host_acceptance, "collect_host_facts", lambda *_args, **_kwargs: next(facts))
+    capabilities = ProvisionCapabilities(
+        **{
+            **_capabilities(host).__dict__,
+            "discover": host_acceptance.validate_provisionable_host,
+        }
+    )
+
+    result = provision(
+        Invocation(command="provision", environment="production", yes=True), capabilities=capabilities
+    )
+
+    assert result.exit_status is ExitStatus.INVALID
     assert host.events == ["plan"]
 
 

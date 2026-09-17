@@ -104,7 +104,8 @@ def test_invoke_helper_keeps_correlation_transport_only(tmp_path: Path) -> None:
     assert value.correlation_id.encode() in helper_call["stdin"]
 
 
-def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path: Path) -> None:
+@pytest.mark.parametrize("database_state", ["ready", "absent"])
+def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path: Path, database_state: str) -> None:
     from taskman_ops.helper_client.runner import invoke_sensitive_pgpass_authority
 
     helper = package(tmp_path)
@@ -115,6 +116,7 @@ def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path
         (
             "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed.as_posix(),
             "provision-pgpass-authority", "127.0.0.1", "5432", "taskman", "taskman_prod",
+            database_state,
         ),
         CommandResult(0, "discarded secret output", "discarded secret error"),
     )
@@ -124,6 +126,7 @@ def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path
         remote, helper, correlation_id=value.correlation_id,
         host="127.0.0.1", port=5432, role="taskman", database="taskman_prod",
         pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n",
+        database_state=database_state,
     )
 
     assert receipt.exit_status == 0
@@ -157,6 +160,7 @@ def test_sensitive_pgpass_entry_refuses_oversized_secret_before_remote_dispatch(
             role="taskman",
             database="taskman_prod",
             pgpass=secret,
+            database_state="ready",
         )
 
     assert remote.calls == []

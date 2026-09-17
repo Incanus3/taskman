@@ -21,7 +21,7 @@ recovery, and context boundaries.
 - [MVP roadmap](../planning/roadmap.md#2-task-detail-and-navigation)
 - [Existing Task editing design](2026-07-31-task-editing-lifecycle-design.md)
 - [Navigation and MVP visual guidance](../prototypes/navigation.html)
-- [Development guide](../development.md)
+- [Development guide](../guides/development.md)
 
 ## Current baseline
 

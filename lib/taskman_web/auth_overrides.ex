@@ -43,5 +43,6 @@ defmodule TaskmanWeb.AuthOverrides do
 
   override Components.Password do
     set :register_toggle_text, nil
+    set :reset_form_module, TaskmanWeb.PasswordResetRequestForm
   end
 end

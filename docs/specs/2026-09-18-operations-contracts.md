@@ -1,55 +1,82 @@
-# Desired-target deployment reconciliation
+# Operations contracts
 
-Status: approved specification; locally implemented and verified on 2026-09-15. Separately
-authorized fresh-host acceptance remains open. Beads tracks delivery evidence and external
-acceptance. Updated: 2026-09-15. Tracking: `tas-sr4b`.
+Status: accepted, implemented contracts. Updated: 2026-09-18.
 
-The operator approved the one-time compatibility break below on 2026-09-14 after design and plan
-approval. It supersedes the earlier requirement to preserve pre-reconciliation artifacts and
-staging records. Future upgrade compatibility and the recovery guarantees remain required.
+This is the canonical reference for Taskman's artifact, record, protocol, admission,
+confirmation, recovery and failure-evidence contracts. The
+[deployment architecture](2026-09-09-dedicated-host-deployment-design.md) owns supported topology,
+security boundaries, component ownership and architectural rationale. The
+[runbook](../guides/deployment.md) owns operator procedures; the
+[development guide](../guides/development.md#operations-verification) owns runnable verification commands.
+The [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified
+historical evidence and native limits. These contracts grant no host or publication authority.
 
-## Authority and scope
+## Reading map
 
-This specification changes existing-host `taskman deploy` from exact-attempt recovery to
-reconciliation with the operator's desired release. It is self-contained for planning together with
-the [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md), which continues to own
-host topology, credentials, archive safety, locking, provisioning, rollback, and restore.
-The [runbook](../deployment.md) owns implemented operator instructions. The
-[development guide](../development.md) owns checks.
+- [Compatibility](#one-time-compatibility-boundary) and [operator contract](#operator-contract).
+- [Artifact identity/resolution](#target-resolution-and-immutable-identity),
+  [deployment admission](#observed-state-and-deployment-admission),
+  [migration/downgrade safety](#database-and-downgrade-safety).
+- [Backup protection/history](#backup-protection-and-successful-history),
+  [restore recovery](#explicit-restore-after-failed-deployment-or-provisioning),
+  [cleanup](#cleanup-while-recovery-is-unfinished-or-disk-space-is-low).
+- [Packaged admission](#packaged-admission-boundaries),
+  [scheduler coordination](#scheduled-helper-compatibility),
+  [protocol budgets/pagination](#reconciliation-procedure-and-transport).
+- [Mutation/failure evidence](#failures-and-reporting),
+  [internal recovery/encoding](#internal-helper-failure-recovery),
+  [verification requirements](#acceptance-scenarios).
 
-For implementation planning, this approved specification supersedes the older design's source-only release identity,
-clean-only local release builds, artifact-resolution-before-SSH ordering, exact-attempt-only
-deployment admission, blanket exclusion of pending records, and absence of unattended deployment
-or provisioning confirmation, exact-artifact-only recovery of an unfinished first installation,
-restore admission that requires physical selection to match successful history, and cleanup
-admission that depends on database health, backup capacity, or completed deployment state. It also
-supersedes provisioning admission based on `/var/lib/taskman-provisioning.state`.
-The exceptions to completed-only records are backup protection and a single restore-target binding
-for an unfinished restore. Neither records execution steps or introduces a general operation journal. Apart from the restore, cleanup, and
-backup-reference changes specified below, other commands retain their existing consequence and
-confirmation rules.
+## Reliability scope
 
-The [CLI UX proposal](2026-09-09-operations-cli-ux-design.md) builds on this specification's protocol
-version 3, artifact/source rules, and deploy/provision acknowledgments. Reconciliation owns
-`tas-6dkg`: retaining bounded failed-verification reports through helper and public controller
-results, alongside truthful mutation evidence. CLI UX consumes and presents that evidence; it must
-not reintroduce protocol version 2 or the superseded confirmation/build restrictions. Its general
-progress UI and early provisioning inspection remain separate work.
+Assume trusted operators and no deliberately hostile interference with managed host state.
+Support modeled ordinary interruption, lost replies and accidental confirmation-to-execution
+drift. Cooperating helper lifecycle sections and scheduled backup/retention coordinate through the
+configured installation's lifecycle lock, fresh checks at material consequence and reacquisition
+boundaries, atomic publication and bounded native subprocesses. This is section-level coordination,
+not host-wide whole-command exclusivity: scheduler refresh releases the lock while waiting.
+Controller-driven provisioning convergence and interactive create-admin do not hold that lock;
+a competing operation is not guaranteed to fail with status 12 merely because one of those commands
+is running. Different installation-root configurations also do not share one host-wide lock.
+Locked observations are coherent against cooperating locked writers, not concurrent unlocked
+provisioning. The controller's separate probes are not one atomic snapshot.
+
+Provisioning does not retain a durable admission reservation or guarantee backup suspension after
+interruption. Its timer creation/refresh paths can activate backups during the invocation, so a
+manual timer stop alone does not establish an exclusive provisioning interval. Remote SSH work and
+service-manager migration/admin jobs may survive controller loss; timeout cleanup of helper-owned
+subprocesses is not universal caller-loss containment. Before retrying uncertain work, inspect and
+establish that outstanding work is quiescent rather than treating a free lifecycle lock as proof.
+Enforced whole-command admission, persistent suspension and reservation-based manual recovery are
+proposed in the [dedicated lock-coverage design](2026-09-18-provisioning-lock-coverage-proposal.md),
+not implemented guarantees.
+
+Preserve scoped path/permission/checksum/destructive-target checks; unavailable or contradictory
+authority refuses without guessing. No generic journal, background recovery,
+hostile-administrator defense or repair of arbitrary corruption/unrecorded migration effects is
+promised. Additional recovery branches require a concrete supported failure and an explicit
+amendment if they change an accepted guarantee.
+
+Follow the [operations development policy](../guides/development.md#operations-development). Focused Python
+procedures own multi-step orchestration; short shell remains suitable when simpler. Do not repeat
+unchanged validation within a locked phase without an intervening action that can invalidate it.
+Verification covers distinct durable states and public entry paths, not every equivalent timing/flag
+permutation. The parked PostgreSQL refactor and proposed CLI UX do not alter these accepted contracts.
 
 ## One-time compatibility boundary
 
-The deployment branch has not been merged. The only existing installation is the unfinished
-staging VPS, with no real application data according to the operator. Preserve its observations
-as failure evidence, but do not build an upgrade, adoption, metadata conversion, or recovery path
-for that installation. After local implementation verification, establish staging through fresh
-provisioning on a clean host. Recreating/resetting the existing VPS requires separate authorization;
-this specification does not authorize deleting its data, changing DNS, or creating provider resources.
+A one-time compatibility exception applies only to the historical pre-reconciliation disposable
+staging installation: its old authority is excluded rather than upgraded/adopted/converted.
+Identified evidence belongs to the acceptance report and recovery obligations to the
+[environment inventory](../inventories/operations-environments.md#staging-recovery-retention).
+Any future reset/provider/DNS action needs its own authority; supported upgrades retain their
+compatibility and recovery obligations.
 
 The first supported baseline is the model defined here: digest-bearing release IDs, manifest schema
 3, installed-release and successful-selection schema 2, the specified backup/protection/restore
 records, and OTP 29.0.6 / Elixir 1.20.4. Keep these explicit version numbers; renumbering them adds
-no simplification. Only these formats/runtime are accepted by this implementation. Remove readers,
-constructors, fallback paths, and positive compatibility fixtures for source-only IDs, manifest 2,
+no simplification. Only these formats/runtime are accepted. No readers, constructors or fallback paths accept
+source-only IDs, manifest 2,
 unversioned release/selection records, and OTP 27 / Elixir 1.18. Explicit old artifacts fail local
 validation with exit 2. Old host authority fails with exit 10 before release/scheduled-helper payload
 upload or managed mutation; transient read-only inspection transport remains available.
@@ -64,83 +91,8 @@ invalidate retained rollback/restore material. Keep scheduled-helper refresh, ol
 atomic publication, and supported-version tests for future upgrades. No speculative multi-version
 framework is needed now. The transient controller still ships its matching wire-protocol helper.
 
-The retained record fields below remain the exact contract; this amendment removes dual-format
-handling without introducing a second record redesign. `backup_id` and `recovery_backup_ids` have
+The record fields below are the supported exact contract; dual-format handling is absent. `backup_id` and `recovery_backup_ids` have
 different operational meanings and remain. Every installed record has full artifact provenance.
-
-## Development constraints and reliability scope
-
-Follow the [operations development guidelines](../development.md#operations-development), including
-their simplicity preference and Python-first workflow policy. These constrain this specification's
-implementation and its upcoming plan; they do not authorize dropping the operator behavior below.
-
-Assume trusted operators and no deliberately hostile interference with managed host state.
-Support ordinary interruption, lost replies, concurrent cooperating commands, scheduled backups,
-and accidental plan-to-execution drift. The existing lifecycle lock, checks at confirmation/apply
-and lock-reacquisition boundaries, atomic publication, and bounded native subprocesses are the
-coordination mechanisms. Do not layer a hostile-tampering defense or generic transaction/recovery
-engine on top. Retain existing scoped path, permission, checksum, and destructive-target checks;
-their role here is preventing mistakes and preserving known recovery material, not resisting a
-malicious administrator. Do not repeat an unchanged validation inside one locked phase without a
-specific intervening action that can invalidate it.
-
-The restore binding, backup protections, database identities, and publication ordering below remain
-necessary for the explicitly supported interrupted operations. Unknown or contradictory state may
-refuse safely; no automatic repair of arbitrary manual corruption, unrecorded migration effects,
-or combinations outside the supported state model is required. Additional recovery branches need
-a concrete supported failure and a demonstrated benefit, not merely a conceivable timing sequence.
-
-Implement orchestration and host-side multi-step work in focused Python procedures, using existing
-transport/packaging and bounded argv calls to native tools. Short shell remains acceptable when
-clearly simpler. Do not add substantial shell for scheduler refresh, restore normalization,
-protection pruning, or result assembly. The parked PostgreSQL refactor is not a prerequisite.
-
-Keep the plan organized around behavior and consequence boundaries, with the smallest useful
-owners and actual shared consumers. The acceptance scenarios describe distinct states and
-guarantees, not an exhaustive Cartesian product of interruption timings and command options.
-Exercise each distinct durable recovery state and the real public entry paths; reuse focused
-coverage for equivalent transitions. If a simplification would remove an accepted repair path or
-weaken a core guarantee, identify that trade-off for operator approval before changing the design.
-
-## Problem and observed baseline
-
-Evidence comes from repository code and staging observations recorded in `tas-sr4b`, `tas-q5lo`,
-and `tas-6dkg`. The dedicated-host design retains technical mechanism references. Specification
-preparation introduces no new external research or host acceptance evidence.
-
-An authorized staging deployment selected and started the OTP 29 release, then failed verification
-before publishing successful-selection history. The controller returned exit 9 with stale
-`changed=false`, the previous selected ID, and no failed check report. Later read-only checks found
-the new executable running and all individual readiness predicates passing. The original failing
-check is unknown; a startup race has not been established.
-
-Controller planning uses strict discovery and refuses this state before its helper's retry logic
-can run. Both standalone verification and exact-artifact deployment dry-run returned exit 10.
-Requiring the original workstation archive also strands an operator after cache loss. Rebuilding
-can produce different archive bytes with the same current release ID, which correctly refuses an
-immutable-directory collision but leaves no normal deployment path.
-
-Relevant recorded environment, to be refreshed before external action:
-
-- Checkout: GitButler-managed Taskman repository; preserve existing work. Runtime implementation
-  checkpoint was `42d019920b7540509ac8fde944d4b979f7178e92`; subsequent documentation amendment
-  observed as `871088fb4ae29c23de74231948e824ec3b16a095`. Do not assume either is the current head.
-- Staging: `root@taskman.page:22`, Ubuntu 26.04 amd64, managed systemd/Caddy/PostgreSQL installation.
-- Last successful selection: `0.2.0-8266656863ad-ubuntu26.04-amd64-otp27.3.4.6`.
-- Physical selection: `0.2.0-42d019920b75-ubuntu26.04-amd64-otp29.0.6`, archive SHA-256
-  `9d7e444f37622cf3e9f96d8891082b882999d84ed10457d7539ae9b4018d7225`.
-- Both releases are installed. Only the older genesis selection is recorded. No migrations
-  changed, and no deployment backup was needed or created.
-- The scheduled backup executable was already refreshed for OTP 27/29 compatibility, not for the
-  new record formats in this proposal. Its observed SHA-256 was
-  `056bdc6dba387e1b814210a5970dcc3d4d30f29c145ff4b2dd7f7ace84e1b586`.
-- Runtime baseline passed 915 operations tests, 805 Elixir tests, clean release build/cache and
-  packaged terminal checks; these are historical evidence, not verification of this proposal.
-
-These pre-reconciliation staging facts are historical diagnostic evidence, not an installation
-the new controller must recover. The [readiness handoff](../handoffs/ops-vps-readiness.md) owns the
-next acceptance action. The former in-place deployment continuation is superseded by fresh staging
-provisioning after separately authorized host recreation; no host change is authorized here.
 
 ## Operator contract
 
@@ -386,7 +338,7 @@ existing resources that will be reused or converged before confirmation. Existin
 databases require installed migration provenance; a newly initialized empty database must be
 proved empty and have the expected role/ownership. No marker can substitute for these checks.
 
-Remove the provisioning marker's fields, probes, writes, and admission branches. The retired path
+The provisioning marker supplies no authority. The retired path
 `/var/lib/taskman-provisioning.state` is not consulted, followed, or modified. No old-marker
 classification or compatibility fixtures are needed, and no replacement flag file or provenance
 token is introduced. Before the first
@@ -395,7 +347,7 @@ after partial convergence, inspect the resources actually present. Reuse the con
 in `host/facts.py`, `host/acceptance.py`, and helper path/credential/record modules, replacing their
 marker-based classification rather than treating its old absence refusal as a retained rule.
 
-This supersedes the earlier marker requirement: a protected constant string did not establish
+The removed marker requirement had no valid authority: a protected constant string did not establish
 resource compatibility or prior authorization, and interrupted marker publication could itself
 block recovery. Explicit plan confirmation supplies authorization for the current invocation;
 resource validation supplies evidence that the proposed actions are safe within its scope.
@@ -417,9 +369,8 @@ fresh validated backup and protection with no successful-selection baseline. Sel
 source using the shared backup-source rule below, whether physical current is present or absent.
 The requirement for existing migration provenance does not apply
 to a proven empty initial database, which needs neither a previous release record nor `current`.
-This narrowly extends backup
-creation to an unfinished installation without physical current; the backup record format remains
-unchanged. A partial-schema dump retains the existing manual-restore caveat.
+Backup creation supports an unfinished installation without physical current; the backup record
+format is unchanged. A partial-schema dump retains the existing manual-restore caveat.
 
 Provisioning convergence must preserve the existing database and its credentials during recovery.
 The final release procedure stops any running Taskman before migration, uses the desired installed
@@ -437,6 +388,23 @@ have run or applied migrations, so absence of successful history does not waive 
 A fresh installation without a selected release or evidence of migration attempts has no downgrade
 baseline and needs no downgrade acknowledgment. `--allow-downgrade` never weakens schema checks
 or permits provision to replace a completed installation.
+
+## Completed record publication
+
+| Record | Managed location / authority |
+| --- | --- |
+| ReleaseRecord v2 | `releases/<release-id>/.taskman-release.json`: full artifact manifest v3 plus exact release/source/archive/migrations. Root:taskman 0600; directory/executables 0750, ordinary runtime files 0640. |
+| BackupRecord | `<backup_root>/<backup-id>.json` beside its custom dump: exactly `backup_id`, `created_at`, `dump_sha256`, `source_release_id`, `migration_versions`, `source_database_size_bytes`. Source size is a nonnegative integer; ID is backup-32-lowercase-hex, digest lowercase SHA256. |
+| SelectionRecord v2 | `deployments/selections/selection-<digest>.json`: verified outcome, successful/observed predecessors and exact recovery references, defined below. |
+| Migration backup protection | Derived `deployments/backup-protections/` plus protection retirement authority: exact unresolved migration-attempt backup/target/baseline, defined below. |
+| Restore binding | Fixed `deployments/restore-target.json`: exact input/original/restored OIDs and bounded safety/replacement authority, defined below. |
+
+Creation/selection timestamps are canonical whole-second UTC. Migration fingerprints contain exact
+filename/SHA256; observed versions are sorted unique nonnegative integers. Installed records publish
+with immutable content before migration consequences; successful selections publish only after
+required verification. Create-once/atomic publication and directory fsync preserve ordering; records
+contain no phase journal/process identity/recovery command. Missing metadata and failed observation
+are distinct. Unsupported formats refuse without conversion or implicit provenance.
 
 ## Observed state and deployment admission
 
@@ -751,6 +719,30 @@ For restore before first success, discovery and expected state carry null
 The helper applies the same admission rules as the controller; neither substitutes an empty
 history or null selection for a failed observation. On retry after first success was published,
 recognize the completed restore through its exact backup references and null original baseline.
+
+### Authentication for restore databases
+
+Canonical application observations retain the declared application TCP connection and protected
+canonical-only password file. Restore derives exactly the temporary and retired names; their
+catalog, migration and pristine-template observations use existing local OS-postgres/native-socket
+administrator access, retaining the existing name, role, owner and OID checks before consequences. Do not widen HBA or
+password-file entries, grant new privileges, or accept arbitrary database targets.
+
+Load only the durably registered temporary OID using native local administrator authentication
+and `pg_restore --role=<configured application role>`. Preserve validated dump/source/checksum/schema
+authority, `--exit-on-error`, `--no-owner`, `--no-privileges`, bounded command execution and error
+refusal. A constant shell bridge opens the validated root-owned0600 dump as stdin before dropping
+OS identity to postgres, then execs quoted positional argv; this keeps the original dump protected
+without a copy, credential file or permission change.
+
+This deliberately authenticates the session as PostgreSQL administrator. Normal execution and
+new object ownership use the application role, but `RESET ROLE` can regain authenticated
+administrator privileges. The accepted operations threat model therefore requires trusted,
+root-managed validated backups; the role switch is not a sandbox for hostile dump contents.
+Native regressions must prove descriptor transport, execution/session identities and resulting
+object ownership. The
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#native-restore-and-authentication)
+records final native findings and verification boundaries.
 
 ### Rerunning an interrupted restore
 
@@ -1163,18 +1155,29 @@ Supplied provisioning credential proof is a narrow private entry point in the sa
 transient package, outside the secret-free JSON protocol:
 
 ```text
-python3 taskman-host.pyz provision-pgpass-authority HOST PORT ROLE DATABASE
+python3 taskman-host.pyz provision-pgpass-authority HOST PORT ROLE DATABASE DATABASE_STATE
 ```
 
-The literal mode and argument count are exact. Host is an allowed loopback address, port a canonical
+The literal mode and five-argument count are exact. DATABASE_STATE is exactly `ready` or `absent`,
+from validated native role/database authority. Host is an allowed loopback address, port a canonical
 decimal in 1–65535, and role/database use the existing PostgreSQL identifier grammar (at most
 63 ASCII characters, with any stricter database-name restriction retained). The pgpass path is
 fixed inside the helper. Raw stdin is a nonempty, bounded, single newline-terminated pgpass record
 with the existing colon/backslash escaping rules and exact connection-field equality. Secrets
 never enter argv, JSON requests/results, diagnostics, or temporary files. Existing pgpass requires
-exact non-link root-owned mode-0600 bytes before native authentication. When absent, the helper
-proves supplied credentials without writing a file, using a restricted child environment with the
-parsed password. Native execution is bounded to 60 seconds and emits no retained stdout/stderr.
+exact non-link root:root mode-0600 bytes matching the supplied record. Ready mode must authenticate
+to the configured application database: retained pgpass uses PGPASSFILE; missing pgpass uses a
+restricted child environment with the parsed password, without creating a credential file.
+Absent mode validates the same exact record and any retained file, omitting only impossible database
+authentication. It is admitted only when both configured role and database are genuinely absent;
+incompatible presence or retained-role/missing-database refuses. It does not prove database
+emptiness or applied migrations. Runtime-file authority is unconditional. Convergence re-observes
+the exact identities, creates through protected stdin and proves final application authentication.
+Generic provision discovery shares this ready/absent observation policy so target admission and
+downgrade planning reach fresh creation even before pgpass exists. Ready missing-file discovery
+retains administrator catalog proof; ready present-file discovery requires application
+authentication and state agreement. Strict/deploy/restore still require their credentials.
+Native execution is bounded to 60 seconds and emits no retained stdout/stderr.
 
 The private entry returns only status: 0 for successful proof, 2 for invalid private arguments or
 oversized input, and 10 for unsafe credential authority, malformed content, missing prerequisites,
@@ -1224,11 +1227,33 @@ obsolete executable by a trusted administrator are outside the normal scheduler 
 
 ## Reconciliation procedure and transport
 
-Keep orchestration in the controller and host mutation in the host-side helper; add no generic workflow engine.
-Use host protocol version 3 for the coordinated transient controller/helper change. Retain envelope,
+Keep orchestration in the controller and lifecycle mutation in the host-side helper; add no generic
+workflow engine. Controller-driven provisioning resource/database/runtime convergence is an existing
+exception and currently runs outside the lifecycle lock. Fresh confirmation checks are not
+serialization. The approved [coverage direction](2026-09-18-provisioning-lock-coverage-proposal.md)
+has an independently reviewed written design awaiting full design/plan approval and implementation
+in the [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md); it does not block
+the current operations merge and is not current behavior.
+The transient controller/helper use protocol version 3. Retain envelope,
 correlation and redaction rules; use the explicit collection and byte budgets below. Old transient protocol requests refuse; the
 controller always transfers its matching helper. Future persisted-format compatibility is a
 separate lifecycle obligation, not a requirement to accept old transient wire requests.
+
+### Protocol envelope
+
+| Envelope | Exact fields |
+| --- | --- |
+| HostRequest | `protocol_version`, `operation`, `correlation_id`, `expected_state`, `paths`, `parameters` |
+| HostResult | `protocol_version`, `operation`, `correlation_id`, `outcome`, `message`, `state`, `warnings` |
+
+The finite vocabulary is `discover`, `list_releases`, `list_backups`, `verify`, `genesis`, `deploy`,
+`backup`, `rollback`, `restore`, `restore_preflight`, `provision_authority`, and `cleanup`.
+Correlation is ephemeral transport identity, never persistent operation/release/backup/database
+identity. Paths contain exactly installation and backup roots; handlers own operation semantics.
+Outcomes are `succeeded`, `refused`, `retryable`, `manual`. The strict codec rejects wrong types,
+unsupported version/operation, duplicate JSON keys, invalid UTF-8/JSON, oversized/trailing output
+and nonfinite values. Operation/correlation must match the request. Generic collection limit 64
+and nesting depth 8 apply alongside the schema-specific budgets below.
 
 `credentials_path` identifies the host's PostgreSQL password file, `/etc/taskman/pgpass`, not an
 operator login or SSH key. Existing private-file ownership, permission, and non-symlink checks apply.
@@ -1267,10 +1292,10 @@ with more than 64 migration fingerprints still require the schema-specific codec
 and history growth is a separate discovery/listing concern; larger messages are not a substitute
 for bounded projections.
 
-Extend the existing read-only `discover` operation with four inspection modes: `strict`, `deploy`,
+The read-only `discover` operation has four inspection modes: `strict`, `deploy`,
 `provision`, and `restore`. Mode `strict` retains the existing completed-installation checks;
 the other modes support the unfinished states admitted by their respective commands.
-In protocol version 3, parameters are exactly `credentials_path`, `database`, and `mode`, except
+Parameters are exactly `credentials_path`, `database`, and `mode`, except
 that `restore` additionally requires `backup_id`; expected state remains empty. In `provision` mode,
 discovery accepts and reports the unfinished-installation state described above, with nullable
 current and successful selection;
@@ -1308,10 +1333,9 @@ Validate full successful history, installed migration provenance, and backup/ref
 on the host before constructing an operational projection. Do not send every historical record to
 the controller to perform those safety checks. Do not silently ignore old references or delete
 history to fit a response. History retention, rollback predecessor semantics, and reference-based
-backup protection remain unchanged. In particular, the existing 4096-entry implementation guard
-must not become a lifetime successful-selection limit: scan valid history incrementally under the
-lock, with per-record validation and the normal bounded operation timeout, not a fixed record-count
-refusal. A timeout is reported as incomplete inspection, never a truncated successful history.
+backup protection remain unchanged. Successful history has no lifetime record-count limit: scan
+valid history incrementally under the lock, with per-record validation and the normal bounded
+operation timeout. A timeout is reported as incomplete inspection, never a truncated successful history.
 
 Protocol-v3 `list_releases` and `list_backups` use exactly `cursor` in parameters and empty expected
 state. The first cursor is null;
@@ -1352,8 +1376,8 @@ facts; require their sorted-ID digest to match the host's `downgrade_baseline_sh
 the classification. Host-side admission remains authoritative. Do not treat missing pages or a
 digest mismatch as an empty baseline. No new acknowledgment or host mutation occurs during paging.
 
-Cleanup inspection also pages its eligible targets: add `cursor` to its exact parameters (null for
-execute), and return `inventory_sha256`/`next_cursor` alongside its existing confirmation facts and
+Cleanup inspection pages its eligible targets using `cursor` in its exact parameters (null for
+execute), and returns `inventory_sha256`/`next_cursor` alongside its existing confirmation facts and
 target list. Apply the same count/byte budget, deterministic ordering by `(kind, identifier, path)`,
 and snapshot-change refusal; the cursor's `after_id` is the canonical JSON encoding of that target
 tuple. Its inventory digest covers the full ordered eligible target set and confirmation facts.
@@ -1363,9 +1387,9 @@ every batch. Internal batching never authorizes a target absent from the confirm
 reports partial changes and requires a new inspection/confirmation for remaining work. Cleanup
 does not require generic operational discovery or export full history to validate protection.
 
-The UX proposal's credential-free provisioning inspection uses inventory counts and eligibility
-facts rather than full release/staging arrays. It still validates the underlying records on the
-host and does not infer a pristine installation from omitted or uninspected records.
+Credential-free early provisioning inspection remains separate proposed CLI UX work. Any future
+implementation must validate underlying host records and use bounded counts/eligibility facts;
+omitted or uninspected inventories never prove a pristine installation.
 
 Version-3 existing-host deploy has this exact operation-specific shape:
 
@@ -1434,12 +1458,9 @@ loopback topology, journal, readiness, and HSTS checks as uploaded artifacts.
 
 ## Failures and reporting
 
-Approved amendment (2026-09-16): the
-[exact helper failure design](2026-09-16-exact-helper-failure-design.md) governs recovery from
-malformed matching in-process handler results and encoding failure. It supersedes generic
-evidence-erasing fallback in that bounded scope; wire schema, controller whole-reply rejection
-and the failure/authorization rules below remain authoritative. The amendment is locally
-implemented and verified; its linked design owns evidence.
+[Internal helper failure recovery](#internal-helper-failure-recovery) governs malformed matching
+in-process results and encoding failure. Wire validation still rejects the complete invalid reply;
+internal evidence salvage does not relax controller trust or authorize another consequence.
 
 Preserve the bounded verification report on exit 9, including checks actually attempted; do not
 replace it with an empty report. If follow-up inspection also fails, keep the original failure as
@@ -1456,27 +1477,49 @@ loss makes the affected dispatch `unknown`, not a claim that a particular mutati
 Earlier proved mutations remain part of command-level evidence, as specified below.
 Unavailable final identity/schema/state fields are null or the existing explicit unknown enum,
 never empty collections or previous identities masquerading as fresh observations. Human output
-must explain possible changes. This follows the separate CLI UX proposal's retained semantics.
+must explain possible changes. The separate CLI UX workstream consumes these accepted semantics.
 
-Preserve exit categories: 2 invalid input/missing migration declaration, 3 local build prerequisite,
-5 SSH/preflight, 6 backup, 7 migration, 8 staging/selection/service lifecycle, 9 verification,
-10 unsafe/incompatible state or missing unattended acknowledgment, 11 restore or restored-database
-validation failure, and 12 lock contention.
+The fixed public exit categories are:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Success or verified no-op |
+| 2 | Invalid command/argument/configuration/target or missing migration declaration |
+| 3 | Local prerequisite/build failure |
+| 4 | Secret decryption/validation/installation failure |
+| 5 | SSH/host-key/privilege/remote preflight failure |
+| 6 | Backup/backup-validation failure |
+| 7 | Migration failure |
+| 8 | Release staging/selection/service lifecycle failure |
+| 9 | Readiness/public verification failure |
+| 10 | Safety/state/schema/policy conflict, incompatible rollback or missing unattended acknowledgment |
+| 11 | Restore/restored-database validation failure |
+| 12 | Shared lifecycle lock unavailable |
+
 Scheduler dependency refresh failures use 8 once its mutation begins; prior unsafe identity uses 10.
 Transport loss keeps its transport status and unknown consequence evidence, not an invented
 migration failure. Completing deployment or a newly restored release requires a complete passing
 report and durable successful history. Cleanup-only restore retries retain their explicit exception:
 they validate durable completion and recovery authority, not current application readiness.
-Transient service/readiness polling retains a finite budget; do not expand this work into an
-unproven startup-race fix. A timeout must retain the failed checks.
+Topology and subsequent readiness share the configured finite readiness budget under the global
+45-second deadline. Only safe absent application/distribution listeners may wait; unsafe, malformed,
+public, EPMD or missing-PostgreSQL evidence fails immediately. A timeout retains failed checks.
+The deployment architecture defines journal capture and the complete verification boundary.
+
+### Public result envelope
+
+Public JSON schema version 1 contains `schema_version`, `command`, `environment`, `status`,
+`changed`, `stage`, `facts`, `warnings`, and `next_action`. Human and JSON output preserve the
+same bounded redacted evidence. A stage/failed boundary is a coarse summary, not execution history.
+The interactive administrator bridge propagates the remote command status after session entry.
+No raw remote output, inspected exceptions or secret values become safe diagnostics on failure.
 
 ### Exact protocol-v3 mutation results
 
 Keep the existing result envelope keys: `protocol_version`, `operation`, `correlation_id`,
 `outcome`, `message`, `state`, and `warnings`. Outcomes remain `succeeded`, `refused`, `retryable`,
 and `manual`. Validate correlation, operation, and the complete operation-specific state before
-consuming any result. The following replaces the older optional success-only `changed`/report
-fields for `deploy`, `genesis`, `restore`, and cleanup execution. Failed cleanup inspection also
+consuming any result. Exact mutation-state fields are required for `deploy`, `genesis`, `restore`, and cleanup execution. Failed cleanup inspection also
 uses this failure shape; successful inspection retains its separately specified paginated response.
 Other read-only operation results retain their own contracts.
 
@@ -1615,364 +1658,206 @@ collection, and nesting validators apply at their exact schema locations. Requir
 evidence cannot be silently dropped to fit; cover worst-case result serialization during local
 contract verification before publishing the matching helper package.
 
+## Internal helper failure recovery
+
+Only matching cooperative in-process handler results may contribute independently validated
+evidence. The wire consumer rejects any malformed/mismatched complete reply; it cannot use this
+internal salvage policy. The former legacy translator and stop/10 repair are removed; stop/start
+producers emit service/8 directly, preserving possible/known mutation and native command order.
+
+### Chosen contract
+
+One handler contract remains: a request-correlated `HostResult` containing exact mutation state.
+There is no legacy reader or second handler evidence vocabulary. Valid results pass through,
+including successful cleanup inspection's existing paginated authority contract. An invalid
+success can only become failure; independently passing verification never reconstructs success.
+
+Recovery may reuse independently valid evidence only from an in-process `HostResult` whose
+protocol, operation and correlation match the request through `validate_result_for_request`.
+Wrong type, mismatched envelope and thrown exceptions contribute no reply evidence. They use
+unknown mutation failure (unchanged for cleanup inspection) and the existing safe observer.
+This trust boundary concerns cooperative internal producers, not hostile Python objects.
+Malformed, mismatched, oversized or lost wire replies remain wholly invalid at the controller:
+unknown for the affected dispatch, retaining only earlier validated aggregate evidence.
+
+The helper owns recovery policy. The shared protocol validator remains the single schema owner.
+Use a small fixed set of complete failure-state projections against that validator to accept
+independent groups; do not create another field parser, generic repair framework or duplicated
+schema. Each projection substitutes one group into an otherwise valid unavailable failure base.
+The finished result must pass full validation and request-dependent cleanup validation.
+
+### Evidence groups and precedence
+
+The base is a failed exact state with unavailable final facts and a fixed redacted internal-failure
+message. Deploy/genesis use retryable inspection/8; restore uses retryable inspection/11;
+cleanup uses refused inspection/10. Report is null, restore safety-copy identity is null and
+cleanup completion is empty. Request-derived desired release and input backup identities may be
+recorded when valid; they establish intent only, never publication or completion.
+
+1. **Mutation classification.** Retain canonical `unchanged`, `changed` or `unknown` from the
+   matching internal result. Missing or invalid classification becomes unknown. Cleanup inspection
+   is always unchanged and has no completions. Never infer classification from old boolean fields,
+   observations, a passing report or failure category. A lock category cannot survive a retained
+   changed/unknown classification because full validation requires unchanged.
+2. **Identities.** Validate operation-specific release/backup identities as one group using a
+   complete failure projection. If invalid, use the safe request-derived defaults above. Do not
+   guess a pre-restore backup or restored source from current filesystem facts.
+3. **Cleanup completions.** Accept only an entirely valid sorted unique group whose exact
+   kind/identifier/path triples belong to the confirmed request batch. Reject the entire group
+   if any member is malformed, duplicated or outside that batch. Completion can coexist with
+   unchanged mutation for a target already absent. It is evidence only and authorizes no further
+   deletion. The shared protocol owner supplies request-membership validation to both helper and controller;
+   retain success/all-target and inspection/no-completion checks. Do not duplicate target parsing.
+4. **Report and primary failure.** Cleanup reports are always ineligible, even if their standalone
+   schema validates; discard them while retaining eligible cleanup proof and its coherent failure
+   tuple. For deploy/genesis/restore, validate the report independently through the existing report
+   validator, then choose a coherent failure tuple. If a valid failed report exists, verification
+   with its exit 8 or 9 takes precedence over an incompatible or malformed supplied category;
+   emit the fixed internal-failure message and warning when repairing that contradiction. If the
+   supplied nonzero outcome/status/boundary tuple is already coherent with retained evidence,
+   preserve it and its safe message. A valid passing report survives a later primary failure.
+   An invalid report is omitted. If the remaining supplied tuple is invalid, or deploy/genesis
+   verification lacks its required valid report, use the base internal-failure category. Never
+   attach a failed report to inspection/history or convert it into a passing report.
+5. **Final facts.** Treat observations, unavailable_fields and inspection_error as one validated
+   group. Restore's database arrangement and top-level migrations remain a dependent unit.
+   Reuse a valid operation-owned final group without another observation. For missing/invalid
+   groups, make at most one existing read-only post-invocation observation attempt under the
+   lifecycle lock. Do not salvage arbitrary individual fields or reuse an earlier snapshot as
+   final. On lock/error/invalid observation output, retain unavailable facts with the appropriate
+   safe inspection error. Follow-up failure never replaces the chosen primary category/report.
+
+Construct a fresh exact failed result with a fixed warning that invalid internal evidence was
+rejected. Do not expose raw exceptions or add arbitrary invalid original warnings. Validate once
+more before encoding. Contradictions in optional sibling groups cannot erase separately accepted
+mutation, report or completion proof. No recovery path invokes the mutation handler twice.
+
+The observer uses the existing five-second lock acquisition timeout and existing per-command
+bounds; five seconds is not a total observation deadline. Cleanup observes filesystem authority
+only. Recovery performs no service, database or filesystem mutation.
+
+### Encoding boundary
+
+Encoding failure must not trigger another observation or a generic evidence-erasing
+fallback. From a semantically validated result, retain classification, coherent primary failure,
+report, identities and completions. If the original result was successful, choose the operation
+base nonzero failure category/outcome above, preserving any eligible passing report and completion
+proof; succeeded/0/null cannot survive unavailable final facts. Replace the final-fact group with
+unavailable facts, discard
+optional original diagnostics, and emit a fixed redacted encoding warning. Revalidate and encode
+this small failure envelope. At most two encoding attempts are allowed.
+
+Required report and completion evidence must not be truncated to fit. Implementation must prove
+that the reduced envelope fits the existing 1 MiB bound using maximum valid report strings and
+64 maximum-sized completed targets, JSON escaping and all identity fields. Existing input/output,
+collection, string, migration and depth limits remain unchanged. Large observational integers or
+other encoding failures are removed with the whole fact group. If the existing validator permits
+required evidence exceeding the reduced envelope's bound, stop and return to design review rather
+than silently dropping proof or introducing a retry loop.
+
+### Shared cleanup interface and encoding proof
+
+`validate_cleanup_completion(request_value: HostRequest, outcome: str,
+state: Mapping[str, object]) -> None` is exported by `host_protocol/__init__.py` and implemented
+in `host_protocol/mutation_results.py`. Both helper recovery and controller handling call it after
+exact cleanup-state validation. It owns confirmed-batch membership, success/all-target and
+inspection/no-completion invariants, without a new target vocabulary or deletion authority.
+
+Maximum escaped reduced-envelope regressions retain required proof without truncation:
+restore with eight 4096-byte control-character summaries and 255-byte release identities encoded
+as 199,289 bytes; cleanup with 64 confirmed 1024-byte escaped paths and 255-byte temporary
+identifiers as 491,606 bytes. Both decoded and fully validated within 1 MiB. Actual large-integer
+serialization failure is covered; the fact group is replaced rather than required evidence dropped.
+Individual delivery checks belong to task records; these regression obligations remain.
+
+### Alternatives and accepted trade-offs
+
+
+Making every invalid internal result unknown with no report/completions is simpler, but loses
+consequential evidence already required by the failure contract. Retaining the translator keeps
+old-shape inference and its demonstrated degradation. A second typed handler interface adds a
+migration contract without removing more behavior. Fixed projections reuse strict
+validation, at the cost of explicit local precedence and focused malformed-result coverage.
+Rejecting a whole invalid final-fact group can lose otherwise valid individual facts; one bounded
+fresh observer is the accepted replacement. Controller wire consumers receive no partial salvage.
+
 ## File boundaries
 
-Expected owners, relative to `ops/taskman_ops/`:
+Paths are relative to `ops/taskman_ops/`. The architecture's
+[repository map](2026-09-09-dedicated-host-deployment-design.md#repository-map) supplies the broader map.
 
-- `cli.py`, `workflows/deploy.py`, `workflows/provision.py`: command-specific flags, target intent,
-  ordinary confirmation, independent downgrade acknowledgment for deploy/provision, plans, and results.
-- `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`: exact artifact identity,
-  clean and frozen-dirty source export, supported-format reads, build-after-hash naming, local and installed
-  resolution; small source-order helper within `releases/` if needed, not host code that runs Git.
-- `host_protocol/`, `workflows/helper.py`: versioned discovery/request/result integration,
-  schema-specific budgets, and validated page collection within command timeouts.
-- Host listing/discovery operations and their controller consumers: compact operational facts,
-  paginated release/backup inventories, snapshot validation, and complete public listings.
-- `host_helper/records.py`, `state.py`, `paths.py`: single supported record formats and coherent authority;
-  a focused `host_helper/backup_protection.py` owns protection publication/reference lifecycle.
-- `host_helper/operations/deploy.py`: explicit reconciliation consequence order.
-- `workflows/restore.py`, `host_helper/operations/restore.py`: restore-specific admission from an
-  unfinished deployment or database swap, typed data-loss confirmation, restore-target binding,
-  and verified history/protection resolution.
-- `workflows/cleanup.py`, `host_helper/operations/cleanup.py`: capacity-independent cleanup admission,
-  paginated read-only inspection, recovery-aware protected targets, and exact confirmed deletion
-  in bounded batches.
-- `host/facts.py`, `host/acceptance.py`, `host/baseline.py`: resource-based provisioning admission,
-  removal of marker reads/writes from the active workflow, and safe partial-resource classification.
-- `host_helper/backups.py`, scheduled adapter, cleanup/rollback/restore consumers: new reference
-    protection and preserved command-specific safety, without a shared generic recovery engine.
-- `services/backups.py`, helper packaging and narrowly scoped installation capability: compatible
-  persistent executable and safe scheduler coordination.
-- `verification.py`, workflow verification translation/output: preserve failed evidence, not a
-  full output-framework rewrite.
-- `ops/tests/` mirrors these trust boundaries; update package-isolation and public CLI coverage.
-  Update the runbook, canonical design, and documentation index when the behavior is implemented.
+| Contract owner | Responsibility |
+| --- | --- |
+| `cli.py`, `workflows/deploy.py`, `workflows/provision.py`, `workflows/restore.py`, `workflows/cleanup.py` | Flags, target intent, plans, confirmations and command results. |
+| `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`, `source_order.py` | Exact artifact/provenance identity, frozen source export, byte budgets, installed/cache resolution and bounded local source ordering. |
+| `host_protocol/`, `workflows/helper.py` | Envelope and operation schema/budgets, request correlation, strict controller reply consumption and shared cleanup completion authority. |
+| `host_helper/records.py`, `state.py`, `paths.py`, `backup_protection.py` | Completed records, coherent authority, derived paths and protected migration-attempt lifecycle. |
+| `host_helper/restore_target.py`, `restore_database.py`, `operations/restore.py` | Restore binding/reference lifecycle, exact OID/authentication/load/arrangement authority and consequences. |
+| `host_helper/operations/discover.py`, `preflight.py`, `helper_client/runner.py` | Command-specific observation, packaged admission and the finite sensitive credential entry. |
+| `host_helper/operations/deploy.py`, `rollback.py`, `cleanup.py` | Explicit consequence order and operation-specific refusal/recovery rules. |
+| `host/facts.py`, `host/acceptance.py`, `host/baseline.py`, `provisioning.py` | Resource-based provisioning admission and confirmed convergence; no marker-based authority. |
+| `host_helper/backups.py`, `backup_helper.py`, `scheduled_backup.py`, `services/backups.py` | Shared backup/reference retention, scheduler quiescence/refresh and installed adapter contracts. |
+| `host_helper/verification.py`, `workflows/verify.py`, `output.py` | Fresh bounded report production and validated public presentation. |
+| `host_helper/__main__.py` | One dispatch, exact result validation, bounded internal recovery and two-attempt evidence-preserving encoding. |
+
+Shared standard-library record/protocol modules are explicitly included in each consuming zipapp.
+Tests exercise those generated executables, public commands and distinct capability boundaries.
+There is no second controller-owned reference model or generic recovery engine.
 
 ## Acceptance scenarios
 
-Acceptance requires focused controller-to-helper scenarios, not helper-only retry tests:
-
-### Artifact identity and compatibility
-
-#### Recovery without local artifacts
-
-Lose local artifacts: reuse sufficient installed provenance, or rebuild safely with a new ID;
-explicit supported artifacts remain exact; unsupported old host records refuse without mutation.
-
-#### Archive identity and source snapshots
-
-Same-source non-identical archives get distinct IDs; identical bytes reuse identity within the
-same clean-or-dirty provenance class even when irrelevant worktree content differs. Clean and
-dirty artifacts have distinct IDs through the terminal marker. Reject digest/source/manifest
-disagreements and unsafe paths. Exercise real clean build/cache reuse and dirty snapshots with
-tracked changes, deletions, and non-ignored untracked files while proving ignored files stay
-excluded.
-
-#### Supported baseline and rejected old formats
-
-Supported artifacts/records work through verification, scheduled backup, listings, rollback,
-restore, and cleanup, including retained releases/backups across subsequent deployments. Old IDs,
-manifests, installed/selection records, and OTP 27 artifacts refuse at their input/authority boundary.
-No old-format conversion, mixed-format success fixture, or generic adoption. Future package refresh
-tests use earlier and replacement packages that both implement the supported baseline.
-
-### Protocol budgets and inventory pagination
-
-#### Artifact, record, and message limits
-
-Budget coverage must exercise 64, 65, and 256 fingerprints through supported parsing, uploaded and
-installed targets, embedded manifests, and helper dispatch; reject 257 fingerprints. Exercise
-512 observed versions and reject 513 at their schema boundary. Keep unrelated collections capped
-at 64. Test maximum-length filenames, complete serialized manifests/records/requests/results at
-and beyond each byte limit, and actual nested codec round trips. Local budget failure must precede
-artifact publication or host mutation; unsupported formats must not gain a compatibility bypass.
-
-#### Growing inventories and bounded responses
-
-Exercise more than 64 and more than 4096 successful selections in focused observer regressions,
-without rewriting or dropping history, validating protection and rollback relationships across
-complete history. Public packaged deploy/restore integration coverage uses a small history whose
-oldest backup reference lies outside the latest/predecessor projection: discovery must remain
-representable, preserve that backup authority and refuse when the required dump is absent.
-
-This coverage split was accepted on 2026-09-16. It retains real >4096 observer coverage while
-avoiding repeated large-history scans in every packaged integration call; it accepts losing the
-combined large-count packaged-consumer exercise. The
-[measurement evidence](../research/2026-09-16-operations-test-parallelism.md) owns its rationale and
-verification results.
-
-Cover byte-driven pages below 64 entries, complete public listings,
-invalid cursors, inventory drift between pages, bounded retries, and no partial-success output.
-Exercise automatic target resolution and downgrade classification across multiple release pages,
-and cleanup plans/execution spanning multiple byte-bounded batches with interruption and newly
-protected targets. Verify that early provisioning inspection also remains bounded as inventories grow.
-
-### Deployment reconciliation and acknowledgment
-
-#### Retry after failed verification
-
-Select target, fail verification, rerun the public controller with the same target, and complete
-only after verification; expose the original failed report and real selection on failure.
-
-#### Replace an unhealthy partial target
-
-Replace an unhealthy partial target with another target, without starting/verifying the failed
-one first; history links successful outcomes, not an invented success.
-
-#### Interruptions at deployment boundaries
-
-Fail after each migration commit prefix, backup publication, protection publication, selection,
-start, verification, successful record, and protection removal. Retry or replace from live schema.
-
-#### Unsafe or unprovable state
-
-Missing/conflicting provenance, malformed protection, unsafe links, absent history/current,
-incompatible downgrade, and nontransactional/unknown database state refuse without repair.
-
-#### Confirmation and downgrade policy
-
-Deploy and provision interactive, unattended, JSON, and dry-run confirmation matrices, including
-dirty local builds, implicit acknowledgment from an explicit dirty artifact, redundant
-`--allow-dirty` for a dirty artifact, refusal for a clean artifact, and apply-time drift after
-`--yes`.
-
-Both commands cover known/unknown source ordering, lower SemVer, divergent revisions,
-same-source rebuilds, and baseline drift. Provision also covers older replacement after failed
-startup or committed migrations, protected migration targets without current, supported installed
-provenance before first success, no-baseline fresh installation, and independent ordinary and
-downgrade prompts/flags.
-
-Non-interactive known downgrades or unknown ordering against an existing
-baseline without acknowledgment refuse exit 10, including under `--yes` or `--json`. Cover
-missing commit objects, divergent histories, unorderable versions, mixed known/unknown signals,
-identical-source/version rebuilds, and distinct known-downgrade versus uncertainty prompt text.
-Dry-run reports required acknowledgment without demanding it.
-
-### Provisioning and first-installation recovery
-
-#### Interrupted provisioning with a changed target
-
-Interrupt provisioning during staging, partial migration, selection, start, verification,
-first successful selection publication, and protection removal. Rerun the public provision
-command with changed clean source, dirty source, and different explicit artifacts; lose the
-original archive. Validate reuse or new immutable builds, missing-current recovery, multiple
-installed candidates, fresh protected backups with a null baseline, migration-policy refusal,
-and successful first-history publication. Existing data must survive; incompatible targets
-refuse. Once the first selection is durable, replacement requires deploy, including after
-transport loss. Exercise pausing scheduled backups and waiting for running backups to finish
-before replacing the backup program during provisioning recovery.
-
-#### Resource-based admission without a marker
-
-Verify the active workflow no longer probes, writes, or classifies the retired marker path.
-Interrupt before the
-first resource mutation and at supported partial-convergence boundaries, then rerun through
-resource inspection and confirmation. Compatible partial state is reusable without a marker;
-a valid marker cannot admit a foreign database, conflicting service/configuration, unsafe
-path, or unrecorded release. Plans identify reused resources and initial database emptiness
-is verified independently of migration-history emptiness.
-Missing accounts, directories, unit files, or credentials in an otherwise safe partial install
-do not by themselves block admission; they are created and validated before use. Missing
-migration provenance for existing populated data still refuses.
-
-#### Restore before the first successful selection
-
-Before any successful selection, interrupt provisioning after a complete migration schema,
-capture a validated backup, and exercise a subsequent failed transition. Through the public
-restore command, restore that backup with and without `current` present, using installed
-migration metadata rather than successful history as provenance. Verify safety-backup creation,
-typed data-loss confirmation, null-baseline binding, first-success publication and protection
-transfer, and retry after interrupted swaps or lost completion output. Reject a partial-schema
-backup incompatible with its source release, corrupt/missing metadata, and missing required
-restore infrastructure. Future release replacement must use deploy.
-
-### Restore recovery
-
-#### Restore after a failed deployment
-
-Through the public controller, deploy from verified A to B, apply migrations, select B, then
-fail startup/verification. Restore the validated pre-deployment backup and A directly, without
-first completing B. Also cover failure before selection with a partial committed migration
-prefix. Assert typed data-loss confirmation, dry-run, unchanged or differing physical/history
-identities, safety backup, corrupt/incompatible backup refusal, apply-time drift, preserved
-protections on failure, verified restored schema, and durable reference transfer on success.
-
-#### Interrupted restore and same-backup retry
-
-Interrupt restore before/after binding publication, during dump loading, after each database
-rename, after release selection, verification, successful history, retired-database deletion,
-and binding removal. Rerun the public command with the same backup, including when canonical
-is absent; complete after renewed confirmation. Reject an unacknowledged different backup with identical
-migration versions, OID/ownership drift, and unknown arrangements. Verify temporary rebuild
-after partial load, preserved original/safety material, retention protection, accurate dry-run,
-capacity checks for remaining work, and no duplicate restore after durable completion.
-
-#### Rebuilding incomplete temporary databases
-
-For ordinary same-backup retries, interrupt after dropping temporary and before recreating it
-while the original is retired; accept retired-only state with the validated binding and original
-OID, rebuild temporary, and finish without target replacement. Also interrupt immediately after
-temporary creation and before its migration table is loaded. Missing/corrupt binding, wrong
-original OID, or failed observation must still refuse; preserve original and unrelated databases.
-
-#### Replacing an unfinished restore
-
-Exercise `--replace-unfinished` before loading, during partial loading, between renames, and
-after failed application verification. Preserve the original OID and safety copies, including
-possible new writes to a failed restored database. Interrupt every replacement binding update,
-discard, and rename; resume the pending target or select a third target without requiring the
-abandoned target to run. Cover retired-only inspection, exact discard-OID checks, backup failure
-before deletion, typed confirmation, dry-run, helper/controller parity, retention references,
-and already-successful restores requiring cleanup followed by a separately confirmed new plan.
-
-#### Cleanup after durable restore success
-
-After durable restore success, interrupt before retired-database deletion and before binding
-removal, then make readiness fail or become unobservable. A retry must validate authority and
-finish cleanup without requiring readiness, reloading the dump, or adding success history;
-report health separately and allow a subsequent separately confirmed deploy or restore.
-Wrong database identities, conflicting success references, and unsafe backup authority still
-refuse cleanup. Cover both controller and helper admission, not only the cleanup body.
-
-#### Explicitly reapplying a completed restore
-
-Restore a backup successfully, make later data changes, and verify an ordinary rerun does not
-reload it. With `--reapply`, require a new plan, typed confirmation, fresh safety backup, and new
-binding baseline; restore the data and append exactly one new successful selection. Cover
-completed binding cleanup, dry-run without writes, failure and ordinary retry after binding
-publication, rejection during an unfinished restore, mutually exclusive flags, and helper parity.
-
-#### Bounded restore safety backups
-
-Exercise more than 64 restore replacements with fresh safety copies and different input backups.
-Preserve original/newest/three recent eligible safety attempts and all independent references;
-release abandoned input references without treating those inputs as disposable attempts.
-Include multiple safety copies in one replacement, identical timestamps, clock rollback,
-interruption after registration/reference retirement/each backup-file deletion, and a transient
-sixth attempt. Confirm exact prune IDs, no deletion before fresh protection, no accumulation
-refusal, and bounded successful-history publication after recovery.
-
-#### Replacing an unusable backup input
-
-Replace an input whose metadata remains valid but whose dump is missing, unreadable, corrupt,
-or fails checksum validation. Reach replacement through public preflight/discovery, normalize
-any pending replacement, and load only the fully validated new input. Preserve remaining old
-files and report their condition. Ordinary retry of the unusable input must still refuse;
-corrupt binding/backup metadata, unsafe paths, conflicting identities, and an invalid required
-safety copy remain refusals, including when the abandoned input has that independent role.
-
-#### Restore previews and acknowledgments
-
-Preview a different backup during an unfinished restore without `--replace-unfinished`: show
-the validated replacement plan and missing execution acknowledgment, with no writes. Execution
-without the flag still refuses. After completed restore, same-backup dry-run without `--reapply`
-previews completion checking, while adding it previews a fresh restore and safety backup.
-
-#### Restore binding discovery and digest
-
-Verify flat discovery `restore_target` contains the complete validated binding plus its digest,
-with null only for proven absence. Reject malformed fields and mismatched digests; hash only
-binding fields and never persist the response digest. Build target/pruning plans from this
-response and bind apply-time drift checks through `expected_state.restore_target_sha256`.
-
-#### Database and migration-table observations
-
-Distinguish absent database, existing database without a migration table, present-empty table,
-and populated table in restore discovery and expected state. Check canonical/top-level agreement
-and reject contradictory boolean/null/array combinations. Failed connection, permission, or
-query observations refuse rather than producing absence or emptiness. Only supported incomplete
-recovery states admit missing tables; ordinary application-database authority remains mandatory.
-
-#### Database creation intent and OID registration
-
-Interrupt after durable creation intent, database creation, OID registration, rebuild intent,
-temporary deletion, replacement creation, and each rename. Register only a verified empty
-unregistered temporary with valid creation intent; never load before durable OID registration.
-Reject populated unregistered databases, wrong owner, unexpected writers, failed emptiness
-observation, or mismatched restored OID after promotion. Verify post-success cleanup validates
-the registered restored canonical OID while tolerating an already-deleted retired original.
-
-### Backup retention and cleanup
-
-#### Backup provenance after partial migration
-
-Start with selected successful A containing migration 1. Deploy B containing migrations 1, 2, and 3;
-commit migration 2, fail migration 3, and leave current at A. Through public deploy retry, scheduled
-backup, and restore safety-backup paths, select B's protected installed provenance for the live
-prefix rather than attributing migration 2 to A. Verify the stored source ID and actual versions,
-and that a partial-prefix backup is not advertised as automatically restorable.
-Cover multiple qualifying protected targets in different enumeration orders, preference for a
-qualifying current, absent-current first-install recovery, conflicting fingerprints, and no single
-eligible record covering the entire prefix. Source choice must be deterministic, must not use an
-unrelated installed or newly supplied artifact, and must not change current or successful history.
-
-#### Exact backup attribution and protected references
-
-Multiple backups with identical source/schema do not cause guessed attribution; protect exact
-referenced IDs. Scheduled retention and cleanup cannot delete retained unresolved or history-held backups
-or required releases, including after target replacement and transport loss.
-
-#### Bounded migration-attempt backups
-
-Exercise more than 64 failed migration attempts and target replacements under one baseline:
-retain the original, newest, and three most recent eligible intermediates, without a retry-count
-refusal. Include null-baseline first-install recovery, identical timestamps, clock rollback,
-independently history/restore-held backups, and unrelated scheduled/manual backups. Interrupt
-after new dump publication, protection publication, each retired protection removal, manifest
-deletion, and dump deletion. Prove that a transient sixth backup can be inspected and pruned,
-failed replacement creation never prunes, original/newest and migration provenance survive,
-independent references remain intact, and success records reference only retained protections.
-Plans and apply-time checks must bind the exact proposed intermediate deletions.
-
-#### Cleanup while recovery is unfinished
-
-Through the public cleanup command, exercise low backup capacity, an unavailable canonical
-database during restore, mismatched physical/successful selection, and unfinished first install.
-Eligible unreferenced artifacts can be removed after typed confirmation; all required release
-provenance, backup protections, restore bindings, and their referenced material survive.
-Inspect/dry-run performs no normalization or managed writes. Cover no eligible targets,
-malformed references, target becoming protected after confirmation, interrupted deletion,
-and transport uncertainty without invoking database-health or backup-capacity preflight.
-
-### Packaging and failure reporting
-
-#### Isolated packages and scheduled-helper compatibility
-
-Isolated `-I -S` execution of both packages; dependency refresh/no-op/failure/interruption and
-an already-started old scheduled process cannot execute unsafe retention after new records.
-
-#### Transport uncertainty and sensitive output
-
-Transport loss and failed reobservation preserve uncertainty and the primary failed boundary;
-never report stale unchanged success or leak raw remote output, credentials, or release cookies.
-
-#### Mutation-result contracts and final observations
-
-Round-trip every exact deploy/genesis/restore/cleanup result variant through the packaged helper
-and public controller. Reject missing/extra fields, mismatched correlation/operation, invalid
-outcome/status pairs, malformed reports, and contradictory unavailable markers. Cover successful
-deployment, healthy no-op, pre-mutation refusal, lock contention, partial mutation, failed
-verification with its report, and passing verification followed by failed history publication.
-Exercise successful and failed final observation, including proved absence versus unavailable
-current and empty versus unavailable migrations/protections. No failure may fall back to old
-selection/schema facts or default missing mutation evidence to false.
-
-Cover scheduler refresh before failure, provisioning convergence before genesis failure, partial
-backup-pair deletion, and multiple cleanup batches followed by refusal or lost transport. Preserve
-earlier proved changes and completed targets without claiming unknown later work completed.
-Restore cleanup-only success must carry validated completion authority without requiring a new
-passing report; cleanup must not inspect database health. Lost/malformed/oversized replies must
-not fabricate observations, reports, or completion. Exercise result byte/count/nesting limits with
-maximum migration arrays, recovery references, cleanup batches, and bounded verification reports.
+These are regression obligations for the supported behavior, not pending implementation steps or
+proof that native acceptance has just been repeated. Use focused public controller-to-helper tests
+and direct capability tests for distinct recovery states. The
+[architecture test design](2026-09-09-dedicated-host-deployment-design.md#test-design) defines trust-domain
+coverage; the [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) records identified results/limits.
+
+| Boundary | Required observable outcomes and consequential refusals |
+| --- | --- |
+| Artifact identity/source snapshots | Lost local artifact: installed provenance or safe new-ID rebuild. Same-source differing bytes get distinct IDs; identical bytes reuse within clean/dirty class. Explicit dirty acknowledgment/clean-artifact allowance refusal. Frozen tracked changes/deletions/nonignored files included; ignored canaries excluded. Digest/source/layout/path disagreement refuses. |
+| Compatibility | Supported retained release/backup consumers and future scheduler refresh; rejected old IDs/manifests/records/runtime at local/host authority boundary, no conversion/adoption. |
+| Budgets | 64/65/256 fingerprints accepted at their exact nested schema locations, 257 refused; 512 versions accepted/513 refused. Unrelated collections remain 64. Maximum filenames and complete manifest/record/request/result bytes at/beyond limits; local refusal before publication/mutation, codec round trips and no proof truncation. |
+| Pagination | Byte-driven pages below 64, all-page public output, invalid cursor/snapshot drift/removed versus unknown continuation, bounded restarts and no partial success. Multi-page target/downgrade resolution and byte-batched cleanup with newly protected targets/interruption. |
+| Deploy reconciliation | Retry failed verification and retain original report/physical selection; replace unhealthy partial target without first repairing it. Distinct migration-prefix/backup/protection/selection/start/verification/history/removal interruptions; missing or conflicting authority/links/unknown side effects refuse. |
+| Confirmation/downgrade | Interactive/unattended/JSON/dry-run and explicit/clean/dirty targets; apply-time drift under yes. Lower SemVer/ancestor/divergent/missing objects/unorderable versions/mixed signals/rebuild equality/no-baseline; distinguish known downgrade and uncertainty. Unacknowledged noninteractive action refuses 10, dry-run reports acknowledgment. Before-first-success protected/live-prefix baselines retained even without current. |
+| First provisioning | Partial convergence/staging/migrations/start/history/lost reply supports changed source or exact target without original archive; null-baseline safety and missing-current provenance, populated-state refusal, immutable candidates and no marker authority. After durable first success replacement uses deploy. Scheduler pause/quiescence before replacement. True absent identities reach mutation-free packaged dry-run and confirmed creation; incompatible/partial presence, wrong ready credentials, retained-byte mismatch and post-convergence foreign schema refuse. |
+| Restore before first success | Full-schema backup with installed provenance, with/without current; safety/typed confirmation/null-baseline binding/first success/reference transfer/swaps/lost output. Partial source-incompatible dump, missing infrastructure or corrupt authority refuses. |
+| Restore after failed deploy | Physical/history mismatch and partial migration prefix admit explicit typed restore to validated source; selected backup and pre-restore safety differ in full-schema versus manual-recovery guarantees. Corrupt backup/drift refuses; no automatic restore. |
+| Same-backup restore retry | Binding/load/rename/selection/verification/history/cleanup/lost-reply interruptions, absent canonical/retired-only states, partial temporary rebuild and original preservation. Wrong OID/owner, failed observation, unacknowledged different input and unknown arrangement refuse. |
+| Creation intent/OID registration | Intent/create/register/rebuild/drop/recreate/rename interruptions; only proved pristine unregistered temporary with pending intent may register, no load beforehand. Populated/wrong owner/writers/failed pristine proof refuse; promoted canonical uses registered OID and success cleanup tolerates absent retired original. |
+| Restore target replacement | Before/during load/between renames/after failed verification; preserve original and fresh safety for possible writes to either original or failed restored DB. Every binding/discard/rename interruption, pending/third-target normalization without running abandoned source, exact discard OID/typed confirmation/backup-before-deletion. Durable success requires cleanup then separately confirmed new action. |
+| Unusable abandoned input | Missing/unreadable/corrupt/checksum-failed dump permits replacement/normalization only with valid recorded metadata and original authority; report/preserve remnants. Ordinary retry and independently required safety still require full validation. Unsafe paths/corrupt binding/invalid safety refuse. |
+| Completed restore/reapply | Post-success retired/binding cleanup works when health fails/unknown without reload/duplicate success; wrong identities/references refuse. Ordinary rerun preserves later writes. Explicit reapply gets new typed plan/fresh safety/baseline/exactly one new success; completed-binding cleanup then new plan; unfinished reapply/mutually exclusive flags refuse. Dry-run distinguishes completed checking, replacement missing acknowledgment and explicitly requested reapply. |
+| Restore facts/authentication | Flat complete binding plus exact digest/null absence, canonical/top-level consistency and absent DB versus absent/present-empty/populated migration table. Failed query never absence. Real protected FD load/session execution identities/application object ownership, canonical authentication unchanged and trusted-dump privilege qualification. |
+| Attempt retention | More than 64 migration attempts/restore replacements under one sequence; original/newest/three eligible intermediates, transient sixth, multiple fresh safety copies, identical/rollback clocks and all independent references. Register fresh safety before confirmed retirement, interrupt at each reference/file deletion, no retry-count refusal, no abandoned-input accumulation or pruning scheduled/manual backups. Original-DB safety remains held even when failed-restored safety is newer. |
+| Backup-source provenance | After A migration1/B migration2 commits and migration3 fails, backup current prefix using eligible protected B rather than A. Deterministic ordering/current preference/absent current/conflicting hashes/no single source refusal. No unrelated/new artifact adoption; partial dump not advertised automatically restorable. Exact IDs, not matching source/schema/timestamp, determine references. |
+| Cleanup | Low capacity/unavailable canonical/unfinished install/current-history mismatch admit only proven-safe confirmed targets; preserve full history/provenance/protections/bindings. No inspect normalization; no eligible targets remains truthful. Changed protection/unsafe references/inode drift/partial pair deletion/lost reply retain consequence evidence; no database/service/capacity or scheduler refresh dependency. |
+| Packages/scheduler | Both actual standard-library zipapps under -I -S; exact membership/import/entrypoint, compatible refresh/no-op/failure/interruption and started old-process quiescence before supported records. |
+| Mutation/final facts | Actual helper/public round trips for success/no-op/pre-mutation refusal/lock/partial mutation/failed report/passing report plus failed history. Correlation/schema/outcome/unavailable-marker contradictions reject complete wire reply. Final unavailable never old snapshot; proved absence/empty distinct from failed observation. Provision convergence/helper refresh/earlier cleanup batches aggregate known/possible evidence and completions without fabricated later observations/report. |
+| Internal recovery/encoding | Matching changed result with malformed siblings; passing report plus later failure; failed-report/category contradiction; invalid success/envelope/type/identities/observer shape/lock/error. Cleanup schema-valid reports always ineligible, completion is exact confirmed subset; duplicate/out-of-batch group rejected. Valid facts avoid another observer, invalid group permits one, handler never retried. At most two encodes, former success becomes failure, maxima proof and actual integer serialization refusal; one actual isolated packaged case. |
+
+### Growing inventories and bounded responses
+
+More than 64 and more than 4096 successful selections are covered by focused full-observer
+regressions, including complete protection/rollback relationships without dropping history.
+Public packaged deploy/restore uses small history whose oldest backup reference lies outside the
+latest/predecessor projection; preserve that reference and refuse if its required dump is absent.
+This accepted split retains real large-observer coverage while losing combined large-count packaged-
+consumer exercise. The [parallelism report](../research/2026-09-16-operations-test-parallelism.md)
+owns measurement rationale. Credential-free early provisioning inspection remains proposed in the
+CLI UX workstream; it is not claimed as delivered coverage here.
 
 ## Verification gates
 
-Run the development guide's operations suite, compileall, shell syntax, help/confirmation checks,
-and `mix precommit`; check Markdown links, whitespace, and planning-term leakage. Independent scoped
-review must inspect migration ordering, reference retention, supported-format readers, and the actual public
-retry path. Build/packaging changes require clean and dirty identified release builds plus
-manifest/hash/cache and packaged-runtime validation. Local tests do not establish real systemd,
-backup, or restore safety.
+Use the development guide's focused/full operations checks, actual isolated executables,
+help/confirmation/redaction contracts and mix precommit. Check local Markdown links/whitespace and
+planning-term leakage. Scoped independent review for material correctness/security/architecture
+changes inspects relevant consequences, retained references and actual public paths; no automatic
+whole-branch review. Build/package changes require clean/controlled-dirty identified artifact,
+manifest/hash/pins/private modes/exact-input cache and packaged runtime checks. Local/container
+results do not establish native systemd/UFW/ACME/email/reboot or full destructive restore acceptance.
+Affected native checks need separately authorized targets; retained evidence stays qualified to its
+identified source/database and explicit limits.
 
 ## Rejected alternatives and caveats
 
@@ -1992,18 +1877,6 @@ backup, or restore safety.
 
 This model cannot repair arbitrary manual corruption or infer unrecorded database side effects.
 Interrupted migrations without sufficient fingerprint/protection evidence remain manual;
-the old staging installation is outside the compatibility boundary and will not be repaired by this
-controller. Local dumps
-do not survive host loss. Full destructive recovery acceptance remains separately authorized.
-
-## Next-session checklist
-
-1. Before any future change, read this complete specification, the
-   [implemented plan](../plans/2026-09-14-deploy-reconciliation.md), and the development guide's
-   ops-specific simplicity/reliability and Python-first rules.
-2. Obtain exact authorization before recreating a clean staging host and running fresh
-   provisioning/readiness acceptance. Do not recover the old installation, manually append
-   selection records, or repoint current to bypass the controller.
-3. Refresh host state only for that separately authorized acceptance action. Administrator/login
-   acceptance and deployment completion remain separate outcomes; the readiness handoff records
-   their current state.
+the historical old staging installation was outside the compatibility boundary. Local dumps do
+not survive host loss. Completed native acceptance is recorded in the acceptance report; future destructive
+recovery still requires scoped authorization.

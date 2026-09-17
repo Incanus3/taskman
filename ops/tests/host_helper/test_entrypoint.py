@@ -172,6 +172,7 @@ def test_built_zipapp_private_pgpass_entry_is_exit_only_and_finite(tmp_path: Pat
         [
             sys.executable, "-I", "-S", str(package.path), "provision-pgpass-authority",
             "127.0.0.1", "5432", "taskman", "taskman_prod",
+            "ready",
         ],
         input=b"127.0.0.1:5432:other:taskman:secret-canary\n",
         capture_output=True, check=False,
