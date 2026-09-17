@@ -172,8 +172,6 @@ def test_native_configuration_script_has_fail_fast_config_and_hba_gates_before_r
     assert "set -eu" in script
     assert "pg_hba_file_rules" in script
     assert '--config-file="$config_file"' in script
-    assert script.count("floor(extract(epoch from pg_postmaster_start_time()))::bigint") == 2
-    assert inspection_script.count("floor(extract(epoch from pg_postmaster_start_time()))::bigint") == 1
     assert 'postgres_binary="/usr/lib/postgresql/$version/bin/postgres"' in script
     assert script.count('runuser -u postgres -- "$postgres_binary" --config-file="$config_file" -C') == 4
     assert 'postgres_binary="/usr/lib/postgresql/$version/bin/postgres"' in inspection_script
@@ -283,7 +281,7 @@ esac''',
         f'''printf '%s\\n' "$*" >> {admin_log}
 case "$*" in
   */bin/postgres*) exit 91 ;;
-  *current_setting*) printf '%s\\n' '5432|{data_directory}|{start_time}' ;;
+  *current_setting*) printf '%s\\n' '5432|{data_directory}|{os.getpid()}' ;;
   *'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *pg_hba_file_rules*) ;;
@@ -441,7 +439,7 @@ esac''',
         bin_dir / "runuser",
         f'''case "$*" in
 {_postgres_effective_settings_cases(destination, port=5432)}
-  *current_setting*) printf '%s\\n' '5432|{data_directory}|{start_time}' ;;
+  *current_setting*) printf '%s\\n' '5432|{data_directory}|{os.getpid()}' ;;
   *'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *pg_hba_file_rules*) : > {hba_check_log}; printf '%s\\n' 'bad HBA entry' ;;
@@ -600,7 +598,6 @@ def test_native_configuration_uses_the_live_old_socket_before_restart_and_the_re
     data_directory = tmp_path / "data"
     data_directory.mkdir()
     start_time = 1_725_000_200
-    rounded_start_time = start_time + 1
     _write_postmaster_pid(data_directory, port=5432, start_time=start_time)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -639,24 +636,12 @@ esac''',
         f'''printf '%s\\n' "$*" >> {admin_log}
 case "$*" in
 {_postgres_effective_settings_cases(destination, port=5433)}
-      *'--port 5432'*'current_setting'*)
-        case "$*" in
-          *'floor(extract(epoch from pg_postmaster_start_time()))::bigint'*) printf '%s\\n' '5432|{data_directory}|{start_time}' ;;
-          *) printf '%s\\n' '5432|{data_directory}|{rounded_start_time}' ;;
-        esac
-        ;;
+      *'--port 5432'*'current_setting'*) printf '%s\\n' '5432|{data_directory}|{os.getpid()}' ;;
   *'--port 5432'*'SHOW port'*) printf '%s\\n' 5432 ;;
   *'--port 5432'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5432'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *'--port 5432'*'pg_hba_file_rules'*) ;;
-      *'--port 5433'*'current_setting'*)
-        if [ -f {restarted} ]; then
-          case "$*" in
-            *'floor(extract(epoch from pg_postmaster_start_time()))::bigint'*) printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
-            *) printf '%s\\n' '5433|{data_directory}|{rounded_start_time}' ;;
-          esac
-        fi
-        ;;
+      *'--port 5433'*'current_setting'*) [ -f {restarted} ] && printf '%s\\n' '5433|{data_directory}|{os.getpid()}' ;;
   *'--port 5433'*'SHOW port'*) [ -f {restarted} ] && printf '%s\\n' 5433 ;;
   *'--port 5433'*'SHOW config_file'*) [ -f {restarted} ] && printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5433'*'SHOW hba_file'*) [ -f {restarted} ] && printf '%s\\n' {destination} ;;
@@ -701,7 +686,7 @@ esac''',
     assert completed.stdout == ""
     admin_commands = admin_log.read_text(encoding="utf-8").splitlines()
     assert admin_commands == [
-        f"-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SELECT current_setting('port'), current_setting('data_directory'), floor(extract(epoch from pg_postmaster_start_time()))::bigint",
+        f"-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SHOW config_file",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SHOW hba_file",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5432 --username postgres --dbname=postgres --command SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL",
@@ -709,7 +694,7 @@ esac''',
         "-u postgres -- /usr/lib/postgresql/16/bin/postgres --config-file=/etc/postgresql/16/main/postgresql.conf -C port",
         "-u postgres -- /usr/lib/postgresql/16/bin/postgres --config-file=/etc/postgresql/16/main/postgresql.conf -C password_encryption",
         "-u postgres -- /usr/lib/postgresql/16/bin/postgres --config-file=/etc/postgresql/16/main/postgresql.conf -C hba_file",
-        f"-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5433 --username postgres --dbname=postgres --command SELECT current_setting('port'), current_setting('data_directory'), floor(extract(epoch from pg_postmaster_start_time()))::bigint",
+        f"-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5433 --username postgres --dbname=postgres --command SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5433 --username postgres --dbname=postgres --command SHOW config_file",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5433 --username postgres --dbname=postgres --command SHOW hba_file",
         "-u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator | --host /var/run/postgresql --port 5433 --username postgres --dbname=postgres --command SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL",
@@ -770,12 +755,12 @@ esac''',
         bin_dir / "runuser",
         f'''case "$*" in
 {_postgres_effective_settings_cases(destination, port=5433)}
-  *'--port 5432'*'current_setting'*) printf '%s\\n' '5432|{data_directory}|{start_time}' ;;
+  *'--port 5432'*'current_setting'*) printf '%s\\n' '5432|{data_directory}|{os.getpid()}' ;;
   *'--port 5432'*'SHOW port'*) printf '%s\\n' 5432 ;;
   *'--port 5432'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5432'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *'--port 5432'*'pg_hba_file_rules'*) ;;
-  *'--port 5433'*'current_setting'*) [ -f {restarted} ] && printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
+  *'--port 5433'*'current_setting'*) [ -f {restarted} ] && printf '%s\\n' '5433|{data_directory}|{os.getpid()}' ;;
   *'--port 5433'*'SHOW port'*) [ -f {restarted} ] && printf '%s\\n' 5433 ;;
   *'--port 5433'*'SHOW config_file'*) [ -f {restarted} ] && printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5433'*'SHOW hba_file'*) [ -f {restarted} ] && printf '%s\\n' {destination} ;;
@@ -942,7 +927,6 @@ def test_native_configuration_inspection_requires_a_successful_hba_parser_query(
     data_directory = tmp_path / "data"
     data_directory.mkdir()
     start_time = 1_725_000_300
-    rounded_start_time = start_time + 1
     _write_postmaster_pid(data_directory, port=5433, start_time=start_time)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -982,12 +966,7 @@ esac''',
         bin_dir / "runuser",
         f'''case "$*" in
 {_postgres_effective_settings_cases(destination, port=5433)}
-  *'--port 5433'*'current_setting'*)
-    case "$*" in
-      *'floor(extract(epoch from pg_postmaster_start_time()))::bigint'*) printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
-      *) printf '%s\\n' '5433|{data_directory}|{rounded_start_time}' ;;
-    esac
-    ;;
+      *'--port 5433'*'current_setting'*) printf '%s\\n' '5433|{data_directory}|{os.getpid()}' ;;
   *'--port 5433'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5433'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *'--port 5433'*'pg_hba_file_rules'*) {":" if parser_query_succeeds else "exit 91"} ;;
@@ -1099,7 +1078,7 @@ esac''',
         bin_dir / "runuser",
         f'''case "$*" in
 {_postgres_effective_settings_cases(destination, port=5433)}
-  *'--port 5433'*'current_setting'*) printf '%s\\n' '5433|{data_directory}|{start_time}' ;;
+  *'--port 5433'*'current_setting'*) printf '%s\\n' '5433|{data_directory}|{os.getpid()}' ;;
   *'--port 5433'*'SHOW config_file'*) printf '%s\\n' /etc/postgresql/16/main/postgresql.conf ;;
   *'--port 5433'*'SHOW hba_file'*) printf '%s\\n' {destination} ;;
   *'--port 5433'*'pg_hba_file_rules'*) ;;
@@ -1231,6 +1210,8 @@ def _native_configuration_fixture(
     configured_hba_file: str | Path | None = None,
     restart_mode: str = "clean",
     cluster_state: str = "online",
+    runtime_parent_pid: str = str(os.getpid()),
+    runtime_identity_query_fails: bool = False,
 ) -> dict[str, object]:
     plan = build_postgresql_plan(environment_config())
     stage = tmp_path / "pg_hba.staged"
@@ -1300,7 +1281,13 @@ case "$*" in
   */bin/postgres*' -C port') printf '%s\\n' 5432 ;;
   */bin/postgres*' -C password_encryption') printf '%s\\n' scram-sha-256 ;;
   */bin/postgres*' -C hba_file') printf '%s\\n' {destination.as_posix()} ;;
-  *current_setting*) printf '%s\\n' '5432|{data_directory}|{start_time}' ;;
+  *current_setting*)
+    case "$*" in
+      *pg_postmaster_start_time*) printf '%s\\n' '5432|{data_directory}|{start_time + 1}' ;;
+      *"/proc/self/status"*) {"exit 91" if runtime_identity_query_fails else f"printf '%s\\n' '5432|{data_directory}|{runtime_parent_pid}'"} ;;
+      *) exit 92 ;;
+    esac
+    ;;
   *'SHOW config_file'*) printf '%s\\n' {config_file} ;;
   *'SHOW hba_file'*) printf '%s\\n' {active_hba} ;;
   *pg_hba_file_rules*)
@@ -1378,6 +1365,40 @@ def _run_native_configuration_fixture(
         text=True,
         env=fixture["environment"],
     )
+
+
+@pytest.mark.parametrize(
+    ("runtime_parent_pid", "runtime_identity_query_fails", "expected_status"),
+    (
+        (str(os.getpid()), False, 0),
+        (str(os.getpid() + 1), False, int(ExitStatus.SAFETY)),
+        ("", False, int(ExitStatus.SAFETY)),
+        ("postgres", False, int(ExitStatus.SAFETY)),
+        (str(os.getpid()), True, int(ExitStatus.SAFETY)),
+    ),
+    ids=("matching-parent", "mismatched-parent", "missing-parent", "malformed-parent", "query-fails"),
+)
+def test_native_configuration_requires_the_postmaster_parent_pid_before_mutation(
+    tmp_path: Path,
+    *,
+    runtime_parent_pid: str,
+    runtime_identity_query_fails: bool,
+    expected_status: int,
+) -> None:
+    """A stale, absent, malformed, or unavailable backend parent identity must stop convergence."""
+
+    fixture = _native_configuration_fixture(
+        tmp_path,
+        initial_config="listen_addresses = '127.0.0.1'\n",
+        runtime_parent_pid=runtime_parent_pid,
+        runtime_identity_query_fails=runtime_identity_query_fails,
+    )
+
+    completed = _run_native_configuration_fixture(fixture)
+
+    assert completed.returncode == expected_status, completed.stderr
+    assert not fixture["restart_log"].exists()
+    assert not fixture["config_log"].exists()
 
 
 def test_native_configuration_derives_the_selected_ubuntu_hba_path_and_preserves_native_parent_metadata() -> None:

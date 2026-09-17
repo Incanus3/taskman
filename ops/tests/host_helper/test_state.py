@@ -669,6 +669,34 @@ def test_lifecycle_lock_serializes_writers_and_times_out(tmp_path: Path) -> None
                 pass
 
 
+def test_lifecycle_lock_creates_a_missing_install_root_at_controller_mode(tmp_path: Path) -> None:
+    """First-install locking must leave the root acceptable to controller convergence."""
+
+    paths = managed_paths(tmp_path)
+
+    with lifecycle_lock(paths, timeout_seconds=0.1):
+        pass
+
+    install_root = Path(paths.local(paths.install_root))
+    lock_path = Path(paths.local(paths.lifecycle_lock_path))
+    assert install_root.stat().st_mode & 0o777 == 0o755
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_lifecycle_lock_does_not_normalize_an_existing_safe_install_root(tmp_path: Path) -> None:
+    """Changing an existing root's permissions would adopt operator authority unexpectedly."""
+
+    paths = managed_paths(tmp_path)
+    install_root = Path(paths.local(paths.install_root))
+    install_root.mkdir(mode=0o750)
+    install_root.chmod(0o750)
+
+    with lifecycle_lock(paths, timeout_seconds=0.1):
+        pass
+
+    assert install_root.stat().st_mode & 0o777 == 0o750
+
+
 def test_observe_refuses_an_inventory_that_exceeds_the_safe_bound(tmp_path: Path) -> None:
     paths = managed_paths(tmp_path)
     release_root = Path(paths.local(paths.release_root))

@@ -230,16 +230,40 @@ def test_listener_owner_parser_accepts_ss_field_padding() -> None:
     }
 
 
+def test_listener_owner_parser_omits_shared_socket_owners_without_discarding_unique_owners() -> None:
+    """A shared SSH socket must not invalidate independent, owned Caddy listeners."""
+
+    listener_owners = (
+        'LISTEN 0 4096 *:22 0.0.0.0:* users:(("sshd",pid=1115,fd=3),("systemd",pid=1,fd=199))\n'
+        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+    )
+
+    assert _listener_owners(listener_owners) == {
+        Listener("*", 80): ("caddy", 402),
+        Listener("*", 443): ("caddy", 402),
+    }
+
+
 @pytest.mark.parametrize(
     "listener_owners",
     (
-        'LISTEN 0 4096 *:80 *:* users:(("caddy",pid=402,fd=6),("sidecar",pid=403,fd=7))\n',
+        'LISTEN 0 4096 *:80 *:* users:(("caddy",pid=402,fd=6),("sidecar",pid=403,fd=7)\n',
         'LISTEN 0 4096 *:80 *:* users:(("caddy",pid=402,fd=6)) unexpected\n',
     ),
 )
-def test_listener_owner_parser_rejects_ambiguous_or_nonwhitespace_suffix(
+def test_listener_owner_parser_rejects_malformed_owner_records(
     listener_owners: str,
 ) -> None:
+    assert _listener_owners(listener_owners) is None
+
+
+def test_listener_owner_parser_rejects_a_duplicate_after_an_omitted_shared_socket() -> None:
+    listener_owners = (
+        'LISTEN 0 4096 *:22 0.0.0.0:* users:(("sshd",pid=1115,fd=3),("systemd",pid=1,fd=199))\n'
+        'LISTEN 0 4096 *:22 0.0.0.0:* users:(("sshd",pid=1115,fd=3))\n'
+    )
+
     assert _listener_owners(listener_owners) is None
 
 
@@ -248,6 +272,8 @@ def test_listener_owner_parser_rejects_ambiguous_or_nonwhitespace_suffix(
     (
         'LISTEN 0 4096 *:80 0.0.0.0:* users:(("nginx",pid=901,fd=6))\n'
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("nginx",pid=901,fd=7))\n',
+        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6),("sidecar",pid=403,fd=7))\n'
+        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
         'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",fd=6))\n'
         'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
     ),
@@ -268,6 +294,28 @@ def test_resource_based_caddy_listener_refuses_foreign_or_ambiguous_owners(
         )
 
     assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_shared_ssh_socket_keeps_valid_caddy_admissible() -> None:
+    """An unrelated shared listener cannot erase Caddy's exact ownership proof."""
+
+    discovery = validate_provisionable_host(
+        ScriptedRemote.from_responses(
+            managed_caddy_responses(
+                listener_owners=(
+                    'LISTEN 0 4096 *:22 0.0.0.0:* users:(("sshd",pid=1115,fd=3),("systemd",pid=1,fd=199))\n'
+                    'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
+                    'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
+                )
+            )
+        ),
+        environment_config(),
+        resolver=direct_dns,
+        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+    )
+
+    assert discovery.state is ProvisioningState.PARTIAL
+    assert discovery.caddy_state.value == "active"
 
 
 @pytest.mark.parametrize(
@@ -967,6 +1015,7 @@ def test_taskman_listener_requires_the_exact_managed_beam_process() -> None:
     assert _provisioning_state(managed, environment_config()) is ProvisioningState.PARTIAL
     for foreign in (
         replace(managed, taskman_listener_owners=((listener, ("beam.smp", 813)),)),
+        replace(managed, taskman_listener_owners=()),
         replace(managed, taskman_service_executable="/usr/local/bin/foreign-beam.smp"),
         replace(managed, taskman_service_owner="root:root"),
     ):

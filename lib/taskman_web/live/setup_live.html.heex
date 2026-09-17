@@ -1,0 +1,49 @@
+<Layouts.app flash={@flash} current_scope={@current_scope} current_user={@current_user}>
+  <main
+    id="invitation-setup"
+    class="grid min-h-full place-items-center bg-slate-950 px-6 py-12 text-slate-100"
+  >
+    <section class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-2xl shadow-black/30">
+      <header class="space-y-2">
+        <p class="text-sm font-semibold uppercase tracking-[0.18em] text-indigo-300">Taskman</p>
+        <h1 class="text-3xl font-semibold tracking-tight">Set your password</h1>
+        <p class="text-sm leading-6 text-slate-400">
+          Choose a password to activate your account and sign in.
+        </p>
+      </header>
+
+      <.form
+        for={@setup_form}
+        id="setup-form"
+        action={~p"/auth/user/setup"}
+        method="post"
+        class="mt-8 space-y-3"
+      >
+        <.input field={@setup_form[:token]} type="hidden" />
+        <.input
+          field={@setup_form[:password]}
+          type="password"
+          label="Password"
+          autocomplete="new-password"
+          minlength="8"
+          required
+        />
+        <.input
+          field={@setup_form[:password_confirmation]}
+          type="password"
+          label="Confirm password"
+          autocomplete="new-password"
+          minlength="8"
+          required
+        />
+        <button
+          id="complete-setup"
+          type="submit"
+          class="w-full rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-400"
+        >
+          Activate account
+        </button>
+      </.form>
+    </section>
+  </main>
+</Layouts.app>

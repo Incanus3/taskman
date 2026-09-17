@@ -96,7 +96,7 @@ installation are offline CLI commands.
 - `.gitignore` — ignore the generated root `/taskman` escript.
 - `.github/workflows/elixir.yml` — provide Bash and Fish for completion parsing.
 - `README.md` — installed CLI entry point and help/onboarding discovery.
-- `docs/development.md` — later-slice API/CLI/help/completion/skill parity gate.
+- `docs/guides/development.md` — later-slice API/CLI/help/completion/skill parity gate.
 - `docs/planning/roadmap.md` — mark Slice 4 complete only after final acceptance.
 
 ## Delivery Graph
@@ -1426,7 +1426,7 @@ but commit -b api-cli-agent-skill -m "Bundle and safely install taskman CLI skil
 
 - Create: `test/taskman/cli/end_to_end_test.exs`
 - Modify: `README.md`
-- Modify: `docs/development.md`
+- Modify: `docs/guides/development.md`
 - Modify: `docs/planning/roadmap.md`
 - Modify: `docs/handoffs/api-cli-agent-skill.md`
 - Modify: `.beads/issues.jsonl` only through `br` commands

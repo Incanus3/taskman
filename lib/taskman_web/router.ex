@@ -36,6 +36,7 @@ defmodule TaskmanWeb.Router do
     post "/account/settings/delete", AuthController, :delete_account
     post "/auth/user/password/reset", AuthController, :reset_password
     post "/auth/user/password/reset_request", AuthController, :request_password_reset
+    post "/auth/user/setup", AuthController, :complete_setup
 
     auth_routes AuthController, Taskman.Accounts.User
 
@@ -47,6 +48,7 @@ defmodule TaskmanWeb.Router do
       path: "/setup",
       auth_routes_prefix: "/auth",
       as: :setup,
+      live_view: TaskmanWeb.SetupLive,
       overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
 
     confirm_route Taskman.Accounts.User, :email_change,

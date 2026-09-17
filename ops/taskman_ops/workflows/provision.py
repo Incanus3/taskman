@@ -59,6 +59,9 @@ _ACCEPTANCE_STEPS: AcceptanceSteps = (
     "copy a verified local backup off-host",
 )
 _MAX_CLEAN_INPUT_RERESOLUTIONS = 3
+_VOLATILE_CAPACITY_FACTS = frozenset(
+    {"available_disk_bytes", "backup_available_disk_bytes"}
+)
 
 
 class ProvisionDiscovery(Protocol):
@@ -303,12 +306,13 @@ def provision(
                 refreshed_starting_state, refreshed_input, invocation
             )
             if (
-                refreshed_discovery != discovery
+                _confirmation_discovery(refreshed_discovery) != _confirmation_discovery(discovery)
                 or refreshed_input != release_input
                 or refreshed_authority != authority
                 or refreshed_downgrade_required != downgrade_required
                 or refreshed_downgrade_evidence != downgrade_evidence
-                or refreshed_plan_effects != plan_effects
+                or _confirmation_plan_effects(refreshed_plan_effects)
+                != _confirmation_plan_effects(plan_effects)
             ):
                 raise OpsError(
                     ExitStatus.SAFETY,
@@ -776,6 +780,42 @@ def _required_resource_authority(value: object) -> dict[str, object]:
             next_action="inspect the supported host resources before retrying",
         )
     return authority
+
+
+def _confirmation_discovery(value: object) -> tuple[type[object], dict[str, object]]:
+    """Keep discovery type and all admitted authority except free-space counters."""
+
+    return type(value), _confirmation_resource_authority(value)
+
+
+def _confirmation_plan_effects(value: Mapping[str, object]) -> dict[str, object]:
+    """Use the same narrow capacity projection inside confirmed plan effects."""
+
+    projected = _copy_authority(value)
+    convergence = projected.get("resource_convergence")
+    if not isinstance(convergence, Mapping):
+        return projected
+    host = convergence.get("host")
+    if not isinstance(host, Mapping):
+        return projected
+    projected["resource_convergence"] = {
+        **convergence,
+        "host": _confirmation_resource_authority(host),
+    }
+    return projected
+
+
+def _confirmation_resource_authority(value: object) -> dict[str, object]:
+    """Remove only complete free-space measurements from confirmation equality."""
+
+    projected = _required_resource_authority(value)
+    facts = projected.get("facts")
+    if not isinstance(facts, Mapping) or not _VOLATILE_CAPACITY_FACTS.issubset(facts):
+        return projected
+    return {
+        **projected,
+        "facts": {key: item for key, item in facts.items() if key not in _VOLATILE_CAPACITY_FACTS},
+    }
 
 
 def _copy_authority(value: Mapping[str, object]) -> dict[str, object]:

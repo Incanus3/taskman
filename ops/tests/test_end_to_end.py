@@ -149,7 +149,7 @@ class _ControllerRemote:
             return CommandResult(0)
         if (
             isinstance(args, tuple)
-            and len(args) == 10
+            and len(args) == 11
             and args[:4] == ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3")
             and args[5] == "provision-pgpass-authority"
             and isinstance(stdin, bytes)
@@ -621,7 +621,11 @@ deploy_module.run_command = command
 services.run_command = command
 deploy_module.host_preflight = lambda *_args: None
 deploy_module.validate_credentials = lambda *_args: None
-discover_module.validate_credentials = lambda *_args: None
+def validate_discovery_credentials(_path):
+    if not read_state().get("pgpass_present", True):
+        raise FileNotFoundError("isolated host pgpass is absent")
+
+discover_module.validate_credentials = validate_discovery_credentials
 deploy_module._taskman_gid = os.getegid
 state_module._service_state = lambda include_runtime: "running" if include_runtime and read_state()["service_running"] else "stopped"
 deploy_module.verify = verify
@@ -813,8 +817,17 @@ def preflight_credentials(_path):
     value["events"].append("restore-preflight-credentials")
     write_state(value)
 
-def preflight_command(argv, **_kwargs):
-    query = argv[-1]
+def preflight_command(argv, *, stdin=None, **_kwargs):
+    if "--file=-" in argv:
+        assert "--command" not in argv
+        assert "--set=ON_ERROR_STOP=1" in argv
+        assert type(stdin) is bytes
+        query = stdin.decode("utf-8")
+        assert query.endswith("\n")
+        query = query.removesuffix("\n")
+    else:
+        assert stdin is None
+        query = argv[-1]
     value = read_state()
     if "rolcanlogin" in query:
         value["events"].append("restore-preflight-role-login")
@@ -1017,6 +1030,7 @@ def _install_public_controller(
     *,
     verification: str = "failing",
     database_state: str = "ready",
+    pgpass_present: bool = True,
     migrations: tuple[int, ...] = (),
     migration_result: tuple[int, ...] | None = None,
     scheduler_resources: dict[str, bool] | None = None,
@@ -1040,6 +1054,7 @@ def _install_public_controller(
             (20260905120000,) if migration_result is None else migration_result
         ),
         "database_state": database_state,
+        "pgpass_present": pgpass_present,
         "scheduler_sha256": scheduler.sha256,
         "scheduler_resources": scheduler_resources or {
             "helper": True,
@@ -2029,6 +2044,7 @@ def _converge_native_provision_writers(runtime_path: Path):
             runtime["backup_timer_enabled"] = True
             runtime["backup_timer_state"] = "inactive"
         runtime["database_state"] = "ready"
+        runtime["pgpass_present"] = True
         if "post_pyinfra_migrations" in runtime:
             runtime["migrations"] = runtime["post_pyinfra_migrations"]
         runtime["native_provision_writes"] = runtime.get("native_provision_writes", 0) + 1
@@ -2721,6 +2737,7 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
         tmp_path, integration_packages,
         verification="passing",
         database_state="absent",
+        pgpass_present=False,
         migration_result=(20260905120000,),
         scheduler_resources={
             "helper": False,
@@ -2772,6 +2789,15 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
         "converge_provisioning",
         _converge_native_provision_writers(runtime_path),
     )
+
+    dry_run = provision(Invocation(
+        command="provision", environment="production", yes=True, dry_run=True, artifact=archive,
+    ))
+    before = json.loads(runtime_path.read_text())
+    assert dry_run.exit_status is ExitStatus.OK, dry_run.facts
+    assert before.get("native_provision_writes", 0) == 0
+    assert before["database_state"] == "absent"
+    assert before["pgpass_present"] is False
 
     result = provision(Invocation(
         command="provision", environment="production", yes=True, artifact=archive

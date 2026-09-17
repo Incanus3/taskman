@@ -134,20 +134,25 @@ def converge_provisioning(remote: PyinfraRemote, inputs: ProvisioningInputs) -> 
     return ChangeSet(changed=bool(operations), operations=operations)
 
 
-def validate_existing_credential_authority(remote: object, inputs: ProvisioningInputs) -> None:
+def validate_existing_credential_authority(
+    remote: object, inputs: ProvisioningInputs, *, database_state: str,
+) -> None:
     """Refuse conflicting existing secret authority before pyinfra can write.
 
     An absent file is a supported partial-installation boundary.  Once either
     protected file exists it is authority: it must be a root-owned, non-link
     regular file with exact bytes matching the just-decrypted input.  The
     database password file additionally proves that those retained bytes can
-    authenticate to the configured role and database.  ``cmp`` consumes the
+    authenticate to the configured role and database when both exist. Verified
+    absent identities omit only that impossible authentication. ``cmp`` consumes the
     protected stdin directly, so this read-only check never creates a staging
     file or exposes secret values in argv, output, or logs.
     """
 
     if not isinstance(inputs, ProvisioningInputs):
         raise TypeError("credential authority requires provisioning inputs")
+    if type(database_state) is not str or database_state not in {"ready", "absent"}:
+        raise ValueError("credential authority requires validated database presence")
     runner = getattr(remote, "run", None)
     if not callable(runner):
         raise TypeError("credential authority requires a remote command runner")
@@ -172,6 +177,7 @@ def validate_existing_credential_authority(remote: object, inputs: ProvisioningI
             remote, package, correlation_id=new_correlation_id(),
             host=config.database_host, port=config.database_port,
             role=config.database_role, database=config.database_name, pgpass=inputs.pgpass,
+            database_state=database_state,
         )
     if receipt.exit_status != 0:
         raise OpsError(
@@ -188,7 +194,9 @@ def validate_existing_authority(remote: object, inputs: ProvisioningInputs) -> M
     """Keep resource and secret validation as one pre-mutation capability."""
 
     authority = validate_preconvergence_authority(remote, inputs)
-    credential_receipt = validate_existing_credential_authority(remote, inputs)
+    credential_receipt = validate_existing_credential_authority(
+        remote, inputs, database_state=authority["database_state"],
+    )
     return ProvisionAuthority(
         {**authority, "scheduler_create": _scheduler_create_authority(authority)},
         (*getattr(authority, "warnings", ()), *getattr(credential_receipt, "warnings", ())),

@@ -1,23 +1,23 @@
-# Dedicated-host deployment design
+# Dedicated-host deployment architecture
 
-Status: consolidated accepted design. Updated: 2026-09-15.
+Status: accepted, implemented design. Updated: 2026-09-18.
 
 This is the canonical design for Taskman's repository-owned deployment controller. It describes
 the implemented architecture and accepted constraints, not an implementation sequence. The
-[deployment runbook](../deployment.md) owns operator commands, configuration setup, manual recovery,
-and external acceptance. The [development guide](../development.md#operations-verification) owns
+[deployment runbook](../guides/deployment.md) owns operator commands, configuration setup, manual recovery,
+and external acceptance. The [development guide](../guides/development.md#operations-verification) owns
 the runnable local verification recipe. Neither this design nor passing local checks authorizes
 deployment, publication, or changes to an external host.
 
-The [desired-target reconciliation design](2026-09-09-deploy-reconciliation-design.md) owns exact
-recovery schemas, admission rules, bounds and acceptance criteria. This design incorporates its
-implemented architecture; the [implementation plan](../plans/2026-09-14-deploy-reconciliation.md)
-and Beads retain delivery evidence. Local verification does not establish real-VPS acceptance.
+The [operations contracts](2026-09-18-operations-contracts.md) own exact artifact/record/protocol shapes,
+admission, confirmation, migration/restore/cleanup recovery, bounds and failure evidence.
+The
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified
+local/build/native results and accepted limits.
 
-The operator's 2026-09-14 [one-time compatibility decision](2026-09-09-deploy-reconciliation-design.md#one-time-compatibility-boundary)
-removes old-format/runtime compatibility for the historical staging installation. It requires
-separately authorized recreation and fresh provisioning, without conversion or repair by this
-controller. Future supported upgrades retain compatibility and recovery guarantees.
+The [one-time compatibility boundary](2026-09-18-operations-contracts.md#one-time-compatibility-boundary)
+excludes unsupported staging formats/runtime; future supported upgrades retain compatibility and
+recovery obligations.
 
 ## Purpose and supported scope
 
@@ -160,7 +160,9 @@ failed. Report fixed reasons and bounded observed facts instead.
 Root, the trusted SSH administrator, and the service account with access to the release cookie
 are trusted application operators. `nologin` is not a sandbox after account compromise.
 Installed release directories, executables, data, and the completed manifest remain root-owned
-with the `taskman` group: directories and executables use `0750`, other regular files `0640`.
+with the `taskman` group: directories and executables use `0750`, ordinary regular files `0640`.
+The completed `.taskman-release.json` record is `0600`; it is privileged deployment authority,
+not service-account-readable runtime data.
 This permits service-account read/execute access without group writes or world access. Resolve
 the service group explicitly during staging; do not retain archive/extractor group ownership.
 Existing immutable releases are not silently rewritten to repair historical metadata mistakes.
@@ -204,47 +206,20 @@ primary result or turning completed work into failure. The warning does not auth
 recursive deletion. Read-only commands and dry runs do not change managed application state;
 temporary helper transfer and execution infrastructure are still required.
 
-Protocol version `3` has these exact envelope fields:
+Protocol version 3 has a finite request-correlated operation vocabulary. The shared standard-library
+codec owns strict envelope/state/report schemas, 1-MiB messages, schema-specific collection limits
+and fixed operation/correlation validation. Controllers consume validated evidence without
+reconstructing host policy or a second report model. Outcomes are succeeded/refused/retryable/manual;
+mutation classification distinguishes unchanged/changed/unknown and unavailable final facts from
+proved absence. [Operations contracts](2026-09-18-operations-contracts.md#reconciliation-procedure-and-transport)
+define exact schemas, budgets, inventories and failure handling.
 
-| Envelope | Fields |
-| --- | --- |
-| `HostRequest` | `protocol_version`, `operation`, `correlation_id`, `expected_state`, `paths`, `parameters` |
-| `HostResult` | `protocol_version`, `operation`, `correlation_id`, `outcome`, `message`, `state`, `warnings` |
-
-The finite helper vocabulary is `discover`, `list_releases`, `list_backups`, `verify`, `genesis`,
-`deploy`, `backup`, `rollback`, `restore`, `restore_preflight`, `provision_authority`, and `cleanup`. `correlation_id` is ephemeral transport
-identity, not a durable operation, release, backup, or database identity. `paths` contains exactly
-the two roots. Operation handlers own their expected-state and parameter semantics.
-
-Requests and results are at most 1 MiB each, ordinary collections at most 64 items, and nesting
-depth at most 8. Exact migration fields permit 256 fingerprints or 512 observed versions. Artifact
-manifests are bounded to 128 KiB, installed release records to 256 KiB, and other records to 64 KiB. Strings, paths, and identifiers also have explicit byte bounds. The shared codec rejects
-wrong types, unsupported versions/operations, duplicate JSON keys, invalid UTF-8/JSON, oversized or
-trailing output, and non-finite values. Request/result operation and correlation must match.
-Operation-specific validators check required final facts without reconstructing host policy.
-
-Provisioning credential proof is the one private exit-only package entry. It consumes bounded raw
-pgpass stdin, never JSON/argv secret content, and authenticates without creating a credential file.
-It shares verified package staging and exact cleanup with ordinary helper requests. Its finite
-arguments, fixed path, restricted native execution and statuses are specified in
-[packaged admission boundaries](2026-09-09-deploy-reconciliation-design.md#packaged-admission-boundaries).
-This does not introduce a generic command transport or a public workstation command.
-
-The four outcomes are:
-
-- `succeeded`: the requested outcome is verified;
-- `refused`: the request or observed authority is unsafe;
-- `retryable`: a recognizable state can be addressed by rerunning the command; and
-- `manual`: authoritative state is contradictory or needs external information/action.
-
-The wire envelope remains separate from operation evidence. `HostResult.for_request` copies request
-identity while callers explicitly choose outcome, message, state, and warnings. Workflow utilities
-share frozen-value conversion and first-occurrence warning deduplication; callers retain schema
-validation and error translation.
-
-The shared protocol validator owns verification-report schema and check-order/success/failure
-rules. Controller workflows consume its validated report mapping directly and retain their
-operation-specific outcome and expected-release checks, without a second typed report model.
+Provisioning credential authority is the one private exit-only package entry. It consumes bounded
+raw pgpass stdin, never JSON/argv secrets. Ready identities require authentication; genuinely absent
+role/database permits exact record/file validation while deferring only impossible authentication
+until convergence. It creates no credential file. Verified staging/cleanup is shared with ordinary
+requests; [packaged admission](2026-09-18-operations-contracts.md#packaged-admission-boundaries) defines the
+finite argument/status boundary. It is not a generic command transport or public CLI command.
 
 ## Completed state and replayable recovery
 
@@ -254,44 +229,41 @@ planning uses credential-safe live observation, not only release-manifest assump
 state stays unknown. Non-authoritative storage is preserved with bounded warnings; authoritative
 contradictions prevent unsafe mutation.
 
-All host mutations, including scheduled backup/retention, use the exclusive lock at
+Helper lifecycle mutations, including scheduled backup/retention, use the exclusive lock at
 `install_root/lifecycle.lock`. Read-only discovery takes that same lock briefly for a coherent
-snapshot. Acquisition is bounded; the lock contains no durable operation identity. Its existence
-does not mean it is held and is not a reason to delete it.
+snapshot against cooperating locked writers; it does not exclude unlocked provisioning writes.
+Acquisition is bounded; the lock contains no durable operation identity. Its existence
+does not mean it is held and is not a reason to delete it. Controller-driven provisioning
+convergence (pyinfra, database/pgpass and runtime installation) currently runs outside this lock;
+its fresh authority checks do not serialize those writes.
+[Admission and provisioning recovery](2026-09-18-provisioning-lock-coverage-proposal.md) is the
+reviewed follow-up design; full design/plan approval and implementation remain pending in the
+[dedicated post-merge workstream](../handoffs/operations-lock-coverage.md). It does not block the
+current operations merge and is not current behavior.
 
-The host persists immutable installation/success facts and narrowly scoped recovery authority:
+The host persists immutable release/backup/success records and narrow migration-backup protection
+and restore-target authority. Installed provenance precedes migration consequences; successful
+history is published only after complete verification. Recovery authority protects exact inputs,
+references and OIDs, without a phase journal, interrupted process identity or generated commands.
+[Operations contracts](2026-09-18-operations-contracts.md#backup-protection-and-successful-history) define those
+records and their ordering. Full history/reference validation stays on the host; bounded projections
+and digest-bound pages keep controller transport finite without truncating protection.
 
-| Record | Authority | Location |
-| --- | --- | --- |
-| `ReleaseRecord` v2 | Exact release/source/archive/migrations plus complete artifact manifest v3 | `releases/<release-id>/.taskman-release.json` |
-| `BackupRecord` | Exact dump digest/source/migrations/size and creation time | `<backup_root>/<backup-id>.json` beside its dump |
-| `SelectionRecord` v2 | Verified release, successful predecessor, observed physical predecessor and exact recovery backup IDs | `deployments/selections/selection-<digest>.json` |
-| Backup protection | Exact unresolved safety backup, source/target/base and attempt authority | `deployments/backup-protections/` with retirement authority retained during removal |
-| Restore target | Input/source, original and restored OIDs, creation/replacement intent and safety attempts | The fixed restore-target binding under deployments |
+Helper lifecycle sections lock, observe, validate confirmed material facts, handle only recognizable
+safe partial state, perform ordered consequences, verify and publish completed authority. Scheduler
+refresh releases lifecycle while waiting; whole manual commands are not exclusively admitted.
+Provisioning convergence and interactive administrator creation are unguarded by that lock, and
+different installation-root configurations do not share a host-wide lock. Status 12 reports failure
+to acquire a lifecycle section, not guaranteed rejection of every overlapping command.
 
-Creation/selection timestamps are canonical whole-second UTC. Fingerprints contain exact filenames
-and SHA-256; observed versions are sorted unique non-negative integers. Installed records are
-published with immutable content, before migrations can need their provenance. Success records are
-published only after verification. Recovery records contain only authority needed to protect data,
-not stages, a workflow journal, process identity or generated recovery commands.
-
-Complete successful history is validated without truncating reference protection. Its controller
-projection contains only required latest/predecessor facts, while host summaries retain every
-referenced release and backup. Listings and cleanup page by stable full-inventory digests and
-count/byte budgets; all pages are collected before success output or destructive confirmation.
-Absent metadata and failed observation remain distinct. Unsupported old formats refuse without
-conversion, implicit provenance or historical-runtime fallback.
-
-Each mutating procedure locks, observes, validates confirmation-relevant facts, normalizes only
-recognizable safe temporary state, repeats or skips safe work, performs consequences in order,
-verifies the final outcome, and publishes completed facts. Deterministic staging, dump, and
-temporary-database names make modeled interruptions recognizable without preserving an interrupted
-process identity.
-
-Confirmation binds the material action: selected release, target, backup, or exact deletion set.
-Changed authority causes refusal/replanning; irrelevant drift does not require an exhaustive
-snapshot match. Recovery means an operator reruns and reconfirms where needed. It does not mean
-background recovery, seamless process resumption, arbitrary corruption repair, or automatic rollback.
+Provisioning has no persistent reservation or guaranteed backup suspension after interruption; its
+normal timer creation/refresh can activate backups before the command finishes. Remote SSH work or
+service-manager migration/admin jobs may continue after caller loss. A free lock or vanished caller
+is not proof that such work stopped; manual inspection/quiescence is required before uncertain
+retry. The proposed admission/recovery design supplies additional safeguards only when implemented.
+Rerun and renewed confirmation supply recovery. No background recovery, seamless process resumption, automatic
+rollback or arbitrary-corruption repair is promised. Temporary names identify safe modeled
+interruptions; contradictory authority refuses without guessing.
 
 ## Build and artifact identity
 
@@ -313,39 +285,22 @@ is checked against its recorded SHA-512. The Containerfile and artifact schema o
 toolchain constraints. External package indexes mean
 this is not a claim of bit-for-bit reproducible release archives.
 
-The historical OTP 27 / Elixir 1.18 tuple is no longer accepted by the new baseline. Its prior
-upgrade instructions are superseded by separately authorized staging recreation. OTP 29 also
+The historical OTP 27 / Elixir 1.18 tuple is outside the supported baseline. OTP 29 also
 supports the administrator prompt's reversible raw/cooked terminal API, introduced in OTP 28.
 The separate [Alpine CI decision](2026-08-10-alpine-elixir-ci-design.md) remains independent.
 
-Release identity is
-`<application-version>-<12-hex-source-sha>-ubuntu26.04-amd64-otp<otp-version>-<full-archive-sha256>`
-with a terminal `-dirty` marker for dirty provenance. Manifest v3 records the full source revision,
-source class, archive digest, build time, target/toolchain/builder, fingerprints and layout. The
-manifest, ID, detached checksum and actual bytes must agree. Different builds of one revision may
-have different identities; no bit-for-bit reproducibility is claimed. Same exact identity may
-retain its originally installed build-time provenance, but no immutable content is overwritten.
+Release identity includes application version, source revision, supported target/runtime and full
+archive SHA256, with terminal dirty provenance. Manifest/ID/detached checksum/actual bytes must agree;
+immutable installed content is never overwritten. Archive validation rejects unsafe members/links/
+layout before extraction. [Artifact contracts](2026-09-18-operations-contracts.md#target-resolution-and-immutable-identity)
+own exact fields, safe export and input/byte limits.
 
-Archive verification precedes extraction and rejects traversal, absolute paths, device nodes,
-escaping links, and unexpected release layout. Installation verifies remote bytes and only promotes
-complete validated content into the immutable release root. Safe matching staged/installed content
-may be reused; contradictory final content is not repaired in place.
-
-Explicit `--artifact` is authoritative after validation of adjacent manifest and checksum. Dirty
-explicit artifacts imply dirty allowance; pairing `--allow-dirty` with a clean explicit artifact is
-invalid. Without explicit bytes or dirty allowance, deploy/provision capture exact clean inputs
-before observation and prefer matching physical installed, last-successful installed, another
-installed, verified cache, then a new build. Complete validated installed provenance permits reuse
-without reconstructing an archive or requiring a surviving local artifact.
-
-Dirty automatic resolution freezes tracked and nonignored untracked files, honoring deletions and
-excluding ignored files, repository metadata and controller state. Unsafe member types and changes
-during capture refuse. It builds before exact identity is known; matching a base revision cannot
-substitute for dirty bytes. Before confirmation, clean-source drift discards an automatic target
-and repeats clean input identification, host discovery, resolution, planning, and confirmation,
-including under `--yes`; a bounded unstable source refusal prevents an unending retry. After
-confirmation, source or material host drift refuses a new invocation rather than silently adopting
-a different target. A frozen dirty target does not follow later worktree edits.
+Explicit validated artifacts select exact bytes. Automatic clean resolution identifies source inputs
+before observation and prefers matching physical/latest-successful/other installed provenance,
+verified cache, then build. Dirty allowance freezes a private stable source snapshot and requires
+building before exact identity is known. Clean-source drift before confirmation repeats the bounded
+material-plan cycle; source/material drift afterward refuses a new invocation. Frozen dirty bytes do
+not follow later edits. Local source development remains supported independently of host releases.
 
 ## Provisioning and admission
 
@@ -383,18 +338,17 @@ logged command path. PostgreSQL retains one-cluster authority, least-privilege r
 ownership, loopback binding, SCRAM, and connection verification. Read/mutation predicates are shared
 where they represent one policy, not reimplemented as separate evidence frameworks.
 
-The operator selected native-path HBA validation on 2026-09-09 after VPS testing established
-that PostgreSQL's `hba_file` setting is startup-only. Keep the selected Ubuntu cluster's
+PostgreSQL's `hba_file` setting is startup-only. Keep the selected Ubuntu cluster's
 `/etc/postgresql/<version>/<cluster>/pg_hba.conf` path rather than relocate it. Install the
 candidate atomically with a recoverable copy of the previous file and its metadata, query
 `pg_hba_file_rules` before reload/restart, and restore the previous file on validation failure.
 Validate the exact selected-cluster path and live endpoint; an unavailable or contradictory
 live parser must not authorize an authentication-file replacement. Preserve the native cluster
-directory metadata rather than applying the former dedicated-HBA-directory ownership policy.
+directory metadata.
 
-This supersedes the stronger interpretation that parser validation must precede all live-path
-disk changes. The operator accepts the brief crash/power-loss window between candidate
-installation and validation/restoration. A separate temporary PostgreSQL validation instance
+Parser validation follows candidate installation and precedes reload/restart. The brief
+crash/power-loss window between installation and validation/restoration is accepted.
+A separate temporary PostgreSQL validation instance
 was rejected for now because of its lifecycle and cleanup complexity. A later requirement to
 eliminate that window needs a new decision. PostgreSQL documents the
 [startup-only file setting](https://www.postgresql.org/docs/18/runtime-config-file-locations.html)
@@ -407,18 +361,17 @@ checked inside the locked `provision_authority` helper. Supplied credential proo
 read-only sensitive channel. Resource inspection and confirmed convergence do not adopt arbitrary
 resources.
 
-Before the first durable successful selection, provision can retry or replace the desired target;
-installed provenance must cover live migrations, including recognized partial prefixes. After that
-selection exists, deploy owns replacement. Exact first-install replay remains restricted to the
-completed first-install case. A lost response after success does not move this boundary backward.
-Compatible partial host resources remain for rerun rather than being undone.
+Before first durable success, provision can retry/replace a target using validated installed migration
+provenance and recognizable partial resources. After first success, deploy owns release replacement.
+Missing role plus missing database permits fresh creation; incompatible/partial identities refuse.
+Convergence preserves existing credentials/data and proves final application authentication.
+[Provisioning/recovery contracts](2026-09-18-operations-contracts.md#recovering-an-unfinished-first-installation)
+define replay, schema, credential and command-specific admission boundaries.
 
-Admission is command-specific. Backup/deploy/rollback require operational runtime/database/capacity
-checks. Restore first inspects maintenance/credential-file/role authority without canonical access
-or capacity, then requests typed capacity evidence only for actions that need it. Cleanup observes
-filesystem/record authority without DB, service, scheduler or capacity checks. Helper consequences
-freshly revalidate mutable authority under the lifecycle lock. Read-only observation failures never
-become empty schema or missing metadata.
+Operational commands validate runtime/database/capacity; restore first inspects maintenance/credential/
+role authority without assuming canonical availability, then obtains required capacity facts.
+Cleanup uses filesystem/record authority without database health or backup-capacity dependencies.
+Fresh locked helper checks own consequential authority; failed observation never means absence/empty.
 
 ## Public commands and consequences
 
@@ -441,103 +394,46 @@ it does not acknowledge downgrade, authorize restore/cleanup, or turn JSON into 
 | `cleanup ENV` | Delete exact eligible managed artifacts; typed environment/identifier-list confirmation |
 | `create-admin ENV` | Run the constrained interactive administrator command through a real terminal |
 
-### Deploy
+### Release and database consequences
 
-Deploy plans against physical selection, successful history, complete installed provenance,
-protected recovery state and live migrations. Pending migrations require a declared
-`backward-compatible` or `restore-required` policy before confirmation, including dry-run. Targets
-must cover every live applied version with consistent fingerprints. The declaration is a human
-compatibility decision, not migration-syntax inference or permission to remove applied versions.
+Deploy refreshes compatible scheduled code under the lifecycle lock, stages/reuses immutable content,
+takes protected safety before new migrations, stops Taskman, applies remaining forward versions,
+selects/starts/verifies and publishes success. Caddy remains running. A verified matching target
+avoids unnecessary restart. Live migration fingerprints and compatible-prefix provenance, rather
+than version ordering alone, determine safe work. Retry/replacement never manufactures success for
+failed candidates; manual installation adoption and automatic rollback remain unsupported.
 
-A failed verification can leave physical selection ahead of history. Recognized state supports a
-retry or another compatible desired target; the failed target need not be healthy and the original
-local artifact need not survive. Contradictory authority and unsupported partial schema refuse.
-Partial-prefix provenance can support safety backup creation without claiming automatic restore.
+Rollback selects the immediately preceding successful installed release only when live schema
+matches exactly, after fresh safety and typed confirmation. Restore validates exact backup/source/
+schema, safety references and original/restored OIDs, loads/validates temporary content, swaps,
+selects/verifies and records success before retired cleanup. Canonical observations remain application-
+authenticated; derived observations/load use peer administrator with application execution role.
+Trusted managed backups retain the accepted RESET ROLE privilege boundary, not a hostile-dump sandbox.
+Same-input retry, explicit replacement/reapply and completed cleanup preserve original data and later
+writes according to [restore contracts](2026-09-18-operations-contracts.md#explicit-restore-after-failed-deployment-or-provisioning).
 
-The helper refreshes compatible scheduled code under the lock, stages/reuses immutable content,
-creates required protected safety copies before new migration attempts, stops Taskman, applies
-remaining forward migrations, selects, starts, verifies and publishes success. Caddy stays running.
-An already satisfied verified target avoids unnecessary mutation. Required backup attempts retain
-original/newest/recent safety and exact independent references through interrupted retries and
-replacement. Pruning is bound to exact confirmed IDs; automatic rollback remains excluded.
+Manual, scheduled and release/recovery safety backups use one capability: private credential/path/
+live-prefix authority, capacity, native custom pg_dump/pg_restore-list, checksum and immutable pair
+publication. Completed metadata/reference authority, not timestamp or schema similarity, protects
+recovery points. Temporary normalization/deletion is only for proven-safe exact managed targets.
+Local backups do not survive VPS loss; offhost storage is arranged independently.
 
-Manual installation adoption is unsupported. Deploy requires completed Taskman authority;
-`--adopt-manual-current` remains a parser-level safety refusal, not a migration path. An existing
-manual installation needs a separately reviewed procedure.
+Provision installs root-owned 0750 `/usr/local/lib/taskman/taskman-backup.pyz`. Its persistent
+standard-library allowlist contains only scheduled adapter/backup dependencies, excluding deploy,
+restore, SSH, SOPS and interactive code. Each systemd `Type=oneshot` process is short-lived. Timer uses validated calendar and
+`Persistent=true`. Fixed
+nonsecret environment carries roots/database connection/retention; credentials use protected pgpass,
+not argv/environment. Hardened writes are limited to backup root and exact lifecycle lock. Adapter
+statuses are 0 completed, 2 invalid config, 6 retryable backup, 10 unsafe/manual, 12 lock unavailable.
+[Scheduler coordination](2026-09-18-operations-contracts.md#scheduled-helper-compatibility) preserves quiescence,
+checksum/enablement authority and interrupted refresh behavior without a second intent record.
 
-### Listings, rollback, and restore
-
-Listings return validated `ReleaseRecord` or `BackupRecord` fields, not reconstructed activation
-graphs or directory-name guesses. Empty valid inventories succeed. Unknown storage is preserved;
-contradictory metadata refuses. Backup listings do not validate every dump body. Malformed rollback
-or restore identifiers return status `2` before environment loading or SSH, without echoing input.
-
-Rollback requires an installed immutable target, the immediately preceding completed selection,
-and target migration versions exactly matching the live database. It does not traverse arbitrary
-historical compatibility declarations or reverse migrations. After a fresh safety backup it stops,
-selects atomically, starts, verifies, and records success. Recognizable interrupted selection/start
-work can complete on rerun; missing, non-adjacent, or incompatible authority refuses.
-
-Restore validates the exact input/source/schema and every independently required safety copy.
-Its durable binding tracks original/restored OIDs, creation intent, replacement and bounded safety
-attempts across canonical/temporary/retired names. Permission to inspect an absent canonical name
-is not permission to rename or delete an unproved database. Apply revalidates content/custom format,
-capacity and identity under the lock, creates fresh required safety, loads and validates a new
-temporary database, swaps, selects/verifies and publishes success before retired cleanup.
-
-Same-backup retry converges recognized arrangements. A durably completed restore finishes remaining
-cleanup without reloading or requiring new readiness, preserving later writes. `--reapply` explicitly
-starts a fresh restore of a completed input after cleanup. `--replace-unfinished` permits a different
-input while preserving the original database and required fresh safety; it may discard only the
-exact registered failed-restored OID. Required safety must validate even if abandoned input content
-is unusable. Metadata/source/path authority remains required, and damaged unreferenced remnants
-remain preserved.
-
-A third target chosen during pending replacement first confirms normalization only, then rediscovery
-and a second confirmation bind the new target. Cancellation reports changes already made. Exact
-creation/normalization ambiguity, unregistered loaded databases and contradictory references refuse
-without a guessed repair. The reconciliation specification owns the complete arrangement table.
-
-### Backups, scheduled execution, and cleanup
-
-Manual backup, deploy, rollback, restore, and scheduled backup share one backup capability. It
-validates credential/path authority and selected-release/live-migration provenance, checks capacity,
-uses private `PGPASSFILE` with custom-format `pg_dump`, validates with `pg_restore --list`, hashes
-the dump, publishes without replacing an existing final dump, and creates its completed manifest.
-Normalization removes/repeats only proven safe deterministic temporary output. Referenced,
-unknown, malformed, or contradictory orphans are not guessed into cleanup eligibility.
-
-Provisioning installs `/usr/local/lib/taskman/taskman-backup.pyz` as root-owned mode `0750`. The
-executable persists; each systemd `Type=oneshot` process is short-lived. Its allowlist contains only
-the scheduled adapter and required standard-library backup/state/lock/record capabilities, not
-deployment, restore, SSH, SOPS, or interactive code. Installation is atomic and checksum-verified.
-
-The timer has validated calendar syntax and `Persistent=true`. Its fixed non-secret environment
-contains only installation/backup roots, database host/port/role/name, and retention. Credentials
-come from `/etc/taskman/pgpass`, not argv or environment values. Hardening grants write access only
-to the backup root and exact lifecycle lock. The adapter emits fixed journal messages and statuses:
-`0` completed, `2` invalid installed configuration, `6` retryable backup failure, `10` manual/unsafe
-state, and `12` lock unavailable.
-
-Retention preserves backups referenced by complete successful history, active/retiring migration
-protections and restore bindings, then the configured ordinary unprotected count. Recovery attempt
-retention keeps original, newest and three recent eligible intermediates; independent references
-preserve material outside those slots. Fresh safety publication precedes exact confirmed pruning.
-Clock ordering does not weaken reference protection. Backup provenance follows a validated
-installed source covering the observed live prefix, not an assumed healthy current release.
-
-Cleanup uses filesystem-only locked admission during low-space and unfinished recovery. It protects
-all full-history release references, backup sources and unresolved recovery references. It preserves
-all releases when live migration irrelevance cannot be proved during an unfinished transition.
-Inspect/dry-run do not normalize partial files; safe recognized temporaries appear as explicit
-targets. Unknown/damaged storage and recovery authority records remain outside deletion authority.
-
-Cleanup collects all count/byte-bounded pages before typed confirmation and executes only confirmed
-subsets in bounded batches with fresh references/path/type/ownership/checksum/inode validation.
-Manifest deletion precedes dump deletion; safe canonical absence is idempotent. Proved deletions
-remain changed after later uncertainty, while unavailable final observations stay unavailable.
-Reinspection/reconfirmation is required after partial failure. Cleanup cannot drop/rename databases,
-resolve bindings/protections, or refresh scheduler code. Local backups do not survive VPS loss.
+Cleanup preserves all history/recovery/provenance references and unknown/damaged authority; it
+collects all bounded pages before typed confirmation, then deletes only confirmed eligible subsets
+with fresh path/type/ownership/checksum/inode checks. Partial/lost-result evidence remains truthful.
+It cannot alter databases, resolve recovery authority or refresh scheduler. Exact retention,
+manifest-before-dump ordering and low-space admission belong to
+[cleanup contracts](2026-09-18-operations-contracts.md#cleanup-while-recovery-is-unfinished-or-disk-space-is-low).
 
 ### Interactive administration
 
@@ -562,47 +458,32 @@ connection port through `SSH_CONNECTION`, and PostgreSQL authority. These checks
 same bounded verification deadline; root execution alone does not prove administrator authority.
 The helper independently proves service MainPID/executable under the selected release, Caddy
 activity, required listener topology, absence of ordinary EPMD, bounded startup-journal evidence,
-exact loopback/public readiness, and public HSTS. Ordered fixed summaries distinguish lifecycle
+exact loopback/public readiness, and public HSTS. During startup, absent application or distribution
+listeners may appear within the configured readiness timeout; topology and subsequent local/public
+readiness share that budget, bounded by the overall 45-second verification deadline. PostgreSQL
+must already be present on loopback. Failed or malformed listener observations, public managed
+listeners, and ordinary EPMD fail immediately; every fresh observation retains those checks.
+Startup-journal inspection reads the latest 100 service lines with a 64 KiB output limit per stream;
+other fixed command observations retain their 9,216-byte bound. Empty journal evidence, failure
+matches, command failure, timeout or output overflow fail closed. The three-second command cap and
+overall verification deadline remain unchanged.
+Ordered fixed summaries distinguish lifecycle
 failure from readiness failure; public verify preserves the typed failed report. A deployment or new restore cannot
 report success without a complete successful report for its expected release. Authority-validated
 cleanup of an already successful restore is exempt from repeating readiness; it does not claim the
 application is currently healthy.
 
-Public human and JSON reports carry the same bounded facts and warnings. JSON schema version `1`
-contains `command`, `environment`, `status`, `changed`, `stage`, `facts`, `warnings`, and
-`next_action` alongside `schema_version`. A public stage or failed boundary is a coarse summary,
-not a transaction history. Unknown service/database state is not promoted to success. The fixed
-status categories are:
-
-| Exit | Meaning |
-| --- | --- |
-| `0` | Success or verified no-op |
-| `2` | Invalid command, argument, configuration, or unsupported target |
-| `3` | Local prerequisite or build failure |
-| `4` | Secret decryption, validation, or installation failure |
-| `5` | SSH, host-key, privilege, or remote preflight failure |
-| `6` | Backup or backup-validation failure |
-| `7` | Migration failure |
-| `8` | Release staging/selection or service lifecycle failure |
-| `9` | Readiness or public verification failure |
-| `10` | Safety refusal, state conflict, or incompatible rollback |
-| `11` | Restore or restored-database validation failure |
-| `12` | Shared lifecycle lock unavailable |
-
-The interactive administrator bridge propagates its remote command status after session entry.
-Migration classification requires observed migration evidence; transport loss does not invent it.
-Mutation results retain desired identity, failed boundary, `unchanged`/`changed`/`unknown` evidence,
-fresh observations, unavailable fields and any actual bounded verification report. The first
-accepted plan is retained separately as `starting_state`; it cannot stand in for final evidence.
-Proved mutation survives later uncertainty, including within and across cleanup batches. Lost or
-malformed replies do not reuse prior final observations. Failed readiness reports survive helper
-and public mapping without raw output or credentials.
-Reports direct the operator toward inspection/rerun or manual action without generated recovery
-commands. The runbook supplies the state-specific manual recovery guidance.
+Human and JSON results share bounded redacted facts/warnings and public schema 1. A coarse stage or
+failure boundary is not a transaction history. Preserve the actual failed verification report and
+primary failure; unavailable final facts do not reuse starting-state evidence. Known mutation survives
+later uncertainty, including provisioning convergence and cleanup batches. Lost/invalid replies leave
+unknown affected outcomes and retain earlier validated aggregate proof. [Failure/result contracts](2026-09-18-operations-contracts.md#failures-and-reporting)
+own exact fields, exit categories, unavailable markers and in-process recovery/encoding precedence.
+The runbook supplies manual state-specific recovery; reports do not generate recovery commands.
 
 ## Simplicity and maintenance
 
-Future ops changes also follow the [operations development guidelines](../development.md#operations-development):
+Future ops changes also follow the [operations development guidelines](../guides/development.md#operations-development):
 prefer simple reliable procedures under a non-adversarial operator model, and Python over
 substantial shell workflows. This does not retroactively rewrite the implemented baseline below.
 
@@ -630,6 +511,94 @@ pyinfra sudo/probe mechanics have clear owners. They do not justify a universal 
 runner, workflow engine, or generic result-construction framework. Any future extraction must
 identify actual consumers, a shared invariant, retained errors/authority, and a concrete net benefit.
 
+### Implemented simplification decisions
+
+These are the final ownership and simplification decisions.
+
+- **Migration parsing:** `migrations.versions_from_filenames` owns filename grammar and
+  sorted unique version extraction. `records.migration_record_versions` adapts record mappings;
+  typed manifests project filenames directly. Database observation, fingerprint hashes,
+  source selection and recovery policy remain with their consumers. Distinct filenames with
+  duplicate timestamps are invalid history: provisioning refuses before plan/confirmation or
+  mutation, closes transport and raises `MigrationOrderError`. The CLI reports exit 3 (`LOCAL_PREREQUISITE`), stage `controller`, fixed message
+  `controller operation failed`, and `changed=False`. Full validation also applies
+  to directly constructed typed objects; permissive timestamp slicing is not a compatibility promise.
+- **SOPS injection:** decryption invokes one callable once, accepting only `CompletedProcess`
+  with binary `bytes`/`bytearray` captures; `None` means empty capture. No alternate-signature
+  retry or arbitrary result coercion remains. Both capture references are cleared and mutable
+  captures wiped on success and supported refusal, including invalid sibling captures. This
+  does not promise erasure of immutable Python values or generic cleanup of unsupported objects.
+  Secret validation, rendering, redaction and fixed error/status boundaries remain unchanged.
+- **Exact handler results:** handlers produce the exact supported result shape.
+  For deploy/genesis, inspection failures admit inspection/5 alongside inspection/8;
+  selection, service and history remain 8. Restore history/inspection use 11, restore
+  selection/service use 8, and cleanup uses 10 for these categories.
+  Service stop/start failures use service/8. The
+  [exact failure contract](2026-09-18-operations-contracts.md#internal-helper-failure-recovery) owns evidence salvage,
+  report precedence, whole-group observation replacement and bounded encoding.
+- **Production-shaped provisioning:** target resolution and preflight authority are required;
+  artifact-only injection and `None` authority are unsupported. Preparation has
+  an empty scheduler-create set; only validated confirmed discovery authorizes creation.
+  Missing evidence refuses before convergence. Missing resources remain supported and are
+  distinct from missing authority. Refreshed refusals retain the confirmed snapshot and
+  observer cleanup warnings; genesis retains locked scheduler refresh.
+- **Exact systemd bytes:** installed `SystemdAsset` content is validated bytes, hashed and
+  uploaded from the same immutable `SystemdPlan` described above. Backup template sources
+  remain meaningful in `ManagedBackupAsset`; they are not a second installed-asset representation.
+- **Internal names and admission:** unused internal Python names require no compatibility shims;
+  documented YAML input aliases and derived paths remain. Provisioning admission uses production
+  `validate_provisionable_host`. Compatible partial/managed resources are intended
+  input; resource existence alone is not a refusal. Operational and restore admission remain
+  distinct. The [overlap review](../research/2026-09-17-operations-test-overlap.md#production-admission-coverage-migration)
+  retains the assertion mapping and the single obsolete export-only test deletion.
+- **Imports:** selected-handler imports were explicitly skipped. Import-only measurements
+  suggested smaller read-operation closures but did not establish end-to-end benefit; both
+  production dispatch and the isolated harness would need changes while mutations retain most
+  dependencies. Keep the direct callable map, fresh child processes, actual isolated archive
+  entrypoints, immutable package bytes and native-effect substitutions. No dispatcher,
+  persistent bytecode lifecycle or reused-process framework is justified by those measurements.
+
+### Reasons for retaining explicit checks
+
+These distinctions explain why superficially repeated code remains:
+
+- Peer-admin maintenance SQL calls share argv/stdin mechanics but differ in tabular output,
+  variable order and result consumption. A common adapter would add parameterization,
+  archive wiring and fixture migration without sharing authority policy. Restore canonical
+  observations remain application-authenticated; exact temporary/retired catalog reads use
+  peer-admin authority. Registered loading uses peer-admin `pg_restore --role=<application-role>`, with
+  `--no-owner` and `--no-privileges`; trusted managed backups retain the accepted RESET ROLE
+  privilege trade-off. It is not application-authenticated loading.
+- Provisioning confirmation projects free-space counters at two shapes through shared resource
+  authority. A recursive projection could erase unrelated drift; refreshed admission separately
+  refuses insufficient capacity. Free-space-only change is allowed, material drift is not.
+- Listener topology distinguishes pending from unsafe evidence and refuses unsafe topology
+  immediately. HTTP readiness retries another condition; both share one finite readiness budget.
+  Merging their polling loops would obscure policy without removing state. Journal capture
+  remains bounded to 64 KiB per stream with fixed public summaries.
+- PostgreSQL parent-PID checks at inspection and before/after mutation answer different freshness
+  questions. Replacing their workflow belongs to the separately parked PostgreSQL Python proposal.
+- Caddy package authority checks both `/lib` and `/usr/lib` systemd paths and resolved identity.
+  A shared socket does not prove ownership; duplicate, malformed or contradictory evidence refuses.
+  Fragment-only inspection would reintroduce the observed native acceptance failure.
+- Lock-root creation establishes 0755 despite umask and tolerates ordinary creation overlap while
+  preserving safe existing roots. The systemd state home explicitly uses 0700, agreeing with
+  admission. Weakening admission to accommodate default directory modes is not equivalent.
+- Scheduler absence checks LoadState before UnitFileState; unloaded/error discovery refuses.
+  Failed cluster listing or SQL is unavailable evidence, not authoritative absence. Nonempty
+  broad-track selection remains required for provisioning database discovery.
+- Account setup/reset controller adapters implement the authentication component's submission
+  contract, delegate domain decisions to Accounts and retain CSRF-protected forms. Combining
+  adapter forms or redirects offered no demonstrated simplification.
+
+Full-history validation and bounded incremental reference checks, restore OID/replacement binding,
+backup publication/deletion ordering, pinned SSH after firewall changes, candidate Caddy validation
+and native PostgreSQL HBA/cluster authority retain their distinct safety owners. A generic
+observer, recovery, retention or guarded-service framework is rejected. Small repeated JSON/digest
+helpers, application-version parsing, toolchain lookup or protected secret wrappers require a
+concrete net benefit before extraction. CLI UX and PostgreSQL Python proposals remain separate.
+No runtime saving is claimed by these decisions.
+
 ### Test design
 
 Tests are organized by trust domain and consequence boundary. Similar assertions at configuration,
@@ -646,8 +615,9 @@ Do not replace them with broad autouse fixtures or factories that hide the autho
 Verification covers:
 
 - public commands, help, confirmations, dry-run, status mapping, and human/JSON redaction;
-- strict host identity, literal shell argv, bounded output, and process-tree termination with
-  deterministic startup synchronization;
+- strict host identity, literal shell argv, bounded output, and helper-owned subprocess timeout
+  cleanup with deterministic startup synchronization; this does not prove remote SSH or
+  service-manager work terminates after caller loss;
 - configuration-to-helper/scheduled/systemd contract parity, including native parser diagnostics;
 - isolated execution of both deterministic allowlisted zipapps without controller dependencies;
 - exact records, authoritative paths, atomic selection/publication, and live migration evidence;
@@ -691,16 +661,9 @@ not an automatic whole-branch review for every edit.
 
 ## Evidence, caveats, and acceptance
 
-The locally verified reconciliation baseline is `0a6ebf1bd7a8912c6fffc543dfca9e90aa158ee8`.
-On 2026-09-15, locked dependency synchronization, compileall, shell syntax, command-help checks,
-both isolated packages under `python3 -I -S`, and the extracted-release terminal test passed;
-the full operations suite passed 1,439 tests in 337.95 seconds and `mix precommit` passed 805
-tests. A clean build produced release
-`0.2.0-0a6ebf1bd7a8-ubuntu26.04-amd64-otp29.0.6-5a80077efd338812dc3ced2b3c67ba60b64246a7e47d6c9fae85f1852fbcee7b`,
-44,127,400 bytes, with manifest schema 3 and ten migrations; a second clean build reused its
-exact-input cache. A controlled dirty build retained the revision, carried `-dirty`, and excluded
-the ignored canary. These are dated local facts, not real-host acceptance. Current reproduction
-commands are in the development guide; task records retain detailed evidence.
+Identified local/native baselines and artifacts belong to the
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries).
+They do not prove later changed source or authorize future external actions.
 
 The transient archive's required runtime dependency set includes the release manifest and error
 modules. Tests execute both zipapps with `-I -S`: `-I` alone can resolve an editable workstation
@@ -708,8 +671,10 @@ installation through site packages and hide missing archive members. This isolat
 was established by reproducing a missing-dependency startup failure, not just inspecting filenames.
 
 Local tests and container builds do not prove systemd PID 1, UFW, public DNS, ACME, Resend delivery,
-reboot behavior, or a complete real PostgreSQL restore. A disposable Ubuntu 26.04 amd64 acceptance
-run remains unperformed and separately authorized. It must cover first/second provision, HTTPS/HSTS,
+reboot behavior, or a complete real PostgreSQL restore. Identified completed native
+acceptance and its limits are recorded in the
+[acceptance report](../research/2026-09-17-operations-vps-acceptance.md). Future runs require
+separate authorization and must cover first/second provision, HTTPS/HSTS,
 interactive administrator/sign-in/email/API/LiveView use, another release and rollback/forward
 deployment, controlled migration failure, backup/restore, firewall/listeners, and secret/cookie
 leakage inspection. Confirm the exact target, access, and permitted external changes first; do not

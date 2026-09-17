@@ -16,6 +16,7 @@ from pyinfra.operations.files import ensure_mode_int
 from tests.support.remotes import LocalProtectedRemote, ScriptedRemote
 from tests.support.environments import environment_config
 from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host.baseline import build_baseline_plan
 from taskman_ops.provisioning import ProvisioningInputs
 from taskman_ops.remote import ChangeSet, CommandResult
 from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
@@ -49,6 +50,29 @@ def test_systemd_plan_uses_builtin_non_secret_assets_and_never_starts_taskman() 
         "KillSignal=SIGTERM",
         "Restart=on-failure",
     }
+
+
+def test_rendered_taskman_unit_declares_the_canonical_private_state_home() -> None:
+    """Systemd's created state home must satisfy discovery's taskman:taskman 0700 policy."""
+
+    config = environment_config()
+    baseline = build_baseline_plan(config)
+    state_home = next(
+        directory for directory in baseline.directories if directory.path == baseline.service_account.home
+    )
+    directives = dict(
+        line.split("=", maxsplit=1)
+        for line in render_taskman_service(config).splitlines()
+        if "=" in line and not line.startswith("#")
+    )
+
+    assert state_home.owner == state_home.group == baseline.service_account.name
+    assert state_home.mode == 0o700
+    assert directives["User"] == state_home.owner
+    assert directives["Group"] == state_home.group
+    assert f"/var/lib/{directives['StateDirectory']}" == state_home.path
+    assert int(directives["StateDirectoryMode"], 8) == state_home.mode
+    assert directives["RuntimeDirectoryMode"] == "0750"
 
 
 @pytest.mark.parametrize(

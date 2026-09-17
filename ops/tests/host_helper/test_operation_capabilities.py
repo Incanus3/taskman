@@ -5,8 +5,11 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import json
+import os
 from pathlib import Path
 import subprocess
+from uuid import uuid4
 
 import pytest
 
@@ -96,6 +99,102 @@ def test_initial_database_empty_proof_inspects_every_user_schema_catalog(
     # by their complete expected identities, not rejected by name alone.
     for language in ("internal", "c", "sql", "plpgsql_call_handler", "plpgsql_validator"):
         assert language in query
+
+
+def test_initial_database_empty_proof_executes_on_native_postgresql_when_configured(
+) -> None:
+    """The real catalog proof must reject a public function after accepting a pristine database."""
+
+    raw_command = os.environ.get("TASKMAN_TEST_PSQL_COMMAND")
+    if raw_command is None:
+        pytest.skip("set TASKMAN_TEST_PSQL_COMMAND to a trusted JSON psql argv to run native catalog proof")
+    try:
+        command = json.loads(raw_command)
+    except json.JSONDecodeError as error:
+        pytest.fail(f"TASKMAN_TEST_PSQL_COMMAND must be JSON argv: {error}")
+    if not isinstance(command, list) or not command or any(type(item) is not str or not item for item in command):
+        pytest.fail("TASKMAN_TEST_PSQL_COMMAND must be a non-empty JSON argv of strings")
+
+    database = _capability("database")
+    captured: list[str] = []
+
+    def capture_query(
+        _database: object, _credentials: object, query: str
+    ) -> bytes:
+        captured.append(query)
+        return b""
+
+    original_query = database._database_query
+    database._database_query = capture_query
+    try:
+        database._initial_database_empty(database_mapping(), None)
+    finally:
+        database._database_query = original_query
+
+    assert len(captured) == 1
+    probe = f"taskman_initial_empty_{uuid4().hex}"
+    completed = subprocess.run(
+        command,
+        input=(
+            "BEGIN;\n"
+            f"{captured[0]};\n"
+            f"CREATE FUNCTION public.{probe}() RETURNS integer LANGUAGE sql AS 'SELECT 1';\n"
+            f"{captured[0]};\n"
+            "ROLLBACK;\n"
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["1", "0"]
+
+
+def test_restore_authority_sql_wrappers_use_native_psql_file_input_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only production SQL wrappers need psql parsing and strict SQL refusal."""
+
+    container = os.environ.get("TASKMAN_TEST_POSTGRES_CONTAINER")
+    if container is None:
+        pytest.skip("set TASKMAN_TEST_POSTGRES_CONTAINER to run the local native psql wrapper proof")
+
+    preflight = _capability("operations.preflight")
+    restore_database = _capability("restore_database")
+    command_error = _capability("commands").CommandError
+    observed_stdin: list[bytes] = []
+
+    def run(argv: tuple[str, ...], *, stdin: bytes | None = None, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert stdin is not None
+        psql = argv.index("psql")
+        completed = subprocess.run(
+            ("docker", "exec", "-i", container, *argv[psql:]),
+            input=stdin,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        observed_stdin.append(stdin)
+        if completed.returncode != 0:
+            raise command_error("native psql execution failed")
+        return subprocess.CompletedProcess(argv, completed.returncode, completed.stdout, completed.stderr)
+
+    monkeypatch.setattr(preflight, "run_command", run)
+    monkeypatch.setattr(restore_database, "run_command", run)
+    database = {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": f"taskman_native_{uuid4().hex}"}
+
+    assert preflight._admin_query(database, "SELECT :'role'", variables=("role", "expanded-value")) == b"expanded-value\n"
+    assert restore_database._admin_query(database, "SELECT :'oid'::integer", variables={"oid": "202"}) == b"202\n"
+    with pytest.raises(command_error):
+        preflight._admin_query(database, "SELEC malformed")
+
+    assert observed_stdin == [
+        b"SELECT :'role'\n",
+        b"SELECT :'oid'::integer\n",
+        b"SELEC malformed\n",
+    ]
 
 
 def test_pristine_language_template_accepts_real_builtin_rows_and_refuses_identity_drift() -> None:

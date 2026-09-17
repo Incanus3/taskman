@@ -4,11 +4,12 @@ import ast
 from contextlib import nullcontext
 from datetime import UTC, datetime
 import inspect
+import sys
 
 import pytest
 
 from taskman_ops.host_helper import verification as verification_module
-from taskman_ops.host_helper.commands import CommandTimeout
+from taskman_ops.host_helper.commands import CommandTimeout, run_command
 from taskman_ops.host_helper.paths import ManagedPaths
 from taskman_ops.host_helper.records import ReleaseRecord, SelectionRecord
 from taskman_ops.host_helper.state import HostState, StateAmbiguityError
@@ -56,7 +57,7 @@ CHECK_NAMES = (
 )
 
 
-def _request(*, expected_release_id: str | None = None) -> HostRequest:
+def _request(*, expected_release_id: str | None = None, readiness_timeout: int = 1) -> HostRequest:
     return HostRequest(
         3,
         "verify",
@@ -72,7 +73,7 @@ def _request(*, expected_release_id: str | None = None) -> HostRequest:
             "public_ipv6": None,
             "ssh_port": 22,
             "ssh_user": "deployer",
-            "readiness_timeout": 1,
+            "readiness_timeout": readiness_timeout,
             "connection_timeout": 1,
         },
     )
@@ -224,7 +225,9 @@ def test_host_preflight_does_not_repeat_controller_immutable_admission(
 
     commands: list[tuple[str, ...]] = []
 
-    def successful(argv: tuple[str, ...], _timeout: float) -> tuple[bool, str]:
+    def successful(
+        argv: tuple[str, ...], _timeout: float, **_kwargs: object
+    ) -> tuple[bool, str]:
         commands.append(argv)
         return _host_command_response(argv)
 
@@ -254,7 +257,7 @@ def test_host_preflight_refuses_changed_administrator_or_ssh_session_identity(
     monkeypatch.setattr(
         verification_module,
         "_successful",
-        lambda argv, _timeout: _host_command_response(argv),
+        lambda argv, _timeout, **_kwargs: _host_command_response(argv),
     )
     monkeypatch.setenv("SUDO_USER", sudo_user)
     monkeypatch.setenv("SSH_CONNECTION", ssh_connection)
@@ -277,7 +280,7 @@ def _install_healthy_observation(
     monkeypatch.setattr(
         verification_module,
         "_successful",
-        lambda argv, _timeout: (True, "" if argv[0] != "journalctl" else "clean startup"),
+        lambda argv, _timeout, **_kwargs: (True, "" if argv[0] != "journalctl" else "clean startup"),
     )
     monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: (("127.0.0.1", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)))
     if patch_local_ready:
@@ -375,6 +378,7 @@ def test_authoritative_state_ambiguity_is_not_reported_as_a_timeout_stage(
         None,
         (("0.0.0.0", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)),
         (("127.0.0.1", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432), ("127.0.0.1", 4369)),
+        (("127.0.0.1", 4000), ("127.0.0.1", 6789)),
     ],
 )
 def test_malformed_public_or_epmd_listener_topology_is_a_release_failure(
@@ -383,6 +387,11 @@ def test_malformed_public_or_epmd_listener_topology_is_a_release_failure(
 ) -> None:
     _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
     monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: listeners)
+    monkeypatch.setattr(
+        verification_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("unsafe topology must not wait"),
+    )
 
     result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
 
@@ -391,6 +400,109 @@ def test_malformed_public_or_epmd_listener_topology_is_a_release_failure(
     assert report["exit_status"] == 8
     assert report["checks"][3]["name"] == "listener-topology"
     assert report["checks"][3]["status"] == "failed"
+
+
+def test_verification_waits_within_the_readiness_budget_for_delayed_safe_listeners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newly active release may bind its safe listeners after systemd reports active."""
+
+    _install_healthy_observation(monkeypatch, observed=_state())
+    clock = [0.0]
+    sleeps: list[float] = []
+    observations = iter(
+        (
+            (("127.0.0.1", 5432),),
+            (("127.0.0.1", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)),
+        )
+    )
+    local_deadlines: list[float] = []
+    public_timeouts: list[float] = []
+
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        verification_module.time,
+        "sleep",
+        lambda seconds: (sleeps.append(seconds), clock.__setitem__(0, clock[0] + seconds)),
+    )
+    monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: next(observations))
+    monkeypatch.setattr(
+        verification_module,
+        "_local_ready",
+        lambda _port, _timeout, deadline: (local_deadlines.append(deadline), True)[1],
+    )
+    monkeypatch.setattr(
+        verification_module,
+        "_curl",
+        lambda url, timeout: (
+            public_timeouts.append(timeout),
+            (200, b"ready", (("cache-control", "no-store"), ("strict-transport-security", "max-age=31536000"))),
+        )[1],
+    )
+
+    result = verification_module.verify(
+        _request(expected_release_id=RELEASE_ID, readiness_timeout=2)
+    )
+
+    assert result.outcome == "succeeded"
+    assert sleeps == [1.0]
+    assert local_deadlines == [2.0]
+    assert public_timeouts == [1.0]
+
+
+def test_verification_refuses_when_safe_listener_wait_exhausts_the_shared_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        verification_module.time,
+        "sleep",
+        lambda seconds: (sleeps.append(seconds), clock.__setitem__(0, clock[0] + seconds)),
+    )
+    monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: (("127.0.0.1", 5432),))
+    monkeypatch.setattr(verification_module, "_local_ready", lambda *_args: pytest.fail("readiness must not start after topology exhaustion"))
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 8
+    assert sleeps == [1.0]
+    assert clock == [1.0]
+
+
+def test_verification_refuses_an_unsafe_listener_observation_during_safe_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
+    clock = [0.0]
+    sleeps: list[float] = []
+    observations = iter(
+        (
+            (("127.0.0.1", 5432),),
+            (("0.0.0.0", 4000), ("127.0.0.1", 6789), ("127.0.0.1", 5432)),
+        )
+    )
+
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        verification_module.time,
+        "sleep",
+        lambda seconds: (sleeps.append(seconds), clock.__setitem__(0, clock[0] + seconds)),
+    )
+    monkeypatch.setattr(verification_module, "_listener_values", lambda _deadline: next(observations))
+    monkeypatch.setattr(verification_module, "_local_ready", lambda *_args: pytest.fail("unsafe topology must stop before readiness"))
+
+    result = verification_module.verify(_request(expected_release_id=RELEASE_ID))
+
+    report = result.state["report"]
+    assert result.outcome == "retryable"
+    assert report["exit_status"] == 8
+    assert sleeps == [1.0]
 
 
 def test_listener_topology_accepts_scoped_loopback_addresses_from_live_ss_output(
@@ -402,7 +514,7 @@ LISTEN 0 128 127.0.0.1:4000 0.0.0.0:*
 LISTEN 0 128 [::1%lo]:6789 [::]:*
 LISTEN 0 244 [::1]:5432 [::]:*
 """
-    monkeypatch.setattr(verification_module, "_successful", lambda *_args: (True, output))
+    monkeypatch.setattr(verification_module, "_successful", lambda *_args, **_kwargs: (True, output))
 
     assert verification_module._listener_topology(4000, 6789, 5432, 1.0)
 
@@ -415,7 +527,7 @@ LISTEN 0 128 203.0.113.10%lo:4000 0.0.0.0:*
 LISTEN 0 128 127.0.0.1:6789 0.0.0.0:*
 LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*
 """
-    monkeypatch.setattr(verification_module, "_successful", lambda *_args: (True, output))
+    monkeypatch.setattr(verification_module, "_successful", lambda *_args, **_kwargs: (True, output))
 
     assert not verification_module._listener_topology(4000, 6789, 5432, 1.0)
 
@@ -455,7 +567,9 @@ def test_startup_journal_failure_is_a_release_failure(
 ) -> None:
     _install_healthy_observation(monkeypatch, observed=_state())
 
-    def command(argv: tuple[str, ...], _timeout: float) -> tuple[bool, str]:
+    def command(
+        argv: tuple[str, ...], _timeout: float, **_kwargs: object
+    ) -> tuple[bool, str]:
         if argv[0] == "journalctl":
             return True, "application failed to start"
         return True, ""
@@ -469,6 +583,144 @@ def test_startup_journal_failure_is_a_release_failure(
     assert report["exit_status"] == 8
     assert report["checks"][4]["name"] == "startup-journal"
     assert report["checks"][4]["status"] == "failed"
+
+
+def test_startup_journal_accepts_a_normal_native_capture_above_the_general_output_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid 11,907-byte startup journal must not be refused at the 9 KiB default."""
+
+    journal_argv = (
+        "journalctl",
+        "--no-pager",
+        "--output=cat",
+        "--unit",
+        "taskman.service",
+        "--lines=100",
+    )
+
+    def journal_fixture(
+        argv: tuple[str, ...], *, timeout_seconds: float, output_limit: int
+    ):
+        assert argv == journal_argv
+        assert output_limit == 65_536
+        return run_command(
+            (sys.executable, "-c", "import sys; sys.stdout.write('started\\n' + 'x' * 11899)"),
+            timeout_seconds=timeout_seconds,
+            output_limit=output_limit,
+        )
+
+    monkeypatch.setattr(verification_module, "run_command", journal_fixture)
+
+    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+
+    assert check["status"] == "passed"
+
+
+@pytest.mark.parametrize("stream", ("stdout", "stderr"))
+def test_journal_command_bound_accepts_exactly_64_kib_per_stream(stream: str) -> None:
+    succeeded, output = verification_module._successful(
+        (sys.executable, "-c", f"import sys; sys.{stream}.write('x' * 65536)"),
+        1.0,
+        output_limit=65_536,
+    )
+
+    assert succeeded is True
+    assert len(output.encode("utf-8")) == (65_536 if stream == "stdout" else 0)
+
+
+@pytest.mark.parametrize("stream", ("stdout", "stderr"))
+def test_journal_command_bound_refuses_more_than_64_kib_from_either_stream(stream: str) -> None:
+    succeeded, output = verification_module._successful(
+        (sys.executable, "-c", f"import sys; sys.{stream}.write('x' * 65537)"),
+        1.0,
+        output_limit=65_536,
+    )
+
+    assert succeeded is False
+    assert output == ""
+
+
+def test_startup_journal_detects_a_failure_after_the_old_output_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal_argv = (
+        "journalctl",
+        "--no-pager",
+        "--output=cat",
+        "--unit",
+        "taskman.service",
+        "--lines=100",
+    )
+
+    def journal_fixture(
+        argv: tuple[str, ...], *, timeout_seconds: float, output_limit: int
+    ):
+        assert argv == journal_argv
+        return run_command(
+            (
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('x' * 10000 + ' application failed to start')",
+            ),
+            timeout_seconds=timeout_seconds,
+            output_limit=output_limit,
+        )
+
+    monkeypatch.setattr(verification_module, "run_command", journal_fixture)
+
+    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+
+    assert check["status"] == "failed"
+    assert check["summary"] == "recent startup journal evidence indicates a startup failure"
+
+
+@pytest.mark.parametrize(
+    ("script", "timeout", "summary"),
+    (
+        ("import time; time.sleep(1)", 0.01, "recent startup journal evidence is unavailable"),
+        ("import sys; sys.exit(1)", 1.0, "recent startup journal evidence is unavailable"),
+        ("pass", 1.0, "recent startup journal evidence is empty"),
+    ),
+)
+def test_startup_journal_fails_closed_for_timeout_nonzero_and_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+    script: str,
+    timeout: float,
+    summary: str,
+) -> None:
+    def journal_fixture(
+        argv: tuple[str, ...], *, timeout_seconds: float, output_limit: int
+    ):
+        assert argv == (
+            "journalctl",
+            "--no-pager",
+            "--output=cat",
+            "--unit",
+            "taskman.service",
+            "--lines=100",
+        )
+        return run_command(
+            (sys.executable, "-c", script),
+            timeout_seconds=min(timeout_seconds, timeout),
+            output_limit=output_limit,
+        )
+
+    monkeypatch.setattr(verification_module, "run_command", journal_fixture)
+
+    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+
+    assert check["status"] == "failed"
+    assert check["summary"] == summary
+
+
+def test_other_commands_keep_the_9_kib_output_bound() -> None:
+    succeeded, output = verification_module._successful(
+        (sys.executable, "-c", "import sys; sys.stdout.write('x' * 9217)"), 1.0
+    )
+
+    assert succeeded is False
+    assert output == ""
 
 
 @pytest.mark.parametrize(

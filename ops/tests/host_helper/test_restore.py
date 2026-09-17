@@ -89,6 +89,37 @@ def _protection_digest(state) -> str:
     return hashlib.sha256(json.dumps(records, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()
 
 
+def test_connection_termination_feeds_exact_database_names_to_psql_file_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Termination must bind both controlled database names through psql variables."""
+
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def run(argv: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+        calls.append((argv, kwargs))
+        return SimpleNamespace(stdout=b"")
+
+    monkeypatch.setattr(restore_module, "run_command", run)
+    inputs = restore_module._Inputs(
+        managed_paths(tmp_path), {}, INPUT_BACKUP, Path("/etc/taskman/pgpass"),
+        database_mapping(), {}, {}, (), False, False,
+    )
+
+    restore_module._terminate_connections(inputs)
+
+    argv, kwargs = calls[0]
+    assert "--set" in argv
+    assert "database_0=taskman" in argv
+    assert "database_1=taskman__restore_tmp" in argv
+    assert "--file=-" in argv
+    assert "--command" not in argv
+    assert kwargs["stdin"] == (
+        b"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN "
+        b"(:'database_0', :'database_1') AND pid <> pg_backend_pid()\n"
+    )
+
+
 class Runtime:
     def __init__(self, arrangement: str = "canonical") -> None:
         self.events: list[str] = []

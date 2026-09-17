@@ -124,11 +124,42 @@ defmodule TaskmanWeb.AuthController do
     reset_password_failure(conn, nil)
   end
 
+  @doc false
+  def complete_setup(conn, %{"setup" => params}) when is_map(params) do
+    token = Map.get(params, "token")
+
+    case Accounts.complete_setup(token, Map.delete(params, "token")) do
+      {:ok, _user} ->
+        conn
+        |> put_flash(:info, "Account setup complete. Sign in with your new password.")
+        |> redirect(to: ~p"/sign-in")
+
+      {:error, _reason} ->
+        setup_failure(conn, token)
+    end
+  end
+
+  def complete_setup(conn, _params) do
+    _ = Accounts.complete_setup(nil, %{})
+    setup_failure(conn, nil)
+  end
+
   defp reset_password_failure(conn, token) do
     path = if is_binary(token), do: ~p"/reset-password/#{token}", else: ~p"/reset-password"
 
     conn
     |> put_flash(:error, "Unable to reset the password.")
+    |> redirect(to: path)
+  end
+
+  defp setup_failure(conn, token) do
+    path = if is_binary(token), do: ~p"/setup/#{token}", else: ~p"/sign-in"
+
+    conn
+    |> put_flash(
+      :error,
+      "Unable to complete setup. Check your password and confirmation. If this link is invalid or expired, ask an administrator to resend the invitation."
+    )
     |> redirect(to: path)
   end
 

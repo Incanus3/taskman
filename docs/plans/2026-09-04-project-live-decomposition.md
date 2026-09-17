@@ -16,7 +16,8 @@ structure is a nested `State` module containing only data and pure transformatio
 
 **Spec:** `docs/specs/2026-09-03-project-live-decomposition-design.md`
 
-**Status:** Approved
+**Status:** Approved design and implementation sequence; execution target must be selected before use.
+Updated: 2026-09-18. No decomposition implementation has started.
 
 **Delivery tracking:** `tas-1tq`
 
@@ -32,9 +33,28 @@ structure is a nested `State` module containing only data and pure transformatio
 | 8 | `tas-1tq.8` |
 | 9 | `tas-1tq.9` |
 
+## Execution target and completion gates
+
+Workstream scheduling and selection are recorded in the
+[handoff](../handoffs/project-live-decomposition.md#next-actions-when-selected-after-the-operations-merge).
+Before execution, refresh the actual target/base and select an isolated implementation branch.
+The commands below use the purpose-named
+`project-live-decomposition` branch; `but commit -b` creates it if absent. If the operator selects
+another target, update these commands before running them. Do not commit this refactor to the
+operations stack.
+
+If directory removal has executed first, preserve its accepted name-only Project behavior and
+refresh affected form/navigation fixtures; otherwise preserve the current directory behavior.
+Neither workstream is a prerequisite for the other. Select the target, read the complete design
+and plan, and honor the existing approved-plan clean-session boundary before execution.
+No second clean-session prompt is required if implementation already resumed from that boundary.
+
+Technical task completion does not retire the handoff. Keep the final verified state and remaining
+review/publication/merge decisions until the operator explicitly confirms workstream completion.
+
 ## Global Constraints
 
-- Read the complete approved specification, `AGENTS.md`, and `docs/development.md` before starting
+- Read the complete approved specification, `AGENTS.md`, and `docs/guides/development.md` before starting
   any task.
 - Preserve the existing routes, event names and payloads, stream names and DOM IDs, PubSub topics,
   error text, persistence behavior, and public Project/List/Task context APIs.
@@ -277,7 +297,7 @@ Expected: all tests pass with unchanged patches and navigation.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive route paths"
+but commit -b project-live-decomposition -m "Extract ProjectLive route paths"
 ```
 
 ### Task 2: Group workspace state
@@ -415,7 +435,7 @@ Expected: all tests pass and the template has no references to the superseded wo
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Group ProjectLive workspace state"
+but commit -b project-live-decomposition -m "Group ProjectLive workspace state"
 ```
 
 ### Task 3: Extract Task listing
@@ -530,7 +550,7 @@ Expected: all tests pass, including location-sort clearing and filtered empty st
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive Task listing"
+but commit -b project-live-decomposition -m "Extract ProjectLive Task listing"
 ```
 
 ### Task 4: Extract Task creation
@@ -643,7 +663,7 @@ successful route restoration.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive Task creation"
+but commit -b project-live-decomposition -m "Extract ProjectLive Task creation"
 ```
 
 ### Task 5: Extract Task editing and autosave orchestration
@@ -766,7 +786,7 @@ hierarchy navigation, and modal clearing.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive Task editing"
+but commit -b project-live-decomposition -m "Extract ProjectLive Task editing"
 ```
 
 ### Task 6: Extract parent-selection orchestration
@@ -837,7 +857,7 @@ external parent changes.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive parent selection"
+but commit -b project-live-decomposition -m "Extract ProjectLive parent selection"
 ```
 
 ### Task 7: Extract Task movement orchestration
@@ -903,7 +923,7 @@ preservation, and external moves.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive Task movement"
+but commit -b project-live-decomposition -m "Extract ProjectLive Task movement"
 ```
 
 ### Task 8: Complete workspace workflow extraction
@@ -997,7 +1017,7 @@ and navigation expansion.
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Extract ProjectLive workspace workflow"
+but commit -b project-live-decomposition -m "Extract ProjectLive workspace workflow"
 ```
 
 ### Task 9: Extract reconciliation and finish the coordinator
@@ -1040,8 +1060,14 @@ and inactive detail messages as no-ops.
 For Project/List events, call `Workspace.reconcile/2` first. For
 `{:location_changed, task_lists}`, then call `Creation.refresh_location/2`,
 `Listing.refresh/1`, `Movement.reconcile/1`, `ParentSelection.refresh/1`, and
-`Editing.reload_hierarchy/1`; for `:location_missing`, clear creation/listing/movement state while
-retaining the current not-found route behavior.
+`Editing.reload_hierarchy/1`; for `:location_missing`, call `Listing.clear/1` to reset only the
+Task stream and its empty-state flags (`tasks_empty?` true, `tasks_filtered_empty?` false),
+retaining the current not-found route behavior. Do not clear creation, editing, parent-selection,
+or movement state as an incidental extraction change. Preserve existing creation-location
+canonicalization without discarding its draft. This records the current behavior, not a decision
+that it is the final missing-location UX; the separately scoped
+[behavior follow-up](../specs/2026-09-03-project-live-decomposition-design.md#missing-location-behavior-follow-up)
+must review action invalidation and recoverable user input before changing that contract.
 
 For Task events in the selected Project, call `Editing.reconcile/2`, then synchronize the parent
 picker from the resulting `socket.assigns.editing.selected_task` when one remains selected:
@@ -1118,14 +1144,15 @@ Expected: formatting, compilation, static checks, and the complete test suite pa
 - [ ] **Step 8: Record completion in canonical state**
 
 Update `tas-1tq` through `br` with the implemented module boundaries and fresh verification
-evidence, then close it with a concise outcome. Retire
-`docs/handoffs/project-live-decomposition.md` and remove its line from
-`docs/handoffs/INDEX.md` because no continuation remains.
+evidence, and close implementation tasks only when their criteria pass. Keep the feature and handoff
+current with verification and pending completion/review/publication/merge decisions. Retire
+`docs/handoffs/project-live-decomposition.md` and remove its index entry only after explicit
+operator workstream-completion confirmation; passed checks and commits do not supply it.
 
 - [ ] **Step 9: Commit the final coordinator extraction**
 
 Inspect `but diff`, confirm it contains only this task, then run:
 
 ```sh
-but commit -b authenticated-hosted-access -m "Complete ProjectLive workflow decomposition"
+but commit -b project-live-decomposition -m "Complete ProjectLive workflow decomposition"
 ```

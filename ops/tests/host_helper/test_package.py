@@ -5,6 +5,8 @@ from pathlib import Path
 import stat
 import zipfile
 
+import pytest
+
 from taskman_ops.helper_client.package import (
     ARCHIVE_MEMBERS,
     build_helper_package,
@@ -99,3 +101,45 @@ def test_temporary_package_is_removed_after_its_invocation_scope() -> None:
         assert path.is_file()
 
     assert not path.exists()
+
+
+@pytest.mark.parametrize("database_state,expected,authenticates", [("absent", 0, False), ("ready", 10, True)])
+def test_isolated_packaged_private_entry_uses_validated_database_presence(tmp_path, database_state, expected, authenticates):
+    import os
+    import subprocess
+    import sys
+
+    package = build_helper_package(tmp_path / "helper.pyz")
+    marker = tmp_path / "authenticated"
+    psql = tmp_path / "psql"
+    psql.write_text(
+        '#!/bin/sh\n[ "$*" = "--no-psqlrc --quiet --host 127.0.0.1 --port 5432 --username taskman --dbname taskman_prod --no-password --command SELECT 1 --output /dev/null" ] || exit 99\n'
+        f"printf called > '{marker}'\nexit 1\n"
+    )
+    psql.chmod(0o700)
+    # Adapt the protected file location and external psql executable; use the archived production
+    # dispatcher, parser and native command runner in an isolated interpreter.
+    script = '''import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv.pop(1))
+from taskman_ops.host_helper.operations import preflight
+preflight._PGPASS_PATH = Path(sys.argv.pop(1))
+original_run = preflight.run_command
+psql = sys.argv.pop(1)
+def run(argv, **kwargs):
+    return original_run((psql, *argv[1:]), **kwargs)
+preflight.run_command = run
+from taskman_ops.host_helper.__main__ import main
+raise SystemExit(main())
+'''
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script, str(package.path), str(tmp_path / "pgpass"), str(psql),
+         "provision-pgpass-authority", "127.0.0.1", "5432", "taskman", "taskman_prod", database_state],
+        input=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", capture_output=True,
+        env=os.environ,
+        check=False,
+    )
+    assert completed.returncode == expected
+    assert completed.stdout == completed.stderr == b""
+    assert marker.exists() is authenticates
+    assert not (tmp_path / "pgpass").exists()

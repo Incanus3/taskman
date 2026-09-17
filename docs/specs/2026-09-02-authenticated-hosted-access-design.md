@@ -1,9 +1,17 @@
 # Authenticated Hosted Access and Release Deployment
 
-**Status:** Approved
+**Status:** Accepted and implemented
 **Date:** 2026-09-02
 
+This specification owns implemented account behavior and the original hosted-access design.
+Later [deployment architecture](2026-09-09-dedicated-host-deployment-design.md) and
+[operations contracts](2026-09-18-operations-contracts.md) own host automation/recovery details.
+[Identified native acceptance](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries)
+remains qualified to its historical source/database.
+
 ## Context
+
+The context below describes the original pre-authentication design baseline.
 
 Taskman is a Phoenix 1.8 LiveView application backed by PostgreSQL. Its browser UI and versioned
 JSON API currently provide shared access to Projects, nested Lists, and Tasks. The installable
@@ -23,9 +31,10 @@ excluded.
 
 The design baseline is upstream commit
 `7a0a664caa6c2ef050649b98202df6db8c1ee415` (`Add immediate cooperative workspace updates`). The
-workspace was clean when this design was finalized. The approved implementation plan is
-`docs/plans/2026-09-02-authenticated-hosted-access.md`; Beads feature
-`tas-authenticated-hosted-access-2a8` owns its delivery graph.
+workspace was clean when this design was finalized. The
+[completed implementation plan](../archive/plans/2026-09-02-authenticated-hosted-access.md)
+is retained for historical provenance; Beads feature `tas-authenticated-hosted-access-2a8`
+records its delivery graph.
 
 ## Outcome
 
@@ -886,7 +895,7 @@ Run focused checks throughout and finish with `mix precommit`.
 - This specification is indexed from `docs/README.md`.
 - `docs/product/mvp-spec.md` changes from local-only/unauthenticated to an authenticated,
   hostable shared workspace while retaining the exclusion of ownership and collaboration.
-- `docs/development.md` permits this accepted auth/release boundary while preserving just-in-time
+- `docs/guides/development.md` permits this accepted auth/release boundary while preserving just-in-time
   architecture and the prohibition on speculative multi-user work.
 - `docs/planning/roadmap.md` records authenticated hosted access as the next priority insertion
   before continuing Task relationship increments.
@@ -1017,12 +1026,3 @@ The following current primary documentation informed the design:
   are external operator actions and are not authorized by this specification.
 - Adding magic link or OAuth later may require an identity resource and provider-specific account
   linking decisions; this design only preserves the seam.
-
-## Next-session checklist
-
-1. Resume implementation in a fresh session with `$resume authenticated-hosted-access`, defaulting
-   to subagent-driven development unless the operator explicitly chooses another approach.
-2. Read this specification, the approved implementation plan, and Beads feature
-   `tas-authenticated-hosted-access-2a8`.
-3. Begin with `tas-authenticated-hosted-access-2a8.1`, the isolated AshPostgres Repo compatibility
-   gate, before building authentication behavior.

@@ -6,7 +6,7 @@ CLI from arbitrary clients; Taskman does not assign ownership or permissions to 
 records. The MVP product definition and delivery context live in [the project documentation](docs/README.md).
 
 For a dedicated HTTPS host, use the repository-owned `./ops/taskman` automation and follow the
-self-contained [deployment runbook](docs/deployment.md). It provisions and operates the supported
+self-contained [deployment runbook](docs/guides/deployment.md). It provisions and operates the supported
 Ubuntu host while retaining Taskman's OTP release, Caddy, systemd, and loopback PostgreSQL
 topology. VPS creation, DNS, provider firewall, Resend, and off-host backups remain operator-owned.
 Local source development remains supported as described below.

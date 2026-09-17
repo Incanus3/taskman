@@ -2,7 +2,9 @@
 
 ## Status
 
-Approved.
+Direction approved; written specification awaits review approval before implementation planning.
+Updated: 2026-09-18. No directory-removal migration or implementation exists.
+No implementation or deployment approval is implied.
 
 ## Context
 
@@ -173,7 +175,9 @@ agent architecture.
 
 ## Expected file boundaries
 
-Implementation is expected to touch these responsibility groups:
+Implementation is expected to touch these responsibility groups. If ProjectLive decomposition
+executes first, follow its resulting workspace workflow owner for Project creation; the navigation
+component, API/CLI and domain responsibilities remain the same. Neither change requires the other.
 
 - Project persistence and behavior under `lib/taskman/projects*` and a newly generated migration;
 - Project creation and navigation under `lib/taskman_web/live/` and
@@ -218,13 +222,3 @@ forward-only data-model transition.
   the matching database backup when rolling back across this change.
 - Future agent work will need a separate source for machine-local execution context if it needs one;
   this design intentionally does not choose that source.
-
-## Next-session checklist
-
-1. Write and review an implementation plan from this complete design.
-2. Create repository-local Beads work items for the implementation and verification units.
-3. Start implementation in a clean session after the plan is approved.
-4. Generate, rather than hand-name, the migration.
-5. Implement the vertical change across domain, UI, API, CLI, bundled skill, tests, and canonical
-   documentation.
-6. Verify the migration and rollback limitation explicitly, then run the full completion gates.

@@ -391,7 +391,7 @@ validate_runtime_identity() {{
   set -- $identity
   IFS=$old_ifs
   [ "$#" -eq 3 ] || refuse_runtime
-  [ "$1" = "$runtime_port" ] && [ "$2" = "$data_directory" ] && [ "$3" = "$runtime_start" ] || refuse_runtime
+  [ "$1" = "$runtime_port" ] && [ "$2" = "$data_directory" ] && [ "$3" = "$runtime_pid" ] || refuse_runtime
 }}
 validate_configured_settings() {{
   expected_hba_file=$1
@@ -460,7 +460,7 @@ hba_recovery_path="$hba_final.taskman-backup"
 {native_cluster_guard}
 [ "$cluster_state" = online ] || changed
 load_runtime_pid || changed
-if ! runtime_identity=$(admin_query "$runtime_port" "SELECT current_setting('port'), current_setting('data_directory'), floor(extract(epoch from pg_postmaster_start_time()))::bigint"); then changed; fi
+if ! runtime_identity=$(admin_query "$runtime_port" "SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]"); then changed; fi
 validate_runtime_identity "$runtime_identity"
 active_config_file=$(admin_query "$runtime_port" 'SHOW config_file') || changed
 active_hba_file=$(admin_query "$runtime_port" 'SHOW hba_file') || changed
@@ -972,7 +972,7 @@ case \"$cluster_state\" in
   down|*) refuse_runtime ;;
 esac
 load_runtime_pid || refuse_runtime
-if ! runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), floor(extract(epoch from pg_postmaster_start_time()))::bigint\"); then
+if ! runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]\"); then
   refuse_runtime
 fi
 validate_runtime_identity \"$runtime_identity\"
@@ -1018,7 +1018,7 @@ if [ \"$changed\" -eq 1 ]; then
 fi
 load_runtime_pid || refuse_runtime
 [ \"$runtime_port\" = \"$desired_port\" ] || refuse_runtime
-runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), floor(extract(epoch from pg_postmaster_start_time()))::bigint\")
+runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]\")
 validate_runtime_identity \"$runtime_identity\"
 [ \"$(admin_query \"$runtime_port\" 'SHOW config_file')\" = \"$config_file\" ] || refuse_runtime
 [ \"$(admin_query \"$runtime_port\" 'SHOW hba_file')\" = \"$hba_final\" ] || refuse_runtime

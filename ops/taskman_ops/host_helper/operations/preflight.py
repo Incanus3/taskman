@@ -107,19 +107,22 @@ def _admin_query(
         "--port", str(database["port"]), "--username", "postgres",
         "--dbname", "postgres", "--no-password",
     ]
+    argv.append("--set=ON_ERROR_STOP=1")
     for index in range(0, len(variables), 2):
         argv.append(f"--set={variables[index]}={variables[index + 1]}")
-    argv.extend(("--command", command))
-    return run_command(tuple(argv), timeout_seconds=_COMMAND_TIMEOUT_SECONDS).stdout
+    argv.append("--file=-")
+    return run_command(
+        tuple(argv), stdin=f"{command}\n".encode("utf-8"), timeout_seconds=_COMMAND_TIMEOUT_SECONDS
+    ).stdout
 
 
 def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> int:
     """Prove one exact supplied pgpass record and expose only a status code."""
 
     try:
-        if len(arguments) != 4:
+        if len(arguments) != 5:
             return 2
-        host, port_text, role, database_name = arguments
+        host, port_text, role, database_name, database_state = arguments
         if (
             host not in {"127.0.0.1", "::1"}
             or not port_text.isdecimal()
@@ -127,6 +130,7 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
             or not 1 <= int(port_text) <= 65_535
             or _IDENTIFIER_RE.fullmatch(role) is None
             or _IDENTIFIER_RE.fullmatch(database_name) is None
+            or database_state not in {"ready", "absent"}
         ):
             return 2
         raw = source.read(MAX_INPUT_BYTES + 1)
@@ -138,6 +142,7 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
         authenticate_pgpass(
             _PGPASS_PATH, raw, host=host, port=port_text,
             role=role, database=database_name, password=fields[4],
+            database_state=database_state,
         )
         return 0
     except (CommandError, OSError, UnicodeError, ValueError):
@@ -147,12 +152,15 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
 def authenticate_pgpass(
     path: Path, raw: bytes, *, host: str, port: str,
     role: str, database: str, password: str,
+    database_state: str,
 ) -> None:
     """Validate retained bytes or authenticate absent supplied bytes without writes."""
 
     try:
         details = path.lstat()
     except FileNotFoundError:
+        if database_state == "absent":
+            return
         argv = (
             "psql", "--no-psqlrc", "--quiet", "--host", host, "--port", port,
             "--username", role, "--dbname", database, "--no-password",
@@ -172,6 +180,8 @@ def authenticate_pgpass(
         or path.read_bytes() != raw
     ):
         raise ValueError("existing pgpass authority is invalid")
+    if database_state == "absent":
+        return
     run_command(
         (
             "psql", "--no-psqlrc", "--quiet", "--host", host, "--port", port,

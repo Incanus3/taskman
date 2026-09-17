@@ -124,39 +124,12 @@ def provision_authority(request: HostRequest) -> HostResult:
                 allow_lock_created_install_root=install_root_was_absent,
             )
             state = observe_host_state(paths, allow_selection_transition=True)
-            database_state = _observe_postgresql_authority(database, package_track)
-            # A provision plan may only call an existing database empty when
-            # the controlled-template probe proved it.  Preserve observed
-            # migrations as authority; missing observation is never an empty
-            # tuple for the convenience of first-install planning.
-            if database_state == "absent":
-                # A missing cluster/database is a planned provisioning delta,
-                # not an observed empty schema.  Do not touch absent
-                # credentials or manufacture controlled-template evidence.
-                database_observation = {
-                    "state": "absent",
-                    "applied_migrations": (),
-                    "initial_empty": False,
-                }
-            else:
-                credentials = Path("/etc/taskman/pgpass")
-                try:
-                    credentials.lstat()
-                except FileNotFoundError:
-                    # The controller proves its supplied pgpass through a
-                    # sensitive, read-only authentication command before
-                    # pyinfra. Keep this catalog observation secret-free so
-                    # supplied credential bytes never enter the wire result,
-                    # request, or diagnostics.
-                    database_observation = observe_database_state_or_empty_as_admin(database)
-                else:
-                    validate_credentials(credentials)
-                    database_observation = observe_database_state_or_empty(database, credentials)
-                if database_observation["state"] != database_state:
-                    raise ValueError("PostgreSQL authority observations disagree")
+            database_observation = _observe_provision_database(
+                database, Path("/etc/taskman/pgpass"), package_track,
+            )
             state = replace(
                 state,
-                database_state=database_state,
+                database_state=database_observation["state"],
                 applied_migrations=tuple(database_observation["applied_migrations"]),
                 initial_database_empty=database_observation["initial_empty"],
             )
@@ -234,6 +207,43 @@ def _validate_managed_resources(
             raise ValueError("managed resource authority is invalid")
 
 
+def _observe_provision_database(
+    database: Mapping[str, object], credentials_path: Path, package_track: str | None = None,
+) -> dict[str, object]:
+    """Observe absent or ready provisioning identities without inventing schema evidence."""
+
+    database_state = _observe_postgresql_authority(database, package_track)
+    # A provision plan may only call an existing database empty when
+    # the controlled-template probe proved it.  Preserve observed
+    # migrations as authority; missing observation is never an empty
+    # tuple for the convenience of first-install planning.
+    if database_state == "absent":
+        # A missing cluster/database is a planned provisioning delta,
+        # not an observed empty schema.  Do not touch absent
+        # credentials or manufacture controlled-template evidence.
+        database_observation = {
+            "state": "absent",
+            "applied_migrations": (),
+            "initial_empty": False,
+        }
+    else:
+        try:
+            credentials_path.lstat()
+        except FileNotFoundError:
+            # The controller proves its supplied pgpass through a
+            # sensitive, read-only authentication command before
+            # pyinfra. Keep this catalog observation secret-free so
+            # supplied credential bytes never enter the wire result,
+            # request, or diagnostics.
+            database_observation = observe_database_state_or_empty_as_admin(database)
+        else:
+            validate_credentials(credentials_path)
+            database_observation = observe_database_state_or_empty(database, credentials_path)
+        if database_observation["state"] != database_state:
+            raise ValueError("PostgreSQL authority observations disagree")
+    return database_observation
+
+
 def _observe_postgresql_authority(
     database: Mapping[str, object], package_track: str | None,
 ) -> str:
@@ -244,7 +254,8 @@ def _observe_postgresql_authority(
             "set -eu",
             "track=$1 port=$2 role=$3 database=$4",
             "command -v pg_lsclusters >/dev/null 2>&1 || { printf '%s\\n' absent; exit 0; }",
-            "candidates=$(pg_lsclusters --no-header 2>/dev/null | awk -v track=\"$track\" '(track == \"\" || $1 == track) { if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ || $3 !~ /^[0-9]+$/ || ($4 != \"online\" && $4 != \"down\") || $5 != \"postgres\") exit 2; print $1, $2, $3, $4 }')",
+            "cluster_rows=$(pg_lsclusters --no-header 2>/dev/null)",
+            "candidates=$(printf '%s\\n' \"$cluster_rows\" | awk -v track=\"$track\" '(track == \"*\" || $1 == track) { if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ || $3 !~ /^[0-9]+$/ || ($4 != \"online\" && $4 != \"down\") || $5 != \"postgres\") exit 2; print $1, $2, $3, $4 }')",
             "count=$(printf '%s\\n' \"$candidates\" | sed '/^$/d' | wc -l | tr -d ' ')",
             "[ \"$count\" -le 1 ] || exit 1",
             "[ \"$count\" -eq 0 ] && { printf '%s\\n' absent; exit 0; }",
@@ -256,16 +267,16 @@ def _observe_postgresql_authority(
             "case \"$pid\" in ''|*[!0-9]*) exit 1 ;; esac",
             "[ \"$(readlink -f \"/proc/$pid/exe\" 2>/dev/null || true)\" = \"/usr/lib/postgresql/$version/bin/postgres\" ] || exit 1",
             "[ \"$(stat --format='%U:%G' \"/proc/$pid\" 2>/dev/null || true)\" = postgres:postgres ] || exit 1",
-            "admin() { runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host /var/run/postgresql --port \"$port\" --username postgres --dbname postgres \"$@\"; }",
-            "role_ok=$(admin --set=role=\"$role\" --command \"SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND rolinherit AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership JOIN pg_roles member ON member.oid = membership.member WHERE member.rolname = :'role')\" 2>/dev/null || true)",
-            "database_ok=$(admin --set=database=\"$database\" --set=role=\"$role\" --command \"SELECT 1 FROM pg_database WHERE datname = :'database' AND pg_get_userbyid(datdba) = :'role'\" 2>/dev/null || true)",
+            "admin() { runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host /var/run/postgresql --port \"$port\" --username postgres --dbname postgres --set=ON_ERROR_STOP=1 \"$@\" --file=-; }",
+            "role_ok=$(printf '%s\\n' \"SELECT CASE WHEN rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND rolinherit AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership JOIN pg_roles member ON member.oid = membership.member WHERE member.rolname = :'role') THEN 1 ELSE 0 END FROM pg_roles WHERE rolname = :'role'\" | admin --set=role=\"$role\" 2>/dev/null)",
+            "database_ok=$(printf '%s\\n' \"SELECT CASE WHEN pg_get_userbyid(datdba) = :'role' THEN 1 ELSE 0 END FROM pg_database WHERE datname = :'database'\" | admin --set=database=\"$database\" --set=role=\"$role\" 2>/dev/null)",
             "case \"$role_ok:$database_ok\" in :) printf '%s\\n' absent ;; 1:1) printf '%s\\n' ready ;; *) exit 1 ;; esac",
         )
     )
     result = run_command(
         (
             "sh", "-ceu", script, "taskman-provision-authority",
-            "" if package_track is None else package_track,
+            "*" if package_track is None else package_track,
             str(database["port"]), str(database["role"]), str(database["name"]),
         ),
         timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS,
@@ -344,7 +355,8 @@ def _observe(
             if type(credentials) is not str or not credentials.startswith("/"):
                 raise ValueError("discovery credentials path is invalid")
             credentials_path = Path(credentials)
-            validate_credentials(credentials_path)
+            if mode != "provision":
+                validate_credentials(credentials_path)
             database = database_mapping(request.parameters["database"])
             requested_backup = (
                 _validate_restore_backup(paths, backup_id)
@@ -369,7 +381,7 @@ def _observe(
                     observation = {"state": "absent", "applied_migrations": ()}
             else:
                 observation = (
-                    observe_database_state_or_empty(database, credentials_path)
+                    _observe_provision_database(database, credentials_path)
                     if mode == "provision"
                     else observe_database_state(database, credentials_path)
                 )
@@ -737,8 +749,8 @@ def _scheduler_facts(paths: ManagedPaths) -> dict[str, object]:
         ):
             raise StateAmbiguityError("scheduled backup executable is unsafe")
         package_sha256 = sha256_file(package)
-    enabled = _systemd_property("UnitFileState")
-    if enabled == "not-found":
+    load_state = _systemd_property("LoadState")
+    if load_state == "not-found":
         # Absence is a valid pre-convergence fact.  The first provision plan
         # owns creating the package and timer; it is not ambiguous authority.
         return {
@@ -746,6 +758,9 @@ def _scheduler_facts(paths: ManagedPaths) -> dict[str, object]:
             "backup_timer_enabled": False,
             "backup_timer_state": "inactive",
         }
+    if load_state != "loaded":
+        raise StateAmbiguityError("backup timer load state is ambiguous")
+    enabled = _systemd_property("UnitFileState")
     if enabled not in {"enabled", "disabled"}:
         raise StateAmbiguityError("backup timer enablement is ambiguous")
     active = _systemd_property("ActiveState")

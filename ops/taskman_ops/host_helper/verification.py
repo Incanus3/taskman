@@ -28,6 +28,7 @@ _STATUS_RE = re.compile(r"HTTP/(?:1\.[01]|2|3) ([0-9]{3})(?: [^\r\n]*)?\Z")
 _FAILURE_RE = re.compile(r"failed to start|boot failed|application.*(failed|error)|database.*(failed|error)", re.I)
 _INTERFACE_SCOPE_RE = re.compile(r"[A-Za-z0-9_.-]{1,15}\Z")
 _MAX_OUTPUT = 9_216
+_MAX_JOURNAL_OUTPUT = 65_536
 _MAX_COMMAND_SECONDS = 3.0
 _MAX_READINESS_SECONDS = 30.0
 _VERIFY_DEADLINE_SECONDS = 45.0
@@ -109,13 +110,18 @@ def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResul
     checks.append(_check("release-identity", executable_ok, "systemd MainPID executable is under the selected release", "systemd MainPID executable does not match the selected release"))
     caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _command_timeout(deadline))[0]
     checks.append(_check("caddy-service", caddy_ok, "caddy.service is active", "caddy.service is not active"))
-    topology_ok = _listener_topology(settings["application_port"], settings["distribution_port"], settings["database_port"], deadline)
+    readiness_deadline = min(deadline, time.monotonic() + settings["readiness_timeout"])
+    topology_ok = _listener_topology(
+        settings["application_port"],
+        settings["distribution_port"],
+        settings["database_port"],
+        readiness_deadline,
+    )
     checks.append(_check("listener-topology", topology_ok, "Taskman, distribution, and PostgreSQL listeners have the required topology", "listener topology is missing, public, malformed, or ambiguous"))
     checks.append(_journal_check(deadline))
     if not _passed(checks):
         return _final_result(request, "retryable", release_id, expected, checks, state)
 
-    readiness_deadline = min(deadline, time.monotonic() + settings["readiness_timeout"])
     local_ok = _local_ready(settings["application_port"], settings["connection_timeout"], readiness_deadline)
     checks.append(_check("local-readiness", local_ok, "loopback health endpoint returned exact ready response", "loopback health endpoint did not return exact ready response before its bounded deadline"))
     if not local_ok:
@@ -391,15 +397,55 @@ def _listener_values(deadline: float) -> tuple[tuple[str, int], ...] | None:
 
 
 def _listener_topology(application: int | str | float, distribution: int | str | float, database: int | str | float, deadline: float) -> bool:
+    attempts = max(1, math.ceil(deadline - time.monotonic()) + 1)
+    for attempt in range(attempts):
+        state = _listener_topology_state(application, distribution, database, deadline)
+        if state != "pending":
+            return state == "ready"
+        if attempt + 1 < attempts:
+            remaining = deadline - time.monotonic()
+            if remaining < 0.001:
+                return False
+            time.sleep(min(1.0, remaining))
+    return False
+
+
+def _listener_topology_state(
+    application: int | str | float,
+    distribution: int | str | float,
+    database: int | str | float,
+    deadline: float,
+) -> str:
     parsed = _listener_values(deadline)
     if parsed is None:
-        return False
-    ports = (int(application), int(distribution), int(database))
-    return all(_loopback_only(parsed, port) for port in ports) and not any(port == 4369 for _address, port in parsed)
+        return "invalid"
+    if any(port == 4369 for _address, port in parsed):
+        return "invalid"
+
+    application_port, distribution_port, database_port = map(int, (application, distribution, database))
+    addresses = {
+        port: [address for address, candidate in parsed if candidate == port]
+        for port in (application_port, distribution_port, database_port)
+    }
+    if any(
+        not _loopback_only(parsed, port)
+        for port in (application_port, distribution_port, database_port)
+        if addresses[port]
+    ):
+        return "invalid"
+    if not addresses[database_port]:
+        return "invalid"
+    if not addresses[application_port] or not addresses[distribution_port]:
+        return "pending"
+    return "ready"
 
 
 def _journal_check(deadline: float) -> dict[str, object]:
-    succeeded, output = _successful(("journalctl", "--no-pager", "--output=cat", "--unit", "taskman.service", "--lines=100"), _command_timeout(deadline))
+    succeeded, output = _successful(
+        ("journalctl", "--no-pager", "--output=cat", "--unit", "taskman.service", "--lines=100"),
+        _command_timeout(deadline),
+        output_limit=_MAX_JOURNAL_OUTPUT,
+    )
     state = "unavailable" if not succeeded else "empty" if not output.strip() else "startup-failure" if _FAILURE_RE.search(output) else "clean"
     summaries = {
         "clean": "recent startup journal evidence is clean",
@@ -437,7 +483,9 @@ def _command_timeout(deadline: float) -> float:
     return min(_MAX_COMMAND_SECONDS, max(0.0, deadline - time.monotonic()))
 
 
-def _successful(argv: tuple[str, ...], timeout: float) -> tuple[bool, str]:
+def _successful(
+    argv: tuple[str, ...], timeout: float, *, output_limit: int = _MAX_OUTPUT
+) -> tuple[bool, str]:
     """Run one fixed command under its own deadline and evidence bound."""
 
     if timeout < 0.001 or not math.isfinite(timeout):
@@ -446,7 +494,7 @@ def _successful(argv: tuple[str, ...], timeout: float) -> tuple[bool, str]:
         completed = run_command(
             argv,
             timeout_seconds=timeout,
-            output_limit=_MAX_OUTPUT,
+            output_limit=output_limit,
         )
     except CommandError:
         return False, ""

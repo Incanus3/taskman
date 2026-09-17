@@ -163,6 +163,7 @@ def invoke_sensitive_pgpass_authority(
     role: str,
     database: str,
     pgpass: bytes,
+    database_state: str,
     deadline: float | None = None,
 ) -> SensitiveHelperReceipt:
     """Stage the verified helper and invoke its one secret-bearing entry."""
@@ -175,6 +176,8 @@ def invoke_sensitive_pgpass_authority(
         or not 1 <= port <= 65_535
         or type(role) is not str
         or type(database) is not str
+        or type(database_state) is not str
+        or database_state not in {"ready", "absent"}
         or type(pgpass) is not bytes
         or not pgpass
         or len(pgpass) > MAX_INPUT_BYTES
@@ -226,6 +229,7 @@ def invoke_sensitive_pgpass_authority(
             (
                 "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed_path.as_posix(),
                 "provision-pgpass-authority", host, str(port), role, database,
+                database_state,
             ),
             sudo=False,
             stdin=pgpass,

@@ -69,11 +69,13 @@ unit_executable=
 if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
   unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
   package_state=$(dpkg-query --showformat='${db:Status-Status}' --show caddy 2>/dev/null || true)
-  package_owner=$(dpkg-query --search "$unit_fragment" 2>/dev/null || true)
   package_path=
-  case "$package_owner" in
-    'caddy: '*) package_path=${package_owner#caddy: } ;;
-  esac
+  for package_candidate in /lib/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service; do
+    package_owner=$(dpkg-query --search "$package_candidate" 2>/dev/null || true)
+    case "$package_owner" in
+      "caddy: $package_candidate") package_path=$package_candidate; break ;;
+    esac
+  done
   unit_resolved=$(readlink -f "$unit_fragment" 2>/dev/null || true)
   package_resolved=$(readlink -f "$package_path" 2>/dev/null || true)
   if [ "$package_state" = installed ] && [ -n "$package_path" ] \
@@ -582,9 +584,10 @@ def _listeners(value: str) -> tuple[Listener, ...]:
 
 
 def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
-    """Parse only unambiguous process owners from privileged ``ss`` output."""
+    """Parse unambiguous owners while retaining valid shared-socket evidence."""
 
     owners: dict[Listener, tuple[str, int]] = {}
+    seen_listeners: set[Listener] = set()
     for line in value.splitlines():
         fields = line.split(maxsplit=5)
         if len(fields) < 4 or fields[0].upper() != "LISTEN":
@@ -595,16 +598,21 @@ def _listener_owners(value: str) -> dict[Listener, tuple[str, int]] | None:
         if len(fields) != 6:
             return None
         fields[5] = fields[5].rstrip()
+        if listener in seen_listeners:
+            return None
+        seen_listeners.add(listener)
         match = re.fullmatch(
             r'users:\(\("(?P<name>[^"]+)",pid=(?P<pid>[1-9][0-9]*),fd=[0-9]+\)\)',
             fields[5],
         )
-        if match is None:
+        if match is not None:
+            owners[listener] = (match.group("name"), int(match.group("pid")))
+            continue
+        if re.fullmatch(
+            r'users:\(\("[^"]+",pid=[1-9][0-9]*,fd=[0-9]+\)(?:,\("[^"]+",pid=[1-9][0-9]*,fd=[0-9]+\))+\)',
+            fields[5],
+        ) is None:
             return None
-        owner = (match.group("name"), int(match.group("pid")))
-        if listener in owners:
-            return None
-        owners[listener] = owner
     return owners
 
 

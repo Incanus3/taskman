@@ -80,7 +80,7 @@ Non-CI development and release builds target Elixir `1.20.4` with Erlang/OTP `29
 Local developers may use mise to manage that pair; the release builder installs checksum-pinned
 HexPM Ubuntu binaries directly and does not use mise or alter workstation settings.
 Alpine CI intentionally remains on Elixir `1.19.5` / OTP `26.2.5.21` until its
-[upstream signal-stack restriction](specs/2026-08-10-alpine-elixir-ci-design.md) is resolved.
+[upstream signal-stack restriction](../specs/2026-08-10-alpine-elixir-ci-design.md) is resolved.
 Keep source compatibility with that CI pair, but verify release-only runtime behavior separately.
 
 ### Application architecture
@@ -181,13 +181,18 @@ Code-size and duplication measurements are signals to review complexity, not tar
 hiding it. Confirm that a simplification removes redundant behavior or state rather than merely
 relocating it, and do not trade understandable boundaries or meaningful tests for a smaller count.
 
-### Prefer Python for workflows
+### Prefer Python for durable operations workflows
 
-Use Python for nontrivial operations logic: branching workflows, structured parsing, filesystem
-state management, subprocess coordination, retries, and recovery. This applies to new code and
-substantial changes to existing workflows, whether local or host-side. Host helpers retain their
-standard-library-only packaging boundary; reuse the existing helper transport rather than adding
-a second remote execution mechanism merely to run Python.
+This preference applies to durable repository operations scripts and their implementation, not to
+agents' everyday repository work or temporary commands. For inspection, searches, edits and other
+agent workflows, choose Bash, standard command-line tools or Python according to the task. Use
+Python when it has a concrete advantage, not because of this operations implementation rule.
+
+Use Python for nontrivial durable operations logic: branching workflows, structured parsing,
+filesystem state management, subprocess coordination, retries, and recovery. This applies to new
+code and substantial changes to existing operations workflows, whether controller-side or host-side.
+Host helpers retain their standard-library-only packaging boundary; reuse the existing helper
+transport rather than adding a second remote execution mechanism merely to run Python.
 
 One-line shell calls, or a few lines where demonstrably simpler, remain appropriate when they
 improve clarity or have a concrete advantage. Keep native tools such as `systemctl`, `psql`, and
@@ -197,7 +202,7 @@ one long embedded string to satisfy a size check. Explain a substantial-shell ex
 is introduced.
 
 This is not a prerequisite to rewrite all existing shell code. The
-[PostgreSQL host-side Python proposal](specs/2026-09-09-postgresql-host-python-design.md) remains the
+[PostgreSQL host-side Python proposal](../specs/2026-09-09-postgresql-host-python-design.md) remains the
 separately scoped refactor of its existing workflow; its parked status does not limit this general
 preference for future ops work.
 
@@ -236,7 +241,7 @@ mix precommit
 The operations gate uses four explicit workers; pytest's default remains serial. Run
 `uv run --project ops pytest ops/tests` for serial diagnosis. Avoid concurrent source edits or
 application builds while running the operations suite: administrator bridge tests share Mix build
-output. See the [parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
+output. See the [parallelism measurements](../research/2026-09-16-operations-test-parallelism.md)
 for the audit, workstation timings, and fork/thread warning caveats.
 
 For changed command or documentation surfaces, also exercise the relevant
@@ -291,5 +296,5 @@ Execute generated Python zipapps with `-I -S` in isolation tests: `-I` alone sti
 packages and can mask missing archive members through an editable workstation installation.
 Import shared fixtures explicitly to preserve their intended scope rather than enabling them
 globally. Treat code-size counts as diagnostic evidence, not a size target;
-the [deployment design](specs/2026-09-09-dedicated-host-deployment-design.md#simplicity-and-maintenance)
+the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md#simplicity-and-maintenance)
 explains why quality, safety, and coherent responsibility take precedence over size.

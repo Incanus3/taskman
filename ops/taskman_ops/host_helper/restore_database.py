@@ -16,7 +16,7 @@ from .commands import CommandError, run_command
 from .database import (
     database_mapping,
     migration_versions,
-    observe_database_state_or_empty,
+    observe_database_state_or_empty_as_admin,
 )
 from .paths import ManagedPaths
 from .restore_target import RestoreTarget, replace_restore_target
@@ -160,9 +160,7 @@ def observe_restore_databases(
             owner = parts[2]
             if owner != settings["role"]:
                 raise RestoreDatabaseError("restore database ownership is invalid")
-            table_present, applied = _migration_observation(
-                settings, credentials, parts[0]
-            )
+            table_present, applied = _migration_observation(settings, credentials, parts[0])
             observed[role] = {
                 "oid": oid,
                 "owner": owner,
@@ -382,7 +380,6 @@ def load_registered_temporary(
         or target.restored_database_oid is None
     ):
         raise RestoreDatabaseError("restore temporary database is not durably registered")
-    credentials = _credentials_path(credentials)
     if not isinstance(dump, Path) or not dump.is_absolute():
         raise RestoreDatabaseError("restore dump path is invalid")
     observed = observe_restore_databases(database, credentials)
@@ -394,22 +391,30 @@ def load_registered_temporary(
     try:
         run_command(
             (
+                "sh",
+                "-ceu",
+                'dump=$1; shift; exec "$@" < "$dump"',
+                "taskman-restore-input",
+                dump.as_posix(),
+                "runuser",
+                "-u",
+                "postgres",
+                "--",
                 "pg_restore",
                 "--exit-on-error",
                 "--no-owner",
                 "--no-privileges",
                 "--host",
-                str(settings["host"]),
+                "/var/run/postgresql",
                 "--port",
                 str(settings["port"]),
                 "--username",
-                str(settings["role"]),
+                "postgres",
                 "--dbname",
                 names["temporary"],
                 "--no-password",
-                dump.as_posix(),
+                f"--role={settings['role']}",
             ),
-            env={"PGPASSFILE": credentials.as_posix()},
             timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
         )
     except CommandError as error:
@@ -429,10 +434,10 @@ def _catalog_rows(database: Mapping[str, object], names: Mapping[str, str]) -> s
 def _migration_observation(
     database: Mapping[str, object], credentials: Path, name: str
 ) -> tuple[bool, tuple[int, ...] | None]:
-    table = _application_query(
-        database,
-        credentials,
-        name,
+    names = restore_database_names(database)
+    query = _application_query if name == names["canonical"] else _admin_database_query
+    table = query(
+        database, credentials, name,
         "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' "
         "AND table_name = 'schema_migrations'",
     ).strip()
@@ -440,7 +445,7 @@ def _migration_observation(
         return False, None
     if table != b"1":
         raise RestoreDatabaseError("restore migration-table observation is invalid")
-    rows = _application_query(
+    rows = query(
         database,
         credentials,
         name,
@@ -470,12 +475,12 @@ def _active_writer_count(database: Mapping[str, object], oid: int) -> int:
 
 
 def _empty_template_matches(
-    database: Mapping[str, object], credentials: Path
+    database: Mapping[str, object], _credentials: Path
 ) -> bool:
     names = restore_database_names(database)
     temporary = {**database_mapping(database), "name": names["temporary"]}
     try:
-        state = observe_database_state_or_empty(temporary, _credentials_path(credentials))
+        state = observe_database_state_or_empty_as_admin(temporary)
     except (CommandError, TypeError, ValueError):
         return False
     return state.get("state") == "ready" and state.get("initial_empty") is True
@@ -521,6 +526,43 @@ def _application_query(
     ).stdout
 
 
+def _admin_database_query(
+    database: Mapping[str, object], _credentials: Path, name: str, sql: str
+) -> bytes:
+    """Read one exact restore-owned derived database over the local socket."""
+
+    settings = database_mapping(database)
+    names = restore_database_names(settings)
+    if name not in {names["temporary"], names["retired"]}:
+        raise RestoreDatabaseError("restore derived database name is invalid")
+    return run_command(
+        (
+            "runuser",
+            "-u",
+            "postgres",
+            "--",
+            "psql",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--host",
+            "/var/run/postgresql",
+            "--port",
+            str(settings["port"]),
+            "--username",
+            "postgres",
+            "--dbname",
+            name,
+            "--no-password",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--command",
+            sql,
+        ),
+        timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+    ).stdout
+
+
 def _admin_query(
     database: Mapping[str, object],
     sql: str,
@@ -555,9 +597,9 @@ def _admin_query(
             "--set",
             "ON_ERROR_STOP=1",
             *variable_argv,
-            "--command",
-            sql,
+            "--file=-",
         ),
+        stdin=f"{sql}\n".encode("utf-8"),
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     ).stdout
 

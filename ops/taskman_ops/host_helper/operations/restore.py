@@ -1036,8 +1036,9 @@ def _terminate_connections(inputs: _Inputs) -> None:
             "runuser", "-u", "postgres", "--", "psql", "--no-psqlrc", "--host", "/var/run/postgresql",
             "--port", str(inputs.database["port"]), "--username", "postgres", "--dbname", "postgres",
             "--no-password", "--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1", *variables,
-            "--command", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (:'database_0', :'database_1') AND pid <> pg_backend_pid()",
+            "--file=-",
         ),
+        stdin=b"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (:'database_0', :'database_1') AND pid <> pg_backend_pid()\n",
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     )
 

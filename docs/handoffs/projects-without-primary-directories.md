@@ -1,8 +1,11 @@
 # Projects without primary directories
 
-- Status: active
-- Updated: 2026-09-10
+- Status: parked
+- Updated: 2026-09-18
 - Resume: `$resume projects-without-primary-directories`
+
+Resume only after the current operations branch is merged and this workstream is selected.
+Use its own dedicated branch from refreshed main; retain the written-spec review and plan gates below.
 
 ## Objective
 
@@ -18,13 +21,21 @@ CLI, and current product documentation without making replacement agent-integrat
 
 The design direction is approved and the self-contained specification is written. A Project becomes
 a machine-independent logical container with a name and no directory. Agent integration is deferred
-rather than redesigned around Auggie or Orca.
+rather than redesigned around Auggie or Orca. Written-spec review approval remains pending;
+no migration or implementation exists. Product-document correction remains in scope. If ProjectLive
+decomposition runs first, use its resulting workspace creation owner; neither workstream requires
+the other. Document refresh grants no deployment authority.
 
-## Next actions
+## Next actions when selected after the operations merge
 
 1. Obtain review approval for the written specification.
-2. Write the implementation plan and create the corresponding Beads work items.
-3. Update this handoff, then resume implementation in a clean session.
+2. Write and review the implementation plan from the complete design; create repository-local
+   Beads work items for implementation and verification units through `br`.
+3. After plan approval, update this handoff, then resume implementation in a clean session.
+4. Generate, rather than hand-name, the migration using the command specified in the design.
+5. Implement the vertical change across domain, UI, API, CLI, bundled skill, tests and canonical
+   documentation without selecting a replacement agent model.
+6. Verify the migration and rollback limitation explicitly, then run the full completion gates.
 
 ## Constraints and uncertainty
 
