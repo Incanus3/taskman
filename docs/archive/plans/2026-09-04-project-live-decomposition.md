@@ -1,8 +1,13 @@
 # ProjectLive Workflow Decomposition Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use
-> superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement
-> this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+Historical implementation plan. The nine-task extraction is complete, independently reviewed, and
+verified; this plan was archived on 2026-09-19. Its checked steps preserve execution provenance,
+not remaining work. Current architecture belongs to the
+[accepted design](../../specs/2026-09-03-project-live-decomposition-design.md) and implemented code.
+The separately gated behavior follow-up belongs to the
+[Missing List recovery specification](../../specs/2026-09-18-missing-list-recovery-design.md),
+[active implementation plan](../../plans/2026-09-18-missing-list-recovery.md), and
+[Missing List recovery handoff](../../handoffs/missing-list-recovery.md).
 
 **Goal:** Split `TaskmanWeb.ProjectLive` into cohesive workflow modules while preserving every
 route, event, stream, subscription, DOM, persistence, conflict, and error contract.
@@ -16,10 +21,9 @@ structure is a nested `State` module containing only data and pure transformatio
 
 **Spec:** `docs/specs/2026-09-03-project-live-decomposition-design.md`
 
-**Status:** Nine-task extraction implemented and verified, including final scoped review and
-fix re-review, on `project-live-decomposition`. Separately gated missing-location behavior design,
-publication and completion decisions remain in the handoff.
-Updated: 2026-09-18.
+**Status:** Completed and archived. The operator confirmed extraction-workstream completion on
+2026-09-19; recovery continues through its separate handoff.
+Updated: 2026-09-19.
 
 **Delivery tracking:** `tas-1tq`
 
@@ -37,8 +41,7 @@ Updated: 2026-09-18.
 
 ## Execution target and completion gates
 
-Workstream scheduling and selection are recorded in the
-[handoff](../handoffs/project-live-decomposition.md#remaining-execution-sequence).
+Workstream scheduling and selection were recorded in the now-retired extraction handoff.
 Before execution, refresh the actual target/base and select an isolated implementation branch.
 The commands below use the purpose-named
 `project-live-decomposition` branch; `but commit -b` creates it if absent. If the operator selects
@@ -1084,7 +1087,7 @@ retaining the current not-found route behavior. Do not clear creation, editing, 
 or movement state as an incidental extraction change. Preserve existing creation-location
 canonicalization without discarding its draft. This records the current behavior, not a decision
 that it is the final missing-location UX; the separately scoped
-[behavior follow-up](../specs/2026-09-03-project-live-decomposition-design.md#missing-location-behavior-follow-up)
+[behavior follow-up](../../specs/2026-09-03-project-live-decomposition-design.md#missing-location-behavior-follow-up)
 must review action invalidation and recoverable user input before changing that contract.
 
 For Task events in the selected Project, refresh Listing, reconcile Movement, then call

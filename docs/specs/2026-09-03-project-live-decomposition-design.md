@@ -2,7 +2,8 @@
 
 ## Status
 
-Implemented; missing-location behavior follow-up remains separately gated. Updated: 2026-09-18.
+Implemented and verified; the missing-location recovery workstream remains separately gated.
+Updated: 2026-09-19.
 
 ## Context
 
@@ -25,7 +26,8 @@ makes otherwise independent changes collide in one file.
 
 The existing LiveView behavior is well covered by the tests under
 `test/taskman_web/live/project_live/`. The
-[implementation plan](../plans/2026-09-04-project-live-decomposition.md) defines the extraction tasks.
+[archived implementation plan](../archive/plans/2026-09-04-project-live-decomposition.md) records
+the completed extraction sequence.
 If the separately designed directory removal runs first, preserve its then-current Project
 form/navigation contract; neither workstream requires the other.
 
@@ -492,18 +494,24 @@ This refactor does not introduce new error semantics.
 
 ### Missing-location behavior follow-up
 
-On 2026-09-18 the operator agreed to track a separate behavior review/fix in this workstream.
+The proposed detailed contract now lives in the [Missing List recovery design](2026-09-18-missing-list-recovery-design.md),
+with a [draft implementation plan](../plans/2026-09-18-missing-list-recovery.md) and a separate
+[workstream handoff](../handoffs/missing-list-recovery.md). Direction is approved; these written
+artifacts still require review and implementation approval. The evidence below remains the
+extraction baseline and does not describe implemented recovery.
+
+On 2026-09-18 the operator agreed to track a separate recovery workstream.
 Current external List reconciliation marks a missing selected location, hides its Task creation/
 detail surfaces, and clears the Task stream and empty flags; it retains transient creation and
 movement state. Existing route lookup has a different boundary: an unavailable route clears modal
 state. Extraction must describe these existing boundaries accurately, without interpreting draft
 retention as proof that the behavior is correct.
 
-After the approved extraction sequence, review missing-location handling as a separately scoped
-behavior increment. The preferred direction is to invalidate actions tied to the missing location,
-explain what disappeared, and preserve recoverable user input. Specify whether/how drafts remain
+The recovery workstream reviews missing-location handling as a separately scoped behavior
+increment. Its preferred direction is to invalidate actions tied to the missing location, explain
+what disappeared, and preserve recoverable user input. It specifies whether and how drafts remain
 accessible, how the human chooses a new location or discards input, and which pending actions must
-stop. Do not silently redirect a save into the Project root or erase drafts as a convenience.
+stop. It must not silently redirect a save into the Project root or erase drafts as a convenience.
 
 Reproduce external disappearance with creation, detail and movement active, including stale browser
 events or pending work after the surface hides. Creation currently retains a List struct while
@@ -540,11 +548,12 @@ Source inspection also finds unguarded conflict, parent-picker, and movement sea
 handlers, but those variants were not separately reproduced. A future approved specification
 must define its event boundary and cover those actions explicitly.
 
-The next behavior-design decision remains pending: stop location-bound actions, show retained
-input in an accessible recovery surface, and require explicit destination selection before
-resuming creation. Recovery storage lifetime, detail recovery when its Task survives or is gone,
-and explicit movement reopening must be specified before implementation. No persistence across
-reload, automatic save redirection, or List deletion is authorized by this investigation.
+The recovery direction is approved: stop location-bound actions, show retained input in an
+accessible recovery surface, and require explicit destination selection before resuming creation,
+with copying/discarding input available. This authorizes detailed design and planning. Recovery
+storage lifetime, parent relationships, navigation, detail recovery when its Task survives or is
+gone, and explicit movement reopening must be specified and approved before implementation.
+No persistence across reload, automatic save redirection, or List deletion is authorized by this investigation.
 
 ### Preserved extraction outcomes
 
@@ -561,6 +570,34 @@ reload, automatic save redirection, or List deletion is authorized by this inves
 
 Moving a clause to another module must not broaden exception handling or convert a currently visible
 failure into a silent fallback.
+
+### Final implementation decisions
+
+The implemented extraction resolved several illustrative-plan details while preserving the design:
+
+- `Editing.State.open/4` receives the prior state, selected Task, prebuilt `Autosave`, and domain
+  hierarchy. It preserves the persisted Task as the baseline while opening with `saved?: false`, an
+  idle indicator, and the existing autosave sequence.
+- `Editing` may call `Creation.clear/1` only for missing-detail and missing-hierarchy cleanup. This
+  minimal acyclic dependency preserves the existing all-modal cleanup contract.
+- `Editing.State` loads its UI hierarchy state from the domain hierarchy through the pure
+  `Hierarchy.load/2` transition, preserving disclosure state.
+- Resolving a parent conflict synchronizes the persisted picker without adding the hierarchy and
+  listing refreshes used by an ordinary successful parent save.
+- `Editing.refresh_after_move/2` performs a scoped selected-Task refetch and reloads autosave with a
+  saved indicator while retaining its sequence. General persisted-Task synchronization continues
+  to preserve pending edits.
+- Missing-location reconciliation returns the already loaded Lists with
+  `{:location_missing, task_lists}`. Creation can therefore canonicalize a surviving parent-derived
+  List before Listing clears, without a duplicate query or reverse workflow dependency.
+- Task notifications run Listing, Movement, Editing, and then ParentSelection in that order.
+  `Editing.reconcile/2` returns an explicit successful persisted-Task outcome or `:unchanged`, so
+  ParentSelection synchronizes exactly once after a successful lookup and remains unchanged when
+  the selected Task is missing. Scheduled-autosave picker behavior remains independent.
+
+Final independent review and fix re-review found no remaining extraction defects. The verified
+baseline passed 264 focused tests, structural and formatting checks, 829 full `mix precommit`
+tests, and PR CI without compiler warnings. Expected negative-path runtime logs remain nonblocking.
 
 ## Implementation sequence
 
