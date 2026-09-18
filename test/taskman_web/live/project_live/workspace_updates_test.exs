@@ -150,7 +150,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert has_element?(view, "#list-#{renamed.id}", "Other")
     assert has_element?(view, "#location-path", "Selected")
     assert has_element?(view, "#task-#{selected_task.id}")
-    assert view_assigns(view).selected_project.id == selected_project.id
+    assert view_assigns(view).workspace.selected_project.id == selected_project.id
   end
 
   test "duplicate and delayed List events converge on canonical navigation", %{conn: conn} do
@@ -340,7 +340,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     task_path = ~p"/projects/#{project.id}/lists/#{root.id}/tasks/#{selected.id}"
 
     {:ok, view, _html} = live(conn, task_path)
-    assert %{task_hierarchy: %{hierarchy: %{root: hierarchy_root}}} = view_assigns(view)
+    assert %{editing: %{hierarchy: %{hierarchy: %{root: hierarchy_root}}}} = view_assigns(view)
     assert Enum.map(hierarchy_root.location_path, & &1.name) == ["Before"]
 
     assert {:ok, _renamed} =
@@ -349,7 +349,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     sync_view(view)
 
     assigns = view_assigns(view)
-    assert %{task_hierarchy: %{hierarchy: %{root: hierarchy_root}}} = assigns
+    assert %{editing: %{hierarchy: %{hierarchy: %{root: hierarchy_root}}}} = assigns
     assert Enum.map(hierarchy_root.location_path, & &1.name) == ["Latest"]
 
     selected_node = find_hierarchy_node(hierarchy_root, selected.id)
@@ -380,7 +380,47 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='Draft task']")
     assert has_element?(view, "#task-create-location", "List Latest")
-    assert view_assigns(view).task_create_location.name == "Latest"
+    assert view_assigns(view).creation.location.name == "Latest"
+    refute_patched(view, task_path)
+  end
+
+  test "missing selected List preserves a parent-derived creation draft and canonicalizes its surviving List",
+       %{conn: conn} do
+    project = project_fixture(%{})
+    selected = list_fixture(project, nil, %{name: "Selected"})
+    parent_list = list_fixture(project, nil, %{name: "Before"})
+    parent = task_fixture(project, parent_list, %{title: "Parent"})
+
+    task_path =
+      ~p"/projects/#{project.id}/lists/#{selected.id}/tasks/new?parent_task_id=#{parent.id}"
+
+    {:ok, view, _html} = live(conn, task_path)
+
+    view
+    |> form("#task-form", task: %{title: "Recoverable draft"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    before = view_assigns(view)
+    assert before.creation.location.id == parent_list.id
+
+    Taskman.Repo.delete!(selected)
+
+    assert {:ok, renamed} =
+             externally(fn -> Lists.rename_list(project, parent_list, %{name: "Latest"}) end)
+
+    sync_view(view)
+
+    after_update = view_assigns(view)
+    assert after_update.workspace.location_not_found?
+    assert after_update.creation.location == renamed
+    assert after_update.creation.form.params == before.creation.form.params
+    assert after_update.creation.enabled? == before.creation.enabled?
+    assert after_update.editing == before.editing
+    assert after_update.task_parent_picker == before.task_parent_picker
+    assert after_update.task_move == before.task_move
+    assert after_update.listing.tasks_empty?
+    refute after_update.listing.tasks_filtered_empty?
+    refute has_element?(view, "#task-modal")
     refute_patched(view, task_path)
   end
 

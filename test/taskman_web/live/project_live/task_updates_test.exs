@@ -106,7 +106,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     send(view.pid, task_event(project_a.id, task_a.id, :updated, [:title]))
     sync_view(view)
-    assert view_assigns(view).selected_project.id == project_b.id
+    assert view_assigns(view).workspace.selected_project.id == project_b.id
     assert has_element?(view, "#task-#{task_b.id}")
 
     send(view.pid, %Event{
@@ -118,7 +118,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     })
 
     sync_view(view)
-    assert view_assigns(view).selected_project.id == project_b.id
+    assert view_assigns(view).workspace.selected_project.id == project_b.id
     assert has_element?(view, "#task-#{task_b.id}")
   end
 

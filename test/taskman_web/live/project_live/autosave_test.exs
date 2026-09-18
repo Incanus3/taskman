@@ -330,9 +330,15 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     socket =
       %{socket | assigns: Map.merge(socket.assigns, %{live_action: :show_task})}
-      |> Phoenix.Component.assign(:selected_project, selected_project)
-      |> Phoenix.Component.assign(:selected_task, task)
-      |> Phoenix.Component.assign(:task_autosave, autosave)
+      |> Phoenix.Component.assign(:workspace, %{
+        socket.assigns.workspace
+        | selected_project: selected_project
+      })
+      |> Phoenix.Component.assign(:editing, %{
+        socket.assigns.editing
+        | selected_task: task,
+          autosave: autosave
+      })
 
     params = %{
       "project_id" => Integer.to_string(selected_project.id),
@@ -340,9 +346,9 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     }
 
     assert {:noreply, socket} = ProjectLive.handle_params(params, nil, socket)
-    assert socket.assigns.selected_task == nil
-    assert socket.assigns.task_not_found?
-    assert socket.assigns.task_autosave.form == nil
+    assert socket.assigns.editing.selected_task == nil
+    assert socket.assigns.editing.not_found?
+    assert socket.assigns.editing.autosave.form == nil
 
     socket = %{socket | assigns: Map.put(socket.assigns, :flash, %{})}
     assert rendered_to_string(ProjectLive.render(socket.assigns)) =~ ~s(id="task-not-found")
@@ -479,8 +485,11 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     socket =
       %{socket | assigns: Map.merge(socket.assigns, %{live_action: :show_task})}
-      |> Phoenix.Component.assign(:selected_project, project)
-      |> Phoenix.Component.assign(:selected_task, latest)
+      |> Phoenix.Component.assign(:workspace, %{
+        socket.assigns.workspace
+        | selected_project: project
+      })
+      |> Phoenix.Component.assign(:editing, %{socket.assigns.editing | selected_task: latest})
       |> Phoenix.Component.assign(:task_parent_picker, conflicted_picker)
 
     assert {:noreply, socket} =

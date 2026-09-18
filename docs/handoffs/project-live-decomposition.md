@@ -1,11 +1,12 @@
 # ProjectLive decomposition
 
-- Status: parked
+- Status: active
 - Updated: 2026-09-18
 - Resume: `$resume project-live-decomposition`
 
-Resume only after the current operations branch is merged and this workstream is selected.
-Use its own dedicated branch from refreshed main; retain the approved-plan execution gates below.
+Operations changes are merged. The operator selected this workstream and approved the dedicated
+`project-live-decomposition` branch from refreshed `origin/main` at `73725e54`.
+Implementation has resumed through the existing clean-session boundary.
 
 ## Objective
 
@@ -20,10 +21,18 @@ ownership, streams, events, or user-visible behavior.
 
 ## Current checkpoint
 
-Design and nine-task implementation plan are approved; no decomposition has started. `tas-1tq`
-and `.1`–`.9` remain deferred until selection. Small private workflow `State` modules are nested
-in their owning files and limited to pure transformations. Select/refresh the isolated target/base
-before using the plan's `project-live-decomposition` commit commands; do not infer old branches.
+All nine extraction tasks (`tas-1tq.1`–`.9`) are implemented and reviewed through
+`b3933e99`, including the final cross-workflow picker fix. ProjectLive is the sole workspace
+LiveView and a 182-line coordinator. Final independent review and scoped fix re-review are clean;
+264 focused tests and 829 full `mix precommit` tests pass, with format/structural checks clean.
+Existing negative-path runtime logs are nonblocking; compilation is warning-free.
+
+`tas-1tq` stays open for `tas-1tq.10`. Three rolled-back test-database disappearance probes
+established stale creation can save after hiding, pending autosave can clear a hidden draft,
+and stale movement can retain an inaccessible error. Evidence and fixture limitations are in the
+[design follow-up](../specs/2026-09-03-project-live-decomposition-design.md#missing-location-investigation-evidence).
+No missing-location behavior fix or product List deletion has been implemented. The next gate is
+behavior-design approval, including creation resumption versus copying/discarding input.
 
 If directory removal runs first, preserve its accepted form/navigation behavior; neither
 workstream requires the other. Missing-location extraction clears only listing results and
@@ -32,21 +41,27 @@ on `.9`; keep it in this workstream until resolved. Explicit operator completion
 required before handoff retirement. Use the existing clean-session boundary; do not request a
 second boundary solely for document refresh.
 
-## Next actions when selected after the operations merge
+## Remaining execution sequence
 
-1. Select and refresh the isolated implementation target/base; resume through the existing
-   clean-session boundary and read the complete design and plan.
-2. Use subagent-driven development by default, with separate implementer and verifier agents.
-3. Start `tas-1tq.1`, then execute the remaining tasks in plan order with a passing checkpoint and
-   commit after each.
-4. After the extraction sequence, review and separately scope the
-   [missing-location behavior follow-up](../specs/2026-09-03-project-live-decomposition-design.md#missing-location-behavior-follow-up).
-   Invalidate actions tied to a disappeared location while preserving recoverable input; specify
-   recovery UX, reproduce active creation/detail/movement and stale/pending actions, then obtain
-   behavior-design approval before regression coverage and a fix. Do not implement List deletion.
-   This agreed follow-up is not part of the behavior-preserving extraction or an approved fix.
+1. Extraction and final review/fix verification are complete; preserve the verified baseline.
+2. Current position: separately scope the
+   [missing-location behavior follow-up](../specs/2026-09-03-project-live-decomposition-design.md#missing-location-behavior-follow-up)
+   (`tas-1tq.10`). Review the reproduced creation/detail/movement failures and remaining
+   source-only stale/pending action variants. Specify accessible recovery and action invalidation,
+   explicit destination choice, surviving/missing Task recovery, movement reopening and draft
+   lifetime. Obtain behavior-design approval before repository regression coverage or a fix.
+3. After approved design and planning, implement the bounded recovery behavior, independently
+   review it and run covering checks plus `mix precommit`. Do not implement List deletion.
+4. Publication and merge require separate operator authorization and refreshed target state.
+   Explicit workstream completion confirmation is required before closing the feature and retiring
+   this handoff; if the follow-up is deferred instead, record that operator decision explicitly.
 
 ## Pending decision
 
-Implementation target selection is required before execution. The approved design direction and
-nine-task dependency order remain intact. Do not begin implementation in this review session.
+The approved extraction is authorized on the selected branch. After extraction, the missing-location
+behavior design still requires approval. Publication, merge, and explicit workstream completion
+remain separate operator gates.
+
+Before any eventual publication, refresh the target: GitButler currently reports a historical
+same-name remote branch (`fb945c12`) requiring force. No push or history rewrite is authorized;
+resolve the publication target explicitly rather than overwriting that remote by default.
