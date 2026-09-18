@@ -42,10 +42,53 @@ Gaps, simplification candidates and optimization candidates are examples, not an
 Update the entry to its current conclusion rather than accumulating its development history. A dated
 before/after experiment that supports a finding is evidence; a sequence of delivery updates is not.
 
-Handoffs are short-lived and should remain concise rather than accumulate a complete development
-history. Retire them after the operator explicitly acknowledges workstream completion and their
-relevant final information has been harvested into durable owners. Normally discard obsolete
+## Handoffs
+
+Handoffs are short-lived transfer documents for active workstreams. They preserve the minimum
+current state needed to resume safely: the implemented baseline, remaining sequence, blockers,
+dependencies, pending decisions, approval gates, and verification evidence that establishes the
+baseline or explains a blocker.
+
+Maintain one handoff per workstream under `docs/handoffs/` and keep its index entry current. Update
+it when the workstream advances, changes direction, reaches a material checkpoint, or needs to move
+to another session. Keep it concise and actionable. Link to canonical specifications, plans, product
+documents, guides, and tracker items rather than copying their content or turning the handoff into a
+second source of truth.
+
+Do not replace agreed unfinished work with only the immediate next action. Preserve the execution
+sequence and its dependencies, decisions, and authorization or verification gates until each item
+is completed or explicitly superseded. Repository history alone is not sufficient preservation.
+
+Retire a handoff only after the operator explicitly confirms that the workstream is complete,
+explicitly acknowledges every ruling made autonomously during implementation, and lasting decisions
+and evidence have been harvested into their canonical owners. Completion acknowledgement does not
+also acknowledge rulings unless the rulings were presented and the acknowledgement expressly covers
+them. Once these gates are satisfied, retire the handoff before merging the workstream; do not leave
+retirement as post-merge cleanup that requires another branch. Normally discard obsolete
 continuation and historical narration. If a historical handoff or ledger still has a concrete use,
 keep only the relevant material under `docs/archive/handoffs/` and index it as historical. Do not
-archive a ledger merely to preserve everything, and do not retire an active handoff before explicit
-completion confirmation.
+archive a ledger merely to preserve everything.
+
+### Workstream rulings
+
+During an active workstream, retain every agent ruling in a dedicated section of its handoff.
+A ruling is a decision made to resolve conflicting guidance, an ambiguity, a plan defect, a review
+disagreement, or a scope or ownership trade-off. Record what was decided, why, its current status,
+and the cost or risk if wrong; link to the canonical decision or implementation contract when useful.
+Keep entries concise and in decision order. Routine progress narration is not a ruling.
+
+Persist rulings before deleting temporary ledgers or other execution artifacts. A chat response,
+repository history, or a current specification alone does not replace this active-workstream record.
+Handoff refreshes and shortening must preserve all rulings while the workstream remains active,
+including those from completed tasks. Mark superseded or reversed entries and identify their
+replacements rather than deleting them; retaining the original rationale makes correction visible.
+
+Before retirement, present every ruling made autonomously during implementation to the operator and
+record its explicit acknowledgement, revision, or rejection. Keep a ruling pending until that
+response is unambiguous. Workstream completion and ruling acknowledgement are separate gates, even
+when the operator addresses both in one response.
+
+At explicit operator-confirmed workstream completion, harvest lasting decisions and rationale into
+canonical owners. After the operator acknowledges the ruling ledger, retire the handoff before
+merge. The active record requirement does not require permanently archiving a complete ruling
+ledger.
