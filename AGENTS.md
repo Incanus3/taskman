@@ -52,6 +52,9 @@ Do not include:
 Update a handoff when the workstream advances so its state, task IDs, blockers, and next action
 remain current.
 
+Retain all workstream rulings in the active handoff, including superseded decisions, following
+[the documentation guide](docs/guides/documentation.md#workstream-rulings).
+
 Preserve the operator-agreed execution sequence, dependencies, pending decisions, and
 authorization or verification gates across handoff updates. Agreed remaining work is not
 speculative backlog.
@@ -63,6 +66,12 @@ When asked to shorten a handoff, compress each agreed unfinished step rather tha
 
 Update the current position and retire completed instructions without dropping unfinished
 commitments. Concision must not erase information needed to continue the agreed work.
+
+Before retiring a handoff, present every ruling made autonomously during implementation and obtain
+the operator's explicit acknowledgement, revision, or rejection. Workstream completion does not
+implicitly acknowledge those rulings. After completion, ruling acknowledgement, and durable
+harvesting are all satisfied, retire the handoff before merge rather than leaving post-merge
+cleanup.
 
 Before removing or materially shortening such information, verify that it is completed,
 explicitly superseded, or preserved in a canonical document linked from the handoff. Repository

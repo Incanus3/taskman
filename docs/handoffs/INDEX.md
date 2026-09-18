@@ -2,8 +2,9 @@
 
 This is the complete index of current repository handoffs.
 
-- [ProjectLive decomposition](project-live-decomposition.md) — active — Split the workspace
-  LiveView into workflow modules; extraction verified; missing-location recovery design approval pending, then fix/review and publication/completion gates — `$resume project-live-decomposition`
+- [Missing List recovery](missing-list-recovery.md) — parked — Recovery direction approved;
+  resume on a dedicated branch for detailed design and plan approval before implementation —
+  `$resume missing-list-recovery`
 - [Projects without primary directories](projects-without-primary-directories.md) — parked —
   Remove machine-specific Project paths; direction approved; written-design review approval pending before planning —
   `$resume projects-without-primary-directories`
