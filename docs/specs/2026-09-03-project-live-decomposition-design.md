@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved; decomposition is not implemented. Updated: 2026-09-18.
+Implemented; missing-location behavior follow-up remains separately gated. Updated: 2026-09-18.
 
 ## Context
 
@@ -279,6 +279,9 @@ The existing `ParentPicker` module remains the socket-free state and transition 
 `ParentSelection` translates browser events and persisted results into socket updates.
 
 Its main internal APIs are `handle_event/3`, `open_edit/3`, `sync/2`, `refresh/1`, and `clear/1`.
+`sync/2` consumes the persisted selected Task from Editing's successful reconciliation outcome,
+without another selected-Task lookup. Reconciliation calls it exactly once on success and skips it
+when Editing reports `:unchanged`, including when the selected Task lookup fails.
 
 ### `TaskmanWeb.ProjectLive.Tasks.Editing`
 
@@ -297,13 +300,20 @@ The existing `Autosave` and `Hierarchy` modules remain socket-free. `Editing` co
 the socket, timers, Tasks context, and routes.
 
 Its main internal APIs are `handle_event/3`, `apply_route/3`, `handle_autosave_info/2`, `flush/1`,
-`reconcile/2`, `reload_hierarchy/1`, and `clear/1`.
+`reconcile/2`, `sync_persisted_task/2`, `refresh_after_move/2`, `reload_hierarchy/1`, and `clear/1`.
+`reconcile/2` returns `{socket, {:task_reconciled, persisted_task}}` after a successful selected-Task
+lookup or `{socket, :unchanged}` otherwise. It updates editing state only; the coordinator owns
+external picker synchronization. Scheduled autosave synchronization retains its picker updates.
 
 `Editing.State` groups the selected Task, detail visibility, not-found state, autosave state, and
-hierarchy state. Its transformations include `empty/0`, `open/3`, `not_found/1`,
-`put_autosave/2`, `put_hierarchy/2`, `clear_transient/1`, and `clear/1`. `open/3` establishes a
-saved autosave baseline and matching hierarchy for the same selected Task; `not_found/1` removes
-incompatible detail state.
+hierarchy state. Its transformations include `empty/0`, `open/4`, `not_found/1`,
+`put_autosave/2`, `put_hierarchy/2`, `clear_transient/1`, and `clear/1`. `open/4` accepts the prior
+state, selected Task, prebuilt `Autosave`, and matching domain `Taskman.Tasks.Hierarchy`.
+It loads UI `Tasks.Hierarchy` state internally through pure `Hierarchy.load/2`.
+The orchestration module builds the context-dependent autosave form and preserves the existing
+detail-opening `saved?: false`
+and idle save indicator; its baseline is the persisted Task. `not_found/1` removes incompatible
+detail state.
 
 ### `TaskmanWeb.ProjectLive.Tasks.Movement`
 
@@ -321,8 +331,11 @@ The existing `Move` module remains the socket-free movement state. `Movement` ow
 orchestration around it.
 
 Its main internal APIs are `handle_event/3`, `refresh/1`, `reconcile/1`, and `clear/1`.
-`Movement` may depend on `Editing.flush/1` and `Listing.refresh/1`; neither module may depend back on
-`Movement`.
+`Movement` may depend on `Editing.flush/1`, `Editing.refresh_after_move/2`, and `Listing.refresh/1`;
+`Editing.refresh_after_move/2` reloads a matching selected Task after successful movement with
+`Autosave.load(..., saved?: true)`, preserving the post-move saved indicator. Ordinary persisted
+Task synchronization retains pending edits through `Editing.sync_persisted_task/2`. Neither Editing
+nor Listing may depend back on `Movement`.
 
 ### `TaskmanWeb.ProjectLive.Reconciliation`
 
@@ -388,6 +401,7 @@ Tasks.Creation
   └── Tasks.Listing
 
 Tasks.Editing
+  ├── Tasks.Creation (clear/1 for missing-detail cleanup only)
   └── Tasks.Listing
 
 Workspace
@@ -402,7 +416,10 @@ All workflow modules
 
 The diagram expresses allowed direction, not a requirement that every listed dependency exist.
 Creation and Editing may refresh Listing after their successful mutations; Listing must not depend
-on either workflow. These edges preserve the approved plan's refresh calls without introducing cycles.
+on either workflow. Editing may call `Creation.clear/1` only to preserve all-modal cleanup
+when detail or its hierarchy is missing, including late creation-validation events on a detail
+route. Creation must not depend on Editing. These edges preserve the approved plan's refresh calls
+without introducing cycles.
 `Paths` and the socket-free state modules must never depend on a workflow module.
 `Reconciliation` is a top-level coordinator and no workflow module may depend on it.
 
@@ -414,8 +431,8 @@ not part of this design.
 
 - Workflow event handlers accept `(event, params, socket)` and return `{:noreply, socket}`.
 - `Reconciliation.handle_info/2` returns `{:noreply, socket}`.
-- Lower-level workflow operations return an updated socket or the existing tagged result when the
-  caller must decide whether to navigate.
+- Lower-level workflow operations return an updated socket or an explicit tagged result when the
+  caller must coordinate downstream work or navigation.
 - Workflow `State` modules accept and return structures without receiving a socket.
 - Workflow orchestration modules use LiveView socket APIs directly and assign complete state
   structures returned by pure transitions.
@@ -452,9 +469,18 @@ For external notifications:
 
 1. `Reconciliation` validates the event envelope exactly as today.
 2. Project/List events first reconcile `Workspace`.
-3. Any resulting location change refreshes `Creation`, `Listing`, and `Movement` in that order.
-4. Task events refresh `Listing`, then reconcile the open detail through `Editing` and
-   `ParentSelection`, then reconcile the move surface through `Movement`.
+3. `Workspace.reconcile/2` returns `{socket, :unchanged}`,
+   `{socket, {:location_changed, task_lists}}`, or `{socket, {:location_missing, task_lists}}`.
+   A found location refreshes `Creation`, `Listing`, `Movement`, `ParentSelection`, and Task hierarchy
+   in that order. A missing location refreshes only the creation location from the already loaded
+   Lists, then clears `Listing`; creation, editing, parent-selection, and movement drafts remain.
+   Carrying the Lists preserves canonicalization when creation targets a different surviving List
+   through a selected parent Task, without another context lookup.
+4. Task events refresh `Listing`, reconcile the move surface through `Movement`, reconcile the
+   open detail through `Editing`, and synchronize `ParentSelection` exactly once from the explicit
+   `{:task_reconciled, persisted_task}` outcome in that order. An `:unchanged` outcome skips picker
+   synchronization, preserving its state when the selected Task disappears. Only hierarchy-affecting
+   operations or fields then reload hierarchy.
 5. Missing or stale records preserve the current route-recovery and not-found behavior.
 
 The implementation must preserve ordering where later operations consume assigns or streams
@@ -487,6 +513,38 @@ supported product mutation, so controlled disappearance fixtures must not expand
 into implementing deletion. Add outcome-focused regression coverage for the agreed behavior before
 fixing it. A bounded behavior design and operator approval remain required; the preferred direction
 does not authorize implementation or alter the approved nine-task extraction dependency order.
+
+#### Missing-location investigation evidence
+
+A 2026-09-18 read-only investigation used three temporary LiveView probes against
+`MIX_ENV=test`, database `taskman_test`, with `Ecto.Adapters.SQL.Sandbox`. All three probes
+passed and rolled their synthetic fixtures back. The temporary command was
+`MIX_ENV=test mix test /tmp/taskman_missing_location_probe_test.exs --trace`; the temporary
+probe is not a repository regression suite or an approved behavior contract.
+
+| Active workflow | Observed disappearance outcome | Observed stale or pending action |
+| --- | --- | --- |
+| Creation with a parent in another surviving List | Modal hides; form and parent-derived location survive and are canonicalized. | Stale `validate_task` followed by `save_task` creates the Task in the surviving List and patches away from the missing route. |
+| Detail with dirty title and a scheduled revision | Modal hides; selected Task and dirty draft remain after the synthetic Task disappears. | `{:autosave_task_field, task_id, "title", 1}` reaches persistence `:not_found`, clears draft/dirty state, and removes selected Task while recovery remains hidden. |
+| Row movement with a chosen destination | Popover hides; active Task and destination remain. | Stale `submit_move_task` retains the inaccessible move state and error `This Task is no longer available.` |
+
+These observations establish that persistence authority checks alone do not invalidate actions
+at location loss or provide recoverable input. Creation can still persist through a surviving
+parent-derived location; pending detail work can destroy input after its surface hides.
+
+The synthetic disappearance removed Task fixtures before their List because the composite
+`tasks_list_id_project_id_fkey` rejects deleting a referenced List. A well-formed List update
+notification then triggered reconciliation. This reproduces the post-disappearance boundary,
+not an implemented deletion operation or a guarantee about external notification ordering.
+Source inspection also finds unguarded conflict, parent-picker, and movement search/cancel
+handlers, but those variants were not separately reproduced. A future approved specification
+must define its event boundary and cover those actions explicitly.
+
+The next behavior-design decision remains pending: stop location-bound actions, show retained
+input in an accessible recovery surface, and require explicit destination selection before
+resuming creation. Recovery storage lifetime, detail recovery when its Task survives or is gone,
+and explicit movement reopening must be specified before implementation. No persistence across
+reload, automatic save redirection, or List deletion is authorized by this investigation.
 
 ### Preserved extraction outcomes
 
