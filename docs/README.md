@@ -24,7 +24,8 @@
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
-- [ProjectLive workflow decomposition (approved; parked until operations merge and workstream selection)](specs/2026-09-03-project-live-decomposition-design.md)
+- [ProjectLive workflow decomposition (implemented; missing-location follow-up separately gated)](specs/2026-09-03-project-live-decomposition-design.md)
+- [Missing List recovery (direction approved; detailed draft awaiting review)](specs/2026-09-18-missing-list-recovery-design.md)
 - [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
@@ -34,15 +35,9 @@
 
 ## Active implementation plans
 
-No active implementation plans.
-
-## Parked implementation plans
-
-- [ProjectLive workflow decomposition (approved)](plans/2026-09-04-project-live-decomposition.md) —
-  execute only after the operations branch is merged and this workstream is selected. Refresh main
-  and select a dedicated ProjectLive implementation branch before execution; the former branch is
-  historical. Retain the existing approved-plan clean-session and explicit completion-confirmation
-  gates. The separately tracked missing-location behavior follow-up requires its own scoped approval.
+- [Missing List recovery (draft; implementation approval pending)](plans/2026-09-18-missing-list-recovery.md) —
+  three dependent increments tracked under `tas-1tq.10`; review the complete specification and plan
+  before authorizing implementation.
 
 ## Handoffs
 
@@ -73,6 +68,7 @@ No active implementation plans.
 
 ## Archive
 
+- [ProjectLive workflow decomposition implementation plan](archive/plans/2026-09-04-project-live-decomposition.md)
 - [Authenticated hosted access and release deployment implementation plan](archive/plans/2026-09-02-authenticated-hosted-access.md)
 - [Foundation documentation update implementation plan](archive/plans/2026-07-18-foundation-documentation-update.md)
 - [Projects and basic Tasks first slice implementation plan](archive/plans/2026-07-18-projects-basic-tasks-first-slice.md)
