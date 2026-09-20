@@ -1,30 +1,43 @@
 defmodule TaskmanWeb.Tasks.Detail do
   use TaskmanWeb, :html
 
+  alias Taskman.Projects.Project
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.{Form, MovePopover}
 
   attr :task, Task, required: true
+  attr :project, Project, default: nil
   attr :task_autosave, Autosave, required: true
   attr :parent_picker, ParentPicker, required: true
   attr :cancel, :string, required: true
   attr :task_hierarchy, TaskHierarchy, required: true
   attr :task_path, :any, required: true
+  attr :browse_path, :any, default: nil
   attr :task_move, Move, required: true
+  attr :recovery?, :boolean, default: false
 
   def detail(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :location_path,
+        TaskHierarchy.selected_location_path(assigns.task_hierarchy)
+      )
+
     ~H"""
     <div
       id="task-detail-layout"
+      data-recovery={to_string(@recovery?)}
       data-has-hierarchy={to_string(hierarchy_content?(@task_hierarchy))}
       data-hierarchy-expanded="false"
       class="task-detail-layout"
     >
-      <div id="task-hierarchy-overlay" aria-hidden="true"></div>
+      <div :if={!@recovery?} id="task-hierarchy-overlay" aria-hidden="true"></div>
 
       <aside
+        :if={!@recovery?}
         id="task-hierarchy"
         aria-labelledby="task-hierarchy-title"
         class="task-hierarchy border-r border-slate-700 bg-slate-950/70"
@@ -74,34 +87,108 @@ defmodule TaskmanWeb.Tasks.Detail do
 
       <div id="task-detail-content" class="task-detail-content">
         <div class="task-detail-columns">
-          <section class="min-w-0 p-6 sm:px-7 sm:pb-7" aria-labelledby="task-modal-title">
-            <div class="relative mb-5">
-              <div class="flex items-start justify-between gap-4 pr-10 xl:pr-0">
-                <h2
-                  id="task-modal-title"
-                  class="text-xl font-semibold tracking-tight text-slate-100"
+          <section
+            class="min-w-0 p-6 sm:px-7 sm:pb-7"
+            aria-labelledby={if(@recovery?, do: nil, else: "task-modal-title")}
+          >
+            <div :if={!@recovery?} class="relative mb-3">
+              <div class="flex min-w-0 items-start justify-between gap-4 pr-10 xl:pr-0">
+                <nav
+                  id="task-location-breadcrumbs"
+                  aria-label="Task location"
+                  phx-hook="TaskmanWeb.Tasks.Detail.TaskLocationBreadcrumbs"
+                  class="min-w-0 flex-1"
                 >
-                  Task #{@task.id}
-                </h2>
+                  <ol
+                    id="task-location-breadcrumb-track"
+                    class="flex min-w-0 items-center justify-start overflow-hidden"
+                  >
+                    <li
+                      id="task-location-ellipsis"
+                      hidden
+                      aria-hidden="true"
+                      class="flex shrink-0 items-center"
+                    >
+                      <span class="text-base font-semibold text-slate-500">…</span>
+                      <.icon name="hero-chevron-right" class="mx-1.5 size-4 text-slate-600" />
+                    </li>
+                    <li
+                      :if={@location_path == []}
+                      data-containing-location
+                      class="hidden min-w-0 shrink-0 items-center sm:flex"
+                    >
+                      <.link
+                        id={"task-location-project-#{@project.id}"}
+                        patch={@browse_path.(nil)}
+                        data-containing-location
+                        class="block max-w-64 truncate text-base font-semibold text-slate-400 transition hover:text-slate-200 xl:max-w-none"
+                      >
+                        {@project.name}
+                      </.link>
+                      <.icon
+                        name="hero-chevron-right"
+                        class="mx-1.5 size-4 shrink-0 text-slate-600"
+                      />
+                    </li>
+                    <li
+                      :for={{task_list, index} <- Enum.with_index(@location_path)}
+                      data-optional-segment={index < length(@location_path) - 1 && "true"}
+                      data-containing-location={index == length(@location_path) - 1 && "true"}
+                      class={[
+                        "items-center",
+                        index < length(@location_path) - 1 && "hidden shrink-0 xl:flex",
+                        index == length(@location_path) - 1 &&
+                          "hidden min-w-0 shrink-0 sm:flex"
+                      ]}
+                    >
+                      <.link
+                        id={"task-location-list-#{task_list.id}"}
+                        patch={@browse_path.(task_list)}
+                        data-optional-segment={index < length(@location_path) - 1 && "true"}
+                        data-containing-location={index == length(@location_path) - 1 && "true"}
+                        class={[
+                          "block whitespace-nowrap text-base font-semibold text-slate-400 transition hover:text-slate-200",
+                          index == length(@location_path) - 1 &&
+                            "max-w-64 truncate xl:max-w-none"
+                        ]}
+                      >
+                        {task_list.name}
+                      </.link>
+                      <.icon
+                        name="hero-chevron-right"
+                        class="mx-1.5 size-4 shrink-0 text-slate-600"
+                      />
+                    </li>
+                    <li id="task-location-current" aria-current="page" class="shrink-0">
+                      <h2
+                        id="task-modal-title"
+                        class="whitespace-nowrap text-base font-semibold text-slate-100"
+                      >
+                        Task #{@task.id}
+                      </h2>
+                    </li>
+                  </ol>
+                </nav>
                 <button
                   id={"move-task-detail-button-#{@task.id}"}
                   type="button"
                   phx-click={JS.push_focus() |> JS.push("open_move_task")}
                   phx-value-task-id={@task.id}
-                  class="cursor-pointer rounded-lg px-2 py-1 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                  class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800/90 px-3 py-1.5 text-sm font-semibold text-slate-100 shadow-sm transition hover:border-slate-500 hover:bg-slate-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
                 >
-                  Move Task
+                  <.icon name="hero-arrows-right-left" class="size-4" /> Move Task
                 </button>
               </div>
               <div
                 :if={Move.active_for?(@task_move, @task.id, :detail)}
                 data-move-task-popover
-                class="absolute left-0 right-0 top-full z-30"
+                class="absolute right-0 top-full z-30 w-80 max-w-full"
               >
                 <MovePopover.popover
                   task_id={@task.id}
                   task_move={@task_move}
                   window_escape?={false}
+                  recovery?={@recovery?}
                 />
               </div>
             </div>
@@ -113,18 +200,13 @@ defmodule TaskmanWeb.Tasks.Detail do
               cancel={@cancel}
               parent_picker={@parent_picker}
               conflicts={@task_autosave.conflicts}
+              field_states={@task_autosave.field_states}
+              recovery?={@recovery?}
             />
-            <p
-              id="task-save-status"
-              aria-live="polite"
-              data-state={@task_autosave.save_state}
-              class="mt-4 text-right text-sm text-slate-400"
-            >
-              {Autosave.message(@task_autosave)}
-            </p>
           </section>
 
           <aside
+            :if={!@recovery?}
             aria-label="Task activity and sessions"
             class="border-t border-slate-700 bg-slate-950/35 p-6 xl:border-l xl:border-t-0"
           >
@@ -165,6 +247,81 @@ defmodule TaskmanWeb.Tasks.Detail do
         </div>
       </div>
     </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskLocationBreadcrumbs">
+      export default {
+        mounted() {
+          this.wide = window.matchMedia("(min-width: 80rem)")
+          this.scheduleFit = () => {
+            cancelAnimationFrame(this.fitFrame)
+            this.fitFrame = requestAnimationFrame(() => this.fit())
+          }
+          this.resizeObserver = new ResizeObserver(this.scheduleFit)
+          this.resizeObserver.observe(this.el)
+          this.wide.addEventListener("change", this.scheduleFit)
+          this.scheduleFit()
+        },
+
+        updated() {
+          this.scheduleFit()
+        },
+
+        destroyed() {
+          cancelAnimationFrame(this.fitFrame)
+          this.resizeObserver?.disconnect()
+          this.wide?.removeEventListener("change", this.scheduleFit)
+        },
+
+        fit() {
+          const track = this.el.querySelector("#task-location-breadcrumb-track")
+          const ellipsis = this.el.querySelector("#task-location-ellipsis")
+          if (!track || !ellipsis) return
+
+          const optionalSegments = [
+            ...track.querySelectorAll("li[data-optional-segment='true']")
+          ]
+          const containingSegment = track.querySelector("li[data-containing-location]")
+          const containingLink = containingSegment?.querySelector("a[data-containing-location]")
+
+          optionalSegments.forEach(segment => segment.style.removeProperty("display"))
+          containingLink?.style.removeProperty("max-width")
+          ellipsis.hidden = true
+
+          if (!this.wide.matches) return
+
+          const overflows = () => this.visibleWidth(track) > track.clientWidth + 1
+
+          for (const segment of optionalSegments) {
+            if (!overflows()) break
+
+            segment.style.display = "none"
+            ellipsis.hidden = false
+          }
+
+          if (overflows() && containingSegment && containingLink) {
+            const otherWidth = this.visibleWidth(track, containingSegment)
+
+            const separatorWidth =
+              containingSegment.getBoundingClientRect().width -
+              containingLink.getBoundingClientRect().width
+
+            containingLink.style.maxWidth = `${Math.max(
+              track.clientWidth - otherWidth - separatorWidth,
+              0
+            )}px`
+          }
+        },
+
+        visibleWidth(track, excludedSegment = null) {
+          return [...track.children]
+            .filter(segment =>
+              segment !== excludedSegment &&
+                !segment.hidden &&
+                getComputedStyle(segment).display !== "none"
+            )
+            .reduce((width, segment) => width + segment.getBoundingClientRect().width, 0)
+        }
+      }
+    </script>
     """
   end
 

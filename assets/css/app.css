@@ -99,6 +99,11 @@
 /* Use the data attribute for dark mode  */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* Keep error flashes legible and subdued without changing inline error text. */
+.taskman-flash-error {
+  --color-error: oklch(43% 0.12 17.585);
+}
+
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
@@ -138,6 +143,24 @@
   min-height: 0;
   max-height: inherit;
   overflow-y: auto;
+}
+
+#task-detail-layout[data-recovery="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#task-detail-layout[data-recovery="true"] #task-detail-content {
+  grid-column: 1;
+}
+
+#task-detail-layout[data-recovery="true"] .task-detail-columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The final field should end at the detail panel's own bottom padding. */
+#task-detail-content [data-lifecycle-field]:last-child > .fieldset {
+  margin-bottom: 0;
+  padding-bottom: 0;
 }
 
 .task-detail-columns {

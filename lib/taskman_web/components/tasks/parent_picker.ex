@@ -5,6 +5,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
   alias TaskmanWeb.ProjectLive.Tasks.ParentPicker, as: ParentPickerState
 
   attr :picker, ParentPickerState, required: true
+  attr :recovery?, :boolean, default: false
 
   def parent_picker(assigns) do
     assigns = assign(assigns, :picker_state, assigns.picker)
@@ -12,10 +13,10 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
     ~H"""
     <div
       id="task-parent-picker"
-      phx-click-away={@picker_state.options_open? && "close_task_parent_options"}
+      phx-click-away={!@recovery? && @picker_state.options_open? && "close_task_parent_options"}
       class="relative"
     >
-      <div :if={!@picker_state.options_open?} class="fieldset mb-2">
+      <div :if={@recovery? || !@picker_state.options_open?} class="fieldset mb-2">
         <span class="label">Parent Task</span>
         <button
           id="task-parent-trigger"
@@ -25,7 +26,8 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
           aria-expanded="false"
           aria-invalid={@picker_state.error && "true"}
           aria-describedby={@picker_state.error && "task-parent-error"}
-          phx-click="open_task_parent_options"
+          phx-click={!@recovery? && "open_task_parent_options"}
+          disabled={@recovery?}
           class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-left text-sm text-slate-100 shadow-sm shadow-black/20 outline-none transition hover:border-slate-600 hover:bg-slate-900 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
         >
           <span class="min-w-0">
@@ -41,7 +43,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
         </button>
       </div>
 
-      <div :if={@picker_state.options_open?} class="relative">
+      <div :if={!@recovery? && @picker_state.options_open?} class="relative">
         <.input
           id="task-parent-search"
           type="search"
@@ -80,7 +82,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
       </div>
 
       <div
-        :if={@picker_state.options_open?}
+        :if={!@recovery? && @picker_state.options_open?}
         id="task-parent-results"
         role="listbox"
         aria-label="Parent Task options"
@@ -141,14 +143,14 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
         </button>
       </div>
 
-      <p
+      <.inline_error
         :if={@picker_state.error}
         id="task-parent-error"
         role="alert"
-        class="mt-2 text-sm text-rose-300"
+        class="mt-2 text-rose-300"
       >
         {@picker_state.error}
-      </p>
+      </.inline_error>
 
       <div
         :if={parent_conflict?(@picker_state)}
@@ -161,7 +163,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
             @picker_state.conflict_parent
           )}
         </p>
-        <div class="mt-2 flex flex-wrap gap-2">
+        <div :if={!@recovery?} class="mt-2 flex flex-wrap gap-2">
           <button
             id="use-latest-parent_task_id"
             type="button"

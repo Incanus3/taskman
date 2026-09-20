@@ -69,6 +69,15 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   def collapsible?(%__MODULE__{} = state, task_id),
     do: !MapSet.member?(state.required_node_ids, task_id)
 
+  @spec selected_location_path(t()) :: [Taskman.Lists.TaskList.t()]
+  def selected_location_path(%__MODULE__{
+        hierarchy: %Hierarchy{root: root, selected_task_id: selected_task_id}
+      }) do
+    selected_location_path(root, selected_task_id) || []
+  end
+
+  def selected_location_path(%__MODULE__{}), do: []
+
   @spec clear(t()) :: t()
   def clear(_state), do: empty()
 
@@ -88,5 +97,15 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
       nil -> []
       path -> [task.id | path]
     end
+  end
+
+  defp selected_location_path(
+         %HierarchyNode{task: %{id: selected_task_id}, location_path: location_path},
+         selected_task_id
+       ),
+       do: location_path
+
+  defp selected_location_path(%HierarchyNode{children: children}, selected_task_id) do
+    Enum.find_value(children, &selected_location_path(&1, selected_task_id))
   end
 end

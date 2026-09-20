@@ -67,6 +67,33 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     refute has_element?(view, "#move-task-options-#{task.id}")
   end
 
+  test "clicking away from destination options closes only the list and keeps its query", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    _planning = list_fixture(project, nil, %{name: "Planning"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_keyup(%{"value" => "Plan"})
+
+    assert has_element?(
+             view,
+             "#move-task-destination-picker-#{task.id}[phx-click-away='close_move_destinations']"
+           )
+
+    render_click(view, "close_move_destinations")
+
+    assert has_element?(view, "#move-task-#{task.id}")
+    assert has_element?(view, "#move-task-search-#{task.id}[aria-expanded='false'][value='Plan']")
+    refute has_element?(view, "#move-task-options-#{task.id}")
+
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    assert has_element?(view, "#move-task-options-#{task.id}")
+  end
+
   test "reopening a selected destination filters its query and refreshes persisted location", %{
     conn: conn
   } do
@@ -87,6 +114,12 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
 
+    assert has_element?(
+             view,
+             "#move-task-current-location-#{task.id}[role='status']",
+             "This Task is already at the selected destination."
+           )
+
     persisted_task = Tasks.get_task_for_project(project, task.id)
     assert {:ok, _moved} = Tasks.move_task(project, persisted_task, inbox)
 
@@ -106,6 +139,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     refute has_element?(view, "#move-task-option-list-#{inbox.id}")
     refute has_element?(view, "#move-task-option-list-#{archive.id}")
     refute has_element?(view, "#move-task-submit-#{task.id}[disabled]")
+    refute has_element?(view, "#move-task-current-location-#{task.id}")
     assert Tasks.get_task_for_project(project, task.id).list_id == inbox.id
   end
 
@@ -144,13 +178,16 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
            ]
   end
 
-  test "moves a Task from a row and removes it from the selected direct List", %{conn: conn} do
+  test "a row move browses the destination when the Task leaves the current location", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
     inbox = list_fixture(project, nil, %{name: "Inbox"})
     planning = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, inbox, %{title: "Move me"})
 
-    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{inbox.id}")
+    {:ok, view, _html} =
+      live(conn, ~p"/projects/#{project.id}/lists/#{inbox.id}?include_children=true")
 
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
     view |> element("#move-task-search-#{task.id}") |> render_click()
@@ -158,11 +195,36 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-submit-#{task.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
-    refute has_element?(view, "#tasks-#{task.id}")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}?include_children=true")
+    assert has_element?(view, "#location-heading", "Planning")
+    assert has_element?(view, "#tasks-#{task.id}")
     refute has_element?(view, "#move-task-#{task.id}")
   end
 
-  test "moves from Task detail while keeping the detail route open", %{conn: conn} do
+  test "a row move stays on an ancestor that includes the destination", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = list_fixture(project, nil, %{name: "Parent"})
+    child = list_fixture(project, parent, %{name: "Child"})
+    task = task_fixture(project, parent, %{title: "Move me"})
+    path = ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=true"
+
+    {:ok, view, _html} = live(conn, path)
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{child.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == child.id
+    refute_patched(view, ~p"/projects/#{project.id}/lists/#{child.id}?include_children=true")
+    assert has_element?(view, "#location-heading", "Parent")
+    assert has_element?(view, "#tasks-#{task.id}")
+    refute has_element?(view, "#move-task-#{task.id}")
+  end
+
+  test "a detail move follows the Task to its destination and keeps the editor open", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
     inbox = list_fixture(project, nil, %{name: "Inbox"})
     planning = list_fixture(project, nil, %{name: "Planning"})
@@ -171,26 +233,62 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, task_path)
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
-
-    assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-form")
-    refute has_element?(view, "#tasks-#{task.id}")
-    refute_patched(view, task_path)
-    assert has_element?(view, "#task-save-status[data-state='saved']")
+    assert has_element?(view, "#task-location-list-#{inbox.id}", "Inbox")
 
     view
     |> form("#task-form", task: %{priority: "urgent"})
     |> render_change(%{"_target" => ["task", "priority"]})
 
     assert Tasks.get_task_for_project(project, task.id).priority == :urgent
+    assert has_element?(view, "#task-priority-save-status[data-state='saved']", "Saved")
+
+    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}/tasks/#{task.id}")
+    assert has_element?(view, "#location-heading", "Planning")
+    assert has_element?(view, "#task-location-list-#{planning.id}", "Planning")
+    refute has_element?(view, "#task-location-list-#{inbox.id}")
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form")
+    assert has_element?(view, "#tasks-#{task.id}")
+    refute has_element?(view, "#task-save-status")
     assert has_element?(view, "#task-priority option[selected][value='urgent']")
-    assert has_element?(view, "#task-save-status[data-state='saved']")
-    refute_patched(view, task_path)
+    assert has_element?(view, "#task-priority-save-status[data-state='saved']", "Saved")
+
+    view |> element("#task-modal-close") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}")
+  end
+
+  test "a detail move stays on an ancestor backdrop when the Task remains included", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    parent = list_fixture(project, nil, %{name: "Parent"})
+    child = list_fixture(project, parent, %{name: "Child"})
+    task = task_fixture(project, parent, %{title: "Move me"})
+    path = ~p"/projects/#{project.id}/lists/#{parent.id}/tasks/#{task.id}?include_children=true"
+
+    {:ok, view, _html} = live(conn, path)
+
+    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{child.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert Tasks.get_task_for_project(project, task.id).list_id == child.id
+
+    refute_patched(
+      view,
+      ~p"/projects/#{project.id}/lists/#{child.id}/tasks/#{task.id}?include_children=true"
+    )
+
+    assert has_element?(view, "#location-heading", "Parent")
+    assert has_element?(view, "#task-location-list-#{child.id}", "Child")
+    assert has_element?(view, "#task-form")
   end
 
   test "gives the Task modal sole Escape ownership while its move popover is open", %{conn: conn} do
@@ -359,7 +457,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
            )
   end
 
-  test "keeps the row Move Task error visible when the Task is deleted after opening", %{
+  test "clears a row move and reports when the Task is deleted after opening", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -375,9 +473,8 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     view |> element("#move-task-submit-#{task.id}") |> render_click()
 
-    assert has_element?(view, "#tasks-#{task.id}")
-    assert has_element?(view, "#move-task-#{task.id}")
-    assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
+    refute has_element?(view, "#move-task-#{task.id}")
+    assert has_element?(view, "#flash-error", "This Task is no longer available.")
   end
 
   test "keeps the row Move Task error visible when its selected List is deleted", %{conn: conn} do
@@ -448,6 +545,12 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
            )
 
     assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
+
+    assert has_element?(
+             view,
+             "#move-task-current-location-#{task.id}[role='status']",
+             "This Task is already at the selected destination."
+           )
   end
 
   test "search refreshes a move surface from the Task persisted location", %{conn: conn} do
@@ -533,7 +636,8 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-submit-#{task.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
-    refute has_element?(view, "#tasks-#{task.id}")
+    assert_patch(view, ~p"/projects/#{project.id}")
+    assert has_element?(view, "#tasks-#{task.id}")
     refute has_element?(view, "#move-task-#{task.id}")
   end
 

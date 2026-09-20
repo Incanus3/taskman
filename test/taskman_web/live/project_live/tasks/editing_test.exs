@@ -88,4 +88,31 @@ defmodule TaskmanWeb.ProjectLive.Tasks.EditingTest do
     refute socket.assigns.editing.detail_open?
     assert socket.assigns.editing.hierarchy == Hierarchy.empty()
   end
+
+  test "restore identifies a Task that disappears during fresh reconstruction" do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    }
+
+    {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
+    socket = Phoenix.Component.assign(socket, :live_action, :show_task)
+
+    {:noreply, socket} =
+      ProjectLive.handle_params(
+        %{"project_id" => "#{project.id}", "task_id" => "#{task.id}"},
+        nil,
+        socket
+      )
+
+    captured_editing = socket.assigns.editing
+    captured_picker = socket.assigns.task_parent_picker
+    Taskman.Repo.delete!(task)
+    cleared = Editing.clear(socket)
+
+    assert {:error, :task_not_found, ^cleared} =
+             Editing.restore(cleared, captured_editing, captured_picker)
+  end
 end

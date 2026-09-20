@@ -696,7 +696,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     updated = Tasks.get_task_for_project(project, task.id)
     assert updated.title == "Valid"
     assert updated.status == :in_review
-    assert has_element?(view, "#task-save-status[data-state='not_saved']")
+    assert has_element?(view, "#task-title-save-status[data-state='not_saved']")
   end
 
   test "populated Task list renders column headers before its Task stream", %{conn: conn} do
@@ -739,7 +739,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='project'][selected]",
+             "Project #{project.name}"
+           )
+
     assert has_element?(view, "#task-parent-picker")
     refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#task-parent-trigger", "No parent")
@@ -995,7 +1001,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='project'][selected]",
+             "Project #{project.name}"
+           )
+
     assert has_element?(view, "#task-parent-trigger", "Parent in Planning")
     refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#task-form [data-role='field-error']")

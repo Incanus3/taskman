@@ -21,9 +21,9 @@ defmodule TaskmanWeb.Tasks.MovePopoverTest do
           },
           options_open?: true,
           options: [
-            %{id: 1, value: "project", label: "Project · Taskman", current?: false},
-            %{id: 11, value: "list:11", label: "Planning", current?: false},
-            %{id: 12, value: "list:12", label: "Planning / Launch", current?: true}
+            %{id: 1, key: "project", label: "Project · Taskman", current?: false},
+            %{id: 11, key: "list:11", label: "Planning", current?: false},
+            %{id: 12, key: "list:12", label: "Planning / Launch", current?: true}
           ]
         }
       })
@@ -90,12 +90,21 @@ defmodule TaskmanWeb.Tasks.MovePopoverTest do
              )
            )
 
-    refute Enum.empty?(
-             LazyHTML.query(
-               document,
-               "#move-task-41 button[phx-click='cancel_move_task'][type='button']"
+    assert 1 ==
+             Enum.count(
+               LazyHTML.query(
+                 document,
+                 "#move-task-41 #cancel-move-task-41[phx-click='cancel_move_task'][type='button']"
+               )
              )
-           )
+
+    assert 1 ==
+             Enum.count(
+               LazyHTML.query(
+                 document,
+                 "#move-task-41 button[phx-click='cancel_move_task'][type='button']"
+               )
+             )
 
     refute Enum.empty?(LazyHTML.query(document, "#move-task-submit-41[type='button'][disabled]"))
   end

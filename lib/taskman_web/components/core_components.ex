@@ -69,7 +69,7 @@ defmodule TaskmanWeb.CoreComponents do
       <div class={[
         "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
         @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
+        @kind == :error && "alert-error taskman-flash-error"
       ]}>
         <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
         <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
@@ -132,14 +132,16 @@ defmodule TaskmanWeb.CoreComponents do
   attr :on_escape, JS, default: nil
   attr :size, :atom, values: [:default, :wide], default: :default
   attr :initial_focus, :string, default: nil
+  attr :focus_on_mount, :boolean, default: true
   slot :inner_block, required: true
 
   def modal(assigns) do
     ~H"""
     <div
       id={@id}
+      data-modal-root
       class="relative z-50"
-      phx-mounted={@show && show_modal(@id, @initial_focus)}
+      phx-mounted={@show && show_modal(@id, @initial_focus, @focus_on_mount)}
       hidden
     >
       <div
@@ -365,8 +367,24 @@ defmodule TaskmanWeb.CoreComponents do
   # Helper used by inputs to generate form errors
   defp error(assigns) do
     ~H"""
-    <p data-role="field-error" class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <.inline_error data-role="field-error" class="mt-1.5 flex items-center gap-2 text-error">
       <.icon name="hero-exclamation-circle" class="size-5" />
+      {render_slot(@inner_block)}
+    </.inline_error>
+    """
+  end
+
+  @doc """
+  Renders a compact inline error message.
+  """
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  slot :inner_block, required: true
+
+  def inline_error(assigns) do
+    ~H"""
+    <p class={["text-xs", @class]} {@rest}>
       {render_slot(@inner_block)}
     </p>
     """
@@ -535,7 +553,7 @@ defmodule TaskmanWeb.CoreComponents do
     )
   end
 
-  defp show_modal(id, initial_focus) do
+  defp show_modal(id, initial_focus, focus_on_mount) do
     js =
       %JS{}
       |> JS.push_focus()
@@ -553,7 +571,11 @@ defmodule TaskmanWeb.CoreComponents do
            "opacity-100 translate-y-0 sm:scale-100"}
       )
 
-    JS.focus(js, to: initial_focus || "##{id}-content")
+    if focus_on_mount do
+      JS.focus(js, to: initial_focus || "##{id}-content")
+    else
+      js
+    end
   end
 
   defp hide_modal(js, id) do

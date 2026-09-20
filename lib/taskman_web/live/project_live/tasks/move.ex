@@ -4,6 +4,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.{Task, TaskWithLocation}
+  alias TaskmanWeb.ProjectLive.Tasks.Messages
 
   defstruct active_task: nil,
             query: "",
@@ -15,7 +16,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   @type origin :: :row | :detail
   @type destination_option :: %{
           id: pos_integer(),
-          value: String.t(),
+          key: String.t(),
           label: String.t(),
           current?: boolean()
         }
@@ -61,6 +62,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
 
   def current_destination(%__MODULE__{}), do: nil
 
+  @spec at_selected_destination?(t()) :: boolean()
+  def at_selected_destination?(%__MODULE__{destination: destination} = state)
+      when is_binary(destination),
+      do: destination == current_destination(state)
+
+  def at_selected_destination?(%__MODULE__{}), do: false
+
   @spec put_error(t(), String.t()) :: t()
   def put_error(%__MODULE__{} = state, message) when is_binary(message),
     do: %{state | error: message}
@@ -86,11 +94,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   @spec open_destinations(t()) :: t()
   def open_destinations(%__MODULE__{} = state), do: %{state | options_open?: true}
 
+  @spec close_destinations(t()) :: t()
+  def close_destinations(%__MODULE__{} = state), do: %{state | options_open?: false}
+
   @spec select_destination(t(), String.t()) :: t()
   def select_destination(%__MODULE__{} = state, destination) when is_binary(destination) do
     query =
       Enum.find_value(state.options, state.query, fn option ->
-        if option.value == destination, do: option.label
+        if option.key == destination, do: option.label
       end)
 
     %{
@@ -133,6 +144,18 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
         destination = retain_destination(options, state.destination)
         query = refreshed_query(state, destination, options)
 
+        error =
+          cond do
+            is_binary(state.destination) and is_nil(destination) ->
+              Messages.destination_unavailable_with_guidance()
+
+            state.error == Messages.destination_unavailable_with_guidance() ->
+              state.error
+
+            true ->
+              nil
+          end
+
         active_task = %{
           active_task
           | current_destination: task_destination(persisted_task),
@@ -149,7 +172,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
             destination: destination,
             query: query,
             options: filtered_options(options, query),
-            error: nil
+            error: error
         }
 
         {:ok, refreshed, persisted_task}
@@ -166,7 +189,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
       ) do
     case Tasks.get_task_for_project(project, task_id) do
       nil ->
-        {:error, put_error(state, "This Task is no longer available."), :task_not_found}
+        {:error, put_error(state, Messages.task_unavailable()), :task_not_found}
 
       %Task{} = task ->
         submit_persisted_task(state, project, task)
@@ -176,8 +199,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   defp submit_persisted_task(state, project, task) do
     case resolve_destination(project, state.destination) do
       {:error, :destination_not_found} ->
-        {:error, put_error(state, "That destination is no longer available."),
-         :destination_not_found}
+        {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
 
       {:ok, destination} ->
         case Tasks.move_task(project, task, destination) do
@@ -191,12 +213,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
                  :unchanged_location}
 
               {:error, _cleared, :task_not_found} ->
-                {:error, put_error(state, "This Task is no longer available."), :task_not_found}
+                {:error, put_error(state, Messages.task_unavailable()), :task_not_found}
             end
 
           {:error, :not_found} ->
-            {:error, put_error(state, "That destination is no longer available."),
-             :destination_not_found}
+            {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
 
           {:error, _reason} ->
             {:error, put_error(state, "Couldn’t move this Task. Please try again."), :move_failed}
@@ -228,14 +249,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
     [
       %{
         id: project.id,
-        value: "project",
+        key: "project",
         label: "Project · #{project.name}",
         current?: is_nil(task.list_id)
       }
       | Enum.map(ordered_task_lists(task_lists), fn task_list ->
           %{
             id: task_list.id,
-            value: "list:#{task_list.id}",
+            key: "list:#{task_list.id}",
             label:
               task_lists
               |> Lists.path_for(task_list)
@@ -247,7 +268,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
   end
 
   defp retain_destination(options, destination) do
-    if Enum.any?(options, &(&1.value == destination)), do: destination, else: nil
+    if Enum.any?(options, &(&1.key == destination)), do: destination, else: nil
   end
 
   defp filtered_options(options, query) do
@@ -262,7 +283,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
 
   defp refreshed_query(%__MODULE__{destination: destination, query: _query}, destination, options)
        when is_binary(destination) do
-    case Enum.find(options, &(&1.value == destination)) do
+    case Enum.find(options, &(&1.key == destination)) do
       %{label: label} -> label
       nil -> ""
     end

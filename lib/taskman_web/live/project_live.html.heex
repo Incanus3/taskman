@@ -8,362 +8,393 @@
     phx-hook=".TaskDetailLayout"
     class="h-full bg-slate-950 text-slate-100"
   >
-    <div class="grid min-h-full grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
-      <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
-        <div class="flex h-full flex-col p-6">
-          <div class="mb-5 flex items-center gap-3">
-            <div class="grid size-10 place-items-center rounded-xl bg-indigo-500 text-white shadow-lg shadow-indigo-950/30">
-              <.icon name="hero-check-circle" class="size-6" />
+    <div
+      id="workspace-content"
+      inert={not is_nil(RecoveryWorkflow.view(@recovery))}
+      class="h-full"
+    >
+      <div class="grid min-h-full grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
+        <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
+          <div class="flex h-full flex-col p-6">
+            <div class="mb-5 flex items-center gap-3">
+              <div class="grid size-10 place-items-center rounded-xl bg-indigo-500 text-white shadow-lg shadow-indigo-950/30">
+                <.icon name="hero-check-circle" class="size-6" />
+              </div>
+              <div>
+                <p class="text-base font-semibold tracking-tight">Taskman</p>
+                <p class="text-xs text-slate-400">Local project workspace</p>
+              </div>
             </div>
-            <div>
-              <p class="text-base font-semibold tracking-tight">Taskman</p>
-              <p class="text-xs text-slate-400">Local project workspace</p>
-            </div>
-          </div>
 
-          <WorkspaceNavigation.tree
-            navigation_nodes={@streams.navigation_nodes}
-            include_children?={@workspace.include_children?}
-            list_edit={@workspace.list_edit}
-          />
+            <WorkspaceNavigation.tree
+              navigation_nodes={@streams.navigation_nodes}
+              include_children?={@workspace.include_children?}
+              list_edit={@workspace.list_edit}
+            />
 
-          <.form
-            for={@workspace.project_form}
-            id="project-form"
-            phx-change="validate_project"
-            phx-submit="save_project"
-            class="mt-auto flex flex-col gap-3 border-t border-white/10 pt-5"
-          >
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-              New Project
-            </p>
-            <.input
-              field={@workspace.project_form[:name]}
-              type="text"
-              label="Name"
-              autocomplete="off"
-              class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10"
-              error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/10"
-            />
-            <.input
-              field={@workspace.project_form[:primary_directory]}
-              type="text"
-              label="Primary directory"
-              autocomplete="off"
-              class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 font-mono text-xs text-white outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10"
-              error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/10"
-            />
-            <button
-              type="submit"
-              phx-disable-with="Creating…"
-              class="w-full rounded-xl bg-indigo-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
+            <.form
+              for={@workspace.project_form}
+              id="project-form"
+              phx-change="validate_project"
+              phx-submit="save_project"
+              class="mt-auto flex flex-col gap-3 border-t border-white/10 pt-5"
             >
-              Create Project
-            </button>
-          </.form>
-        </div>
-      </aside>
-
-      <main
-        id="main-panel"
-        data-state={Workspace.panel_state(@workspace)}
-        class="min-w-0 bg-slate-900"
-      >
-        <div
-          :if={!@workspace.selected_project && !@workspace.project_not_found?}
-          class="grid min-h-full place-items-center px-6 py-16 text-center"
-        >
-          <div class="max-w-md">
-            <.icon name="hero-arrow-left" class="mx-auto mb-5 size-8 text-indigo-500 lg:hidden" />
-            <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Choose a Project</h1>
-            <p class="mt-3 text-sm leading-6 text-slate-400">
-              Select a Project from the sidebar or create one to begin organizing work.
-            </p>
-          </div>
-        </div>
-
-        <section
-          :if={@workspace.project_not_found?}
-          id="project-not-found"
-          class="grid min-h-full place-items-center px-6 py-16 text-center"
-        >
-          <div class="max-w-md">
-            <.icon name="hero-folder-minus" class="mx-auto mb-5 size-10 text-slate-600" />
-            <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
-              Project not found
-            </h1>
-            <p class="mt-3 text-sm leading-6 text-slate-400">
-              This Project may have been removed. Choose another Project from the sidebar.
-            </p>
-          </div>
-        </section>
-
-        <section
-          :if={@workspace.location_not_found? && @workspace.selected_project}
-          id="location-not-found"
-          class="grid min-h-full place-items-center px-6 py-16 text-center"
-        >
-          <div class="max-w-md">
-            <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />
-            <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
-              List not found
-            </h1>
-            <p class="mt-3 text-sm leading-6 text-slate-400">
-              This List may belong to another Project or may have been removed. Choose another
-              location from the sidebar.
-            </p>
-          </div>
-        </section>
-
-        <section
-          :if={@workspace.selected_project && !@workspace.location_not_found?}
-          class="p-6"
-        >
-          <header class="mb-5 flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
-                {if(@workspace.selected_list, do: "List", else: "Project")}
+              <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                New Project
               </p>
-              <h1
-                id="location-heading"
-                class="mt-1 min-w-0 text-2xl font-semibold tracking-tight text-slate-100"
+              <.input
+                field={@workspace.project_form[:name]}
+                type="text"
+                label="Name"
+                autocomplete="off"
+                class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10"
+                error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/10"
+              />
+              <.input
+                field={@workspace.project_form[:primary_directory]}
+                type="text"
+                label="Primary directory"
+                autocomplete="off"
+                class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 font-mono text-xs text-white outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10"
+                error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/10"
+              />
+              <button
+                type="submit"
+                phx-disable-with="Creating…"
+                class="w-full rounded-xl bg-indigo-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
               >
-                <%= if @workspace.selected_list do %>
-                  <span
-                    id="location-path"
-                    class="flex min-w-0 items-center gap-2 overflow-hidden"
-                  >
-                    <%= for {task_list, index} <- Enum.with_index(@workspace.location_path) do %>
-                      <span :if={index > 0} aria-hidden="true" class="shrink-0 text-slate-600">
-                        /
-                      </span>
-                      <span
-                        aria-current={task_list.id == @workspace.selected_list.id && "page"}
-                        class={[
-                          "truncate",
-                          task_list.id == @workspace.selected_list.id && "text-slate-100",
-                          task_list.id != @workspace.selected_list.id && "text-slate-400"
-                        ]}
-                      >
-                        {task_list.name}
-                      </span>
-                    <% end %>
-                  </span>
-                <% else %>
-                  <span class="block truncate">{@workspace.selected_project.name}</span>
-                <% end %>
+                Create Project
+              </button>
+            </.form>
+          </div>
+        </aside>
+
+        <main
+          id="main-panel"
+          data-state={Workspace.panel_state(@workspace)}
+          class="min-w-0 bg-slate-900"
+        >
+          <div
+            :if={!@workspace.selected_project && !@workspace.project_not_found?}
+            class="grid min-h-full place-items-center px-6 py-16 text-center"
+          >
+            <div class="max-w-md">
+              <.icon name="hero-arrow-left" class="mx-auto mb-5 size-8 text-indigo-500 lg:hidden" />
+              <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+                Choose a Project
               </h1>
+              <p class="mt-3 text-sm leading-6 text-slate-400">
+                Select a Project from the sidebar or create one to begin organizing work.
+              </p>
             </div>
-            <div class="flex shrink-0 items-center gap-3">
-              <.link
-                id="include-child-lists"
-                patch={
-                  Paths.browse_path(
-                    @workspace.selected_project,
-                    @workspace.selected_list,
-                    !@workspace.include_children?
-                  )
-                }
-                aria-pressed={to_string(@workspace.include_children?)}
-                data-state={if(@workspace.include_children?, do: "on", else: "off")}
-                class={[
-                  "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition",
-                  @workspace.include_children? &&
-                    "border-indigo-400/40 bg-indigo-400/15 text-indigo-100 hover:bg-indigo-400/20",
-                  !@workspace.include_children? &&
-                    "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
-                ]}
-              >
-                <span>Include child Lists</span>
-                <span
-                  id="include-child-lists-track"
-                  aria-hidden="true"
+          </div>
+
+          <section
+            :if={@workspace.project_not_found?}
+            id="project-not-found"
+            class="grid min-h-full place-items-center px-6 py-16 text-center"
+          >
+            <div class="max-w-md">
+              <.icon name="hero-folder-minus" class="mx-auto mb-5 size-10 text-slate-600" />
+              <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+                Project not found
+              </h1>
+              <p class="mt-3 text-sm leading-6 text-slate-400">
+                This Project may have been removed. Choose another Project from the sidebar.
+              </p>
+            </div>
+          </section>
+
+          <section
+            :if={@workspace.location_not_found? && @workspace.selected_project}
+            id="location-not-found"
+            class="grid min-h-full place-items-center px-6 py-16 text-center"
+          >
+            <div class="max-w-md">
+              <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />
+              <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+                List not found
+              </h1>
+              <p class="mt-3 text-sm leading-6 text-slate-400">
+                This List may belong to another Project or may have been removed. Choose another
+                location from the sidebar.
+              </p>
+            </div>
+          </section>
+
+          <section
+            :if={@workspace.selected_project && !@workspace.location_not_found?}
+            class="p-6"
+          >
+            <header class="mb-5 flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
+                  {if(@workspace.selected_list, do: "List", else: "Project")}
+                </p>
+                <h1
+                  id="location-heading"
+                  class="mt-1 min-w-0 text-2xl font-semibold tracking-tight text-slate-100"
+                >
+                  <%= if @workspace.selected_list do %>
+                    <span
+                      id="location-path"
+                      class="flex min-w-0 items-center gap-2 overflow-hidden"
+                    >
+                      <%= for {task_list, index} <- Enum.with_index(@workspace.location_path) do %>
+                        <span :if={index > 0} aria-hidden="true" class="shrink-0 text-slate-600">
+                          /
+                        </span>
+                        <span
+                          aria-current={task_list.id == @workspace.selected_list.id && "page"}
+                          class={[
+                            "truncate",
+                            task_list.id == @workspace.selected_list.id && "text-slate-100",
+                            task_list.id != @workspace.selected_list.id && "text-slate-400"
+                          ]}
+                        >
+                          {task_list.name}
+                        </span>
+                      <% end %>
+                    </span>
+                  <% else %>
+                    <span class="block truncate">{@workspace.selected_project.name}</span>
+                  <% end %>
+                </h1>
+              </div>
+              <div class="flex shrink-0 items-center gap-3">
+                <.link
+                  id="include-child-lists"
+                  patch={
+                    Paths.browse_path(
+                      @workspace.selected_project,
+                      @workspace.selected_list,
+                      !@workspace.include_children?
+                    )
+                  }
+                  aria-pressed={to_string(@workspace.include_children?)}
+                  data-state={if(@workspace.include_children?, do: "on", else: "off")}
                   class={[
-                    "flex h-4 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors",
-                    @workspace.include_children? && "bg-indigo-400",
-                    !@workspace.include_children? && "bg-slate-600"
+                    "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition",
+                    @workspace.include_children? &&
+                      "border-indigo-400/40 bg-indigo-400/15 text-indigo-100 hover:bg-indigo-400/20",
+                    !@workspace.include_children? &&
+                      "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
                   ]}
                 >
+                  <span>Include child Lists</span>
                   <span
-                    id="include-child-lists-thumb"
+                    id="include-child-lists-track"
+                    aria-hidden="true"
                     class={[
-                      "size-3 rounded-full bg-white shadow-sm transition-transform",
-                      @workspace.include_children? && "translate-x-4",
-                      !@workspace.include_children? && "translate-x-0"
+                      "flex h-4 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors",
+                      @workspace.include_children? && "bg-indigo-400",
+                      !@workspace.include_children? && "bg-slate-600"
                     ]}
-                  />
-                </span>
-              </.link>
-              <Table.status_filter
-                form={@listing.status_filter_form}
-                visible_statuses={@listing.visible_statuses}
-                open?={@listing.filter_open?}
-              />
-              <.link
-                id="add-task"
-                patch={
-                  Paths.new_task_path(
-                    @workspace.selected_project,
-                    @workspace.selected_list,
-                    @workspace.include_children?
-                  )
-                }
-                class="inline-flex h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
-              >
-                Add task
-              </.link>
-            </div>
-          </header>
-
-          <div class={[
-            "rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:gap-x-0.5",
-            @workspace.include_children? &&
-              "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
-            !@workspace.include_children? &&
-              "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
-          ]}>
-            <div
-              :if={!@listing.tasks_empty?}
-              id="task-table-header"
-              class="hidden gap-3 border-b border-slate-700 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
-            >
-              <Table.sort_header
-                id="task-number-header"
-                label="#"
-                field={:id}
-                task_sort={@listing.sort}
-                class="sm:pl-1"
-              />
-              <Table.sort_header
-                id="task-title-header"
-                label="Task"
-                field={:title}
-                task_sort={@listing.sort}
-              />
-              <Table.sort_header
-                :if={@workspace.include_children?}
-                id="task-location-header"
-                label="Location"
-                field={:location}
-                task_sort={@listing.sort}
-                class="justify-center"
-              />
-              <Table.sort_header
-                id="task-status-header"
-                label="Status"
-                field={:status}
-                task_sort={@listing.sort}
-                class="justify-center"
-              />
-              <Table.sort_header
-                id="task-priority-header"
-                label="Priority"
-                field={:priority}
-                task_sort={@listing.sort}
-                class="justify-center"
-              />
-              <span id="task-actions-header" class="sm:justify-self-center">Actions</span>
-            </div>
-            <div id="tasks" phx-update="stream" class="sm:contents">
-              <div
-                id="tasks-empty"
-                class="hidden px-6 py-16 text-center only:block sm:col-span-full"
-              >
-                <.icon name="hero-clipboard-document-list" class="mx-auto size-9 text-slate-600" />
-                <p class="mt-3 text-sm font-medium text-slate-300">
-                  <%= cond do %>
-                    <% @listing.tasks_filtered_empty? -> %>
-                      No tasks match the selected statuses
-                    <% @workspace.include_children? && @workspace.selected_list -> %>
-                      No tasks in this List or its child Lists yet
-                    <% @workspace.include_children? -> %>
-                      No tasks in this Project or its child Lists yet
-                    <% @workspace.selected_list -> %>
-                      No direct tasks in this List yet
-                    <% true -> %>
-                      No direct tasks yet
-                  <% end %>
-                </p>
+                  >
+                    <span
+                      id="include-child-lists-thumb"
+                      class={[
+                        "size-3 rounded-full bg-white shadow-sm transition-transform",
+                        @workspace.include_children? && "translate-x-4",
+                        !@workspace.include_children? && "translate-x-0"
+                      ]}
+                    />
+                  </span>
+                </.link>
+                <Table.status_filter
+                  form={@listing.status_filter_form}
+                  visible_statuses={@listing.visible_statuses}
+                  open?={@listing.filter_open?}
+                />
+                <.link
+                  :if={is_nil(@recovery.snapshot)}
+                  id="add-task"
+                  patch={
+                    Paths.new_task_path(
+                      @workspace.selected_project,
+                      @workspace.selected_list,
+                      @workspace.include_children?
+                    )
+                  }
+                  class="inline-flex h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+                >
+                  Add task
+                </.link>
               </div>
-              <Table.row
-                :for={{dom_id, task_with_location} <- @streams.tasks}
-                id={dom_id}
-                task_with_location={task_with_location}
-                task_path={
-                  Paths.task_detail_path(
-                    @workspace.selected_project,
-                    @workspace.selected_list,
-                    task_with_location.task,
-                    @workspace.include_children?
-                  )
-                }
-                include_children?={@workspace.include_children?}
-                task_move={@task_move}
-                add_subtask_path={
-                  Paths.new_task_path(
-                    @workspace.selected_project,
-                    @workspace.selected_list,
-                    @workspace.include_children?,
-                    task_with_location.task.id
-                  )
-                }
-              />
+            </header>
+
+            <div class={[
+              "rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:gap-x-0.5",
+              @workspace.include_children? &&
+                "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
+              !@workspace.include_children? &&
+                "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
+            ]}>
+              <div
+                :if={!@listing.tasks_empty?}
+                id="task-table-header"
+                class="hidden gap-3 border-b border-slate-700 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
+              >
+                <Table.sort_header
+                  id="task-number-header"
+                  label="#"
+                  field={:id}
+                  task_sort={@listing.sort}
+                  class="sm:pl-1"
+                />
+                <Table.sort_header
+                  id="task-title-header"
+                  label="Task"
+                  field={:title}
+                  task_sort={@listing.sort}
+                />
+                <Table.sort_header
+                  :if={@workspace.include_children?}
+                  id="task-location-header"
+                  label="Location"
+                  field={:location}
+                  task_sort={@listing.sort}
+                  class="justify-center"
+                />
+                <Table.sort_header
+                  id="task-status-header"
+                  label="Status"
+                  field={:status}
+                  task_sort={@listing.sort}
+                  class="justify-center"
+                />
+                <Table.sort_header
+                  id="task-priority-header"
+                  label="Priority"
+                  field={:priority}
+                  task_sort={@listing.sort}
+                  class="justify-center"
+                />
+                <span id="task-actions-header" class="sm:justify-self-center">Actions</span>
+              </div>
+              <div id="tasks" phx-update="stream" class="sm:contents">
+                <div
+                  id="tasks-empty"
+                  class="hidden px-6 py-16 text-center only:block sm:col-span-full"
+                >
+                  <.icon
+                    name="hero-clipboard-document-list"
+                    class="mx-auto size-9 text-slate-600"
+                  />
+                  <p class="mt-3 text-sm font-medium text-slate-300">
+                    <%= cond do %>
+                      <% @listing.tasks_filtered_empty? -> %>
+                        No tasks match the selected statuses
+                      <% @workspace.include_children? && @workspace.selected_list -> %>
+                        No tasks in this List or its child Lists yet
+                      <% @workspace.include_children? -> %>
+                        No tasks in this Project or its child Lists yet
+                      <% @workspace.selected_list -> %>
+                        No direct tasks in this List yet
+                      <% true -> %>
+                        No direct tasks yet
+                    <% end %>
+                  </p>
+                </div>
+                <Table.row
+                  :for={{dom_id, task_with_location} <- @streams.tasks}
+                  id={dom_id}
+                  task_with_location={task_with_location}
+                  task_path={
+                    Paths.task_detail_path(
+                      @workspace.selected_project,
+                      @workspace.selected_list,
+                      task_with_location.task,
+                      @workspace.include_children?
+                    )
+                  }
+                  include_children?={@workspace.include_children?}
+                  task_move={@task_move}
+                  actions_enabled?={is_nil(@recovery.snapshot)}
+                  add_subtask_path={
+                    Paths.new_task_path(
+                      @workspace.selected_project,
+                      @workspace.selected_list,
+                      @workspace.include_children?,
+                      task_with_location.task.id
+                    )
+                  }
+                />
+              </div>
             </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div
+      :if={RecoveryWorkflow.view(@recovery)}
+      id="task-modal"
+      class="relative z-50"
+      phx-mounted={JS.focus(to: "#task-modal-content")}
+    >
+      <div
+        id="task-modal-backdrop"
+        class="fixed inset-0 bg-slate-950/45 backdrop-blur-[2px]"
+        aria-hidden="true"
+      />
+      <div class="fixed inset-0 overflow-y-auto" role="presentation">
+        <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-6">
+          <div
+            id="task-modal-content"
+            data-size="wide"
+            class={[
+              "relative w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-left align-middle shadow-2xl shadow-black/50",
+              "max-h-[calc(100dvh-2rem)] max-w-7xl sm:max-h-[calc(100dvh-3rem)]"
+            ]}
+            aria-labelledby="task-recovery-title"
+            role="dialog"
+            aria-modal="true"
+            tabindex="-1"
+          >
+            <Recovery.shell view={RecoveryWorkflow.view(@recovery)} />
           </div>
-        </section>
-      </main>
+        </div>
+      </div>
     </div>
 
     <.modal
       :if={
-        @live_action == :new_task && @workspace.selected_project &&
-          !@workspace.location_not_found?
+        is_nil(@recovery.snapshot) && @live_action == :new_task && @workspace.selected_project &&
+          @creation.form
       }
       id="task-modal"
       show
-      initial_focus="#task-title"
-      on_cancel={
-        JS.patch(
-          Paths.browse_path(
-            @workspace.selected_project,
-            @workspace.selected_list,
-            @workspace.include_children?
-          )
-        )
-      }
+      focus_on_mount={false}
+      on_cancel={JS.patch(Creation.cancel_path(@workspace))}
     >
       <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
         Add task
       </h2>
-      <p id="task-create-location" class="mt-2 text-sm leading-6 text-slate-400">
-        {Creation.location_copy(@workspace.selected_project, @creation)}
-      </p>
       <Form.form
         form={@creation.form}
         mode={:new}
         change="validate_task"
         submit="save_task"
-        cancel={
-          Paths.browse_path(
-            @workspace.selected_project,
-            @workspace.selected_list,
-            @workspace.include_children?
-          )
-        }
+        cancel={Creation.cancel_path(@workspace)}
         create_enabled?={@creation.enabled?}
+        location={@creation.location}
+        location_label={@creation.location_label}
+        location_options={@creation.location_options}
+        location_error={@creation.location_error}
         parent_picker={@task_parent_picker}
       />
     </.modal>
 
     <.modal
       :if={
-        @live_action == :show_task && @workspace.selected_project &&
+        is_nil(@recovery.snapshot) && @live_action == :show_task && @workspace.selected_project &&
           !@workspace.location_not_found? && @editing.selected_task
       }
       id="task-modal"
       show
       size={:wide}
-      initial_focus="#task-title"
+      focus_on_mount={false}
       on_cancel={
         JS.patch(
           Paths.browse_path(
@@ -377,6 +408,7 @@
     >
       <Detail.detail
         task={@editing.selected_task}
+        project={@workspace.selected_project}
         task_autosave={@editing.autosave}
         parent_picker={@task_parent_picker}
         cancel={
@@ -397,13 +429,22 @@
             )
           end
         }
+        browse_path={
+          fn task_list ->
+            Paths.browse_path(
+              @workspace.selected_project,
+              task_list,
+              @workspace.include_children?
+            )
+          end
+        }
         task_move={@task_move}
       />
     </.modal>
 
     <.modal
       :if={
-        @live_action == :show_task && @workspace.selected_project &&
+        is_nil(@recovery.snapshot) && @live_action == :show_task && @workspace.selected_project &&
           !@workspace.location_not_found? &&
           @editing.not_found?
       }

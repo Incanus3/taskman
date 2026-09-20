@@ -4,6 +4,39 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
 
+  test "returns the selected Task's fresh location path" do
+    location_path = [%{id: 21, name: "Planning"}, %{id: 22, name: "Launch"}]
+
+    hierarchy = %Hierarchy{
+      selected_task_id: 3,
+      root:
+        hierarchy_node(1, [
+          hierarchy_node(2, [hierarchy_node(3, [], location_path)])
+        ])
+    }
+
+    state = TaskHierarchy.load(TaskHierarchy.empty(), hierarchy)
+
+    assert TaskHierarchy.selected_location_path(state) == location_path
+  end
+
+  test "finds a selected Task location after an unrelated sibling" do
+    location_path = [%{id: 22, name: "Launch"}]
+
+    hierarchy = %Hierarchy{
+      selected_task_id: 3,
+      root:
+        hierarchy_node(1, [
+          hierarchy_node(2),
+          hierarchy_node(3, [], location_path)
+        ])
+    }
+
+    state = TaskHierarchy.load(TaskHierarchy.empty(), hierarchy)
+
+    assert TaskHierarchy.selected_location_path(state) == location_path
+  end
+
   test "loading a hierarchy expands the selected Task and its ancestors" do
     hierarchy = hierarchy(3)
 
@@ -79,10 +112,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     %Hierarchy{selected_task_id: 11, root: hierarchy_node(10, [hierarchy_node(11)])}
   end
 
-  defp hierarchy_node(id, children \\ []) do
+  defp hierarchy_node(id, children \\ [], location_path \\ []) do
     %HierarchyNode{
       task: %Task{id: id, title: "Task #{id}"},
-      location_path: [],
+      location_path: location_path,
       children: children
     }
   end

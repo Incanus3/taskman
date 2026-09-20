@@ -371,7 +371,12 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='Draft task']")
-    assert has_element?(view, "#task-create-location", "List Before")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{root.id}'][selected]",
+             "List Before"
+           )
 
     assert {:ok, _renamed} =
              externally(fn -> Lists.rename_list(project, root, %{name: "Latest"}) end)
@@ -379,12 +384,18 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     sync_view(view)
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='Draft task']")
-    assert has_element?(view, "#task-create-location", "List Latest")
-    assert view_assigns(view).creation.location.name == "Latest"
+
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{root.id}'][selected]",
+             "List Latest"
+           )
+
+    assert view_assigns(view).creation.location_label == "List Latest"
     refute_patched(view, task_path)
   end
 
-  test "missing selected List preserves a parent-derived creation draft and canonicalizes its surviving List",
+  test "missing selected List keeps an ordinary parent-derived creation draft",
        %{conn: conn} do
     project = project_fixture(%{})
     selected = list_fixture(project, nil, %{name: "Selected"})
@@ -401,26 +412,25 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     |> render_change(%{"_target" => ["task", "title"]})
 
     before = view_assigns(view)
-    assert before.creation.location.id == parent_list.id
+    assert before.creation.location == "list:#{parent_list.id}"
 
     Taskman.Repo.delete!(selected)
 
-    assert {:ok, renamed} =
+    assert {:ok, _renamed} =
              externally(fn -> Lists.rename_list(project, parent_list, %{name: "Latest"}) end)
 
     sync_view(view)
 
     after_update = view_assigns(view)
     assert after_update.workspace.location_not_found?
-    assert after_update.creation.location == renamed
     assert after_update.creation.form.params == before.creation.form.params
-    assert after_update.creation.enabled? == before.creation.enabled?
-    assert after_update.editing == before.editing
+    assert after_update.creation.location == "list:#{parent_list.id}"
+    assert after_update.creation.location_label == "List Latest"
     assert after_update.task_parent_picker == before.task_parent_picker
-    assert after_update.task_move == before.task_move
+    assert is_nil(after_update.recovery.snapshot)
     assert after_update.listing.tasks_empty?
     refute after_update.listing.tasks_filtered_empty?
-    refute has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-form #task-title[value='Recoverable draft']")
     refute_patched(view, task_path)
   end
 
