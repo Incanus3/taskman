@@ -37,6 +37,16 @@ defmodule TaskmanWeb.CoreComponentsTest do
     refute mounted_actions =~ "focus_first"
   end
 
+  test "shown modal can delegate initial focus to its content" do
+    [mounted_actions] =
+      render_component(&shown_modal_without_initial_focus/1, %{})
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#task-modal")
+      |> LazyHTML.attribute("phx-mounted")
+
+    refute mounted_actions =~ ~s("focus")
+  end
+
   test "modal keeps the compact default and exposes an opt-in wide size" do
     html = render_component(&sized_modals/1, %{})
     document = LazyHTML.from_fragment(html)
@@ -77,6 +87,19 @@ defmodule TaskmanWeb.CoreComponentsTest do
       id="task-modal"
       show
       initial_focus="#task-title"
+      on_cancel={JS.push("cancel-task")}
+    >
+      <input id="task-title" />
+    </CoreComponents.modal>
+    """
+  end
+
+  defp shown_modal_without_initial_focus(assigns) do
+    ~H"""
+    <CoreComponents.modal
+      id="task-modal"
+      show
+      focus_on_mount={false}
       on_cancel={JS.push("cancel-task")}
     >
       <input id="task-title" />

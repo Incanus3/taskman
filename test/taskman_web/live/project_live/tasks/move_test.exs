@@ -6,7 +6,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks.TaskWithLocation
-  alias TaskmanWeb.ProjectLive.Tasks.Move
+  alias TaskmanWeb.ProjectLive.Tasks.{Move, Movement}
 
   test "empty and clear provide one inactive source of truth" do
     state = Move.empty()
@@ -40,7 +40,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
     assert %TaskWithLocation{task: ^task, location_path: [^planning, ^launch]} =
              state.active_task.task_with_location
 
-    assert Enum.map(state.options, &{&1.value, &1.label, &1.current?}) == [
+    assert Enum.map(state.options, &{&1.key, &1.label, &1.current?}) == [
              {"project", "Project · #{project.name}", false},
              {"list:#{planning.id}", "Planning", false},
              {"list:#{launch.id}", "Planning / Launch", true},
@@ -112,7 +112,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
     assert {:ok, searched, ^task} = Move.search(selected, project, "lAuNcH")
     assert searched.destination == nil
     assert searched.options_open?
-    assert Enum.map(searched.options, & &1.value) == ["list:#{launch.id}"]
+    assert Enum.map(searched.options, & &1.key) == ["list:#{launch.id}"]
   end
 
   test "identical search keeps the selected destination" do
@@ -144,7 +144,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
 
     assert Enum.any?(
              refreshed.options,
-             &(&1.value == "list:#{launch.id}" and &1.label == "Roadmap / Launch")
+             &(&1.key == "list:#{launch.id}" and &1.label == "Roadmap / Launch")
            )
 
     assert refreshed.active_task.task_with_location.location_path == [renamed_planning, launch]
@@ -182,7 +182,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
     assert refreshed.query == "Planning"
     assert refreshed.destination == "list:#{planning.id}"
     assert refreshed.options_open?
-    assert Enum.any?(refreshed.options, &(&1.value == "list:#{planning.id}"))
+    assert Enum.any?(refreshed.options, &(&1.key == "list:#{planning.id}"))
   end
 
   test "refresh updates a selected destination query after a List rename" do
@@ -207,8 +207,45 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
 
     assert Enum.any?(
              refreshed.options,
-             &(&1.value == "list:#{child.id}" and &1.label == "Latest / Launch")
+             &(&1.key == "list:#{child.id}" and &1.label == "Latest / Launch")
            )
+  end
+
+  test "movement restoration retains a renamed valid destination by canonical value" do
+    project = project_fixture(%{})
+    destination = list_fixture(project, nil, %{name: "Before"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    captured =
+      Move.empty()
+      |> Move.open(project, task, :detail)
+      |> Move.select_destination("list:#{destination.id}")
+
+    assert {:ok, _renamed} = Taskman.Lists.rename_list(project, destination, %{name: "After"})
+    assert {:ok, restored} = Movement.restore_move(captured, project, task, :detail)
+
+    assert restored.destination == "list:#{destination.id}"
+    assert restored.query == "After"
+    assert restored.error == nil
+  end
+
+  test "movement restoration retains a destination that became current without calling it missing" do
+    project = project_fixture(%{})
+    destination = list_fixture(project, nil, %{name: "Destination"})
+    task = task_fixture(project, %{title: "Move me"})
+
+    captured =
+      Move.empty()
+      |> Move.open(project, task, :detail)
+      |> Move.select_destination("list:#{destination.id}")
+
+    assert {:ok, moved} = Taskman.Tasks.move_task(project, task, destination)
+    assert {:ok, restored} = Movement.restore_move(captured, project, moved, :detail)
+
+    assert restored.destination == "list:#{destination.id}"
+    assert restored.query == "Destination"
+    assert restored.error == nil
+    assert Move.at_selected_destination?(restored)
   end
 
   test "refresh clears state when the active Task is gone" do

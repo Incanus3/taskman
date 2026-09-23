@@ -4,10 +4,9 @@ Historical implementation plan. The nine-task extraction is complete, independen
 verified; this plan was archived on 2026-09-19. Its checked steps preserve execution provenance,
 not remaining work. Current architecture belongs to the
 [accepted design](../../specs/2026-09-03-project-live-decomposition-design.md) and implemented code.
-The separately gated behavior follow-up belongs to the
-[Missing List recovery specification](../../specs/2026-09-18-missing-list-recovery-design.md),
-[active implementation plan](../../plans/2026-09-18-missing-list-recovery.md), and
-[Missing List recovery handoff](../../handoffs/missing-list-recovery.md).
+The separately scoped behavior follow-up belongs to the
+[Missing List recovery specification](../../specs/2026-09-18-missing-list-recovery-design.md);
+its [implementation plan](2026-09-18-missing-list-recovery.md) is also archived after completion.
 
 **Goal:** Split `TaskmanWeb.ProjectLive` into cohesive workflow modules while preserving every
 route, event, stream, subscription, DOM, persistence, conflict, and error contract.
@@ -22,8 +21,8 @@ structure is a nested `State` module containing only data and pure transformatio
 **Spec:** `docs/specs/2026-09-03-project-live-decomposition-design.md`
 
 **Status:** Completed and archived. The operator confirmed extraction-workstream completion on
-2026-09-19; recovery continues through its separate handoff.
-Updated: 2026-09-19.
+2026-09-19; the separate recovery workstream was completed on 2026-09-23.
+Updated: 2026-09-23.
 
 **Delivery tracking:** `tas-1tq`
 

@@ -201,7 +201,13 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert has_element?(view, "#location-heading", "Planning")
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-create-location", "List Planning")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{list.id}'][selected]",
+             "List Planning"
+           )
+
     assert has_element?(view, "#task-parent-picker")
     refute has_element?(view, "#task-parent-search")
     assert has_element?(view, "#task-parent-trigger", "No parent")
@@ -230,7 +236,13 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     )
 
     assert has_element?(view, "#task-#{source.id}")
-    assert has_element?(view, "#task-create-location", "List Planning")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{planning.id}'][selected]",
+             "List Planning"
+           )
+
     assert has_element?(view, "#task-parent-trigger", "Plan release")
 
     view |> element("#task-parent-trigger") |> render_click()
@@ -244,13 +256,23 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     view |> element("#task-parent-option-#{replacement.id}") |> render_click()
 
-    assert has_element?(view, "#task-create-location", "List Planning")
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{planning.id}'][selected]",
+             "List Planning"
+           )
+
     assert has_element?(view, "#task-parent-trigger", "Project replacement")
 
     view |> element("#task-parent-trigger") |> render_click()
     view |> element("#task-parent-clear") |> render_click()
 
-    assert has_element?(view, "#task-create-location", "List Planning")
+    assert has_element?(
+             view,
+             "#task-location option[value='list:#{planning.id}'][selected]",
+             "List Planning"
+           )
+
     assert has_element?(view, "#task-parent-trigger", "No parent")
 
     view
@@ -276,7 +298,13 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/new?parent_task_id=#{source.id}")
     assert has_element?(view, "#task-#{source.id}")
-    assert has_element?(view, "#task-create-location", "Project #{project.name}")
+
+    assert has_element?(
+             view,
+             "#task-location option[value='project'][selected]",
+             "Project #{project.name}"
+           )
+
     assert has_element?(view, "#task-parent-trigger", "Project root parent")
 
     view
@@ -307,14 +335,14 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     |> form("#task-form", task: %{title: "Hidden List child"})
     |> render_submit()
 
-    assert_patch(view, ~p"/projects/#{project.id}")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}")
 
     created =
       Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Hidden List child"))
 
     assert created.list_id == planning.id
     assert created.parent_task_id == source.id
-    refute has_element?(view, "#task-#{created.id}")
+    assert has_element?(view, "#task-#{created.id}")
   end
 
   test "saving a new Task creates it in the selected List and returns to its URL context", %{

@@ -362,6 +362,201 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
     assert reconciled.conflicts == %{}
   end
 
+  test "resume retains dirty values and fresh clean values without keeping old timers" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+
+    assert {:schedule, captured, ^task, 60_000, _message} =
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "status" => "pending"},
+               "title"
+             )
+
+    assert {:ok, fresh_task} = Tasks.update_task(project, task, %{status: :in_review})
+
+    resumed = Autosave.resume(captured, fresh_task)
+    assert resumed.draft["title"] == "Mine"
+    assert resumed.revisions == %{}
+    assert resumed.sequence == captured.sequence
+    assert resumed.save_state == :not_saved
+    assert resumed.form[:title].value == "Mine"
+    assert resumed.form[:status].value == :in_review
+  end
+
+  test "resume exposes an external dirty-field change as a conflict without saving" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before"})
+
+    assert {:schedule, captured, ^task, 60_000, _message} =
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine"},
+               "title"
+             )
+
+    assert {:ok, fresh_task} = Tasks.update_task(project, task, %{title: "Latest"})
+
+    resumed = Autosave.resume(captured, fresh_task)
+    assert resumed.form[:title].value == "Mine"
+    assert resumed.conflicts == %{"title" => "Latest"}
+    assert resumed.revisions == %{}
+    assert resumed.sequence == captured.sequence
+    assert resumed.save_state == :conflicted
+    assert Tasks.get_task_for_project(project, task.id).title == "Latest"
+  end
+
+  test "restart schedules reconciled debounced fields with fresh independent revisions" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", description: "Old"})
+
+    assert {:schedule, captured, ^task, 60_000,
+            {:autosave_task_field, _, "title", captured_title_revision}} =
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"title" => "Mine", "description" => "Old"},
+               "title"
+             )
+
+    assert {:schedule, captured, ^task, 60_000,
+            {:autosave_task_field, _, "description", captured_description_revision}} =
+             Autosave.change(
+               captured,
+               project,
+               task,
+               %{"title" => "Mine", "description" => "My description"},
+               "description"
+             )
+
+    resumed = Autosave.resume(captured, task)
+    assert resumed.revisions == %{}
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+    assert Tasks.get_task_for_project(project, task.id).description == "Old"
+
+    assert {:ok, restarted, ^task, schedules} = Autosave.restart(resumed, project, task)
+
+    assert restarted.sequence > max(captured_title_revision, captured_description_revision)
+    assert Autosave.field_state(restarted, "title") == :saving
+    assert Autosave.field_state(restarted, "description") == :saving
+
+    assert Enum.map(schedules, fn {_delay_ms, {:autosave_task_field, _, field, revision}} ->
+             {field, revision}
+           end)
+           |> Enum.sort() ==
+             [
+               {"description", restarted.revisions["description"]},
+               {"title", restarted.revisions["title"]}
+             ]
+
+    assert Enum.all?(schedules, fn {_delay_ms, {:autosave_task_field, _, _field, revision}} ->
+             revision > max(captured_title_revision, captured_description_revision)
+           end)
+  end
+
+  test "restart persists an eligible immediate field and retains an unrelated pending field state" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+
+    captured = %{
+      Autosave.load(Autosave.empty(), task, saved?: false)
+      | draft: %{"title" => "Mine", "status" => "in_review"},
+        dirty_fields: MapSet.new(["title", "status"]),
+        sequence: 7
+    }
+
+    resumed = Autosave.resume(captured, task)
+
+    assert {:ok, restarted, updated_task, schedules} = Autosave.restart(resumed, project, task)
+    assert updated_task.status == :in_review
+    assert Tasks.get_task_for_project(project, task.id).status == :in_review
+    assert Autosave.field_state(restarted, "status") == :saved
+    assert Autosave.field_state(restarted, "title") == :saving
+    assert [{60_000, {:autosave_task_field, task_id, "title", revision}}] = schedules
+    assert task_id == task.id
+    assert revision > captured.sequence
+
+    assert {:ok, completed, completed_task} =
+             Autosave.handle_scheduled_save(
+               restarted,
+               project,
+               updated_task,
+               task.id,
+               "title",
+               revision
+             )
+
+    assert completed_task.title == "Mine"
+    assert Autosave.field_state(completed, "status") == :saved
+    assert Autosave.field_state(completed, "title") == :saved
+  end
+
+  test "restart leaves invalid and conflicted dirty fields unsaved without new actions" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", description: "Old"})
+
+    invalid = %{
+      Autosave.load(Autosave.empty(), task, saved?: false)
+      | draft: %{"title" => ""},
+        dirty_fields: MapSet.new(["title"]),
+        sequence: 4
+    }
+
+    assert {:ok, restarted_invalid, ^task, []} =
+             invalid |> Autosave.resume(task) |> Autosave.restart(project, task)
+
+    assert Autosave.field_state(restarted_invalid, "title") == :not_saved
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+
+    assert {:schedule, captured, ^task, 60_000, _message} =
+             Autosave.change(
+               Autosave.load(Autosave.empty(), task, saved?: false),
+               project,
+               task,
+               %{"description" => "Mine"},
+               "description"
+             )
+
+    assert {:ok, fresh_task} = Tasks.update_task(project, task, %{description: "Latest"})
+
+    assert {:ok, restarted_conflict, ^fresh_task, []} =
+             captured |> Autosave.resume(fresh_task) |> Autosave.restart(project, fresh_task)
+
+    assert Autosave.field_state(restarted_conflict, "description") == nil
+    assert Autosave.conflict_value(restarted_conflict, "description") == "Latest"
+    assert Tasks.get_task_for_project(project, task.id).description == "Latest"
+  end
+
+  test "a restart persistence failure marks only the failed field" do
+    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
+    )
+
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :pending})
+
+    captured = %{
+      Autosave.load(Autosave.empty(), task, saved?: false)
+      | draft: %{"title" => "Mine", "status" => "in_review"},
+        dirty_fields: MapSet.new(["title", "status"])
+    }
+
+    assert {:ok, restarted, ^task, [{60_000, {:autosave_task_field, _, "title", _}}]} =
+             captured |> Autosave.resume(task) |> Autosave.restart(project, task)
+
+    assert Autosave.field_state(restarted, "status") == :failed
+    assert Autosave.field_state(restarted, "title") == :saving
+    assert Tasks.get_task_for_project(project, task.id).status == :pending
+  end
+
   test "reconciles an external change to a dirty field as a conflict and invalidates its timer" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})

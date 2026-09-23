@@ -3,6 +3,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
   alias Taskman.Tasks
   alias Taskman.Tasks.Conflict
   alias Taskman.Tasks.{Task, TaskWithLocation}
+  alias TaskmanWeb.ProjectLive.Tasks.Messages
 
   defstruct mode: nil,
             current_task: nil,
@@ -271,7 +272,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
         {:ok, refreshed_state, updated_task}
 
       {:error, :not_found} ->
-        {:error, reject_draft(state, "That parent Task is no longer available."), :not_found}
+        {:error, reject_draft(state, Messages.parent_unavailable()), :not_found}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         message = changeset_error_message(changeset)
@@ -431,7 +432,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
         {:conflict, put_parent_conflict(state, project, current_task), current_task}
 
       {:error, :not_found} ->
-        {:error, reject_draft(state, "That parent Task is no longer available."), :not_found}
+        {:error, reject_draft(state, Messages.parent_unavailable()), :not_found}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:error, reject_draft(state, changeset_error_message(changeset)), changeset}

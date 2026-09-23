@@ -494,33 +494,13 @@ This refactor does not introduce new error semantics.
 
 ### Missing-location behavior follow-up
 
-The proposed detailed contract now lives in the [Missing List recovery design](2026-09-18-missing-list-recovery-design.md),
-with a [draft implementation plan](../plans/2026-09-18-missing-list-recovery.md) and a separate
-[workstream handoff](../handoffs/missing-list-recovery.md). Direction is approved; these written
-artifacts still require review and implementation approval. The evidence below remains the
-extraction baseline and does not describe implemented recovery.
-
-On 2026-09-18 the operator agreed to track a separate recovery workstream.
-Current external List reconciliation marks a missing selected location, hides its Task creation/
-detail surfaces, and clears the Task stream and empty flags; it retains transient creation and
-movement state. Existing route lookup has a different boundary: an unavailable route clears modal
-state. Extraction must describe these existing boundaries accurately, without interpreting draft
-retention as proof that the behavior is correct.
-
-The recovery workstream reviews missing-location handling as a separately scoped behavior
-increment. Its preferred direction is to invalidate actions tied to the missing location, explain
-what disappeared, and preserve recoverable user input. It specifies whether and how drafts remain
-accessible, how the human chooses a new location or discards input, and which pending actions must
-stop. It must not silently redirect a save into the Project root or erase drafts as a convenience.
-
-Reproduce external disappearance with creation, detail and movement active, including stale browser
-events or pending work after the surface hides. Creation currently retains a List struct while
-persistence enforces its foreign-key boundary; movement refetches Task/destination authority on
-submit. Those guards do not establish a complete recovery UX. List deletion is not currently a
-supported product mutation, so controlled disappearance fixtures must not expand this follow-up
-into implementing deletion. Add outcome-focused regression coverage for the agreed behavior before
-fixing it. A bounded behavior design and operator approval remain required; the preferred direction
-does not authorize implementation or alter the approved nine-task extraction dependency order.
+The approved and implemented contract lives in the [Missing List recovery design](2026-09-18-missing-list-recovery-design.md).
+Its [archived implementation plan](../archive/plans/2026-09-18-missing-list-recovery.md) preserves
+execution provenance. The evidence below describes the 2026-09-18 extraction baseline before
+recovery was implemented; it does not describe current behavior. That investigation established
+the need to invalidate stale location-bound actions while retaining recoverable input. Product
+List deletion remains unsupported, so its controlled disappearance fixtures do not define a
+deletion event producer or ordering contract.
 
 #### Missing-location investigation evidence
 

@@ -148,7 +148,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert updated.description == "New description"
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='']")
-    assert has_element?(view, "#task-save-status[data-state='not_saved']")
+    assert has_element?(view, "#task-title-save-status[data-state='not_saved']")
   end
 
   test "saving an edit parent preserves a dirty ordinary autosave draft", %{conn: conn} do
@@ -168,7 +168,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
     assert has_element?(view, "#task-title[value='Dirty title']")
-    assert has_element?(view, "#task-save-status[data-state='saving']")
+    assert has_element?(view, "#task-title-save-status[data-state='saving']")
 
     view |> element("#task-modal-close") |> render_click()
 
@@ -224,7 +224,8 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     assert Tasks.get_task_for_project(project, first.id).title == "First flushed"
     assert has_element?(view, "#task-title[value='Second persisted']")
-    assert has_element?(view, "#task-save-status[data-state='idle']")
+    refute has_element?(view, "#task-save-status")
+    refute has_element?(view, "#task-title-save-status[data-state]")
 
     send(view.pid, {:autosave_task_field, first.id, "title", 1})
     _ = :sys.get_state(view.pid)
@@ -276,7 +277,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     |> form("#task-form", task: %{title: "Valid alongside failure", status: "in_review"})
     |> render_change(%{"_target" => ["task", "status"]})
 
-    assert has_element?(view, "#task-save-status[data-state='failed']")
+    assert has_element?(view, "#task-status-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
 
@@ -285,7 +286,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     |> render_submit()
 
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-save-status[data-state='failed']")
+    assert has_element?(view, "#task-status-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
 
     updated = Tasks.get_task_for_project(project, task.id)
@@ -300,7 +301,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert_patch(view, task_path)
     refute_patched(view, task_path)
     assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-save-status[data-state='failed']")
+    assert has_element?(view, "#task-status-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
   end
@@ -442,7 +443,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Latest"
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='Mine']")
-    assert has_element?(view, "#task-save-status[data-state='conflicted']")
+    refute has_element?(view, "#task-save-status")
     assert has_element?(view, "#task-title-conflict[role='alert']")
     assert has_element?(view, "#use-latest-title")
     assert has_element?(view, "#keep-mine-title")

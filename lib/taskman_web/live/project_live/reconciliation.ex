@@ -4,33 +4,53 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Projects.Project
   alias TaskmanWeb.ProjectLive.Workspace
+  alias TaskmanWeb.ProjectLive.Recovery
   alias TaskmanWeb.ProjectLive.Tasks.{Creation, Editing, Listing, Movement, ParentSelection}
 
   @doc "Handles scheduled autosaves and validated workspace notifications."
   @spec handle_info(term(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
   def handle_info({:autosave_task_field, _task_id, _field, _revision} = message, socket),
-    do: Editing.handle_autosave_info(message, socket)
+    do:
+      if(Recovery.blocked?(socket) or socket.assigns.workspace.location_not_found?,
+        do: {:noreply, socket},
+        else: Editing.handle_autosave_info(message, socket)
+      )
 
   def handle_info(%Event{entity: entity} = event, socket) when entity in [:project, :list] do
     socket =
       if well_formed_workspace_event?(event) do
+        previous_workspace = socket.assigns.workspace
+
         case Workspace.reconcile(socket, event) do
           {socket, :unchanged} ->
             socket
 
           {socket, {:location_missing, task_lists}} ->
-            socket
-            |> Creation.refresh_location(task_lists)
-            |> Listing.clear()
+            socket = Recovery.capture(socket, previous_workspace)
+
+            case Movement.reconcile(socket) do
+              {:anchored, socket} ->
+                reconcile_missing_location(socket, previous_workspace, task_lists)
+
+              {:missing, socket} = movement_result ->
+                recover_detail_or_apply_movement(socket, previous_workspace, movement_result)
+
+              movement_result ->
+                Movement.apply_reconciliation(movement_result)
+            end
 
           {socket, {:location_changed, task_lists}} ->
-            socket
-            |> Creation.refresh_location(task_lists)
-            |> Listing.refresh()
-            |> Movement.reconcile()
-            |> ParentSelection.refresh()
-            |> Editing.reload_hierarchy()
+            if Recovery.State.active?(socket.assigns.recovery) do
+              Listing.refresh(socket)
+            else
+              socket
+              |> Creation.refresh_locations(task_lists)
+              |> Listing.refresh()
+              |> reconcile_movement()
+              |> ParentSelection.refresh()
+              |> Editing.reload_hierarchy()
+            end
         end
       else
         socket
@@ -57,17 +77,57 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   def handle_info(%Event{}, socket), do: {:noreply, socket}
 
   defp reconcile_task_event(socket, event) do
-    socket =
-      socket
-      |> Listing.refresh()
-      |> Movement.reconcile()
-      |> Editing.reconcile(event)
-      |> sync_parent_selection()
-
-    if task_hierarchy_affected?(event) do
-      Editing.reload_hierarchy(socket)
+    if Recovery.State.active?(socket.assigns.recovery) do
+      Listing.refresh(socket)
     else
+      socket = Listing.refresh(socket)
+
+      case Movement.reconcile(socket) do
+        {:anchored, socket} ->
+          socket =
+            socket
+            |> Editing.reconcile(event)
+            |> sync_parent_selection()
+
+          if task_hierarchy_affected?(event) do
+            Editing.reload_hierarchy(socket)
+          else
+            socket
+          end
+
+        movement_result ->
+          Movement.apply_reconciliation(movement_result)
+      end
+    end
+  end
+
+  defp reconcile_movement(socket) do
+    socket
+    |> Movement.reconcile()
+    |> Movement.apply_reconciliation()
+  end
+
+  defp reconcile_missing_location(socket, previous_workspace, task_lists) do
+    if socket.assigns.live_action == :new_task and socket.assigns.creation.form do
       socket
+      |> Creation.refresh_locations(task_lists)
+      |> Listing.clear()
+    else
+      Recovery.enter(socket, previous_workspace)
+    end
+  end
+
+  defp recover_detail_or_apply_movement(socket, previous_workspace, movement_result) do
+    if socket.assigns.live_action == :new_task and socket.assigns.creation.form do
+      Movement.apply_reconciliation(movement_result)
+    else
+      recovered = Recovery.enter(socket, previous_workspace)
+
+      if Recovery.State.active?(recovered.assigns.recovery) do
+        recovered
+      else
+        Movement.apply_reconciliation(movement_result)
+      end
     end
   end
 

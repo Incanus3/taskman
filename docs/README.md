@@ -24,20 +24,14 @@
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
-- [ProjectLive workflow decomposition (implemented; missing-location follow-up separately gated)](specs/2026-09-03-project-live-decomposition-design.md)
-- [Missing List recovery (direction approved; detailed draft awaiting review)](specs/2026-09-18-missing-list-recovery-design.md)
+- [ProjectLive workflow decomposition (implemented)](specs/2026-09-03-project-live-decomposition-design.md)
+- [Missing List recovery (implemented and operator accepted)](specs/2026-09-18-missing-list-recovery-design.md)
 - [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
 - [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 - [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
-
-## Active implementation plans
-
-- [Missing List recovery (draft; implementation approval pending)](plans/2026-09-18-missing-list-recovery.md) —
-  three dependent increments tracked under `tas-1tq.10`; review the complete specification and plan
-  before authorizing implementation.
 
 ## Handoffs
 
@@ -68,6 +62,7 @@
 
 ## Archive
 
+- [Missing List recovery implementation plan](archive/plans/2026-09-18-missing-list-recovery.md)
 - [ProjectLive workflow decomposition implementation plan](archive/plans/2026-09-04-project-live-decomposition.md)
 - [Authenticated hosted access and release deployment implementation plan](archive/plans/2026-09-02-authenticated-hosted-access.md)
 - [Foundation documentation update implementation plan](archive/plans/2026-07-18-foundation-documentation-update.md)

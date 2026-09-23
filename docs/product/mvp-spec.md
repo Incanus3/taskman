@@ -41,6 +41,12 @@ and a user may explicitly select another lifecycle state during creation. Its fi
 Progress. **Will Not Do** is the other terminal state. A human explicitly transitions state and
 reviews work before marking it Done.
 
+After a successful Task move, the browser stays on the current Project/List backdrop if the Task is
+still in its direct or enabled descendant location scope. Otherwise it follows the Task to its new
+location. A row move opens that location's Task list; a detail move keeps the same Task editor open
+over that location. The Include child Lists setting is preserved, and status filters do not affect
+the route choice.
+
 Task priority is required and exactly one of **None**, **Low**, **Medium**, **High**, or **Urgent**.
 Description, local due date-time, and checklist are optional. Neither checklist progress, due date,
 nor an Agent Session automatically changes Task state.
@@ -52,6 +58,28 @@ nor an Agent Session automatically changes Task state.
   **Include child Lists** optionally adds descendant Tasks while preserving their source List.
 - Opening a Task shows a modal over the preserved list state. The selected Task should be shareable
   in the URL.
+- Every Create Task modal has an explicit same-Project Location. If its selected location or backdrop
+  becomes unavailable, the ordinary form remains editable but Create is disabled until another
+  location is chosen; submission resolves that location fresh. Creation stays on its current browse
+  backdrop only when the new Task is visible by direct or Include child Lists scope, otherwise it
+  browses the chosen location without changing the current scope preference.
+- If a selected List becomes unavailable while a dirty Task detail form is active, Taskman resolves
+  the Task and its current location again, reconciles the unsaved input, and continues ordinary
+  detail automatically without creating, updating, or moving the Task. The previous backdrop stays
+  only when the Task remains visible there by direct or Include child Lists scope; otherwise detail
+  follows the Task's current location without changing that scope preference. Status filters do not
+  affect this route decision. After fresh reconciliation, each valid nonconflicted changed field
+  resumes normal saving under fresh authority and reports its own Saving, Saved, Not saved, or
+  failure state beside that field; conflicts retain their field-specific resolution notice.
+- An open Move Task popover remains usable when its source row or destination changes: an unavailable
+  destination must be replaced, while a surviving Task whose row is no longer visible reopens in
+  detail at its fresh location without being moved. If the Task no longer exists, the move closes
+  with an error.
+- Dirty detail input retained across location changes is temporary to the current live page process.
+  When the Project, Task, or Task location cannot be resolved again, recovery provides copy and
+  explicit discard controls. Try again is available when fresh authority may be restored; a
+  confirmed missing Task offers only Copy and Discard. Reloading, leaving the page, or a replacement
+  connection loses the retained input.
 - The modal has a collapsible left parent-child hierarchy with nesting guides, central Task detail,
   and an Activity and Sessions rail.
 - The hierarchy contains only parent-child work breakdown. A Related Tasks table contains Blocks /

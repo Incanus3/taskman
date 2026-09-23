@@ -75,7 +75,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def apply_route(socket, project, %Task{} = task) do
     case Tasks.get_task_hierarchy(project, task) do
       {:ok, hierarchy} ->
-        autosave = Autosave.load(socket.assigns.editing.autosave, task, saved?: false)
+        autosave = route_autosave(socket.assigns.editing, task)
         assign(socket, :editing, State.open(socket.assigns.editing, task, autosave, hierarchy))
 
       {:error, :not_found} ->
@@ -84,6 +84,69 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   def apply_route(socket, _project, nil), do: task_not_found_modal_state(socket)
+
+  defp route_autosave(
+         %State{selected_task: %Task{id: task_id}, autosave: current},
+         %Task{
+           id: task_id
+         } = task
+       ) do
+    current
+    |> Autosave.load(task, saved?: current.saved?)
+    |> Map.put(:field_states, current.field_states)
+  end
+
+  defp route_autosave(%State{autosave: current}, %Task{} = task),
+    do: Autosave.load(current, task, saved?: false)
+
+  @doc "Restores captured detail input against fresh scoped Task authority without writing."
+  @spec restore(Phoenix.LiveView.Socket.t(), State.t(), ParentPicker.t()) ::
+          {:ok, Phoenix.LiveView.Socket.t()}
+          | {:error, :task_not_found, Phoenix.LiveView.Socket.t()}
+          | {:error, Phoenix.LiveView.Socket.t()}
+  def restore(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket,
+        %State{selected_task: %Task{id: task_id}, autosave: %Autosave{} = captured_autosave} =
+          captured,
+        %ParentPicker{} = captured_picker
+      ) do
+    case Tasks.get_task_for_project(project, task_id) do
+      %Task{} = task ->
+        case Tasks.get_task_hierarchy(project, task) do
+          {:ok, hierarchy} ->
+            sequence = max(captured_autosave.sequence, socket.assigns.editing.autosave.sequence)
+            autosave = Autosave.resume(%{captured_autosave | sequence: sequence}, task)
+            editing = State.open(captured, task, autosave, hierarchy)
+            picker = ParentPicker.reconcile(captured_picker, project, task)
+
+            socket =
+              socket
+              |> assign(:editing, editing)
+              |> assign(:task_parent_picker, picker)
+
+            case Autosave.restart(socket.assigns.editing.autosave, project, task) do
+              {:ok, autosave, task, schedules} ->
+                socket = sync_autosave(socket, autosave, task)
+
+                {:ok,
+                 Enum.reduce(schedules, socket, fn {delay_ms, message}, socket ->
+                   execute_task_autosave_schedule(socket, delay_ms, message)
+                 end)}
+
+              {:not_found, autosave} ->
+                {:error, apply_task_autosave_result(socket, {:not_found, autosave})}
+            end
+
+          {:error, :not_found} ->
+            {:error, :task_not_found, socket}
+        end
+
+      nil ->
+        {:error, :task_not_found, socket}
+    end
+  end
+
+  def restore(socket, %State{}, %ParentPicker{}), do: {:error, socket}
 
   @doc "Clears detail data while retaining the autosave timer sequence."
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
@@ -222,10 +285,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         case Tasks.get_task_for_project(socket.assigns.workspace.selected_project, task_id) do
           %Task{} = task ->
             update_state(socket, fn editing ->
+              autosave = Autosave.load(editing.autosave, task, saved?: true)
+
               %{
                 editing
                 | selected_task: task,
-                  autosave: Autosave.load(editing.autosave, task, saved?: true)
+                  autosave: %{autosave | field_states: editing.autosave.field_states}
               }
             end)
 

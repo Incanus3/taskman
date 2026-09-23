@@ -8,45 +8,105 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.Tasks.Listing
-  alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
+  alias TaskmanWeb.ProjectLive.Tasks.{Listing, LocationScope, Messages, ParentPicker}
 
   @events ["validate_task", "save_task"]
 
   defmodule State do
-    alias Taskman.Lists.TaskList
-
-    defstruct form: nil, enabled?: false, location: nil
+    defstruct form: nil,
+              enabled?: false,
+              location: nil,
+              location_label: nil,
+              location_options: [],
+              location_error: nil
 
     @type t :: %__MODULE__{
             form: Phoenix.HTML.Form.t() | nil,
             enabled?: boolean(),
-            location: TaskList.t() | nil
+            location: String.t() | nil,
+            location_label: String.t() | nil,
+            location_options: [{String.t(), String.t()}],
+            location_error: String.t() | nil
           }
 
     @spec empty() :: t()
     def empty, do: %__MODULE__{}
 
-    @spec open(t(), Phoenix.HTML.Form.t(), TaskList.t() | nil) :: t()
-    def open(%__MODULE__{} = state, form, location) do
-      %{state | form: form, enabled?: form.source.valid?, location: location}
+    @spec open(t(), Phoenix.HTML.Form.t(), String.t(), String.t(), [{String.t(), String.t()}]) ::
+            t()
+    def open(%__MODULE__{} = state, form, location, location_label, location_options) do
+      state
+      |> Map.put(:form, form)
+      |> Map.put(:location, location)
+      |> Map.put(:location_label, location_label)
+      |> refresh_locations(location_options)
     end
 
     @spec validate(t(), Phoenix.HTML.Form.t()) :: t()
-    def validate(%__MODULE__{} = state, form), do: open(state, form, state.location)
+    def validate(%__MODULE__{} = state, form), do: state |> Map.put(:form, form) |> with_enabled()
 
-    @spec refresh_location(t(), [TaskList.t()]) :: t()
-    def refresh_location(%__MODULE__{location: %TaskList{id: list_id}} = state, task_lists) do
-      case Enum.find(task_lists, &(&1.id == list_id)) do
-        %TaskList{} = task_list -> %{state | location: task_list}
-        nil -> state
+    @spec choose_location(t(), String.t(), [{String.t(), String.t()}]) :: t()
+    def choose_location(%__MODULE__{} = state, location, location_options)
+        when is_binary(location) do
+      case option_label(location_options, location) do
+        nil ->
+          state
+          |> Map.put(:location, location)
+          |> Map.put(:location_options, location_options)
+          |> Map.put(:location_error, unavailable_location_error())
+          |> with_enabled()
+
+        label ->
+          state
+          |> Map.put(:location, location)
+          |> Map.put(:location_label, label)
+          |> Map.put(:location_options, location_options)
+          |> Map.put(:location_error, nil)
+          |> with_enabled()
       end
     end
 
-    def refresh_location(%__MODULE__{} = state, _task_lists), do: state
+    @spec refresh_locations(t(), [{String.t(), String.t()}]) :: t()
+    def refresh_locations(%__MODULE__{} = state, location_options) do
+      case option_label(location_options, state.location) do
+        nil when is_nil(state.location) ->
+          state
+          |> Map.put(:location_options, location_options)
+          |> Map.put(:location_label, nil)
+          |> Map.put(:location_error, unavailable_location_error())
+          |> with_enabled()
+
+        nil ->
+          state
+          |> Map.put(:location_options, location_options)
+          |> Map.put(:location_error, unavailable_location_error())
+          |> with_enabled()
+
+        label ->
+          state
+          |> Map.put(:location_options, location_options)
+          |> Map.put(:location_label, label)
+          |> Map.put(:location_error, nil)
+          |> with_enabled()
+      end
+    end
 
     @spec clear(t()) :: t()
     def clear(%__MODULE__{}), do: empty()
+
+    defp option_label(options, location) do
+      case Enum.find(options, fn {_label, key} -> key == location end) do
+        {label, _key} -> label
+        nil -> nil
+      end
+    end
+
+    defp with_enabled(%__MODULE__{} = state) do
+      %{state | enabled?: state.form.source.valid? and is_nil(state.location_error)}
+    end
+
+    defp unavailable_location_error,
+      do: "This List is no longer available. Choose another location."
   end
 
   @spec events() :: [String.t()]
@@ -59,7 +119,18 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     changeset = Tasks.change_task(project)
 
     {location, parent_picker} = task_create_state(project, selected_list, params)
-    creation = State.open(socket.assigns.creation, to_form(changeset), location)
+    location_options = location_options(project)
+    location_key = location_key(location)
+    location_label = location_label(location_options, location_key)
+
+    creation =
+      State.open(
+        socket.assigns.creation,
+        to_form(changeset),
+        location_key,
+        location_label,
+        location_options
+      )
 
     socket
     |> assign(:creation, creation)
@@ -68,21 +139,71 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
-  def handle_event("validate_task", %{"task" => task_params}, socket) do
+  def handle_event("validate_task", %{"task" => task_params} = params, socket) do
     changeset =
       socket.assigns.workspace.selected_project
       |> Tasks.change_task(task_params)
       |> Map.put(:action, :validate)
 
-    creation = State.validate(socket.assigns.creation, to_form(changeset))
+    location = Map.get(params, "location") || socket.assigns.creation.location || "project"
+
+    creation =
+      socket.assigns.creation
+      |> State.validate(to_form(changeset))
+      |> State.choose_location(
+        location,
+        location_options(socket.assigns.workspace.selected_project)
+      )
+
     {:noreply, assign(socket, :creation, creation)}
   end
 
-  def handle_event("save_task", %{"task" => task_params}, socket) do
-    case Tasks.create_task(
-           socket.assigns.workspace.selected_project,
-           socket.assigns.creation.location,
-           task_params,
+  def handle_event("save_task", %{"task" => task_params} = params, socket) do
+    project = socket.assigns.workspace.selected_project
+    location = Map.get(params, "location") || socket.assigns.creation.location || "project"
+
+    case resolve_location(project, location) do
+      {:ok, destination} ->
+        create_task(socket, project, destination, task_params, location)
+
+      :error ->
+        {:noreply, assign_invalid_location(socket, task_params, location)}
+    end
+  end
+
+  @spec refresh_locations(Phoenix.LiveView.Socket.t(), [TaskList.t()]) ::
+          Phoenix.LiveView.Socket.t()
+  def refresh_locations(socket, task_lists) do
+    project = socket.assigns.workspace.selected_project
+
+    if socket.assigns.live_action == :new_task and socket.assigns.creation.form do
+      assign(
+        socket,
+        :creation,
+        State.refresh_locations(socket.assigns.creation, location_options(project, task_lists))
+      )
+    else
+      socket
+    end
+  end
+
+  @spec cancel_path(map()) :: String.t()
+  def cancel_path(workspace) do
+    destination = if workspace.location_not_found?, do: nil, else: workspace.selected_list
+    Paths.browse_path(workspace.selected_project, destination, workspace.include_children?)
+  end
+
+  @spec post_create_path(Project.t(), map(), TaskList.t() | nil, [TaskList.t()]) :: String.t()
+  def post_create_path(project, workspace, destination, task_lists) do
+    backdrop = LocationScope.backdrop(workspace, destination, task_lists)
+    Paths.browse_path(project, backdrop, workspace.include_children?)
+  end
+
+  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def clear(socket), do: assign(socket, :creation, State.clear(socket.assigns.creation))
+
+  defp create_task(socket, project, destination, task_params, location) do
+    case Tasks.create_task(project, destination, task_params,
            parent: ParentPicker.selected_parent(socket.assigns.task_parent_picker)
          ) do
       {:ok, _task} ->
@@ -91,10 +212,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
         {:noreply,
          push_patch(socket,
            to:
-             Paths.browse_path(
-               socket.assigns.workspace.selected_project,
-               socket.assigns.workspace.selected_list,
-               socket.assigns.workspace.include_children?
+             post_create_path(
+               project,
+               socket.assigns.workspace,
+               destination,
+               Lists.list_lists_for_project(project)
              )
          )}
 
@@ -105,32 +227,38 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
            :task_parent_picker,
            ParentPicker.reject_draft(
              socket.assigns.task_parent_picker,
-             "That parent Task is no longer available."
+             Messages.parent_unavailable()
            )
          )}
 
       {:error, changeset} ->
         {:noreply,
-         assign(socket, :creation, State.validate(socket.assigns.creation, to_form(changeset)))}
+         assign(
+           socket,
+           :creation,
+           socket.assigns.creation
+           |> State.validate(to_form(changeset))
+           |> State.choose_location(location, location_options(project))
+         )}
     end
   end
 
-  @spec refresh_location(Phoenix.LiveView.Socket.t(), [TaskList.t()]) ::
-          Phoenix.LiveView.Socket.t()
-  def refresh_location(socket, task_lists) do
-    assign(socket, :creation, State.refresh_location(socket.assigns.creation, task_lists))
-  end
+  defp assign_invalid_location(socket, task_params, location) do
+    changeset =
+      socket.assigns.workspace.selected_project
+      |> Tasks.change_task(task_params)
+      |> Map.put(:action, :validate)
 
-  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def clear(socket), do: assign(socket, :creation, State.clear(socket.assigns.creation))
-
-  @spec location_copy(Project.t(), State.t()) :: String.t()
-  def location_copy(%Project{name: project_name}, %State{location: nil}) do
-    "Create this Task in Project #{project_name}."
-  end
-
-  def location_copy(%Project{}, %State{location: %TaskList{name: list_name}}) do
-    "Create this Task in List #{list_name}."
+    assign(
+      socket,
+      :creation,
+      socket.assigns.creation
+      |> State.validate(to_form(changeset))
+      |> State.choose_location(
+        location,
+        location_options(socket.assigns.workspace.selected_project)
+      )
+    )
   end
 
   defp task_create_state(project, selected_list, params) do
@@ -147,7 +275,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
             {selected_list,
              ParentPicker.empty()
              |> ParentPicker.open_create(project, nil)
-             |> ParentPicker.reject_draft("That parent Task is no longer available.")}
+             |> ParentPicker.reject_draft(Messages.parent_unavailable())}
         end
     end
   end
@@ -169,4 +297,47 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
       nil -> :error
     end
   end
+
+  defp location_options(project, task_lists \\ nil)
+
+  defp location_options(%Project{} = project, nil),
+    do: location_options(project, Lists.list_lists_for_project(project))
+
+  defp location_options(%Project{name: name}, task_lists) do
+    [{"Project #{name}", "project"}] ++
+      Enum.map(Lists.tree_order(task_lists), fn task_list ->
+        {"List #{task_list.name}", location_key(task_list)}
+      end)
+  end
+
+  defp location_key(nil), do: "project"
+  defp location_key(%TaskList{id: id}), do: "list:#{id}"
+
+  defp location_label(options, key) do
+    case Enum.find(options, fn {_label, option_key} -> option_key == key end) do
+      {label, _key} -> label
+      nil -> nil
+    end
+  end
+
+  defp resolve_location(_project, "project"), do: {:ok, nil}
+
+  defp resolve_location(project, "list:" <> id) do
+    case Integer.parse(id) do
+      {value, ""} when value > 0 ->
+        if Integer.to_string(value) == id do
+          case Lists.get_list_for_project(project, value) do
+            %TaskList{} = task_list -> {:ok, task_list}
+            nil -> :error
+          end
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp resolve_location(_project, _location), do: :error
 end

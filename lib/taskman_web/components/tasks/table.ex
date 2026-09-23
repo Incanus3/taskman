@@ -223,6 +223,7 @@ defmodule TaskmanWeb.Tasks.Table do
   attr :include_children?, :boolean, default: false
   attr :task_move, Move, required: true
   attr :add_subtask_path, :string, default: nil
+  attr :actions_enabled?, :boolean, default: true
 
   def row(assigns) do
     ~H"""
@@ -295,6 +296,7 @@ defmodule TaskmanWeb.Tasks.Table do
         </span>
       </div>
       <div
+        :if={@actions_enabled?}
         id={"task-actions-#{task.id}"}
         class={[
           "pointer-events-auto relative flex justify-end gap-2 sm:justify-self-center",

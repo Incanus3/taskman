@@ -307,11 +307,12 @@ flush fails, movement does not occur and both the Task save error and move failu
 For a successful move:
 
 - the Task table is re-queried and reset;
-- the selected Project/List and descendant query do not change;
+- the selected backdrop follows the current location-scope rule (the previous fixed-backdrop rule is
+  superseded by [Missing List recovery, Movement continuity](2026-09-18-missing-list-recovery-design.md#movement-continuity));
 - the popover closes;
-- a row that no longer belongs disappears;
+- a row remains visible in the resulting backdrop when its status is included;
 - a row that remains visible receives its new location path; and
-- open Task detail remains open with the moved Task as the selected Task.
+- open Task detail remains open with the moved Task as the selected Task on that backdrop.
 
 The interaction should use ordinary LiveView events, `phx-click-away`, and keyboard events where
 they suffice. A small colocated hook may be added only if browser focus or anchored-popover behavior
