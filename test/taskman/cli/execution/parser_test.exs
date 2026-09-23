@@ -104,7 +104,12 @@ defmodule Taskman.CLI.Execution.ParserTest do
              Parser.parse(~w(tasks show --project 7), %{})
 
     assert {:error, _message, ["projects", "create"]} =
-             Parser.parse(~w(projects create --name New), %{})
+             Parser.parse(~w(projects create), %{})
+  end
+
+  test "accepts Project creation with a name" do
+    assert {:ok, invocation} = Parser.parse(~w(projects create --name New), %{})
+    assert invocation.options == %{name: "New"}
   end
 
   test "rejects unknown commands and options" do

@@ -63,8 +63,6 @@ defmodule Taskman.CLI.EndToEndTest do
           "create",
           "--name",
           "HTTP smoke",
-          "--directory",
-          File.cwd!(),
           "--json"
         ],
         config_root
@@ -77,12 +75,9 @@ defmodule Taskman.CLI.EndToEndTest do
     assert %{
              "data" => %{
                "id" => id,
-               "name" => "HTTP smoke",
-               "primary_directory" => directory
+               "name" => "HTTP smoke"
              }
            } = Jason.decode!(create.stdout)
-
-    assert directory == File.cwd!()
 
     show =
       cli_run(
@@ -102,8 +97,7 @@ defmodule Taskman.CLI.EndToEndTest do
     assert Jason.decode!(show.stdout) == %{
              "data" => %{
                "id" => id,
-               "name" => "HTTP smoke",
-               "primary_directory" => File.cwd!()
+               "name" => "HTTP smoke"
              }
            }
   end
@@ -127,8 +121,6 @@ defmodule Taskman.CLI.EndToEndTest do
           "create",
           "--name",
           "Hierarchy smoke",
-          "--directory",
-          File.cwd!(),
           "--json"
         ],
         config_root
@@ -239,8 +231,6 @@ defmodule Taskman.CLI.EndToEndTest do
           "create",
           "--name",
           "CLI Project",
-          "--directory",
-          File.cwd!(),
           "--json"
         ],
         config_root

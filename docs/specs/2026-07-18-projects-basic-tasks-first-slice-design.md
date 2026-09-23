@@ -4,8 +4,10 @@
 **Status:** Approved design
 
 > **Superseded in part:** The title-only Task creation decision is replaced by the
-> [Full Task creation form design](2026-08-03-full-task-creation-form-design.md). The remaining
-> first-slice decisions stay authoritative.
+> [Full Task creation form design](2026-08-03-full-task-creation-form-design.md). The
+> [Projects without primary directories design](2026-09-10-projects-without-primary-directories-design.md)
+> supersedes Project-directory requirements; Projects now have a name and no directory. Other
+> first-slice decisions remain authoritative.
 
 ## Goal
 

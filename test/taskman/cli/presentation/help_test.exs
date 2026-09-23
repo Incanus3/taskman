@@ -57,6 +57,14 @@ defmodule Taskman.CLI.Presentation.HelpTest do
              "taskman tasks hierarchy --project PROJECT_ID TASK_ID"
   end
 
+  test "Project creation help documents name-only creation" do
+    help = Help.render(~w(projects create))
+
+    assert help =~ "taskman projects create --name NAME"
+    assert help =~ "--name NAME"
+    assert help =~ "taskman projects create --name CLI"
+  end
+
   test "Task parent help distinguishes parent assignment from removal" do
     create_help = Help.render(~w(tasks create))
     update_help = Help.render(~w(tasks update))

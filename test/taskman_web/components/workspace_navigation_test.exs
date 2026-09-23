@@ -12,7 +12,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
   alias TaskmanWeb.WorkspaceNavigation
 
   test "renders a flattened semantic tree with independent controls" do
-    project = %Project{id: 7, name: "Taskman", primary_directory: "/workspace/taskman"}
+    project = %Project{id: 7, name: "Taskman"}
     root = %TaskList{id: 11, project_id: project.id, name: "Planning"}
     child = %TaskList{id: 12, project_id: project.id, parent_list_id: root.id, name: "Launch"}
 
@@ -83,24 +83,18 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
              LazyHTML.query(document, "#toggle-list-11[aria-label='Collapse Planning']")
            )
 
-    refute Enum.empty?(LazyHTML.query(document, "#project-7 a[aria-label='Select Taskman']"))
-    refute Enum.empty?(LazyHTML.query(document, "#list-11 a[aria-label='Select Planning']"))
-
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#project-7 a[aria-label='Select Taskman'][aria-describedby='project-directory-7']"
+               "#select-project-7[href='/projects/7'][aria-label='Select Taskman']"
              )
            )
 
-    directory_popover =
-      LazyHTML.query(
-        document,
-        "#project-directory-7[role='tooltip'][data-project-directory-popover]"
-      )
+    refute Enum.empty?(
+             LazyHTML.query(document, "#add-list-project-7[aria-label='Add List to Taskman']")
+           )
 
-    refute Enum.empty?(directory_popover)
-    assert LazyHTML.text(directory_popover) =~ "/workspace/taskman"
+    refute Enum.empty?(LazyHTML.query(document, "#list-11 a[aria-label='Select Planning']"))
 
     refute Enum.empty?(
              LazyHTML.query(document, "#list-11 button[aria-label='Add child List to Planning']")
@@ -108,25 +102,6 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
 
     refute Enum.empty?(LazyHTML.query(document, "#list-11 button[aria-label='Rename Planning']"))
     assert Enum.empty?(LazyHTML.query(document, "[aria-label*='Delete']"))
-  end
-
-  test "owns hover and Escape interaction for the Project directory popover" do
-    project = %Project{id: 7, name: "Taskman", primary_directory: "/workspace/taskman"}
-
-    document =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [{"project-7", project_node(project)}],
-        include_children?: false,
-        list_edit: ListEdit.empty()
-      })
-      |> LazyHTML.from_fragment()
-
-    refute Enum.empty?(
-             LazyHTML.query(
-               document,
-               "#select-project-7[phx-hook='TaskmanWeb.WorkspaceNavigation.ProjectDirectoryPopover'][aria-describedby='project-directory-7'] > #project-directory-7[role='tooltip'][data-project-directory-popover]"
-             )
-           )
   end
 
   test "overlays actions on fine pointers and masks the name beneath them" do

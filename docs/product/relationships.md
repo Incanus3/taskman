@@ -43,8 +43,8 @@ Task relationships never automatically alter Task state.
 Deleting a Task always removes its incident Blocks / Blocked by and Relates to records. Parent-child
 requires the following explicit choice when the deleted Task has children:
 
-1. **Recursively delete child subtree:** delete every descendant Task, its Agent Sessions, and all
-   incident relationships. The impact confirmation enumerates the full affected set.
+1. **Recursively delete child subtree:** delete every descendant Task and all incident
+   relationships. The impact confirmation enumerates the full affected set.
 2. **Preserve child subtree:** remove the deleted Task and reparent only its direct children to the
    deleted Task's parent. If the deleted Task had no parent, reparent those children to the Project
    level. Each child retains its existing descendants and List ownership.

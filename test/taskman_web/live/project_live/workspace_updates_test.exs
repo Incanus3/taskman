@@ -50,7 +50,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
 
     created =
       externally(fn ->
-        Projects.create_project(%{name: "External", primary_directory: File.cwd!()})
+        Projects.create_project(%{name: "External"})
       end)
 
     assert {:ok, created} = created
@@ -62,7 +62,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
 
     other =
       externally(fn ->
-        Projects.create_project(%{name: "Later", primary_directory: File.cwd!()})
+        Projects.create_project(%{name: "Later"})
       end)
 
     assert {:ok, other} = other
@@ -180,12 +180,12 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     {:ok, index, _html} = live(conn, ~p"/")
 
     index
-    |> form("#project-form", project: %{name: "Draft Project", primary_directory: File.cwd!()})
+    |> form("#project-form", project: %{name: "Draft Project"})
     |> render_change(%{"_target" => ["project", "name"]})
 
     assert {:ok, _created} =
              externally(fn ->
-               Projects.create_project(%{name: "Elsewhere", primary_directory: File.cwd!()})
+               Projects.create_project(%{name: "Elsewhere"})
              end)
 
     sync_view(index)

@@ -9,7 +9,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
       assert conn.request_path == "/api/v1/projects"
 
       Req.Test.json(conn, %{
-        data: [%{id: 7, name: "CLI", primary_directory: "/work/cli"}]
+        data: [%{id: 7, name: "CLI"}]
       })
     end)
 
@@ -22,12 +22,12 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
 
     assert result.status == 0
     assert result.stderr == ""
-    assert result.stdout == "ID\tNAME\tPRIMARY DIRECTORY\n7\tCLI\t/work/cli\n"
+    assert result.stdout == "ID\tNAME\n7\tCLI\n"
   end
 
   test "projects list rejects malformed collection members as an invalid response" do
     Req.Test.expect(ProjectCommands, fn conn ->
-      Req.Test.json(conn, %{data: [nil]})
+      Req.Test.json(conn, %{data: [%{}]})
     end)
 
     result =
@@ -42,13 +42,13 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     assert result.stderr =~ "invalid_response"
   end
 
-  test "projects show requests the project member and preserves all fields in JSON mode" do
+  test "projects show requests the project member and preserves its data envelope in JSON mode" do
     Req.Test.expect(ProjectCommands, fn conn ->
       assert conn.method == "GET"
       assert conn.request_path == "/api/v1/projects/7"
 
       Req.Test.json(conn, %{
-        data: %{id: 7, name: "CLI", primary_directory: "/work/cli"}
+        data: %{id: 7, name: "CLI"}
       })
     end)
 
@@ -63,7 +63,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     assert result.stderr == ""
 
     assert Jason.decode!(result.stdout) == %{
-             "data" => %{"id" => 7, "name" => "CLI", "primary_directory" => "/work/cli"}
+             "data" => %{"id" => 7, "name" => "CLI"}
            }
   end
 
@@ -90,17 +90,17 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
       assert conn.request_path == "/api/v1/projects"
 
       assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
-               "project" => %{"name" => "CLI", "primary_directory" => "/work/cli"}
+               "project" => %{"name" => "CLI"}
              }
 
       conn
       |> Plug.Conn.put_status(201)
-      |> Req.Test.json(%{data: %{id: 8, name: "CLI", primary_directory: "/work/cli"}})
+      |> Req.Test.json(%{data: %{id: 8, name: "CLI"}})
     end)
 
     result =
       Taskman.CLI.run(
-        ["projects", "create", "--name", "CLI", "--directory", "/work/cli", "--json"],
+        ["projects", "create", "--name", "CLI", "--json"],
         env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
         config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ProjectCommands}]
@@ -108,7 +108,10 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
 
     assert result.status == 0
     assert result.stderr == ""
-    assert %{"data" => %{"id" => 8, "name" => "CLI"}} = Jason.decode!(result.stdout)
+
+    assert Jason.decode!(result.stdout) == %{
+             "data" => %{"id" => 8, "name" => "CLI"}
+           }
   end
 
   test "projects create rejects a malformed member as an invalid response" do
@@ -120,7 +123,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
 
     result =
       Taskman.CLI.run(
-        ["projects", "create", "--name", "CLI", "--directory", "/work/cli", "--json"],
+        ["projects", "create", "--name", "CLI", "--json"],
         env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
         config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ProjectCommands}]

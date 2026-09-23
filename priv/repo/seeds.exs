@@ -38,11 +38,7 @@ end
     Repo.delete_all(TaskList)
     Repo.delete_all(Project)
 
-    {:ok, project} =
-      Projects.create_project(%{
-        name: "Taskman Demo",
-        primary_directory: File.cwd!()
-      })
+    {:ok, project} = Projects.create_project(%{name: "Taskman Demo"})
 
     {:ok, workstreams} = Lists.create_list(project, nil, %{name: "Workstreams"})
     {:ok, product} = Lists.create_list(project, workstreams, %{name: "Product"})

@@ -12,8 +12,8 @@ defmodule Taskman.CLI.Skill.BundleTest do
     skill = Map.fetch!(files, "SKILL.md")
 
     assert skill =~ ~r/\A---\nname: taskman-cli\ndescription: Use when .+\n---\n/s
-    assert skill =~ "Taskman is the system of record"
-    assert skill =~ "Projects, Lists, Tasks, and Agent Sessions"
+    assert skill =~ "Taskman is the system of record for Projects, Lists, and Tasks."
+    assert skill =~ ~r/Agent Session integration is\s+deferred to a separate accepted design\./
     assert skill =~ "taskman --help"
     assert skill =~ "taskman agent onboarding"
     assert skill =~ "ordinary commands require a running backend"
@@ -42,8 +42,8 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "tasks update --parent"
     assert skill =~ "tasks update --no-parent"
     assert skill =~ "tasks hierarchy"
-    assert skill =~ "preserve its returned name and primary directory"
-    assert skill =~ "never infer registration from the current working directory"
+    assert skill =~ "preserve its returned ID and name"
+    assert skill =~ "taskman projects create --name Demo"
     assert skill =~ "taskman tasks list --project 7 --include-descendants --json"
     assert skill =~ "--status pending --status in_progress --sort priority --direction desc"
     assert skill =~ "Repeat `--status` to include multiple lifecycle states"
@@ -54,12 +54,12 @@ defmodule Taskman.CLI.Skill.BundleTest do
              "An empty direct-location result does not establish that the Project has no Tasks"
 
     assert skill =~ "explicit authority"
-    assert skill =~ "Agent launch or completion is evidence only, not authority"
+    assert skill =~ "Agent work is evidence only, not authority"
 
     assert skill =~
-             "any Task lifecycle change requires a separate, user-authorized Task-status decision"
+             ~r/any Task lifecycle change requires a separate,\s+user-authorized Task-status decision/
 
-    assert skill =~ "Do not treat agent work as automatic Task completion"
+    assert skill =~ "Agent activity never marks a Task complete automatically."
 
     for command <- Registry.commands() do
       path = Enum.join(command.path, " ")

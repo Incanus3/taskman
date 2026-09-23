@@ -8,11 +8,7 @@ defmodule TaskmanWeb.API.Representation do
 
   @spec project(Taskman.Projects.Project.t()) :: map()
   def project(project) do
-    %{
-      id: project.id,
-      name: project.name,
-      primary_directory: project.primary_directory
-    }
+    %{id: project.id, name: project.name}
   end
 
   @spec task_list(Taskman.Lists.TaskList.t(), [Taskman.Lists.TaskList.t()]) :: map()

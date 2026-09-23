@@ -34,7 +34,7 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
       post_request(
         "/api/v1/projects",
         %{
-          "project" => %{"name" => "Controller Project", "primary_directory" => File.cwd!()}
+          "project" => %{"name" => "Controller Project"}
         },
         api_key
       )

@@ -25,6 +25,7 @@ defmodule Taskman.CLI.OnboardingTest do
     assert text =~ "one-time"
     assert text =~ "status 7"
     assert text =~ "taskman projects list --json"
+    assert text =~ "taskman projects create --name \"My Project\" --json"
     assert text =~ "taskman lists list --project 7 --json"
     assert text =~ "taskman tasks list --project 7 --json"
     assert text =~ "taskman tasks update --project 7 42 --parent 41 --json"

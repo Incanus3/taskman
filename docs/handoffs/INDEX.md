@@ -2,9 +2,6 @@
 
 This is the complete index of current repository handoffs.
 
-- [Projects without primary directories](projects-without-primary-directories.md) — parked —
-  Remove machine-specific Project paths; direction approved; written-design review approval pending before planning —
-  `$resume projects-without-primary-directories`
 - [Operations CLI UX](operations-cli-ux.md) — parked — Finish readable progress, outcome, and provisioning-rerun design after the operations merge — `$resume operations-cli-ux`
 - [PostgreSQL host-side Python](postgresql-host-python.md) — parked — Revised protocol/native identity/failure contract needs scoped review and written-spec approval before planning — `$resume postgresql-host-python`
 

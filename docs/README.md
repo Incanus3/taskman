@@ -5,7 +5,7 @@
 - [MVP specification](product/mvp-spec.md)
 - [Domain model and glossary](product/domain.md)
 - [Task relationships](product/relationships.md)
-- [Agent Sessions](product/agent-sessions.md)
+- [Agent Sessions (superseded historical workflow)](product/agent-sessions.md)
 
 ## Planning
 
@@ -14,19 +14,19 @@
 ## Specifications
 
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
-- [Projects and basic Tasks first slice](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
+- [Projects and basic Tasks first slice (Project directory requirements superseded)](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
 - [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
 - [Task detail and navigation](specs/2026-08-24-task-detail-navigation-design.md)
 - [Lists and nested organization](specs/2026-08-26-lists-nested-organization-design.md)
-- [API, CLI, and agent skill](specs/2026-08-29-api-cli-agent-skill-design.md)
+- [API, CLI, and agent skill (Project representation requirements superseded)](specs/2026-08-29-api-cli-agent-skill-design.md)
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [ProjectLive workflow decomposition (implemented)](specs/2026-09-03-project-live-decomposition-design.md)
 - [Missing List recovery (implemented and operator accepted)](specs/2026-09-18-missing-list-recovery-design.md)
-- [Projects without primary directories](specs/2026-09-10-projects-without-primary-directories-design.md)
+- [Projects without primary directories (implemented and operator accepted)](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
 - [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
@@ -62,6 +62,7 @@
 
 ## Archive
 
+- [Projects without primary directories implementation plan](archive/plans/2026-09-23-projects-without-primary-directories.md)
 - [Missing List recovery implementation plan](archive/plans/2026-09-18-missing-list-recovery.md)
 - [ProjectLive workflow decomposition implementation plan](archive/plans/2026-09-04-project-live-decomposition.md)
 - [Authenticated hosted access and release deployment implementation plan](archive/plans/2026-09-02-authenticated-hosted-access.md)

@@ -1,6 +1,8 @@
 # Taskman — Agent Session Workflow
 
-**Status:** Resolved MVP workflow
+**Status:** Superseded. Agent Session implementation is deferred to a separate accepted design; the current Project model has no directory. See [Projects without primary directories](../specs/2026-09-10-projects-without-primary-directories-design.md).
+
+**Historical status:** Resolved MVP workflow
 **Decided:** 2026-07-14
 **MVP provider:** Auggie ACP, run locally through a provider-adapter boundary.
 

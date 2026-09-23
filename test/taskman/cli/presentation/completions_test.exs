@@ -134,19 +134,35 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
 
     assert "--json" in fish_query(
              fish_path,
-             "taskman projects create --name completions --directory /tmp --"
+             "taskman projects create --name completions --"
            )
   end
 
   @tag :tmp_dir
-  test "Fish keeps project create options after a child-named option value", %{tmp_dir: tmp_dir} do
+  test "Fish offers the Project name option", %{tmp_dir: tmp_dir} do
     fish_path = Path.join(tmp_dir, "taskman.fish")
     File.write!(fish_path, Completions.fish())
 
-    assert "--directory" in fish_query(
+    assert "--name" in fish_query(
              fish_path,
-             "taskman projects create --name show --"
+             "taskman projects create --"
            )
+  end
+
+  @tag :tmp_dir
+  test "Fish keeps global options after a child-named Project name", %{tmp_dir: tmp_dir} do
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(fish_path, Completions.fish())
+
+    assert "--json" in fish_query(fish_path, "taskman projects create --name show --")
+  end
+
+  @tag :tmp_dir
+  test "Bash offers the Project name option", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    File.write!(bash_path, Completions.bash())
+
+    assert "--name" in bash_query(bash_path, ["taskman", "projects", "create", "--"])
   end
 
   @tag :tmp_dir

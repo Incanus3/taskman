@@ -8,7 +8,6 @@ defmodule Taskman.ChangeNotifications do
   @workspace_topic "workspace:changes"
   @field_order [
     :name,
-    :primary_directory,
     :description,
     :due_at,
     :list_id,

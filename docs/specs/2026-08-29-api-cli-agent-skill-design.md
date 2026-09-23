@@ -3,6 +3,11 @@
 **Status:** Approved
 **Date:** 2026-08-29
 
+> **Superseded in part:** The
+> [Projects without primary directories design](2026-09-10-projects-without-primary-directories-design.md)
+> replaces Project-directory and Project-representation requirements. Current Project API and CLI
+> creation and output use ID and name only; the remaining design remains historical context.
+
 ## Context
 
 Taskman is a locally started, single-user Phoenix application whose delivered UI supports Projects,

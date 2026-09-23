@@ -2,9 +2,9 @@
 
 ## Status
 
-Direction approved; written specification awaits review approval before implementation planning.
-Updated: 2026-09-18. No directory-removal migration or implementation exists.
-No implementation or deployment approval is implied.
+Written specification approved for implementation planning on 2026-09-23.
+Updated: 2026-09-23. The directory-removal implementation is locally and independently verified
+and accepted by the operator. Deployment approval remains a separate gate.
 
 ## Context
 
@@ -13,12 +13,12 @@ performed on one or more different development machines. A filesystem path store
 therefore describes, at best, one checkout on one machine. The Taskman server cannot interpret or
 validate that path, and another client may need a different path for the same Project.
 
-The current implementation treats `Project.primary_directory` as required domain data. It
-normalizes and validates the value against the server filesystem, persists it in a non-null
-PostgreSQL column, displays it in the creation form and navigation, exposes it through the JSON API
-and CLI, includes it in Project change notifications, and assumes it in fixtures, seeds, and tests.
-Current product documents also use the field as the basis for a planned Auggie integration that has
-not been implemented.
+At design time, the implementation treated `Project.primary_directory` as required domain data. It
+normalized and validated the value against the server filesystem, persisted it in a non-null
+PostgreSQL column, displayed it in the creation form and navigation, exposed it through the JSON API
+and CLI, included it in Project change notifications, and assumed it in fixtures, seeds, and tests.
+Product documents at design time also used the field as the basis for a planned Auggie integration
+that had not been implemented.
 
 No external research is needed for this change. The observed deployment topology and the
 machine-local meaning of filesystem paths are sufficient to show that the current ownership is
@@ -87,10 +87,13 @@ casts and requires `name`, trims it, and performs no filesystem work. `Taskman.P
 directory normalization and validation functions. A successful creation notification reports only
 the `name` field.
 
-Generate a new migration with `mix ecto.gen.migration drop_primary_directory_from_projects`, then
-remove the `projects.primary_directory` column. Do not edit the historical Project-creation
-migration: existing databases need an explicit transition and fresh databases should retain the
-same migration history.
+Generate a new migration with `mix ecto.gen.migration drop_primary_directory_from_projects`. Its
+`up/0` removes the `projects.primary_directory` column. Its `down/0` raises
+`Ecto.MigrationError` with the message “Cannot roll back Project directory removal; restore the
+matching pre-migration database backup with the prior application release.” Do not use a reversible
+column removal that recreates a directory column without the discarded values. Do not edit the
+historical Project-creation migration: existing databases need an explicit transition and fresh
+databases should retain the same migration history.
 
 This is intentionally a forward data-model transition. A database containing Projects created by
 the new release cannot be meaningfully downgraded to an old release that requires valid local
@@ -173,14 +176,20 @@ Update `docs/README.md`, the root `README.md`, and any active roadmap language n
 old assumptions from appearing current. Do not replace them with guesses about Orca or another
 agent architecture.
 
+Because Agent Sessions are deferred, the current relationship deletion rules and bundled CLI skill
+describe only implemented records and operations. Agent Session obligations require the separate
+accepted integration design.
+
 ## Expected file boundaries
 
-Implementation is expected to touch these responsibility groups. If ProjectLive decomposition
-executes first, follow its resulting workspace workflow owner for Project creation; the navigation
-component, API/CLI and domain responsibilities remain the same. Neither change requires the other.
+Implementation is expected to touch these responsibility groups. ProjectLive decomposition has
+already merged, so `TaskmanWeb.ProjectLive.Workspace` owns Project creation and the root LiveView
+continues to render the form; the navigation component, API/CLI, and domain responsibilities remain
+the same.
 
 - Project persistence and behavior under `lib/taskman/projects*` and a newly generated migration;
-- Project creation and navigation under `lib/taskman_web/live/` and
+- Project creation in `lib/taskman_web/live/project_live/workspace.ex`, the form in
+  `lib/taskman_web/live/project_live.html.heex`, and navigation in
   `lib/taskman_web/components/workspace_navigation.ex`;
 - Project API serialization under `lib/taskman_web/controllers/api/`;
 - Project CLI registry, command, response validation, and presentation under `lib/taskman/cli/`;
@@ -195,18 +204,21 @@ Do not modify archived implementation plans or historical research solely to era
 
 Use test-driven development for the behavior change. The focused checks must establish that:
 
-- `Projects.create_project/1` succeeds with a trimmed non-empty name alone and fails only for an
-  invalid name;
+- `Projects.create_project/1` succeeds with a trimmed non-empty name and reports a name validation
+  error for a blank name;
 - Project creation publishes `fields: [:name]`;
-- the LiveView form has no directory input and creates a Project from name-only parameters;
-- workspace navigation contains no directory popover or path text;
-- API list, show, and create return only `id` and `name`, and validation errors mention only `name`;
+- the LiveView form creates and selects a Project from name-only parameters and shows the name
+  validation error for a blank submission;
+- workspace navigation renders the Project name, link, and Add List action;
+- API list, show, and create return the documented `id` and `name` values, and a blank name yields
+  the documented `422 validation_failed` response with a name error;
 - CLI help, parsing, request construction, response validation, readable output, JSON output,
-  completions, and bundled-skill assertions use the name-only contract;
+  completions, and bundled-skill assertions exercise creation by name and presentation of Project
+  ID and name;
 - seeds, fixtures, account-deletion coverage, repository compatibility tests, and external-update
-  tests create valid Projects without a path; and
-- the forward migration succeeds against a database with existing Project rows and the resulting
-  schema has no `primary_directory` column.
+  tests create valid Projects by name; and
+- the forward migration succeeds against a database with existing Project rows, preserves their
+  readable names, and supports subsequent Project creation by name.
 
 Run focused tests while implementing, then run `mix precommit`. Because this changes a documented
 CLI surface, also inspect `taskman projects create --help`, generated Bash and Fish completion

@@ -25,12 +25,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/")
 
     view
-    |> form("#project-form", project: %{name: "Taskman", primary_directory: File.cwd!()})
+    |> form("#project-form", project: %{name: "Taskman"})
     |> render_submit()
 
     assert [project] = Taskman.Projects.list_projects()
+    assert project.name == "Taskman"
     assert_patch(view, ~p"/projects/#{project.id}")
     assert has_element?(view, "#project-#{project.id}[aria-current='page']")
+    assert has_element?(view, "#add-list-project-#{project.id}")
     assert has_element?(view, "#tasks")
   end
 
@@ -709,14 +711,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-actions-header", "Actions")
   end
 
-  test "invalid Project input renders inline errors", %{conn: conn} do
+  test "blank Project name renders an inline name error", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
     view
-    |> form("#project-form", project: %{name: "Taskman", primary_directory: "/not/a/taskman/dir"})
+    |> form("#project-form", project: %{name: ""})
     |> render_submit()
 
-    assert has_element?(view, "#project-form [data-role='field-error']")
+    assert has_element?(view, "#project-form [data-role='field-error']", "can't be blank")
   end
 
   test "opens and cancels the new Task modal over the selected list", %{conn: conn} do

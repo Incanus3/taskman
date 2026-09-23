@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Authenticated hosted access complete; Task relationships are next
-**Updated:** 2026-09-03
+**Status:** Name-only Project transition complete; Task relationships follow
+**Updated:** 2026-09-23
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -44,7 +44,7 @@ default list-first screen.
 
 Initial scope:
 
-- Project name and required primary local directory.
+- Project name; Project identity is independent of a local directory.
 - Project persistence and selection.
 - Task persistence under a Project.
 - Task title, description, priority, status, and optional due date-time.
@@ -54,8 +54,8 @@ Initial scope:
 
 This is the first real MVP milestone and the first slice to guide later architectural decisions.
 
-**Current state:** Complete. Users can create and select Projects, create Tasks from the selected
-Project's direct list, and open each Task at its canonical
+**Current state:** Complete. Users can create and select name-only Projects, create Tasks
+from the selected Project's direct list, and open each Task at its canonical
 `/projects/:project_id/tasks/:task_id` URL in a modal over the preserved list. The modal autosaves
 title, description, status, priority, and optional due date-time changes; every lifecycle state is
 human-selectable, and persisted title, status, and priority values refresh in the Task row. Focused
@@ -218,46 +218,23 @@ Scope:
 - Recursive List deletion.
 - Task deletion.
 - Task-with-children choice between subtree deletion and direct-child reparenting.
-- Cleanup of relationships and any existing Agent Sessions.
+- Cleanup of incident relationships.
 - Tests for cross-Project relationship effects.
 
 Implement this after ownership and relationship behavior exists so impact calculations reflect the
 real model.
 
-### 7. Agent Session launch foundation
+### 7. Agent integration design gate
 
-**Outcome:** A user can launch an Auggie session for a Task through a narrow, testable integration
-boundary.
+**Outcome:** A separate accepted design defines whether and how agents use Taskman Tasks and how
+machine-local execution context is provided.
 
-Scope:
+Do not assume a provider, work pickup mechanism, launch flow, or local checkout association before
+that design is accepted. Agent Session implementation remains deferred.
 
-- Decide the minimum provider-adapter boundary required by launch.
-- Add a deterministic fake provider for tests and local UI development.
-- Persist Agent Sessions only after a provider session ID is obtained.
-- Add Sessions rail states and launch flow.
-- Enforce the Project primary-directory rule.
-- Persist launch context and the opaque provider session ID.
+### 8. MVP hardening
 
-ACP process ownership, capability negotiation, and recovery details should be designed immediately
-before this slice.
-
-### 8. Attach and resume
-
-**Outcome:** Existing Auggie sessions can be attached and explicitly resumed with clear recovery
-behavior.
-
-Scope:
-
-- Attach an existing session after adapter validation in the Project directory.
-- Capability-reported model handling.
-- Explicit Resume flow.
-- Recovery status and unsupported/failed-operation reporting.
-
-Keep this separate from initial launch because attachment and recovery are materially more complex.
-
-### 9. MVP hardening
-
-**Outcome:** The local MVP is coherent, testable, and safe to use.
+**Outcome:** The hosted MVP is coherent, testable, and safe to use.
 
 Scope:
 
@@ -277,8 +254,8 @@ them:
 - Full database schema design beyond the current slice.
 - Tree-storage strategy before nested Lists or parent-child relationships.
 - Generic repository or event/activity abstractions.
-- Full filesystem/service architecture before local-directory behavior is implemented.
-- ACP supervision and recovery architecture before Agent Session work.
+- Agent provider, work pickup, launch, local execution context, and recovery architecture before
+  the agent integration design is accepted.
 - Complete URL and modal-state design before Task detail/navigation.
 - Broad JavaScript conventions without a browser behavior that requires a hook.
 - Synchronization, collaboration, managed hosting, and per-user domain ownership beyond the

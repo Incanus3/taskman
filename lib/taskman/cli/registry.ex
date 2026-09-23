@@ -38,15 +38,10 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(projects create),
         summary: "Create a Project.",
-        usage: "taskman projects create --name NAME --directory PATH",
+        usage: "taskman projects create --name NAME",
         handler: {:projects, :create},
-        options: [
-          option(:name, "--name", :string, "NAME", "Project name.", required?: true),
-          option(:directory, "--directory", :string, "PATH", "Primary directory.",
-            required?: true
-          )
-        ],
-        examples: ["taskman projects create --name CLI --directory /work/project"]
+        options: [option(:name, "--name", :string, "NAME", "Project name.", required?: true)],
+        examples: ["taskman projects create --name CLI"]
       },
       %Command{
         path: ~w(lists list),

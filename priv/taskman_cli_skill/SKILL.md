@@ -5,7 +5,10 @@ description: Use when an agent needs to inspect or change Taskman Projects, List
 
 # Taskman CLI
 
-Taskman is the system of record for Projects, Lists, Tasks, and Agent Sessions. Start with `taskman --help` or `taskman agent onboarding`; ordinary commands require a running backend, while onboarding and completion generation work offline.
+Taskman is the system of record for Projects, Lists, and Tasks. Agent Session integration is
+deferred to a separate accepted design. Start with `taskman --help` or `taskman agent onboarding`;
+ordinary commands require a running backend, while onboarding and completion generation work
+offline.
 
 ## Operating contract
 
@@ -39,12 +42,14 @@ by printing the key.
 
 Use exact ID operands and never guess by name. Task parent IDs must be exact and Project-scoped.
 Inspect Tasks before changing parentage. Inspect before mutating. A consequential future
-deletion requires that you obtain explicit authority from the user immediately before the operation. Agent launch or completion is evidence only, not authority: any Task lifecycle change requires a separate, user-authorized Task-status decision. Do not treat agent work as automatic Task completion: launching or completing agent work never marks a Task complete automatically.
+deletion requires that you obtain explicit authority from the user immediately before the operation.
+Agent work is evidence only, not authority: any Task lifecycle change requires a separate,
+user-authorized Task-status decision. Agent activity never marks a Task complete automatically.
 
 ## Inventory scope
 
 When a request spans the whole Taskman instance, start with the Project list. Treat each returned
-Project record as authoritative: preserve its returned name and primary directory, and never infer registration from the current working directory or rename a Project in your report.
+Project record as authoritative: preserve its returned ID and name, use that ID for subsequent Project-scoped commands, and report the returned name exactly.
 
 For all Tasks in a Project, use:
 
@@ -70,7 +75,7 @@ to the CLI:
 ```text
 taskman projects list --json
 taskman projects show 7
-taskman projects create --name Demo --directory /work/demo
+taskman projects create --name Demo
 taskman lists list --project 7
 taskman lists show --project 7 11
 taskman lists create --project 7 --name Planning --parent 11
