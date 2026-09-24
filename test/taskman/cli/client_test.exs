@@ -11,14 +11,42 @@ defmodule Taskman.CLI.ClientTest do
       assert conn.request_path == "/api/v1/projects"
 
       Req.Test.json(conn, %{
-        data: [%{id: 1, name: "One", primary_directory: "/tmp"}]
+        data: [%{id: 1, name: "One"}]
       })
     end)
 
-    assert {:ok, [%{"id" => 1, "name" => "One", "primary_directory" => "/tmp"}]} =
+    assert {:ok, [%{"id" => 1, "name" => "One"}]} =
              Client.request(:get, "/api/v1/projects", [],
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
+  end
+
+  test "validates Project IDs and names in response members" do
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      Req.Test.json(conn, %{data: %{id: 7, name: "One"}})
+    end)
+
+    assert {:ok, %{"id" => 7, "name" => "One"}} =
+             Client.request(
+               :get,
+               "/api/v1/projects/7",
+               [],
+               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               {:member, :project}
+             )
+
+    for data <- [%{}, %{id: 0, name: "One"}, %{id: 7, name: 123}] do
+      Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: data}) end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(
+                 :get,
+                 "/api/v1/projects/7",
+                 [],
+                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 {:member, :project}
+               )
+    end
   end
 
   test "adds a bearer credential without putting it in the URL or result" do

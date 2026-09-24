@@ -4,7 +4,7 @@ defmodule Taskman.ProjectsFixtures do
 
     attrs =
       Map.merge(
-        %{name: "Project #{unique}", primary_directory: File.cwd!()},
+        %{name: "Project #{unique}"},
         Map.new(attrs)
       )
 

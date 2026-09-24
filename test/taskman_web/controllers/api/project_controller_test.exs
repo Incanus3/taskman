@@ -35,31 +35,52 @@ defmodule TaskmanWeb.API.ProjectControllerTest do
 
     assert %{
              "data" => [
-               %{"id" => ^first_id, "name" => "First", "primary_directory" => _},
-               %{"id" => ^second_id, "name" => "Second", "primary_directory" => _}
+               %{"id" => ^first_id, "name" => "First"},
+               %{"id" => ^second_id, "name" => "Second"}
              ]
            } = json_response(conn, 200)
   end
 
-  test "POST /api/v1/projects returns 201 and normalized data", %{conn: conn} do
-    conn =
-      post(conn, "/api/v1/projects", %{
-        "project" => %{"name" => "CLI", "primary_directory" => File.cwd!()}
-      })
+  test "GET /api/v1/projects/:id returns project data", %{conn: conn} do
+    project = project_fixture(%{name: "Shown"})
+    id = project.id
+
+    conn = get(conn, "/api/v1/projects/#{id}")
+
+    assert %{"data" => %{"id" => ^id, "name" => "Shown"}} = json_response(conn, 200)
+  end
+
+  test "POST /api/v1/projects returns 201 for a name-only request", %{conn: conn} do
+    conn = post(conn, "/api/v1/projects", %{"project" => %{"name" => "CLI"}})
 
     assert %{"data" => %{"id" => id, "name" => "CLI"}} = json_response(conn, 201)
     assert is_integer(id)
   end
 
-  test "POST /api/v1/projects returns field errors", %{conn: conn} do
-    conn = post(conn, "/api/v1/projects", %{"project" => %{"name" => ""}})
+  test "POST /api/v1/projects ignores unrelated input keys", %{conn: conn} do
+    conn =
+      post(conn, "/api/v1/projects", %{"project" => %{"name" => "CLI", "other" => "ignored"}})
 
-    assert %{
-             "error" => %{
-               "code" => "validation_failed",
-               "fields" => %{"name" => [_], "primary_directory" => [_]}
-             }
-           } = json_response(conn, 422)
+    assert %{"data" => %{"id" => id, "name" => "CLI"}} = json_response(conn, 201)
+    assert is_integer(id)
+  end
+
+  test "POST /api/v1/projects returns a name error when name is missing", %{conn: conn} do
+    conn = post(conn, "/api/v1/projects", %{"project" => %{}})
+
+    assert %{"error" => %{"code" => "validation_failed", "fields" => fields}} =
+             json_response(conn, 422)
+
+    assert fields == %{"name" => ["can't be blank"]}
+  end
+
+  test "POST /api/v1/projects returns a name error for whitespace", %{conn: conn} do
+    conn = post(conn, "/api/v1/projects", %{"project" => %{"name" => "   "}})
+
+    assert %{"error" => %{"code" => "validation_failed", "fields" => fields}} =
+             json_response(conn, 422)
+
+    assert fields == %{"name" => ["can't be blank"]}
   end
 
   test "malformed and missing project ids use stable errors", %{conn: conn} do

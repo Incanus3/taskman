@@ -37,12 +37,7 @@ defmodule Taskman.CLI.Commands.Projects do
         )
 
       :create ->
-        body = %{
-          "project" => %{
-            "name" => Map.fetch!(invocation.options, :name),
-            "primary_directory" => Map.fetch!(invocation.options, :directory)
-          }
-        }
+        body = %{"project" => %{"name" => Map.fetch!(invocation.options, :name)}}
 
         request(
           invocation,

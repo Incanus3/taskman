@@ -63,11 +63,7 @@ defmodule Taskman.Repo.SeedsTest do
   end
 
   test "seeds replace existing data with a rerunnable nested sample dataset" do
-    {:ok, existing_project} =
-      Projects.create_project(%{
-        name: "Existing project",
-        primary_directory: File.cwd!()
-      })
+    {:ok, existing_project} = Projects.create_project(%{name: "Existing project"})
 
     run_seeds()
 
@@ -138,7 +134,7 @@ defmodule Taskman.Repo.SeedsTest do
     task_titles_by_id = Map.new(tasks, &{&1.id, &1.title})
 
     %{
-      project: {project.name, project.primary_directory},
+      project: project.name,
       lists:
         task_lists
         |> Enum.map(&{&1.name, Map.get(list_names_by_id, &1.parent_list_id)})

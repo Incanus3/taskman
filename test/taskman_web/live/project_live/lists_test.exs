@@ -33,7 +33,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
            )
   end
 
-  test "List breadcrumbs are the main heading and Project directories stay out of main headers",
+  test "List breadcrumbs are the main heading",
        %{
          conn: conn
        } do
@@ -50,20 +50,6 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
            )
 
     assert has_element?(list_view, "#location-path [aria-current='page']", "Launch")
-
-    refute has_element?(
-             list_view,
-             "#main-panel section > header",
-             project.primary_directory
-           )
-
-    {:ok, project_view, _html} = live(conn, ~p"/projects/#{project.id}")
-
-    refute has_element?(
-             project_view,
-             "#main-panel section > header",
-             project.primary_directory
-           )
   end
 
   test "List descendant inclusion is URL-backed and toggles back to direct Tasks", %{conn: conn} do

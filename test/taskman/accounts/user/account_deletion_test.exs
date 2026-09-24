@@ -44,10 +44,7 @@ defmodule Taskman.Accounts.User.AccountDeletionTest do
              )
 
     assert {:ok, project} =
-             Projects.create_project(%{
-               name: "Shared workspace survives account deletion",
-               primary_directory: File.cwd!()
-             })
+             Projects.create_project(%{name: "Shared workspace survives account deletion"})
 
     assert {:ok, task_list} = Lists.create_list(project, nil, %{name: "Shared list"})
     assert {:ok, task} = Tasks.create_task(project, task_list, %{title: "Shared task"})

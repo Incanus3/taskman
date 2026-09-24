@@ -73,18 +73,10 @@ defmodule TaskmanWeb.WorkspaceNavigation do
           <.link
             id={selection_link_id(node)}
             patch={selection_path(node, @include_children?)}
-            phx-hook={
-              node.kind == :project && node.project.primary_directory &&
-                "TaskmanWeb.WorkspaceNavigation.ProjectDirectoryPopover"
-            }
             aria-current={node.selected? && "page"}
             aria-label={"Select #{node_label(node)}"}
-            aria-describedby={
-              node.kind == :project && node.project.primary_directory &&
-                "project-directory-#{node.project.id}"
-            }
             class={[
-              "group/project-link relative flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1",
+              "flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1",
               node.kind == :project &&
                 "pr-10 pointer-fine:group-hover:pr-10 pointer-fine:group-focus-within:pr-10",
               node.kind == :list &&
@@ -96,15 +88,6 @@ defmodule TaskmanWeb.WorkspaceNavigation do
               class="size-4 shrink-0 text-indigo-300"
             />
             <span class="min-w-0 flex-1 truncate">{node_label(node)}</span>
-            <span
-              :if={node.kind == :project && node.project.primary_directory}
-              id={"project-directory-#{node.project.id}"}
-              role="tooltip"
-              data-project-directory-popover
-              class="pointer-events-auto invisible absolute left-1 top-full z-40 mt-2 w-max max-w-64 translate-y-1 break-all rounded-lg border border-slate-700 bg-slate-900/95 px-2.5 py-2 text-left font-mono text-[0.6875rem] font-normal leading-4 text-slate-300 opacity-0 shadow-xl shadow-black/30 transition duration-150 group-hover/project-link:visible group-hover/project-link:translate-y-0 group-hover/project-link:opacity-100 group-focus-within/project-link:visible group-focus-within/project-link:translate-y-0 group-focus-within/project-link:opacity-100"
-            >
-              {node.project.primary_directory}
-            </span>
           </.link>
           <div
             id={
@@ -162,33 +145,6 @@ defmodule TaskmanWeb.WorkspaceNavigation do
         />
       </div>
     </nav>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".ProjectDirectoryPopover">
-      export default {
-        mounted() {
-          this.tooltip = document.getElementById(this.el.getAttribute("aria-describedby"))
-          this.showTooltip = () => {
-            if (this.tooltip) this.tooltip.hidden = false
-          }
-          this.dismissTooltip = event => {
-            if (event.key !== "Escape" || !this.tooltip) return
-
-            event.preventDefault()
-            event.stopPropagation()
-            this.tooltip.hidden = true
-          }
-
-          this.el.addEventListener("mouseenter", this.showTooltip)
-          this.el.addEventListener("focus", this.showTooltip)
-          this.el.addEventListener("keydown", this.dismissTooltip)
-        },
-
-        destroyed() {
-          this.el.removeEventListener("mouseenter", this.showTooltip)
-          this.el.removeEventListener("focus", this.showTooltip)
-          this.el.removeEventListener("keydown", this.dismissTooltip)
-        }
-      }
-    </script>
     """
   end
 

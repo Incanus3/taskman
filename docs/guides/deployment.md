@@ -369,7 +369,9 @@ The declaration is a human compatibility decision. The target must cover every a
 with consistent fingerprints. Partial-prefix provenance can support a safety backup without
 making that backup automatically restorable; unsupported or contradictory schema refuses.
 Rollback independently requires the immediately preceding successful selection and exact live
-migration compatibility. It never reverses migrations.
+migration compatibility. It never reverses migrations. To return to a release that is incompatible
+with a forward-only migration, restore the matching pre-migration database backup with that release.
+Do not recreate removed fields with placeholder data.
 
 Deployment stages or reuses immutable target content, refreshes compatible scheduled-backup code
 under the lifecycle lock, creates required protected safety backups, stops Taskman, applies

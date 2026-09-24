@@ -2,7 +2,7 @@
 
 ## Ownership and organization
 
-- **Project**: the top-level work container. It owns one required primary local directory, its nested Lists, and its Tasks. Any local directory is valid; repository metadata is detected when present.
+- **Project**: a machine-independent top-level work container identified by its ID and name. It owns nested Lists and Tasks, and has no directory.
 - **List**: a nested organizational container within exactly one Project. Lists may contain nested Lists and Tasks.
 - **Direct Project Task**: a Task owned directly by its Project rather than by a List; it has list depth zero.
 - **Owning location**: the single place where a Task resides: either its Project or one List within that Project.
@@ -16,26 +16,14 @@
 
 ## Agent work
 
-- **Agent Session**: a first-class record of one external agent-work attempt linked to a Task. It is not proof that its Task is complete.
-- **Provider adapter**: the boundary that starts, discovers, validates, and capability-negotiates
-  Agent Sessions for one agent provider. The only MVP adapter is local **Auggie ACP**.
-- **Recovery status**: a Session's last-known ability to be resumed: **available**,
-  **unavailable**, or **not yet checked**. It is not an agent-execution or Task-completion status.
-
-## Agent Session rules
-
-- A Task may have zero, one, or many Agent Sessions.
-- Each Agent Session belongs to exactly one Task and cannot be shared or moved between Tasks.
-- A Task may be completed without an Agent Session.
-- Every MVP Auggie Session uses its Task Project's primary local directory; Sessions cannot override it.
-- The product creates an Auggie Session record only after the adapter obtains its opaque provider
-  session ID. A user may also attach a validated existing Auggie Session ID to one Task.
-- Launching, attaching, resuming, or failing to recover an Agent Session never changes Task state.
+Agent Session implementation and provider rules are deferred to a separate accepted design. The
+current Project model does not define a local execution directory. Agent work cannot by itself
+complete a Task; a human explicitly changes Task state.
 
 ## Deletion
 
-- A Project, List, or Task may be permanently deleted even when it contains nested Lists, Tasks, or Agent Sessions.
-- Deletion is recursive: removing a Project removes all its Lists, Tasks, and Agent Sessions; removing a List removes its descendants; removing a Task removes its linked Agent Sessions.
+- A Project, List, or Task may be permanently deleted even when it contains nested Lists and Tasks.
+- Deletion is recursive: removing a Project removes all its Lists and Tasks; removing a List removes its descendants.
 - Before any recursive deletion, the product shows a detailed warning of the affected records and requires a second explicit confirmation button.
 - Deleting a Task with children offers a choice: recursively delete its child subtree, or preserve it
   by reparenting only its direct children to the deleted Task's parent (or the Project-level Task
@@ -68,7 +56,7 @@
 - **Task**: a unit of intended work. It is complete only when a human explicitly marks it **Done**.
 - **Icebox**: intentionally deferred work that is not currently ready to begin.
 - **Pending**: work that is ready to be started.
-- **In Progress**: work actively being performed by a person, an Agent Session, or both.
+- **In Progress**: work actively being performed by a person, an external agent, or both.
 - **In Review**: work awaiting human assessment before it can be completed.
 - **Done**: the terminal state for work a human has reviewed and explicitly accepted as complete.
 - **Will Not Do**: the terminal state for work intentionally abandoned or declined.
@@ -95,4 +83,4 @@
 
 - The normal forward flow is **Icebox → Pending → In Progress → In Review → Done**.
 - A Task in **In Review** may return to **In Progress** or **Pending** when further work or reprioritization is needed.
-- An Agent Session ending is an attempt or contribution; it never completes a Task by itself.
+- External agent work never completes a Task by itself.

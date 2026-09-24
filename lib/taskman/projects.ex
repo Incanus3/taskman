@@ -24,12 +24,10 @@ defmodule Taskman.Projects do
 
   def create_project(attrs \\ %{}) do
     changeset = change_project(%Project{}, attrs)
-    changed_fields = Map.keys(changeset.changes)
 
     case Repo.insert(changeset) do
       {:ok, project} = result ->
-        fields = changed_fields ++ [:name, :primary_directory]
-        _ = ChangeNotifications.publish_project(project, :created, fields)
+        _ = ChangeNotifications.publish_project(project, :created, [:name])
         result
 
       error ->
@@ -38,47 +36,6 @@ defmodule Taskman.Projects do
   end
 
   def change_project(%Project{} = project, attrs \\ %{}) do
-    attrs = normalize_primary_directory(attrs)
-
-    project
-    |> Project.changeset(attrs)
-    |> validate_primary_directory()
-  end
-
-  defp normalize_primary_directory(attrs) do
-    key =
-      cond do
-        Map.has_key?(attrs, :primary_directory) -> :primary_directory
-        Map.has_key?(attrs, "primary_directory") -> "primary_directory"
-        true -> nil
-      end
-
-    case key && Map.fetch(attrs, key) do
-      {:ok, path} when is_binary(path) ->
-        normalized =
-          case String.trim(path) do
-            "" -> ""
-            trimmed -> Path.expand(trimmed)
-          end
-
-        Map.put(attrs, key, normalized)
-
-      _missing_or_invalid ->
-        attrs
-    end
-  end
-
-  defp validate_primary_directory(changeset) do
-    case Ecto.Changeset.get_field(changeset, :primary_directory) do
-      path when is_binary(path) and path != "" ->
-        if File.dir?(path) do
-          changeset
-        else
-          Ecto.Changeset.add_error(changeset, :primary_directory, "must be an existing directory")
-        end
-
-      _blank ->
-        changeset
-    end
+    Project.changeset(project, attrs)
   end
 end

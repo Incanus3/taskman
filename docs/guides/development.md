@@ -217,6 +217,11 @@ add assertions that only verify styling details such as spacing, colors, or alig
 assertions are appropriate only when they establish functional user-visible state, such as whether
 an element is shown or hidden.
 
+Test the current supported behavior. An absence assertion is appropriate when it is part of that
+behavior, such as confirming that a successful operation returned no error. Do not add assertions
+that a removed, deprecated, or superseded feature, state, element, field, or column is absent. For
+removals, inspect the implementation or migration and test the intended resulting behavior.
+
 Meaningful persisted or query operations exposed through the UI must ship with corresponding API,
 CLI, help, Bash/Fish completion, bundled skill, and focused verification parity unless the
 accepted feature specification records an explicit exception.

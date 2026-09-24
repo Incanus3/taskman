@@ -103,8 +103,6 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
           "create",
           "--name",
           "CLI acceptance Project",
-          "--directory",
-          File.cwd!(),
           "--json"
         ],
         config_root

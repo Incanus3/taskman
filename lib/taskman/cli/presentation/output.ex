@@ -1,11 +1,7 @@
 defmodule Taskman.CLI.Presentation.Output do
   @moduledoc "Render one CLI result as readable text or an API-compatible JSON envelope."
 
-  @project_fields [
-    {:id, "ID"},
-    {:name, "NAME"},
-    {:primary_directory, "PRIMARY DIRECTORY"}
-  ]
+  @project_fields [{:id, "ID"}, {:name, "NAME"}]
 
   @doc "Render successful command data. JSON mode always preserves the API data envelope."
   @spec success(term(), term(), boolean()) :: String.t()
@@ -15,7 +11,9 @@ defmodule Taskman.CLI.Presentation.Output do
     do: readable_collection(command, data)
 
   def success(command, data, false) when is_map(data) do
-    if hierarchy_command?(command), do: readable_hierarchy(data), else: readable_member(data)
+    if hierarchy_command?(command),
+      do: readable_hierarchy(data),
+      else: readable_member(command, data)
   end
 
   def success(_command, data, false), do: to_string(data) <> "\n"
@@ -39,7 +37,7 @@ defmodule Taskman.CLI.Presentation.Output do
   defp readable_collection(command, rows) do
     case resource(command) do
       :projects ->
-        ["ID\tNAME\tPRIMARY DIRECTORY\n", Enum.map(rows, &project_row/1)]
+        ["ID\tNAME\n", Enum.map(rows, &project_row/1)]
         |> IO.iodata_to_binary()
 
       :lists ->
@@ -52,7 +50,7 @@ defmodule Taskman.CLI.Presentation.Output do
 
       _other ->
         rows
-        |> Enum.map(&readable_member/1)
+        |> Enum.map(&readable_member(command, &1))
         |> IO.iodata_to_binary()
     end
   end
@@ -62,8 +60,6 @@ defmodule Taskman.CLI.Presentation.Output do
       value(project, :id),
       "\t",
       value(project, :name),
-      "\t",
-      value(project, :primary_directory),
       "\n"
     ]
   end
@@ -113,9 +109,9 @@ defmodule Taskman.CLI.Presentation.Output do
   defp format_task_location(nil), do: "—"
   defp format_task_location(location), do: format_value(location)
 
-  defp readable_member(project) when is_map(project) do
+  defp readable_member(command, project) when is_map(project) do
     fields =
-      if project_fields?(project) do
+      if resource(command) == :projects and project_fields?(project) do
         @project_fields
       else
         project

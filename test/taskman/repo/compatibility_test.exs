@@ -5,10 +5,7 @@ defmodule Taskman.Repo.CompatibilityTest do
     assert {:error, :rolled_back} =
              Taskman.Repo.transaction(fn ->
                {:ok, project} =
-                 Taskman.Projects.create_project(%{
-                   name: "Compatibility",
-                   primary_directory: File.cwd!()
-                 })
+                 Taskman.Projects.create_project(%{name: "Compatibility"})
 
                assert Taskman.Repo.get!(Taskman.Projects.Project, project.id)
                Taskman.Repo.rollback(:rolled_back)

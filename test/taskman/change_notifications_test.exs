@@ -11,7 +11,7 @@ defmodule Taskman.ChangeNotificationsTest do
   @workspace_topic "workspace:changes"
 
   test "publishes workspace events while excluding the sender and isolating Project topics" do
-    project = %Project{id: 17, name: "Taskman", primary_directory: "/workspace/taskman"}
+    project = %Project{id: 17, name: "Taskman"}
 
     assert :ok = ChangeNotifications.subscribe_workspace()
     start_forwarder(@workspace_topic)
@@ -23,7 +23,7 @@ defmodule Taskman.ChangeNotificationsTest do
              ChangeNotifications.publish_project(
                project,
                :created,
-               [:primary_directory, :name, :name]
+               [:name, :name]
              )
 
     refute_receive %Event{}, 50
@@ -35,7 +35,7 @@ defmodule Taskman.ChangeNotificationsTest do
                       project_id: ^project_id,
                       entity_id: ^project_id,
                       lock_version: nil,
-                      fields: [:name, :primary_directory]
+                      fields: [:name]
                     }}
 
     refute_receive {:forwarded, "projects:17:tasks", %Event{entity: :project}}, 50
@@ -90,13 +90,13 @@ defmodule Taskman.ChangeNotificationsTest do
   end
 
   test "rejects non-atom fields before publication" do
-    project = %Project{id: 17, name: "Taskman", primary_directory: "/workspace/taskman"}
+    project = %Project{id: 17, name: "Taskman"}
 
     assert :ok = ChangeNotifications.subscribe_workspace()
     start_forwarder(@workspace_topic)
 
     assert_raise ArgumentError, fn ->
-      ChangeNotifications.publish_project(project, :created, [:name, "primary_directory"])
+      ChangeNotifications.publish_project(project, :created, [:name, "invalid_field"])
     end
 
     refute_receive {:forwarded, @workspace_topic, %Event{}}, 50
@@ -114,7 +114,7 @@ defmodule Taskman.ChangeNotificationsTest do
       end
     end)
 
-    project = %Project{id: 17, name: "Taskman", primary_directory: "/workspace/taskman"}
+    project = %Project{id: 17, name: "Taskman"}
 
     assert {:error, _reason} =
              ChangeNotifications.publish_project(project, :created, [:name])

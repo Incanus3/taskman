@@ -1,8 +1,8 @@
 # Taskman
 
-Taskman is an authenticated shared workspace for organizing Projects, Lists, Tasks, and local agent
-sessions. Explicitly provisioned users can use its LiveView browser interface and API-key-authenticated
-CLI from arbitrary clients; Taskman does not assign ownership or permissions to individual domain
+Taskman is an authenticated shared workspace for organizing Projects, Lists, and Tasks. Explicitly
+provisioned users can use its LiveView browser interface and API-key-authenticated CLI from
+arbitrary clients; Taskman does not assign ownership or permissions to individual domain
 records. The MVP product definition and delivery context live in [the project documentation](docs/README.md).
 
 For a dedicated HTTPS host, use the repository-owned `./ops/taskman` automation and follow the

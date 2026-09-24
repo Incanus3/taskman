@@ -136,10 +136,9 @@ defmodule Taskman.CLI.Client do
   defp valid_success_data?(_data, _success_shape), do: false
 
   defp valid_resource?(project, :project) when is_map(project) do
-    required_keys?(project, ~w(id name primary_directory)) and
+    required_keys?(project, ~w(id name)) and
       positive_integer?(project["id"]) and
-      is_binary(project["name"]) and
-      is_binary(project["primary_directory"])
+      is_binary(project["name"])
   end
 
   defp valid_resource?(task_list, :list) when is_map(task_list) do

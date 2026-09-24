@@ -4,24 +4,31 @@ defmodule Taskman.CLI.Presentation.OutputTest do
   alias Taskman.CLI.Presentation.Output
 
   test "JSON success output is one API data envelope and a trailing newline" do
-    data = [%{"id" => 1, "name" => "One", "primary_directory" => "/tmp"}]
+    data = [%{"id" => 1, "name" => "One"}]
 
     assert Output.success({:projects, :list}, data, true) ==
              Jason.encode!(%{data: data}) <> "\n"
   end
 
   test "readable Project collections retain identifying fields" do
-    data = [%{"id" => 1, "name" => "One", "primary_directory" => "/tmp"}]
+    data = [%{"id" => 1, "name" => "One"}]
 
     assert Output.success({:projects, :list}, data, false) ==
-             "ID\tNAME\tPRIMARY DIRECTORY\n1\tOne\t/tmp\n"
+             "ID\tNAME\n1\tOne\n"
   end
 
   test "readable Project members use one labelled line per public field" do
-    data = %{"id" => 1, "name" => "One", "primary_directory" => "/tmp"}
+    data = %{"id" => 1, "name" => "One"}
 
     assert Output.success({:projects, :show}, data, false) ==
-             "ID: 1\nNAME: One\nPRIMARY DIRECTORY: /tmp\n"
+             "ID: 1\nNAME: One\n"
+  end
+
+  test "readable List members retain List fields when ID and name are present" do
+    data = %{"id" => 11, "name" => "Planning", "parent_list_id" => nil}
+
+    assert Output.success({:lists, :show}, data, false) ==
+             "ID: 11\nNAME: Planning\nPARENT LIST ID: —\n"
   end
 
   test "readable Task collections include each parent Task ID" do
