@@ -573,8 +573,8 @@ After an uncertain interruption, inspect outstanding remote commands and systemd
 backup work and establish quiescence before retrying or restarting backups; a free lifecycle lock
 or exited controller does not prove remote work has stopped. No durable provisioning reservation,
 host-wide whole-command conflict refusal or reservation-based recovery command exists yet. The
-[admission and recovery design](../specs/2026-09-18-provisioning-lock-coverage-proposal.md) is future
-work in its [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md).
+[admission and recovery proposal](../specs/2026-09-18-provisioning-lock-coverage-proposal.md) is
+Not Planned and retained for possible reconsideration; it supplies no current operating guarantee.
 
 Installed releases are `root:taskman`: directories/executables are `0750`, regular data is
 `0640`, and the completed manifest is `0600`. The service account can read and execute application

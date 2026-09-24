@@ -307,10 +307,9 @@ Acquisition is bounded; the lock contains no durable operation identity. Its exi
 does not mean it is held and is not a reason to delete it. Controller-driven provisioning
 convergence (pyinfra, database/pgpass and runtime installation) currently runs outside this lock;
 its fresh authority checks do not serialize those writes.
-[Admission and provisioning recovery](2026-09-18-provisioning-lock-coverage-proposal.md) is the
-reviewed follow-up design; full design/plan approval and implementation remain pending in the
-[dedicated post-merge workstream](../handoffs/operations-lock-coverage.md). It does not block the
-current operations merge and is not current behavior.
+[Admission and provisioning recovery](2026-09-18-provisioning-lock-coverage-proposal.md) is an
+unimplemented proposal marked Not Planned. It is retained for reconsideration; whole-provision
+coordination remains an operator responsibility under the current runbook.
 
 The host persists immutable release/backup/success records and narrow migration-backup protection
 and restore-target authority. Installed provenance precedes migration consequences; successful
