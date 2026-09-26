@@ -1,12 +1,13 @@
 defmodule TaskmanWeb.ProjectLive.Workspace do
-  import Phoenix.Component, only: [assign: 3, update: 3, to_form: 1]
+  import Phoenix.Component, only: [assign: 3, update: 3]
   import Phoenix.LiveView, only: [connected?: 1, stream: 4, push_patch: 2]
 
   alias Taskman.ChangeNotifications
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Lists
   alias Taskman.Projects
-  alias TaskmanWeb.ProjectLive.{ListEdit, Paths}
+  alias Taskman.Tasks
+  alias TaskmanWeb.ProjectLive.{ListEdit, Paths, ProjectEdit}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
   alias __MODULE__, as: Workspace
@@ -15,7 +16,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Projects.Project
 
   defmodule State do
-    alias TaskmanWeb.ProjectLive.ListEdit
+    alias TaskmanWeb.ProjectLive.{ListEdit, ProjectEdit}
 
     defstruct selected_project: nil,
               subscribed_project_id: nil,
@@ -24,8 +25,11 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
               include_children?: false,
               location_not_found?: false,
               location_path: [],
-              project_form: nil,
+              project_selector_open?: false,
+              mobile_sidebar_open?: false,
+              project_edit: ProjectEdit.empty(),
               expanded_node_ids: MapSet.new(),
+              collapsed_node_ids: MapSet.new(),
               list_edit: ListEdit.empty()
 
     @type t :: %__MODULE__{
@@ -36,16 +40,37 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
             include_children?: boolean(),
             location_not_found?: boolean(),
             location_path: [TaskList.t()],
-            project_form: Phoenix.HTML.Form.t() | nil,
+            project_selector_open?: boolean(),
+            mobile_sidebar_open?: boolean(),
+            project_edit: ProjectEdit.t(),
             expanded_node_ids: MapSet.t(),
+            collapsed_node_ids: MapSet.t(),
             list_edit: ListEdit.t()
           }
 
-    @spec new(Phoenix.HTML.Form.t()) :: t()
-    def new(project_form), do: %__MODULE__{project_form: project_form}
+    @spec new() :: t()
+    def new, do: %__MODULE__{}
 
-    @spec select_location(t(), Project.t(), TaskList.t() | nil, boolean(), [TaskList.t()]) :: t()
+    @spec select_location(t(), Project.t() | nil, TaskList.t() | nil, boolean(), [TaskList.t()]) ::
+            t()
     def select_location(state, project, task_list, include_children?, location_path) do
+      same_path? =
+        (state.selected_project && state.selected_project.id) == (project && project.id) &&
+          Enum.map(state.location_path, & &1.id) == Enum.map(location_path, & &1.id)
+
+      collapsed_node_ids =
+        if same_path? do
+          state.collapsed_node_ids
+        else
+          required_ids =
+            location_path
+            |> Enum.drop(-1)
+            |> Enum.map(&{:list, &1.id})
+            |> MapSet.new()
+
+          MapSet.difference(state.collapsed_node_ids, required_ids)
+        end
+
       %{
         state
         | selected_project: project,
@@ -53,7 +78,8 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           project_not_found?: false,
           include_children?: include_children?,
           location_not_found?: false,
-          location_path: location_path
+          location_path: location_path,
+          collapsed_node_ids: collapsed_node_ids
       }
     end
 
@@ -82,16 +108,40 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     end
 
     @spec toggle_node(t(), term()) :: t()
-    def toggle_node(%__MODULE__{expanded_node_ids: expanded_node_ids} = state, identity) do
-      expanded_node_ids =
-        if MapSet.member?(expanded_node_ids, identity) do
-          MapSet.delete(expanded_node_ids, identity)
-        else
-          MapSet.put(expanded_node_ids, identity)
-        end
+    def toggle_node(%__MODULE__{} = state, identity) do
+      forced_open? = forced_open_ancestor?(state, identity)
 
-      %{state | expanded_node_ids: expanded_node_ids}
+      expanded? =
+        MapSet.member?(state.expanded_node_ids, identity) ||
+          (forced_open? && !MapSet.member?(state.collapsed_node_ids, identity))
+
+      if expanded? do
+        collapsed_node_ids =
+          if forced_open?,
+            do: MapSet.put(state.collapsed_node_ids, identity),
+            else: MapSet.delete(state.collapsed_node_ids, identity)
+
+        %{
+          state
+          | expanded_node_ids: MapSet.delete(state.expanded_node_ids, identity),
+            collapsed_node_ids: collapsed_node_ids
+        }
+      else
+        %{
+          state
+          | expanded_node_ids: MapSet.put(state.expanded_node_ids, identity),
+            collapsed_node_ids: MapSet.delete(state.collapsed_node_ids, identity)
+        }
+      end
     end
+
+    defp forced_open_ancestor?(state, {:list, list_id}) do
+      state.location_path
+      |> Enum.drop(-1)
+      |> Enum.any?(&(&1.id == list_id))
+    end
+
+    defp forced_open_ancestor?(_state, _identity), do: false
 
     @spec put_list_edit(t(), ListEdit.t()) :: t()
     def put_list_edit(state, %ListEdit{} = list_edit), do: %{state | list_edit: list_edit}
@@ -103,6 +153,23 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     @spec put_subscription(t(), pos_integer() | nil) :: t()
     def put_subscription(%__MODULE__{} = state, project_id),
       do: %{state | subscribed_project_id: project_id}
+
+    def put_project_edit(state, %ProjectEdit{} = edit), do: %{state | project_edit: edit}
+    def close_project_edit(state), do: %{state | project_edit: ProjectEdit.empty()}
+
+    def toggle_project_selector(state),
+      do: %{state | project_selector_open?: !state.project_selector_open?}
+
+    def close_project_selector(state), do: %{state | project_selector_open?: false}
+
+    def toggle_mobile_sidebar(%__MODULE__{mobile_sidebar_open?: true} = state),
+      do: close_mobile_sidebar(state)
+
+    def toggle_mobile_sidebar(%__MODULE__{} = state),
+      do: %{state | mobile_sidebar_open?: true}
+
+    def close_mobile_sidebar(%__MODULE__{} = state),
+      do: %{state | mobile_sidebar_open?: false, project_selector_open?: false}
   end
 
   @spec panel_state(State.t()) :: String.t()
@@ -118,7 +185,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   def selected_location(%State{selected_list: %TaskList{id: list_id}}), do: {:list, list_id}
   def selected_location(%State{}), do: nil
 
-  @events ~w(validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
+  @events ~w(toggle_project_selector close_project_selector toggle_mobile_sidebar close_mobile_sidebar open_project_new open_project_edit cancel_project_edit select_project_color validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
 
   @spec events() :: [String.t()]
   def events, do: @events
@@ -148,6 +215,20 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   def resolve_location(_params), do: {:error, :project_not_found}
 
+  @spec remembered_project(term()) :: {:ok, Project.t()} | :stale
+  def remembered_project(id) when is_binary(id) do
+    with true <- Regex.match?(~r/^[1-9][0-9]*$/, id),
+         {project_id, ""} <- Integer.parse(id),
+         true <- project_id <= 9_223_372_036_854_775_807,
+         %Project{} = project <- Projects.get_project(project_id) do
+      {:ok, project}
+    else
+      _ -> :stale
+    end
+  end
+
+  def remembered_project(_id), do: :stale
+
   @spec location_path(Project.t(), TaskList.t() | nil) :: [TaskList.t()]
   def location_path(_project, nil), do: []
 
@@ -159,31 +240,96 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
-  def handle_event("validate_project", %{"project" => project_params}, socket) do
-    form =
-      %Project{}
-      |> Projects.change_project(project_params)
-      |> Map.put(:action, :validate)
-      |> to_form()
+  def handle_event("toggle_project_selector", _params, socket) do
+    socket = update_workspace(socket, &State.toggle_project_selector/1)
 
-    {:noreply, update_workspace(socket, &%{&1 | project_form: form})}
+    socket =
+      if socket.assigns.workspace.project_selector_open?,
+        do: stream(socket, :projects, Projects.list_projects(), reset: true),
+        else: socket
+
+    {:noreply, socket}
   end
 
-  def handle_event("save_project", %{"project" => project_params}, socket) do
-    case Projects.create_project(project_params) do
-      {:ok, project} ->
-        {:noreply,
-         socket
-         |> update_workspace(&%{&1 | project_form: project_form(%Project{})})
-         |> push_patch(to: Paths.browse_path(project, nil, false))}
+  def handle_event("close_project_selector", _params, socket) do
+    {:noreply, update_workspace(socket, &State.close_project_selector/1)}
+  end
 
-      {:error, changeset} ->
-        {:noreply, update_workspace(socket, &%{&1 | project_form: to_form(changeset)})}
+  def handle_event("toggle_mobile_sidebar", _params, socket) do
+    {:noreply, update_workspace(socket, &State.toggle_mobile_sidebar/1)}
+  end
+
+  def handle_event("close_mobile_sidebar", _params, socket) do
+    {:noreply, update_workspace(socket, &State.close_mobile_sidebar/1)}
+  end
+
+  def handle_event("open_project_new", _params, socket) do
+    {:noreply,
+     update_workspace(socket, fn state ->
+       state |> State.close_project_selector() |> State.put_project_edit(ProjectEdit.open_new())
+     end)}
+  end
+
+  def handle_event("open_project_edit", _params, socket) do
+    case socket.assigns.workspace.selected_project do
+      %Project{} = project ->
+        {:noreply,
+         update_workspace(socket, fn state ->
+           state
+           |> State.close_project_selector()
+           |> State.put_project_edit(ProjectEdit.open_edit(project))
+         end)}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_project_edit", _params, socket) do
+    {:noreply, update_workspace(socket, &State.close_project_edit/1)}
+  end
+
+  def handle_event("select_project_color", %{"color" => color}, socket) do
+    edit = socket.assigns.workspace.project_edit
+
+    case {ProjectEdit.target(edit), edit.form, color} do
+      {{:ok, _mode, _project}, %Phoenix.HTML.Form{} = form, color}
+      when color in ~w(6366F1 3B82F6 06B6D4 10B981 F59E0B F97316 F43F5E D946EF) ->
+        params = Map.put(form.params || %{}, "color", color)
+        put_project_validation(socket, params)
+
+      _invalid ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("validate_project", %{"project" => params}, socket),
+    do: put_project_validation(socket, params)
+
+  def handle_event("save_project", %{"project" => params}, socket) do
+    edit = socket.assigns.workspace.project_edit
+
+    case ProjectEdit.target(edit) do
+      {:ok, :new, _project} ->
+        validate_project_submission(socket, edit, params)
+
+      {:ok, :edit, project} ->
+        case Projects.get_project(project.id) do
+          nil ->
+            unavailable = ProjectEdit.reconcile(edit, [])
+            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
+
+          current ->
+            validate_project_submission(socket, ProjectEdit.reconcile(edit, [current]), params)
+        end
+
+      :error ->
+        {:noreply, socket}
     end
   end
 
   def handle_event("toggle_navigation_node", params, socket) when is_map(params) do
-    case navigation_identity(params) do
+    case navigation_identity(params, socket.assigns.workspace.selected_project) do
       nil ->
         {:noreply, socket}
 
@@ -235,10 +381,11 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         case Lists.create_list(project, parent, list_params) do
           {:ok, _task_list} ->
             expanded_node_ids =
-              MapSet.put(
-                socket.assigns.workspace.expanded_node_ids,
-                if(parent, do: {:list, parent.id}, else: {:project, project.id})
-              )
+              if parent do
+                MapSet.put(socket.assigns.workspace.expanded_node_ids, {:list, parent.id})
+              else
+                socket.assigns.workspace.expanded_node_ids
+              end
 
             {:noreply,
              socket
@@ -295,25 +442,88 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     end
   end
 
-  defp navigation_identity(%{"kind" => "project", "id" => id} = params) do
-    project_id = Map.get(params, "project-id", Map.get(params, "project_id", id))
+  defp validate_project_submission(socket, edit, params) do
+    case ProjectEdit.validate(edit, params) do
+      {:ok, validated} ->
+        cond do
+          not validated.changeset.valid? ->
+            {:noreply, update_workspace(socket, &State.put_project_edit(&1, validated))}
 
-    with {:ok, node_id} <- parse_navigation_identity(id),
-         {:ok, owning_project_id} <- parse_navigation_identity(project_id),
-         true <- node_id == owning_project_id,
-         %Project{} <- Projects.get_project(node_id) do
-      {:project, node_id}
-    else
-      _invalid -> nil
+          true ->
+            persist_project_edit(socket, validated)
+        end
+
+      {:error, :not_found} ->
+        {:noreply, socket}
     end
   end
 
-  defp navigation_identity(%{"kind" => "list", "id" => id} = params) do
+  defp put_project_validation(socket, params) do
+    case ProjectEdit.validate(socket.assigns.workspace.project_edit, params) do
+      {:ok, edit} -> {:noreply, update_workspace(socket, &State.put_project_edit(&1, edit))}
+      {:error, :not_found} -> {:noreply, socket}
+    end
+  end
+
+  defp persist_project_edit(socket, edit) do
+    attrs = Map.take(edit.changeset.params || %{}, ["name", "description", "icon", "color"])
+    attrs = Map.put(attrs, "color", Ecto.Changeset.get_field(edit.changeset, :color))
+
+    case ProjectEdit.target(edit) do
+      {:ok, :new, _project} ->
+        case Projects.create_project(attrs) do
+          {:ok, project} ->
+            {:noreply,
+             socket
+             |> update_workspace(&State.close_project_edit/1)
+             |> push_patch(
+               to: Paths.browse_path(project, nil, socket.assigns.workspace.include_children?)
+             )}
+
+          {:error, changeset} ->
+            {:noreply, project_edit_error(socket, edit, changeset)}
+        end
+
+      {:ok, :edit, project} ->
+        case Projects.get_project(project.id) do
+          nil ->
+            unavailable = ProjectEdit.reconcile(edit, Projects.list_projects())
+            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
+
+          current ->
+            case Projects.update_project(current, attrs) do
+              {:ok, updated} ->
+                {:noreply,
+                 update_workspace(socket, fn state ->
+                   state
+                   |> State.close_project_edit()
+                   |> Map.put(:selected_project, updated)
+                 end)
+                 |> stream(:projects, Projects.list_projects(), reset: true)}
+
+              {:error, changeset} ->
+                {:noreply, project_edit_error(socket, edit, changeset)}
+            end
+        end
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  defp project_edit_error(socket, edit, changeset) do
+    update_workspace(socket, &State.put_project_edit(&1, ProjectEdit.put_error(edit, changeset)))
+  end
+
+  defp navigation_identity(
+         %{"kind" => "list", "id" => id} = params,
+         %Project{id: selected_project_id} = project
+       ) do
     project_id = Map.get(params, "project-id", Map.get(params, "project_id"))
 
     with {:ok, list_id} <- parse_navigation_identity(id),
          {:ok, project_id} <- parse_navigation_identity(project_id),
-         %Project{} = project <- Projects.get_project(project_id),
+         true <- project_id == selected_project_id,
          %TaskList{} <- Lists.get_list_for_project(project, list_id) do
       {:list, list_id}
     else
@@ -321,7 +531,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     end
   end
 
-  defp navigation_identity(_params), do: nil
+  defp navigation_identity(_params, _selected_project), do: nil
 
   defp parse_navigation_identity(id) do
     case Integer.parse(to_string(id)) do
@@ -336,10 +546,18 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   defp action_project(socket, params) do
     project_id = Map.get(params, "project-id", Map.get(params, "project_id"))
 
-    case project_id do
-      nil -> socket.assigns.workspace.selected_project
-      "" -> nil
-      id -> Projects.get_project(id)
+    case {socket.assigns.workspace.selected_project, project_id} do
+      {%Project{} = project, nil} ->
+        project
+
+      {%Project{id: id} = project, requested_id} when requested_id == id ->
+        project
+
+      {%Project{id: id} = project, requested_id} ->
+        if to_string(requested_id) == Integer.to_string(id), do: project, else: nil
+
+      _other ->
+        nil
     end
   end
 
@@ -394,12 +612,13 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     update_workspace(socket, &Workspace.State.clear_list_edit/1)
   end
 
-  @doc "Refreshes the navigation stream from a complete workspace snapshot."
+  @doc "Refreshes the active Project's List navigation stream."
   @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def refresh(socket) do
-    {projects, lists_by_project} = workspace_snapshot()
-    stream_navigation(socket, projects, lists_by_project)
+  def refresh(%{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket) do
+    stream_navigation(socket, project, Lists.list_lists_for_project(project))
   end
+
+  def refresh(socket), do: stream(socket, :navigation_nodes, [], reset: true)
 
   @spec subscribe(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def subscribe(socket) do
@@ -410,24 +629,27 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     socket
   end
 
-  defp workspace_snapshot do
+  defp workspace_snapshot(socket) do
     projects = Projects.list_projects()
 
     lists_by_project =
-      Map.new(projects, fn project ->
-        {project.id, Lists.list_lists_for_project(project)}
-      end)
+      case socket.assigns.workspace.selected_project do
+        %Project{} = project -> %{project.id => Lists.list_lists_for_project(project)}
+        nil -> %{}
+      end
 
     {projects, lists_by_project}
   end
 
-  defp stream_navigation(socket, projects, lists_by_project) do
+  defp stream_navigation(socket, project, task_lists) do
     nodes =
       Lists.navigation_nodes(
-        projects,
-        lists_by_project,
+        project,
+        task_lists,
+        Tasks.list_ids_with_direct_tasks(project),
         Workspace.selected_location(socket.assigns.workspace),
-        socket.assigns.workspace.expanded_node_ids
+        socket.assigns.workspace.expanded_node_ids,
+        socket.assigns.workspace.collapsed_node_ids
       )
 
     stream(socket, :navigation_nodes, nodes, reset: true)
@@ -443,18 +665,34 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           {Phoenix.LiveView.Socket.t(),
            :unchanged | {:location_changed, [TaskList.t()]} | {:location_missing, [TaskList.t()]}}
   def reconcile(socket, %Event{entity: :project}) do
-    {projects, lists_by_project} = workspace_snapshot()
+    projects = Projects.list_projects()
+
+    workspace = socket.assigns.workspace
+
+    selected_project =
+      case workspace.selected_project do
+        %Project{id: id} = project -> Enum.find(projects, &(&1.id == id)) || project
+        nil -> nil
+      end
+
+    workspace = %{
+      workspace
+      | selected_project: selected_project,
+        project_edit: ProjectEdit.reconcile(workspace.project_edit, projects)
+    }
 
     socket =
       socket
+      |> assign(:workspace, workspace)
+      |> assign(:projects_empty?, projects == [])
       |> stream(:projects, projects, reset: true)
-      |> stream_navigation(projects, lists_by_project)
+      |> refresh()
 
     {socket, :unchanged}
   end
 
   def reconcile(socket, %Event{entity: :list, project_id: project_id}) do
-    {projects, lists_by_project} = workspace_snapshot()
+    {projects, lists_by_project} = workspace_snapshot(socket)
 
     socket =
       socket
@@ -464,12 +702,13 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           ListEdit.reconcile(&1.list_edit, projects, lists_by_project)
         )
       )
+      |> assign(:projects_empty?, projects == [])
       |> stream(:projects, projects, reset: true)
 
     {socket, outcome} =
       reconcile_selected_location(socket, project_id, projects, lists_by_project)
 
-    {stream_navigation(socket, projects, lists_by_project), outcome}
+    {refresh(socket), outcome}
   end
 
   defp reconcile_selected_location(
@@ -551,12 +790,17 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         location_path
       )
       |> Workspace.State.clear_list_edit()
+      |> Workspace.State.close_project_selector()
+      |> Workspace.State.close_mobile_sidebar()
+
+    projects = Projects.list_projects()
 
     socket
     |> assign(:workspace, workspace)
     |> sync_project_task_subscription(selected_project)
     |> update(:listing, &ListingState.close_filter/1)
-    |> stream(:projects, Projects.list_projects(), reset: true)
+    |> assign(:projects_empty?, projects == [])
+    |> stream(:projects, projects, reset: true)
     |> refresh()
   end
 
@@ -646,7 +890,4 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   defp update_workspace(socket, transition) do
     assign(socket, :workspace, transition.(socket.assigns.workspace))
   end
-
-  @spec project_form(Project.t()) :: Phoenix.HTML.Form.t()
-  def project_form(project), do: to_form(Projects.change_project(project))
 end

@@ -2,7 +2,9 @@ defmodule Taskman.CLI.Registry do
   @moduledoc "The single declarative source of truth for the Taskman CLI."
 
   alias Taskman.CLI.Registry.{Argument, Command, Option}
+  alias Taskman.Projects.Project
 
+  @project_icons Project.icons()
   @statuses ~w(icebox pending in_progress in_review done will_not_do)
   @priorities ~w(none low medium high urgent)
   @task_sort_fields ~w(id title status priority location)
@@ -38,10 +40,32 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(projects create),
         summary: "Create a Project.",
-        usage: "taskman projects create --name NAME",
+        usage:
+          "taskman projects create --name NAME [--description TEXT] [--icon ICON] [--color '#RRGGBB']",
         handler: {:projects, :create},
-        options: [option(:name, "--name", :string, "NAME", "Project name.", required?: true)],
-        examples: ["taskman projects create --name CLI"]
+        options: [
+          option(:name, "--name", :string, "NAME", "Project name.", required?: true),
+          option(:description, "--description", :string, "TEXT", "Project description."),
+          option(:icon, "--icon", :string, "ICON", "Project icon.", values: @project_icons),
+          option(:color, "--color", :string, "'#RRGGBB'", "Project color.")
+        ],
+        examples: ["taskman projects create --name CLI --icon rocket-launch --color '#6366F1'"]
+      },
+      %Command{
+        path: ~w(projects update),
+        summary: "Update a Project's identity.",
+        usage:
+          "taskman projects update PROJECT_ID [--name NAME] [--description TEXT] [--icon ICON] [--color '#RRGGBB']",
+        handler: {:projects, :update},
+        arguments: [argument(:project_id, "PROJECT_ID", :positive_integer, "Project ID.")],
+        options: [
+          option(:name, "--name", :string, "NAME", "Replacement Project name."),
+          option(:description, "--description", :string, "TEXT", "Replacement description."),
+          option(:icon, "--icon", :string, "ICON", "Replacement icon.", values: @project_icons),
+          option(:color, "--color", :string, "'#RRGGBB'", "Replacement color.")
+        ],
+        constraints: [{:at_least_one, [:name, :description, :icon, :color]}],
+        examples: ["taskman projects update 7 --description ''"]
       },
       %Command{
         path: ~w(lists list),

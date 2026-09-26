@@ -14,6 +14,64 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     {:ok, conn: log_in_user(conn, user_fixture())}
   end
 
+  test "external Task creation and movement refresh active List icons only", %{conn: conn} do
+    project = project_fixture(%{})
+    foreign = project_fixture(%{})
+    source = list_fixture(project)
+    destination = list_fixture(project)
+    _source_child = list_fixture(project, source)
+    _destination_child = list_fixture(project, destination)
+    foreign_list = list_fixture(foreign)
+    _foreign_task = task_fixture(foreign, foreign_list, %{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    refute has_element?(view, "#list-#{foreign_list.id}")
+
+    assert {:ok, task} =
+             externally(fn -> Tasks.create_task(project, source, %{title: "Visible icon"}) end)
+
+    sync_view(view)
+    assert has_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
+
+    assert {:ok, _moved} = externally(fn -> Tasks.move_task(project, task, destination) end)
+    sync_view(view)
+    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    assert has_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
+    refute has_element?(view, "#list-#{foreign_list.id}")
+  end
+
+  test "creating a Task locally updates its List icon", %{conn: conn} do
+    project = project_fixture(%{})
+    root = list_fixture(project)
+    _child = list_fixture(project, root)
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{root.id}/tasks/new")
+
+    assert has_element?(view, "#toggle-list-#{root.id} .hero-folder")
+    view |> form("#task-form", task: %{title: "New direct Task"}) |> render_submit()
+    assert has_element?(view, "#toggle-list-#{root.id} .hero-queue-list")
+  end
+
+  test "moving a Task locally refreshes source and destination icons", %{conn: conn} do
+    project = project_fixture(%{})
+    source = list_fixture(project)
+    destination = list_fixture(project)
+    _source_child = list_fixture(project, source)
+    _destination_child = list_fixture(project, destination)
+    task = task_fixture(project, source, %{title: "Move me"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
+
+    assert has_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
+    assert has_element?(view, "#toggle-list-#{destination.id} .hero-folder")
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_click()
+
+    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    assert has_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
+  end
+
   test "maintains one live Project task-topic subscription across selection transitions", %{
     conn: conn
   } do

@@ -8,6 +8,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   alias Taskman.Tasks
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Paths
+  alias TaskmanWeb.ProjectLive.Workspace
 
   alias TaskmanWeb.ProjectLive.Tasks.{
     Editing,
@@ -155,6 +156,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
               |> assign(:task_move, task_move)
               |> Editing.refresh_after_move(moved_task.id)
               |> Editing.reload_hierarchy()
+              |> Workspace.refresh()
               |> Listing.refresh()
 
             {:noreply, navigate_after_move(socket, project, moved_task, origin)}

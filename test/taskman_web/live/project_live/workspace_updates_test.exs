@@ -56,7 +56,8 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert {:ok, created} = created
 
     sync_view(view)
-    assert has_element?(view, "#project-#{created.id}", "External")
+    refute has_element?(view, "#project-tasks-row")
+    assert Projects.get_project(created.id)
 
     render_patch(view, ~p"/projects/#{project.id}")
 
@@ -68,8 +69,8 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert {:ok, other} = other
 
     sync_view(view)
-    assert has_element?(view, "#project-#{other.id}", "Later")
-    assert has_element?(view, "#project-#{project.id}[aria-current='page']")
+    assert Projects.get_project(other.id)
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
   end
 
   test "external root and child List creation refreshes the owning Project branch", %{conn: conn} do
@@ -83,16 +84,15 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert {:ok, foreign_root} = foreign_root
 
     sync_view(view)
-    refute has_element?(view, "#list-#{root.id}")
-
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     assert has_element?(view, "#list-#{root.id}", "Planning")
+    assert has_element?(view, "#list-#{root.id} .hero-list-bullet")
     refute has_element?(view, "#list-#{foreign_root.id}")
 
     child = externally(fn -> Lists.create_list(project, root, %{name: "Launch"}) end)
     assert {:ok, child} = child
 
     sync_view(view)
+    assert has_element?(view, "#toggle-list-#{root.id} .hero-folder")
     view |> element("#toggle-list-#{root.id}") |> render_click()
     assert has_element?(view, "#list-#{child.id}", "Launch")
     assert has_element?(view, "#toggle-list-#{root.id}[aria-expanded='true']")
@@ -109,7 +109,6 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     view |> element("#sort-task-location") |> render_click()
     assert has_element?(view, "#task-location-header[aria-sort='ascending']")
 
@@ -128,7 +127,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert has_element?(view, "#tasks > #tasks-#{second_task.id} + #tasks-#{first_task.id}")
   end
 
-  test "a List event for another Project refreshes only workspace navigation", %{conn: conn} do
+  test "a List event for another Project leaves active navigation and Tasks scoped", %{conn: conn} do
     selected_project = project_fixture(%{})
     selected_root = list_fixture(selected_project, nil, %{name: "Selected"})
     selected_task = task_fixture(selected_project, selected_root, %{title: "Selected task"})
@@ -139,7 +138,6 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
       live(conn, ~p"/projects/#{selected_project.id}/lists/#{selected_root.id}")
 
     assert has_element?(view, "#task-#{selected_task.id}")
-    view |> element("#toggle-project-#{target_project.id}") |> render_click()
 
     assert {:ok, renamed} =
              externally(fn ->
@@ -147,7 +145,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
              end)
 
     sync_view(view)
-    assert has_element?(view, "#list-#{renamed.id}", "Other")
+    refute has_element?(view, "#list-#{renamed.id}")
     assert has_element?(view, "#location-path", "Selected")
     assert has_element?(view, "#task-#{selected_task.id}")
     assert view_assigns(view).workspace.selected_project.id == selected_project.id
@@ -169,7 +167,6 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     send(view.pid, list_event(project.id, latest.id, :updated, [:name]))
     sync_view(view)
 
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     assert has_element?(view, "#list-#{latest.id}", "Latest")
     refute has_element?(view, "#list-#{latest.id}", "Before")
   end
@@ -178,6 +175,8 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     project = project_fixture(%{})
     root = list_fixture(project, nil, %{name: "Planning"})
     {:ok, index, _html} = live(conn, ~p"/")
+
+    index |> element("#new-project-button") |> render_click()
 
     index
     |> form("#project-form", project: %{name: "Draft Project"})
@@ -192,7 +191,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert has_element?(index, "#project-form input[name='project[name]'][value='Draft Project']")
 
     render_patch(index, ~p"/projects/#{project.id}")
-    index |> element("#add-list-project-#{project.id}") |> render_click()
+    index |> element("#add-root-list-#{project.id}") |> render_click()
 
     index
     |> form("#list-create-form-root", list: %{name: "Draft root"})
@@ -208,7 +207,6 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
              "#list-create-form-root input[name='list[name]'][value='Draft root']"
            )
 
-    index |> element("#toggle-project-#{project.id}") |> render_click()
     index |> element("#add-child-list-#{root.id}") |> render_click()
 
     index

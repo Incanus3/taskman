@@ -253,8 +253,7 @@ defmodule TaskmanWeb.ProjectLive.Recovery do
       socket.assigns.live_action == :show_task and
       Map.get(params, "project_id") == Integer.to_string(pending.project_id) and
       Map.get(params, "task_id") == Integer.to_string(pending.task_id) and
-      route_param_list_id(params) == pending.list_id and
-      Map.get(params, "include_children") == if(pending.include_children?, do: "true", else: nil)
+      route_param_list_id(params) == pending.list_id
   end
 
   defp complete_pending_route(socket, params, pending) do

@@ -1,7 +1,13 @@
 defmodule Taskman.CLI.Presentation.Output do
   @moduledoc "Render one CLI result as readable text or an API-compatible JSON envelope."
 
-  @project_fields [{:id, "ID"}, {:name, "NAME"}]
+  @project_fields [
+    {:id, "ID"},
+    {:name, "NAME"},
+    {:description, "DESCRIPTION"},
+    {:icon, "ICON"},
+    {:color, "COLOR"}
+  ]
 
   @doc "Render successful command data. JSON mode always preserves the API data envelope."
   @spec success(term(), term(), boolean()) :: String.t()
@@ -37,7 +43,7 @@ defmodule Taskman.CLI.Presentation.Output do
   defp readable_collection(command, rows) do
     case resource(command) do
       :projects ->
-        ["ID\tNAME\n", Enum.map(rows, &project_row/1)]
+        ["ID\tNAME\tDESCRIPTION\tICON\tCOLOR\n", Enum.map(rows, &project_row/1)]
         |> IO.iodata_to_binary()
 
       :lists ->
@@ -60,6 +66,12 @@ defmodule Taskman.CLI.Presentation.Output do
       value(project, :id),
       "\t",
       value(project, :name),
+      "\t",
+      value(project, :description),
+      "\t",
+      value(project, :icon),
+      "\t",
+      value(project, :color),
       "\n"
     ]
   end

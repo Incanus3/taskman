@@ -78,7 +78,12 @@ defmodule TaskmanWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
+        <button
+          type="button"
+          class="group self-start cursor-pointer"
+          aria-label={gettext("close")}
+          data-tooltip=""
+        >
           <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
         </button>
       </div>
@@ -174,6 +179,7 @@ defmodule TaskmanWeb.CoreComponents do
               class="absolute right-4 top-4 z-30 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
               phx-click={hide_modal(@on_cancel, @id)}
               aria-label={gettext("Close dialog")}
+              data-tooltip=""
             >
               <.icon name="hero-x-mark" class="size-5" />
             </button>
@@ -245,6 +251,7 @@ defmodule TaskmanWeb.CoreComponents do
   attr :multiple, :boolean, default: false, doc: "the multiple flag for select inputs"
   attr :class, :any, default: nil, doc: "the input class to use over defaults"
   attr :error_class, :any, default: nil, doc: "the input error class to use over defaults"
+  attr :prefix, :string, default: nil, doc: "static text displayed before an editable text value"
 
   attr :rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
@@ -347,7 +354,25 @@ defmodule TaskmanWeb.CoreComponents do
     <div class="fieldset mb-2">
       <label for={@id}>
         <span :if={@label} class="label mb-1">{@label}</span>
+        <span
+          :if={@prefix}
+          class={[
+            @class || "w-full input",
+            @errors != [] && (@error_class || "input-error")
+          ]}
+        >
+          <span aria-hidden="true">{@prefix}</span>
+          <input
+            type={@type}
+            name={@name}
+            id={@id}
+            value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+            class="grow"
+            {@rest}
+          />
+        </span>
         <input
+          :if={!@prefix}
           type={@type}
           name={@name}
           id={@id}

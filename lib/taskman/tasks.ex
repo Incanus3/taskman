@@ -18,6 +18,18 @@ defmodule Taskman.Tasks do
     |> Repo.all()
   end
 
+  @doc "Returns List IDs owning direct Tasks in the given Project, regardless of Task status."
+  @spec list_ids_with_direct_tasks(Project.t()) :: MapSet.t(pos_integer())
+  def list_ids_with_direct_tasks(%Project{id: project_id}) do
+    from(task in Task,
+      where: task.project_id == ^project_id and not is_nil(task.list_id),
+      distinct: true,
+      select: task.list_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
   def get_task_for_project(%Project{id: project_id}, id) when is_integer(id) and id > 0 do
     Repo.get_by(Task, id: id, project_id: project_id)
   end

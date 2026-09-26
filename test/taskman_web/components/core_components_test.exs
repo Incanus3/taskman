@@ -8,6 +8,23 @@ defmodule TaskmanWeb.CoreComponentsTest do
   alias Phoenix.LiveView.JS
   alias TaskmanWeb.CoreComponents
 
+  test "prefixed text input keeps the hash static and limits editable digits" do
+    html = render_component(&prefixed_input/1, %{}) |> LazyHTML.from_fragment()
+
+    assert Enum.count(LazyHTML.query(html, "span.input")) == 1
+    assert LazyHTML.query(html, "span.input span") |> LazyHTML.text() == "#"
+
+    assert LazyHTML.query(html, "#project-color[maxlength='6'][value='12ABEF']") |> Enum.count() ==
+             1
+  end
+
+  test "ordinary text input keeps its plain input structure" do
+    html = render_component(&ordinary_input/1, %{}) |> LazyHTML.from_fragment()
+
+    assert Enum.count(LazyHTML.query(html, "#project-name.input")) == 1
+    assert Enum.count(LazyHTML.query(html, "span.input")) == 0
+  end
+
   test "shown modal removes its hidden attribute on mount" do
     html = render_component(&shown_modal/1, %{})
 
@@ -78,6 +95,24 @@ defmodule TaskmanWeb.CoreComponentsTest do
     <CoreComponents.modal id="task-modal" show on_cancel={JS.push("cancel-task")}>
       <button id="first-modal-control" type="button">First control</button>
     </CoreComponents.modal>
+    """
+  end
+
+  defp prefixed_input(assigns) do
+    ~H"""
+    <CoreComponents.input
+      id="project-color"
+      name="project[color]"
+      value="12ABEF"
+      prefix="#"
+      maxlength="6"
+    />
+    """
+  end
+
+  defp ordinary_input(assigns) do
+    ~H"""
+    <CoreComponents.input id="project-name" name="project[name]" value="Alpha" />
     """
   end
 

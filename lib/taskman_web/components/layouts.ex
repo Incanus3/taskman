@@ -35,6 +35,8 @@ defmodule TaskmanWeb.Layouts do
     default: nil,
     doc: "the authenticated User actor"
 
+  attr :content_scroll?, :boolean, default: true
+
   slot :inner_block, required: true
 
   def app(assigns) do
@@ -57,7 +59,13 @@ defmodule TaskmanWeb.Layouts do
         <.account_menu current_user={@current_user} />
       </header>
 
-      <div id="application-content" class="min-h-0 flex-1 overflow-y-auto">
+      <div
+        class={[
+          "min-h-0 flex-1",
+          if(@content_scroll?, do: "overflow-y-auto", else: "overflow-hidden")
+        ]}
+        id="application-content"
+      >
         {render_slot(@inner_block)}
       </div>
     </div>

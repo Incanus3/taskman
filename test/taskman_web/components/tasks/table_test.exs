@@ -151,7 +151,7 @@ defmodule TaskmanWeb.Tasks.TableTest do
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#task-actions-41 #move-task-row-button-41.cursor-pointer[aria-label='Move Launch'][title='Move Task'] .hero-arrows-right-left"
+               "#task-actions-41 #move-task-row-button-41.cursor-pointer[aria-label='Move Launch'][data-tooltip='Move Task'] .hero-arrows-right-left"
              )
            )
 

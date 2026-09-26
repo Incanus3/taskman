@@ -49,7 +49,7 @@ user-authorized Task-status decision. Agent activity never marks a Task complete
 ## Inventory scope
 
 When a request spans the whole Taskman instance, start with the Project list. Treat each returned
-Project record as authoritative: preserve its returned ID and name, use that ID for subsequent Project-scoped commands, and report the returned name exactly.
+Project record as authoritative: preserve its returned ID, name, description, icon, and color; use that ID for subsequent Project-scoped commands, and report the returned name exactly. Project descriptions may be empty. Valid icon keys are `check-circle`, `folder`, `briefcase`, `code-bracket`, `rocket-launch`, `beaker`, `light-bulb`, and `wrench-screwdriver`. Colors use `#RRGGBB` and accept any valid hex color.
 
 For all Tasks in a Project, use:
 
@@ -76,6 +76,8 @@ to the CLI:
 taskman projects list --json
 taskman projects show 7
 taskman projects create --name Demo
+taskman projects create --name Demo --description Delivery --icon rocket-launch --color '#6366F1'
+taskman projects update 7 --description Updated
 taskman lists list --project 7
 taskman lists show --project 7 11
 taskman lists create --project 7 --name Planning --parent 11
@@ -102,3 +104,5 @@ Read the relevant group or leaf help for the complete option set. Before changin
 inspect it with `show` or `list`, then make one explicit, ID-based mutation and verify the result.
 Use `tasks update --parent` to set a parent and `tasks update --no-parent` to clear it. Use
 `tasks hierarchy` to inspect the connected hierarchy before or after a parent mutation.
+
+Project update requires at least one of `--name`, `--description`, `--icon`, or `--color`. Supply only fields you intend to change. Use `--description ''` to clear a description.

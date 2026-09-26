@@ -68,9 +68,18 @@ defmodule Taskman.Repo.SeedsTest do
     run_seeds()
 
     refute Repo.get(Project, existing_project.id)
-    assert Repo.aggregate(Project, :count) == 1
+    assert Repo.aggregate(Project, :count) == 3
     assert Repo.aggregate(TaskList, :count) >= 4
     assert Repo.aggregate(Task, :count) == 30
+
+    assert Projects.list_projects()
+           |> Enum.map(&{&1.name, &1.description, &1.icon, &1.color})
+           |> Enum.sort() ==
+             [
+               {"Lab Notes", "Capture experiments and findings.", "beaker", "#06B6D4"},
+               {"Launch Planning", "Coordinate upcoming releases.", "rocket-launch", "#F97316"},
+               {"Taskman Demo", "", "briefcase", "#6366F1"}
+             ]
 
     task_lists = Repo.all(TaskList)
     tasks = Repo.all(Task)
@@ -94,7 +103,7 @@ defmodule Taskman.Repo.SeedsTest do
 
     run_seeds()
 
-    assert Repo.aggregate(Project, :count) == 1
+    assert Repo.aggregate(Project, :count) == 3
     assert Repo.aggregate(Task, :count) == 30
     assert dataset_signature() == first_seed
   end
@@ -126,7 +135,7 @@ defmodule Taskman.Repo.SeedsTest do
   end
 
   defp dataset_signature do
-    project = Repo.one!(Project)
+    projects = Repo.all(Project)
     task_lists = Repo.all(TaskList)
     tasks = Repo.all(Task)
 
@@ -134,7 +143,10 @@ defmodule Taskman.Repo.SeedsTest do
     task_titles_by_id = Map.new(tasks, &{&1.id, &1.title})
 
     %{
-      project: project.name,
+      projects:
+        projects
+        |> Enum.map(&{&1.name, &1.description, &1.icon, &1.color})
+        |> Enum.sort(),
       lists:
         task_lists
         |> Enum.map(&{&1.name, Map.get(list_names_by_id, &1.parent_list_id)})

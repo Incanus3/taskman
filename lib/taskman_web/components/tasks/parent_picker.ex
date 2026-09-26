@@ -71,6 +71,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
         <button
           type="button"
           aria-label="Close parent Task options"
+          data-tooltip=""
           phx-click="toggle_task_parent_options"
           class="absolute bottom-3 right-2 grid size-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
         >

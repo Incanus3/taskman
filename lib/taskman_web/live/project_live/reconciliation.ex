@@ -77,6 +77,8 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   def handle_info(%Event{}, socket), do: {:noreply, socket}
 
   defp reconcile_task_event(socket, event) do
+    socket = Workspace.refresh(socket)
+
     if Recovery.State.active?(socket.assigns.recovery) do
       Listing.refresh(socket)
     else
@@ -156,13 +158,14 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
   defp well_formed_workspace_event?(%Event{
          entity: :project,
-         operation: :created,
+         operation: operation,
          project_id: project_id,
          entity_id: entity_id,
          lock_version: nil,
          fields: fields
        })
-       when is_integer(project_id) and project_id > 0 and entity_id == project_id and
+       when operation in [:created, :updated] and is_integer(project_id) and project_id > 0 and
+              entity_id == project_id and
               is_list(fields) do
     Enum.all?(fields, &is_atom/1)
   end

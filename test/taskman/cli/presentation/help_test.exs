@@ -113,4 +113,18 @@ defmodule Taskman.CLI.Presentation.HelpTest do
       assert help =~ "Example"
     end
   end
+
+  test "Project help documents identity options and update" do
+    create = Help.render(~w(projects create))
+    update = Help.render(~w(projects update))
+
+    for option <- ["--description TEXT", "--icon ICON", "--color '#RRGGBB'"] do
+      assert create =~ option
+      assert update =~ option
+    end
+
+    assert update =~ "taskman projects update PROJECT_ID"
+    assert update =~ "--name NAME"
+    assert update =~ "rocket-launch"
+  end
 end

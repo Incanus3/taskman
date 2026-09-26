@@ -5,145 +5,176 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias TaskmanWeb.ProjectLive.ListEdit
+  alias TaskmanWeb.ProjectLive.Paths
 
-  @doc """
-  Renders the visible Project/List portion of the workspace sidebar.
-
-  The LiveView owns the navigation stream and all transient state. This component only projects
-  each supplied flattened node into semantic tree markup and the currently active List form.
-  """
+  @doc "Renders the selected Project root and its visible List tree."
   attr :navigation_nodes, :any, required: true
+  attr :selected_project, Project, default: nil
+  attr :selected_list, TaskList, default: nil
+  attr :location_not_found?, :boolean, default: false
   attr :include_children?, :boolean, default: false
   attr :list_edit, ListEdit, required: true
 
   def tree(assigns) do
     ~H"""
     <nav
-      id="workspace-tree"
-      role="tree"
+      :if={@selected_project}
+      id="workspace-navigation"
       aria-label="Workspace navigation"
-      phx-update="stream"
-      class="space-y-1"
+      class="flex min-h-0 flex-1 flex-col gap-1"
     >
-      <div
-        id="projects-empty"
-        class="hidden rounded-xl border border-dashed border-slate-700 px-3 py-4 text-sm text-slate-400 only:block"
-      >
-        Create your first Project below.
+      <div id="project-tasks-row" class="group/row relative shrink-0">
+        <div class={[
+          "flex items-center gap-1 rounded-xl px-2 py-1.5 transition hover:bg-white/7 hover:text-white focus-within:bg-white/7",
+          is_nil(@selected_list) && !@location_not_found? && "bg-white/12 text-white",
+          (!is_nil(@selected_list) || @location_not_found?) && "text-slate-300"
+        ]}>
+          <.link
+            id="project-tasks-link"
+            patch={Paths.browse_path(@selected_project, nil, @include_children?)}
+            aria-current={is_nil(@selected_list) && !@location_not_found? && "page"}
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 pr-10 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
+            <.icon name="hero-clipboard-document-list" class="size-4 shrink-0 text-indigo-300" />
+            <span class="truncate">Project tasks</span>
+          </.link>
+          <button
+            id={"add-root-list-#{@selected_project.id}"}
+            type="button"
+            phx-click="open_list_form"
+            phx-value-kind="new"
+            phx-value-parent-id=""
+            phx-value-project-id={@selected_project.id}
+            aria-label="Add root List"
+            data-tooltip=""
+            class="grid size-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            <.icon name="hero-plus" class="size-4" />
+          </button>
+        </div>
+        <.list_form :if={root_form_active?(@list_edit, @selected_project)} list_edit={@list_edit} />
       </div>
       <div
-        :for={{dom_id, node} <- @navigation_nodes}
-        id={dom_id}
-        role="treeitem"
-        aria-level={node.depth}
-        aria-current={node.selected? && "page"}
-        class="group relative"
+        id="workspace-tree"
+        role="tree"
+        aria-label="Lists in current Project"
+        phx-update="stream"
+        phx-hook=".NavigationDisclosureFocus"
+        class="min-h-0 flex-1 space-y-1 overflow-y-auto"
       >
         <div
-          class={[
-            "relative flex items-center gap-1 rounded-xl px-2 py-1.5 transition",
-            node.selected? && "bg-white/12 text-white",
-            !node.selected? &&
-              "text-slate-300 hover:bg-white/7 hover:text-white focus-within:bg-white/7"
-          ]}
-          style={"padding-inline-start: #{(node.depth - 1) * 1.25}rem"}
+          :for={{dom_id, node} <- @navigation_nodes}
+          id={dom_id}
+          role="treeitem"
+          aria-level={node.depth}
+          aria-current={node.selected? && "page"}
+          class="group/row relative"
         >
-          <button
-            :if={node.expandable?}
-            id={toggle_id(node)}
-            type="button"
-            phx-click="toggle_navigation_node"
-            phx-value-kind={node.kind}
-            phx-value-id={node_id(node)}
-            phx-value-project-id={node.project.id}
-            aria-expanded={to_string(node.expanded?)}
-            aria-label={toggle_label(node)}
-            class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
-          >
-            <.icon
-              name={if(node.expanded?, do: "hero-chevron-down", else: "hero-chevron-right")}
-              class="size-4"
-            />
-          </button>
-          <span
-            :if={!node.expandable?}
-            aria-hidden="true"
-            class="size-7 shrink-0"
-          />
-          <.link
-            id={selection_link_id(node)}
-            patch={selection_path(node, @include_children?)}
-            aria-current={node.selected? && "page"}
-            aria-label={"Select #{node_label(node)}"}
-            class={[
-              "flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1",
-              node.kind == :project &&
-                "pr-10 pointer-fine:group-hover:pr-10 pointer-fine:group-focus-within:pr-10",
-              node.kind == :list &&
-                "pr-18 pointer-fine:group-hover:pr-18 pointer-fine:group-focus-within:pr-18"
-            ]}
-          >
-            <.icon
-              name={if(node.kind == :project, do: "hero-folder", else: "hero-list-bullet")}
-              class="size-4 shrink-0 text-indigo-300"
-            />
-            <span class="min-w-0 flex-1 truncate">{node_label(node)}</span>
-          </.link>
           <div
-            id={
-              if(node.kind == :project,
-                do: "project-actions-#{node.project.id}",
-                else: "list-actions-#{node.task_list.id}"
-              )
-            }
-            class="absolute right-0 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 rounded-r-xl bg-transparent py-1 pl-1 pr-2 opacity-100 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-fine:opacity-0"
+            class={[
+              "relative flex items-center gap-1 rounded-xl px-2 py-1.5 transition",
+              node.selected? && "bg-white/12 text-white",
+              !node.selected? &&
+                "text-slate-300 hover:bg-white/7 hover:text-white focus-within:bg-white/7"
+            ]}
+            style={"padding-inline-start: #{(node.depth - 1) * 1.25}rem"}
           >
             <button
-              :if={node.kind == :project}
-              id={"add-list-project-#{node.project.id}"}
+              :if={node.expandable?}
+              id={toggle_id(node)}
               type="button"
-              phx-click="open_list_form"
-              phx-value-kind="new"
-              phx-value-parent-id=""
+              phx-click="toggle_navigation_node"
+              phx-value-kind="list"
+              phx-value-id={node.task_list.id}
               phx-value-project-id={node.project.id}
-              aria-label={"Add List to #{node.project.name}"}
-              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+              aria-expanded={to_string(node.expanded?)}
+              aria-label={toggle_label(node)}
+              data-tooltip=""
+              class="group/disclosure grid size-8 shrink-0 place-items-center rounded-lg text-indigo-300 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             >
-              <.icon name="hero-plus" class="size-4" />
+              <.icon
+                name={node.icon}
+                class="size-4 group-hover/row:hidden group-focus-visible/disclosure:hidden"
+              />
+              <.icon
+                name={if(node.expanded?, do: "hero-chevron-down", else: "hero-chevron-right")}
+                class="hidden size-4 group-hover/row:block group-focus-visible/disclosure:block"
+              />
             </button>
-            <button
-              :if={node.kind == :list}
-              id={"add-child-list-#{node.task_list.id}"}
-              type="button"
-              phx-click="open_list_form"
-              phx-value-kind="new"
-              phx-value-parent-id={node.task_list.id}
-              phx-value-project-id={node.project.id}
-              aria-label={"Add child List to #{node.task_list.name}"}
-              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            <span
+              :if={!node.expandable?}
+              aria-hidden="true"
+              class="grid size-8 shrink-0 place-items-center text-indigo-300"
             >
-              <.icon name="hero-plus" class="size-4" />
-            </button>
-            <button
-              :if={node.kind == :list}
-              id={"rename-list-#{node.task_list.id}"}
-              type="button"
-              phx-click="open_list_form"
-              phx-value-kind="rename"
-              phx-value-list-id={node.task_list.id}
-              phx-value-project-id={node.project.id}
-              aria-label={"Rename #{node.task_list.name}"}
-              class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+              <.icon name={node.icon} class="size-4" />
+            </span>
+            <.link
+              id={selection_link_id(node)}
+              patch={Paths.browse_path(node.project, node.task_list, @include_children?)}
+              aria-current={node.selected? && "page"}
+              aria-label={"Select #{node.task_list.name}"}
+              class="flex min-w-0 flex-1 items-center rounded-lg py-1 pl-1 pr-18 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1 pointer-fine:group-hover/row:pr-18 pointer-fine:group-focus-within/row:pr-18"
             >
-              <.icon name="hero-pencil-square" class="size-4" />
-            </button>
+              <span class="min-w-0 flex-1 truncate">{node.task_list.name}</span>
+            </.link>
+            <div
+              id={"list-actions-#{node.task_list.id}"}
+              class="absolute right-0 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 rounded-r-xl bg-transparent py-1 pl-1 pr-2 opacity-100 transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100 pointer-fine:group-focus-within/row:opacity-100"
+            >
+              <button
+                id={"rename-list-#{node.task_list.id}"}
+                type="button"
+                phx-click="open_list_form"
+                phx-value-kind="rename"
+                phx-value-list-id={node.task_list.id}
+                phx-value-project-id={node.project.id}
+                aria-label={"Rename #{node.task_list.name}"}
+                data-tooltip="Rename List"
+                class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              >
+                <.icon name="hero-pencil-square" class="size-4" />
+              </button>
+              <button
+                id={"add-child-list-#{node.task_list.id}"}
+                type="button"
+                phx-click="open_list_form"
+                phx-value-kind="new"
+                phx-value-parent-id={node.task_list.id}
+                phx-value-project-id={node.project.id}
+                aria-label={"Add child List to #{node.task_list.name}"}
+                data-tooltip="Add child List"
+                class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              >
+                <.icon name="hero-plus" class="size-4" />
+              </button>
+            </div>
           </div>
+          <.list_form :if={ListEdit.active_for?(@list_edit, node)} list_edit={@list_edit} />
         </div>
-        <.list_form
-          :if={ListEdit.active_for?(@list_edit, node)}
-          list_edit={@list_edit}
-        />
       </div>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".NavigationDisclosureFocus">
+        export default {
+          mounted() {
+            this.onClick = event => {
+              const button = event.target.closest('button[id^="toggle-list-"]')
+              if (button && this.el.contains(button) && document.activeElement === button) {
+                this.pendingFocusId = button.id
+              }
+            }
+            this.el.addEventListener("click", this.onClick)
+          },
+          updated() {
+            const id = this.pendingFocusId
+            this.pendingFocusId = null
+            const focusLost = document.activeElement === document.body ||
+              document.activeElement === document.documentElement
+            if (id && focusLost) this.el.querySelector(`#${id}`)?.focus({preventScroll: true})
+          },
+          destroyed() {
+            this.el.removeEventListener("click", this.onClick)
+          }
+        }
+      </script>
     </nav>
     """
   end
@@ -206,38 +237,18 @@ defmodule TaskmanWeb.WorkspaceNavigation do
     """
   end
 
-  defp node_id(%NavigationNode{kind: :project, project: %Project{id: id}}), do: id
-  defp node_id(%NavigationNode{kind: :list, task_list: %TaskList{id: id}}), do: id
+  defp root_form_active?(
+         %ListEdit{project: %Project{id: project_id}, action: {:new, nil}},
+         %Project{id: project_id}
+       ),
+       do: true
 
-  defp node_label(%NavigationNode{kind: :project, project: %Project{name: name}}), do: name
-  defp node_label(%NavigationNode{kind: :list, task_list: %TaskList{name: name}}), do: name
+  defp root_form_active?(_list_edit, _project), do: false
 
-  defp selection_link_id(%NavigationNode{kind: kind} = node),
-    do: "select-#{kind}-#{node_id(node)}"
+  defp selection_link_id(%NavigationNode{task_list: %TaskList{id: id}}), do: "select-list-#{id}"
+  defp toggle_id(%NavigationNode{task_list: %TaskList{id: id}}), do: "toggle-list-#{id}"
 
-  defp toggle_id(%NavigationNode{kind: kind} = node), do: "toggle-#{kind}-#{node_id(node)}"
-
-  defp toggle_label(%NavigationNode{} = node) do
-    if node.expanded?, do: "Collapse #{node_label(node)}", else: "Expand #{node_label(node)}"
+  defp toggle_label(%NavigationNode{task_list: %TaskList{name: name}, expanded?: expanded?}) do
+    if expanded?, do: "Collapse #{name}", else: "Expand #{name}"
   end
-
-  defp selection_path(
-         %NavigationNode{kind: :project, project: %Project{id: project_id}},
-         include_children?
-       ),
-       do: append_include_children(~p"/projects/#{project_id}", include_children?)
-
-  defp selection_path(
-         %NavigationNode{
-           kind: :list,
-           project: %Project{id: project_id},
-           task_list: %TaskList{id: list_id}
-         },
-         include_children?
-       ),
-       do:
-         append_include_children(~p"/projects/#{project_id}/lists/#{list_id}", include_children?)
-
-  defp append_include_children(path, true), do: path <> "?include_children=true"
-  defp append_include_children(path, false), do: path
 end

@@ -3,87 +3,141 @@ defmodule Taskman.Lists.NavigationTest do
 
   import Taskman.ProjectsFixtures
   import Taskman.ListsFixtures
+  import Taskman.TasksFixtures
 
   alias Taskman.Lists
-  alias Taskman.Lists.NavigationNode
+  alias Taskman.Tasks
 
-  test "builds a depth-first navigation tree and opens selected ancestors" do
+  test "direct Task presence is scoped to one Project and ignores status" do
     project = project_fixture(%{})
-    other_project = project_fixture(%{})
+    other = project_fixture(%{})
+    empty = list_fixture(project)
+    filled = list_fixture(project)
+    foreign = list_fixture(other)
+    _hidden = task_fixture(project, filled, %{status: :done})
+    _also_filled = task_fixture(project, filled, %{})
+    _foreign = task_fixture(other, foreign, %{})
+    _root_task = task_fixture(project, %{})
+
+    assert Tasks.list_ids_with_direct_tasks(project) == MapSet.new([filled.id])
+    assert Tasks.list_ids_with_direct_tasks(other) == MapSet.new([foreign.id])
+    refute MapSet.member?(Tasks.list_ids_with_direct_tasks(project), empty.id)
+  end
+
+  test "a selected descendant opens ancestors in a Lists-only depth-first tree" do
+    project = project_fixture(%{})
+    other = project_fixture(%{})
     root = list_fixture(project, nil, %{name: "Planning"})
     child = list_fixture(project, root, %{name: "Launch"})
     leaf = list_fixture(project, child, %{name: "Copy"})
-    _other_root = list_fixture(other_project, nil, %{name: "Other"})
-
-    lists_by_project = %{
-      project.id => Lists.list_lists_for_project(project),
-      other_project.id => Lists.list_lists_for_project(other_project)
-    }
+    _other = list_fixture(other)
 
     nodes =
       Lists.navigation_nodes(
-        [project, other_project],
-        lists_by_project,
+        project,
+        Lists.list_lists_for_project(project),
+        MapSet.new(),
         {:list, leaf.id},
         MapSet.new()
       )
 
-    assert Enum.map(nodes, fn node ->
-             {node.dom_id, node.kind, node.depth, node.task_list && node.task_list.name}
-           end) == [
-             {"project-#{project.id}", :project, 1, nil},
-             {"list-#{root.id}", :list, 2, "Planning"},
-             {"list-#{child.id}", :list, 3, "Launch"},
-             {"list-#{leaf.id}", :list, 4, "Copy"},
-             {"project-#{other_project.id}", :project, 1, nil}
-           ]
+    assert Enum.map(nodes, &{&1.kind, &1.depth, &1.task_list.id}) ==
+             [{:list, 1, root.id}, {:list, 2, child.id}, {:list, 3, leaf.id}]
 
-    [project_node, root_node, child_node, leaf_node, other_node] = nodes
-    assert %NavigationNode{} = project_node
-    assert project_node.expanded?
-    assert root_node.expanded?
-    assert child_node.expanded?
-    refute leaf_node.expanded?
-    assert leaf_node.selected?
-    refute project_node.selected?
-    refute other_node.expanded?
-    assert other_node.task_list == nil
-    assert Enum.all?([project_node, root_node, child_node], & &1.expandable?)
-    refute leaf_node.expandable?
-    assert other_node.expandable?
+    assert Enum.map(nodes, & &1.expanded?) == [true, true, false]
+    assert List.last(nodes).selected?
   end
 
-  test "selected Project does not force its own descendants open" do
+  test "leaf, child-only, and mixed icons use direct Task ownership" do
     project = project_fixture(%{})
-    root = list_fixture(project, nil, %{name: "Planning"})
-    _child = list_fixture(project, root, %{name: "Launch"})
+    empty = list_fixture(project)
+    filled = list_fixture(project)
+    child_only = list_fixture(project)
+    mixed = list_fixture(project)
+    descendant = list_fixture(project, child_only)
+    _mixed_child = list_fixture(project, mixed)
+    _filled_task = task_fixture(project, filled, %{status: :done})
+    _descendant_task = task_fixture(project, descendant, %{})
+    _mixed_task = task_fixture(project, mixed, %{})
 
-    [project_node] =
+    lists = Lists.list_lists_for_project(project)
+    direct_ids = Tasks.list_ids_with_direct_tasks(project)
+    closed = Lists.navigation_nodes(project, lists, direct_ids, nil, MapSet.new())
+
+    opened =
       Lists.navigation_nodes(
-        [project],
-        %{project.id => Lists.list_lists_for_project(project)},
-        {:project, project.id},
-        MapSet.new()
+        project,
+        lists,
+        direct_ids,
+        nil,
+        MapSet.new([{:list, child_only.id}, {:list, mixed.id}])
       )
 
-    assert project_node.selected?
-    refute project_node.expanded?
+    by_id = Map.new(closed, &{&1.task_list.id, &1})
+    open_by_id = Map.new(opened, &{&1.task_list.id, &1})
+
+    assert %{
+             kind: :list,
+             depth: 1,
+             list_kind: :leaf,
+             icon: "hero-list-bullet",
+             expandable?: false
+           } =
+             by_id[empty.id]
+
+    assert %{list_kind: :leaf, icon: "hero-list-bullet", expandable?: false} = by_id[filled.id]
+
+    assert %{list_kind: :child_only, icon: "hero-folder", expanded?: false, expandable?: true} =
+             by_id[child_only.id]
+
+    assert %{icon: "hero-folder-open", expanded?: true} = open_by_id[child_only.id]
+    assert %{icon: "hero-list-bullet", depth: 2} = open_by_id[descendant.id]
+    assert %{list_kind: :mixed, icon: "hero-queue-list", expanded?: false} = by_id[mixed.id]
+    assert %{list_kind: :mixed, icon: "hero-queue-list", expanded?: true} = open_by_id[mixed.id]
   end
 
-  test "selected root List forces its Project node open" do
+  test "moving the only direct Task changes both source and destination icons" do
     project = project_fixture(%{})
-    root = list_fixture(project, nil, %{name: "Planning"})
+    source = list_fixture(project)
+    destination = list_fixture(project)
+    _source_child = list_fixture(project, source)
+    _destination_child = list_fixture(project, destination)
+    task = task_fixture(project, source, %{})
+    lists = Lists.list_lists_for_project(project)
 
-    [project_node, root_node] =
-      Lists.navigation_nodes(
-        [project],
-        %{project.id => Lists.list_lists_for_project(project)},
-        {:list, root.id},
-        MapSet.new()
-      )
+    icons = fn ->
+      project
+      |> Tasks.list_ids_with_direct_tasks()
+      |> then(&Lists.navigation_nodes(project, lists, &1, nil, MapSet.new()))
+      |> Map.new(&{&1.task_list.id, &1.icon})
+    end
 
-    assert project_node.expanded?
-    assert root_node.selected?
-    refute root_node.expanded?
+    assert icons.()[source.id] == "hero-queue-list"
+    assert icons.()[destination.id] == "hero-folder"
+    assert {:ok, _moved} = Tasks.move_task(project, task, destination)
+    assert icons.()[source.id] == "hero-folder"
+    assert icons.()[destination.id] == "hero-queue-list"
+  end
+
+  test "adding and removing the last child changes pure navigation state" do
+    project = project_fixture(%{})
+    root = list_fixture(project)
+
+    child = %Taskman.Lists.TaskList{
+      id: -1,
+      project_id: project.id,
+      parent_list_id: root.id,
+      name: "Child"
+    }
+
+    lists = [root]
+
+    build = fn lists ->
+      Lists.navigation_nodes(project, lists, MapSet.new(), nil, MapSet.new())
+    end
+
+    assert [%{icon: "hero-list-bullet", expandable?: false}] = build.(lists)
+    assert [%{icon: "hero-folder", expandable?: true}] = build.([root, child])
+    assert [%{icon: "hero-list-bullet", expandable?: false}] = build.(lists)
   end
 end

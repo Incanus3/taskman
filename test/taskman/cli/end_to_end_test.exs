@@ -75,7 +75,10 @@ defmodule Taskman.CLI.EndToEndTest do
     assert %{
              "data" => %{
                "id" => id,
-               "name" => "HTTP smoke"
+               "name" => "HTTP smoke",
+               "description" => "",
+               "icon" => "briefcase",
+               "color" => "#6366F1"
              }
            } = Jason.decode!(create.stdout)
 
@@ -97,9 +100,50 @@ defmodule Taskman.CLI.EndToEndTest do
     assert Jason.decode!(show.stdout) == %{
              "data" => %{
                "id" => id,
-               "name" => "HTTP smoke"
+               "name" => "HTTP smoke",
+               "description" => "",
+               "icon" => "briefcase",
+               "color" => "#6366F1"
              }
            }
+
+    update =
+      cli_run(
+        [
+          "projects",
+          "update",
+          Integer.to_string(id),
+          "--description",
+          "Delivery",
+          "--icon",
+          "beaker",
+          "--color",
+          "#aabbcc",
+          "--json"
+        ],
+        config_root
+      )
+
+    assert update.status == 0
+
+    assert %{
+             "data" => %{
+               "id" => ^id,
+               "description" => "Delivery",
+               "icon" => "beaker",
+               "color" => "#AABBCC"
+             }
+           } =
+             Jason.decode!(update.stdout)
+
+    clear =
+      cli_run(
+        ["projects", "update", Integer.to_string(id), "--description", "", "--json"],
+        config_root
+      )
+
+    assert clear.status == 0
+    assert Jason.decode!(clear.stdout)["data"]["description"] == ""
   end
 
   test "updates Task parentage and inspects hierarchy through the loopback API",
@@ -244,7 +288,8 @@ defmodule Taskman.CLI.EndToEndTest do
              Jason.decode!(project_create.stdout)
 
     sync_view(project_view)
-    assert has_element?(project_view, "#project-#{created_project_id}", "CLI Project")
+    project_view |> element("#project-selector-toggle") |> render_click()
+    assert has_element?(project_view, "#select-project-#{created_project_id}", "CLI Project")
     refute_patched(project_view, project_path)
 
     list_create =
@@ -278,7 +323,6 @@ defmodule Taskman.CLI.EndToEndTest do
     assert project_id == project.id
 
     sync_view(project_view)
-    project_view |> element("#toggle-project-#{project.id}") |> render_click()
     assert has_element?(project_view, "#list-#{list_id}", "CLI List")
     refute_patched(project_view, project_path)
 

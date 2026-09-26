@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Name-only Project transition complete; Task relationships follow
-**Updated:** 2026-09-23
+**Status:** Active Project selector complete and operator accepted; Task relationships follow
+**Updated:** 2026-09-26
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -54,8 +54,10 @@ Initial scope:
 
 This is the first real MVP milestone and the first slice to guide later architectural decisions.
 
-**Current state:** Complete. Users can create and select name-only Projects, create Tasks
-from the selected Project's direct list, and open each Task at its canonical
+**Current state:** The initial slice is complete. The active Project selector workstream has since
+added editable Project descriptions, icons, and colors, a Project-scoped List tree, remembered
+selection, and shareable Task-table filters; the workstream is complete and operator accepted.
+Users can create Tasks from the selected Project's direct list and open each Task at its canonical
 `/projects/:project_id/tasks/:task_id` URL in a modal over the preserved list. The modal autosaves
 title, description, status, priority, and optional due date-time changes; every lifecycle state is
 human-selectable, and persisted title, status, and priority values refresh in the Task row. Focused

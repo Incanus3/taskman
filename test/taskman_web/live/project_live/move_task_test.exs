@@ -195,7 +195,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-submit-#{task.id}") |> render_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}?include_children=true")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}")
     assert has_element?(view, "#location-heading", "Planning")
     assert has_element?(view, "#tasks-#{task.id}")
     refute has_element?(view, "#move-task-#{task.id}")
@@ -383,7 +383,6 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
              "#move-task-option-list-#{child.id}[aria-label='Planning / Launch']"
            )
 
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     view |> element("#rename-list-#{root.id}") |> render_click()
 
     view
@@ -671,10 +670,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
     assert has_element?(view, "#move-task-#{task.id}")
 
+    view |> element("#project-selector-toggle") |> render_click()
     view |> element("#select-project-#{destination_project.id}") |> render_click()
 
     assert_patch(view, ~p"/projects/#{destination_project.id}")
-    assert has_element?(view, "#project-#{destination_project.id}[aria-current='page']")
+    assert has_element?(view, "#project-selector-name", destination_project.name)
     refute has_element?(view, "#move-task-#{task.id}")
   end
 end

@@ -48,4 +48,16 @@ defmodule Taskman.CLI.OnboardingTest do
     assert %{"data" => %{"onboarding" => text}} = Jason.decode!(result.stdout)
     assert text == Onboarding.text()
   end
+
+  test "Project onboarding describes identity fields and update workflow" do
+    text = Onboarding.text()
+
+    assert text =~ "list, inspect, create, and update Projects"
+    assert text =~ "Project description, icon, and color"
+
+    assert text =~
+             "taskman projects create --name \"My Project\" --description Delivery --icon rocket-launch --color '#6366F1' --json"
+
+    assert text =~ "taskman projects update 7 --description Revised --json"
+  end
 end

@@ -228,7 +228,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     assert_patch(
       descendants_view,
-      ~p"/projects/#{project.id}/lists/#{current.id}?include_children=true"
+      ~p"/projects/#{project.id}/lists/#{current.id}"
     )
 
     {:ok, narrow_view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
@@ -276,7 +276,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
       "task" => %{"title" => "Visible list task"}
     })
 
-    assert_patch(visible_list_view, ~p"/projects/#{project.id}?include_children=true")
+    assert_patch(visible_list_view, ~p"/projects/#{project.id}")
   end
 
   test "unrelated and missing backdrops navigate to the selected location", %{conn: conn} do
@@ -294,7 +294,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     assert_patch(
       unrelated_view,
-      ~p"/projects/#{project.id}/lists/#{unrelated.id}?include_children=true"
+      ~p"/projects/#{project.id}/lists/#{unrelated.id}"
     )
 
     lost = list_fixture(project, nil, %{name: "Lost"})

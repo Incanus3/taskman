@@ -165,7 +165,7 @@ without changing the Task-detail component contract.
 
 ### Wide layout
 
-At Tailwind's `xl` breakpoint and above, the modal uses the three-column layout:
+At the `80rem` breakpoint and above, the modal uses the three-column layout:
 
 ```text
 expanded hierarchy: 15rem | minmax(0, 1fr) Task detail | 18rem Activity/Sessions
@@ -174,15 +174,15 @@ collapsed hierarchy: 3rem  | minmax(0, 1fr) Task detail | 18rem Activity/Session
 
 The opt-in wide modal has a maximum width of `80rem` (`max-w-7xl`) and remains constrained by the
 viewport padding. Expanding or collapsing the hierarchy changes the first column width and pushes
-or releases the central detail; it does not overlay the detail at this width.
+or releases the central detail. From `48rem` through the two-column widths, the same pushed
+hierarchy sits beside Task detail while Activity and Sessions follow below the form.
 
 ### Narrow layout
 
-Below the `xl` breakpoint:
+Below `48rem`:
 
 - the base layout uses a `3rem` collapsed hierarchy edge and a minimum-width-zero content column;
-- Activity follows Task detail in the content column;
-- Sessions follows Activity;
+- Activity follows Task detail in the content column, and Sessions follows Activity;
 - expanding the hierarchy opens it as a drawer over the Task detail rather than shrinking the
   editing column; and
 - the drawer width is `min(20rem, calc(100% - 3rem))`, leaving an outside dismissal target even
@@ -355,9 +355,10 @@ Responsive browser verification covers:
    preference remains.
 4. Collapse it, switch Tasks again, and confirm the collapsed preference remains.
 5. Reload and confirm the empty hierarchy returns to its collapsed contextual default.
-6. At `xl` width or above, confirm expanded hierarchy pushes the Task detail and Activity/Sessions
-   remain in the right rail.
-7. Below `xl`, confirm expanded hierarchy overlays the detail, the form remains readable, and
+6. At `80rem` or above, confirm expanded hierarchy pushes the Task detail and Activity/Sessions
+   remain in the right rail; at `48rem` through the intermediate widths, confirm the hierarchy
+   still pushes detail while Activity/Sessions appear below it.
+7. Below `48rem`, confirm expanded hierarchy overlays the detail, the form remains readable, and
    Activity then Sessions appear below the form.
 8. Confirm localized outside click collapses the narrow drawer without closing the modal.
 9. Confirm first Escape collapses the narrow drawer and second Escape closes the modal.

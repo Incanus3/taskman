@@ -217,6 +217,12 @@ add assertions that only verify styling details such as spacing, colors, or alig
 assertions are appropriate only when they establish functional user-visible state, such as whether
 an element is shown or hidden.
 
+Use focused LiveView tests for server-owned interactions and rendered outcomes. Reserve Wallaby
+browser tests for behavior that needs direct browser orchestration, such as local storage, history,
+clipboard results, connection recovery, computed rendering, and viewport changes. Run those tests
+through `mix test.browser` with Chromium and ChromeDriver; keep them separate from the normal
+`mix test` gate.
+
 Test the current supported behavior. An absence assertion is appropriate when it is part of that
 behavior, such as confirming that a successful operation returned no error. Do not add assertions
 that a removed, deprecated, or superseded feature, state, element, field, or column is absent. For

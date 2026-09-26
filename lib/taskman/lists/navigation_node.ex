@@ -6,6 +6,8 @@ defmodule Taskman.Lists.NavigationNode do
     :depth,
     :project,
     :task_list,
+    :list_kind,
+    :icon,
     :expanded?,
     :expandable?,
     :selected?
@@ -13,10 +15,12 @@ defmodule Taskman.Lists.NavigationNode do
 
   @type t :: %__MODULE__{
           dom_id: String.t(),
-          kind: :project | :list,
+          kind: :list,
           depth: pos_integer(),
           project: Taskman.Projects.Project.t(),
-          task_list: Taskman.Lists.TaskList.t() | nil,
+          task_list: Taskman.Lists.TaskList.t(),
+          list_kind: :leaf | :child_only | :mixed,
+          icon: String.t(),
           expanded?: boolean(),
           expandable?: boolean(),
           selected?: boolean()

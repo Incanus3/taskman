@@ -9,6 +9,8 @@ defmodule Taskman.ChangeNotifications do
   @field_order [
     :name,
     :description,
+    :icon,
+    :color,
     :due_at,
     :list_id,
     :parent_task_id,
@@ -43,16 +45,17 @@ defmodule Taskman.ChangeNotifications do
     end
   end
 
-  @spec publish_project(Project.t(), :created, [atom()]) :: publication_result()
+  @spec publish_project(Project.t(), :created | :updated, [atom()]) :: publication_result()
   def publish_project(
         %Project{id: project_id},
-        :created,
+        operation,
         fields
       )
-      when is_integer(project_id) and project_id > 0 and is_list(fields) do
+      when operation in [:created, :updated] and is_integer(project_id) and project_id > 0 and
+             is_list(fields) do
     event = %Event{
       entity: :project,
-      operation: :created,
+      operation: operation,
       project_id: project_id,
       entity_id: project_id,
       lock_version: nil,

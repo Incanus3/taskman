@@ -6,6 +6,8 @@
 @source "../css";
 @source "../js";
 @source "../../lib/taskman_web";
+/* Project choices and derived List icons use dynamic class names. */
+@source inline("hero-{check-circle,folder,folder-open,briefcase,code-bracket,rocket-launch,beaker,light-bulb,wrench-screwdriver,queue-list}");
 /* Required for Tailwind to automatically pick up changes in colocated CSS files in dev */
 @source "../../_build/dev/phoenix-colocated/taskman/*/";
 
@@ -114,6 +116,23 @@
 #task-parent-search::-webkit-search-cancel-button {
   -webkit-appearance: none;
   display: none;
+}
+
+.taskman-tooltip {
+  position: fixed;
+  z-index: 110;
+  max-width: min(18rem, calc(100vw - 1rem));
+  pointer-events: none;
+  border: 1px solid rgb(99 102 241 / 0.35);
+  border-radius: 0.5rem;
+  background: rgb(15 23 42 / 0.98);
+  padding: 0.35rem 0.6rem;
+  color: rgb(241 245 249);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: center;
+  box-shadow: 0 10px 22px rgb(0 0 0 / 0.3);
 }
 
 #task-detail-layout {
@@ -253,7 +272,7 @@
   font-weight: 600;
 }
 
-@media (min-width: 80rem) {
+@media (min-width: 48rem) {
   #task-hierarchy {
     position: relative;
     inset: auto;
@@ -271,7 +290,9 @@
   #task-detail-layout[data-hierarchy-expanded="true"] #task-hierarchy-overlay {
     display: none;
   }
+}
 
+@media (min-width: 80rem) {
   .task-detail-columns {
     grid-template-columns: minmax(0, 1fr) 18rem;
   }

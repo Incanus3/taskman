@@ -94,6 +94,7 @@ defmodule TaskmanWeb.Router do
     get "/projects", ProjectController, :index
     post "/projects", ProjectController, :create
     get "/projects/:project_id", ProjectController, :show
+    patch "/projects/:project_id", ProjectController, :update
     get "/projects/:project_id/lists", ListController, :index
     post "/projects/:project_id/lists", ListController, :create
     get "/projects/:project_id/lists/:list_id", ListController, :show

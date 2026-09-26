@@ -43,7 +43,8 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
              json_response(project_response, 201)
 
     sync_view(view)
-    assert has_element?(view, "#project-#{project_id}", "Controller Project")
+    view |> element("#project-selector-toggle") |> render_click()
+    assert has_element?(view, "#select-project-#{project_id}", "Controller Project")
     refute_patched(view, ~p"/")
 
     project_path = ~p"/projects/#{project_id}"
@@ -67,7 +68,6 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
            } = json_response(list_response, 201)
 
     sync_view(view)
-    view |> element("#toggle-project-#{project_id}") |> render_click()
     assert has_element?(view, "#list-#{list_id}", "Controller List")
     refute_patched(view, project_path)
 

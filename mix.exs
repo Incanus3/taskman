@@ -28,7 +28,7 @@ defmodule Taskman.MixProject do
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [precommit: :test, "test.browser": :test]
     ]
   end
 
@@ -60,6 +60,9 @@ defmodule Taskman.MixProject do
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
+      {:wallaby, "~> 0.31.0", only: :test, runtime: false},
+      # Wallaby permits HTTPoison 3, whose Hackney 4 dependency needs OTP 27.
+      {:httpoison, "~> 2.3", only: :test, runtime: false},
       {:phoenix_live_dashboard, "~> 0.8.3"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
@@ -107,7 +110,11 @@ defmodule Taskman.MixProject do
         "esbuild taskman --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
+      "test.browser": [
+        "assets.build",
+        "test test/taskman_web/live/project_live/task_table_browser_test.exs --include browser"
+      ]
     ]
   end
 end

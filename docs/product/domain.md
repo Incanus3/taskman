@@ -2,10 +2,28 @@
 
 ## Ownership and organization
 
-- **Project**: a machine-independent top-level work container identified by its ID and name. It owns nested Lists and Tasks, and has no directory.
+- **Project**: a machine-independent top-level work container identified by its ID and name, with a description, icon, and color. It owns nested Lists and Tasks, and has no directory.
 - **List**: a nested organizational container within exactly one Project. Lists may contain nested Lists and Tasks.
 - **Direct Project Task**: a Task owned directly by its Project rather than by a List; it has list depth zero.
 - **Owning location**: the single place where a Task resides: either its Project or one List within that Project.
+
+## Project identity
+
+Project names are trimmed and non-empty. Descriptions are trimmed, may be empty, and contain at
+most 160 characters; an empty description has no subtitle in the selector. Identity is stored on
+the Project and shared by browser, API, and CLI creation and editing.
+
+The default icon is `briefcase`. Allowed icon keys are `check-circle`, `folder`, `briefcase`,
+`code-bracket`, `rocket-launch`, `beaker`, `light-bulb`, and `wrench-screwdriver`. Colors use an
+uppercase `#RRGGBB` value, defaulting to `#6366F1`. The browser supports preset shortcuts and any
+valid six-digit custom hex color. Description, icon, and color are never null.
+
+The sidebar shows one active Project and its Lists. Explicit Project and List URLs select their
+Project; opening `/` restores a valid Project remembered by this browser, otherwise it shows a
+neutral selector. Include child Lists and Statuses are browser preferences retained across
+navigation. Share copies the current route with both filters as an explicit snapshot. See the
+[active Project selector specification](../specs/2026-09-22-active-project-selector-design.md) for
+navigation, filter, validation, and API/CLI contracts.
 
 ## Ownership rules
 

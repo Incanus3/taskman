@@ -37,7 +37,7 @@ defmodule Taskman.CLI.Commands.Projects do
         )
 
       :create ->
-        body = %{"project" => %{"name" => Map.fetch!(invocation.options, :name)}}
+        body = %{"project" => project_attrs(invocation.options)}
 
         request(
           invocation,
@@ -49,9 +49,29 @@ defmodule Taskman.CLI.Commands.Projects do
           {:member, :project}
         )
 
+      :update ->
+        project_id = Map.fetch!(invocation.arguments, :project_id)
+        body = %{"project" => project_attrs(invocation.options)}
+
+        request(
+          invocation,
+          :patch,
+          "/api/v1/projects/#{project_id}",
+          [json: body],
+          runtime_options,
+          json?,
+          {:member, :project}
+        )
+
       _other ->
         internal_error(invocation, json?)
     end
+  end
+
+  defp project_attrs(options) do
+    options
+    |> Map.take([:name, :description, :icon, :color])
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
   end
 
   defp request(
