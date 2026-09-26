@@ -517,13 +517,20 @@ def _validate_migration_policy(
         return
     if policy == "backward-compatible" and candidate[: len(current)] == current:
         return
-    if policy == "restore-required" and current != candidate:
+    if (
+        policy == "restore-required"
+        and current != candidate
+        and candidate[: len(current)] == current
+    ):
         if first_release and not current:
             # A clean host has no predecessor database to restore.  The
             # controller keeps the declared policy visible, while this one
             # procedure still applies the initial schema directly.
             return
-        # A deployment never restores a database as an implicit side effect.
+        if not first_release:
+            # An existing installation has a protected pre-migration backup.
+            # Restore remains a separate, explicit recovery operation.
+            return
         raise ValueError("the confirmed migration policy requires restore")
     raise ValueError("migration policy does not match the candidate")
 
