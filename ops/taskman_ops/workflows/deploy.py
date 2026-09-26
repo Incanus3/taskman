@@ -169,7 +169,12 @@ def deploy(
                     ),
                 )
             policy = migration_policy or "no-change"
-            _validate_migration_policy(applied_versions, deployment_target.manifest.migrations, policy)
+            _validate_migration_policy(
+                applied_versions,
+                deployment_target.manifest.migrations,
+                policy,
+                allow_restore_required=True,
+            )
             downgrade_required, downgrade_evidence = _downgrade_acknowledgment(
                 remote, config, deployment_target, repo
             )
@@ -1027,6 +1032,8 @@ def _validate_migration_policy(
     current: tuple[MigrationFingerprint, ...] | tuple[int, ...],
     candidate: tuple[MigrationFingerprint, ...],
     policy: str,
+    *,
+    allow_restore_required: bool = False,
 ) -> None:
     if current and isinstance(current[0], MigrationFingerprint):
         applied = versions_from_filenames(tuple(item.filename for item in current))
@@ -1035,7 +1042,10 @@ def _validate_migration_policy(
     pending = _pending_migration_versions(applied, candidate)
     if not pending and policy in {"no-change", "backward-compatible"}:
         return
-    if pending and policy == "backward-compatible":
+    if pending and (
+        policy == "backward-compatible"
+        or (policy == "restore-required" and allow_restore_required)
+    ):
         return
     raise _safety("confirmed migration policy does not match completed release authority")
 

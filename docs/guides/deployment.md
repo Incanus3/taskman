@@ -365,6 +365,9 @@ Pending migrations require an explicit policy, including dry-run; omission is an
 ./ops/taskman deploy production --migration-policy restore-required
 ```
 
+Use `restore-required` when the prior release cannot use the migrated database. Deploy takes a
+protected pre-migration backup and applies the forward migrations; it does not restore automatically.
+Returning to that prior release requires restoring the matching backup and loses later writes.
 The declaration is a human compatibility decision. The target must cover every applied migration
 with consistent fingerprints. Partial-prefix provenance can support a safety backup without
 making that backup automatically restorable; unsupported or contradictory schema refuses.

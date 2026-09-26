@@ -477,12 +477,16 @@ without adopting unrelated database state. Nontransactional migration side effec
 a manual recovery caveat; do not claim this model makes such migrations replay-safe.
 
 No pending versions means `no-change` is the default. Additional versions on an existing database
-require explicit `--migration-policy backward-compatible`. `no-change` with pending versions
-refuses. `restore-required` with pending versions refuses with the existing restore-required reason;
-deploy never performs an implicit restore. A supplied `backward-compatible` declaration remains
-acceptable when a retry finds all versions already applied. A `restore-required` declaration with
-no pending versions is unnecessary and refuses as a mismatched policy. Missing required policy is
-exit 2; contradictory schema or policy is exit 10. Migrations are not reversed.
+require an explicit `--migration-policy backward-compatible` or `--migration-policy restore-required`
+declaration for deploy. The latter permits forward migration when the previous release cannot use
+the migrated schema; it does not perform an implicit restore. Deploy creates a protected
+pre-migration backup before applying pending versions. Returning to an incompatible prior release
+requires restoring that matching backup and loses writes made after it. Provisioning an unfinished
+first installation with applied migrations still requires `backward-compatible` for additional
+versions. `no-change` with pending versions refuses. A supplied `backward-compatible` declaration
+remains acceptable when a retry finds all versions already applied. A `restore-required`
+declaration with no pending versions is unnecessary and refuses as a mismatched policy. Missing
+required policy is exit 2; contradictory schema or policy is exit 10. Migrations are not reversed.
 
 For deploy and provision, compare the desired target against physical current, the last successful
 release when present, and installed migration targets named by unresolved backup protections.

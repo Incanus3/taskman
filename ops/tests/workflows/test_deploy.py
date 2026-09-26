@@ -106,6 +106,79 @@ def test_changed_migrations_require_explicit_policy_before_confirmation_or_uploa
     assert result.exit_status is ExitStatus.INVALID
 
 
+def test_restore_required_plans_pending_deploy_migrations_with_a_protected_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rejecting this declaration strands releases whose schema cannot roll back in place."""
+    from taskman_ops.workflows.deploy import deploy
+
+    migration = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+
+    result = deploy(
+        object(),
+        config(),
+        deployment_artifact(tmp_path, migrations=(migration,)),
+        migration_policy="restore-required",
+        dry_run=True,
+    )
+
+    assert result.exit_status is ExitStatus.OK
+    assert result.stage == "planned"
+    assert result.facts["migration_policy"] == "restore-required"
+    assert result.facts["pending_migration_versions"] == [20260905120000]
+    assert result.facts["planned_backup"] is True
+
+
+def test_restore_required_refuses_when_deploy_has_no_pending_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore-required is a declaration about a real forward schema transition."""
+    from taskman_ops.workflows.deploy import deploy
+
+    monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
+
+    result = deploy(
+        object(),
+        config(),
+        deployment_artifact(tmp_path),
+        migration_policy="restore-required",
+        dry_run=True,
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
+def test_restore_required_does_not_continue_partial_first_install_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partially migrated first installation still requires backward-compatible."""
+    from taskman_ops.workflows.deploy import deploy_first_release
+
+    first = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
+    second = MigrationFingerprint("20260906120000_add_projects.exs", "e" * 64)
+    partial = {
+        **_EXPECTED,
+        "selected_release_id": None,
+        "last_successful_selection_id": None,
+        "applied_migrations": (20260905120000,),
+        "scheduled_backup_sha256": None,
+    }
+    monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: partial)
+
+    result = deploy_first_release(
+        object(),
+        config(),
+        deployment_artifact(tmp_path, migrations=(first, second)),
+        migration_policy="restore-required",
+        dry_run=True,
+    )
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert result.stage == "safety-refused"
+
+
 def test_dry_run_observes_material_authority_but_does_not_need_confirmation_or_apply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

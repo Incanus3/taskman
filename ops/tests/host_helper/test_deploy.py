@@ -702,6 +702,61 @@ def test_converge_deployment_stages_backs_up_migrates_selects_and_verifies(tmp_p
     assert stat.S_IMODE((candidate / ".taskman-release.json").stat().st_mode) == 0o600
 
 
+def test_deploy_applies_restore_required_migrations_after_protecting_the_previous_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restore-required deploy still moves forward, but only after its recovery copy exists."""
+    request = _request(tmp_path, policy="restore-required")
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    result = deploy(request)
+
+    assert result.outcome == "succeeded", (result.message, result.state)
+    assert result.state["backup_id"] == "backup-00000000000000000000000000000001"
+    assert runtime.events == ["backup", "stop", "migration", "start", "verify"]
+    assert runtime.migrations == (20260905120000,)
+
+
+def test_deploy_refuses_restore_required_without_pending_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restore declaration cannot authorize an unrelated release replacement."""
+    request = _request(tmp_path, migrations=(), policy="restore-required")
+    _install_current(dict(request.paths))
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+
+    result = deploy(request)
+
+    assert result.outcome == "refused"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+
+
+def test_genesis_refuses_restore_required_for_a_partial_initial_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only backward-compatible may continue an already migrated first installation."""
+    request = _request(
+        tmp_path,
+        operation="genesis",
+        previous=None,
+        applied_migrations=(20260905120000,),
+        migrations=(MIGRATION, SECOND_MIGRATION),
+        policy="restore-required",
+    )
+    runtime = _Runtime((20260905120000,), migration_result=(20260905120000, 20260906120000))
+    _install_runtime(monkeypatch, runtime)
+
+    result = genesis(request)
+
+    assert result.outcome == "refused"
+    assert result.state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+
+
 def test_real_discovery_supplies_migrated_predecessor_authority_to_real_deploy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
