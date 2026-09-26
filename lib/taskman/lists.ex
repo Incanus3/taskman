@@ -166,57 +166,43 @@ defmodule Taskman.Lists do
     end
   end
 
+  @doc "Builds visible List nodes for one Project without persistence access."
+  @spec navigation_nodes(
+          Project.t(),
+          [TaskList.t()],
+          MapSet.t(pos_integer()),
+          selected_location(),
+          MapSet.t(),
+          MapSet.t()
+        ) :: [NavigationNode.t()]
   def navigation_nodes(
-        projects,
-        lists_by_project,
+        %Project{} = project,
+        task_lists,
+        direct_task_list_ids,
         selected_location,
-        expanded_node_ids
+        expanded_node_ids,
+        collapsed_node_ids \\ MapSet.new()
       )
-      when is_list(projects) and is_map(lists_by_project) do
-    Enum.flat_map(projects, fn project ->
-      task_lists = Map.get(lists_by_project, project.id, [])
-      children_by_parent = Enum.group_by(task_lists, & &1.parent_list_id)
-      forced_open_ids = forced_open_list_ids(task_lists, selected_location)
+      when is_list(task_lists) do
+    task_lists = Enum.filter(task_lists, &(&1.project_id == project.id))
+    children_by_parent = Enum.group_by(task_lists, & &1.parent_list_id)
 
-      selected_list_in_project? =
-        match?({:list, _}, selected_location) and
-          Enum.any?(task_lists, &(&1.id == elem(selected_location, 1)))
+    forced_open_ids =
+      task_lists
+      |> forced_open_list_ids(selected_location)
+      |> Enum.reject(&MapSet.member?(collapsed_node_ids, {:list, &1}))
+      |> MapSet.new()
 
-      project_selected? = selected_location == {:project, project.id}
-      project_expandable? = task_lists != []
-
-      project_node = %NavigationNode{
-        dom_id: "project-#{project.id}",
-        kind: :project,
-        depth: 1,
-        project: project,
-        task_list: nil,
-        expanded?:
-          project_expandable? &&
-            (MapSet.member?(expanded_node_ids, {:project, project.id}) or
-               selected_list_in_project? or
-               forced_open_ids != MapSet.new()),
-        expandable?: project_expandable?,
-        selected?: project_selected?
-      }
-
-      if project_node.expanded? do
-        [
-          project_node
-          | flatten_children(
-              children_by_parent,
-              project,
-              nil,
-              2,
-              selected_location,
-              expanded_node_ids,
-              forced_open_ids
-            )
-        ]
-      else
-        [project_node]
-      end
-    end)
+    flatten_children(
+      children_by_parent,
+      project,
+      direct_task_list_ids,
+      nil,
+      1,
+      selected_location,
+      expanded_node_ids,
+      forced_open_ids
+    )
   end
 
   defp forced_open_list_ids(task_lists, {:list, selected_id}) do
@@ -247,6 +233,7 @@ defmodule Taskman.Lists do
   defp flatten_children(
          children_by_parent,
          project,
+         direct_task_list_ids,
          parent_id,
          depth,
          selected_location,
@@ -265,12 +252,18 @@ defmodule Taskman.Lists do
         expandable? &&
           (forced_open? or MapSet.member?(expanded_node_ids, {:list, task_list.id}))
 
+      direct_tasks? = MapSet.member?(direct_task_list_ids, task_list.id)
+      list_kind = list_kind(expandable?, direct_tasks?)
+      icon = list_icon(list_kind, expanded?)
+
       node = %NavigationNode{
         dom_id: "list-#{task_list.id}",
         kind: :list,
         depth: depth,
         project: project,
         task_list: task_list,
+        list_kind: list_kind,
+        icon: icon,
         expanded?: expanded?,
         expandable?: expandable?,
         selected?: selected?
@@ -282,6 +275,7 @@ defmodule Taskman.Lists do
           | flatten_children(
               children_by_parent,
               project,
+              direct_task_list_ids,
               task_list.id,
               depth + 1,
               selected_location,
@@ -294,4 +288,13 @@ defmodule Taskman.Lists do
       end
     end)
   end
+
+  defp list_kind(false, _direct_tasks?), do: :leaf
+  defp list_kind(true, false), do: :child_only
+  defp list_kind(true, true), do: :mixed
+
+  defp list_icon(:leaf, _expanded?), do: "hero-list-bullet"
+  defp list_icon(:child_only, false), do: "hero-folder"
+  defp list_icon(:child_only, true), do: "hero-folder-open"
+  defp list_icon(:mixed, _expanded?), do: "hero-queue-list"
 end

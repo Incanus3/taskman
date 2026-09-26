@@ -14,6 +14,53 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     {:ok, conn: log_in_user(conn, user_fixture())}
   end
 
+  test "Project tasks link covers root Task routes but not a missing List route", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, root, _html} = live(conn, ~p"/projects/#{project.id}")
+    assert has_element?(root, "#project-tasks-link[aria-current='page']")
+
+    {:ok, new_task, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+    assert has_element?(new_task, "#project-tasks-link[aria-current='page']")
+
+    {:ok, missing, _html} = live(conn, ~p"/projects/#{project.id}/lists/999999999")
+    refute has_element?(missing, "#project-tasks-link[aria-current='page']")
+  end
+
+  test "neutral and missing Project routes omit the List tree", %{conn: conn} do
+    {:ok, neutral, _html} = live(conn, ~p"/")
+    refute has_element?(neutral, "#workspace-tree")
+
+    {:ok, missing, _html} = live(conn, "/projects/not-an-id")
+    refute has_element?(missing, "#workspace-tree")
+  end
+
+  test "root List button opens a form without navigating", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#add-root-list-#{project.id}") |> render_click()
+
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
+    assert has_element?(view, "#project-tasks-row #list-create-form-root")
+  end
+
+  test "Project tasks and List links preserve enabled descendant inclusion", %{conn: conn} do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+
+    {:ok, view, _html} =
+      live(conn, ~p"/projects/#{project.id}/lists/#{task_list.id}?include_children=true")
+
+    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
+    view |> element("#project-tasks-link") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}")
+    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
+
+    view |> element("#select-list-#{task_list.id}") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{task_list.id}")
+    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
+  end
+
   test "direct List route renders only direct Tasks for the selected List", %{conn: conn} do
     project = project_fixture(%{})
     list = list_fixture(project, nil, %{name: "Planning"})
@@ -52,7 +99,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     assert has_element?(list_view, "#location-path [aria-current='page']", "Launch")
   end
 
-  test "List descendant inclusion is URL-backed and toggles back to direct Tasks", %{conn: conn} do
+  test "List descendant inclusion toggles back to direct Tasks without navigation", %{conn: conn} do
     project = project_fixture(%{})
     list = list_fixture(project, nil, %{name: "Planning"})
     child = list_fixture(project, list, %{name: "Launch"})
@@ -63,7 +110,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     view |> element("#include-child-lists") |> render_click()
 
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
+    refute_patched(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
 
     assert has_element?(
              view,
@@ -74,7 +121,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     view |> element("#include-child-lists") |> render_click()
 
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}")
+    refute_patched(view, ~p"/projects/#{project.id}/lists/#{list.id}")
 
     assert has_element?(
              view,
@@ -172,13 +219,16 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
       assert has_element?(view, "#project-sidebar")
       assert has_element?(view, "#location-not-found")
-      assert has_element?(view, "#project-#{project.id}")
+      assert has_element?(view, "#project-tasks-link")
+      refute has_element?(view, "#project-tasks-link[aria-current='page']")
       refute has_element?(view, "#add-task")
       refute has_element?(view, "#task-modal")
     end
   end
 
-  test "new Task route and cancellation preserve the selected List and query", %{conn: conn} do
+  test "new Task route and cancellation preserve the selected List and mounted filters", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
     list = list_fixture(project, nil, %{name: "Planning"})
 
@@ -200,7 +250,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     view |> element("#cancel-task") |> render_click()
 
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}")
     refute has_element?(view, "#task-modal")
   end
 
@@ -218,7 +268,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert_patch(
       view,
-      ~p"/projects/#{project.id}/tasks/new?include_children=true&parent_task_id=#{source.id}"
+      ~p"/projects/#{project.id}/tasks/new?parent_task_id=#{source.id}"
     )
 
     assert has_element?(view, "#task-#{source.id}")
@@ -265,7 +315,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     |> form("#task-form", task: %{title: "Captured List child"})
     |> render_submit()
 
-    assert_patch(view, ~p"/projects/#{project.id}?include_children=true")
+    assert_patch(view, ~p"/projects/#{project.id}")
 
     created =
       Enum.find(Tasks.list_tasks_for_project(project), &(&1.title == "Captured List child"))
@@ -384,11 +434,13 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     view |> element("#task-modal-close") |> render_click()
 
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}")
     refute has_element?(view, "#task-modal")
   end
 
-  test "opening a Task from a List row preserves the List context and query", %{conn: conn} do
+  test "opening a Task from a List row preserves the List context and mounted filters", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
     list = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, list, %{title: "List task"})
@@ -400,7 +452,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert_patch(
       view,
-      ~p"/projects/#{project.id}/lists/#{list.id}/tasks/#{task.id}?include_children=true"
+      ~p"/projects/#{project.id}/lists/#{list.id}/tasks/#{task.id}"
     )
 
     assert has_element?(view, "#task-modal")
@@ -427,16 +479,17 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
   } do
     project = project_fixture(%{})
     root = list_fixture(project, nil, %{name: "Planning"})
-    _child = list_fixture(project, root, %{name: "Launch"})
+    child = list_fixture(project, root, %{name: "Launch"})
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    refute has_element?(view, "#list-#{root.id}")
-
-    view |> element("#toggle-project-#{project.id}") |> render_click()
-
     assert has_element?(view, "#list-#{root.id}")
-    assert has_element?(view, "#project-#{project.id}[aria-current='page']")
+    refute has_element?(view, "#list-#{child.id}")
+
+    view |> element("#toggle-list-#{root.id}") |> render_click()
+
+    assert has_element?(view, "#list-#{child.id}")
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
   end
 
   test "selected List ancestors remain visible in the flattened navigation", %{conn: conn} do
@@ -447,17 +500,49 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{leaf.id}")
 
-    assert has_element?(view, "#project-#{project.id}")
+    assert has_element?(view, "#project-tasks-link")
     assert has_element?(view, "#list-#{root.id}")
     assert has_element?(view, "#list-#{child.id}")
     assert has_element?(view, "#list-#{leaf.id}[aria-current='page']")
+  end
+
+  test "selected List ancestors can be collapsed and reopen for a new selection", %{conn: conn} do
+    project = project_fixture(%{})
+    root = list_fixture(project, nil, %{name: "Workstreams"})
+    product = list_fixture(project, root, %{name: "Product"})
+    selected = list_fixture(project, product, %{name: "Research"})
+    next_list = list_fixture(project, root, %{name: "Engineering"})
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{selected.id}")
+
+    assert has_element?(view, "#toggle-list-#{root.id}[aria-expanded='true']")
+    view |> element("#toggle-list-#{root.id}") |> render_click()
+
+    assert has_element?(view, "#toggle-list-#{root.id}[aria-expanded='false']")
+    refute has_element?(view, "#list-#{selected.id}")
+
+    view |> element("#toggle-list-#{root.id}") |> render_click()
+    assert has_element?(view, "#list-#{selected.id}[aria-current='page']")
+
+    view |> element("#toggle-list-#{product.id}") |> render_click()
+    assert has_element?(view, "#toggle-list-#{product.id}[aria-expanded='false']")
+    refute has_element?(view, "#list-#{selected.id}")
+
+    view |> element("#toggle-list-#{product.id}") |> render_click()
+    assert has_element?(view, "#list-#{selected.id}[aria-current='page']")
+
+    view |> element("#toggle-list-#{root.id}") |> render_click()
+    render_patch(view, ~p"/projects/#{project.id}/lists/#{next_list.id}")
+
+    assert has_element?(view, "#toggle-list-#{root.id}[aria-expanded='true']")
+    assert has_element?(view, "#list-#{next_list.id}[aria-current='page']")
   end
 
   test "creates a root List without changing the selected Project", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#add-list-project-#{project.id}") |> render_click()
+    view |> element("#add-root-list-#{project.id}") |> render_click()
     assert has_element?(view, "#list-create-form-root")
 
     view
@@ -466,7 +551,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     [task_list] = Lists.list_lists_for_project(project)
     assert task_list.name == "Planning"
-    assert has_element?(view, "#project-#{project.id}[aria-current='page']")
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
     assert has_element?(view, "#list-#{task_list.id}")
     refute has_element?(view, "#list-create-form-root")
   end
@@ -476,7 +561,6 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     root = list_fixture(project, nil, %{name: "Planning"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     view |> element("#add-child-list-#{root.id}") |> render_click()
     assert has_element?(view, "#list-create-form-#{root.id}")
 
@@ -486,7 +570,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     [^root, child] = Lists.list_lists_for_project(project)
     assert child.parent_list_id == root.id
-    assert has_element?(view, "#project-#{project.id}[aria-current='page']")
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
     assert has_element?(view, "#list-#{child.id}")
     assert has_element?(view, "#toggle-list-#{root.id}[aria-expanded='true']")
   end
@@ -496,7 +580,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     _existing = list_fixture(project, nil, %{name: "Planning"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#add-list-project-#{project.id}") |> render_click()
+    view |> element("#add-root-list-#{project.id}") |> render_click()
 
     for name <- ["   ", String.duplicate("x", 256), "planning"] do
       view
@@ -516,7 +600,6 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     _existing = list_fixture(project, parent, %{name: "Review"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#toggle-project-#{project.id}") |> render_click()
     view |> element("#add-child-list-#{parent.id}") |> render_click()
 
     view
@@ -573,7 +656,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     assert has_element?(view, "#list-#{root.id}[aria-current='page']")
   end
 
-  test "a root List action uses its owning Project and preserves another selection", %{
+  test "a forged root List action cannot target another Project", %{
     conn: conn
   } do
     selected_project = project_fixture(%{})
@@ -581,24 +664,18 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{selected_project.id}")
 
-    view |> element("#add-list-project-#{target_project.id}") |> render_click()
+    render_click(view, "open_list_form", %{
+      "kind" => "new",
+      "parent-id" => "",
+      "project-id" => Integer.to_string(target_project.id)
+    })
 
-    assert has_element?(view, "#project-#{target_project.id} #list-create-form-root")
-    assert has_element?(view, "#project-#{selected_project.id}[aria-current='page']")
+    render_click(view, "save_list", %{"list" => %{"name" => "Forged"}})
 
-    assert Enum.count(
-             LazyHTML.query(LazyHTML.from_fragment(render(view)), "#list-create-form-root")
-           ) ==
-             1
-
-    view
-    |> form("#list-create-form-root", list: %{name: "Target root"})
-    |> render_submit()
-
-    assert [%{project_id: project_id}] = Lists.list_lists_for_project(target_project)
-    assert project_id == target_project.id
+    refute has_element?(view, "#list-create-form-root")
+    assert has_element?(view, "#project-tasks-link[aria-current='page']")
+    assert Lists.list_lists_for_project(target_project) == []
     assert Lists.list_lists_for_project(selected_project) == []
-    assert has_element?(view, "#project-#{selected_project.id}[aria-current='page']")
   end
 
   test "malformed, stale, and cross-Project navigation IDs do not change expansion state", %{
@@ -618,7 +695,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
       "project-id" => Integer.to_string(project.id)
     })
 
-    refute has_element?(view, "#list-#{root.id}")
+    assert has_element?(view, "#list-#{root.id}")
 
     render_click(view, "toggle_navigation_node", %{
       "kind" => "project",
@@ -634,11 +711,10 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
       "project-id" => Integer.to_string(project.id)
     })
 
-    refute has_element?(view, "#list-#{root.id}")
+    assert has_element?(view, "#list-#{root.id}")
     refute has_element?(view, "#list-#{other_root.id}")
 
-    view |> element("#select-project-#{other_project.id}") |> render_click()
-    view |> element("#toggle-project-#{other_project.id}") |> render_click()
+    render_patch(view, ~p"/projects/#{other_project.id}")
     assert has_element?(view, "#list-#{other_root.id}")
     refute has_element?(view, "#list-#{other_child.id}")
 
@@ -652,7 +728,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     refute has_element?(view, "#list-create-form-#{other_root.id}")
   end
 
-  test "renaming a non-selected Project List preserves the selected location path", %{conn: conn} do
+  test "navigating between Projects shows only each Project's Lists", %{conn: conn} do
     selected_project = project_fixture(%{})
     selected_root = list_fixture(selected_project, nil, %{name: "Selected"})
     selected_child = list_fixture(selected_project, selected_root, %{name: "Context"})
@@ -662,16 +738,13 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     {:ok, view, _html} =
       live(conn, ~p"/projects/#{selected_project.id}/lists/#{selected_child.id}")
 
-    view |> element("#toggle-project-#{target_project.id}") |> render_click()
-    view |> element("#rename-list-#{target_root.id}") |> render_click()
-
-    view
-    |> form("#list-rename-form-#{target_root.id}", list: %{name: "Renamed target"})
-    |> render_submit()
-
     assert has_element?(view, "#location-heading", "Context")
     assert has_element?(view, "#location-path", "Selected / Context")
     assert has_element?(view, "#list-#{selected_child.id}[aria-current='page']")
-    assert has_element?(view, "#list-#{target_root.id}", "Renamed target")
+    refute has_element?(view, "#list-#{target_root.id}")
+
+    render_patch(view, ~p"/projects/#{target_project.id}")
+    assert has_element?(view, "#list-#{target_root.id}", "Target")
+    refute has_element?(view, "#list-#{selected_root.id}")
   end
 end

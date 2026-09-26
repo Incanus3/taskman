@@ -17,12 +17,95 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/")
 
     assert has_element?(view, "#project-sidebar")
-    assert has_element?(view, "#project-form")
+    assert has_element?(view, "#new-project-button")
     assert has_element?(view, "#main-panel[data-state='no-selection']")
+  end
+
+  test "remembered Project restores only after preferences hydrate", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/")
+    params = %{"project_id" => Integer.to_string(project.id)}
+
+    render_hook(view, "restore_remembered_project", params)
+    refute_patched(view, ~p"/projects/#{project.id}")
+    assert has_element?(view, "#main-panel[data-state='no-selection']")
+
+    render_hook(view, "hydrate_task_table_preferences", %{
+      "include_children" => true,
+      "statuses" => ["pending"]
+    })
+
+    render_hook(view, "restore_remembered_project", params)
+    assert_patch(view, ~p"/projects/#{project.id}")
+    assert has_element?(view, "#main-panel[data-state='selected']")
+    assert view_assigns(view).workspace.include_children?
+    assert view_assigns(view).listing.visible_statuses == [:pending]
+
+    render_hook(view, "restore_remembered_project", params)
+    refute_patched(view, ~p"/projects/#{project.id}")
+  end
+
+  test "malformed and stale remembered IDs leave root unselected", %{conn: conn} do
+    for id <- ["", "0", "01", "-1", "1oops", "not-a-project", 1, "999999999"] do
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_hook(view, "hydrate_task_table_preferences", %{})
+      render_hook(view, "restore_remembered_project", %{"project_id" => id})
+      assert has_element?(view, "#main-panel[data-state='no-selection']")
+      refute_patched(view, "/projects/999999999")
+    end
+  end
+
+  test "a stale restore attempt does not accept a later duplicate", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _html} = live(conn, ~p"/")
+    render_hook(view, "hydrate_task_table_preferences", %{})
+
+    render_hook(view, "restore_remembered_project", %{"project_id" => "999999999"})
+    render_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
+    assert has_element?(view, "#main-panel[data-state='no-selection']")
+    refute_patched(view, ~p"/projects/#{project.id}")
+  end
+
+  test "explicit Project and missing List routes reject remembered selection", %{conn: conn} do
+    remembered = project_fixture(%{})
+    explicit = project_fixture(%{})
+
+    for path <- [~p"/projects/#{explicit.id}", ~p"/projects/#{explicit.id}/lists/999999999"] do
+      {:ok, view, _html} = live(conn, path)
+      render_hook(view, "hydrate_task_table_preferences", %{})
+      render_hook(view, "restore_remembered_project", %{"project_id" => "#{remembered.id}"})
+
+      assert has_element?(view, "#project-memory[data-project-id='#{explicit.id}']")
+      refute_patched(view, ~p"/projects/#{remembered.id}")
+    end
+  end
+
+  test "root URL filter snapshots survive remembered Project patch", %{conn: conn} do
+    project = project_fixture(%{})
+
+    for {path, expected_include, expected_statuses} <- [
+          {"/?include_children=false", false, [:done]},
+          {"/?statuses=", true, []}
+        ] do
+      {:ok, view, _html} = live(conn, path)
+
+      render_hook(view, "hydrate_task_table_preferences", %{
+        "route_key" => path,
+        "include_children" => true,
+        "statuses" => ["done"]
+      })
+
+      render_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
+      assert_patch(view, ~p"/projects/#{project.id}")
+      assert view_assigns(view).workspace.include_children? == expected_include
+      assert view_assigns(view).listing.visible_statuses == expected_statuses
+    end
   end
 
   test "creates a Project and selects it in the URL", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#new-project-button") |> render_click()
 
     view
     |> form("#project-form", project: %{name: "Taskman"})
@@ -31,8 +114,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert [project] = Taskman.Projects.list_projects()
     assert project.name == "Taskman"
     assert_patch(view, ~p"/projects/#{project.id}")
-    assert has_element?(view, "#project-#{project.id}[aria-current='page']")
-    assert has_element?(view, "#add-list-project-#{project.id}")
+    assert has_element?(view, "#project-selector-name", "Taskman")
+    assert has_element?(view, "#add-root-list-#{project.id}")
     assert has_element?(view, "#tasks")
   end
 
@@ -44,6 +127,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#project-not-found")
     refute has_element?(view, "#add-task")
 
+    view |> element("#project-selector-toggle") |> render_click()
     view |> element("#select-project-#{project.id}") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     assert has_element?(view, "#tasks")
@@ -72,6 +156,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#tasks > #tasks-#{task_a.id}")
     refute has_element?(view, "#tasks > #tasks-#{task_b.id}")
 
+    view |> element("#project-selector-toggle") |> render_click()
     view |> element("#select-project-#{project_b.id}") |> render_click()
 
     assert_patch(view, ~p"/projects/#{project_b.id}")
@@ -556,7 +641,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert_patch(
       view,
-      ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{root.id}?include_children=true"
+      ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{root.id}"
     )
 
     assert has_element?(view, "#task-hierarchy-link-#{root.id}[aria-current='true']")
@@ -713,6 +798,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
   test "blank Project name renders an inline name error", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#new-project-button") |> render_click()
 
     view
     |> form("#project-form", project: %{name: ""})
@@ -1015,5 +1102,10 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-form [data-role='field-error']")
     assert has_element?(view, "#task-description", "Preserve this draft")
     assert Tasks.list_tasks_for_project(project) == [parent]
+  end
+
+  defp view_assigns(view) do
+    %{socket: socket} = :sys.get_state(view.pid)
+    socket.assigns
   end
 end

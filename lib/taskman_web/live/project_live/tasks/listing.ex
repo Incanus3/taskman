@@ -5,12 +5,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
+  alias TaskmanWeb.ProjectLive.TaskTablePreferences
 
   @events [
     "toggle_task_status_filter",
     "close_task_status_filter",
     "filter_task_statuses",
-    "restore_task_statuses",
     "sort_tasks"
   ]
 
@@ -59,7 +59,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
     @spec apply_statuses(t(), [term()]) :: t()
     def apply_statuses(%__MODULE__{} = state, statuses) when is_list(statuses) do
-      visible_statuses = normalize_statuses(statuses)
+      visible_statuses = TaskTablePreferences.normalize_statuses(statuses)
 
       %{
         state
@@ -95,11 +95,6 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
     @spec clear_results(t()) :: t()
     def clear_results(%__MODULE__{} = state), do: put_results(state, [], false)
 
-    defp normalize_statuses(statuses) do
-      Task.statuses()
-      |> Enum.filter(fn status -> Atom.to_string(status) in statuses end)
-    end
-
     defp status_filter_form(statuses) do
       to_form(%{"statuses" => Enum.map(statuses, &Atom.to_string/1)}, as: :status_filter)
     end
@@ -124,18 +119,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   def handle_event("filter_task_statuses", %{"status_filter" => params}, socket)
       when is_map(params) do
     state = State.apply_statuses(socket.assigns.listing, Map.get(params, "statuses", []))
-    {:noreply, socket |> assign(:listing, state) |> refresh()}
+    {:noreply, socket |> assign(:listing, state) |> refresh() |> TaskTablePreferences.changed()}
   end
 
   def handle_event("filter_task_statuses", _params, socket), do: {:noreply, socket}
-
-  def handle_event("restore_task_statuses", %{"statuses" => statuses}, socket)
-      when is_list(statuses) do
-    state = State.apply_statuses(socket.assigns.listing, statuses)
-    {:noreply, socket |> assign(:listing, state) |> refresh()}
-  end
-
-  def handle_event("restore_task_statuses", _params, socket), do: {:noreply, socket}
 
   def handle_event("sort_tasks", %{"field" => field}, socket) do
     case Map.fetch(@sort_fields, field) do

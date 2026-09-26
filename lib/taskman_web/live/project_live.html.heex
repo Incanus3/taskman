@@ -2,6 +2,7 @@
   flash={@flash}
   current_scope={@current_scope}
   current_user={@current_user}
+  content_scroll?={false}
 >
   <div
     id="taskman-workspace"
@@ -10,65 +11,111 @@
   >
     <div
       id="workspace-content"
+      phx-hook="TaskmanWeb.ProjectLive.TaskTablePreferences"
+      data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
+      data-preferences-hydrated={to_string(@preferences_hydrated?)}
       inert={not is_nil(RecoveryWorkflow.view(@recovery))}
       class="h-full"
     >
-      <div class="grid min-h-full grid-cols-[minmax(0,1fr)] lg:grid-cols-[19rem_minmax(0,1fr)]">
-        <aside id="project-sidebar" class="border-r border-slate-800 bg-slate-950 text-slate-100">
-          <div class="flex h-full flex-col p-6">
-            <div class="mb-5 flex items-center gap-3">
-              <div class="grid size-10 place-items-center rounded-xl bg-indigo-500 text-white shadow-lg shadow-indigo-950/30">
-                <.icon name="hero-check-circle" class="size-6" />
-              </div>
-              <div>
-                <p class="text-base font-semibold tracking-tight">Taskman</p>
-                <p class="text-xs text-slate-400">Projects, Lists, and Tasks</p>
-              </div>
+      <div
+        id="project-memory"
+        phx-hook="TaskmanWeb.ProjectLive.ProjectMemory"
+        data-project-id={@workspace.selected_project && @workspace.selected_project.id}
+        data-root-route={to_string(@live_action == :index)}
+        data-preferences-hydrated={to_string(@preferences_hydrated?)}
+        hidden
+      >
+      </div>
+      <div
+        id="workspace-layout"
+        class="relative grid h-full min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden lg:grid-cols-[19rem_minmax(0,1fr)]"
+      >
+        <button
+          :if={@workspace.mobile_sidebar_open?}
+          id="project-sidebar-backdrop"
+          type="button"
+          phx-click="close_mobile_sidebar"
+          aria-label="Close Project navigation"
+          class="absolute inset-0 z-40 bg-slate-950/60 lg:hidden"
+        />
+        <aside
+          id="project-sidebar"
+          phx-hook="TaskmanWeb.ProjectLive.MobileProjectDrawer"
+          data-open={to_string(@workspace.mobile_sidebar_open?)}
+          phx-window-keydown={@workspace.mobile_sidebar_open? && "close_mobile_sidebar"}
+          phx-key="escape"
+          class={[
+            "absolute inset-y-0 left-0 z-50 w-[min(19rem,calc(100vw-3rem))] min-h-0 overflow-hidden border-r border-slate-800 bg-slate-950 text-slate-100 lg:static lg:block lg:w-auto",
+            !@workspace.mobile_sidebar_open? && "hidden"
+          ]}
+        >
+          <div class="flex h-full min-h-0 flex-col p-6">
+            <div class="mb-4 flex shrink-0 items-center justify-between lg:hidden">
+              <span class="text-sm font-semibold text-slate-200">Projects</span>
+              <button
+                id="project-sidebar-close"
+                type="button"
+                phx-click="close_mobile_sidebar"
+                aria-label="Close Project navigation"
+                data-tooltip=""
+                class="grid size-8 place-items-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              >
+                <.icon name="hero-x-mark" class="size-5" />
+              </button>
             </div>
+            <ProjectSelector.selector
+              selected_project={@workspace.selected_project}
+              projects={@streams.projects}
+              projects_empty?={@projects_empty?}
+              open?={@workspace.project_selector_open?}
+              inert?={not is_nil(RecoveryWorkflow.view(@recovery))}
+            />
 
             <WorkspaceNavigation.tree
               navigation_nodes={@streams.navigation_nodes}
+              selected_project={@workspace.selected_project}
+              selected_list={@workspace.selected_list}
+              location_not_found?={@workspace.location_not_found?}
               include_children?={@workspace.include_children?}
               list_edit={@workspace.list_edit}
             />
 
-            <.form
-              for={@workspace.project_form}
-              id="project-form"
-              phx-change="validate_project"
-              phx-submit="save_project"
-              class="mt-auto flex flex-col gap-3 border-t border-white/10 pt-5"
-            >
-              <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                New Project
-              </p>
-              <.input
-                field={@workspace.project_form[:name]}
-                type="text"
-                label="Name"
-                autocomplete="off"
-                class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10"
-                error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/10"
-              />
+            <div class="mt-auto shrink-0 border-t border-white/10 pt-5">
               <button
-                type="submit"
-                phx-disable-with="Creating…"
-                class="w-full rounded-xl bg-indigo-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
+                id="new-project-button"
+                type="button"
+                phx-click="open_project_new"
+                class="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               >
-                Create Project
+                <.icon name="hero-plus" class="size-4" /> New Project
               </button>
-            </.form>
+            </div>
           </div>
         </aside>
 
         <main
           id="main-panel"
           data-state={Workspace.panel_state(@workspace)}
-          class="min-w-0 bg-slate-900"
+          class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-900"
         >
           <div
+            id="workspace-mobile-header"
+            class="flex shrink-0 items-center border-b border-slate-800 bg-slate-950 px-4 py-2 lg:hidden"
+          >
+            <button
+              id="project-sidebar-toggle"
+              type="button"
+              phx-click="toggle_mobile_sidebar"
+              aria-controls="project-sidebar"
+              aria-expanded={to_string(@workspace.mobile_sidebar_open?)}
+              class="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            >
+              <.icon name="hero-bars-3" class="size-5" /> Projects
+            </button>
+          </div>
+          <div
             :if={!@workspace.selected_project && !@workspace.project_not_found?}
-            class="grid min-h-full place-items-center px-6 py-16 text-center"
+            class="grid min-h-0 flex-1 place-items-center px-6 py-16 text-center"
           >
             <div class="max-w-md">
               <.icon name="hero-arrow-left" class="mx-auto mb-5 size-8 text-indigo-500 lg:hidden" />
@@ -84,7 +131,7 @@
           <section
             :if={@workspace.project_not_found?}
             id="project-not-found"
-            class="grid min-h-full place-items-center px-6 py-16 text-center"
+            class="grid min-h-0 flex-1 place-items-center px-6 py-16 text-center"
           >
             <div class="max-w-md">
               <.icon name="hero-folder-minus" class="mx-auto mb-5 size-10 text-slate-600" />
@@ -100,7 +147,7 @@
           <section
             :if={@workspace.location_not_found? && @workspace.selected_project}
             id="location-not-found"
-            class="grid min-h-full place-items-center px-6 py-16 text-center"
+            class="grid min-h-0 flex-1 place-items-center px-6 py-16 text-center"
           >
             <div class="max-w-md">
               <.icon name="hero-list-bullet" class="mx-auto mb-5 size-10 text-slate-600" />
@@ -116,9 +163,9 @@
 
           <section
             :if={@workspace.selected_project && !@workspace.location_not_found?}
-            class="p-6"
+            class="flex min-h-0 flex-1 flex-col p-6"
           >
-            <header class="mb-5 flex items-center justify-between gap-4">
+            <header class="mb-5 flex shrink-0 flex-col items-stretch gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div class="min-w-0">
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
                   {if(@workspace.selected_list, do: "List", else: "Project")}
@@ -153,16 +200,17 @@
                   <% end %>
                 </h1>
               </div>
-              <div class="flex shrink-0 items-center gap-3">
-                <.link
+              <div class="flex min-w-0 flex-wrap items-center gap-2 lg:shrink-0 lg:gap-3">
+                <ShareTaskView.control
+                  id="share-task-view"
+                  include_children?={@workspace.include_children?}
+                  visible_statuses={@listing.visible_statuses}
+                  hydrated?={@preferences_hydrated?}
+                />
+                <button
                   id="include-child-lists"
-                  patch={
-                    Paths.browse_path(
-                      @workspace.selected_project,
-                      @workspace.selected_list,
-                      !@workspace.include_children?
-                    )
-                  }
+                  type="button"
+                  phx-click="toggle_include_children"
                   aria-pressed={to_string(@workspace.include_children?)}
                   data-state={if(@workspace.include_children?, do: "on", else: "off")}
                   class={[
@@ -192,7 +240,7 @@
                       ]}
                     />
                   </span>
-                </.link>
+                </button>
                 <Table.status_filter
                   form={@listing.status_filter_form}
                   visible_statuses={@listing.visible_statuses}
@@ -215,17 +263,20 @@
               </div>
             </header>
 
-            <div class={[
-              "rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:gap-x-0.5",
-              @workspace.include_children? &&
-                "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
-              !@workspace.include_children? &&
-                "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
-            ]}>
+            <div
+              id="task-list-scroll"
+              class={[
+                "min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:content-start sm:gap-x-0.5",
+                @workspace.include_children? &&
+                  "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
+                !@workspace.include_children? &&
+                  "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
+              ]}
+            >
               <div
                 :if={!@listing.tasks_empty?}
                 id="task-table-header"
-                class="hidden gap-3 border-b border-slate-700 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
+                class="sticky top-0 z-20 hidden gap-3 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
               >
                 <Table.sort_header
                   id="task-number-header"
@@ -318,6 +369,11 @@
         </main>
       </div>
     </div>
+
+    <ProjectSelector.editor
+      edit={@workspace.project_edit}
+      inert?={not is_nil(RecoveryWorkflow.view(@recovery))}
+    />
 
     <div
       :if={RecoveryWorkflow.view(@recovery)}
@@ -431,7 +487,25 @@
           end
         }
         task_move={@task_move}
-      />
+      >
+        <:header_actions>
+          <ShareTaskView.control
+            id="task-modal-share-task-view"
+            label="Share Task"
+            share_path={
+              Paths.task_detail_path(
+                @workspace.selected_project,
+                @workspace.selected_list,
+                @editing.selected_task,
+                @workspace.include_children?
+              )
+            }
+            include_children?={@workspace.include_children?}
+            visible_statuses={@listing.visible_statuses}
+            hydrated?={@preferences_hydrated?}
+          />
+        </:header_actions>
+      </Detail.detail>
     </.modal>
 
     <.modal
@@ -532,7 +606,7 @@
         },
 
         narrowOverlayExpanded() {
-          return !window.matchMedia("(min-width: 80rem)").matches && this.currentExpanded()
+          return !window.matchMedia("(min-width: 48rem)").matches && this.currentExpanded()
         },
 
         rememberAndApply(expanded) {

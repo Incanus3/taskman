@@ -17,6 +17,7 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :browse_path, :any, default: nil
   attr :task_move, Move, required: true
   attr :recovery?, :boolean, default: false
+  slot :header_actions
 
   def detail(assigns) do
     assigns =
@@ -49,6 +50,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             aria-controls="task-hierarchy"
             aria-expanded="false"
             aria-label="Expand task hierarchy"
+            data-tooltip=""
             class="grid size-9 shrink-0 place-items-center rounded-lg text-slate-300 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
           >
             <span data-hierarchy-icon="expand">
@@ -169,15 +171,18 @@ defmodule TaskmanWeb.Tasks.Detail do
                     </li>
                   </ol>
                 </nav>
-                <button
-                  id={"move-task-detail-button-#{@task.id}"}
-                  type="button"
-                  phx-click={JS.push_focus() |> JS.push("open_move_task")}
-                  phx-value-task-id={@task.id}
-                  class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800/90 px-3 py-1.5 text-sm font-semibold text-slate-100 shadow-sm transition hover:border-slate-500 hover:bg-slate-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
-                >
-                  <.icon name="hero-arrows-right-left" class="size-4" /> Move Task
-                </button>
+                <div id="task-detail-actions" class="flex shrink-0 items-center gap-2">
+                  {render_slot(@header_actions)}
+                  <button
+                    id={"move-task-detail-button-#{@task.id}"}
+                    type="button"
+                    phx-click={JS.push_focus() |> JS.push("open_move_task")}
+                    phx-value-task-id={@task.id}
+                    class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800/90 px-3 py-1.5 text-sm font-semibold text-slate-100 shadow-sm transition hover:border-slate-500 hover:bg-slate-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                  >
+                    <.icon name="hero-arrows-right-left" class="size-4" /> Move Task
+                  </button>
+                </div>
               </div>
               <div
                 :if={Move.active_for?(@task_move, @task.id, :detail)}
@@ -362,6 +367,7 @@ defmodule TaskmanWeb.Tasks.Detail do
           phx-value-task-id={@node.task.id}
           aria-expanded={to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))}
           aria-label={"Toggle #{String.trim(@node.task.title || "")}"}
+          data-tooltip=""
           class="task-hierarchy-disclosure"
         >
           <.icon

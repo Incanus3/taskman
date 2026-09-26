@@ -12,7 +12,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
   test "location transitions keep found and not-found state mutually consistent" do
     project = project_fixture(%{})
     task_list = list_fixture(project)
-    state = State.new(:project_form)
+    state = State.new()
 
     selected = State.select_location(state, project, task_list, true, [task_list])
     assert selected.selected_project == project
@@ -33,7 +33,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
 
   test "node and List-edit transitions remain inside workspace state" do
     project = project_fixture(%{})
-    state = State.new(:project_form)
+    state = State.new()
     list_edit = ListEdit.open_new(project, nil)
 
     state = state |> State.toggle_node({:project, project.id}) |> State.put_list_edit(list_edit)
@@ -45,7 +45,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
   test "selected-location reconciliation returns canonical Lists without touching downstream state" do
     project = project_fixture(%{})
     task_list = list_fixture(project)
-    state = State.select_location(State.new(:project_form), project, task_list, true, [task_list])
+    state = State.select_location(State.new(), project, task_list, true, [task_list])
     socket = reconciliation_socket(state)
     {:ok, renamed} = Taskman.Lists.rename_list(project, task_list, %{name: "Renamed"})
 
@@ -70,7 +70,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
     unavailable_list = list_fixture(other_project)
 
     state =
-      State.select_location(State.new(:project_form), project, unavailable_list, true, [
+      State.select_location(State.new(), project, unavailable_list, true, [
         unavailable_list
       ])
 
@@ -95,7 +95,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
   test "Project and unrelated List notifications require no selected-location refresh" do
     project = project_fixture(%{})
     other_project = project_fixture(%{})
-    state = State.select_location(State.new(:project_form), project, nil, false, [])
+    state = State.select_location(State.new(), project, nil, false, [])
     socket = reconciliation_socket(state)
 
     for event <- [

@@ -291,6 +291,29 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
            )
   end
 
+  @tag :tmp_dir
+  test "Bash and Fish complete Project identity options and icon values", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash_path, Completions.bash())
+    File.write!(fish_path, Completions.fish())
+
+    for option <- ["--name", "--description", "--icon", "--color"] do
+      assert option in bash_query(bash_path, ["taskman", "projects", "update", "7", "--"])
+      assert option in fish_query(fish_path, "taskman projects update 7 --")
+    end
+
+    assert "rocket-launch" in bash_query(bash_path, [
+             "taskman",
+             "projects",
+             "create",
+             "--icon",
+             ""
+           ])
+
+    assert "rocket-launch" in fish_query(fish_path, "taskman projects create --icon ")
+  end
+
   defp fish_query(path, command_line) do
     script = "source #{shell_quote(path)}; complete -C #{shell_quote(command_line)}"
     {output, status} = System.cmd("fish", ["-c", script], stderr_to_stdout: true)

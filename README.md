@@ -41,6 +41,8 @@ Local source development remains supported as described below.
    - Password for both: `taskman-dev`
 
    The seed script creates missing development accounts without overwriting existing accounts.
+   It replaces existing Projects, Lists, and Tasks with three example Projects, seven Lists, and
+   30 Tasks. Two example Projects are empty; Taskman Demo contains the Lists and Tasks.
    To create another local administrator, run `mix taskman.accounts.create-admin` in another
    terminal.
 

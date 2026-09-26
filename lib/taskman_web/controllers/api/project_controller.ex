@@ -4,6 +4,7 @@ defmodule TaskmanWeb.API.ProjectController do
   action_fallback TaskmanWeb.API.FallbackController
 
   alias Taskman.Projects
+  alias Taskman.Projects.Project
   alias TaskmanWeb.API.Params
   alias TaskmanWeb.API.Representation
 
@@ -39,4 +40,17 @@ defmodule TaskmanWeb.API.ProjectController do
         {:error, :invalid_request}
     end
   end
+
+  def update(conn, %{"project_id" => project_id, "project" => attrs}) when is_map(attrs) do
+    with {:ok, id} <- Params.positive_id(project_id),
+         %Project{} = project <- Projects.get_project(id),
+         {:ok, updated} <- Projects.update_project(project, attrs) do
+      json(conn, %{data: Representation.project(updated)})
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def update(_conn, _params), do: {:error, :invalid_request}
 end

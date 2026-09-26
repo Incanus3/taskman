@@ -200,8 +200,9 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
           task_fixture(project, %{title: "Persisted", status: :pending})
         end
 
-      {:ok, view, _} =
-        live(conn, Paths.task_detail_path(project, backdrop, task, include_children?))
+      path = Paths.task_detail_path(project, backdrop, task, include_children?)
+      path = if include_children?, do: path <> "?include_children=true", else: path
+      {:ok, view, _} = live(conn, path)
 
       view |> element("#task-status-filter-button") |> render_click()
 

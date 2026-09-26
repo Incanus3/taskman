@@ -44,7 +44,7 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
 
     assert {:ok, workspace, _html} = live(signed_in, "/projects/#{shared_project.id}")
     assert has_element?(workspace, "#authenticated-navigation")
-    assert has_element?(workspace, "#project-#{shared_project.id}", shared_project.name)
+    assert has_element?(workspace, "#project-selector-name", shared_project.name)
 
     assert {:ok, settings, _html} = live(signed_in, "/account/settings")
 

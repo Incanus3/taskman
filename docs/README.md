@@ -19,13 +19,14 @@
 - [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
 - [Task detail and navigation](specs/2026-08-24-task-detail-navigation-design.md)
-- [Lists and nested organization](specs/2026-08-26-lists-nested-organization-design.md)
+- [Lists and nested organization (navigation/filter presentation superseded)](specs/2026-08-26-lists-nested-organization-design.md)
 - [API, CLI, and agent skill (Project representation requirements superseded)](specs/2026-08-29-api-cli-agent-skill-design.md)
 - [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [ProjectLive workflow decomposition (implemented)](specs/2026-09-03-project-live-decomposition-design.md)
 - [Missing List recovery (implemented and operator accepted)](specs/2026-09-18-missing-list-recovery-design.md)
+- [Active Project selector (implemented and operator accepted)](specs/2026-09-22-active-project-selector-design.md)
 - [Projects without primary directories (implemented and operator accepted)](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
@@ -62,6 +63,7 @@
 
 ## Archive
 
+- [Active Project selector implementation plan](archive/plans/2026-09-25-active-project-selector.md)
 - [Projects without primary directories implementation plan](archive/plans/2026-09-23-projects-without-primary-directories.md)
 - [Missing List recovery implementation plan](archive/plans/2026-09-18-missing-list-recovery.md)
 - [ProjectLive workflow decomposition implementation plan](archive/plans/2026-09-04-project-live-decomposition.md)

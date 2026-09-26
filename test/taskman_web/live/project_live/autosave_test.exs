@@ -373,7 +373,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view |> element("#task-modal-close") |> render_click()
 
-    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}?include_children=true")
+    assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "After"
   end
 

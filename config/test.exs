@@ -23,6 +23,8 @@ config :taskman, Taskman.Repo,
 # you can enable the server option below.
 config :taskman, TaskmanWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
+  # The isolated browser test server binds a random loopback port.
+  check_origin: false,
   secret_key_base: "wiizx8YjTFa3W5GyO4F8FX1a1b5RXHqAPDRz9slkV8Kt2Eu3eCh9gGNuFgMtbAVO",
   server: false
 

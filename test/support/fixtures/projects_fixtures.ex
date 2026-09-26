@@ -11,4 +11,17 @@ defmodule Taskman.ProjectsFixtures do
     {:ok, project} = Taskman.Projects.create_project(attrs)
     project
   end
+
+  def project_response_fixture(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "id" => 7,
+        "name" => "CLI",
+        "description" => "",
+        "icon" => "briefcase",
+        "color" => "#6366F1"
+      },
+      Map.new(overrides)
+    )
+  end
 end

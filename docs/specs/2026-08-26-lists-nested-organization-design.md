@@ -1,7 +1,13 @@
 # Lists and Nested Organization Design
 
-**Status:** Approved  
+**Status:** Implemented; navigation presentation and filter persistence superseded by the active Project selector
 **Date:** 2026-08-26
+
+The Project-and-Lists tree and URL-backed descendant-filter contract below describe the original
+Lists slice. The implemented [active Project selector design](2026-09-22-active-project-selector-design.md)
+supersedes those presentation and filter contracts with a Lists-only tree, semantic List icons,
+browser-stored filters during ordinary navigation, and explicit filter-bearing Share links. List
+hierarchy, location ownership, and Task movement rules remain in force.
 
 ## Context
 

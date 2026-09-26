@@ -9,6 +9,7 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(projects list),
              ~w(projects show),
              ~w(projects create),
+             ~w(projects update),
              ~w(lists list),
              ~w(lists show),
              ~w(lists create),
@@ -229,5 +230,48 @@ defmodule Taskman.CLI.Execution.ParserTest do
 
     assert {:error, _message, ["tasks", "move"]} =
              Parser.parse(~w(tasks move --project 7 42 --to-list 11 --to-project-root), %{})
+  end
+
+  test "Project create accepts identity metadata and update requires at least one field" do
+    assert {:ok,
+            %Invocation{
+              options: %{name: "New", description: "", icon: "beaker", color: "#ABCDEF"}
+            }} =
+             Parser.parse(
+               [
+                 "projects",
+                 "create",
+                 "--name",
+                 "New",
+                 "--description",
+                 "",
+                 "--icon",
+                 "beaker",
+                 "--color",
+                 "#ABCDEF"
+               ],
+               %{}
+             )
+
+    assert {:error, message, ["projects", "update"]} =
+             Parser.parse(~w(projects update 7), %{})
+
+    assert message =~ "At least one"
+
+    assert {:ok, %Invocation{arguments: %{project_id: 7}, options: %{description: ""}}} =
+             Parser.parse(["projects", "update", "7", "--description", ""], %{})
+  end
+
+  test "Project update accepts every icon key and rejects unknown values" do
+    for icon <-
+          ~w(check-circle folder briefcase code-bracket rocket-launch beaker light-bulb wrench-screwdriver) do
+      assert {:ok, %Invocation{options: %{icon: ^icon}}} =
+               Parser.parse(["projects", "update", "7", "--icon", icon], %{})
+    end
+
+    assert {:error, message, ["projects", "update"]} =
+             Parser.parse(~w(projects update 7 --icon unknown), %{})
+
+    assert message =~ "--icon"
   end
 end

@@ -1,27 +1,29 @@
 defmodule Taskman.CLI.Presentation.OutputTest do
   use ExUnit.Case, async: true
 
+  import Taskman.ProjectsFixtures, only: [project_response_fixture: 1]
+
   alias Taskman.CLI.Presentation.Output
 
   test "JSON success output is one API data envelope and a trailing newline" do
-    data = [%{"id" => 1, "name" => "One"}]
+    data = [project_response_fixture(%{"id" => 1, "name" => "One"})]
 
     assert Output.success({:projects, :list}, data, true) ==
              Jason.encode!(%{data: data}) <> "\n"
   end
 
   test "readable Project collections retain identifying fields" do
-    data = [%{"id" => 1, "name" => "One"}]
+    data = [project_response_fixture(%{"id" => 1, "name" => "One"})]
 
     assert Output.success({:projects, :list}, data, false) ==
-             "ID\tNAME\n1\tOne\n"
+             "ID\tNAME\tDESCRIPTION\tICON\tCOLOR\n1\tOne\t\tbriefcase\t#6366F1\n"
   end
 
   test "readable Project members use one labelled line per public field" do
-    data = %{"id" => 1, "name" => "One"}
+    data = project_response_fixture(%{"id" => 1, "name" => "One"})
 
     assert Output.success({:projects, :show}, data, false) ==
-             "ID: 1\nNAME: One\n"
+             "ID: 1\nNAME: One\nDESCRIPTION: \nICON: briefcase\nCOLOR: #6366F1\n"
   end
 
   test "readable List members retain List fields when ID and name are present" do
@@ -108,5 +110,22 @@ defmodule Taskman.CLI.Presentation.OutputTest do
   test "readable errors contain a concise diagnostic" do
     assert Output.error(%{"error" => %{"code" => "not_found", "message" => "Missing"}}, false) ==
              "Error: Missing (not_found)\n"
+  end
+
+  test "readable Project output includes identity metadata" do
+    data =
+      project_response_fixture(%{
+        "description" => "Delivery",
+        "icon" => "rocket-launch",
+        "color" => "#ABCDEF"
+      })
+
+    assert Output.success({:projects, :show}, data, false) ==
+             "ID: 7\nNAME: CLI\nDESCRIPTION: Delivery\nICON: rocket-launch\nCOLOR: #ABCDEF\n"
+
+    assert Output.success({:projects, :list}, [data], false) ==
+             "ID\tNAME\tDESCRIPTION\tICON\tCOLOR\n7\tCLI\tDelivery\trocket-launch\t#ABCDEF\n"
+
+    assert Jason.decode!(Output.success({:projects, :update}, data, true)) == %{"data" => data}
   end
 end

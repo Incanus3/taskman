@@ -1,6 +1,5 @@
 defmodule TaskmanWeb.WorkspaceNavigationTest do
   use ExUnit.Case, async: true
-
   use Phoenix.Component
 
   import Phoenix.LiveViewTest
@@ -11,394 +10,142 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
   alias TaskmanWeb.ProjectLive.ListEdit
   alias TaskmanWeb.WorkspaceNavigation
 
-  test "renders a flattened semantic tree with independent controls" do
-    project = %Project{id: 7, name: "Taskman"}
-    root = %TaskList{id: 11, project_id: project.id, name: "Planning"}
-    child = %TaskList{id: 12, project_id: project.id, parent_list_id: root.id, name: "Launch"}
+  test "Project tasks link and Add root List button share a row and remain separate controls" do
+    project = project()
+    document = render_tree(project, [])
 
-    nodes = [
-      %NavigationNode{
-        dom_id: "project-7",
-        kind: :project,
-        depth: 1,
-        project: project,
-        task_list: nil,
-        expanded?: true,
-        expandable?: true,
-        selected?: false
-      },
-      %NavigationNode{
-        dom_id: "list-11",
-        kind: :list,
-        depth: 2,
-        project: project,
-        task_list: root,
-        expanded?: true,
-        expandable?: true,
-        selected?: false
-      },
-      %NavigationNode{
-        dom_id: "list-12",
-        kind: :list,
-        depth: 3,
-        project: project,
-        task_list: child,
-        expanded?: false,
-        expandable?: false,
-        selected?: true
-      }
-    ]
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "nav#workspace-navigation[aria-label='Workspace navigation'] > #project-tasks-row"
+             )
+           )
 
-    html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: Enum.map(nodes, &{&1.dom_id, &1}),
-        include_children?: false,
-        list_edit: ListEdit.empty()
-      })
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#project-tasks-row > div > #project-tasks-link[href='/projects/7'][aria-current='page']"
+             )
+           )
 
-    document = LazyHTML.from_fragment(html)
+    assert "bg-white/12" in (document
+                             |> LazyHTML.query("#project-tasks-row > div")
+                             |> LazyHTML.attribute("class")
+                             |> hd()
+                             |> String.split())
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#project-tasks-row > div > #add-root-list-7[phx-click='open_list_form'][aria-label='Add root List']"
+             )
+           )
+
+    assert Enum.empty?(LazyHTML.query(document, "#project-tasks-link button"))
+    assert Enum.empty?(LazyHTML.query(document, "#project-tasks-row[role='treeitem']"))
+  end
+
+  test "missing List route leaves Project tasks unselected" do
+    document = render_tree(project(), [], location_not_found?: true)
+    assert Enum.empty?(LazyHTML.query(document, "#project-tasks-link[aria-current='page']"))
+  end
+
+  test "no selected Project omits the root row and List tree" do
+    document = render_tree(nil, [])
+    assert Enum.empty?(LazyHTML.query(document, "#project-tasks-row"))
+    assert Enum.empty?(LazyHTML.query(document, "#workspace-tree"))
+  end
+
+  test "root and child Lists have semantic levels and independent link and disclosure" do
+    project = project()
+    root = list_node(project, 11, "Planning", 1, "hero-folder-open", true, true)
+    child = list_node(project, 12, "Launch", 2, "hero-list-bullet", false, false, true)
+    document = render_tree(project, [root, child], selected_list: child.task_list)
 
     refute Enum.empty?(
              LazyHTML.query(document, "#workspace-tree[role='tree'][phx-update='stream']")
            )
 
-    refute Enum.empty?(LazyHTML.query(document, "#project-7[role='treeitem'][aria-level='1']"))
-
-    refute Enum.empty?(LazyHTML.query(document, "#list-11[role='treeitem'][aria-level='2']"))
-
-    refute Enum.empty?(
-             LazyHTML.query(
-               document,
-               "#list-12[role='treeitem'][aria-level='3'][aria-current='page']"
-             )
-           )
-
-    refute Enum.empty?(
-             LazyHTML.query(document, "#list-12[role='treeitem'] a[aria-current='page']")
-           )
-
-    refute Enum.empty?(LazyHTML.query(document, "#toggle-list-11[aria-expanded='true']"))
-
-    refute Enum.empty?(
-             LazyHTML.query(document, "#toggle-list-11[aria-label='Collapse Planning']")
-           )
+    refute Enum.empty?(LazyHTML.query(document, "#list-11[role='treeitem'][aria-level='1']"))
+    refute Enum.empty?(LazyHTML.query(document, "#list-12[role='treeitem'][aria-level='2']"))
 
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#select-project-7[href='/projects/7'][aria-label='Select Taskman']"
+               "#toggle-list-11[aria-expanded='true'][aria-label='Collapse Planning']"
              )
            )
 
-    refute Enum.empty?(
-             LazyHTML.query(document, "#add-list-project-7[aria-label='Add List to Taskman']")
-           )
-
-    refute Enum.empty?(LazyHTML.query(document, "#list-11 a[aria-label='Select Planning']"))
-
-    refute Enum.empty?(
-             LazyHTML.query(document, "#list-11 button[aria-label='Add child List to Planning']")
-           )
-
-    refute Enum.empty?(LazyHTML.query(document, "#list-11 button[aria-label='Rename Planning']"))
-    assert Enum.empty?(LazyHTML.query(document, "[aria-label*='Delete']"))
+    refute Enum.empty?(LazyHTML.query(document, "#select-list-11[href='/projects/7/lists/11']"))
+    refute Enum.empty?(LazyHTML.query(document, "#select-list-12[aria-current='page']"))
+    assert Enum.empty?(LazyHTML.query(document, "#toggle-list-12"))
+    assert Enum.empty?(LazyHTML.query(document, "#project-tasks-link[aria-current='page']"))
   end
 
-  test "overlays actions on fine pointers and masks the name beneath them" do
-    project = %Project{id: 7, name: "Taskman"}
-    task_list = %TaskList{id: 11, project_id: project.id, name: "Planning"}
+  test "non-leaf icon and chevron occupy one disclosure button with focus visuals" do
+    project = project()
+    node = list_node(project, 11, "Planning", 1, "hero-queue-list", true, false)
+    document = render_tree(project, [node])
 
-    list_node = %NavigationNode{
-      dom_id: "list-11",
-      kind: :list,
-      depth: 2,
-      project: project,
-      task_list: task_list,
-      expanded?: false,
-      expandable?: false,
-      selected?: false
-    }
+    refute Enum.empty?(LazyHTML.query(document, "#toggle-list-11 .hero-queue-list"))
+    refute Enum.empty?(LazyHTML.query(document, "#toggle-list-11 .hero-chevron-right"))
+    refute Enum.empty?(LazyHTML.query(document, "#toggle-list-11.focus-visible\\:ring-2"))
+    assert Enum.empty?(LazyHTML.query(document, "#select-list-11 .hero-queue-list"))
+  end
 
-    document =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [
-          {"project-7", project_node(project)},
-          {list_node.dom_id, list_node}
-        ],
-        include_children?: false,
-        list_edit: ListEdit.empty()
-      })
-      |> LazyHTML.from_fragment()
+  test "root and nested forms retain focus and dismissal behavior" do
+    project = project()
+    root = list_node(project, 11, "Planning", 1, "hero-list-bullet", false, false)
 
-    for {actions_selector, link_selector, reserved_padding} <- [
-          {"#project-actions-7", "#select-project-7", "pr-10"},
-          {"#list-actions-11", "#select-list-11", "pr-18"}
+    root_document = render_tree(project, [root], list_edit: ListEdit.open_new(project, nil))
+
+    nested_document =
+      render_tree(project, [root], list_edit: ListEdit.open_new(project, root.task_list))
+
+    refute Enum.empty?(LazyHTML.query(root_document, "#project-tasks-row #list-create-form-root"))
+    refute Enum.empty?(LazyHTML.query(nested_document, "#list-11 #list-create-form-11"))
+
+    for {document, id} <- [
+          {root_document, "list-create-form-root"},
+          {nested_document, "list-create-form-11"}
         ] do
-      [class_attribute] =
-        document
-        |> LazyHTML.query(actions_selector)
-        |> LazyHTML.attribute("class")
+      [mounted] = document |> LazyHTML.query("##{id}") |> LazyHTML.attribute("phx-mounted")
+      assert mounted =~ "#list-name"
 
-      classes = String.split(class_attribute)
-
-      assert "absolute" in classes
-      assert "bg-transparent" in classes
-      assert "opacity-100" in classes
-      assert "pointer-fine:opacity-0" in classes
-      assert "group-hover:opacity-100" in classes
-      assert "group-focus-within:opacity-100" in classes
-      refute "opacity-0" in classes
-
-      [link_class_attribute] =
-        document
-        |> LazyHTML.query(link_selector)
-        |> LazyHTML.attribute("class")
-
-      link_classes = String.split(link_class_attribute)
-
-      assert reserved_padding in link_classes
-      assert "pointer-fine:pr-1" in link_classes
-      assert "pointer-fine:group-hover:#{reserved_padding}" in link_classes
-      assert "pointer-fine:group-focus-within:#{reserved_padding}" in link_classes
-    end
-
-    refute Enum.empty?(LazyHTML.query(document, "#project-actions-7 > #add-list-project-7"))
-
-    refute Enum.empty?(
-             LazyHTML.query(
-               document,
-               "#list-actions-11 > #add-child-list-11 + #rename-list-11"
-             )
-           )
-  end
-
-  test "renders the active root and nested List forms with stable IDs" do
-    project = %Project{id: 7, name: "Taskman"}
-    parent = %TaskList{id: 11, project_id: project.id, name: "Planning"}
-
-    node = %NavigationNode{
-      dom_id: "project-7",
-      kind: :project,
-      depth: 1,
-      project: project,
-      task_list: nil,
-      expanded?: true,
-      expandable?: true,
-      selected?: true
-    }
-
-    root_html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [{node.dom_id, node}],
-        include_children?: false,
-        list_edit: ListEdit.open_new(project, nil)
-      })
-
-    refute Enum.empty?(
-             LazyHTML.query(LazyHTML.from_fragment(root_html), "#list-create-form-root")
-           )
-
-    nested_html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [
-          {node.dom_id, node},
-          {"list-11",
-           %NavigationNode{
-             dom_id: "list-11",
-             kind: :list,
-             depth: 2,
-             project: project,
-             task_list: parent,
-             expanded?: false,
-             expandable?: false,
-             selected?: false
-           }}
-        ],
-        include_children?: false,
-        list_edit: ListEdit.open_new(project, parent)
-      })
-
-    refute Enum.empty?(
-             LazyHTML.query(LazyHTML.from_fragment(nested_html), "#list-create-form-11")
-           )
-
-    rename_html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [
-          {node.dom_id, node},
-          {"list-11",
-           %NavigationNode{
-             dom_id: "list-11",
-             kind: :list,
-             depth: 2,
-             project: project,
-             task_list: parent,
-             expanded?: false,
-             expandable?: false,
-             selected?: false
-           }}
-        ],
-        include_children?: false,
-        list_edit: ListEdit.open_rename(project, parent)
-      })
-
-    refute Enum.empty?(
-             LazyHTML.query(LazyHTML.from_fragment(rename_html), "#list-rename-form-11")
-           )
-  end
-
-  test "focuses the List name input when add and rename popovers open" do
-    for {document, form_id} <- list_form_documents() do
-      mounted_actions =
-        document
-        |> LazyHTML.query("##{form_id}")
-        |> LazyHTML.attribute("phx-mounted")
-
-      assert [mounted_actions] = mounted_actions
-      assert mounted_actions =~ "focus"
-      assert mounted_actions =~ "#list-name"
-    end
-  end
-
-  test "dismisses add and rename popovers on outside click or Escape" do
-    for {document, form_id} <- list_form_documents() do
       refute Enum.empty?(
                LazyHTML.query(
                  document,
-                 "##{form_id}[phx-click-away='cancel_list_form'][phx-window-keydown='cancel_list_form'][phx-key='escape']"
+                 "##{id}[phx-click-away='cancel_list_form'][phx-window-keydown='cancel_list_form'][phx-key='escape']"
                )
              )
     end
   end
 
-  test "renders add and rename popovers outside the tree layout flow" do
-    for {document, _form_id} <- list_form_documents() do
-      refute Enum.empty?(
-               LazyHTML.query(
-                 document,
-                 "[data-list-popover].absolute.left-9.right-1.top-full.z-30"
-               )
-             )
-    end
-  end
+  defp project, do: %Project{id: 7, name: "Taskman"}
 
-  test "keeps List form controls inside a treeitem without an ancestor selection click" do
-    project = %Project{id: 7, name: "Taskman"}
-    task_list = %TaskList{id: 11, project_id: project.id, name: "Planning"}
-
-    node = %NavigationNode{
-      dom_id: "list-11",
-      kind: :list,
-      depth: 2,
-      project: project,
-      task_list: task_list,
-      expanded?: false,
-      expandable?: false,
-      selected?: false
-    }
-
-    html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [{node.dom_id, node}],
-        include_children?: false,
-        list_edit: ListEdit.open_rename(project, task_list)
-      })
-
-    document = LazyHTML.from_fragment(html)
-
-    assert document
-           |> LazyHTML.query("#list-11[role='treeitem']")
-           |> LazyHTML.attribute("phx-click") == []
-
-    refute Enum.empty?(
-             LazyHTML.query(
-               document,
-               "#list-11 #list-rename-form-11[phx-change='validate_list'][phx-submit='save_list']"
-             )
-           )
-
-    refute Enum.empty?(LazyHTML.query(document, "#list-11 #list-rename-form-11 #list-name"))
-
-    refute Enum.empty?(
-             LazyHTML.query(document, "#list-11 #list-rename-form-11-submit[type='submit']")
-           )
-  end
-
-  test "renders an active root form only beneath its owning Project" do
-    first_project = %Project{id: 7, name: "First"}
-    second_project = %Project{id: 8, name: "Second"}
-    first_node = project_node(first_project)
-    second_node = project_node(second_project)
-
-    html =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [{first_node.dom_id, first_node}, {second_node.dom_id, second_node}],
-        include_children?: false,
-        list_edit: ListEdit.open_new(first_project, nil)
-      })
-
-    document = LazyHTML.from_fragment(html)
-    forms = LazyHTML.query(document, "#list-create-form-root")
-
-    assert Enum.count(forms) == 1
-    refute Enum.empty?(LazyHTML.query(document, "#project-7 #list-create-form-root"))
-    assert Enum.empty?(LazyHTML.query(document, "#project-8 #list-create-form-root"))
-  end
-
-  defp project_node(project) do
+  defp list_node(project, id, name, depth, icon, expandable?, expanded?, selected? \\ false) do
     %NavigationNode{
-      dom_id: "project-#{project.id}",
-      kind: :project,
-      depth: 1,
+      dom_id: "list-#{id}",
+      kind: :list,
+      depth: depth,
       project: project,
-      task_list: nil,
-      expanded?: false,
-      expandable?: false,
-      selected?: false
+      task_list: %TaskList{id: id, project_id: project.id, name: name},
+      list_kind: if(expandable?, do: :child_only, else: :leaf),
+      icon: icon,
+      expandable?: expandable?,
+      expanded?: expanded?,
+      selected?: selected?
     }
   end
 
-  defp list_form_documents do
-    project = %Project{id: 7, name: "Taskman"}
-    task_list = %TaskList{id: 11, project_id: project.id, name: "Planning"}
-
-    [
-      render_form_document(project, project_node(project), {:new, nil}),
-      render_form_document(
-        project,
-        %NavigationNode{
-          dom_id: "list-11",
-          kind: :list,
-          depth: 2,
-          project: project,
-          task_list: task_list,
-          expanded?: false,
-          expandable?: false,
-          selected?: false
-        },
-        {:rename, task_list}
-      )
-    ]
+  defp render_tree(project, nodes, opts \\ []) do
+    render_component(&WorkspaceNavigation.tree/1, %{
+      selected_project: project,
+      selected_list: Keyword.get(opts, :selected_list),
+      location_not_found?: Keyword.get(opts, :location_not_found?, false),
+      navigation_nodes: Enum.map(nodes, &{&1.dom_id, &1}),
+      list_edit: Keyword.get(opts, :list_edit, ListEdit.empty())
+    })
+    |> LazyHTML.from_fragment()
   end
-
-  defp render_form_document(project, node, action) do
-    list_edit =
-      case action do
-        {:new, parent} -> ListEdit.open_new(project, parent)
-        {:rename, current_list} -> ListEdit.open_rename(project, current_list)
-      end
-
-    document =
-      render_component(&WorkspaceNavigation.tree/1, %{
-        navigation_nodes: [{node.dom_id, node}],
-        include_children?: false,
-        list_edit: list_edit
-      })
-      |> LazyHTML.from_fragment()
-
-    {document, form_id(action)}
-  end
-
-  defp form_id({:new, nil}), do: "list-create-form-root"
-  defp form_id({:rename, task_list}), do: "list-rename-form-#{task_list.id}"
 end

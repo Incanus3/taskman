@@ -32,13 +32,29 @@ if Application.get_env(:taskman, :seed_development_users, Mix.env() == :dev) do
   seed_user.("user@taskman.dev", false)
 end
 
-{:ok, %{lists: list_count, tasks: task_count}} =
+{:ok, %{projects: project_count, lists: list_count, tasks: task_count}} =
   Repo.transaction(fn ->
     Repo.delete_all(Task)
     Repo.delete_all(TaskList)
     Repo.delete_all(Project)
 
     {:ok, project} = Projects.create_project(%{name: "Taskman Demo"})
+
+    {:ok, _launch_project} =
+      Projects.create_project(%{
+        name: "Launch Planning",
+        description: "Coordinate upcoming releases.",
+        icon: "rocket-launch",
+        color: "#F97316"
+      })
+
+    {:ok, _lab_project} =
+      Projects.create_project(%{
+        name: "Lab Notes",
+        description: "Capture experiments and findings.",
+        icon: "beaker",
+        color: "#06B6D4"
+      })
 
     {:ok, workstreams} = Lists.create_list(project, nil, %{name: "Workstreams"})
     {:ok, product} = Lists.create_list(project, workstreams, %{name: "Product"})
@@ -103,7 +119,7 @@ end
         count + length(task_specs)
       end)
 
-    %{lists: map_size(locations) + 2, tasks: task_count}
+    %{projects: 3, lists: map_size(locations) + 2, tasks: task_count}
   end)
 
-IO.puts("Seeded Taskman Demo with #{list_count} lists and #{task_count} tasks.")
+IO.puts("Seeded #{project_count} Projects with #{list_count} lists and #{task_count} tasks.")

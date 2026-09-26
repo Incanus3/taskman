@@ -75,6 +75,10 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
     render(view)
 
     assert has_element?(view, "#workspace-content[inert]")
+    assert has_element?(view, "#project-selector[inert]")
+    assert has_element?(view, "#new-project-button")
+    render_click(view, "open_project_new", %{})
+    refute has_element?(view, "#project-modal")
     refute has_element?(view, "#task-modal[inert]")
   end
 

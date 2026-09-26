@@ -52,8 +52,6 @@ defmodule TaskmanWeb.Tasks.Table do
     ~H"""
     <div
       id="task-status-filter"
-      phx-hook=".TaskStatusFilterStorage"
-      data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
       phx-click-away={@open? && "close_task_status_filter"}
       phx-window-keydown={@open? && "close_task_status_filter"}
       phx-key={@open? && "escape"}
@@ -114,62 +112,6 @@ defmodule TaskmanWeb.Tasks.Table do
           </label>
         </.form>
       </div>
-
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskStatusFilterStorage">
-        export default {
-          mounted() {
-            this.storageKey = "taskman.task-table.visible-statuses"
-            this.persistSelection = event => {
-              if (!event.target.matches("[data-task-status]")) return
-
-              const statuses = Array.from(
-                this.el.querySelectorAll("[data-task-status]:checked"),
-                input => input.dataset.taskStatus
-              )
-
-              try {
-                window.localStorage.setItem(this.storageKey, JSON.stringify(statuses))
-              } catch (_error) {
-                // Filtering remains usable when browser storage is unavailable.
-              }
-            }
-
-            this.el.addEventListener("change", this.persistSelection)
-            this.restoreSelection()
-          },
-
-          destroyed() {
-            this.el.removeEventListener("change", this.persistSelection)
-          },
-
-          restoreSelection() {
-            let stored
-
-            try {
-              stored = window.localStorage.getItem(this.storageKey)
-            } catch (_error) {
-              return
-            }
-
-            if (stored === null) return
-
-            try {
-              const parsed = JSON.parse(stored)
-              if (!Array.isArray(parsed)) return
-
-              const allowed = new Set(this.el.dataset.taskStatuses.split(","))
-
-              const statuses = [...new Set(
-                parsed.filter(status => typeof status === "string" && allowed.has(status))
-              )]
-
-              this.pushEvent("restore_task_statuses", {statuses})
-            } catch (_error) {
-              // Ignore malformed preferences and retain the server default.
-            }
-          }
-        }
-      </script>
     </div>
     """
   end
@@ -309,7 +251,7 @@ defmodule TaskmanWeb.Tasks.Table do
           id={"add-subtask-#{task.id}"}
           patch={@add_subtask_path}
           aria-label={"Add subtask to #{task.title}"}
-          title="Add subtask"
+          data-tooltip="Add subtask"
           class="pointer-events-auto grid size-8 place-items-center rounded-lg border border-slate-700 bg-slate-800 text-slate-300 shadow-sm transition hover:border-indigo-400/50 hover:bg-indigo-400/10 hover:text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
         >
           <.icon name="hero-plus" class="size-4" />
@@ -320,7 +262,7 @@ defmodule TaskmanWeb.Tasks.Table do
           phx-click={JS.push_focus() |> JS.push("open_move_task")}
           phx-value-task-id={task.id}
           aria-label={"Move #{task.title}"}
-          title="Move Task"
+          data-tooltip="Move Task"
           class="pointer-events-auto grid size-8 cursor-pointer place-items-center rounded-lg border border-slate-700 bg-slate-800 text-slate-300 shadow-sm transition hover:border-indigo-400/50 hover:bg-indigo-400/10 hover:text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
         >
           <.icon name="hero-arrows-right-left" class="size-4" />

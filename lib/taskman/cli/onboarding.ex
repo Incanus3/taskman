@@ -2,7 +2,7 @@ defmodule Taskman.CLI.Onboarding do
   @moduledoc "Versioned, offline onboarding guidance for people and agents."
 
   @text """
-  Taskman is an authenticated shared system of record for Projects, Lists, and Tasks. Explicitly provisioned users work in the same workspace; Tasks do not have per-user ownership or collaboration permissions. Taskman keeps Projects, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, and create Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
+  Taskman is an authenticated shared system of record for Projects, Lists, and Tasks. Explicitly provisioned users work in the same workspace; Tasks do not have per-user ownership or collaboration permissions. Taskman keeps Projects, nested lists, and task titles, descriptions, priorities, due dates, lifecycle states, and locations together. The CLI can list, inspect, create, and update Projects; list, inspect, create, and rename Lists; and list, inspect, create, update, and move Tasks within a Project.
 
   Installation
 
@@ -36,8 +36,11 @@ defmodule Taskman.CLI.Onboarding do
   Representative workflows
 
   Use --json when an agent needs one machine-readable API-compatible data envelope on stdout. Diagnostics go to stderr.
+  Project description, icon, and color give each Project a recognizable identity. Creation can set them, and update changes only supplied fields.
   taskman projects list --json
   taskman projects create --name "My Project" --json
+  taskman projects create --name "My Project" --description Delivery --icon rocket-launch --color '#6366F1' --json
+  taskman projects update 7 --description Revised --json
   taskman lists list --project 7 --json
   taskman lists create --project 7 --name Planning --json
   taskman tasks list --project 7 --json

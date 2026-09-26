@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.ClientTest do
   use ExUnit.Case, async: true
 
+  import Taskman.ProjectsFixtures, only: [project_response_fixture: 1]
+
   alias Taskman.CLI.Client
 
   setup {Req.Test, :verify_on_exit!}
@@ -10,12 +12,19 @@ defmodule Taskman.CLI.ClientTest do
       assert conn.method == "GET"
       assert conn.request_path == "/api/v1/projects"
 
-      Req.Test.json(conn, %{
-        data: [%{id: 1, name: "One"}]
-      })
+      Req.Test.json(conn, %{data: [project_response_fixture(%{"id" => 1, "name" => "One"})]})
     end)
 
-    assert {:ok, [%{"id" => 1, "name" => "One"}]} =
+    assert {:ok,
+            [
+              %{
+                "id" => 1,
+                "name" => "One",
+                "description" => "",
+                "icon" => "briefcase",
+                "color" => "#6366F1"
+              }
+            ]} =
              Client.request(:get, "/api/v1/projects", [],
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
@@ -23,10 +32,17 @@ defmodule Taskman.CLI.ClientTest do
 
   test "validates Project IDs and names in response members" do
     Req.Test.expect(TaskmanCLIClient, fn conn ->
-      Req.Test.json(conn, %{data: %{id: 7, name: "One"}})
+      Req.Test.json(conn, %{data: project_response_fixture(%{"name" => "One"})})
     end)
 
-    assert {:ok, %{"id" => 7, "name" => "One"}} =
+    assert {:ok,
+            %{
+              "id" => 7,
+              "name" => "One",
+              "description" => "",
+              "icon" => "briefcase",
+              "color" => "#6366F1"
+            }} =
              Client.request(
                :get,
                "/api/v1/projects/7",
@@ -501,5 +517,26 @@ defmodule Taskman.CLI.ClientTest do
         ]
       }
     }
+  end
+
+  test "rejects Project responses missing or mistyping identity metadata" do
+    valid = project_response_fixture(%{"name" => "One"})
+
+    for malformed <- [
+          Map.delete(valid, "description"),
+          Map.put(valid, "icon", 123),
+          Map.put(valid, "color", nil)
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: malformed}) end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(
+                 :get,
+                 "/api/v1/projects/7",
+                 [],
+                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 {:member, :project}
+               )
+    end
   end
 end

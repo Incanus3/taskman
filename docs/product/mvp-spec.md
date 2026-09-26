@@ -7,7 +7,7 @@
 Taskman is an authenticated, hostable web application for organizing work in Projects, Lists,
 and Tasks. It is the system of record for those work items and their relationships.
 
-The core journey is: create a Project by name; organize work in Lists and Tasks; perform and
+The core journey is: create a Project; organize work in Lists and Tasks; perform and
 review the work; then explicitly mark each completed Task Done. Agent Session integration is
 deferred to a separate accepted design.
 
@@ -16,8 +16,8 @@ deferred to a separate accepted design.
 - Explicitly provisioned users access one shared Taskman workspace through its browser UI or
   accompanying CLI.
 - Product data persists in the Taskman server's PostgreSQL database.
-- A Project is a machine-independent logical work container identified by its ID and name.
-  It has no directory.
+- A Project is a machine-independent logical work container identified by its ID and name, with
+  editable description, icon, and color. It has no directory.
 - Authentication is an application-wide access gate. Projects, Lists, and Tasks are not owned or
   filtered by user, and the MVP has no collaboration permissions or attribution.
 - Taskman can run as an OTP release behind an HTTPS reverse proxy on a dedicated server.
@@ -26,7 +26,7 @@ deferred to a separate accepted design.
 
 | Concept | MVP definition |
 | --- | --- |
-| **Project** | Top-level work container with an ID, name, an unbounded acyclic tree of Lists, and Tasks. |
+| **Project** | Top-level work container with an ID, name, description, icon, color, an unbounded acyclic tree of Lists, and Tasks. |
 | **List** | Nested organizational container belonging to exactly one Project. It can contain Lists and Tasks. |
 | **Task** | Intended work, owned by exactly one Project and one location: directly under that Project or in one List. |
 | **Checklist** | Ordered, informational completion markers on a Task. |
@@ -50,11 +50,16 @@ nor external agent work automatically changes Task state.
 
 ## 4. Work organization and navigation
 
-- The default view is list-first: a left tree of Projects and nested Lists plus a main Task table.
+- The default view is list-first: an active Project selector and that Project's nested List tree
+  beside a main Task table. A separate **Project tasks** row returns to its root Task view.
+- An explicit Project or List URL selects its Project. Opening `/` restores this browser's last
+  valid Project, otherwise it shows a neutral Project selector.
 - Selecting a Project shows its direct Project Tasks. Selecting a List shows its direct Tasks;
   **Include child Lists** optionally adds descendant Tasks while preserving their source List.
-- Opening a Task shows a modal over the preserved list state. The selected Task should be shareable
-  in the URL.
+- Include child Lists and Statuses persist as browser preferences across navigation. A Share
+  control copies the current route with both filters encoded when a reproducible view is needed.
+- Opening a Task shows a modal over the preserved list state. The selected Task is shareable in
+  the URL.
 - Every Create Task modal has an explicit same-Project Location. If its selected location or backdrop
   becomes unavailable, the ordinary form remains editable but Create is disabled until another
   location is chosen; submission resolves that location fresh. Creation stays on its current browse
