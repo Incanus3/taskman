@@ -10,6 +10,25 @@
     class="h-full bg-slate-950 text-slate-100"
   >
     <div
+      id="task-comment-departure-guard"
+      phx-hook="TaskmanWeb.ProjectLive.CommentDeparture"
+      data-task-id={@editing.selected_task && @editing.selected_task.id}
+      data-pending={to_string(@comment_departure.confirming?)}
+      data-retained-destination={
+        to_string(not is_nil(@comment_departure.destination) && !@comment_departure.confirming?)
+      }
+      data-browse-path={
+        @workspace.selected_project &&
+          Paths.browse_path(
+            @workspace.selected_project,
+            @workspace.selected_list,
+            @workspace.include_children?
+          )
+      }
+      hidden
+    >
+    </div>
+    <div
       id="workspace-content"
       phx-hook="TaskmanWeb.ProjectLive.TaskTablePreferences"
       data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
@@ -443,19 +462,41 @@
       show
       size={:wide}
       focus_on_mount={false}
+      defer_cancel?
+      inert?={@comment_departure.confirming?}
       on_cancel={
-        JS.patch(
-          Paths.browse_path(
-            @workspace.selected_project,
-            @workspace.selected_list,
-            @workspace.include_children?
-          )
+        JS.push("request_task_departure",
+          value: %{
+            destination:
+              Paths.browse_path(
+                @workspace.selected_project,
+                @workspace.selected_list,
+                @workspace.include_children?
+              )
+          }
         )
       }
-      on_escape={if(Move.active?(@task_move), do: JS.push("cancel_move_task"), else: nil)}
+      on_escape={
+        if(Move.active?(@task_move),
+          do: JS.push("cancel_move_task"),
+          else:
+            JS.push("request_task_departure",
+              value: %{
+                destination:
+                  Paths.browse_path(
+                    @workspace.selected_project,
+                    @workspace.selected_list,
+                    @workspace.include_children?
+                  )
+              }
+            )
+        )
+      }
     >
       <Detail.detail
         task={@editing.selected_task}
+        comments={@comments}
+        comment_stream={@streams.comments}
         project={@workspace.selected_project}
         task_autosave={@editing.autosave}
         parent_picker={@task_parent_picker}
@@ -507,6 +548,69 @@
         </:header_actions>
       </Detail.detail>
     </.modal>
+
+    <div
+      :if={@comment_departure.confirming?}
+      id="task-comment-departure"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="task-comment-departure-title"
+      aria-describedby="task-comment-departure-description"
+      phx-mounted={JS.push_focus() |> JS.focus(to: "#task-comment-departure-go-back")}
+      phx-window-keydown={
+        JS.push("cancel_task_comment_departure") |> JS.focus(to: "#task-modal-content")
+      }
+      phx-key="escape"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl shadow-black/60">
+        <h2 id="task-comment-departure-title" class="text-xl font-semibold text-slate-100">
+          Unposted comment
+        </h2>
+        <p id="task-comment-departure-description" class="mt-3 text-sm leading-6 text-slate-300">
+          Your unposted comment will be lost if you leave this Task.
+        </p>
+        <p
+          :if={@comment_departure.error}
+          id="task-comment-departure-error"
+          role="alert"
+          tabindex="-1"
+          class="mt-3 text-sm text-rose-300"
+        >
+          {@comment_departure.error}
+        </p>
+        <div class="mt-6 flex flex-col gap-3">
+          <button
+            id="task-comment-departure-go-back"
+            type="button"
+            phx-click={
+              JS.push("cancel_task_comment_departure") |> JS.focus(to: "#task-modal-content")
+            }
+            class="rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            Go back
+          </button>
+          <button
+            id="task-comment-departure-submit"
+            type="button"
+            phx-click="submit_task_comment_departure"
+            phx-disable-with="Submitting…"
+            disabled={@comment_departure.submitting?}
+            class="rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            Submit comment and close
+          </button>
+          <button
+            id="task-comment-departure-discard"
+            type="button"
+            phx-click="discard_task_comment_departure"
+            class="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            Close and discard draft
+          </button>
+        </div>
+      </div>
+    </div>
 
     <.modal
       :if={

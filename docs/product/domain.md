@@ -48,11 +48,37 @@ complete a Task; a human explicitly changes Task state.
   hierarchy when it has no parent). Reparented children retain their own descendants and List ownership.
 - A deletion removes every incident Task relationship. When a Project is deleted, cross-Project
   relationship edges are removed but externally owned Tasks are preserved and shown in the impact warning.
+- Deleting a Task also deletes its comments. Recursive Project, List, and child-Task deletion has the
+  same effect for every deleted Task. Reparented children retain their comments.
 
 ## Checklists
 
 - **Checklist**: an ordered set of completion markers belonging to a Task.
 - Checklist progress is informational only. Unchecked items never prevent a Task from entering **In Review** or **Done**.
+
+## Task comments and Activity
+
+- **Task comment**: an append-only plain-text record attached to exactly one Task. It has a
+  server-assigned ID and UTC creation time, normalized nonempty text of at most 10,000 Unicode
+  grapheme clusters, the authenticated posting account while that account exists, and optionally a
+  normalized custom display name of at most 80 grapheme clusters. The thread is ordered by
+  `(created_at, id)` ascending. Comments can be posted at any Task status.
+- **Posting account**: the authenticated browser user or API key owner who creates a comment.
+  The account is selected by authentication, never by submitted comment data. Its current login
+  email appears on reads. A custom name labels the comment separately, displayed as
+  `Name (login)`; without a name, only `login` appears. The name neither impersonates the account
+  nor grants authority.
+- Account deletion nulls the comment's posting-account link but retains its text, creation time,
+  and custom name. Its login then appears as `Deleted user`, with no email snapshot. Changing an
+  account email changes the login shown on its earlier comments.
+- **Activity**: the Task-detail tab that currently contains the comment thread and composer.
+  The Sessions tab shares its panel and remains a truthful empty state. This presentation replaces
+  the earlier stacked Activity and Sessions sections. Task changes do not generate Activity entries.
+- A successful comment advances its Task's `updated_at` to at least the comment time, without
+  changing `lock_version`, Task fields, or status. A failed post leaves the Task unchanged. Thus
+  `updated_at` records the latest direct Task mutation or successful comment; it is not proof of
+  human acceptance. Comments do not attribute Task edits, imply lifecycle approval, or establish
+  per-user ownership.
 
 ## Task relationships
 

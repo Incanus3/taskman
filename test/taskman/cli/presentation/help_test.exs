@@ -57,6 +57,15 @@ defmodule Taskman.CLI.Presentation.HelpTest do
              "taskman tasks hierarchy --project PROJECT_ID TASK_ID"
   end
 
+  test "Task comment help discovers commands and opt-in fields" do
+    assert Help.render(~w(tasks)) =~ "tasks comments list"
+    assert Help.render(~w(tasks comments)) =~ "tasks comments add"
+    assert Help.render(~w(tasks comments list)) =~ "--project PROJECT_ID TASK_ID"
+    assert Help.render(~w(tasks comments add)) =~ "--text TEXT"
+    assert Help.render(~w(tasks comments add)) =~ "--author-name NAME"
+    assert Help.render(~w(tasks show)) =~ "--include-comments"
+  end
+
   test "Project creation help documents name-only creation" do
     help = Help.render(~w(projects create))
 

@@ -135,6 +135,8 @@ defmodule TaskmanWeb.CoreComponents do
   attr :show, :boolean, default: false
   attr :on_cancel, JS, required: true
   attr :on_escape, JS, default: nil
+  attr :defer_cancel?, :boolean, default: false
+  attr :inert?, :boolean, default: false
   attr :size, :atom, values: [:default, :wide], default: :default
   attr :initial_focus, :string, default: nil
   attr :focus_on_mount, :boolean, default: true
@@ -145,6 +147,7 @@ defmodule TaskmanWeb.CoreComponents do
     <div
       id={@id}
       data-modal-root
+      inert={@inert?}
       class="relative z-50"
       phx-mounted={@show && show_modal(@id, @initial_focus, @focus_on_mount)}
       hidden
@@ -168,8 +171,8 @@ defmodule TaskmanWeb.CoreComponents do
             aria-labelledby={"#{@id}-title"}
             role="dialog"
             aria-modal="true"
-            phx-click-away={hide_modal(@on_cancel, @id)}
-            phx-window-keydown={modal_escape(@on_cancel, @on_escape, @id)}
+            phx-click-away={cancel_modal(@on_cancel, @id, @defer_cancel?)}
+            phx-window-keydown={modal_escape(@on_cancel, @on_escape, @id, @defer_cancel?)}
             phx-key="escape"
             tabindex="-1"
           >
@@ -177,7 +180,7 @@ defmodule TaskmanWeb.CoreComponents do
               id={"#{@id}-close"}
               type="button"
               class="absolute right-4 top-4 z-30 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
-              phx-click={hide_modal(@on_cancel, @id)}
+              phx-click={cancel_modal(@on_cancel, @id, @defer_cancel?)}
               aria-label={gettext("Close dialog")}
               data-tooltip=""
             >
@@ -619,8 +622,13 @@ defmodule TaskmanWeb.CoreComponents do
     |> JS.pop_focus()
   end
 
-  defp modal_escape(on_cancel, nil, id), do: hide_modal(on_cancel, id)
-  defp modal_escape(_on_cancel, %JS{} = on_escape, _id), do: on_escape
+  defp cancel_modal(js, _id, true), do: js
+  defp cancel_modal(js, id, false), do: hide_modal(js, id)
+
+  defp modal_escape(on_cancel, nil, id, defer_cancel?),
+    do: cancel_modal(on_cancel, id, defer_cancel?)
+
+  defp modal_escape(_on_cancel, %JS{} = on_escape, _id, _defer_cancel?), do: on_escape
 
   @doc """
   Translates an error message using gettext.

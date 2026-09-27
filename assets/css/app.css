@@ -139,7 +139,7 @@
   position: relative;
   display: grid;
   grid-template-columns: 3rem minmax(0, 1fr);
-  max-height: calc(100dvh - 2rem);
+  max-height: min(1000px, calc(100dvh - 2rem));
   min-height: 0;
   overflow: hidden;
   transition: grid-template-columns 160ms ease;
@@ -300,7 +300,7 @@
 
 @media (min-width: 40rem) {
   #task-detail-layout {
-    max-height: calc(100dvh - 3rem);
+    max-height: min(1000px, calc(100dvh - 3rem));
   }
 }
 
@@ -312,3 +312,63 @@
 }
 
 /* This file is for your main application CSS */
+
+.task-detail-discussion {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.task-detail-tab-panel[hidden] {
+  display: none;
+}
+
+.task-detail-activity {
+  min-height: 0;
+}
+
+.task-comment-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (min-width: 80rem) {
+  #task-detail-content {
+    display: flex;
+    flex-direction: column;
+    overflow-y: hidden;
+  }
+
+  .task-detail-columns {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .task-detail-columns > section:first-child {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .task-detail-discussion {
+    min-height: 0;
+  }
+
+  .task-detail-activity {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+
+  .task-comment-thread {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .task-comment-composer {
+    margin-top: auto;
+  }
+}

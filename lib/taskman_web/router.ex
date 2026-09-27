@@ -102,6 +102,8 @@ defmodule TaskmanWeb.Router do
     get "/projects/:project_id/tasks", TaskController, :index
     post "/projects/:project_id/tasks", TaskController, :create
     get "/projects/:project_id/tasks/:task_id", TaskController, :show
+    get "/projects/:project_id/tasks/:task_id/comments", TaskCommentController, :index
+    post "/projects/:project_id/tasks/:task_id/comments", TaskCommentController, :create
     get "/projects/:project_id/tasks/:task_id/hierarchy", TaskController, :hierarchy
     patch "/projects/:project_id/tasks/:task_id", TaskController, :update
     post "/projects/:project_id/tasks/:task_id/move", TaskController, :move

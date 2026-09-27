@@ -49,6 +49,11 @@ defmodule Taskman.CLI.Onboarding do
   taskman tasks update --project 7 42 --parent 41 --json
   taskman tasks hierarchy --project 7 42 --json
   taskman tasks move --project 7 42 --to-project-root --json
+  taskman tasks show --project 7 42 --include-comments --json
+  taskman tasks comments list --project 7 42 --json
+  taskman tasks comments add --project 7 42 --text "Review notes" --author-name "Research agent" --json
+
+  A comment is appended only when you run the add command; inspect the returned comment and list the thread afterward to verify it. The API key selects the verified posting account. --author-name supplies a truthful display name for the comment; it cannot change the posting account. A comment records discussion and does not authorize a Task lifecycle transition. Ask for a separate human status decision before changing lifecycle state.
 
   Install shell completions by redirecting the generated source to the standard location:
   mkdir -p ~/.local/share/bash-completion/completions

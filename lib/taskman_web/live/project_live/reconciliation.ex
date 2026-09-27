@@ -3,9 +3,19 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Projects.Project
+  alias Taskman.Tasks
+  alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Workspace
   alias TaskmanWeb.ProjectLive.Recovery
-  alias TaskmanWeb.ProjectLive.Tasks.{Creation, Editing, Listing, Movement, ParentSelection}
+
+  alias TaskmanWeb.ProjectLive.Tasks.{
+    Comments,
+    Creation,
+    Editing,
+    Listing,
+    Movement,
+    ParentSelection
+  }
 
   @doc "Handles scheduled autosaves and validated workspace notifications."
   @spec handle_info(term(), Phoenix.LiveView.Socket.t()) ::
@@ -74,7 +84,42 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   end
 
   def handle_info(%Event{entity: :task}, socket), do: {:noreply, socket}
+
+  def handle_info(%Event{entity: :comment} = event, socket) do
+    socket =
+      if well_formed_comment_event?(event),
+        do: reconcile_comment_event(socket, event),
+        else: socket
+
+    {:noreply, socket}
+  end
+
   def handle_info(%Event{}, socket), do: {:noreply, socket}
+
+  defp reconcile_comment_event(
+         %{
+           assigns: %{
+             live_action: :show_task,
+             workspace: %{selected_project: %Project{id: project_id} = project},
+             editing: %{selected_task: %Task{id: task_id}}
+           }
+         } = socket,
+         %Event{project_id: project_id, task_id: task_id}
+       ) do
+    case Tasks.get_task_for_project(project, task_id) do
+      %Task{} = task ->
+        socket
+        |> Comments.sync_timestamp(task)
+        |> Comments.reconcile(project, task)
+
+      nil ->
+        socket
+        |> Editing.apply_route(project, nil)
+        |> Comments.clear()
+    end
+  end
+
+  defp reconcile_comment_event(socket, _event), do: socket
 
   defp reconcile_task_event(socket, event) do
     socket = Workspace.refresh(socket)
@@ -155,6 +200,20 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   end
 
   defp well_formed_task_event?(_event), do: false
+
+  defp well_formed_comment_event?(%Event{
+         operation: :created,
+         project_id: project_id,
+         task_id: task_id,
+         entity_id: entity_id,
+         lock_version: nil,
+         fields: []
+       })
+       when is_integer(project_id) and project_id > 0 and is_integer(task_id) and task_id > 0 and
+              is_integer(entity_id) and entity_id > 0,
+       do: true
+
+  defp well_formed_comment_event?(_event), do: false
 
   defp well_formed_workspace_event?(%Event{
          entity: :project,

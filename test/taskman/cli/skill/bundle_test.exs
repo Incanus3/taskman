@@ -63,6 +63,14 @@ defmodule Taskman.CLI.Skill.BundleTest do
              ~r/any Task lifecycle change requires a separate,\s+user-authorized Task-status decision/
 
     assert skill =~ "Agent activity never marks a Task complete automatically."
+    assert skill =~ "taskman tasks comments list --project 7 42"
+    assert skill =~ "taskman tasks comments add --project 7 42 --text"
+    assert skill =~ "taskman tasks show --project 7 42 --include-comments"
+    assert skill =~ "posting account"
+    refute skill =~ "comments search"
+    refute skill =~ "comments edit"
+    refute skill =~ "comments delete"
+    refute skill =~ "impersonate"
 
     for command <- Registry.commands() do
       path = Enum.join(command.path, " ")

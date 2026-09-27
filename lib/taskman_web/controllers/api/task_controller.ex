@@ -53,13 +53,35 @@ defmodule TaskmanWeb.API.TaskController do
   def create(_conn, _params), do: {:error, :invalid_request}
 
   def show(conn, %{"project_id" => project_id, "task_id" => task_id}) do
-    with {:ok, project} <- fetch_project(project_id),
-         {:ok, task} <- fetch_task(project, task_id) do
-      json(conn, %{data: task_data(project, task)})
+    conn = fetch_query_params(conn)
+
+    with {:ok, include_comments?} <- show_comments_option(conn.query_params),
+         {:ok, project} <- fetch_project(project_id),
+         {:ok, task} <- fetch_task(project, task_id),
+         {:ok, comments} <- show_comments(project, task, include_comments?) do
+      data = task_data(project, task)
+      data = if include_comments?, do: Map.put(data, :comments, comments), else: data
+      json(conn, %{data: data})
     end
   end
 
   def show(_conn, _params), do: {:error, :invalid_request}
+
+  defp show_comments_option(%{} = query) when map_size(query) == 0, do: {:ok, false}
+
+  defp show_comments_option(%{"include_comments" => "true"} = query)
+       when map_size(query) == 1,
+       do: {:ok, true}
+
+  defp show_comments_option(_query), do: {:error, :invalid_request}
+
+  defp show_comments(_project, _task, false), do: {:ok, nil}
+
+  defp show_comments(project, task, true) do
+    with {:ok, comments} <- Tasks.list_comments(project, task) do
+      {:ok, Enum.map(comments, &Representation.comment/1)}
+    end
+  end
 
   def hierarchy(conn, %{"project_id" => project_id, "task_id" => task_id}) do
     with {:ok, project} <- fetch_project(project_id),

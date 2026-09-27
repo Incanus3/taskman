@@ -90,6 +90,29 @@ defmodule TaskmanWeb.CoreComponentsTest do
     refute escape_actions =~ "pop_focus"
   end
 
+  test "modal can defer cancellation without changing the default dismissal path" do
+    document =
+      render_component(&default_and_deferred_modals/1, %{})
+      |> LazyHTML.from_fragment()
+
+    [default_actions] =
+      document
+      |> LazyHTML.query("#default-modal-close")
+      |> LazyHTML.attribute("phx-click")
+
+    [deferred_actions] =
+      document
+      |> LazyHTML.query("#deferred-modal-close")
+      |> LazyHTML.attribute("phx-click")
+
+    assert default_actions =~ "cancel-default"
+    assert default_actions =~ ~s("hide")
+    assert default_actions =~ "pop_focus"
+    assert deferred_actions =~ "cancel-deferred"
+    refute deferred_actions =~ ~s("hide")
+    refute deferred_actions =~ "pop_focus"
+  end
+
   defp shown_modal(assigns) do
     ~H"""
     <CoreComponents.modal id="task-modal" show on_cancel={JS.push("cancel-task")}>
@@ -161,6 +184,21 @@ defmodule TaskmanWeb.CoreComponentsTest do
       on_escape={JS.push("cancel-move-task")}
     >
       <h2 id="task-modal-title">Task</h2>
+    </CoreComponents.modal>
+    """
+  end
+
+  defp default_and_deferred_modals(assigns) do
+    ~H"""
+    <CoreComponents.modal id="default-modal" on_cancel={JS.push("cancel-default")}>
+      <h2 id="default-modal-title">Default</h2>
+    </CoreComponents.modal>
+    <CoreComponents.modal
+      id="deferred-modal"
+      defer_cancel?
+      on_cancel={JS.push("cancel-deferred")}
+    >
+      <h2 id="deferred-modal-title">Deferred</h2>
     </CoreComponents.modal>
     """
   end

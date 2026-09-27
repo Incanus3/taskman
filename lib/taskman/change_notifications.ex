@@ -105,6 +105,20 @@ defmodule Taskman.ChangeNotifications do
     publish(project_topic(project_id), event)
   end
 
+  @spec publish_comment(pos_integer(), pos_integer(), pos_integer()) :: publication_result()
+  def publish_comment(project_id, task_id, comment_id)
+      when is_integer(project_id) and project_id > 0 and is_integer(task_id) and task_id > 0 and
+             is_integer(comment_id) and comment_id > 0 do
+    publish(project_topic(project_id), %Event{
+      entity: :comment,
+      operation: :created,
+      project_id: project_id,
+      task_id: task_id,
+      entity_id: comment_id,
+      fields: []
+    })
+  end
+
   defp publish(topic, event) do
     pubsub_call(fn -> PubSub.broadcast_from(pubsub_server(), self(), topic, event) end)
   end

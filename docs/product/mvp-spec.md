@@ -19,7 +19,8 @@ deferred to a separate accepted design.
 - A Project is a machine-independent logical work container identified by its ID and name, with
   editable description, icon, and color. It has no directory.
 - Authentication is an application-wide access gate. Projects, Lists, and Tasks are not owned or
-  filtered by user, and the MVP has no collaboration permissions or attribution.
+  filtered by user, and the MVP has no collaboration permissions or Task-edit attribution. Explicit
+  Task comments record the authenticated posting account as described below.
 - Taskman can run as an OTP release behind an HTTPS reverse proxy on a dedicated server.
 
 ## 3. Core domain model
@@ -30,6 +31,7 @@ deferred to a separate accepted design.
 | **List** | Nested organizational container belonging to exactly one Project. It can contain Lists and Tasks. |
 | **Task** | Intended work, owned by exactly one Project and one location: directly under that Project or in one List. |
 | **Checklist** | Ordered, informational completion markers on a Task. |
+| **Task comment** | Append-only plain-text discussion on one Task, with a posting account, optional custom display name, and creation time. |
 | **Task relationship** | A Blocks / Blocked by, Relates to, or parent-child association; it is independent of List ownership. |
 
 Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
@@ -83,11 +85,41 @@ nor external agent work automatically changes Task state.
   confirmed missing Task offers only Copy and Discard. Reloading, leaving the page, or a replacement
   connection loses the retained input.
 - The modal has a collapsible left parent-child hierarchy with nesting guides, central Task detail,
-  and Activity and Sessions empty-state rails. Agent Session behavior awaits a separate accepted
-  design.
+  and one side panel with Activity and Sessions tabs. Activity shows the Task's comments and a
+  composer; Sessions shows a truthful empty state. Agent Session behavior awaits a separate accepted
+  design. This tabbed presentation supersedes the earlier stacked Activity and Sessions sections.
 - The hierarchy contains only parent-child work breakdown. A Related Tasks table contains Blocks /
   Blocked by and Relates to links. Cross-Project relationship entries identify their other Project.
 - A docked right-detail layout is a future enhancement, not the MVP default.
+
+### Task comments and Activity
+
+- An authenticated user may append and read comments on any Task in the shared workspace,
+  including Done and Will Not Do Tasks. An API key posts as its owning user. Each comment records
+  the authenticated posting account while that account exists; callers cannot choose another
+  account or supply a creation time. API and CLI posts may include an optional custom display name.
+  That name is a label, not delegated identity or authority. Browser posts use the account login.
+- The comment thread is append-only plain text, ordered by creation time and then comment ID.
+  Submission trims surrounding whitespace, requires nonempty text, and limits it to 10,000 Unicode
+  grapheme clusters. An optional custom name is trimmed, nonempty, and limited to 80 grapheme
+  clusters. Internal line breaks remain; rendered markup is escaped. Comments are not edited,
+  deleted individually, searched, or paginated in this MVP slice.
+- While the account exists, comments show its current login email, preceded by the custom name in
+  parentheses form when supplied: `Research agent (person@example.com)`. Changing the account
+  email changes the login shown on earlier comments. Account deletion removes the account link
+  without removing its comments or custom names; the login then reads `Deleted user` (for example,
+  `Research agent (Deleted user)`). No email snapshot is kept in a comment.
+- Posting a comment refreshes the Task's `updated_at` to the latest successful comment activity
+  without changing its status, editable fields, or `lock_version`. A rejected post changes none of
+  these. `updated_at` therefore reflects the most recent direct Task change or successful comment,
+  while `lock_version` remains specific to editable Task fields. Comments are discussion, not Task
+  edit attribution, lifecycle approval, generated Task-change history, or user ownership.
+- Activity contains the ordered thread, a labelled multiline composer, and a truthful `No comments
+  yet` empty state. Posting is explicit. The composer keeps its draft during ordinary Task updates
+  and tab switches. Leaving Task detail with a nonempty unposted draft offers Go back, Submit
+  comment and close, or Close and discard draft; full-page exits use the browser's best-effort
+  unload warning. Sessions shares the same panel and remains an empty state until Agent Session
+  behavior is designed.
 
 ## 5. Programmatic access and CLI
 
@@ -129,7 +161,8 @@ MVP requirement of the initial CLI slice.
 - Disabling a user removes browser and API access immediately. All authenticated users otherwise
   see the same Project, List, and Task data.
 - Account deletion permanently removes authentication data but leaves the shared Project, List,
-  and Task workspace unchanged because those records are not user-owned.
+  Task, and Task-comment workspace unchanged because those records are not user-owned. It nulls the
+  deleted account link on retained comments, which then show `Deleted user` as their login.
 - Password is the initial browser strategy. The Accounts boundary permits later magic-link and
   OAuth/OIDC strategies without changing domain ownership.
 - Production uses an OTP release under systemd, a loopback Phoenix endpoint behind an HTTPS reverse
@@ -162,15 +195,17 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - Deleting a Project removes its Lists, Tasks, and internal relationships. It removes
   cross-Project relationship edges but preserves externally owned Tasks and names those effects.
 - Deleting a List removes its descendants.
-- Deleting a Task removes its incident relationships. If it has children, the user
+- Deleting a Task also removes its comments and incident relationships. If it has children, the user
   chooses either recursive child-subtree deletion or reparenting direct children to its former parent,
-  or to the Project-level hierarchy. Reparented children retain descendants and List ownership.
+  or to the Project-level hierarchy. Recursively deleted children lose their comments; reparented
+  children retain their comments, descendants, and List ownership.
 
 ## 10. Explicit MVP exclusions
 
 - Product implementation and deployment; this document specifies the product only.
-- Per-user domain ownership, synchronization, collaboration permissions, activity attribution, and
-  other multi-user workflows beyond authenticated access to the shared workspace.
+- Per-user domain ownership, synchronization, collaboration permissions, Task-edit attribution,
+  generated Task-change Activity, and other multi-user workflows beyond authenticated access and
+  the posting-account identity recorded on explicit comments.
 - Public self-registration and authentication strategies beyond the initial password flow.
 - Managed hosting, automated deployment, and container orchestration.
 - Desktop packaging and managed Workspace creation, selection, reuse, or lifecycle.

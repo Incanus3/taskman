@@ -84,6 +84,9 @@ taskman lists create --project 7 --name Planning --parent 11
 taskman lists rename --project 7 11 --name Ready
 taskman tasks list --project 7 --list 11 --include-descendants
 taskman tasks show --project 7 42
+taskman tasks show --project 7 42 --include-comments
+taskman tasks comments list --project 7 42 --json
+taskman tasks comments add --project 7 42 --text Review-notes --author-name Research-agent --json
 taskman tasks create --project 7 --title Prepare --status pending
 taskman tasks update --project 7 42 --status in_progress
 taskman tasks update --project 7 42 --parent 41
@@ -104,5 +107,11 @@ Read the relevant group or leaf help for the complete option set. Before changin
 inspect it with `show` or `list`, then make one explicit, ID-based mutation and verify the result.
 Use `tasks update --parent` to set a parent and `tasks update --no-parent` to clear it. Use
 `tasks hierarchy` to inspect the connected hierarchy before or after a parent mutation.
+
+Read the Task or its thread before adding a comment. Append only when the operator requests a
+comment, then inspect the returned comment and list the thread to verify it. The API key selects
+the verified posting account. `--author-name` supplies an optional display name; it never changes
+the posting account and should truthfully identify the source. A comment records discussion; a
+human must separately authorize any Task lifecycle status decision.
 
 Project update requires at least one of `--name`, `--description`, `--icon`, or `--color`. Supply only fields you intend to change. Use `--description ''` to clear a description.

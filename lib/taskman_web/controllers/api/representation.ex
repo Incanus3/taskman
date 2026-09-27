@@ -4,6 +4,7 @@ defmodule TaskmanWeb.API.Representation do
   """
 
   alias Taskman.Lists
+  alias Taskman.Tasks.Comment
   alias Taskman.Tasks.TaskWithLocation
 
   @spec project(Taskman.Projects.Project.t()) :: map()
@@ -46,6 +47,17 @@ defmodule TaskmanWeb.API.Representation do
   @spec task_with_location(TaskWithLocation.t()) :: map()
   def task_with_location(%TaskWithLocation{task: task, location_path: location_path}) do
     task_with_path(task, Enum.map(location_path, & &1.name))
+  end
+
+  @spec comment(Comment.t()) :: map()
+  def comment(%Comment{} = comment) do
+    %{
+      id: comment.id,
+      task_id: comment.task_id,
+      author: %{display_name: comment.author_name, login: comment.author_login},
+      text: comment.text,
+      created_at: comment.created_at
+    }
   end
 
   defp task_with_path(task, path) do

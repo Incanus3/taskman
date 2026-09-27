@@ -41,4 +41,13 @@ defmodule Taskman.Accounts.User.Persistence do
     |> Ecto.Changeset.unique_constraint(:email)
     |> Repo.update()
   end
+
+  @doc false
+  @spec emails_by_user_id([Ecto.UUID.t()]) :: %{optional(Ecto.UUID.t()) => String.t()}
+  def emails_by_user_id([]), do: %{}
+
+  def emails_by_user_id(user_ids) when is_list(user_ids) do
+    Repo.all(from user in User, where: user.id in ^user_ids, select: {user.id, user.email})
+    |> Map.new(fn {id, email} -> {id, to_string(email)} end)
+  end
 end

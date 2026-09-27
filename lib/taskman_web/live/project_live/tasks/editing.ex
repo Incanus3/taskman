@@ -351,30 +351,46 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     socket
   end
 
-  @doc "Flushes pending edits and returns whether route navigation may proceed."
+  @doc "Flushes pending edits and returns whether route navigation may proceed.
+
+  Ordinary navigation may leave behind invalid Task input as before. Comment departure actions
+  require `allow_invalid?: false` so discarding a comment cannot silently discard Task input.
+  "
   @spec flush(Phoenix.LiveView.Socket.t()) ::
           {:ok, Phoenix.LiveView.Socket.t()} | {:error, Phoenix.LiveView.Socket.t()}
+  @spec flush(Phoenix.LiveView.Socket.t(), keyword()) ::
+          {:ok, Phoenix.LiveView.Socket.t()} | {:error, Phoenix.LiveView.Socket.t()}
+  def flush(socket, opts \\ [])
+
   def flush(
         %{
           assigns: %{
             workspace: %{selected_project: %Project{} = project},
             editing: %{selected_task: %Task{} = task}
           }
-        } = socket
+        } = socket,
+        opts
       ) do
     case Autosave.flush(socket.assigns.editing.autosave, project, task) do
       {:ok, autosave, task} ->
         {:ok, sync_autosave(socket, autosave, task)}
 
       {:error, autosave, task} ->
-        {:error, sync_autosave(socket, autosave, task)}
+        socket = sync_autosave(socket, autosave, task)
+
+        if Keyword.get(opts, :allow_invalid?, true) and not autosave.save_failed? and
+             autosave.conflicts == %{} do
+          {:ok, socket}
+        else
+          {:error, socket}
+        end
 
       {:not_found, autosave} ->
         {:ok, apply_task_autosave_result(socket, {:not_found, autosave})}
     end
   end
 
-  def flush(socket), do: {:ok, socket}
+  def flush(socket, _opts), do: {:ok, socket}
 
   @doc "Restores the selected detail route when flushing blocked navigation."
   @spec restore_failed_route(Phoenix.LiveView.Socket.t(), map()) :: Phoenix.LiveView.Socket.t()

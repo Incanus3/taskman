@@ -8,7 +8,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Comments, Move, ParentPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.Detail
 
@@ -255,6 +255,65 @@ defmodule TaskmanWeb.Tasks.DetailTest do
 
     refute Enum.empty?(LazyHTML.query(document, "#task-hierarchy-empty"))
     assert Enum.empty?(LazyHTML.query(document, "#task-hierarchy-disclosure-7"))
+  end
+
+  test "Activity tab and panel expose the selected accessible tab contract" do
+    document = comment_tabs(:activity)
+
+    assert tab_contract?(document, "activity", "true", "0")
+    assert tab_contract?(document, "sessions", "false", "-1")
+    assert visible_panel?(document, "activity")
+    assert inactive_panel?(document, "sessions")
+  end
+
+  test "Sessions selection hides and inerts Activity while preserving linked panels" do
+    document = comment_tabs(:sessions)
+
+    assert tab_contract?(document, "sessions", "true", "0")
+    assert tab_contract?(document, "activity", "false", "-1")
+    assert visible_panel?(document, "sessions")
+    assert inactive_panel?(document, "activity")
+  end
+
+  defp comment_tabs(tab) do
+    task = task(41)
+
+    render_component(&Detail.detail/1, %{
+      task: task,
+      project: %Project{id: 7, name: "Atlas"},
+      task_autosave: Autosave.load(Autosave.empty(), task, saved?: true),
+      parent_picker: ParentPicker.empty(),
+      cancel: "/projects/7",
+      task_hierarchy:
+        TaskHierarchy.load(
+          TaskHierarchy.empty(),
+          %Hierarchy{selected_task_id: task.id, root: hierarchy_node(task.id)}
+        ),
+      task_path: fn item -> "/projects/7/tasks/#{item.id}" end,
+      browse_path: fn _ -> "/projects/7" end,
+      task_move: Move.empty(),
+      comments: %{Comments.State.empty() | tab: tab}
+    })
+    |> LazyHTML.from_fragment()
+  end
+
+  defp tab_contract?(document, tab, selected, tabindex) do
+    selector =
+      "#task-#{tab}-tab[role='tab'][aria-controls='task-#{tab}'][aria-selected='#{selected}'][tabindex='#{tabindex}']"
+
+    length(LazyHTML.query(document, selector) |> LazyHTML.to_tree()) == 1
+  end
+
+  defp visible_panel?(document, tab) do
+    selector =
+      "#task-#{tab}[role='tabpanel'][aria-labelledby='task-#{tab}-tab']:not([hidden]):not([inert])"
+
+    length(LazyHTML.query(document, selector) |> LazyHTML.to_tree()) == 1
+  end
+
+  defp inactive_panel?(document, tab) do
+    selector = "#task-#{tab}[role='tabpanel'][aria-labelledby='task-#{tab}-tab'][hidden][inert]"
+    length(LazyHTML.query(document, selector) |> LazyHTML.to_tree()) == 1
   end
 
   defp hierarchy(selected_task_id) do

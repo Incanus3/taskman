@@ -498,7 +498,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(
              view,
              "#task-activity-empty",
-             "No activity has been recorded for this Task."
+             "No comments yet."
            )
 
     assert has_element?(
