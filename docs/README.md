@@ -41,6 +41,7 @@
 - [Global Task jump search (implemented)](specs/2026-09-29-global-task-search-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
+- [User-owned Orca instance registration (proposed)](specs/2026-09-27-orca-instance-registration-design.md)
 - [ProjectLive workflow decomposition (implemented)](specs/2026-09-03-project-live-decomposition-design.md)
 - [Missing List recovery (implemented and operator accepted)](specs/2026-09-18-missing-list-recovery-design.md)
 - [Active Project selector (implemented and operator accepted)](specs/2026-09-22-active-project-selector-design.md)
