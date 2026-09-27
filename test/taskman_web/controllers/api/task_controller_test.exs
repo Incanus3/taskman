@@ -272,6 +272,48 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert %{"error" => %{"code" => "not_found"}} = json_response(conn, 404)
   end
 
+  test "GET task includes the same ordered comment representation only on literal opt-in", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    user = user_fixture()
+    assert {:ok, _first} = Tasks.create_comment(project, task, user, %{"text" => "First"})
+
+    assert {:ok, _second} =
+             Tasks.create_comment(project, task, user, %{
+               "text" => "Second",
+               "author_name" => "Research agent"
+             })
+
+    path = "/api/v1/projects/#{project.id}/tasks/#{task.id}"
+    ordinary = conn |> get(path) |> json_response(200)
+    opted_in = conn |> get(path <> "?include_comments=true") |> json_response(200)
+    thread = conn |> get(path <> "/comments") |> json_response(200)
+
+    refute Map.has_key?(ordinary["data"], "comments")
+    assert opted_in["data"]["comments"] == thread["data"]
+    assert Enum.map(thread["data"], & &1["text"]) == ["First", "Second"]
+    assert Map.delete(opted_in["data"], "comments") == ordinary["data"]
+  end
+
+  test "GET task rejects unsupported include_comments values and other query keys", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    path = "/api/v1/projects/#{project.id}/tasks/#{task.id}"
+
+    for query <- [
+          "include_comments=false",
+          "include_comments=1",
+          "include_comments[]=true",
+          "include_comments=true&search=note",
+          "search=note"
+        ] do
+      assert %{"error" => %{"code" => "invalid_request"}} =
+               conn |> get(path <> "?" <> query) |> json_response(400)
+    end
+  end
+
   test "POST creates a Project Task with every editable field", %{conn: conn} do
     project = project_fixture(%{})
     other = project_fixture(%{})

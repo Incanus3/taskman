@@ -4,7 +4,7 @@ defmodule Taskman.AccountsFixtures do
   @bootstrap_actor %{accounts_bootstrap?: true}
 
   def pending_user_fixture(attrs \\ %{}) do
-    unique = System.unique_integer([:positive])
+    unique = Ecto.UUID.generate()
 
     attrs =
       Map.merge(
@@ -17,7 +17,7 @@ defmodule Taskman.AccountsFixtures do
   end
 
   def user_fixture(attrs \\ %{}) do
-    unique = System.unique_integer([:positive])
+    unique = Ecto.UUID.generate()
 
     attrs =
       Map.merge(
@@ -39,7 +39,7 @@ defmodule Taskman.AccountsFixtures do
   end
 
   def api_key_fixture(user, attrs \\ %{}) do
-    unique = System.unique_integer([:positive])
+    unique = Ecto.UUID.generate()
 
     attrs =
       Map.merge(

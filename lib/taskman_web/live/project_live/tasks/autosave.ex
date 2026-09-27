@@ -275,7 +275,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
             |> Map.put(:save_failed?, save_failed?)
             |> refresh_save_state()
 
-          if save_failed? do
+          if save_failed? or MapSet.size(autosave.dirty_fields) > 0 do
             {:error, autosave, task}
           else
             {:ok, autosave, task}

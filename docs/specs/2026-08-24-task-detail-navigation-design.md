@@ -3,6 +3,10 @@
 **Status:** Approved  
 **Date:** 2026-08-24
 
+**Supersession:** The [Task comments design](2026-09-26-task-comments-design.md) governs the
+current tabbed Activity/Sessions presentation and its scrolling behavior. The stacked sections and
+shared-scroll rule below remain as historical rationale for the original Task-detail increment.
+
 ## Goal
 
 Extend Taskman's existing URL-backed Task editing modal into the MVP Task-detail surface without

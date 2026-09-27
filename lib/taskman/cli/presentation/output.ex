@@ -17,9 +17,12 @@ defmodule Taskman.CLI.Presentation.Output do
     do: readable_collection(command, data)
 
   def success(command, data, false) when is_map(data) do
-    if hierarchy_command?(command),
-      do: readable_hierarchy(data),
-      else: readable_member(command, data)
+    cond do
+      hierarchy_command?(command) -> readable_hierarchy(data)
+      comments_command?(command) -> readable_comment(data)
+      task_show_with_comments?(command, data) -> readable_task_with_comments(data)
+      true -> readable_member(command, data)
+    end
   end
 
   def success(_command, data, false), do: to_string(data) <> "\n"
@@ -42,6 +45,9 @@ defmodule Taskman.CLI.Presentation.Output do
 
   defp readable_collection(command, rows) do
     case resource(command) do
+      :comments ->
+        readable_comments(rows)
+
       :projects ->
         ["ID\tNAME\tDESCRIPTION\tICON\tCOLOR\n", Enum.map(rows, &project_row/1)]
         |> IO.iodata_to_binary()
@@ -59,6 +65,52 @@ defmodule Taskman.CLI.Presentation.Output do
         |> Enum.map(&readable_member(command, &1))
         |> IO.iodata_to_binary()
     end
+  end
+
+  defp readable_comments([]), do: "No comments yet.\n"
+
+  defp readable_comments(rows) do
+    rows
+    |> Enum.map(&readable_comment/1)
+    |> Enum.intersperse("\n")
+    |> IO.iodata_to_binary()
+  end
+
+  defp readable_comment(comment) do
+    author = fetch_value(comment, :author)
+    login = fetch_value(author, :login)
+    display_name = fetch_value(author, :display_name)
+    name = if is_nil(display_name), do: login, else: "#{display_name} (#{login})"
+    {:ok, utc_time, 0} = comment |> fetch_value(:created_at) |> DateTime.from_iso8601()
+
+    local_erl =
+      utc_time
+      |> DateTime.to_naive()
+      |> NaiveDateTime.to_erl()
+      |> :calendar.universal_time_to_local_time()
+
+    local_time = NaiveDateTime.from_erl!(local_erl, utc_time.microsecond)
+
+    [
+      "#",
+      value(comment, :id),
+      "  ",
+      name,
+      "  ",
+      NaiveDateTime.to_string(local_time),
+      "\n",
+      value(comment, :text),
+      "\n"
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+  defp readable_task_with_comments(task) do
+    comments = fetch_value(task, :comments)
+    task = task |> Map.delete("comments") |> Map.delete(:comments)
+
+    [readable_member({:tasks, :show}, task), "\nCOMMENTS\n", readable_comments(comments)]
+    |> IO.iodata_to_binary()
   end
 
   defp project_row(project) do
@@ -176,10 +228,12 @@ defmodule Taskman.CLI.Presentation.Output do
     Enum.all?(@project_fields, fn {key, _label} -> has_value?(project, key) end)
   end
 
+  defp resource({:tasks, action}) when action in [:comments_list, :comments_add], do: :comments
   defp resource({resource, _action}) when is_atom(resource), do: resource
   defp resource(:list), do: :projects
   defp resource(%Taskman.CLI.Registry.Command{path: ["projects" | _rest]}), do: :projects
   defp resource(%Taskman.CLI.Registry.Command{path: ["lists" | _rest]}), do: :lists
+  defp resource(%Taskman.CLI.Registry.Command{path: ["tasks", "comments" | _rest]}), do: :comments
   defp resource(%Taskman.CLI.Registry.Command{path: ["tasks" | _rest]}), do: :tasks
   defp resource(%Taskman.CLI.Registry.Command{path: [resource | _rest]}), do: resource
   defp resource(["projects" | _rest]), do: :projects
@@ -199,6 +253,22 @@ defmodule Taskman.CLI.Presentation.Output do
   end
 
   defp resource(_command), do: nil
+
+  defp comments_command?({:tasks, action}) when action in [:comments_list, :comments_add],
+    do: true
+
+  defp comments_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :comments_add}}),
+    do: true
+
+  defp comments_command?(_command), do: false
+
+  defp task_show_with_comments?({:tasks, :show_with_comments}, data),
+    do: has_value?(data, :comments)
+
+  defp task_show_with_comments?(%Taskman.CLI.Registry.Command{handler: {:tasks, :show}}, data),
+    do: has_value?(data, :comments)
+
+  defp task_show_with_comments?(_command, _data), do: false
 
   defp hierarchy_command?({:tasks, :hierarchy}), do: true
 

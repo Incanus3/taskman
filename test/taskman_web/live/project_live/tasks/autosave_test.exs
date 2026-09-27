@@ -166,7 +166,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
     assert autosave.form[:title].value == ""
   end
 
-  test "flush persists valid dirty fields and retains invalid fields" do
+  test "flush reports an invalid field while persisting valid dirty fields" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", description: "Old"})
     autosave = Autosave.load(Autosave.empty(), task, saved?: false)
@@ -189,7 +189,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.AutosaveTest do
                "title"
              )
 
-    assert {:ok, autosave, updated_task} = Autosave.flush(autosave, project, task)
+    assert {:error, autosave, updated_task} = Autosave.flush(autosave, project, task)
     assert updated_task.title == "Before"
     assert updated_task.description == "New"
     assert autosave.dirty_fields == MapSet.new(["title"])

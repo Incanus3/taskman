@@ -7,6 +7,49 @@ defmodule Taskman.CLI.ClientTest do
 
   setup {Req.Test, :verify_on_exit!}
 
+  test "comment response contract requires exact attribution and UTC timestamp" do
+    valid = %{
+      id: 123,
+      task_id: 42,
+      author: %{display_name: nil, login: "person@example.com"},
+      text: "Review notes",
+      created_at: "2026-09-26T12:34:56Z"
+    }
+
+    Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: [valid]}) end)
+
+    assert {:ok, [%{"id" => 123}]} =
+             Client.request(
+               :get,
+               "/comments",
+               [],
+               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               {:collection, :comment}
+             )
+
+    for malformed <- [
+          %{valid | id: 0},
+          %{valid | task_id: "42"},
+          %{valid | author: %{display_name: nil}},
+          %{valid | author: %{display_name: 12, login: "person@example.com"}},
+          %{valid | author: %{display_name: nil, login: nil}},
+          %{valid | text: nil},
+          %{valid | created_at: "2026-09-26T13:34:56+01:00"},
+          Map.put(valid, :actor_user_id, "fake")
+        ] do
+      Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: malformed}) end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(
+                 :get,
+                 "/comments",
+                 [],
+                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 {:member, :comment}
+               )
+    end
+  end
+
   test "returns the data from a successful JSON envelope" do
     Req.Test.expect(TaskmanCLIClient, fn conn ->
       assert conn.method == "GET"

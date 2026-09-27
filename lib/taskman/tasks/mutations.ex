@@ -299,7 +299,9 @@ defmodule Taskman.Tasks.Mutations do
 
   defp persist_update(changeset) do
     try do
-      case Repo.update(Ecto.Changeset.optimistic_lock(changeset, :lock_version)) do
+      case Repo.update(Ecto.Changeset.optimistic_lock(changeset, :lock_version),
+             returning: [:updated_at]
+           ) do
         {:ok, task} -> {:ok, task}
         {:error, changeset} -> {:error, changeset}
       end

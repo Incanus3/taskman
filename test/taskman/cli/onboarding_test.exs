@@ -60,4 +60,17 @@ defmodule Taskman.CLI.OnboardingTest do
 
     assert text =~ "taskman projects update 7 --description Revised --json"
   end
+
+  test "comment onboarding gives append and verification examples with account attribution" do
+    text = Onboarding.text()
+    assert text =~ "taskman tasks comments list --project 7 42 --json"
+    assert text =~ "taskman tasks comments add --project 7 42 --text"
+    assert text =~ "taskman tasks show --project 7 42 --include-comments"
+    assert text =~ "posting account"
+    assert text =~ "human"
+    refute text =~ "comments search"
+    refute text =~ "comments edit"
+    refute text =~ "comments delete"
+    refute text =~ "impersonate"
+  end
 end

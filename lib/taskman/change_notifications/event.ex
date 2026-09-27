@@ -4,12 +4,13 @@ defmodule Taskman.ChangeNotifications.Event do
   """
 
   @enforce_keys [:entity, :operation, :project_id, :entity_id, :fields]
-  defstruct [:entity, :operation, :project_id, :entity_id, :lock_version, :fields]
+  defstruct [:entity, :operation, :project_id, :task_id, :entity_id, :lock_version, :fields]
 
   @type t :: %__MODULE__{
-          entity: :project | :list | :task,
+          entity: :project | :list | :task | :comment,
           operation: :created | :updated | :moved,
           project_id: pos_integer(),
+          task_id: pos_integer() | nil,
           entity_id: pos_integer(),
           lock_version: non_neg_integer() | nil,
           fields: [atom()]

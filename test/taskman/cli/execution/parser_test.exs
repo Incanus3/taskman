@@ -16,6 +16,8 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(lists rename),
              ~w(tasks list),
              ~w(tasks show),
+             ~w(tasks comments list),
+             ~w(tasks comments add),
              ~w(tasks hierarchy),
              ~w(tasks create),
              ~w(tasks update),
@@ -28,6 +30,44 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(agent onboarding),
              ~w(agent skill install)
            ]
+  end
+
+  test "parses comment commands and opt-in Task show without inventing actor options" do
+    assert {:ok, list} = Parser.parse(~w(tasks comments list --project 7 42 --json), %{})
+    assert list.arguments == %{task_id: 42}
+    assert list.options == %{project: 7}
+    assert list.globals == %{json: true}
+
+    assert {:ok, add} =
+             Parser.parse(
+               [
+                 "tasks",
+                 "comments",
+                 "add",
+                 "--project",
+                 "7",
+                 "42",
+                 "--text",
+                 "Review notes",
+                 "--author-name",
+                 "Research agent"
+               ],
+               %{}
+             )
+
+    assert add.arguments == %{task_id: 42}
+    assert add.options == %{project: 7, text: "Review notes", author_name: "Research agent"}
+
+    assert {:ok, show} = Parser.parse(~w(tasks show --project 7 42 --include-comments), %{})
+    assert show.options == %{project: 7, include_comments: true}
+    assert {:error, _, _} = Parser.parse(~w(tasks comments add --project 7 42), %{})
+    assert {:error, _, _} = Parser.parse(~w(tasks comments list --project 7 0), %{})
+
+    assert {:error, _, _} =
+             Parser.parse(
+               ~w(tasks comments add --project 7 42 --text hi --actor-user-id fake),
+               %{}
+             )
   end
 
   test "completion commands declare JSON as an incompatible global option" do

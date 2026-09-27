@@ -156,15 +156,59 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks show),
         summary: "Inspect one Task by ID.",
-        usage: "taskman tasks show --project PROJECT_ID TASK_ID",
+        usage: "taskman tasks show --project PROJECT_ID TASK_ID [--include-comments]",
         handler: {:tasks, :show},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
+            required?: true
+          ),
+          option(
+            :include_comments,
+            "--include-comments",
+            :boolean,
+            nil,
+            "Include the ordered comment thread."
+          )
+        ],
+        examples: ["taskman tasks show --project 7 42 --include-comments"]
+      },
+      %Command{
+        path: ~w(tasks comments list),
+        summary: "Read a Task's ordered comment thread.",
+        usage: "taskman tasks comments list --project PROJECT_ID TASK_ID",
+        handler: {:tasks, :comments_list},
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
           option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
             required?: true
           )
         ],
-        examples: ["taskman tasks show --project 7 42"]
+        examples: ["taskman tasks comments list --project 7 42 --json"]
+      },
+      %Command{
+        path: ~w(tasks comments add),
+        summary: "Append a comment as the authenticated account.",
+        usage:
+          "taskman tasks comments add --project PROJECT_ID TASK_ID --text TEXT [--author-name NAME]",
+        handler: {:tasks, :comments_add},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
+            required?: true
+          ),
+          option(:text, "--text", :string, "TEXT", "Comment text.", required?: true),
+          option(
+            :author_name,
+            "--author-name",
+            :string,
+            "NAME",
+            "Optional display name; posting account is unchanged."
+          )
+        ],
+        examples: [
+          "taskman tasks comments add --project 7 42 --text 'Review notes' --author-name 'Research agent'"
+        ]
       },
       %Command{
         path: ~w(tasks hierarchy),

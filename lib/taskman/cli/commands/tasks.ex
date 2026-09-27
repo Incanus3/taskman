@@ -31,14 +31,52 @@ defmodule Taskman.CLI.Commands.Tasks do
 
       :show ->
         task_id = Map.fetch!(invocation.arguments, :task_id)
+        include_comments? = Map.get(invocation.options, :include_comments, false)
+        request_options = if include_comments?, do: [params: [include_comments: true]], else: []
+
+        success_shape =
+          if include_comments?, do: {:member, :task_with_comments}, else: {:member, :task}
 
         request(
           invocation,
           :get,
           "/api/v1/projects/#{project_id}/tasks/#{task_id}",
+          request_options,
+          runtime_options,
+          json?,
+          success_shape
+        )
+
+      :comments_list ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+
+        request(
+          invocation,
+          :get,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
           [],
           runtime_options,
-          json?
+          json?,
+          {:collection, :comment}
+        )
+
+      :comments_add ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+        comment = %{"text" => Map.fetch!(invocation.options, :text)}
+
+        comment =
+          if Map.has_key?(invocation.options, :author_name),
+            do: Map.put(comment, "author_name", Map.fetch!(invocation.options, :author_name)),
+            else: comment
+
+        request(
+          invocation,
+          :post,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/comments",
+          [json: %{"comment" => comment}],
+          runtime_options,
+          json?,
+          {:member, :comment}
         )
 
       :hierarchy ->

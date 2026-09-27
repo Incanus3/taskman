@@ -2,7 +2,8 @@ defmodule TaskmanWeb.Tasks.Detail do
   use TaskmanWeb, :html
 
   alias Taskman.Projects.Project
-  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
+  alias Taskman.Tasks.{Comment, Hierarchy, HierarchyNode, Task}
+  alias TaskmanWeb.ProjectLive.Tasks.Comments
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.{Form, MovePopover}
@@ -17,15 +18,20 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :browse_path, :any, default: nil
   attr :task_move, Move, required: true
   attr :recovery?, :boolean, default: false
+  attr :comments, :any, default: nil
+  attr :comment_stream, :any, default: []
   slot :header_actions
 
   def detail(assigns) do
+    comments = assigns.comments || Comments.State.empty()
+
+    form =
+      comments.form || Phoenix.Component.to_form(Comment.changeset(%Comment{}, %{}), as: :comment)
+
     assigns =
-      assign(
-        assigns,
-        :location_path,
-        TaskHierarchy.selected_location_path(assigns.task_hierarchy)
-      )
+      assigns
+      |> assign(:comments, %{comments | form: form})
+      |> assign(:location_path, TaskHierarchy.selected_location_path(assigns.task_hierarchy))
 
     ~H"""
     <div
@@ -212,38 +218,156 @@ defmodule TaskmanWeb.Tasks.Detail do
 
           <aside
             :if={!@recovery?}
+            id="task-detail-discussion"
             aria-label="Task activity and sessions"
-            class="border-t border-slate-700 bg-slate-950/35 p-6 xl:border-l xl:border-t-0"
+            phx-hook="TaskmanWeb.ProjectLive.CommentThreadScroll"
+            data-task-id={@task.id}
+            data-revision={@comments.revision}
+            class="task-detail-discussion border-t border-slate-700 bg-slate-950/35 p-6 xl:border-l xl:border-t-0"
           >
-            <section id="task-activity" aria-labelledby="task-activity-title">
-              <h3
-                id="task-activity-title"
-                class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-300"
+            <div
+              id="task-detail-tabs"
+              role="tablist"
+              aria-label="Task detail sections"
+              phx-hook=".TaskDetailTabs"
+              class="flex shrink-0 gap-1 rounded-xl bg-slate-800/70 p-1"
+            >
+              <button
+                id="task-activity-tab"
+                type="button"
+                role="tab"
+                aria-controls="task-activity"
+                aria-selected={to_string(@comments.tab == :activity)}
+                tabindex={if(@comments.tab == :activity, do: "0", else: "-1")}
+                phx-click="select_task_detail_tab"
+                phx-value-tab="activity"
+                class={[
+                  "flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                  @comments.tab == :activity && "bg-indigo-500 text-white shadow-sm",
+                  @comments.tab != :activity && "text-slate-300 hover:bg-slate-700 hover:text-white"
+                ]}
               >
                 Activity
-              </h3>
-              <p
-                id="task-activity-empty"
-                class="mt-3 rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400"
+              </button>
+              <button
+                id="task-sessions-tab"
+                type="button"
+                role="tab"
+                aria-controls="task-sessions"
+                aria-selected={to_string(@comments.tab == :sessions)}
+                tabindex={if(@comments.tab == :sessions, do: "0", else: "-1")}
+                phx-click="select_task_detail_tab"
+                phx-value-tab="sessions"
+                class={[
+                  "flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                  @comments.tab == :sessions && "bg-indigo-500 text-white shadow-sm",
+                  @comments.tab != :sessions && "text-slate-300 hover:bg-slate-700 hover:text-white"
+                ]}
               >
-                No activity has been recorded for this Task.
+                Sessions
+              </button>
+            </div>
+
+            <section
+              id="task-activity"
+              role="tabpanel"
+              aria-labelledby="task-activity-tab"
+              tabindex="0"
+              hidden={@comments.tab != :activity}
+              inert={@comments.tab != :activity}
+              class="task-detail-tab-panel task-detail-activity"
+            >
+              <p
+                :if={@comments.empty?}
+                id="task-activity-empty"
+                class="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400"
+              >
+                No comments yet.
               </p>
+              <div
+                id="task-comment-thread"
+                phx-update="stream"
+                class="task-comment-thread"
+              >
+                <article
+                  :for={{id, comment} <- @comment_stream}
+                  id={id}
+                  class="rounded-xl border border-slate-700/70 bg-slate-900/65 p-4"
+                >
+                  <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <strong class="min-w-0 break-words text-sm font-semibold text-slate-100">
+                      {comment_author(comment)}
+                    </strong>
+                    <time
+                      id={"#{id}-time"}
+                      datetime={DateTime.to_iso8601(comment.created_at)}
+                      phx-hook=".CommentLocalTime"
+                      class="text-xs text-slate-400"
+                    >
+                      {DateTime.to_iso8601(comment.created_at)}
+                    </time>
+                  </div>
+                  <p
+                    phx-no-format
+                    class="task-comment-text mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-200"
+                  >{comment.text}</p>
+                </article>
+              </div>
+              <.form
+                for={@comments.form}
+                id="task-comment-form"
+                phx-change="validate_task_comment"
+                phx-submit="post_task_comment"
+                class="task-comment-composer shrink-0 pt-4"
+              >
+                <.input
+                  field={@comments.form[:text]}
+                  value={@comments.draft}
+                  id="task-comment-text"
+                  type="textarea"
+                  aria-label="Comment"
+                  aria-keyshortcuts="Control+Enter"
+                  phx-hook=".CommentSubmitShortcut"
+                  placeholder="Write your comment here"
+                  rows="4"
+                  class="textarea w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-indigo-400 focus:outline-none"
+                />
+                <p
+                  :if={@comments.error}
+                  id="task-comment-error"
+                  role="alert"
+                  tabindex="-1"
+                  class="mt-2 text-sm text-rose-300"
+                >
+                  {@comments.error}
+                </p>
+                <button
+                  id="task-comment-post"
+                  type="submit"
+                  phx-disable-with="Posting…"
+                  disabled={@comments.posting?}
+                  class="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <span>{if(@comments.posting?, do: "Posting…", else: "Post comment")}</span>
+                  <span :if={!@comments.posting?} class="text-xs font-medium text-indigo-100/70">
+                    Ctrl+Enter
+                  </span>
+                </button>
+              </.form>
             </section>
 
             <section
               id="task-sessions"
-              aria-labelledby="task-sessions-title"
-              class="mt-8 border-t border-slate-700 pt-6"
+              role="tabpanel"
+              aria-labelledby="task-sessions-tab"
+              tabindex="0"
+              hidden={@comments.tab != :sessions}
+              inert={@comments.tab != :sessions}
+              class="task-detail-tab-panel"
             >
-              <h3
-                id="task-sessions-title"
-                class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-300"
-              >
-                Sessions
-              </h3>
               <p
                 id="task-sessions-empty"
-                class="mt-3 rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400"
+                class="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400"
               >
                 No Agent Sessions are associated with this Task.
               </p>
@@ -252,78 +376,61 @@ defmodule TaskmanWeb.Tasks.Detail do
         </div>
       </div>
     </div>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskLocationBreadcrumbs">
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskDetailTabs">
       export default {
         mounted() {
-          this.wide = window.matchMedia("(min-width: 80rem)")
-          this.scheduleFit = () => {
-            cancelAnimationFrame(this.fitFrame)
-            this.fitFrame = requestAnimationFrame(() => this.fit())
+          this.onKeydown = event => {
+            const tabs = [...this.el.querySelectorAll('[role="tab"]')]
+            const index = tabs.indexOf(document.activeElement)
+            if (index < 0) return
+            let next
+            switch (event.key) {
+              case "ArrowRight": next = (index + 1) % tabs.length; break
+              case "ArrowLeft": next = (index + tabs.length - 1) % tabs.length; break
+              case "Home": next = 0; break
+              case "End": next = tabs.length - 1; break
+              default: return
+            }
+            event.preventDefault()
+            tabs[next].focus()
+            tabs[next].click()
           }
-          this.resizeObserver = new ResizeObserver(this.scheduleFit)
-          this.resizeObserver.observe(this.el)
-          this.wide.addEventListener("change", this.scheduleFit)
-          this.scheduleFit()
+          this.el.addEventListener("keydown", this.onKeydown)
         },
-
-        updated() {
-          this.scheduleFit()
-        },
-
         destroyed() {
-          cancelAnimationFrame(this.fitFrame)
-          this.resizeObserver?.disconnect()
-          this.wide?.removeEventListener("change", this.scheduleFit)
-        },
-
-        fit() {
-          const track = this.el.querySelector("#task-location-breadcrumb-track")
-          const ellipsis = this.el.querySelector("#task-location-ellipsis")
-          if (!track || !ellipsis) return
-
-          const optionalSegments = [
-            ...track.querySelectorAll("li[data-optional-segment='true']")
-          ]
-          const containingSegment = track.querySelector("li[data-containing-location]")
-          const containingLink = containingSegment?.querySelector("a[data-containing-location]")
-
-          optionalSegments.forEach(segment => segment.style.removeProperty("display"))
-          containingLink?.style.removeProperty("max-width")
-          ellipsis.hidden = true
-
-          if (!this.wide.matches) return
-
-          const overflows = () => this.visibleWidth(track) > track.clientWidth + 1
-
-          for (const segment of optionalSegments) {
-            if (!overflows()) break
-
-            segment.style.display = "none"
-            ellipsis.hidden = false
+          this.el.removeEventListener("keydown", this.onKeydown)
+        }
+      }
+    </script>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CommentLocalTime">
+      export default {
+        mounted() {
+          const value = new Date(this.el.dateTime)
+          if (!Number.isNaN(value.valueOf())) {
+            this.el.textContent = new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium", timeStyle: "short"
+            }).format(value)
           }
+        }
+      }
+    </script>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CommentSubmitShortcut">
+      export default {
+        mounted() {
+          this.onKeydown = event => {
+            if (event.key !== "Enter" || !event.ctrlKey || event.altKey || event.metaKey ||
+                event.shiftKey || event.repeat || event.isComposing) return
 
-          if (overflows() && containingSegment && containingLink) {
-            const otherWidth = this.visibleWidth(track, containingSegment)
+            const button = this.el.form?.querySelector('#task-comment-post')
+            if (!button || button.disabled) return
 
-            const separatorWidth =
-              containingSegment.getBoundingClientRect().width -
-              containingLink.getBoundingClientRect().width
-
-            containingLink.style.maxWidth = `${Math.max(
-              track.clientWidth - otherWidth - separatorWidth,
-              0
-            )}px`
+            event.preventDefault()
+            this.el.form.requestSubmit(button)
           }
+          this.el.addEventListener("keydown", this.onKeydown)
         },
-
-        visibleWidth(track, excludedSegment = null) {
-          return [...track.children]
-            .filter(segment =>
-              segment !== excludedSegment &&
-                !segment.hidden &&
-                getComputedStyle(segment).display !== "none"
-            )
-            .reduce((width, segment) => width + segment.getBoundingClientRect().width, 0)
+        destroyed() {
+          this.el.removeEventListener("keydown", this.onKeydown)
         }
       }
     </script>
@@ -407,6 +514,12 @@ defmodule TaskmanWeb.Tasks.Detail do
     </li>
     """
   end
+
+  defp comment_author(%Comment{author_name: nil, author_login: login}),
+    do: login || "Deleted user"
+
+  defp comment_author(%Comment{author_name: name, author_login: login}),
+    do: "#{name} (#{login || "Deleted user"})"
 
   defp hierarchy_content?(%TaskHierarchy{
          hierarchy: %Hierarchy{

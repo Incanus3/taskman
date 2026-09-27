@@ -20,7 +20,9 @@ defmodule Taskman.CLI.Client do
   @type runtime_options :: keyword() | map()
   @type error_envelope :: map()
   @type success_shape ::
-          :any | :hierarchy | {:collection | :member, :project | :list | :task}
+          :any
+          | :hierarchy
+          | {:collection | :member, :project | :list | :task | :comment | :task_with_comments}
 
   @doc "Make one API request and classify transport and response-contract failures."
   @spec request(atom(), String.t(), request_options(), runtime_options(), success_shape()) ::
@@ -170,7 +172,40 @@ defmodule Taskman.CLI.Client do
       valid_task_location?(task["location"], task["list_id"])
   end
 
+  defp valid_resource?(task, :task_with_comments) when is_map(task) do
+    valid_resource?(task, :task) and
+      Map.has_key?(task, "comments") and
+      is_list(task["comments"]) and
+      Enum.all?(task["comments"], &valid_resource?(&1, :comment))
+  end
+
+  defp valid_resource?(comment, :comment) when is_map(comment) do
+    Map.keys(comment) |> Enum.sort() == ~w(author created_at id task_id text) and
+      positive_integer?(comment["id"]) and
+      positive_integer?(comment["task_id"]) and
+      valid_comment_author?(comment["author"]) and
+      is_binary(comment["text"]) and
+      utc_iso_datetime?(comment["created_at"])
+  end
+
   defp valid_resource?(_resource, _type), do: false
+
+  defp valid_comment_author?(author) when is_map(author) do
+    Map.keys(author) |> Enum.sort() == ~w(display_name login) and
+      (is_nil(author["display_name"]) or is_binary(author["display_name"])) and
+      is_binary(author["login"])
+  end
+
+  defp valid_comment_author?(_author), do: false
+
+  defp utc_iso_datetime?(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, _datetime, 0} -> true
+      _other -> false
+    end
+  end
+
+  defp utc_iso_datetime?(_value), do: false
 
   defp valid_hierarchy?(hierarchy) do
     required_keys?(hierarchy, ~w(selected_task_id root)) and

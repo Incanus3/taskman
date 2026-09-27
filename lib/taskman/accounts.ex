@@ -184,6 +184,24 @@ defmodule Taskman.Accounts do
   def delete_own_account(actor, current_password),
     do: Taskman.Accounts.AccountClosure.delete_own_account(actor, current_password)
 
+  @spec emails_by_user_id([Ecto.UUID.t()]) :: %{optional(Ecto.UUID.t()) => String.t()}
+  def emails_by_user_id(user_ids),
+    do: Taskman.Accounts.User.Persistence.emails_by_user_id(user_ids)
+
+  @doc false
+  @spec lock_eligible_user(User.t() | term()) ::
+          {:ok, User.t()} | {:error, :authentication_required}
+  def lock_eligible_user(%User{id: id}) do
+    with {:ok, persisted} <- Taskman.Accounts.User.Persistence.lock(id),
+         true <- Taskman.Accounts.Authentication.eligible?(persisted) do
+      {:ok, persisted}
+    else
+      _ -> {:error, :authentication_required}
+    end
+  end
+
+  def lock_eligible_user(_actor), do: {:error, :authentication_required}
+
   @doc false
   @spec record_delivery_result(atom(), String.t(), :ok | {:error, term()}) :: :ok
   def record_delivery_result(purpose, token, result),

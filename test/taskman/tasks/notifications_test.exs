@@ -6,6 +6,7 @@ defmodule Taskman.Tasks.NotificationsTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
+  import Taskman.AccountsFixtures
   alias Taskman.ChangeNotifications
   alias Taskman.ChangeNotifications.Event
 
@@ -127,6 +128,58 @@ defmodule Taskman.Tasks.NotificationsTest do
     assert {:ok, moved} = Tasks.move_task(project, updated, destination)
     assert_receive {:task_event, ^topic, %Event{operation: :moved}}
     assert {:error, :unchanged_location} = Tasks.move_task(project, moved, destination)
+    refute_receive {:task_event, ^topic, %Event{}}, 50
+  end
+
+  test "a committed comment publishes one refetchable comment event and no Task event" do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    actor = user_fixture()
+    topic = subscribe_task_events(project)
+
+    assert {:ok, comment} = Tasks.create_comment(project, task, actor, %{text: "Posted"})
+
+    assert_receive {:task_event, ^topic,
+                    %Event{
+                      entity: :comment,
+                      operation: :created,
+                      project_id: project_id,
+                      task_id: task_id,
+                      entity_id: comment_id
+                    }}
+
+    assert {project_id, task_id, comment_id} == {project.id, task.id, comment.id}
+    assert {:ok, [%{id: ^comment_id, text: "Posted"}]} = Tasks.list_comments(project, task)
+    refute_receive {:task_event, ^topic, %Event{}}, 50
+  end
+
+  test "rejected comment creation publishes no event" do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    actor = user_fixture()
+    topic = subscribe_task_events(project)
+
+    assert {:error, %Ecto.Changeset{}} =
+             Tasks.create_comment(project, task, actor, %{text: "  "})
+
+    refute_receive {:task_event, ^topic, %Event{}}, 50
+  end
+
+  test "comment creation rejects an outer transaction without writing or publishing" do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    actor = user_fixture()
+    topic = subscribe_task_events(project)
+
+    assert_raise ArgumentError, ~r/outside an existing transaction/, fn ->
+      Repo.transaction(fn ->
+        Tasks.create_comment(project, task, actor, %{text: "Rolled back"})
+        Repo.rollback(:abort)
+      end)
+    end
+
+    assert {:ok, []} = Tasks.list_comments(project, task)
+    assert Tasks.get_task_for_project(project, task.id).updated_at == task.updated_at
     refute_receive {:task_event, ^topic, %Event{}}, 50
   end
 

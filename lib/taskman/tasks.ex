@@ -1,12 +1,16 @@
 defmodule Taskman.Tasks do
   import Ecto.Query
 
+  alias Taskman.Accounts
   alias Taskman.ChangeNotifications
   alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
   alias Taskman.Tasks.Hierarchy
+  alias Taskman.Tasks.Comment
+  alias Taskman.Tasks.CommentPersistence
+  alias Taskman.Tasks.Comments
   alias Taskman.Tasks.Mutations
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
@@ -42,6 +46,41 @@ defmodule Taskman.Tasks do
   end
 
   def get_task_for_project(%Project{}, _id), do: nil
+
+  @spec list_comments(Project.t(), Task.t()) ::
+          {:ok, [Comment.t()]} | {:error, :not_found}
+  def list_comments(%Project{} = project, %Task{id: task_id}) when is_integer(task_id) do
+    case get_task_for_project(project, task_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Task{} ->
+        comments = CommentPersistence.list_for_task(task_id)
+
+        emails_by_user_id =
+          comments
+          |> Enum.map(& &1.actor_user_id)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+          |> Accounts.emails_by_user_id()
+
+        {:ok,
+         Enum.map(comments, fn comment ->
+           %{
+             comment
+             | author_login: Map.get(emails_by_user_id, comment.actor_user_id, "Deleted user")
+           }
+         end)}
+    end
+  end
+
+  def list_comments(%Project{}, %Task{}), do: {:error, :not_found}
+
+  @spec create_comment(Project.t(), Task.t(), term(), map()) ::
+          {:ok, Comment.t()}
+          | {:error, Ecto.Changeset.t() | :not_found | :authentication_required}
+  def create_comment(project, task, actor, attrs),
+    do: Comments.create(project, task, actor, attrs)
 
   @spec search_parent_candidates(Project.t(), Task.t() | nil, String.t(), keyword()) ::
           [TaskWithLocation.t()]

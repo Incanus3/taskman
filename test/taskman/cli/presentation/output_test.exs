@@ -69,6 +69,38 @@ defmodule Taskman.CLI.Presentation.OutputTest do
              "42  Build import\n└─ 51  Implement parser  [selected]\n"
   end
 
+  test "readable comments include verified login, local time, and full multiline text" do
+    comment = %{
+      "id" => 123,
+      "task_id" => 42,
+      "author" => %{"display_name" => "Research agent", "login" => "person@example.com"},
+      "text" => "First line\nSecond line",
+      "created_at" => "2026-09-26T12:34:56.123456Z"
+    }
+
+    output = Output.success({:tasks, :comments_list}, [comment], false)
+    assert output =~ "123"
+    assert output =~ "Research agent (person@example.com)"
+    assert output =~ "First line\nSecond line"
+    assert output =~ "2026-09-26"
+    assert output =~ ".123456"
+    assert Output.success({:tasks, :comments_list}, [], false) =~ "No comments yet"
+
+    assert Output.success(
+             {:tasks, :comments_add},
+             Map.put(comment, "author", %{"display_name" => nil, "login" => "person@example.com"}),
+             false
+           ) =~ "person@example.com"
+  end
+
+  test "readable Task show adds the comment section only for opt-in show" do
+    task = %{"id" => 42, "title" => "Review", "comments" => []}
+    output = Output.success({:tasks, :show_with_comments}, task, false)
+    assert output =~ "TITLE: Review"
+    assert output =~ "No comments yet"
+    refute Output.success({:tasks, :show}, Map.delete(task, "comments"), false) =~ "COMMENTS"
+  end
+
   test "JSON errors preserve the API envelope and trailing newline" do
     envelope = %{error: %{code: "not_found", message: "Resource not found"}}
 

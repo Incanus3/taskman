@@ -77,8 +77,8 @@ const TaskTablePreferences = {
   mounted() {
     this.allowedStatuses = this.el.dataset.taskStatuses.split(",")
     this.lastURL = window.location.href
-    this.onPopstate = () => this.inspectRoute()
-    window.addEventListener("popstate", this.onPopstate)
+    this.onNavigate = () => this.inspectRoute()
+    window.addEventListener("phx:navigate", this.onNavigate)
 
     this.hydratePreferences()
 
@@ -98,7 +98,7 @@ const TaskTablePreferences = {
   },
 
   destroyed() {
-    window.removeEventListener("popstate", this.onPopstate)
+    window.removeEventListener("phx:navigate", this.onNavigate)
   },
 
   hydratePreferences() {
@@ -233,9 +233,199 @@ const ShareTaskView = {
   }
 }
 
+const CommentThreadScroll = {
+  mounted() {
+    this.taskId = this.el.dataset.taskId
+    this.revision = this.el.dataset.revision
+    this.saved = {top: 0, following: true}
+    this.activity = this.el.querySelector("#task-activity")
+    this.thread = this.el.querySelector("#task-comment-thread")
+    // Stream reset can zero scrollTop before beforeUpdate; retain the last stable measurement.
+    this.onScroll = () => {
+      if (!this.patching && this.thread.scrollHeight === this.lastScrollHeight) this.capture()
+    }
+    this.thread.addEventListener("scroll", this.onScroll)
+    this.wasHidden = this.activity.hidden
+    this.tabs = document.getElementById("task-detail-tabs")
+    this.onTabClick = event => {
+      if (event.target.closest("#task-sessions-tab")) this.capture()
+    }
+    this.tabs?.addEventListener("click", this.onTabClick, true)
+    this.visibilityObserver = new MutationObserver(() => {
+      const hidden = this.activity.hidden
+      if (this.wasHidden && !hidden) this.restore()
+      this.wasHidden = hidden
+    })
+    this.visibilityObserver.observe(this.activity, {attributes: true, attributeFilter: ["hidden"]})
+    requestAnimationFrame(() => this.capture())
+  },
+
+  beforeUpdate(toEl) {
+    if (toEl.dataset.taskId !== this.taskId) return
+    if (toEl.dataset.revision !== this.revision && this.visibleWide()) {
+      this.patching = true
+      this.restoreAfterUpdate = true
+    }
+  },
+
+  updated() {
+    this.thread = this.el.querySelector("#task-comment-thread")
+    if (this.el.dataset.taskId !== this.taskId) {
+      this.taskId = this.el.dataset.taskId
+      this.saved = {top: 0, following: true}
+      this.restoreAfterUpdate = true
+    }
+
+    if (this.el.dataset.revision !== this.revision) {
+      this.revision = this.el.dataset.revision
+      if (this.visibleWide()) this.restoreAfterUpdate = true
+    }
+
+    if (this.restoreAfterUpdate && this.visibleWide()) {
+      cancelAnimationFrame(this.restoreFrame)
+      this.restoreFrame = requestAnimationFrame(() => {
+        this.restore()
+        requestAnimationFrame(() => { this.patching = false })
+      })
+    }
+    this.restoreAfterUpdate = false
+  },
+
+  destroyed() {
+    cancelAnimationFrame(this.restoreFrame)
+    this.thread.removeEventListener("scroll", this.onScroll)
+    this.tabs?.removeEventListener("click", this.onTabClick, true)
+    this.visibilityObserver?.disconnect()
+  },
+
+  visibleWide() {
+    return !this.activity.hidden && window.matchMedia("(min-width: 80rem)").matches
+  },
+
+  capture() {
+    if (!this.visibleWide()) return
+    const {scrollTop, scrollHeight, clientHeight} = this.thread
+    this.saved = {
+      top: scrollTop,
+      following: scrollHeight <= clientHeight || scrollHeight - clientHeight - scrollTop <= 2
+    }
+    this.lastScrollHeight = scrollHeight
+  },
+
+  restore() {
+    if (!this.visibleWide()) return
+    this.thread.scrollTop = this.saved.following ? this.thread.scrollHeight : this.saved.top
+    this.lastScrollHeight = this.thread.scrollHeight
+  }
+}
+
+const CommentDeparture = {
+  mounted() {
+    this.wasPending = this.el.dataset.pending === "true"
+    this.lastTaskId = this.el.dataset.taskId
+    this.onBeforeUnload = event => {
+      event.preventDefault()
+      event.returnValue = true
+    }
+    this.onInput = event => {
+      if (event.target?.id === "task-comment-text") this.syncWarning()
+    }
+    this.onClick = event => {
+      if (this.el.dataset.taskId && event.target.closest("#task-modal") &&
+          !event.target.closest("#task-modal-content")) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        this.pushEvent("request_task_departure", {
+          destination: this.el.dataset.browsePath,
+          draft: this.draft()
+        })
+        return
+      }
+      if (!this.hasDraft() && this.el.dataset.pending !== "true") return
+      const link = event.target.closest("a[href]")
+      if (!link || link.target || link.hasAttribute("download") || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      const url = new URL(link.href, location.href)
+      if (url.origin !== location.origin) return
+      const destination = url.pathname + url.search + url.hash
+      if (this.sameTask(destination) && this.el.dataset.pending !== "true") return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      this.pushEvent("request_task_departure", {destination, draft: this.draft()})
+    }
+    this.onBeforeNavigate = event => {
+      if (!event.detail.pop) return
+      if (!this.hasDraft() && this.el.dataset.pending !== "true") return
+      const url = new URL(event.detail.href)
+      const destination = url.pathname + url.search + url.hash
+      if (this.sameTask(destination) && this.el.dataset.pending !== "true") return
+      event.preventDefault()
+      this.pushEvent("request_task_departure", {destination, draft: this.draft()})
+    }
+    this.onFocusCommentError = () => {
+      window.setTimeout(() => {
+        const target = document.querySelector("#task-comment-departure-error") ||
+          document.querySelector("#task-comment-error") ||
+          document.querySelector("#task-comment-text")
+        target?.focus()
+      }, 0)
+    }
+    this.onDepartureCommitted = () => {
+      this.suppressWarning = true
+      this.syncWarning()
+    }
+    document.addEventListener("input", this.onInput, true)
+    document.addEventListener("click", this.onClick, true)
+    window.addEventListener("phx:before-navigate", this.onBeforeNavigate)
+    window.addEventListener("phx:focus_task_comment_error", this.onFocusCommentError)
+    window.addEventListener("phx:comment_departure_committed", this.onDepartureCommitted)
+    this.syncWarning()
+  },
+
+  updated() {
+    const returnedToTask = this.wasPending && this.el.dataset.pending === "false" &&
+      this.el.dataset.retainedDestination !== "true" && document.querySelector("#task-modal-content")
+    if (returnedToTask) {
+      requestAnimationFrame(() => document.querySelector("#task-modal-content")?.focus())
+    }
+    this.wasPending = this.el.dataset.pending === "true"
+    if (this.el.dataset.taskId !== this.lastTaskId) this.suppressWarning = false
+    this.lastTaskId = this.el.dataset.taskId
+    this.syncWarning()
+  },
+
+  destroyed() {
+    document.removeEventListener("input", this.onInput, true)
+    document.removeEventListener("click", this.onClick, true)
+    window.removeEventListener("phx:before-navigate", this.onBeforeNavigate)
+    window.removeEventListener("phx:focus_task_comment_error", this.onFocusCommentError)
+    window.removeEventListener("phx:comment_departure_committed", this.onDepartureCommitted)
+    window.removeEventListener("beforeunload", this.onBeforeUnload)
+  },
+
+  draft() {
+    return document.querySelector("#task-comment-text")?.value || ""
+  },
+
+  hasDraft() {
+    return this.draft().trim() !== "" && !!this.el.dataset.taskId
+  },
+
+  sameTask(destination) {
+    const path = new URL(destination, location.origin).pathname
+    return path.endsWith(`/tasks/${this.el.dataset.taskId}`)
+  },
+
+  syncWarning() {
+    window.removeEventListener("beforeunload", this.onBeforeUnload)
+    if (this.hasDraft() && !this.suppressWarning) window.addEventListener("beforeunload", this.onBeforeUnload)
+  }
+}
+
 export const projectLiveHooks = {
   "TaskmanWeb.ProjectLive.MobileProjectDrawer": MobileProjectDrawer,
   "TaskmanWeb.ProjectLive.ProjectMemory": ProjectMemory,
   "TaskmanWeb.ProjectLive.TaskTablePreferences": TaskTablePreferences,
   "TaskmanWeb.ProjectLive.ShareTaskView": ShareTaskView,
+  "TaskmanWeb.ProjectLive.CommentThreadScroll": CommentThreadScroll,
+  "TaskmanWeb.ProjectLive.CommentDeparture": CommentDeparture,
 }

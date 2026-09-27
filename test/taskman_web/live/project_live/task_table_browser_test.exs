@@ -72,7 +72,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
 
   test "browser-held filters, sharing, and Project memory survive navigation" do
     password = "browser-test-password"
-    email = "browser-#{System.unique_integer([:positive])}@example.com"
+    email = "browser-#{Ecto.UUID.generate()}@example.com"
     assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
 
     project = project_fixture(%{})
@@ -108,9 +108,61 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
     end
   end
 
+  test "Task location breadcrumbs refit when their available width changes" do
+    password = "browser-test-password"
+    email = "browser-breadcrumbs-#{Ecto.UUID.generate()}@example.com"
+    assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
+
+    project = project_fixture(%{})
+    parent = list_fixture(project, %{name: "Planning"})
+    leaf = list_fixture(project, parent, %{name: "Launch"})
+    task = task_fixture(project, leaf, %{})
+
+    server =
+      start_supervised!(
+        {Bandit, plug: TaskmanWeb.Endpoint, port: 0, ip: {127, 0, 0, 1}, startup_log: false}
+      )
+
+    assert {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    base_url = "http://127.0.0.1:#{port}"
+    {:ok, _started} = Application.ensure_all_started(:wallaby)
+
+    {:ok, session} =
+      Wallaby.start_session(binary: System.find_executable("chromium"), window_size: [1440, 800])
+
+    try do
+      sign_in(session, base_url, email, password, task.id)
+      Browser.visit(session, "#{base_url}/projects/#{project.id}/tasks/#{task.id}")
+      Browser.find(session, Query.css("#task-location-breadcrumbs"))
+
+      js(
+        session,
+        "const nav = document.querySelector('#task-location-breadcrumbs'); nav.style.flex = 'none'; nav.style.width = '120px'"
+      )
+
+      wait_for_js(
+        session,
+        "Breadcrumbs collapse when narrow",
+        "return !document.querySelector('#task-location-ellipsis').hidden",
+        true
+      )
+
+      js(session, "document.querySelector('#task-location-breadcrumbs').style.width = '1000px'")
+
+      wait_for_js(
+        session,
+        "Breadcrumbs expand when wide",
+        "return document.querySelector('#task-location-ellipsis').hidden",
+        true
+      )
+    after
+      Wallaby.end_session(session)
+    end
+  end
+
   test "workspace keeps navigation and Task controls visible while Lists and Tasks scroll" do
     password = "browser-test-password"
-    email = "browser-layout-#{System.unique_integer([:positive])}@example.com"
+    email = "browser-layout-#{Ecto.UUID.generate()}@example.com"
     assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
 
     project = project_fixture(%{})
@@ -243,7 +295,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
 
   test "icon actions show a delayed tooltip that remains inside the viewport" do
     password = "browser-test-password"
-    email = "browser-tooltips-#{System.unique_integer([:positive])}@example.com"
+    email = "browser-tooltips-#{Ecto.UUID.generate()}@example.com"
     assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
 
     project = project_fixture(%{})
