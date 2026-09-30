@@ -1,9 +1,9 @@
 # Operations lock coverage
 
-Status: parked. Updated: 2026-09-18. Resume: `$resume operations-lock-coverage`.
+Status: active. Updated: 2026-09-24. Resume: `$resume operations-lock-coverage`.
 
-Continue after the current operations branch is merged, on a dedicated branch from refreshed main.
-This workstream no longer blocks Operations VPS readiness or its consolidation/merge sequence.
+The prior operations branch is merged. Work continues on the dedicated
+`operations-lock-coverage` branch from refreshed main at `2fd2c51b`.
 
 ## Objective and authority
 
@@ -18,10 +18,11 @@ owns contracts, alternatives, file boundaries and verification requirements.
 
 ## Current checkpoint
 
-No admission/reservation code is implemented. Provisioning convergence remains unlocked before
-genesis; helper operations and scheduled backups use the existing lifecycle lock. Independent
-scoped correctness review of the complete written design is finished. Ownership and manual-recovery
-direction are approved; full written-design approval and implementation planning remain pending.
+No admission/reservation code is implemented. On the refreshed baseline, provisioning convergence
+still runs before lifecycle-locked genesis, scheduled backups use only that lifecycle lock, and the
+helper protocol remains v3. Independent scoped correctness review of the complete written design is
+finished. Ownership and manual-recovery direction are approved; full written-design approval and
+implementation planning remain pending.
 
 Approved direction: one fixed host-wide admission flock, a root-private provisioning reservation
 bound to the confirmed installation, finite nested owner-ID use, conflict status 12, and no completion
@@ -40,26 +41,24 @@ protocol/ownership decisions before their later execution without absorbing thei
 
 ## Remaining order and gates
 
-1. Wait for the current operations merge. Refresh main and select a dedicated
-   `operations-lock-coverage` branch; refresh actual code/package/host assumptions and reread the
-   complete design. Branch creation is deferred until that merged baseline exists.
-2. Obtain explicit operator approval of the complete written design. Revalidate affected review
-   conclusions if the baseline changed materially; then create/review a Beads-backed implementation plan.
-3. Obtain plan approval and preserve the clean-session implementation boundary before implementation.
-4. Implement, perform scoped independent correctness review and local operations/package/runtime/TTY
+1. Obtain explicit operator approval of the complete written design. Revalidate affected review
+   conclusions if the baseline changes materially; then create/review a Beads-backed implementation plan.
+2. Obtain plan approval and preserve the clean-session implementation boundary before implementation.
+3. Implement, perform scoped independent correctness review and local operations/package/runtime/TTY
    verification, and update canonical contracts/runbook/indexes to reflect implemented behavior.
-5. Obtain separate authority for native host actions and exercise the design's native overlap,
+4. Obtain separate authority for native host actions and exercise the design's native overlap,
    interruption/recovery, legacy scheduler, first/repeat provisioning and reboot acceptance gates.
    Preserve private recovery resources and refresh affected source/artifact/acceptance bindings.
-6. Refresh target/remote/review and final-head CI; obtain separate publication and merge authority.
+5. Refresh target/remote/review and final-head CI; obtain separate publication and merge authority.
    Keep this handoff until explicit operator workstream-completion confirmation.
 
 ## Verification baseline and limits
 
-Written-design review found no remaining material contradictions. Changed-document links/anchors
-and whitespace passed at the design checkpoint; `mix precommit` stopped before tests because local
-PostgreSQL at localhost:5432 refused connection. This is document verification, not implementation
-or native acceptance. Historical native/source/artifact baselines remain qualified in the
+Written-design review found no remaining material contradictions. On the refreshed baseline,
+handoff links and whitespace passed, and `mix precommit` passed 914 tests. This verifies the
+resume checkpoint, not the proposed implementation or native acceptance. Historical
+native/source/artifact baselines remain qualified in the
 [acceptance report](../research/2026-09-17-operations-vps-acceptance.md); protected recovery obligations
 remain in the [environment inventory](../inventories/operations-environments.md#staging-recovery-retention).
-No new host action, deployment, publication or merge is authorized by this transfer.
+The refreshed source inspection establishes the current v3/unlocked baseline only; it does not
+verify the proposed implementation or authorize host action, deployment, publication or merge.
