@@ -63,7 +63,7 @@ defmodule Taskman.MixProject do
       {:wallaby, "~> 0.31.0", only: :test, runtime: false},
       # Wallaby permits HTTPoison 3, whose Hackney 4 dependency needs OTP 27.
       {:httpoison, "~> 2.3", only: :test, runtime: false},
-      {:phoenix_live_dashboard, "~> 0.8.3"},
+      {:phoenix_live_dashboard, "~> 0.9.1"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
       {:heroicons,
@@ -75,7 +75,7 @@ defmodule Taskman.MixProject do
        depth: 1},
       {:daisyui,
        github: "saadeghi/daisyui",
-       tag: "v5.5.20",
+       tag: "v5.7.47",
        sparse: "packages/bundle",
        app: false,
        compile: false,
@@ -86,7 +86,7 @@ defmodule Taskman.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
-      {:dns_cluster, "~> 0.2.0"},
+      {:dns_cluster, "~> 0.3.0"},
       {:bandit, "~> 1.5"}
     ]
   end

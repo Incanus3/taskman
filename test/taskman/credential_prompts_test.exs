@@ -52,4 +52,26 @@ defmodule Taskman.CredentialPromptsTest do
     assert {:error, :input_unavailable} = CredentialPrompts.prompt_for_password(FakeTerminal)
     assert [{:secret, "Password: "}] = FakeTerminal.prompts()
   end
+
+  test "prompt_for_password accepts eight codepoints with seven graphemes" do
+    password = "abcdefg\u0301"
+    FakeTerminal.set_responses([], [password, password])
+
+    assert {:ok, ^password} = CredentialPrompts.prompt_for_password(FakeTerminal)
+    assert [{:secret, "Password: "}, {:secret, "Confirm password: "}] = FakeTerminal.prompts()
+  end
+
+  test "prompt_for_password retries passwords exceeding 128 codepoints" do
+    password = String.duplicate("a", 128) <> "\u0301"
+    FakeTerminal.set_responses([], [password, password, "accepted-password", "accepted-password"])
+
+    assert {:ok, "accepted-password"} = CredentialPrompts.prompt_for_password(FakeTerminal)
+
+    assert [
+             {:secret, "Password: "},
+             {:secret, "Confirm password: "},
+             {:secret, "Password: "},
+             {:secret, "Confirm password: "}
+           ] = FakeTerminal.prompts()
+  end
 end

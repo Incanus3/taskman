@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["setuptools>=69,<81"]
+requires = ["setuptools>=84,<85"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -18,7 +18,7 @@ where = ["."]
 
 [dependency-groups]
 dev = [
-  "pytest>=8,<9",
+  "pytest>=9.1.1,<10",
   "pytest-xdist>=3.8,<4",
 ]
 

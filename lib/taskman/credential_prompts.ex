@@ -44,7 +44,7 @@ defmodule Taskman.CredentialPrompts do
   end
 
   defp validate_or_retry_password(password, confirmation, terminal) do
-    if password == confirmation and String.length(password) in @password_length do
+    if password == confirmation and length(String.codepoints(password)) in @password_length do
       {:ok, password}
     else
       prompt_for_password(terminal)

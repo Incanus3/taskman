@@ -281,7 +281,7 @@ The command never starts the Phoenix endpoint and has no HTTP equivalent.
 
 An administrator enters an email address and the intended administrator flag in AshAdmin. Taskman
 creates a pending user and sends a single-use setup link valid for seven days. The link verifies the
-email and lets the user choose and confirm a password with a minimum length of eight characters.
+email and lets the user choose and confirm a password with a minimum length of eight Unicode codepoints.
 Successful setup atomically activates the account and consumes the token.
 
 Resending an invitation issues a new token and invalidates previous setup tokens. Revoking an
@@ -564,7 +564,10 @@ handles missing, rejected, or forbidden authentication.
 ## Security behavior
 
 - Passwords use `AshAuthentication.Argon2Provider`.
-- Password length is 8–128 characters. The implementation does not add arbitrary composition rules.
+- Password length is 8–128 Unicode codepoints, consistently in web validation and terminal prompts.
+  Codepoint counting bounds input length even when a grapheme contains many combining marks; see
+  [Ash's string-length advisory](https://github.com/ash-project/ash/security/advisories/GHSA-cwjv-574p-59f6).
+  The implementation does not add arbitrary composition rules.
 - Password, password confirmation, token, secret, and hash fields are sensitive and redacted.
 - Authentication, setup, confirmation, and recovery failures do not enumerate registered email
   addresses.

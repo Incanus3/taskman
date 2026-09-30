@@ -19,4 +19,25 @@ defmodule Taskman.Accounts.User.BootstrapTest do
 
     assert original.id
   end
+
+  test "bootstrap accepts eight codepoints with seven graphemes" do
+    assert {:ok, user} = Accounts.bootstrap_admin("unicode@example.com", "abcdefg\u0301")
+
+    assert user.status == :active
+    assert user.admin?
+
+    assert {:ok, signed_in} =
+             Accounts.sign_in_with_password(%{
+               "email" => "unicode@example.com",
+               "password" => "abcdefg\u0301"
+             })
+
+    assert signed_in.id == user.id
+  end
+
+  test "bootstrap rejects passwords exceeding 128 codepoints" do
+    password = String.duplicate("a", 128) <> "\u0301"
+
+    assert {:error, _error} = Accounts.bootstrap_admin("too-long@example.com", password)
+  end
 end

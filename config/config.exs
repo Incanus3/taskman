@@ -13,6 +13,9 @@ config :taskman,
 
 config :taskman, ash_domains: [Taskman.Accounts]
 
+# Count Unicode codepoints consistently in validation and SQL length expressions.
+config :ash, default_string_length_count: :codepoints
+
 config :ash_admin, actor_plug: TaskmanWeb.AshAdminActorPlug
 
 config :taskman, :task_autosave_delay_ms, 300
@@ -53,7 +56,7 @@ config :taskman,
 
 # Configure esbuild (the version is required)
 config :esbuild,
-  version: "0.25.4",
+  version: "0.28.2",
   taskman: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
@@ -63,7 +66,7 @@ config :esbuild,
 
 # Configure tailwind (the version is required)
 config :tailwind,
-  version: "4.3.0",
+  version: "4.3.3",
   taskman: [
     args: ~w(
       --input=assets/css/app.css
