@@ -149,6 +149,29 @@ defmodule Taskman.CLI.Execution.Parser do
     end
   end
 
+  defp cast_option_value(%Option{type: :positive_integer_csv} = option, value, path) do
+    ids = String.split(value, ",", trim: false)
+
+    parsed =
+      Enum.reduce_while(ids, [], fn raw_id, parsed ->
+        case Integer.parse(raw_id) do
+          {id, ""} when id > 0 -> {:cont, [id | parsed]}
+          _other -> {:halt, :error}
+        end
+      end)
+
+    case parsed do
+      :error ->
+        {:error, "Invalid ID list for #{option.long}: #{inspect(value)}", path}
+
+      [] ->
+        {:error, "Invalid ID list for #{option.long}: #{inspect(value)}", path}
+
+      parsed ->
+        {:ok, Enum.reverse(parsed)}
+    end
+  end
+
   defp cast_option_value(%Option{type: type} = option, value, path)
        when type in [:integer, :positive_integer] do
     case Integer.parse(value) do
@@ -195,6 +218,11 @@ defmodule Taskman.CLI.Execution.Parser do
   end
 
   defp cast_argument(:string, value), do: {:ok, value}
+
+  defp cast_argument(:nonblank_string, value) do
+    if String.trim(value) == "", do: :error, else: {:ok, value}
+  end
+
   defp cast_argument(_type, _value), do: :error
 
   defp validate_required_options(%Command{options: command_options}, options, path) do
@@ -232,6 +260,17 @@ defmodule Taskman.CLI.Execution.Parser do
           {:cont, :ok}
         else
           {:halt, {:error, "Options #{format_fields(fields)} must be used together", path}}
+        end
+
+      {:requires_value, fields, required_field, required_value}, :ok ->
+        if Enum.any?(fields, &Map.has_key?(options, &1)) and
+             Map.get(options, required_field) != required_value do
+          {:halt,
+           {:error,
+            "Options #{format_fields(fields)} require --#{String.replace(Atom.to_string(required_field), "_", "-")} #{required_value}",
+            path}}
+        else
+          {:cont, :ok}
         end
 
       {:forbidden_global, field}, :ok ->

@@ -6,6 +6,9 @@
 **Supersession:** The [Task comments design](2026-09-26-task-comments-design.md) governs the
 current tabbed Activity/Sessions presentation and its scrolling behavior. The stacked sections and
 shared-scroll rule below remain as historical rationale for the original Task-detail increment.
+The [blocking relationships design](2026-09-27-task-blocking-relationships-design.md) adds the current
+Related Tasks controls and narrow-screen order: main fields, Related Tasks, Activity/Sessions.
+The original increment's relationship exclusions below are historical scope, not current limits.
 
 ## Goal
 

@@ -15,7 +15,11 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(lists create),
              ~w(lists rename),
              ~w(tasks list),
+             ~w(tasks search),
              ~w(tasks show),
+             ~w(tasks blocking show),
+             ~w(tasks blocks add),
+             ~w(tasks blocks remove),
              ~w(tasks comments list),
              ~w(tasks comments add),
              ~w(tasks hierarchy),
@@ -30,6 +34,17 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(agent onboarding),
              ~w(agent skill install)
            ]
+  end
+
+  test "Task search accepts an optional Project while Task list still requires it" do
+    assert {:ok, search} = Parser.parse(["tasks", "search", "42 publish"], %{})
+    assert search.arguments == %{query: "42 publish"}
+    assert search.options == %{}
+
+    assert {:ok, filtered} = Parser.parse(~w(tasks search publish --project 9), %{})
+    assert filtered.options == %{project: 9}
+
+    assert {:error, _, ["tasks", "list"]} = Parser.parse(~w(tasks list), %{})
   end
 
   test "parses comment commands and opt-in Task show without inventing actor options" do
@@ -218,6 +233,16 @@ defmodule Taskman.CLI.Execution.ParserTest do
   test "requires at least one editable option for task updates" do
     assert {:error, _message, ["tasks", "update"]} =
              Parser.parse(~w(tasks update --project 7 42), %{})
+  end
+
+  test "accepts repeated blocker confirmation IDs in their original order" do
+    assert {:ok, invocation} =
+             Parser.parse(
+               ~w(tasks update --project 9 42 --status done --confirm-unresolved-blockers 15,12,15,17,12),
+               %{}
+             )
+
+    assert invocation.options.confirm_unresolved_blockers == [15, 12, 15, 17, 12]
   end
 
   test "parses parent assignment and removal as Task mutations" do

@@ -173,12 +173,22 @@ defmodule Taskman.CLI.Presentation.Help do
           "  Successful data is readable by default; add --json for one API-compatible JSON envelope."
       end
 
+    search_details =
+      if command.handler == {:tasks, :search} do
+        ["  Readable summaries use ID, TITLE, STATUS, PRIORITY, PROJECT, and LOCATION columns."]
+      else
+        []
+      end
+
     [
       "",
       "Output:",
-      output_description,
-      "  Diagnostics and failed operations are written to stderr."
-    ]
+      output_description
+    ] ++
+      search_details ++
+      [
+        "  Diagnostics and failed operations are written to stderr."
+      ]
   end
 
   defp forbidden_global?(%Command{constraints: constraints}, option_name) do

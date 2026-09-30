@@ -283,7 +283,12 @@ The Task table remains a LiveView stream and resets after location changes, desc
 changes, List mutations that alter displayed paths, and Task moves. Empty-state and count state are
 tracked separately from the stream.
 
+The **Statuses** dropdown trigger shows only its funnel icon below `md` (768px), with an accessible
+`Statuses` label and hover title. From 768px upward it also shows its text label and dropdown chevron.
+
 **Add Task** always creates in the selected location, even when descendant inclusion is active.
+Its workspace button shows a plus icon below `md` (768px) and its text label from 768px upward,
+with an accessible `Add task` label and hover title at every width.
 After creation, the route returns to the same location with the recognized query preserved.
 
 ## Explicit Task movement

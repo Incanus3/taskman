@@ -72,7 +72,7 @@ defmodule TaskmanWeb.AuthenticationTest do
     assert has_element?(view, "#account-sign-out-link")
   end
 
-  test "administrators see the administration link between their identity and account settings",
+  test "administrators see the administration link after the home link in application navigation",
        %{
          conn: conn
        } do
@@ -82,7 +82,7 @@ defmodule TaskmanWeb.AuthenticationTest do
 
     assert has_element?(
              view,
-             "#account-identity + #account-administration-link[href='/admin'] + #account-settings-link"
+             "#application-navigation #application-home-link + #account-administration-link[href='/admin']"
            )
   end
 
@@ -93,10 +93,14 @@ defmodule TaskmanWeb.AuthenticationTest do
 
     assert has_element?(
              view,
-             "#authenticated-navigation > #application-home-link[href='/'] + #account-menu"
+             "#authenticated-navigation #application-navigation #application-home-link[href='/']"
            )
+
+    assert has_element?(view, "#authenticated-navigation #global-task-search")
+    assert has_element?(view, "#authenticated-navigation #account-menu")
   end
 
+  @tag :capture_log
   test "pending and disabled users are rejected by the authenticated session", %{conn: conn} do
     pending = pending_user_fixture()
     disabled = user_fixture(%{status: :disabled})

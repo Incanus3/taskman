@@ -219,6 +219,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
     end)
   end
 
+  @tag :capture_log
   test "disabling serializes browser-session issuance with credential revocation" do
     Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
       suffix = System.unique_integer([:positive])

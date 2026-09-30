@@ -99,6 +99,7 @@ defmodule Taskman.Accounts.User.InvitationTest do
     assert {:error, _error} = Accounts.invite_user(admin, %{email: "DUPLICATE@example.com"})
   end
 
+  @tag :capture_log
   test "a delivery failure leaves the created invitation available for resend" do
     admin = admin_fixture()
     mailer_delivery = Application.fetch_env!(:taskman, :mailer_delivery)

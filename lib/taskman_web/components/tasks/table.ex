@@ -61,22 +61,24 @@ defmodule TaskmanWeb.Tasks.Table do
         id="task-status-filter-button"
         type="button"
         phx-click="toggle_task_status_filter"
+        aria-label="Statuses"
+        title="Statuses"
         aria-haspopup="true"
         aria-expanded={to_string(@open?)}
         class={[
-          "inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition",
+          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition md:w-auto md:px-3",
           @open? &&
             "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
           !@open? &&
             "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
         ]}
       >
-        <.icon name="hero-funnel" class="size-4" />
-        <span>Statuses</span>
+        <.icon name="hero-funnel" class="size-5 md:size-4" />
+        <span class="hidden md:inline">Statuses</span>
         <.icon
           name="hero-chevron-down"
           class={[
-            "size-3.5 transition-transform",
+            "hidden size-3.5 transition-transform md:inline-block",
             @open? && "rotate-180"
           ]}
         />

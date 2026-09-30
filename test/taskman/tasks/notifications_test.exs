@@ -165,6 +165,131 @@ defmodule Taskman.Tasks.NotificationsTest do
     refute_receive {:task_event, ^topic, %Event{}}, 50
   end
 
+  test "link mutations invalidate each endpoint Project after success and deduplicate a shared Project" do
+    first_project = project_fixture(%{})
+    second_project = project_fixture(%{})
+    source = task_fixture(first_project)
+    same_project_target = task_fixture(first_project)
+    foreign_target = task_fixture(second_project)
+    first_topic = subscribe_task_events(first_project)
+    second_topic = subscribe_task_events(second_project)
+
+    assert {:ok, _edge} = Tasks.add_block(first_project, source, same_project_target)
+
+    assert_receive {:task_event, ^first_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: task_ids}}
+
+    assert task_ids == [source.id, same_project_target.id]
+    refute_receive {:task_event, ^first_topic, %Event{entity: :relationship}}, 50
+    refute_receive {:task_event, ^second_topic, %Event{entity: :relationship}}, 50
+
+    assert {:ok, _edge} = Tasks.remove_block(first_project, source, same_project_target)
+
+    assert_receive {:task_event, ^first_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: task_ids}}
+
+    assert task_ids == [source.id, same_project_target.id]
+    refute_receive {:task_event, ^first_topic, %Event{entity: :relationship}}, 50
+
+    assert {:ok, _edge} = Tasks.add_block(first_project, source, foreign_target)
+
+    assert_receive {:task_event, ^first_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: [source_id]}}
+
+    assert source_id == source.id
+
+    assert_receive {:task_event, ^second_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: [target_id]}}
+
+    assert target_id == foreign_target.id
+
+    assert {:ok, _edge} = Tasks.remove_block(first_project, source, foreign_target)
+
+    assert_receive {:task_event, ^first_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: [source_id]}}
+
+    assert source_id == source.id
+
+    assert_receive {:task_event, ^second_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: [target_id]}}
+
+    assert target_id == foreign_target.id
+  end
+
+  test "rejected link mutations publish no relationship invalidation" do
+    project = project_fixture(%{})
+    source = task_fixture(project)
+    target = task_fixture(project)
+    topic = subscribe_task_events(project)
+
+    assert {:error, _} = Tasks.add_block(project, source, source)
+    refute_receive {:task_event, ^topic, %Event{entity: :relationship}}, 50
+
+    assert {:ok, _edge} = Tasks.add_block(project, source, target)
+    assert_receive {:task_event, ^topic, %Event{entity: :relationship}}
+
+    assert {:error, _} = Tasks.add_block(project, source, target)
+    assert {:error, :not_found} = Tasks.remove_block(project, target, source)
+    refute_receive {:task_event, ^topic, %Event{entity: :relationship}}, 50
+  end
+
+  test "linked Task field and location changes invalidate the other endpoint's local ID" do
+    source_project = project_fixture(%{})
+    target_project = project_fixture(%{})
+    destination = list_fixture(source_project, nil, %{name: "Moved"})
+    source = task_fixture(source_project, %{title: "Source"})
+    target = task_fixture(target_project)
+    assert {:ok, _edge} = Tasks.add_block(source_project, source, target)
+    source_topic = subscribe_task_events(source_project)
+    target_topic = subscribe_task_events(target_project)
+
+    for attrs <- [
+          %{title: "Renamed"},
+          %{priority: :high},
+          %{status: :in_progress}
+        ] do
+      source = Tasks.get_task_for_project(source_project, source.id)
+      assert {:ok, _updated} = Tasks.update_task(source_project, source, attrs)
+      assert_receive {:task_event, ^source_topic, %Event{entity: :task}}
+
+      assert_receive {:task_event, ^target_topic,
+                      %Event{
+                        entity: :relationship,
+                        operation: :invalidated,
+                        task_ids: [target_id]
+                      }}
+
+      assert target_id == target.id
+      refute_receive {:task_event, ^target_topic, %Event{entity: :task}}, 0
+    end
+
+    source = Tasks.get_task_for_project(source_project, source.id)
+    assert {:ok, _moved} = Tasks.move_task(source_project, source, destination)
+    assert_receive {:task_event, ^source_topic, %Event{entity: :task, operation: :moved}}
+
+    assert_receive {:task_event, ^target_topic,
+                    %Event{entity: :relationship, operation: :invalidated, task_ids: [target_id]}}
+
+    assert target_id == target.id
+    refute_receive {:task_event, ^target_topic, %Event{entity: :task}}, 50
+  end
+
+  test "same-Project linked Task updates invalidate the other local Task ID" do
+    project = project_fixture(%{})
+    source = task_fixture(project)
+    target = task_fixture(project)
+    assert {:ok, _edge} = Tasks.add_block(project, source, target)
+    topic = subscribe_task_events(project)
+
+    assert {:ok, _updated} = Tasks.update_task(project, target, %{title: "Renamed"})
+
+    assert_receive {:task_event, ^topic, %Event{entity: :task, entity_id: target_id}}
+    assert target_id == target.id
+    assert_receive {:task_event, ^topic, %Event{entity: :relationship, task_ids: [source_id]}}
+    assert source_id == source.id
+    refute_receive {:task_event, ^topic, %Event{entity: :relationship}}, 50
+  end
+
   test "comment creation rejects an outer transaction without writing or publishing" do
     project = project_fixture(%{})
     task = task_fixture(project)

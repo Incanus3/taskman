@@ -1,7 +1,7 @@
 # Taskman — Lightweight MVP Roadmap
 
-**Status:** Active Project selector complete and operator accepted; Task relationships follow
-**Updated:** 2026-09-26
+**Status:** Blocking relationships and global Task jump search implemented and verified; operator acceptance and merge pending
+**Updated:** 2026-09-29
 
 This roadmap is intentionally high-level. It describes the order of useful vertical slices without
 turning the whole MVP into a detailed implementation backlog. Each slice should be refined only when
@@ -150,7 +150,7 @@ The
 [`API, CLI, and agent skill specification`](../specs/2026-08-29-api-cli-agent-skill-design.md)
 defines the operation surface and maintenance contract.
 
-**Next slice:** Resume Slice 5 Task relationships with Relates to.
+The later relationship and search capabilities extend this API/CLI surface; see Slices 5 and 5a.
 
 ### Priority insertion: authenticated hosted access
 
@@ -191,9 +191,11 @@ and [`archived implementation plan`](../archive/plans/2026-09-02-authenticated-h
 Add relationship types incrementally:
 
 1. Parent-child hierarchy.
-2. Relates to.
-3. Blocks / Blocked by.
-4. Warning confirmation when completing a Task with unresolved blockers.
+2. Blocks / Blocked by.
+3. Warning confirmation when completing a Task with unresolved blockers.
+
+Symmetric Relates to links are deferred beyond the MVP. Reassess their value after using blocking
+links; they are not a remaining Slice 5 increment.
 
 Each type should add its persistence, domain validation, UI, and focused invariant tests. Do not
 build a generalized relationship subsystem beyond the concrete rules that the next relationship
@@ -207,7 +209,28 @@ List ownership remains independent. Focused and complete repository gates, imple
 scans, responsive browser acceptance, independent verification, and final whole-branch review
 passed.
 
-**Next increment after authenticated hosted access:** Relates to.
+**Current state:** Blocks / Blocked by and the unresolved-blocker Done warning are implemented in
+[PR #23](https://github.com/Incanus3/taskman/pull/23), with browser, API, CLI, help, completion, and
+bundled skill parity. Directed graph validation, shared graph coordination, and atomic warning and
+confirmation behavior have passed focused tests and independent scoped review. The operator
+accepted the completed workstream; merge remains pending. See the
+[blocking specification](../specs/2026-09-27-task-blocking-relationships-design.md) for the contract
+and verification limits.
+
+### 5a. Global Task jump search
+
+**Outcome:** A person can find and open a Task across Projects from the authenticated navbar.
+
+Use the same ID/title term matching as the blocking-link candidate picker. The browser, JSON API,
+CLI, help/completion, and bundled skill expose the capability together. Keep the result set bounded
+and navigation consistent with existing Task detail backdrop rules. Advanced filtering and saved
+searches remain outside the MVP. See the
+[global Task search design](../specs/2026-09-29-global-task-search-design.md).
+
+**Current state:** Implemented and technically verified in the same PR as blocking relationships.
+The authenticated navbar, API, CLI, and parent/blocking pickers use the shared matcher. Operator
+acceptance is complete; merge remains pending. The specification preserves verification limits.
+Deletion safeguards are the next roadmap slice after the blocking/search branch lands.
 
 ### 6. Deletion safeguards
 

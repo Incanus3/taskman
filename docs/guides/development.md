@@ -217,11 +217,14 @@ add assertions that only verify styling details such as spacing, colors, or alig
 assertions are appropriate only when they establish functional user-visible state, such as whether
 an element is shown or hidden.
 
-Use focused LiveView tests for server-owned interactions and rendered outcomes. Reserve Wallaby
-browser tests for behavior that needs direct browser orchestration, such as local storage, history,
-clipboard results, connection recovery, computed rendering, and viewport changes. Run those tests
-through `mix test.browser` with Chromium and ChromeDriver; keep them separate from the normal
-`mix test` gate.
+Use focused LiveView tests for server-owned interactions and rendered outcomes. Keep Wallaby browser
+tests to the minimum: add one only when the behavior cannot be verified with a standard LiveView or
+lower-layer test, and do not repeat those tests in Wallaby. Name the specific browser behavior the
+test must prove. Examples include local storage, browser history, clipboard results, connection
+recovery, computed visibility that affects interaction, and functionality that changes with viewport
+size. Responsive visual acceptance may use direct browser inspection without adding an automated
+browser test. Run Wallaby tests through `mix test.browser` with Chromium and ChromeDriver; keep
+them separate from the normal `mix test` gate.
 
 Test the current supported behavior. An absence assertion is appropriate when it is part of that
 behavior, such as confirming that a successful operation returned no error. Do not add assertions

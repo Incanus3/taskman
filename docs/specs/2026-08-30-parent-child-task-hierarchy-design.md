@@ -3,7 +3,22 @@
 **Status:** Approved  
 **Date:** 2026-08-30
 
-## Context
+**Scope update:** The [current product relationship contract](../product/relationships.md) defers
+Relates to beyond the MVP. References to it below reflect the scope at this design's approval;
+that scope change did not alter parent-child behavior.
+
+**Search matching update:** The implemented
+[global Task search design](2026-09-29-global-task-search-design.md) replaces this design's
+title-only, single-substring parent-candidate matching with shared whitespace-term ID/title
+matching. The parent picker's Project scope, exclusions, blank results, ordering, and selection
+rules remain in force.
+
+**Blocking coordination update:** The implemented
+[blocking design](2026-09-27-task-blocking-relationships-design.md) adds the shared graph lock before
+the Project row lock and rejects parent changes that would create a parent-to-child Blocks edge.
+Its Done warning extends lifecycle updates; unchanged hierarchy behavior below remains in force.
+
+## Design-time context
 
 Taskman is a locally started, single-user Phoenix LiveView application. The delivered product
 supports Projects, nested Lists, Tasks, URL-backed Task detail, same-Project Task movement, a
@@ -158,9 +173,9 @@ database or browser storage.
 The `tasks` table gains `parent_task_id`. This directly models the product cardinality that a Task
 has zero or one parent while a parent has any number of children.
 
-Blocks / Blocked by and Relates to will receive their own persistence design when those increments
-become current. Their directionality, symmetry, cross-Project scope, cardinality, and cycle rules
-do not justify a generalized relationship table now.
+Blocks / Blocked by uses a separate directed-edge table under the
+[blocking design](2026-09-27-task-blocking-relationships-design.md). Relates to remains deferred.
+Their different cardinality and graph rules do not justify a generalized relationship table.
 
 ## Persistence model
 
@@ -274,7 +289,8 @@ The picker:
 
 - uses an accessible combobox/listbox interaction;
 - returns the first 20 eligible Tasks in stable order for an empty query;
-- searches case-insensitively by Task title for a non-empty query;
+- searches case-insensitively by Task title for a non-empty query (superseded by the
+  [shared ID/title term matcher](2026-09-29-global-task-search-design.md#matching-and-ordering));
 - puts an eligible exact Task ID match first when the query is a positive integer;
 - searches all Tasks in the selected Project, regardless of List ownership;
 - shows title, Task ID, and full owning List path, using `Project` for a root Task;

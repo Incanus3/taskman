@@ -38,11 +38,48 @@ defmodule Taskman.Tasks.HierarchyTest do
 
   test "positive exact Task ID match is first without dropping title matches" do
     project = project_fixture(%{})
+    title_match = task_fixture(project, %{title: "Placeholder"})
     exact = task_fixture(project, %{title: "A title"})
-    title_match = task_fixture(project, %{title: "Task #{exact.id} follow-up"})
+
+    {:ok, title_match} =
+      Tasks.update_task(project, title_match, %{title: "Task #{exact.id} follow-up"})
 
     assert [%TaskWithLocation{task: ^exact}, %TaskWithLocation{task: ^title_match}] =
              Tasks.search_parent_candidates(project, nil, Integer.to_string(exact.id))
+  end
+
+  test "parent search returns no more than 20 candidates by default" do
+    project = project_fixture(%{})
+    tasks = for n <- 1..21, do: task_fixture(project, %{title: "Candidate #{n}"})
+
+    assert Enum.map(Tasks.search_parent_candidates(project, nil, "Candidate"), & &1.task.id) ==
+             tasks |> Enum.take(20) |> Enum.map(& &1.id)
+  end
+
+  test "parent search matches ID and title terms while retaining non-exact insertion order" do
+    project = project_fixture(%{})
+    exact = task_fixture(project, %{title: "Publish second"})
+    id_term = String.slice(Integer.to_string(exact.id), 0, 1)
+    first = task_fixture(project, %{title: "#{id_term} Publish first"})
+    last = task_fixture(project, %{title: "#{id_term} Publish last"})
+
+    assert [exact.id, first.id, last.id] ==
+             project
+             |> Tasks.search_parent_candidates(nil, "#{id_term} publish")
+             |> Enum.map(& &1.task.id)
+  end
+
+  test "parent search treats percent and underscore literally" do
+    project = project_fixture(%{})
+    percent = task_fixture(project, %{title: "Ready %"})
+    underscore = task_fixture(project, %{title: "Ready _"})
+    _plain = task_fixture(project, %{title: "Ready x"})
+
+    assert [%TaskWithLocation{task: ^percent}] =
+             Tasks.search_parent_candidates(project, nil, "%")
+
+    assert [%TaskWithLocation{task: ^underscore}] =
+             Tasks.search_parent_candidates(project, nil, "_")
   end
 
   test "parent search is Project-scoped, includes List paths, and excludes current descendants" do

@@ -119,6 +119,25 @@ defmodule Taskman.ChangeNotifications do
     })
   end
 
+  @spec publish_relationship(pos_integer(), [pos_integer()]) :: publication_result()
+  def publish_relationship(project_id, task_ids)
+      when is_integer(project_id) and project_id > 0 and is_list(task_ids) and task_ids != [] do
+    unless Enum.all?(task_ids, &(is_integer(&1) and &1 > 0)) do
+      raise ArgumentError, "relationship Task IDs must be positive integers"
+    end
+
+    task_ids = task_ids |> Enum.uniq() |> Enum.sort()
+
+    publish(project_topic(project_id), %Event{
+      entity: :relationship,
+      operation: :invalidated,
+      project_id: project_id,
+      entity_id: hd(task_ids),
+      task_ids: task_ids,
+      fields: []
+    })
+  end
+
   defp publish(topic, event) do
     pubsub_call(fn -> PubSub.broadcast_from(pubsub_server(), self(), topic, event) end)
   end

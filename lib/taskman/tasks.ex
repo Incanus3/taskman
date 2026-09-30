@@ -8,10 +8,13 @@ defmodule Taskman.Tasks do
   alias Taskman.Projects.Project
   alias Taskman.Repo
   alias Taskman.Tasks.Hierarchy
+  alias Taskman.Tasks.Blocking
+  alias Taskman.Tasks.BlockingLink
   alias Taskman.Tasks.Comment
   alias Taskman.Tasks.CommentPersistence
   alias Taskman.Tasks.Comments
   alias Taskman.Tasks.Mutations
+  alias Taskman.Tasks.Search
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
@@ -46,6 +49,22 @@ defmodule Taskman.Tasks do
   end
 
   def get_task_for_project(%Project{}, _id), do: nil
+
+  @doc "Finds a Task by its instance-wide ID for cross-Project relationship targets."
+  @spec get_task(term()) :: Task.t() | nil
+  def get_task(id) when is_integer(id) and id > 0, do: Repo.get(Task, id)
+  def get_task(_id), do: nil
+
+  @spec list_blocking(Project.t(), Task.t()) :: {:ok, map()} | {:error, :not_found}
+  def list_blocking(project, selected_task), do: Blocking.list(project, selected_task)
+
+  @spec add_block(Project.t(), Task.t(), Task.t()) :: {:ok, map()} | {:error, term()}
+  def add_block(blocker_project, blocker, blocked),
+    do: Blocking.add(blocker_project, blocker, blocked) |> publish_block_result()
+
+  @spec remove_block(Project.t(), Task.t(), Task.t()) :: {:ok, map()} | {:error, term()}
+  def remove_block(blocker_project, blocker, blocked),
+    do: Blocking.remove(blocker_project, blocker, blocked) |> publish_block_result()
 
   @spec list_comments(Project.t(), Task.t()) ::
           {:ok, [Comment.t()]} | {:error, :not_found}
@@ -87,6 +106,13 @@ defmodule Taskman.Tasks do
   def search_parent_candidates(project, current_task, query, opts \\ []) do
     Hierarchy.search_parent_candidates(project, current_task, query, opts)
   end
+
+  @spec search_tasks(String.t(), Project.t() | nil) :: [map()]
+  def search_tasks(query, project_or_nil \\ nil), do: Search.search_tasks(query, project_or_nil)
+
+  @spec search_blocking_candidates(Project.t(), Task.t(), String.t()) :: [map()]
+  def search_blocking_candidates(project, selected_task, query),
+    do: Search.blocking_candidates(project, selected_task, query)
 
   @spec get_task_hierarchy(Project.t(), Task.t()) ::
           {:ok, Hierarchy.t()} | {:error, :not_found}
@@ -387,10 +413,47 @@ defmodule Taskman.Tasks do
   defp publish_task_result({:ok, task, fields}, operation) do
     if fields != [] do
       _ = ChangeNotifications.publish_task(task, operation, fields)
+
+      if Enum.any?(fields, &(&1 in [:title, :status, :priority, :list_id])) do
+        task.id
+        |> linked_task_project_ids()
+        |> publish_relationships()
+      end
     end
 
     {:ok, task}
   end
 
   defp publish_task_result(result, _operation), do: result
+
+  defp publish_block_result({:ok, %{blocking_task: source, blocked_task: target}} = result) do
+    [{source.project_id, source.id}, {target.project_id, target.id}]
+    |> publish_relationships()
+
+    result
+  end
+
+  defp publish_block_result(result), do: result
+
+  defp linked_task_project_ids(task_id) do
+    from(link in BlockingLink,
+      join: linked in Task,
+      on:
+        (link.blocking_task_id == ^task_id and linked.id == link.blocked_task_id) or
+          (link.blocked_task_id == ^task_id and linked.id == link.blocking_task_id),
+      where: link.blocking_task_id == ^task_id or link.blocked_task_id == ^task_id,
+      select: {linked.project_id, linked.id}
+    )
+    |> Repo.all()
+  end
+
+  defp publish_relationships(endpoint_pairs) do
+    endpoint_pairs
+    |> Enum.group_by(fn {project_id, _task_id} -> project_id end, fn {_project_id, task_id} ->
+      task_id
+    end)
+    |> Enum.each(fn {project_id, task_ids} ->
+      _ = ChangeNotifications.publish_relationship(project_id, task_ids)
+    end)
+  end
 end

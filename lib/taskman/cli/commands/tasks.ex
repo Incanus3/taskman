@@ -12,6 +12,27 @@ defmodule Taskman.CLI.Commands.Tasks do
   def execute(action, %Invocation{} = invocation, runtime_options \\ []) do
     json? = Map.get(invocation.globals, :json, false)
     runtime_options = with_api_url(runtime_options, Map.get(invocation.globals, :api_url))
+
+    if action == :search do
+      query = Map.fetch!(invocation.arguments, :query)
+      project_id = Map.get(invocation.options, :project)
+      params = if project_id, do: [q: query, project_id: project_id], else: [q: query]
+
+      request(
+        invocation,
+        :get,
+        "/api/v1/tasks/search",
+        [params: params],
+        runtime_options,
+        json?,
+        {:collection, :task_search_summary}
+      )
+    else
+      execute_scoped(action, invocation, runtime_options, json?)
+    end
+  end
+
+  defp execute_scoped(action, invocation, runtime_options, json?) do
     project_id = Map.fetch!(invocation.options, :project)
 
     case action do
@@ -45,6 +66,34 @@ defmodule Taskman.CLI.Commands.Tasks do
           runtime_options,
           json?,
           success_shape
+        )
+
+      :blocking_show ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+
+        request(
+          invocation,
+          :get,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocking",
+          [],
+          runtime_options,
+          json?,
+          :task_blocking
+        )
+
+      action when action in [:blocks_add, :blocks_remove] ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+        target_id = Map.fetch!(invocation.options, :target)
+        method = if action == :blocks_add, do: :post, else: :delete
+
+        request(
+          invocation,
+          method,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/blocks/#{target_id}",
+          [],
+          runtime_options,
+          json?,
+          :task_blocking_edge
         )
 
       :comments_list ->
@@ -112,7 +161,7 @@ defmodule Taskman.CLI.Commands.Tasks do
         task = task_fields(invocation.options)
         task = maybe_clear_due_at(task, invocation.options)
         task = maybe_update_parent(task, invocation.options)
-        body = %{"task" => task}
+        body = %{"task" => task} |> maybe_put_done_confirmation(invocation.options)
 
         request(
           invocation,
@@ -210,6 +259,21 @@ defmodule Taskman.CLI.Commands.Tasks do
 
       true ->
         task
+    end
+  end
+
+  defp maybe_put_done_confirmation(body, options) do
+    cond do
+      Map.has_key?(options, :confirm_unresolved_blockers) ->
+        Map.put(body, "confirmation", %{
+          "unresolved_blocker_ids" => Map.fetch!(options, :confirm_unresolved_blockers)
+        })
+
+      Map.get(options, :force_done_with_unresolved_blockers, false) ->
+        Map.put(body, "confirmation", %{"force_done_with_unresolved_blockers" => true})
+
+      true ->
+        body
     end
   end
 

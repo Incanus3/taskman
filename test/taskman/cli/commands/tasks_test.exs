@@ -3,6 +3,120 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
   setup {Req.Test, :verify_on_exit!}
 
+  @search_summary %{
+    id: 42,
+    title: "Publish site",
+    status: "pending",
+    priority: "urgent",
+    project_id: 9,
+    project_name: "Website",
+    location: %{kind: "list", list_id: 11, path: ["Release", "Launch"]}
+  }
+
+  test "searches all Projects with a quoted multiword query and renders summary columns" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/api/v1/tasks/search"
+      assert conn.query_params == %{"q" => "42 publish"}
+      Req.Test.json(conn, %{data: [@search_summary]})
+    end)
+
+    result = run_search(["tasks", "search", "42 publish"])
+
+    assert result.status == 0, result.stderr
+    assert result.stderr == ""
+
+    assert result.stdout ==
+             "ID\tTITLE\tSTATUS\tPRIORITY\tPROJECT\tLOCATION\n" <>
+               "42\tPublish site\tpending\turgent\t9: Website\tRelease / Launch\n"
+  end
+
+  test "searches one Project and preserves the exact API envelope in JSON mode" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/api/v1/tasks/search"
+      assert conn.query_params == %{"q" => "publish", "project_id" => "9"}
+      Req.Test.json(conn, %{data: [@search_summary]})
+    end)
+
+    result = run_search(["tasks", "search", "publish", "--project", "9", "--json"])
+
+    assert result.status == 0, result.stderr
+    assert result.stderr == ""
+
+    assert Jason.decode!(result.stdout) == %{
+             "data" => [Jason.decode!(Jason.encode!(@search_summary))]
+           }
+  end
+
+  test "search reports an empty successful result" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.query_params == %{"q" => "missing"}
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    result = run_search(["tasks", "search", "missing"])
+
+    assert result.status == 0
+    assert result.stderr == ""
+    assert result.stdout == "No Tasks found.\n"
+  end
+
+  test "search rejects missing or blank query and malformed Project before HTTP" do
+    for argv <- [
+          ["tasks", "search"],
+          ["tasks", "search", "   "],
+          ["tasks", "search", "publish", "--project", "0"],
+          ["tasks", "search", "publish", "--project", "abc"]
+        ] do
+      result = run_search(argv)
+      assert result.status == 2, inspect(argv)
+      assert result.stdout == ""
+      assert result.stderr =~ "Invalid invocation"
+    end
+  end
+
+  test "search reports unknown Project as a domain failure" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.query_params == %{"q" => "publish", "project_id" => "9"}
+
+      conn
+      |> Plug.Conn.put_status(404)
+      |> Req.Test.json(%{error: %{code: "not_found", message: "Project not found"}})
+    end)
+
+    result = run_search(["tasks", "search", "publish", "--project", "9"])
+
+    assert result.status == 3
+    assert result.stdout == ""
+    assert result.stderr =~ "not_found"
+  end
+
+  test "search refuses malformed success summaries" do
+    for malformed <- [
+          Map.delete(@search_summary, :priority),
+          Map.put(@search_summary, :project_name, 9),
+          Map.put(@search_summary, :location, %{kind: "list", list_id: 11, path: []}),
+          Map.put(@search_summary, :description, "unexpected")
+        ] do
+      Req.Test.expect(TaskCommands, fn conn -> Req.Test.json(conn, %{data: [malformed]}) end)
+
+      result = run_search(["tasks", "search", "publish"])
+
+      assert result.status == 5
+      assert result.stdout == ""
+      assert result.stderr =~ "invalid_response"
+    end
+  end
+
+  defp run_search(argv) do
+    Taskman.CLI.run(argv,
+      env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
+      config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      req_options: [plug: {Req.Test, TaskCommands}]
+    )
+  end
+
   test "lists tasks for a list with descendant filtering query parameters" do
     Req.Test.expect(TaskCommands, fn conn ->
       assert conn.method == "GET"

@@ -833,9 +833,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
   end
 
   defp socket_document(socket) do
-    socket.assigns
-    |> ProjectLive.render()
-    |> rendered_to_string()
+    render_component(&ProjectLive.render/1, socket.assigns)
     |> LazyHTML.from_fragment()
   end
 

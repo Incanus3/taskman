@@ -27,6 +27,38 @@ defmodule Taskman.CLI.Skill.InstallerTest do
   end
 
   @tag :tmp_dir
+  test "installed skill teaches search summaries followed by full Task detail", %{tmp_dir: root} do
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+    skill = File.read!(Path.join([root, "taskman-cli", "SKILL.md"]))
+
+    assert {search_offset, _} = :binary.match(skill, "taskman tasks search publish\n")
+    assert {show_offset, _} = :binary.match(skill, "taskman tasks show --project 9 42")
+    assert search_offset < show_offset
+    assert skill =~ "PROJECT` value `9: Website`"
+    assert skill =~ "ID` value `42`"
+    assert skill =~ "Search returns summaries"
+    assert skill =~ "`tasks show` returns full Task details"
+    assert skill =~ ~r/use the Project ID and Task ID\s+from that row/
+  end
+
+  @tag :tmp_dir
+  test "installed skill teaches directed links and human-authorized Done override", %{
+    tmp_dir: root
+  } do
+    assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
+    skill = File.read!(Path.join([root, "taskman-cli", "SKILL.md"]))
+
+    assert skill =~ "taskman tasks blocking show --project 9 42"
+    assert skill =~ "taskman tasks blocks add --project 7 12 --target 42"
+    assert skill =~ "taskman tasks blocks remove --project 7 12 --target 42"
+    assert skill =~ "--confirm-unresolved-blockers 12,15"
+    assert skill =~ "--force-done-with-unresolved-blockers"
+    assert skill =~ "Blocking Task's Project"
+    assert skill =~ "human authorization"
+    assert skill =~ "link edit does not authorize"
+  end
+
+  @tag :tmp_dir
   test "identical installation is current", %{tmp_dir: root} do
     assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
     assert {:ok, %{action: :current, path: target}} = Installer.install(skills_root: root)

@@ -32,7 +32,7 @@ deferred to a separate accepted design.
 | **Task** | Intended work, owned by exactly one Project and one location: directly under that Project or in one List. |
 | **Checklist** | Ordered, informational completion markers on a Task. |
 | **Task comment** | Append-only plain-text discussion on one Task, with a posting account, optional custom display name, and creation time. |
-| **Task relationship** | A Blocks / Blocked by, Relates to, or parent-child association; it is independent of List ownership. |
+| **Task relationship** | A Blocks / Blocked by or parent-child association; it is independent of List ownership. |
 
 Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
 and a user may explicitly select another lifecycle state during creation. Its fixed lifecycle is
@@ -62,6 +62,14 @@ nor external agent work automatically changes Task state.
   control copies the current route with both filters encoded when a reproducible view is needed.
 - Opening a Task shows a modal over the preserved list state. The selected Task is shareable in
   the URL.
+- The authenticated navbar has a global Task jump search centered between Taskman and account
+  controls. It searches ID or title across Projects and opens a selected result in Task detail.
+  Wide screens show a result dropdown; narrow screens use a search button and full-width panel.
+  A blank query shows no Tasks. The Task detail modal covers the navbar, so search is available
+  after closing detail. Preserve the current Project/List backdrop when it can show the result;
+  otherwise use the Task's owning List or Project root. API and CLI search may optionally narrow
+  results to one Project. See the
+  [global search design](../specs/2026-09-29-global-task-search-design.md).
 - Every Create Task modal has an explicit same-Project Location. If its selected location or backdrop
   becomes unavailable, the ordinary form remains editable but Create is disabled until another
   location is chosen; submission resolves that location fresh. Creation stays on its current browse
@@ -89,7 +97,9 @@ nor external agent work automatically changes Task state.
   composer; Sessions shows a truthful empty state. Agent Session behavior awaits a separate accepted
   design. This tabbed presentation supersedes the earlier stacked Activity and Sessions sections.
 - The hierarchy contains only parent-child work breakdown. A Related Tasks table contains Blocks /
-  Blocked by and Relates to links. Cross-Project relationship entries identify their other Project.
+  Blocked by links with add/remove controls in both groups. Cross-Project relationship entries
+  identify their other Project. Each linked Task shows status and priority. On narrow displays, the
+  main Task fields come first, followed by Related Tasks, then the Activity/Sessions tab panel.
 - A docked right-detail layout is a future enhancement, not the MVP default.
 
 ### Task comments and Activity
@@ -173,13 +183,21 @@ MVP requirement of the initial CLI slice.
 | Type | Scope and rules |
 | --- | --- |
 | **Blocks / Blocked by** | Directed prerequisite; may cross Projects; one edge per ordered Task pair; no self-link or cycle. |
-| **Relates to** | Symmetric contextual association; may cross Projects; one relationship per unordered pair; no self-link. |
 | **parent-child** | Same-Project, acyclic work breakdown; a parent has many children and a child has at most one parent. |
 
-Relationship types may coexist for the same pair. A child may block its parent, but a parent may
-never block its child. Relationships do not automatically transition Tasks. Moving a Task with an
-unresolved direct blocker to Done requires an explicit warning confirmation; a blocker is resolved
-for that warning when it is Done or Will Not Do.
+Parent-child and Blocks may coexist for the same pair. A child may block its parent, but a parent may
+never block its child. Relationships do not automatically transition Tasks. An unconfirmed move to
+Done with an unresolved direct blocker warns and leaves status unchanged. A person may confirm the
+move after reviewing that warning. API and CLI also accept confirmed blocker IDs on the first
+request when the person already knows them, or a case-specific, one-request force confirmation
+without listing blocker IDs. A blocker is resolved for the warning when it is Done or Will Not Do.
+The warning identifies each unresolved direct blocker with its status and priority.
+Confirmation remains valid when the blocker set is unchanged or only shrinks; a newly unresolved
+blocker that was not confirmed requires a fresh warning.
+
+Symmetric Relates to links are deferred beyond the MVP. They are not required in MVP storage,
+browser, API, CLI, skill, or deletion behavior. See the
+[relationship contract](relationships.md) for the scope rationale.
 
 ## 8. Agent Session integration
 
@@ -211,8 +229,9 @@ shows a detailed impact warning and requires a second explicit confirmation.
 - Desktop packaging and managed Workspace creation, selection, reuse, or lifecycle.
 - Agent Session integration, provider selection, local execution context, work pickup, launch,
   attachment, and recovery until a separate design is accepted.
-- Configurable workflows, global dashboards, advanced search, saved views, analytics, import, and
-  export.
+- Symmetric Relates to Task links.
+- Configurable workflows, global dashboards, advanced search beyond the bounded Task jump search,
+  saved views, analytics, import, and export.
 
 ## 11. Related documents
 

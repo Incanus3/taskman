@@ -14,6 +14,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
             revisions: %{},
             conflicts: %{},
             field_states: %{},
+            done_warning: nil,
             sequence: 0,
             save_failed?: false,
             saved?: false,
@@ -29,6 +30,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
           revisions: %{optional(String.t()) => non_neg_integer()},
           conflicts: %{optional(String.t()) => term()},
           field_states: %{optional(String.t()) => field_state()},
+          done_warning: [map()] | nil,
           sequence: non_neg_integer(),
           save_failed?: boolean(),
           saved?: boolean(),
@@ -199,6 +201,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     autosave =
       autosave
       |> Map.put(:draft, draft)
+      |> maybe_cancel_done_warning(field, Map.get(draft, field))
       |> clear_field_state(field)
       |> Map.update!(:dirty_fields, &MapSet.put(&1, field))
       |> put_form(autosave.baseline || task)
@@ -291,6 +294,52 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   def message(%__MODULE__{save_state: :failed}), do: "Couldn’t save changes"
   def message(%__MODULE__{save_state: :conflicted}), do: "Resolve conflicting changes"
 
+  @doc "Discards a warned Done draft and restores the currently persisted status."
+  def cancel_done(%__MODULE__{} = autosave, %Task{} = task) do
+    autosave
+    |> Map.update!(:draft, &Map.delete(&1, "status"))
+    |> Map.update!(:dirty_fields, &MapSet.delete(&1, "status"))
+    |> Map.update!(:field_states, &Map.delete(&1, "status"))
+    |> Map.update!(:revisions, &Map.delete(&1, "status"))
+    |> Map.update!(:conflicts, &Map.delete(&1, "status"))
+    |> Map.put(:done_warning, nil)
+    |> put_form(task)
+  end
+
+  @doc "Confirms exactly the blocker IDs displayed in the current warning."
+  def confirm_done(
+        %__MODULE__{conflicts: conflicts, done_warning: summaries} = autosave,
+        %Project{} = project,
+        %Task{} = task
+      )
+      when is_list(summaries) do
+    if Map.has_key?(conflicts, "status") do
+      {:conflict, autosave, task}
+    else
+      ids = summaries |> Enum.map(& &1.id) |> Enum.sort()
+
+      case Tasks.update_task(project, task, %{status: :done}, done_confirmation: {:ids, ids}) do
+        {:ok, updated_task} ->
+          {:ok, clear_field(autosave, "status", updated_task), updated_task}
+
+        {:error, {:unresolved_blockers, current_summaries}} ->
+          {:ok, warn_done(autosave, current_summaries), task}
+
+        {:error, %Conflict{task: current_task}} ->
+          {:conflict, %{reconcile(autosave, current_task) | done_warning: nil}, current_task}
+
+        {:error, :not_found} ->
+          {:not_found, clear(autosave)}
+
+        {:error, %Ecto.Changeset{}} ->
+          {:error, autosave |> put_field_state("status", :failed) |> refresh_save_state(), task}
+      end
+    end
+  end
+
+  def confirm_done(%__MODULE__{} = autosave, _project, %Task{} = task),
+    do: {:ignored, autosave, task}
+
   defp put_form(%__MODULE__{} = autosave, %Task{} = task) do
     form =
       task
@@ -338,6 +387,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
         {:error, %Conflict{task: current_task}} ->
           {:conflict, reconcile(autosave, current_task), current_task}
+
+        {:error, {:unresolved_blockers, summaries}} ->
+          {:ok, warn_done(autosave, summaries), task}
 
         {:error, %Ecto.Changeset{}} ->
           autosave =
@@ -396,6 +448,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
       {:error, %Conflict{task: current_task}} ->
         {:conflict, reconcile(autosave, current_task), current_task}
 
+      {:error, {:unresolved_blockers, summaries}} ->
+        {:ok,
+         autosave
+         |> Map.update!(:conflicts, &Map.delete(&1, field))
+         |> warn_done(summaries), task}
+
       {:error, %Ecto.Changeset{}} ->
         autosave =
           autosave
@@ -412,6 +470,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   defp clear_field(%__MODULE__{} = autosave, field, %Task{} = task) do
     autosave
     |> Map.update!(:draft, &Map.delete(&1, field))
+    |> maybe_cancel_done_warning(field, nil)
     |> Map.update!(:dirty_fields, &MapSet.delete(&1, field))
     |> Map.update!(:revisions, &Map.delete(&1, field))
     |> Map.update!(:conflicts, &Map.delete(&1, field))
@@ -420,6 +479,18 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     |> put_field_state(field, :saved)
     |> refresh_save_state()
   end
+
+  defp warn_done(autosave, summaries) do
+    autosave
+    |> Map.put(:done_warning, Enum.sort_by(summaries, & &1.id))
+    |> put_field_state("status", :not_saved)
+    |> refresh_save_state()
+  end
+
+  defp maybe_cancel_done_warning(autosave, "status", value) when value not in ["done", :done],
+    do: %{autosave | done_warning: nil}
+
+  defp maybe_cancel_done_warning(autosave, _field, _value), do: autosave
 
   defp valid_field?(%__MODULE__{} = autosave, %Task{} = task, field) do
     Tasks.change_task(task, %{field => Map.get(autosave.draft, field)}).valid?

@@ -489,6 +489,221 @@ defmodule TaskmanWeb.API.TaskControllerTest do
            } = json_response(conn, 422)
   end
 
+  test "PATCH Done warns with direct unresolved blocker summaries and changes no fields", %{
+    conn: conn
+  } do
+    project = project_fixture(%{name: "Website"})
+    blocker_project = project_fixture(%{name: "Launch"})
+    blocker_list = list_fixture(blocker_project, %{name: "Review"})
+    blocked = task_fixture(project, %{title: "Publish"})
+    blocker = task_fixture(blocker_project, blocker_list, %{title: "Approve", priority: :high})
+    assert {:ok, _} = Tasks.add_block(blocker_project, blocker, blocked)
+
+    path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
+
+    assert %{
+             "error" => %{
+               "code" => "unresolved_blockers",
+               "message" => "Review unresolved direct blockers before marking Done",
+               "blockers" => [summary]
+             }
+           } =
+             conn
+             |> patch(path, %{"task" => %{"status" => "done", "title" => "Changed"}})
+             |> json_response(409)
+
+    assert summary == %{
+             "id" => blocker.id,
+             "project_id" => blocker_project.id,
+             "project_name" => "Launch",
+             "title" => "Approve",
+             "status" => "pending",
+             "priority" => "high",
+             "location" => %{
+               "kind" => "list",
+               "list_id" => blocker_list.id,
+               "path" => ["Review"]
+             }
+           }
+
+    persisted = Tasks.get_task_for_project(project, blocked.id)
+    assert persisted.title == "Publish"
+    assert persisted.status == :pending
+
+    assert %{"data" => %{"status" => "done", "title" => "Changed"}} =
+             conn
+             |> patch(path, %{
+               "task" => %{"status" => "done", "title" => "Changed"},
+               "confirmation" => %{"unresolved_blocker_ids" => [blocker.id]}
+             })
+             |> json_response(200)
+  end
+
+  test "PATCH accepts known IDs first and when unresolved blockers diminish or disappear", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    first = task_fixture(project, %{title: "First"})
+    second = task_fixture(project, %{title: "Second"})
+
+    targets =
+      for title <- ["Equal", "Diminished", "Empty"],
+          do: task_fixture(project, %{title: title})
+
+    [equal, diminished, empty] = targets
+
+    for target <- targets, blocker <- [first, second] do
+      assert {:ok, _} = Tasks.add_block(project, blocker, target)
+    end
+
+    for {target, before} <- [
+          {equal, fn -> :ok end},
+          {diminished,
+           fn ->
+             assert {:ok, _} = Tasks.update_task(project, first, %{status: :done})
+           end},
+          {empty,
+           fn ->
+             assert {:ok, _} = Tasks.remove_block(project, second, empty)
+           end}
+        ] do
+      before.()
+
+      assert %{"data" => %{"status" => "done", "id" => id}} =
+               conn
+               |> patch("/api/v1/projects/#{project.id}/tasks/#{target.id}", %{
+                 "task" => %{"status" => "done"},
+                 "confirmation" => %{"unresolved_blocker_ids" => [first.id, second.id]}
+               })
+               |> json_response(200)
+
+      assert id == target.id
+    end
+  end
+
+  test "PATCH refreshes warning when a new blocker appears and accepts one-request force", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    first = task_fixture(project, %{title: "First"})
+    new_blocker = task_fixture(project, %{title: "New"})
+    blocked = task_fixture(project, %{title: "Target"})
+    assert {:ok, _} = Tasks.add_block(project, first, blocked)
+    assert {:ok, _} = Tasks.add_block(project, new_blocker, blocked)
+    path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
+
+    assert %{"error" => %{"code" => "unresolved_blockers", "blockers" => blockers}} =
+             conn
+             |> patch(path, %{
+               "task" => %{"status" => "done", "priority" => "urgent"},
+               "confirmation" => %{"unresolved_blocker_ids" => [first.id]}
+             })
+             |> json_response(409)
+
+    assert Enum.map(blockers, & &1["id"]) == [first.id, new_blocker.id]
+    assert Tasks.get_task_for_project(project, blocked.id).priority == :none
+
+    assert %{"data" => %{"status" => "done", "priority" => "urgent"}} =
+             conn
+             |> patch(path, %{
+               "task" => %{"status" => "done", "priority" => "urgent"},
+               "confirmation" => %{"force_done_with_unresolved_blockers" => true}
+             })
+             |> json_response(200)
+  end
+
+  test "PATCH accepts repeated blocker IDs in a Done confirmation", %{conn: conn} do
+    project = project_fixture(%{})
+    first = task_fixture(project, %{title: "First"})
+    second = task_fixture(project, %{title: "Second"})
+    blocked = task_fixture(project, %{title: "Before"})
+    assert {:ok, _} = Tasks.add_block(project, first, blocked)
+    assert {:ok, _} = Tasks.add_block(project, second, blocked)
+
+    assert %{"data" => %{"status" => "done", "title" => "After"}} =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{blocked.id}", %{
+               "task" => %{"status" => "done", "title" => "After"},
+               "confirmation" => %{
+                 "unresolved_blocker_ids" => [second.id, first.id, second.id, first.id]
+               }
+             })
+             |> json_response(200)
+
+    persisted = Tasks.get_task_for_project(project, blocked.id)
+    assert persisted.status == :done
+    assert persisted.title == "After"
+  end
+
+  test "PATCH rejects malformed Done confirmation without updating the Task", %{conn: conn} do
+    project = project_fixture(%{})
+    blocked = task_fixture(project, %{title: "Before"})
+    path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
+
+    invalid = [
+      %{},
+      %{"unresolved_blocker_ids" => []},
+      %{"unresolved_blocker_ids" => [0]},
+      %{"unresolved_blocker_ids" => ["1"]},
+      %{"unresolved_blocker_ids" => [1, 1, 0]},
+      %{"unresolved_blocker_ids" => [1, 1, "1"]},
+      %{"unresolved_blocker_ids" => "1"},
+      %{"force_done_with_unresolved_blockers" => false},
+      %{"force_done_with_unresolved_blockers" => "true"},
+      %{"force_done_with_unresolved_blockers" => true, "unresolved_blocker_ids" => [1]},
+      %{"force_done_with_unresolved_blockers" => true, "extra" => true}
+    ]
+
+    for confirmation <- invalid do
+      assert %{"error" => %{"code" => "invalid_request"}} =
+               conn
+               |> patch(path, %{
+                 "task" => %{"status" => "done", "title" => "After"},
+                 "confirmation" => confirmation
+               })
+               |> json_response(400)
+    end
+
+    assert %{"error" => %{"code" => "invalid_request"}} =
+             conn
+             |> patch(path, %{
+               "task" => %{"status" => "in_progress"},
+               "confirmation" => %{"force_done_with_unresolved_blockers" => true}
+             })
+             |> json_response(400)
+
+    persisted = Tasks.get_task_for_project(project, blocked.id)
+    assert persisted.title == "Before"
+    assert persisted.status == :pending
+  end
+
+  test "PATCH Done needs no confirmation without blockers and keeps Project scope with confirmation",
+       %{
+         conn: conn
+       } do
+    project = project_fixture(%{})
+    other = project_fixture(%{})
+    unblocked = task_fixture(project)
+    foreign = task_fixture(other)
+
+    assert %{"data" => %{"status" => "done"}} =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{unblocked.id}", %{
+               "task" => %{"status" => "done"}
+             })
+             |> json_response(200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             conn
+             |> patch("/api/v1/projects/#{project.id}/tasks/#{foreign.id}", %{
+               "task" => %{"status" => "done"},
+               "confirmation" => %{"force_done_with_unresolved_blockers" => true}
+             })
+             |> json_response(404)
+
+    assert Tasks.get_task_for_project(other, foreign.id).status == :pending
+  end
+
   test "POST move moves a Task to a List and then Project root", %{conn: conn} do
     project = project_fixture(%{})
     destination = list_fixture(project, %{name: "Planning"})

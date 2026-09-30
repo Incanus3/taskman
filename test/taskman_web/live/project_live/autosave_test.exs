@@ -94,6 +94,126 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Final"
   end
 
+  test "closing detail discards warned Done after the last blocker resolves and saves text", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :in_progress})
+    blocker = task_fixture(project, %{})
+    assert {:ok, _} = Tasks.add_block(project, blocker, task)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "done"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    assert has_element?(view, "#task-done-warning")
+
+    view
+    |> form("#task-form", task: %{title: "Saved on close"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+    assert {:ok, _} = Tasks.update_task(project, blocker, %{status: :done})
+    _ = :sys.get_state(view.pid)
+    assert has_element?(view, "#task-done-warning")
+
+    view |> element("#task-modal-close") |> render_click()
+
+    assert_patch(view, ~p"/projects/#{project.id}")
+    saved = Tasks.get_task_for_project(project, task.id)
+    assert saved.title == "Saved on close"
+    assert saved.status == :in_progress
+  end
+
+  test "route departure discards warned Done after the last blocker is removed and saves text", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :in_review})
+    blocker = task_fixture(project, %{})
+    assert {:ok, _} = Tasks.add_block(project, blocker, task)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "done"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    assert has_element?(view, "#task-done-warning")
+
+    view
+    |> form("#task-form", task: %{title: "Saved on departure"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert Tasks.get_task_for_project(project, task.id).title == "Before"
+    assert {:ok, _} = Tasks.remove_block(project, blocker, task)
+    _ = :sys.get_state(view.pid)
+    assert has_element?(view, "#task-done-warning")
+
+    render_patch(view, ~p"/projects/#{project.id}")
+
+    refute has_element?(view, "#task-modal")
+    saved = Tasks.get_task_for_project(project, task.id)
+    assert saved.title == "Saved on departure"
+    assert saved.status == :in_review
+  end
+
+  test "departure cancels warned Done while preserving an ordinary text conflict", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :in_progress})
+    blocker = task_fixture(project, %{})
+    assert {:ok, _} = Tasks.add_block(project, blocker, task)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "done"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    view
+    |> form("#task-form", task: %{title: "Mine"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    assert {:ok, _} = Tasks.update_task(project, task, %{title: "Latest"})
+    _ = :sys.get_state(view.pid)
+    assert has_element?(view, "#task-title-conflict")
+    assert has_element?(view, "#task-done-warning")
+
+    view |> element("#task-modal-close") |> render_click()
+
+    assert has_element?(view, "#task-modal")
+    assert has_element?(view, "#task-title-conflict")
+    assert has_element?(view, "#task-title[value='Mine']")
+    assert has_element?(view, "#task-status option[value='in_progress'][selected]")
+    refute has_element?(view, "#task-done-warning")
+    saved = Tasks.get_task_for_project(project, task.id)
+    assert saved.title == "Latest"
+    assert saved.status == :in_progress
+  end
+
+  test "submitting ordinary edits preserves the warned Done draft", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :in_progress})
+    blocker = task_fixture(project, %{})
+    assert {:ok, _} = Tasks.add_block(project, blocker, task)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "done"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    view
+    |> form("#task-form", task: %{title: "Submitted draft"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    view |> form("#task-form") |> render_submit()
+
+    assert has_element?(view, "#task-done-warning")
+    assert has_element?(view, "#task-status option[value='done'][selected]")
+    saved = Tasks.get_task_for_project(project, task.id)
+    assert saved.title == "Submitted draft"
+    assert saved.status == :in_progress
+  end
+
   test "submitting an edit flushes a valid dirty draft without leaving the canonical modal", %{
     conn: conn
   } do

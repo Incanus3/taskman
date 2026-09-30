@@ -5,6 +5,8 @@ defmodule Taskman.Tasks.Mutations do
   alias Taskman.Projects.Project
   alias Taskman.Repo
   alias Taskman.Tasks.Conflict
+  alias Taskman.Tasks.BlockingPersistence
+  alias Taskman.Tasks.GraphLock
   alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.Task
 
@@ -46,11 +48,17 @@ defmodule Taskman.Tasks.Mutations do
 
     if changeset.valid? do
       intended = Map.take(changeset.changes, @editable_fields)
+      preconditions = status_precondition(attrs, changeset, intended)
 
-      if Keyword.has_key?(opts, :parent) do
-        update_with_parent(project, task, intended, Keyword.get(opts, :parent))
-      else
-        update_ordinary(project, task, intended)
+      cond do
+        Keyword.has_key?(opts, :parent) ->
+          update_with_parent(project, task, preconditions, Keyword.get(opts, :parent), opts)
+
+        Map.has_key?(intended, :status) ->
+          update_with_status(project, task, intended, opts)
+
+        true ->
+          update_ordinary(project, task, intended, [], preconditions)
       end
     else
       Repo.update(changeset)
@@ -66,6 +74,8 @@ defmodule Taskman.Tasks.Mutations do
 
   defp create_with_parent(project, task, attrs, parent) do
     case Repo.transaction(fn ->
+           GraphLock.acquire!()
+
            with %Project{} = locked_project <- lock_project(project),
                 {:ok, persisted_parent} <- reload_parent(locked_project, parent),
                 :ok <- Hierarchy.validate_parent(task, persisted_parent, locked_project) do
@@ -89,28 +99,55 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
-  defp update_ordinary(project, baseline, intended) do
+  defp update_ordinary(project, baseline, intended, persist_opts) do
+    update_ordinary(project, baseline, intended, persist_opts, intended)
+  end
+
+  defp update_ordinary(project, baseline, intended, persist_opts, preconditions) do
     case Map.keys(intended) do
-      [] -> current_or_not_found(project, baseline)
-      fields -> update_ordinary_once(project, baseline, intended, fields)
+      [] ->
+        current_or_not_found(project, baseline, preconditions)
+
+      fields ->
+        update_ordinary_once(project, baseline, intended, fields, persist_opts, preconditions)
     end
   end
 
-  defp update_ordinary_once(project, baseline, intended, fields) do
-    case persist_update(Task.changeset(baseline, intended)) do
+  defp update_with_status(project, baseline, intended, opts) do
+    {:ok, result} =
+      Repo.transaction(fn ->
+        GraphLock.acquire!()
+
+        case current_task(project, baseline) do
+          nil ->
+            {:error, :not_found}
+
+          %Task{} = current ->
+            with :ok <- check_stale_conflicts(baseline, current, intended),
+                 :ok <- allow_done_transition(current, intended, opts) do
+              update_ordinary(project, baseline, intended, mode: :savepoint)
+            end
+        end
+      end)
+
+    result
+  end
+
+  defp update_ordinary_once(project, baseline, intended, fields, persist_opts, preconditions) do
+    case persist_update(Task.changeset(baseline, intended), persist_opts) do
       {:ok, persisted} -> {:ok, persisted, fields}
       {:error, changeset} -> {:error, changeset}
-      :stale -> retry_ordinary(project, baseline, intended)
+      :stale -> retry_ordinary(project, baseline, preconditions, persist_opts)
     end
   end
 
-  defp retry_ordinary(project, baseline, intended) do
+  defp retry_ordinary(project, baseline, preconditions, persist_opts) do
     case current_task(project, baseline) do
       nil ->
         {:error, :not_found}
 
       current ->
-        case classify_intended_fields(baseline, current, intended) do
+        case classify_intended_fields(baseline, current, preconditions) do
           {[_ | _] = conflicts, _remaining} ->
             {:error, %Conflict{task: current, fields: conflicts}}
 
@@ -118,7 +155,7 @@ defmodule Taskman.Tasks.Mutations do
             {:ok, current, []}
 
           {[], remaining} ->
-            case persist_update(Task.changeset(current, remaining)) do
+            case persist_update(Task.changeset(current, remaining), persist_opts) do
               {:ok, persisted} -> {:ok, persisted, ordered_fields(Map.keys(remaining))}
               {:error, changeset} -> {:error, changeset}
               :stale -> second_stale_conflict(project, current, Map.keys(remaining))
@@ -127,17 +164,17 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
-  defp update_with_parent(project, baseline, intended, parent) do
+  defp update_with_parent(project, baseline, intended, parent, opts) do
     intended = Map.put(intended, :parent_task_id, parent_id(parent))
 
-    case parent_attempt(project, baseline, intended, parent, :initial) do
-      :stale -> retry_parent_update(project, baseline, intended, parent)
+    case parent_attempt(project, baseline, intended, parent, opts, :initial) do
+      :stale -> retry_parent_update(project, baseline, intended, parent, opts)
       result -> result
     end
   end
 
-  defp retry_parent_update(project, baseline, intended, parent) do
-    case parent_attempt(project, baseline, intended, parent, :retry) do
+  defp retry_parent_update(project, baseline, intended, parent, opts) do
+    case parent_attempt(project, baseline, intended, parent, opts, :retry) do
       :stale ->
         case current_task(project, baseline) do
           nil ->
@@ -152,24 +189,36 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
-  defp parent_attempt(project, baseline, intended, parent, attempt) do
+  defp parent_attempt(project, baseline, intended, parent, opts, attempt) do
     case Repo.transaction(fn ->
+           GraphLock.acquire!()
+
            with %Project{} = locked_project <- lock_project(project),
                 {:ok, current} <- current_task_for_attempt(locked_project, baseline, attempt),
                 {:ok, persisted_parent} <- reload_parent(locked_project, parent),
-                :ok <- Hierarchy.validate_parent(current, persisted_parent, locked_project) do
+                :ok <- Hierarchy.validate_parent(current, persisted_parent, locked_project),
+                :ok <- validate_parent_block(current, persisted_parent) do
              parent_attempt_result(
                locked_project,
                baseline,
                current,
                intended,
                persisted_parent,
+               opts,
                attempt
              )
            else
-             nil -> Repo.rollback(:not_found)
-             {:error, :not_found} -> Repo.rollback(:not_found)
-             {:error, :cycle} -> Repo.rollback(cycle_changeset(baseline, intended))
+             nil ->
+               Repo.rollback(:not_found)
+
+             {:error, :not_found} ->
+               Repo.rollback(:not_found)
+
+             {:error, :cycle} ->
+               Repo.rollback(cycle_changeset(baseline, intended))
+
+             {:error, :parent_blocks_child} ->
+               Repo.rollback(parent_block_changeset(baseline, intended))
            end
          end) do
       {:ok, result} -> result
@@ -183,19 +232,31 @@ defmodule Taskman.Tasks.Mutations do
          current,
          intended,
          _persisted_parent,
+         opts,
          :initial
        ) do
     changeset = parent_changeset(baseline, intended)
     fields = ordered_fields(Map.keys(changeset.changes))
 
-    if fields == [] do
-      initial_parent_noop_result(baseline, current, intended)
-    else
-      case persist_update(changeset) do
-        {:ok, persisted} -> {:ok, persisted, fields}
-        {:error, changeset} -> Repo.rollback(changeset)
-        :stale -> :stale
-      end
+    cond do
+      fields == [] ->
+        initial_parent_noop_result(baseline, current, intended)
+
+      baseline.lock_version != current.lock_version ->
+        :stale
+
+      true ->
+        case allow_done_transition(current, changeset.changes, opts) do
+          :ok ->
+            case persist_update(changeset) do
+              {:ok, persisted} -> {:ok, persisted, fields}
+              {:error, changeset} -> Repo.rollback(changeset)
+              :stale -> :stale
+            end
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
     end
   end
 
@@ -205,6 +266,7 @@ defmodule Taskman.Tasks.Mutations do
          current,
          intended,
          _persisted_parent,
+         opts,
          :retry
        ) do
     case classify_intended_fields(baseline, current, intended) do
@@ -218,10 +280,16 @@ defmodule Taskman.Tasks.Mutations do
         changeset = parent_changeset(current, remaining)
         fields = ordered_fields(Map.keys(changeset.changes))
 
-        case persist_update(changeset) do
-          {:ok, persisted} -> {:ok, persisted, fields}
-          {:error, changeset} -> Repo.rollback(changeset)
-          :stale -> :stale
+        case allow_done_transition(current, changeset.changes, opts) do
+          :ok ->
+            case persist_update(changeset) do
+              {:ok, persisted} -> {:ok, persisted, fields}
+              {:error, changeset} -> Repo.rollback(changeset)
+              :stale -> :stale
+            end
+
+          {:error, reason} ->
+            Repo.rollback(reason)
         end
     end
   end
@@ -297,10 +365,11 @@ defmodule Taskman.Tasks.Mutations do
     |> Ecto.Changeset.put_change(:list_id, destination_id)
   end
 
-  defp persist_update(changeset) do
+  defp persist_update(changeset, opts \\ []) do
     try do
-      case Repo.update(Ecto.Changeset.optimistic_lock(changeset, :lock_version),
-             returning: [:updated_at]
+      case Repo.update(
+             Ecto.Changeset.optimistic_lock(changeset, :lock_version),
+             Keyword.merge([returning: [:updated_at]], opts)
            ) do
         {:ok, task} -> {:ok, task}
         {:error, changeset} -> {:error, changeset}
@@ -317,10 +386,19 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
-  defp current_or_not_found(project, baseline) do
+  defp current_or_not_found(project, baseline, preconditions) do
     case current_task(project, baseline) do
-      nil -> {:error, :not_found}
-      current -> {:ok, current, []}
+      nil ->
+        {:error, :not_found}
+
+      current ->
+        case classify_intended_fields(baseline, current, preconditions) do
+          {[_ | _] = conflicts, _remaining} ->
+            {:error, %Conflict{task: current, fields: conflicts}}
+
+          {[], _remaining} ->
+            {:ok, current, []}
+        end
     end
   end
 
@@ -383,6 +461,77 @@ defmodule Taskman.Tasks.Mutations do
     |> then(fn {conflicts, remaining} -> {ordered_fields(conflicts), remaining} end)
   end
 
+  defp status_precondition(attrs, changeset, intended) do
+    if Map.has_key?(attrs, :status) or Map.has_key?(attrs, "status") do
+      Map.put(intended, :status, Ecto.Changeset.get_field(changeset, :status))
+    else
+      intended
+    end
+  end
+
+  defp check_stale_conflicts(%Task{lock_version: version}, %Task{lock_version: version}, _),
+    do: :ok
+
+  defp check_stale_conflicts(baseline, current, intended) do
+    case classify_intended_fields(baseline, current, intended) do
+      {[], _remaining} -> :ok
+      {conflicts, _remaining} -> {:error, %Conflict{task: current, fields: conflicts}}
+    end
+  end
+
+  defp allow_done_transition(%Task{id: task_id, status: status}, %{status: :done}, opts)
+       when status != :done do
+    case Keyword.get(opts, :done_confirmation) do
+      :force ->
+        :ok
+
+      confirmation ->
+        summaries = unresolved_blocker_summaries(task_id)
+        current_ids = MapSet.new(summaries, & &1.id)
+
+        confirmed_ids =
+          case confirmation do
+            {:ids, ids} -> MapSet.new(ids)
+            _ -> MapSet.new()
+          end
+
+        if MapSet.subset?(current_ids, confirmed_ids) do
+          :ok
+        else
+          {:error, {:unresolved_blockers, summaries}}
+        end
+    end
+  end
+
+  defp allow_done_transition(_current, _intended, _opts), do: :ok
+
+  defp unresolved_blocker_summaries(task_id) do
+    ids =
+      task_id
+      |> BlockingPersistence.incoming()
+      |> Enum.map(& &1.blocking_task_id)
+
+    if ids == [] do
+      []
+    else
+      summaries = BlockingPersistence.summaries(ids)
+
+      ids
+      |> Enum.flat_map(fn id ->
+        case Map.fetch(summaries, id) do
+          {:ok, %{status: status} = summary} when status not in [:done, :will_not_do] ->
+            [summary]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.sort_by(fn summary ->
+        {String.downcase(summary.project_name), String.downcase(summary.title), summary.id}
+      end)
+    end
+  end
+
   defp task_value(task, field) do
     task
     |> Map.from_struct()
@@ -397,6 +546,22 @@ defmodule Taskman.Tasks.Mutations do
     task
     |> Task.changeset(attrs)
     |> Ecto.Changeset.add_error(:parent_task_id, "would create a cycle")
+  end
+
+  defp validate_parent_block(_child, nil), do: :ok
+
+  defp validate_parent_block(%Task{id: child_id}, %Task{id: parent_id}) do
+    if BlockingPersistence.edge?(parent_id, child_id) do
+      {:error, :parent_blocks_child}
+    else
+      :ok
+    end
+  end
+
+  defp parent_block_changeset(task, attrs) do
+    task
+    |> parent_changeset(attrs)
+    |> Ecto.Changeset.add_error(:parent_task_id, "parent blocks this Task")
   end
 
   defp ordered_fields(fields) do

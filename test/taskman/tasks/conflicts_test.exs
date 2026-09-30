@@ -266,6 +266,52 @@ defmodule Taskman.Tasks.ConflictsTest do
     assert current.lock_version == persisted.lock_version
   end
 
+  test "a stale explicit status no-op conflicts when persistence changed status" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{status: :done})
+    {first_baseline, stale_baseline} = loaded_task_baselines(project, task)
+
+    assert {:ok, reopened} =
+             Tasks.update_task(project, first_baseline, %{status: :pending})
+
+    assert {:error, %Taskman.Tasks.Conflict{task: current, fields: [:status]}} =
+             Tasks.update_task(project, stale_baseline, %{"status" => "done"})
+
+    assert current == reopened
+    assert Tasks.get_task_for_project(project, task.id).status == :pending
+  end
+
+  test "a stale explicit status no-op prevents a mixed title write" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Before", status: :done})
+    {first_baseline, stale_baseline} = loaded_task_baselines(project, task)
+
+    assert {:ok, _} = Tasks.update_task(project, first_baseline, %{status: :pending})
+
+    assert {:error, %Taskman.Tasks.Conflict{fields: [:status]}} =
+             Tasks.update_task(project, stale_baseline, %{title: "After", status: :done})
+
+    current = Tasks.get_task_for_project(project, task.id)
+    assert current.title == "Before"
+    assert current.status == :pending
+  end
+
+  test "a stale explicit status no-op prevents a mixed parent write" do
+    project = project_fixture(%{})
+    parent = task_fixture(project)
+    child = task_fixture(project, %{status: :done})
+    {first_baseline, stale_baseline} = loaded_task_baselines(project, child)
+
+    assert {:ok, _} = Tasks.update_task(project, first_baseline, %{status: :pending})
+
+    assert {:error, %Taskman.Tasks.Conflict{fields: [:status]}} =
+             Tasks.update_task(project, stale_baseline, %{status: :done}, parent: parent)
+
+    current = Tasks.get_task_for_project(project, child.id)
+    assert current.parent_task_id == nil
+    assert current.status == :pending
+  end
+
   test "a stale mixed-field update fails atomically when one intended field conflicts" do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :pending})
@@ -446,7 +492,7 @@ defmodule Taskman.Tasks.ConflictsTest do
             if self() == test_pid and
                  String.contains?(query, ~s(FROM "tasks")) and
                  String.starts_with?(String.trim_leading(query), "SELECT") and
-                 :atomics.compare_exchange(telemetry_guard, 1, 0, 1) == :ok do
+                 :atomics.add_get(telemetry_guard, 1, 1) == 2 do
               send(race_pid, {:run_second_race, trigger})
               assert_receive {:second_race_finished, ^race_pid}, 5_000
             end

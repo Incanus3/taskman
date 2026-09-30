@@ -36,9 +36,13 @@ runners. Keeping ARM64 would require replacing standard checkout and cache actio
   Elixir 1.19.5 and Erlang/OTP 26.2.5.21.
 - Pin the complete image tag
   `hexpm/elixir:1.19.5-erlang-26.2.5.21-alpine-3.24.1`.
-- Keep `runs-on: ubuntu-latest` as the GitHub-hosted x64 Docker host. Ordinary `run` steps still
+- Use `runs-on: ubuntu-26.04` as the GitHub-hosted x64 Docker host. Ordinary `run` steps still
   execute inside Alpine.
-- Preserve `actions/checkout@v4` and the existing dependency cache.
+- Use `actions/checkout@v7` and `actions/cache@v6`, whose declared action runtime is Node.js 24.
+  Preserve the dependency cache path and keys. These versions follow GitHub's
+  [Node.js 20 retirement guidance](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/).
+- Select Ubuntu 26.04 explicitly so the [host image migration](https://github.com/actions/runner-images/issues/14748)
+  is verified deliberately rather than arriving through the floating `ubuntu-latest` label.
 - Install Alpine's `git` and GNU `tar` packages before checkout and caching. BusyBox `tar` does not
   support the cache action's required `--posix` option.
 - Run PostgreSQL as a healthy service container and expose its `postgres` service label through
@@ -64,7 +68,7 @@ runners. Keeping ARM64 would require replacing standard checkout and cache actio
 The CI job configuration is owned by `.github/workflows/elixir.yml`. The build job uses:
 
 ```yaml
-runs-on: ubuntu-latest
+runs-on: ubuntu-26.04
 container:
   image: hexpm/elixir:1.19.5-erlang-26.2.5.21-alpine-3.24.1
 env:

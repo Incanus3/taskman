@@ -2,6 +2,7 @@ defmodule TaskmanWeb.AccountComponents do
   @moduledoc "Reusable account navigation components."
 
   use Phoenix.Component
+  import TaskmanWeb.CoreComponents, only: [icon: 1]
 
   attr :current_user, :any, default: nil
 
@@ -12,33 +13,32 @@ defmodule TaskmanWeb.AccountComponents do
       :if={@current_user}
       id="account-menu"
       aria-label="Account navigation"
-      class="flex items-center gap-3"
+      class="flex items-center gap-1 sm:gap-3"
     >
-      <span id="account-identity" class="max-w-56 truncate pr-2.5 text-sm text-slate-300">
+      <span
+        id="account-identity"
+        class="hidden max-w-56 truncate pr-2.5 text-sm text-slate-300 xl:block"
+      >
         {to_string(@current_user.email)}
       </span>
       <.link
-        :if={@current_user.admin?}
-        id="account-administration-link"
-        navigate="/admin"
-        class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-      >
-        Administration
-      </.link>
-      <.link
         id="account-settings-link"
         navigate="/account/settings"
-        class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+        aria-label="Account settings"
+        title="Account settings"
+        class="grid size-9 shrink-0 place-items-center rounded-lg text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
       >
-        Account settings
+        <.icon name="hero-cog-6-tooth" class="size-5" />
       </.link>
       <.link
         id="account-sign-out-link"
         href="/sign-out"
         method="delete"
-        class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+        aria-label="Sign out"
+        title="Sign out"
+        class="grid size-9 shrink-0 place-items-center rounded-lg text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
       >
-        Sign out
+        <.icon name="hero-arrow-right-start-on-rectangle" class="size-5" />
       </.link>
     </nav>
     """

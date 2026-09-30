@@ -9,6 +9,7 @@ defmodule Taskman.Accounts.User.PasswordResetTest do
 
   setup :set_swoosh_global
 
+  @tag :capture_log
   test "reset requests have the same public result for unknown, pending, active, disabled, and failed delivery" do
     active = active_user_fixture("active@example.com")
     _pending = pending_user_fixture(email: "pending@example.com")

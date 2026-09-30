@@ -102,7 +102,20 @@ defmodule TaskmanWeb.AshAdminAccessTest do
     end
   end
 
+  @tag :capture_log
   test "forged admin protocol events cannot preserve a revoked mounted actor", %{conn: conn} do
+    # Keep Cinder's rejected read inside this test's log capture.
+    previous_async_setting = Application.get_env(:ash, :disable_async?)
+    Application.put_env(:ash, :disable_async?, true)
+
+    on_exit(fn ->
+      if is_nil(previous_async_setting) do
+        Application.delete_env(:ash, :disable_async?)
+      else
+        Application.put_env(:ash, :disable_async?, previous_async_setting)
+      end
+    end)
+
     administrator = admin_fixture()
     second_administrator = admin_fixture()
     conn = log_in_user(conn, administrator)

@@ -4,9 +4,9 @@ defmodule TaskmanWeb.Tasks.Detail do
   alias Taskman.Projects.Project
   alias Taskman.Tasks.{Comment, Hierarchy, HierarchyNode, Task}
   alias TaskmanWeb.ProjectLive.Tasks.Comments
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
-  alias TaskmanWeb.Tasks.{Form, MovePopover}
+  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks}
 
   attr :task, Task, required: true
   attr :project, Project, default: nil
@@ -20,6 +20,9 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :recovery?, :boolean, default: false
   attr :comments, :any, default: nil
   attr :comment_stream, :any, default: []
+  attr :related_tasks, :map, default: %{blocks: [], blocked_by: []}
+  attr :related_picker, RelatedTasksPicker, default: nil
+  attr :related_task_path, :any, default: nil
   slot :header_actions
 
   def detail(assigns) do
@@ -31,6 +34,7 @@ defmodule TaskmanWeb.Tasks.Detail do
     assigns =
       assigns
       |> assign(:comments, %{comments | form: form})
+      |> assign(:related_picker, assigns.related_picker || RelatedTasksPicker.empty())
       |> assign(:location_path, TaskHierarchy.selected_location_path(assigns.task_hierarchy))
 
     ~H"""
@@ -96,6 +100,7 @@ defmodule TaskmanWeb.Tasks.Detail do
       <div id="task-detail-content" class="task-detail-content">
         <div class="task-detail-columns">
           <section
+            id="task-detail-main"
             class="min-w-0 p-6 sm:px-7 sm:pb-7"
             aria-labelledby={if(@recovery?, do: nil, else: "task-modal-title")}
           >
@@ -213,6 +218,46 @@ defmodule TaskmanWeb.Tasks.Detail do
               conflicts={@task_autosave.conflicts}
               field_states={@task_autosave.field_states}
               recovery?={@recovery?}
+            />
+            <div
+              :if={!@recovery? && is_list(@task_autosave.done_warning)}
+              id="task-done-warning"
+              role="alert"
+              class="mt-5 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-50"
+            >
+              <h3 class="font-semibold">Review unresolved direct blockers</h3>
+              <p class="mt-1 text-amber-100/80">This Task still has work blocking it.</p>
+              <ul class="mt-3 space-y-2">
+                <li
+                  :for={blocker <- @task_autosave.done_warning}
+                  id={"task-done-blocker-#{blocker.id}"}
+                  class="rounded-lg border border-amber-300/20 px-3 py-2"
+                >
+                  <span class="block font-medium">{blocker.title}</span>
+                  <span class="block text-xs text-amber-100/75">Task #{blocker.id} · {blocker.status} · {blocker.priority} · {blocker.project_name}</span>
+                </li>
+              </ul>
+              <div class="mt-4 flex flex-wrap gap-2">
+                <button
+                  id="keep-current-task-status"
+                  type="button"
+                  phx-click="keep_current_task_status"
+                  class="rounded-lg border border-amber-200/40 px-3 py-2 font-semibold transition hover:bg-amber-100/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+                >Keep current status</button>
+                <button
+                  id="confirm-task-done"
+                  type="button"
+                  phx-click="confirm_task_done"
+                  class="rounded-lg bg-amber-300 px-3 py-2 font-semibold text-slate-950 transition hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-100"
+                >Mark Done anyway</button>
+              </div>
+            </div>
+            <RelatedTasks.related_tasks
+              :if={!@recovery?}
+              related_tasks={@related_tasks}
+              picker={@related_picker}
+              current_project_id={@project.id}
+              link_path={@related_task_path}
             />
           </section>
 

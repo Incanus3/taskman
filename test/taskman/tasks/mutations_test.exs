@@ -8,6 +8,111 @@ defmodule Taskman.Tasks.MutationsTest do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
 
+  test "persisted status changes acquire the graph lock before reloading the Task" do
+    project = project_fixture(%{})
+
+    for status <- Task.statuses(), status != :pending do
+      task = task_fixture(project, %{title: "Change to #{status}"})
+
+      {result, queries} =
+        capture_queries(fn -> Tasks.update_task(project, task, %{status: status}) end)
+
+      assert {:ok, updated} = result
+      assert updated.status == status
+
+      graph_lock_positions = query_positions(queries, "pg_advisory_xact_lock")
+      task_read_positions = query_positions(queries, ~s(FROM "tasks"))
+
+      assert length(graph_lock_positions) == 1
+      assert length(task_read_positions) >= 1
+      assert hd(graph_lock_positions) < hd(task_read_positions)
+      assert Enum.any?(queries, &String.contains?(&1, "begin"))
+      assert Enum.any?(queries, &String.contains?(&1, "commit"))
+    end
+  end
+
+  test "ordinary edits and parentless creation do not acquire the graph lock" do
+    project = project_fixture(%{})
+    destination = list_fixture(project, nil, %{name: "Destination"})
+    task = task_fixture(project, %{title: "Ordinary"})
+
+    {create_result, create_queries} =
+      capture_queries(fn -> Tasks.create_task(project, %{title: "No parent"}) end)
+
+    assert {:ok, _created} = create_result
+    refute Enum.any?(create_queries, &String.contains?(&1, "pg_advisory_xact_lock"))
+
+    {update_result, update_queries} =
+      capture_queries(fn ->
+        Tasks.update_task(project, task, %{
+          title: "Renamed",
+          description: "Details",
+          priority: :high,
+          due_at: ~N[2026-10-01 12:00:00],
+          status: :pending
+        })
+      end)
+
+    assert {:ok, updated} = update_result
+    refute Enum.any?(update_queries, &String.contains?(&1, "pg_advisory_xact_lock"))
+
+    {move_result, move_queries} =
+      capture_queries(fn -> Tasks.move_task(project, updated, destination) end)
+
+    assert {:ok, _moved} = move_result
+    refute Enum.any?(move_queries, &String.contains?(&1, "pg_advisory_xact_lock"))
+  end
+
+  test "an unchanged explicit status uses no graph lock or version bump" do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{status: :done})
+
+    {result, queries} =
+      capture_queries(fn -> Tasks.update_task(project, task, %{status: :done}) end)
+
+    assert {:ok, current} = result
+    assert current.status == :done
+    assert current.lock_version == task.lock_version
+    refute Enum.any?(queries, &String.contains?(&1, "pg_advisory_xact_lock"))
+  end
+
+  defp query_positions(queries, pattern) do
+    queries
+    |> Enum.with_index()
+    |> Enum.filter(fn {query, _index} -> String.contains?(query, pattern) end)
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  defp capture_queries(fun) do
+    test_pid = self()
+    handler_id = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:taskman, :repo, :query],
+        fn _event, _measurements, %{query: query}, _config ->
+          send(test_pid, {:captured_query, query})
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+      {result, drain_captured_queries([])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_captured_queries(queries) do
+    receive do
+      {:captured_query, query} -> drain_captured_queries([query | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
+  end
+
   test "move_task/3 moves a Task among same-Project locations and detects no-op moves" do
     project = project_fixture(%{})
     destination = list_fixture(project, nil, %{name: "Planning"})

@@ -102,12 +102,18 @@ defmodule TaskmanWeb.API.TaskController do
       pop_parent_task_id(task_attrs)
 
     with :ok <- validate_update_attrs(task_attrs),
+         {:ok, confirmation_opts} <- done_confirmation(conn.body_params, task_attrs),
          {:ok, project} <- fetch_project(project_id),
          {:ok, task} <- fetch_task(project, task_id),
          {:ok, parent_opts} <-
            resolve_update_parent(project, parent_task_id, parent_present?),
          {:ok, updated} <-
-           Tasks.update_task(project, task, task_attrs_without_parent, parent_opts) do
+           Tasks.update_task(
+             project,
+             task,
+             task_attrs_without_parent,
+             parent_opts ++ confirmation_opts
+           ) do
       json(conn, %{data: task_data(project, updated)})
     end
   end
@@ -259,6 +265,35 @@ defmodule TaskmanWeb.API.TaskController do
       {:error, :invalid_request}
     end
   end
+
+  defp done_confirmation(body, task_attrs) do
+    case Map.fetch(body, "confirmation") do
+      :error ->
+        {:ok, []}
+
+      {:ok, confirmation} ->
+        if Map.get(task_attrs, "status") == "done" or Map.get(task_attrs, :status) == :done do
+          parse_done_confirmation(confirmation)
+        else
+          {:error, :invalid_request}
+        end
+    end
+  end
+
+  defp parse_done_confirmation(%{"unresolved_blocker_ids" => ids} = confirmation)
+       when map_size(confirmation) == 1 and is_list(ids) and ids != [] do
+    if Enum.all?(ids, &(is_integer(&1) and &1 > 0)) do
+      {:ok, [done_confirmation: {:ids, Enum.uniq(ids)}]}
+    else
+      {:error, :invalid_request}
+    end
+  end
+
+  defp parse_done_confirmation(%{"force_done_with_unresolved_blockers" => true} = confirmation)
+       when map_size(confirmation) == 1,
+       do: {:ok, [done_confirmation: :force]}
+
+  defp parse_done_confirmation(_confirmation), do: {:error, :invalid_request}
 
   defp pop_parent_task_id(attrs) do
     cond do

@@ -21,6 +21,18 @@ defmodule TaskmanWeb.API.FallbackController do
   def call(conn, {:error, :internal_error}),
     do: error(conn, 500, "internal_error", "Internal Server Error")
 
+  def call(conn, {:error, {:unresolved_blockers, blockers}}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      error: %{
+        code: "unresolved_blockers",
+        message: "Review unresolved direct blockers before marking Done",
+        blockers: Enum.map(blockers, &Representation.linked_task/1)
+      }
+    })
+  end
+
   def call(conn, {:error, %Taskman.Tasks.Conflict{fields: fields}}) do
     conn
     |> put_status(:conflict)

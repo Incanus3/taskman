@@ -154,6 +154,20 @@ defmodule Taskman.CLI.Registry do
         ]
       },
       %Command{
+        path: ~w(tasks search),
+        summary: "Find Tasks by ID or title across Projects.",
+        usage: "taskman tasks search QUERY [--project PROJECT_ID] [--json]",
+        handler: {:tasks, :search},
+        arguments: [argument(:query, "QUERY", :nonblank_string, "Task ID or title terms.")],
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Limit to one Project.")
+        ],
+        examples: [
+          "taskman tasks search \"42 publish\"",
+          "taskman tasks search publish --project 9"
+        ]
+      },
+      %Command{
         path: ~w(tasks show),
         summary: "Inspect one Task by ID.",
         usage: "taskman tasks show --project PROJECT_ID TASK_ID [--include-comments]",
@@ -172,6 +186,76 @@ defmodule Taskman.CLI.Registry do
           )
         ],
         examples: ["taskman tasks show --project 7 42 --include-comments"]
+      },
+      %Command{
+        path: ~w(tasks blocking show),
+        summary: "Show Tasks this Task blocks and Tasks blocking it.",
+        usage: "taskman tasks blocking show --project PROJECT_ID TASK_ID",
+        handler: {:tasks, :blocking_show},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Selected Task ID.")],
+        options: [
+          option(
+            :project,
+            "--project",
+            :positive_integer,
+            "PROJECT_ID",
+            "Selected Task's Project ID.",
+            required?: true
+          )
+        ],
+        examples: ["taskman tasks blocking show --project 9 42"]
+      },
+      %Command{
+        path: ~w(tasks blocks add),
+        summary: "Add a directed Blocks link from the named Task to a target Task.",
+        usage: "taskman tasks blocks add --project PROJECT_ID TASK_ID --target TARGET_TASK_ID",
+        handler: {:tasks, :blocks_add},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Blocking Task ID.")],
+        options: [
+          option(
+            :project,
+            "--project",
+            :positive_integer,
+            "PROJECT_ID",
+            "Blocking Task's Project ID.",
+            required?: true
+          ),
+          option(
+            :target,
+            "--target",
+            :positive_integer,
+            "TARGET_TASK_ID",
+            "Blocked Task ID, even in another Project.",
+            required?: true
+          )
+        ],
+        examples: ["taskman tasks blocks add --project 7 12 --target 42"]
+      },
+      %Command{
+        path: ~w(tasks blocks remove),
+        summary: "Remove a directed Blocks link from the named Task to a target Task.",
+        usage: "taskman tasks blocks remove --project PROJECT_ID TASK_ID --target TARGET_TASK_ID",
+        handler: {:tasks, :blocks_remove},
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Blocking Task ID.")],
+        options: [
+          option(
+            :project,
+            "--project",
+            :positive_integer,
+            "PROJECT_ID",
+            "Blocking Task's Project ID.",
+            required?: true
+          ),
+          option(
+            :target,
+            "--target",
+            :positive_integer,
+            "TARGET_TASK_ID",
+            "Blocked Task ID, even in another Project.",
+            required?: true
+          )
+        ],
+        examples: ["taskman tasks blocks remove --project 7 12 --target 42"]
       },
       %Command{
         path: ~w(tasks comments list),
@@ -251,7 +335,7 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks update),
         summary: "Update editable Task fields or lifecycle state.",
         usage:
-          "taskman tasks update --project PROJECT_ID TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent]",
+          "taskman tasks update --project PROJECT_ID TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent] [--confirm-unresolved-blockers ID,ID | --force-done-with-unresolved-blockers]",
         handler: {:tasks, :update},
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
@@ -279,19 +363,39 @@ defmodule Taskman.CLI.Registry do
             "PARENT_TASK_ID",
             "Replacement parent Task ID."
           ),
-          option(:no_parent, "--no-parent", :boolean, nil, "Clear the parent Task.")
+          option(:no_parent, "--no-parent", :boolean, nil, "Clear the parent Task."),
+          option(
+            :confirm_unresolved_blockers,
+            "--confirm-unresolved-blockers",
+            :positive_integer_csv,
+            "ID,ID",
+            "Confirm the listed unresolved direct blocker IDs for this Done request. Repeated IDs are accepted and deduplicated by the API."
+          ),
+          option(
+            :force_done_with_unresolved_blockers,
+            "--force-done-with-unresolved-blockers",
+            :boolean,
+            nil,
+            "Explicitly override the unresolved-blocker warning for this Done request."
+          )
         ],
         constraints: [
           {:at_least_one,
            ~w(title description status priority due_at clear_due_at parent no_parent)a},
           {:mutually_exclusive, [:due_at, :clear_due_at]},
-          {:mutually_exclusive, [:parent, :no_parent]}
+          {:mutually_exclusive, [:parent, :no_parent]},
+          {:mutually_exclusive,
+           [:confirm_unresolved_blockers, :force_done_with_unresolved_blockers]},
+          {:requires_value, [:confirm_unresolved_blockers, :force_done_with_unresolved_blockers],
+           :status, "done"}
         ],
         examples: [
           "taskman tasks update --project 7 42 --status in_progress",
           "taskman tasks update --project 7 42 --clear-due-at",
           "taskman tasks update --project 7 42 --parent 41",
-          "taskman tasks update --project 7 42 --no-parent"
+          "taskman tasks update --project 7 42 --no-parent",
+          "taskman tasks update --project 9 42 --status done --confirm-unresolved-blockers 12,15",
+          "taskman tasks update --project 9 42 --status done --force-done-with-unresolved-blockers"
         ]
       },
       %Command{

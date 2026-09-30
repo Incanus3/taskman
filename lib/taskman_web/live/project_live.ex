@@ -2,6 +2,8 @@ defmodule TaskmanWeb.ProjectLive do
   use TaskmanWeb, :live_view
 
   alias Taskman.Projects
+  alias Taskman.Lists
+  alias Taskman.Lists.TaskList
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
@@ -25,7 +27,8 @@ defmodule TaskmanWeb.ProjectLive do
     Move,
     Movement,
     ParentPicker,
-    ParentSelection
+    ParentSelection,
+    LocationScope
   }
 
   alias TaskmanWeb.Tasks.{Detail, Form, Recovery, Table}
@@ -124,7 +127,7 @@ defmodule TaskmanWeb.ProjectLive do
           {:continue, departure} ->
             socket = assign(socket, :comment_departure, departure)
 
-            case Editing.flush(socket) do
+            case Editing.flush(socket, discard_done?: true) do
               {:ok, socket} ->
                 {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
 
@@ -350,7 +353,7 @@ defmodule TaskmanWeb.ProjectLive do
       {:continue, departure} ->
         socket = assign(socket, :comment_departure, departure)
 
-        case Editing.flush(socket) do
+        case Editing.flush(socket, discard_done?: true) do
           {:ok, socket} -> {:noreply, navigate_departure(socket, destination)}
           {:error, socket} -> {:noreply, socket}
         end
@@ -371,7 +374,7 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, socket}
 
       destination ->
-        case Editing.flush(socket, allow_invalid?: false) do
+        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
           {:ok, socket} ->
             {:noreply,
              socket
@@ -400,7 +403,7 @@ defmodule TaskmanWeb.ProjectLive do
       %CommentDeparture{destination: destination} = departure ->
         socket = assign(socket, :comment_departure, %{departure | submitting?: true})
 
-        case Editing.flush(socket, allow_invalid?: false) do
+        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
           {:ok, socket} ->
             case Comments.post(socket, socket.assigns.comments.draft) do
               {:ok, socket} ->
@@ -570,6 +573,25 @@ defmodule TaskmanWeb.ProjectLive do
   defp ordinary_creation_active?(socket) do
     socket.assigns.live_action == :new_task and not is_nil(socket.assigns.creation.form) and
       not RecoveryWorkflow.blocked?(socket)
+  end
+
+  defp related_task_path_fn(workspace) do
+    task_lists = Lists.list_lists_for_project(workspace.selected_project)
+    fn summary -> related_task_path(workspace, task_lists, summary) end
+  end
+
+  defp related_task_path(workspace, task_lists, summary) do
+    project = %Taskman.Projects.Project{id: summary.project_id}
+    actual = if summary.location.list_id, do: %TaskList{id: summary.location.list_id}
+
+    selected =
+      if workspace.selected_project.id == project.id do
+        LocationScope.backdrop(workspace, actual, task_lists)
+      else
+        nil
+      end
+
+    Paths.task_detail_path(project, selected, %Task{id: summary.id}, false)
   end
 
   defp non_creation_workflow_blocked?(socket) do

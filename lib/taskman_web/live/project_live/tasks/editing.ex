@@ -2,45 +2,72 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [push_patch: 2]
 
+  alias Taskman.Projects
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Creation, Hierarchy, Listing, Move, ParentPicker}
 
-  @events ~w(toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict)
+  alias TaskmanWeb.ProjectLive.Tasks.{
+    Autosave,
+    Creation,
+    Hierarchy,
+    Listing,
+    Move,
+    ParentPicker,
+    RelatedTasksPicker
+  }
+
+  @events ~w(toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
 
   defmodule State do
     alias Taskman.Tasks.Task
     alias Taskman.Tasks.Hierarchy, as: TaskHierarchy
-    alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Hierarchy}
+    alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Hierarchy, RelatedTasksPicker}
 
     defstruct selected_task: nil,
               not_found?: false,
               detail_open?: false,
               autosave: Autosave.empty(),
-              hierarchy: Hierarchy.empty()
+              hierarchy: Hierarchy.empty(),
+              related_tasks: %{blocks: [], blocked_by: []},
+              related_picker: RelatedTasksPicker.empty()
 
     @type t :: %__MODULE__{
             selected_task: Task.t() | nil,
             not_found?: boolean(),
             detail_open?: boolean(),
             autosave: Autosave.t(),
-            hierarchy: Hierarchy.t()
+            hierarchy: Hierarchy.t(),
+            related_tasks: map(),
+            related_picker: RelatedTasksPicker.t()
           }
 
     @spec empty() :: t()
     def empty, do: %__MODULE__{}
 
     @spec open(t(), Task.t(), Autosave.t(), TaskHierarchy.t()) :: t()
-    def open(%__MODULE__{} = state, %Task{} = task, %Autosave{} = autosave, hierarchy) do
+    @spec open(t(), Task.t(), Autosave.t(), TaskHierarchy.t(), map()) :: t()
+    def open(
+          %__MODULE__{} = state,
+          %Task{} = task,
+          %Autosave{} = autosave,
+          hierarchy,
+          related_tasks \\ %{blocks: [], blocked_by: []}
+        ) do
       %{
         state
         | selected_task: task,
           not_found?: false,
           detail_open?: true,
           autosave: autosave,
-          hierarchy: Hierarchy.load(state.hierarchy, hierarchy)
+          hierarchy: Hierarchy.load(state.hierarchy, hierarchy),
+          related_tasks: related_tasks,
+          related_picker:
+            if(state.selected_task && state.selected_task.id == task.id,
+              do: state.related_picker,
+              else: RelatedTasksPicker.empty()
+            )
       }
     end
 
@@ -57,7 +84,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
     @spec clear_transient(t()) :: t()
     def clear_transient(%__MODULE__{} = state) do
-      %{state | selected_task: nil, not_found?: false, autosave: Autosave.clear(state.autosave)}
+      %{
+        state
+        | selected_task: nil,
+          not_found?: false,
+          autosave: Autosave.clear(state.autosave),
+          related_tasks: %{blocks: [], blocked_by: []},
+          related_picker: RelatedTasksPicker.empty()
+      }
     end
 
     @spec clear(t()) :: t()
@@ -73,12 +107,17 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   @spec apply_route(Phoenix.LiveView.Socket.t(), Project.t(), Task.t() | nil) ::
           Phoenix.LiveView.Socket.t()
   def apply_route(socket, project, %Task{} = task) do
-    case Tasks.get_task_hierarchy(project, task) do
-      {:ok, hierarchy} ->
+    case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
+      {{:ok, hierarchy}, {:ok, related_tasks}} ->
         autosave = route_autosave(socket.assigns.editing, task)
-        assign(socket, :editing, State.open(socket.assigns.editing, task, autosave, hierarchy))
 
-      {:error, :not_found} ->
+        assign(
+          socket,
+          :editing,
+          State.open(socket.assigns.editing, task, autosave, hierarchy, related_tasks)
+        )
+
+      _not_found ->
         task_not_found_modal_state(socket)
     end
   end
@@ -112,11 +151,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
       ) do
     case Tasks.get_task_for_project(project, task_id) do
       %Task{} = task ->
-        case Tasks.get_task_hierarchy(project, task) do
-          {:ok, hierarchy} ->
+        case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
+          {{:ok, hierarchy}, {:ok, related_tasks}} ->
             sequence = max(captured_autosave.sequence, socket.assigns.editing.autosave.sequence)
             autosave = Autosave.resume(%{captured_autosave | sequence: sequence}, task)
-            editing = State.open(captured, task, autosave, hierarchy)
+            editing = State.open(captured, task, autosave, hierarchy, related_tasks)
             picker = ParentPicker.reconcile(captured_picker, project, task)
 
             socket =
@@ -137,7 +176,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
                 {:error, apply_task_autosave_result(socket, {:not_found, autosave})}
             end
 
-          {:error, :not_found} ->
+          _not_found ->
             {:error, :task_not_found, socket}
         end
 
@@ -166,6 +205,100 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   def handle_event("toggle_task_hierarchy_node", _params, socket), do: {:noreply, socket}
+
+  def handle_event("open_related_picker", %{"direction" => direction}, socket)
+      when direction in ["blocks", "blocked-by"] do
+    with %Project{} = project <- socket.assigns.workspace.selected_project,
+         %Task{} = task <- socket.assigns.editing.selected_task do
+      direction = if(direction == "blocks", do: :blocks, else: :blocked_by)
+      picker = RelatedTasksPicker.open(direction, project, task, Projects.list_projects())
+      {:noreply, update_state(socket, &%{&1 | related_picker: picker})}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_related_picker", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_related_picker", _params, socket),
+    do: {:noreply, update_state(socket, &%{&1 | related_picker: RelatedTasksPicker.empty()})}
+
+  def handle_event(
+        "select_related_project",
+        %{"related_project" => %{"project_id" => id}},
+        socket
+      ) do
+    picker =
+      RelatedTasksPicker.select_project(
+        socket.assigns.editing.related_picker,
+        id,
+        socket.assigns.editing.selected_task
+      )
+
+    {:noreply, update_state(socket, &%{&1 | related_picker: picker})}
+  end
+
+  def handle_event("select_related_project", _params, socket), do: {:noreply, socket}
+
+  def handle_event("search_related_tasks", %{"related_search" => %{"query" => query}}, socket) do
+    picker =
+      RelatedTasksPicker.search(
+        socket.assigns.editing.related_picker,
+        query,
+        socket.assigns.editing.selected_task
+      )
+
+    {:noreply, update_state(socket, &%{&1 | related_picker: picker})}
+  end
+
+  def handle_event("search_related_tasks", _params, socket), do: {:noreply, socket}
+
+  def handle_event("add_related_task", %{"task-id" => id}, socket) do
+    picker = socket.assigns.editing.related_picker
+
+    case RelatedTasksPicker.candidate(picker, id) do
+      %{id: candidate_id} -> mutate_related_task(socket, :add, picker.direction, candidate_id)
+      _ -> {:noreply, related_error(socket, "This Task is no longer available. Search again.")}
+    end
+  end
+
+  def handle_event("add_related_task", _params, socket), do: {:noreply, socket}
+
+  def handle_event("remove_related_task", %{"direction" => direction, "task-id" => id}, socket)
+      when direction in ["blocks", "blocked-by"] do
+    case parse_navigation_identity(id) do
+      {:ok, target_id} ->
+        direction = if(direction == "blocks", do: :blocks, else: :blocked_by)
+        mutate_related_task(socket, :remove, direction, target_id)
+
+      :error ->
+        {:noreply, related_error(socket, "This relationship is no longer available.")}
+    end
+  end
+
+  def handle_event("remove_related_task", _params, socket), do: {:noreply, socket}
+
+  def handle_event("keep_current_task_status", _params, socket) do
+    case socket.assigns.editing.selected_task do
+      %Task{} = task ->
+        autosave = Autosave.cancel_done(socket.assigns.editing.autosave, task)
+        {:noreply, update_state(socket, &State.put_autosave(&1, autosave))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("confirm_task_done", _params, socket) do
+    case {socket.assigns.workspace.selected_project, socket.assigns.editing.selected_task} do
+      {%Project{} = project, %Task{} = task} ->
+        result = Autosave.confirm_done(socket.assigns.editing.autosave, project, task)
+        {:noreply, apply_task_autosave_result(socket, result)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
 
   def handle_event(
         "autosave_task",
@@ -353,6 +486,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   @doc "Flushes pending edits and returns whether route navigation may proceed.
 
+  Departure callers use `discard_done?: true` to discard a warned Done draft before saving.
+
   Ordinary navigation may leave behind invalid Task input as before. Comment departure actions
   require `allow_invalid?: false` so discarding a comment cannot silently discard Task input.
   "
@@ -371,7 +506,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         } = socket,
         opts
       ) do
-    case Autosave.flush(socket.assigns.editing.autosave, project, task) do
+    autosave = socket.assigns.editing.autosave
+
+    autosave =
+      if Keyword.get(opts, :discard_done?, false) and not is_nil(autosave.done_warning) do
+        Autosave.cancel_done(autosave, task)
+      else
+        autosave
+      end
+
+    case Autosave.flush(autosave, project, task) do
       {:ok, autosave, task} ->
         {:ok, sync_autosave(socket, autosave, task)}
 
@@ -432,6 +576,28 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   def reload_hierarchy(socket), do: socket
 
+  @doc "Refetches relationships for the selected detail from its scoped Project."
+  @spec reload_related_tasks(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def reload_related_tasks(
+        %{
+          assigns: %{
+            live_action: :show_task,
+            workspace: %{selected_project: %Project{} = project},
+            editing: %{selected_task: %Task{} = selected_task}
+          }
+        } = socket
+      ) do
+    case Tasks.list_blocking(project, selected_task) do
+      {:ok, related_tasks} ->
+        update_state(socket, &%{&1 | related_tasks: related_tasks})
+
+      {:error, :not_found} ->
+        task_not_found_modal_state(socket)
+    end
+  end
+
+  def reload_related_tasks(socket), do: socket
+
   defp reload_task_hierarchy(socket, %Project{} = project, %Task{} = task) do
     case Tasks.get_task_hierarchy(project, task) do
       {:ok, hierarchy} ->
@@ -478,6 +644,60 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   def reconcile(socket, _event), do: {socket, :unchanged}
+
+  defp mutate_related_task(socket, action, direction, target_id)
+       when action in [:add, :remove] and direction in [:blocks, :blocked_by] do
+    selected = socket.assigns.editing.selected_task
+    selected_project = socket.assigns.workspace.selected_project
+
+    with %Task{} = target <- Tasks.get_task(target_id),
+         {blocker_project, blocker, blocked} <-
+           ordered_endpoints(direction, selected_project, selected, target),
+         %Project{} <- blocker_project do
+      result =
+        case action do
+          :add -> Tasks.add_block(blocker_project, blocker, blocked)
+          :remove -> Tasks.remove_block(blocker_project, blocker, blocked)
+        end
+
+      case result do
+        {:ok, _edge} ->
+          socket =
+            socket
+            |> update_state(&%{&1 | related_picker: RelatedTasksPicker.empty()})
+            |> reload_related_tasks()
+
+          {:noreply, socket}
+
+        {:error, reason} ->
+          {:noreply, related_error(socket, related_error_message(reason))}
+      end
+    else
+      _ -> {:noreply, related_error(socket, "This Task is no longer available. Search again.")}
+    end
+  end
+
+  defp ordered_endpoints(:blocks, project, selected, target),
+    do: {project, selected, target}
+
+  defp ordered_endpoints(:blocked_by, _project, selected, target),
+    do: {Projects.get_project(target.project_id), target, selected}
+
+  defp related_error(socket, message) do
+    update_state(socket, fn state ->
+      %{state | related_picker: RelatedTasksPicker.reject(state.related_picker, message)}
+    end)
+  end
+
+  defp related_error_message(%Ecto.Changeset{errors: errors}) do
+    case Keyword.get(errors, :target_task_id) do
+      {message, _} -> "Couldn’t change the relationship: #{message}."
+      nil -> "Couldn’t change the relationship. Please try again."
+    end
+  end
+
+  defp related_error_message(:not_found), do: "This relationship is no longer available."
+  defp related_error_message(_), do: "Couldn’t change the relationship. Please try again."
 
   defp task_conflict_resolution("use_latest"), do: :use_latest
   defp task_conflict_resolution("keep_mine"), do: :keep_mine
