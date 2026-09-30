@@ -19,6 +19,8 @@ defmodule Taskman.CLI.Presentation.Output do
   def success(command, data, false) when is_map(data) do
     cond do
       hierarchy_command?(command) -> readable_hierarchy(data)
+      blocking_show_command?(command) -> readable_blocking(data)
+      blocks_mutation_command?(command) -> readable_blocking_edge(command, data)
       comments_command?(command) -> readable_comment(data)
       task_show_with_comments?(command, data) -> readable_task_with_comments(data)
       true -> readable_member(command, data)
@@ -36,15 +38,19 @@ defmodule Taskman.CLI.Presentation.Output do
     code = Map.get(error_data, "code") || Map.get(error_data, :code) || "error"
     message = Map.get(error_data, "message") || Map.get(error_data, :message) || "Unknown error"
     fields = Map.get(error_data, "fields") || Map.get(error_data, :fields)
+    blockers = Map.get(error_data, "blockers") || Map.get(error_data, :blockers)
 
-    ["Error: #{message} (#{code})\n", render_fields(fields)]
+    ["Error: #{message} (#{code})\n", render_fields(fields), render_blockers(blockers)]
     |> IO.iodata_to_binary()
   end
 
   def error(_envelope, false), do: "Error: Unknown error (error)\n"
 
   defp readable_collection(command, rows) do
-    case resource(command) do
+    case collection_kind(command) do
+      :task_search ->
+        readable_task_search(rows)
+
       :comments ->
         readable_comments(rows)
 
@@ -65,6 +71,77 @@ defmodule Taskman.CLI.Presentation.Output do
         |> Enum.map(&readable_member(command, &1))
         |> IO.iodata_to_binary()
     end
+  end
+
+  defp readable_task_search([]), do: "No Tasks found.\n"
+
+  defp readable_task_search(rows) do
+    [
+      "ID\tTITLE\tSTATUS\tPRIORITY\tPROJECT\tLOCATION\n",
+      Enum.map(rows, fn task ->
+        [
+          value(task, :id),
+          "\t",
+          value(task, :title),
+          "\t",
+          value(task, :status),
+          "\t",
+          value(task, :priority),
+          "\t",
+          value(task, :project_id),
+          ": ",
+          value(task, :project_name),
+          "\t",
+          format_task_location(fetch_value(task, :location)),
+          "\n"
+        ]
+      end)
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+  defp readable_blocking(data) do
+    [
+      "BLOCKS\n",
+      readable_linked_tasks(fetch_value(data, :blocks)),
+      "BLOCKED BY\n",
+      readable_linked_tasks(fetch_value(data, :blocked_by))
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+  defp readable_linked_tasks([]), do: "None\n"
+
+  defp readable_linked_tasks(tasks) do
+    [
+      "ID\tTITLE\tSTATUS\tPRIORITY\tPROJECT\tLOCATION\n",
+      Enum.map(tasks, fn task ->
+        [
+          value(task, :id),
+          "\t",
+          value(task, :title),
+          "\t",
+          value(task, :status),
+          "\t",
+          value(task, :priority),
+          "\t",
+          value(task, :project_id),
+          ": ",
+          value(task, :project_name),
+          "\t",
+          format_task_location(fetch_value(task, :location)),
+          "\n"
+        ]
+      end)
+    ]
+  end
+
+  defp readable_blocking_edge(command, data) do
+    blocker = fetch_value(data, :blocking_task)
+    blocked = fetch_value(data, :blocked_task)
+    prefix = if command.handler == {:tasks, :blocks_remove}, do: "Removed: ", else: ""
+
+    "#{prefix}Task #{value(blocker, :id)} blocks Task #{value(blocked, :id)} (#{value(blocked, :project_name)}).\n"
   end
 
   defp readable_comments([]), do: "No comments yet.\n"
@@ -254,6 +331,11 @@ defmodule Taskman.CLI.Presentation.Output do
 
   defp resource(_command), do: nil
 
+  defp collection_kind(%Taskman.CLI.Registry.Command{handler: {:tasks, :search}}),
+    do: :task_search
+
+  defp collection_kind(command), do: resource(command)
+
   defp comments_command?({:tasks, action}) when action in [:comments_list, :comments_add],
     do: true
 
@@ -261,6 +343,16 @@ defmodule Taskman.CLI.Presentation.Output do
     do: true
 
   defp comments_command?(_command), do: false
+
+  defp blocking_show_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :blocking_show}}),
+    do: true
+
+  defp blocking_show_command?(_command), do: false
+
+  defp blocks_mutation_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, action}})
+       when action in [:blocks_add, :blocks_remove], do: true
+
+  defp blocks_mutation_command?(_command), do: false
 
   defp task_show_with_comments?({:tasks, :show_with_comments}, data),
     do: has_value?(data, :comments)
@@ -312,4 +404,9 @@ defmodule Taskman.CLI.Presentation.Output do
   end
 
   defp render_fields(_fields), do: []
+
+  defp render_blockers(blockers) when is_list(blockers),
+    do: ["UNRESOLVED DIRECT BLOCKERS\n", readable_linked_tasks(blockers)]
+
+  defp render_blockers(_blockers), do: []
 end

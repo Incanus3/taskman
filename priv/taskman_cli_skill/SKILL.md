@@ -67,6 +67,66 @@ direct-location results do not expose a Location column. For example:
 taskman tasks list --project 7 --status pending --status in_progress --sort priority --direction desc
 ```
 
+To locate a Task across Projects by decimal ID or title, use `tasks search`. Add `--project` only
+when the request is limited to a known Project. Search returns summaries with Task ID, title,
+status, priority, Project ID and name, and owning location. The readable `PROJECT` column shows
+`PROJECT_ID: Project name`. `tasks show` returns full Task details, including its description.
+Start with an unfiltered search:
+
+```text
+taskman tasks search publish
+```
+
+For a result with `ID` value `42` and `PROJECT` value `9: Website`, use the Project ID and Task ID
+from that row to inspect full details:
+
+```text
+taskman tasks show --project 9 42
+```
+
+A search match helps identify a Task; inspect its current detail and obtain explicit authority
+before changing its status or relationships.
+
+## Blocking relationships and Done
+
+`blocks` commands always name the blocking Task first. `--project` is the **Blocking Task's Project**,
+and `TASK_ID` is that Task's exact ID; `--target` is the Task it blocks, even across Projects.
+For example, Task 12 in Launch (Project 7) is a prerequisite of Task 42 in Website (Project 9):
+
+```text
+taskman tasks blocks add --project 7 12 --target 42
+taskman tasks blocking show --project 7 12
+taskman tasks blocking show --project 9 42
+taskman tasks blocks remove --project 7 12 --target 42
+```
+
+Inspect both endpoint Projects and verify the named edge after mutation. `blocking show` displays
+**Blocks** and **Blocked by** separately. Link edits never change Task status, and a link edit does not authorize
+marking either Task Done. Obtain a separate human-authorized lifecycle decision before any status
+change.
+
+Moving a Task to Done can return `unresolved_blockers` on stderr with current direct blocker IDs,
+statuses, priorities, Projects, and locations. The Task remains unchanged. A person may confirm the
+IDs already reviewed on the first request or retry after that warning:
+
+```text
+taskman tasks update --project 9 42 --status done --confirm-unresolved-blockers 12,15
+```
+
+If a new unresolved blocker appears, review the refreshed warning and obtain human authorization
+for that decision before retrying. The case-specific force override is available only for a Done
+request and requires explicit human authorization to override the unresolved-blocker warning:
+
+```text
+taskman tasks update --project 9 42 --status done --force-done-with-unresolved-blockers
+```
+
+Repeated confirmation IDs are accepted; the API validates the parsed IDs and removes duplicates.
+The CLI ID list must remain nonempty and comma-separated without spaces, for example `12,15,12`.
+
+The force option makes one request and does not grant general permission to ignore validation or
+concurrent updates. Never infer lifecycle authority from adding, removing, or resolving a link.
+
 ## Command map
 
 Use the matching command or its group help. These examples use literal IDs so they can be copied
@@ -83,12 +143,18 @@ taskman lists show --project 7 11
 taskman lists create --project 7 --name Planning --parent 11
 taskman lists rename --project 7 11 --name Ready
 taskman tasks list --project 7 --list 11 --include-descendants
+taskman tasks search publish
 taskman tasks show --project 7 42
+taskman tasks blocking show --project 9 42
+taskman tasks blocks add --project 7 12 --target 42
+taskman tasks blocks remove --project 7 12 --target 42
 taskman tasks show --project 7 42 --include-comments
 taskman tasks comments list --project 7 42 --json
 taskman tasks comments add --project 7 42 --text Review-notes --author-name Research-agent --json
 taskman tasks create --project 7 --title Prepare --status pending
 taskman tasks update --project 7 42 --status in_progress
+taskman tasks update --project 9 42 --status done --confirm-unresolved-blockers 12,15
+taskman tasks update --project 9 42 --status done --force-done-with-unresolved-blockers
 taskman tasks update --project 7 42 --parent 41
 taskman tasks update --project 7 42 --no-parent
 taskman tasks hierarchy --project 7 42

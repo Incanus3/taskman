@@ -289,6 +289,7 @@ defmodule Taskman.Accounts.User.LifecycleTransactionsTest do
     end)
   end
 
+  @tag :capture_log
   test "concurrent failed invitation resends retain one recoverable setup token" do
     with_committed_accounts(fn ->
       admin = committed_admin_fixture()

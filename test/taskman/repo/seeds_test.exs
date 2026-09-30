@@ -1,6 +1,8 @@
 defmodule Taskman.Repo.SeedsTest do
   use Taskman.DataCase, async: false
 
+  import ExUnit.CaptureIO
+
   alias Taskman.Accounts
   alias Taskman.Accounts.User
   alias Taskman.Lists.TaskList
@@ -109,7 +111,12 @@ defmodule Taskman.Repo.SeedsTest do
   end
 
   defp run_seeds do
-    Code.eval_file(Path.join(File.cwd!(), "priv/repo/seeds.exs"))
+    output =
+      capture_io(fn ->
+        Code.eval_file(Path.join(File.cwd!(), "priv/repo/seeds.exs"))
+      end)
+
+    assert output == "Seeded 3 Projects with 7 lists and 30 tasks.\n"
   end
 
   defp has_grandchild_list?(task_lists) do

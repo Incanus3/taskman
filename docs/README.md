@@ -18,11 +18,13 @@
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
 - [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
-- [Task detail and navigation (Activity/Sessions presentation superseded)](specs/2026-08-24-task-detail-navigation-design.md)
+- [Task detail and navigation (Activity/Sessions and relationship presentation superseded)](specs/2026-08-24-task-detail-navigation-design.md)
 - [Task comments (implemented)](specs/2026-09-26-task-comments-design.md)
 - [Lists and nested organization (navigation/filter presentation superseded)](specs/2026-08-26-lists-nested-organization-design.md)
-- [API, CLI, and agent skill (Project representation requirements superseded)](specs/2026-08-29-api-cli-agent-skill-design.md)
-- [Parent-child Task hierarchy](specs/2026-08-30-parent-child-task-hierarchy-design.md)
+- [API, CLI, and agent skill (Project representation superseded; operation surface extended)](specs/2026-08-29-api-cli-agent-skill-design.md)
+- [Parent-child Task hierarchy (parent search matching superseded)](specs/2026-08-30-parent-child-task-hierarchy-design.md)
+- [Task blocking relationships and Done warning (implemented)](specs/2026-09-27-task-blocking-relationships-design.md)
+- [Global Task jump search (implemented)](specs/2026-09-29-global-task-search-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
 - [Authenticated hosted access and release deployment](specs/2026-09-02-authenticated-hosted-access-design.md)
 - [ProjectLive workflow decomposition (implemented)](specs/2026-09-03-project-live-decomposition-design.md)
@@ -64,6 +66,7 @@
 
 ## Archive
 
+- [Task blocking relationships and global Task search implementation plan](archive/plans/2026-09-29-task-blocking-and-search.md)
 - [Active Project selector implementation plan](archive/plans/2026-09-25-active-project-selector.md)
 - [Projects without primary directories implementation plan](archive/plans/2026-09-23-projects-without-primary-directories.md)
 - [Missing List recovery implementation plan](archive/plans/2026-09-18-missing-list-recovery.md)

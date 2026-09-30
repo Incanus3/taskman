@@ -3,6 +3,12 @@
   current_scope={@current_scope}
   current_user={@current_user}
   content_scroll?={false}
+  search_workspace={@workspace}
+  search_enabled?={
+    is_nil(RecoveryWorkflow.view(@recovery)) &&
+      !(@live_action == :new_task && @creation.form) &&
+      !(@live_action == :show_task && (@editing.detail_open? || @editing.not_found?))
+  }
 >
   <div
     id="taskman-workspace"
@@ -275,9 +281,12 @@
                       @workspace.include_children?
                     )
                   }
-                  class="inline-flex h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+                  aria-label="Add task"
+                  title="Add task"
+                  class="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 md:w-auto md:px-4"
                 >
-                  Add task
+                  <.icon name="hero-plus" class="size-5 md:hidden" />
+                  <span class="hidden md:inline">Add task</span>
                 </.link>
               </div>
             </header>
@@ -499,6 +508,9 @@
         comment_stream={@streams.comments}
         project={@workspace.selected_project}
         task_autosave={@editing.autosave}
+        related_tasks={@editing.related_tasks}
+        related_picker={@editing.related_picker}
+        related_task_path={related_task_path_fn(@workspace)}
         parent_picker={@task_parent_picker}
         cancel={
           Paths.browse_path(

@@ -172,6 +172,7 @@ defmodule TaskmanWeb.AshAdminActionsTest do
     assert_safe_admin_surface(view)
   end
 
+  @tag :capture_log
   test "the AshAdmin invitation form reports delivery failure and preserves the pending user", %{
     conn: conn
   } do

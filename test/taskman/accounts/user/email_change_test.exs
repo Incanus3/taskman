@@ -73,6 +73,7 @@ defmodule Taskman.Accounts.User.EmailChangeTest do
              })
   end
 
+  @tag :capture_log
   test "delivery failure preserves the pending confirmation while keeping the old email" do
     user = user_fixture("failure-old@example.com")
     mailer_delivery = Application.fetch_env!(:taskman, :mailer_delivery)

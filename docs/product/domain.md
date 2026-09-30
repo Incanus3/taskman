@@ -83,16 +83,16 @@ complete a Task; a human explicitly changes Task state.
 ## Task relationships
 
 - **Task relationship**: an explicit association between two Tasks. Task relationships are in MVP scope and are distinct from List ownership.
-- MVP relationship vocabulary includes directed **Blocks / Blocked by**, symmetric **Relates to**, and **parent-child** relationships.
+- MVP relationship vocabulary includes directed **Blocks / Blocked by** and **parent-child**
+  relationships. Symmetric **Relates to** links are deferred beyond the MVP; see the
+  [relationship contract](relationships.md).
 - **Blocks / Blocked by** may span Projects. It is directed, has at most one edge per ordered Task
   pair, rejects self-links and all cycles, and counts as resolved for the **Done** warning only when
   the blocking Task is **Done** or **Will Not Do**. Moving a Task with unresolved blockers to **Done**
   requires warning confirmation.
-- **Relates to** may span Projects. It is symmetric, permits at most one relationship per unordered
-  Task pair, and rejects self-links.
 - Parent-child is an acyclic, same-Project work-breakdown relationship: one parent may have many
   children, while a child has at most one parent. It does not change a Task's List ownership or status.
-- Different relationship types may coexist between the same Tasks. A child may block its parent, but
+- Parent-child and Blocks may coexist between the same Tasks. A child may block its parent, but
   a parent may never block its own child.
 
 ## Task lifecycle

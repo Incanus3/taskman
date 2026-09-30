@@ -57,6 +57,40 @@ defmodule Taskman.CLI.Presentation.HelpTest do
              "taskman tasks hierarchy --project PROJECT_ID TASK_ID"
   end
 
+  test "Task search help shows optional Project filtering and summary output" do
+    group_help = Help.render(~w(tasks))
+    help = Help.render(~w(tasks search))
+
+    assert group_help =~ "tasks search"
+    assert help =~ "taskman tasks search QUERY [--project PROJECT_ID] [--json]"
+    assert help =~ "--project PROJECT_ID"
+    assert help =~ "ID, TITLE, STATUS, PRIORITY, PROJECT, and LOCATION"
+    assert help =~ "taskman tasks search publish --project 9"
+  end
+
+  test "relationship leaf help names blocker-first source and exact target IDs" do
+    show = Help.render(~w(tasks blocking show))
+    add = Help.render(~w(tasks blocks add))
+    remove = Help.render(~w(tasks blocks remove))
+
+    assert show =~ "taskman tasks blocking show --project PROJECT_ID TASK_ID"
+    assert show =~ "Tasks blocking it"
+
+    for help <- [add, remove] do
+      assert help =~ "--project PROJECT_ID TASK_ID --target TARGET_TASK_ID"
+      assert help =~ "Blocking Task's Project ID"
+      assert help =~ "Blocked Task ID, even in another Project"
+    end
+  end
+
+  test "Task update help explains explicit Done confirmation and force override" do
+    help = Help.render(~w(tasks update))
+
+    assert help =~ "--confirm-unresolved-blockers ID,ID"
+    assert help =~ "--force-done-with-unresolved-blockers"
+    assert help =~ "Done request"
+  end
+
   test "Task comment help discovers commands and opt-in fields" do
     assert Help.render(~w(tasks)) =~ "tasks comments list"
     assert Help.render(~w(tasks comments)) =~ "tasks comments add"

@@ -6,7 +6,15 @@
 > **Superseded in part:** The
 > [Projects without primary directories design](2026-09-10-projects-without-primary-directories-design.md)
 > replaces Project-directory and Project-representation requirements. Current Project API and CLI
-> creation and output use ID and name only; the remaining design remains historical context.
+> creation and output follow the
+> [active Project selector contract](2026-09-22-active-project-selector-design.md), including
+> description, icon, and color. The remaining original design remains historical context.
+
+**Operation extensions:** The implemented
+[blocking relationships design](2026-09-27-task-blocking-relationships-design.md) and
+[global Task search design](2026-09-29-global-task-search-design.md) define the current relationship,
+Done confirmation, and search API/CLI operations. Their exact command and response contracts extend
+the original operation surface below; its slice-specific exclusions are historical scope.
 
 ## Context
 

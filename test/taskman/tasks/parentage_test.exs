@@ -8,6 +8,30 @@ defmodule Taskman.Tasks.ParentageTest do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
 
+  test "parent writes acquire the graph lock before the Project row lock" do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    child = task_fixture(project, %{title: "Child"})
+
+    {asserted_create, create_queries} =
+      capture_queries(fn ->
+        Tasks.create_task(project, nil, %{title: "New child"}, parent: parent)
+      end)
+
+    assert {:ok, _created} = asserted_create
+    assert_graph_lock_before_project_lock(create_queries)
+
+    {asserted_update, update_queries} =
+      capture_queries(fn ->
+        Tasks.update_task(project, child, %{status: :done}, parent: parent)
+      end)
+
+    assert {:ok, updated} = asserted_update
+    assert updated.parent_task_id == parent.id
+    assert updated.status == :done
+    assert_graph_lock_before_project_lock(update_queries)
+  end
+
   test "update_task/3 leaves parentage unchanged" do
     project = project_fixture(%{})
     parent = task_fixture(project, %{title: "Parent"})
@@ -111,6 +135,21 @@ defmodule Taskman.Tasks.ParentageTest do
     persisted_child = Tasks.get_task_for_project(project, child.id)
     assert persisted_child.title == "Before"
     assert persisted_child.parent_task_id == nil
+  end
+
+  test "parent update rejects an existing parent-to-child block and rolls back title" do
+    project = project_fixture(%{})
+    parent = task_fixture(project, %{title: "Parent"})
+    child = task_fixture(project, %{title: "Before"})
+    assert {:ok, _} = Tasks.add_block(project, parent, child)
+
+    assert {:error, changeset} =
+             Tasks.update_task(project, child, %{title: "After"}, parent: parent)
+
+    assert Enum.any?(errors_on(changeset).parent_task_id, &String.contains?(&1, "blocks"))
+    persisted = Tasks.get_task_for_project(project, child.id)
+    assert persisted.title == "Before"
+    assert persisted.parent_task_id == nil
   end
 
   test "update_task/4 rejects direct self-parenting" do
@@ -349,6 +388,55 @@ defmodule Taskman.Tasks.ParentageTest do
       end)
 
     %{pid: pid, ref: Process.monitor(pid)}
+  end
+
+  defp assert_graph_lock_before_project_lock(queries) do
+    graph_lock_positions =
+      queries
+      |> Enum.with_index()
+      |> Enum.filter(fn {query, _index} -> String.contains?(query, "pg_advisory_xact_lock") end)
+      |> Enum.map(&elem(&1, 1))
+
+    project_lock_position =
+      Enum.find_index(queries, fn query ->
+        String.contains?(query, ~s(FROM "projects")) and String.contains?(query, "FOR UPDATE")
+      end)
+
+    assert length(graph_lock_positions) == 1
+    assert is_integer(project_lock_position)
+    assert hd(graph_lock_positions) < project_lock_position
+    assert Enum.any?(queries, &String.contains?(&1, "begin"))
+    assert Enum.any?(queries, &String.contains?(&1, "commit"))
+  end
+
+  defp capture_queries(fun) do
+    test_pid = self()
+    handler_id = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:taskman, :repo, :query],
+        fn _event, _measurements, %{query: query}, _config ->
+          send(test_pid, {:captured_query, query})
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+      {result, drain_captured_queries([])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_captured_queries(queries) do
+    receive do
+      {:captured_query, query} -> drain_captured_queries([query | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
   end
 
   defp database_backend_pid do

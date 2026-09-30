@@ -7,6 +7,24 @@ defmodule TaskmanWeb.API.Representation do
   alias Taskman.Tasks.Comment
   alias Taskman.Tasks.TaskWithLocation
 
+  @spec linked_task(map()) :: map()
+  def linked_task(summary) do
+    %{
+      id: summary.id,
+      project_id: summary.project_id,
+      project_name: summary.project_name,
+      title: summary.title,
+      status: summary.status,
+      priority: summary.priority,
+      location: summary.location
+    }
+  end
+
+  @spec blocking_edge(map()) :: map()
+  def blocking_edge(%{blocking_task: blocker, blocked_task: blocked}) do
+    %{blocking_task: linked_task(blocker), blocked_task: linked_task(blocked)}
+  end
+
   @spec project(Taskman.Projects.Project.t()) :: map()
   def project(project) do
     %{

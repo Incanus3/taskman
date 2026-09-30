@@ -10,7 +10,7 @@ defmodule Taskman.CLI.Client do
     403 => {"forbidden", 7},
     400 => {"invalid_request", 3},
     404 => {"not_found", 3},
-    409 => {["unchanged_location", "concurrent_update"], 3},
+    409 => {["unchanged_location", "concurrent_update", "unresolved_blockers"], 3},
     422 => {"validation_failed", 3},
     429 => {"rate_limited", 7},
     500 => {"internal_error", 5}
@@ -22,7 +22,10 @@ defmodule Taskman.CLI.Client do
   @type success_shape ::
           :any
           | :hierarchy
-          | {:collection | :member, :project | :list | :task | :comment | :task_with_comments}
+          | :task_blocking
+          | :task_blocking_edge
+          | {:collection | :member,
+             :project | :list | :task | :comment | :task_with_comments | :task_search_summary}
 
   @doc "Make one API request and classify transport and response-contract failures."
   @spec request(atom(), String.t(), request_options(), runtime_options(), success_shape()) ::
@@ -135,6 +138,18 @@ defmodule Taskman.CLI.Client do
 
   defp valid_success_data?(data, :hierarchy) when is_map(data), do: valid_hierarchy?(data)
 
+  defp valid_success_data?(data, :task_blocking) when is_map(data) do
+    exact_keys?(data, ~w(blocks blocked_by)) and
+      is_list(data["blocks"]) and is_list(data["blocked_by"]) and
+      Enum.all?(data["blocks"] ++ data["blocked_by"], &valid_resource?(&1, :task_search_summary))
+  end
+
+  defp valid_success_data?(data, :task_blocking_edge) when is_map(data) do
+    exact_keys?(data, ~w(blocking_task blocked_task)) and
+      valid_resource?(data["blocking_task"], :task_search_summary) and
+      valid_resource?(data["blocked_task"], :task_search_summary)
+  end
+
   defp valid_success_data?(_data, _success_shape), do: false
 
   defp valid_resource?(project, :project) when is_map(project) do
@@ -179,6 +194,17 @@ defmodule Taskman.CLI.Client do
       Enum.all?(task["comments"], &valid_resource?(&1, :comment))
   end
 
+  defp valid_resource?(task, :task_search_summary) when is_map(task) do
+    exact_keys?(task, ~w(id title status priority project_id project_name location)) and
+      positive_integer?(task["id"]) and
+      is_binary(task["title"]) and
+      task["status"] in Registry.statuses() and
+      task["priority"] in Registry.priorities() and
+      positive_integer?(task["project_id"]) and
+      is_binary(task["project_name"]) and
+      valid_search_location?(task["location"])
+  end
+
   defp valid_resource?(comment, :comment) when is_map(comment) do
     Map.keys(comment) |> Enum.sort() == ~w(author created_at id task_id text) and
       positive_integer?(comment["id"]) and
@@ -220,6 +246,7 @@ defmodule Taskman.CLI.Client do
   defp valid_hierarchy_node?(_node), do: false
 
   defp required_keys?(map, keys), do: Enum.all?(keys, &Map.has_key?(map, &1))
+  defp exact_keys?(map, keys), do: Enum.sort(Map.keys(map)) == Enum.sort(keys)
   defp positive_integer?(value), do: is_integer(value) and value > 0
   defp optional_positive_integer?(nil), do: true
   defp optional_positive_integer?(value), do: positive_integer?(value)
@@ -250,6 +277,13 @@ defmodule Taskman.CLI.Client do
 
   defp valid_task_location?(_location, _list_id), do: false
 
+  defp valid_search_location?(location) when is_map(location) do
+    exact_keys?(location, ~w(kind list_id path)) and
+      valid_task_location?(location, location["list_id"])
+  end
+
+  defp valid_search_location?(_location), do: false
+
   defp valid_error(body, expected_code) when is_map(body) do
     with true <- Map.keys(body) == ["error"],
          {:ok, error} <- Map.fetch(body, "error"),
@@ -270,7 +304,10 @@ defmodule Taskman.CLI.Client do
   defp valid_error(_body, _expected_code), do: :error
 
   defp valid_error_keys?(error) do
-    Enum.all?(Map.keys(error), &(&1 in ["code", "message", "fields"]))
+    case Map.get(error, "code") do
+      "unresolved_blockers" -> exact_keys?(error, ~w(code message blockers))
+      _other -> Enum.all?(Map.keys(error), &(&1 in ["code", "message", "fields"]))
+    end
   end
 
   defp valid_error_code?(code, expected_code) when is_binary(expected_code),
@@ -289,6 +326,16 @@ defmodule Taskman.CLI.Client do
         end)
 
       _ ->
+        false
+    end
+  end
+
+  defp valid_fields?(error, "unresolved_blockers") do
+    case Map.fetch(error, "blockers") do
+      {:ok, blockers} when is_list(blockers) and blockers != [] ->
+        Enum.all?(blockers, &valid_resource?(&1, :task_search_summary))
+
+      _other ->
         false
     end
   end

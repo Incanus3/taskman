@@ -28,8 +28,10 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       )
 
   def handle_info(%Event{entity: entity} = event, socket) when entity in [:project, :list] do
+    valid? = well_formed_workspace_event?(event)
+
     socket =
-      if well_formed_workspace_event?(event) do
+      if valid? do
         previous_workspace = socket.assigns.workspace
 
         case Workspace.reconcile(socket, event) do
@@ -65,6 +67,23 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       else
         socket
       end
+
+    socket =
+      if valid? and event.operation == :updated and :name in event.fields do
+        Editing.reload_related_tasks(socket)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(%Event{entity: :relationship} = event, socket) do
+    socket =
+      if well_formed_relationship_event?(event) and
+           relationship_targets_open_detail?(event, socket),
+         do: Editing.reload_related_tasks(socket),
+         else: socket
 
     {:noreply, socket}
   end
@@ -214,6 +233,32 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
        do: true
 
   defp well_formed_comment_event?(_event), do: false
+
+  defp well_formed_relationship_event?(%Event{
+         operation: :invalidated,
+         project_id: project_id,
+         entity_id: entity_id,
+         task_ids: task_ids,
+         fields: [],
+         lock_version: nil
+       })
+       when is_integer(project_id) and project_id > 0 and is_integer(entity_id) and
+              entity_id > 0 and is_list(task_ids) and task_ids != [] do
+    Enum.all?(task_ids, &(is_integer(&1) and &1 > 0))
+  end
+
+  defp well_formed_relationship_event?(_event), do: false
+
+  defp relationship_targets_open_detail?(%Event{project_id: project_id, task_ids: task_ids}, %{
+         assigns: %{
+           live_action: :show_task,
+           workspace: %{selected_project: %Project{id: project_id}},
+           editing: %{selected_task: %Task{id: task_id}}
+         }
+       }),
+       do: task_id in task_ids
+
+  defp relationship_targets_open_detail?(_event, _socket), do: false
 
   defp well_formed_workspace_event?(%Event{
          entity: :project,

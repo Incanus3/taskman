@@ -91,6 +91,7 @@ defmodule TaskmanWeb.Router do
   scope "/api/v1", TaskmanWeb.API do
     pipe_through :api
 
+    get "/tasks/search", TaskSearchController, :index
     get "/projects", ProjectController, :index
     post "/projects", ProjectController, :create
     get "/projects/:project_id", ProjectController, :show
@@ -105,6 +106,16 @@ defmodule TaskmanWeb.Router do
     get "/projects/:project_id/tasks/:task_id/comments", TaskCommentController, :index
     post "/projects/:project_id/tasks/:task_id/comments", TaskCommentController, :create
     get "/projects/:project_id/tasks/:task_id/hierarchy", TaskController, :hierarchy
+    get "/projects/:project_id/tasks/:task_id/blocking", TaskBlockingController, :index
+
+    post "/projects/:project_id/tasks/:task_id/blocks/:target_task_id",
+         TaskBlockingController,
+         :create
+
+    delete "/projects/:project_id/tasks/:task_id/blocks/:target_task_id",
+           TaskBlockingController,
+           :delete
+
     patch "/projects/:project_id/tasks/:task_id", TaskController, :update
     post "/projects/:project_id/tasks/:task_id/move", TaskController, :move
   end

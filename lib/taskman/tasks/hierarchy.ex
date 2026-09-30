@@ -5,6 +5,7 @@ defmodule Taskman.Tasks.Hierarchy do
   alias Taskman.Projects.Project
   alias Taskman.Repo
   alias Taskman.Tasks.HierarchyNode
+  alias Taskman.Tasks.Search
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
@@ -69,7 +70,7 @@ defmodule Taskman.Tasks.Hierarchy do
         []
       else
         eligible_query
-        |> where([task], ilike(task.title, ^"%#{query}%"))
+        |> Search.filter_by_terms(query)
         |> maybe_exclude_exact(exact_id)
         |> order_by([task], asc: task.inserted_at, asc: task.id)
         |> limit(^title_limit)

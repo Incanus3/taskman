@@ -113,7 +113,7 @@ defmodule Taskman.MixProject do
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
       "test.browser": [
         "assets.build",
-        "test test/taskman_web/live/project_live/task_table_browser_test.exs --include browser"
+        "test --only browser"
       ]
     ]
   end

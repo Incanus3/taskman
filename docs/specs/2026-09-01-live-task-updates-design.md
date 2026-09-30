@@ -3,7 +3,13 @@
 **Status:** Approved  
 **Date:** 2026-09-01
 
-## Context
+**Extensions:** The [Task comments design](2026-09-26-task-comments-design.md) defines comment
+invalidations, and the [blocking design](2026-09-27-task-blocking-relationships-design.md) defines
+relationship invalidations and linked-detail refetch. The publication boundary below describes the
+current top-level context implementation and its limitation against the original enclosing-transaction
+requirement.
+
+## Design-time context
 
 Taskman is intentionally useful to humans in the browser and to agents through the versioned JSON
 API and its `taskman` CLI client. Those clients use the same public Project, List, and Task contexts,
@@ -95,12 +101,17 @@ not publish mutation events themselves.
 
 The event contract contains only routing and reconciliation metadata:
 
-- entity: `project`, `list`, or `task`;
-- operation: `created`, `updated`, or `moved`;
+- entity: `project`, `list`, `task`, `comment`, or `relationship`;
+- operation: `created`, `updated`, `moved`, or `invalidated`;
 - owning Project ID;
 - entity ID;
 - the persisted Task `lock_version` for Task events; and
 - the set of fields changed by the mutation.
+
+Comment events identify their owning Task with `task_id`. Relationship events group sorted,
+deduplicated local endpoint IDs in `task_ids`, allowing one event per affected Project even when
+several local Task details need refetching. Their `entity_id` is the smallest local Task ID, not a
+blocking-edge ID; see the linked capability designs for complete event and reconciliation rules.
 
 For a Project event, the owning Project and entity IDs are the same. An event does not serve as an
 authoritative entity representation. Consumers refetch through the relevant contexts, which makes
@@ -115,10 +126,17 @@ public JSON event schema is introduced.
 
 ### Publish only after persistence succeeds
 
-Every supported public Project, List, and Task mutation publishes exactly once after its database
-operation or enclosing transaction has returned success. Publication never occurs inside a
-transaction that could still roll back. Validation errors, not-found outcomes, unchanged moves,
-stale-write conflicts, and unexpected persistence failures emit nothing.
+Every supported public Project, List, and Task mutation publishes its relevant events after its
+own database operation or transaction has returned success. Validation errors, not-found outcomes,
+unchanged moves, stale-write conflicts, and unexpected persistence failures emit nothing.
+
+The original design required publication after every enclosing transaction committed so rolled-back
+state would emit no invalidation. Current application paths satisfy that requirement by invoking
+contexts at the top level. There is no after-commit hook for a caller's enclosing transaction: if a
+future caller wraps a context mutation in an outer transaction and later rolls it back, an
+invalidation can already have been published. This implementation limitation applies to existing
+Task events and the new relationship events. A composed transaction caller must address
+publication timing before relying on outer-transaction atomicity.
 
 The publisher uses `Phoenix.PubSub.broadcast_from/4` with the calling process as the sender. A
 LiveView that performed a mutation already updates its own assigns through the mutation result and

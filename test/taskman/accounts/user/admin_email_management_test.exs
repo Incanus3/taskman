@@ -123,6 +123,7 @@ defmodule Taskman.Accounts.User.AdminEmailManagementTest do
     assert expires_at - issued_at == 7 * 86_400
   end
 
+  @tag :capture_log
   test "a pending replacement survives delivery failure and remains resendable" do
     administrator = admin_fixture("delivery-administrator@example.com")
 

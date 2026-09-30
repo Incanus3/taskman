@@ -83,6 +83,51 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
     refute fish =~ "__fish_use_subcommand"
   end
 
+  @tag :tmp_dir
+  test "Bash and Fish discover relationship commands and Done options", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash_path, Completions.bash())
+    File.write!(fish_path, Completions.fish())
+
+    assert "blocking" in bash_query(bash_path, ["taskman", "tasks", ""])
+    assert "blocks" in fish_query(fish_path, "taskman tasks ")
+    assert "show" in bash_query(bash_path, ["taskman", "tasks", "blocking", ""])
+    assert "add" in fish_query(fish_path, "taskman tasks blocks ")
+    assert "remove" in bash_query(bash_path, ["taskman", "tasks", "blocks", ""])
+
+    for path <- ["blocking show", "blocks add", "blocks remove"] do
+      words = String.split(path)
+      bash_options = bash_query(bash_path, ["taskman", "tasks" | words] ++ ["--"])
+      fish_options = fish_query(fish_path, "taskman tasks #{path} --")
+      assert "--project" in bash_options
+      assert "--project" in fish_options
+
+      if path != "blocking show" do
+        assert "--target" in bash_options
+        assert "--target" in fish_options
+      end
+    end
+
+    for option <- ["--confirm-unresolved-blockers", "--force-done-with-unresolved-blockers"] do
+      assert option in bash_query(bash_path, ["taskman", "tasks", "update", "--"])
+      assert option in fish_query(fish_path, "taskman tasks update --")
+    end
+  end
+
+  @tag :tmp_dir
+  test "Bash and Fish discover Task search and its optional Project filter", %{tmp_dir: tmp_dir} do
+    bash_path = Path.join(tmp_dir, "taskman.bash")
+    fish_path = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash_path, Completions.bash())
+    File.write!(fish_path, Completions.fish())
+
+    assert "search" in bash_query(bash_path, ["taskman", "tasks", ""])
+    assert "search" in fish_query(fish_path, "taskman tasks ")
+    assert "--project" in bash_query(bash_path, ["taskman", "tasks", "search", "publish", "--"])
+    assert "--project" in fish_query(fish_path, "taskman tasks search publish --")
+  end
+
   test "CLI dispatches both completion commands without a backend" do
     for {shell, marker} <- [
           {"bash", "complete -F _taskman taskman"},
