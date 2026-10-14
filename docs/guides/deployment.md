@@ -1,19 +1,24 @@
 # Operating Taskman on a dedicated host
 
-This is the canonical runbook for one Taskman installation on a dedicated Ubuntu host. The
-repository-owned controller under `ops/` is the primary path for building, provisioning,
+This is the canonical runbook for one Taskman installation on a supported Ubuntu host.
+Existing PostgreSQL and Caddy may serve other applications; provisioning preserves their
+operator-owned configuration by default. The repository-owned controller under `ops/` is the primary path for building, provisioning,
 deploying, inspecting, backing up, rolling back, restoring, and cleaning up the installation.
 Manual recovery remains documented below for use when the controller is unavailable.
+The repository-bundled [Taskman operations reference skill](../../priv/taskman_ops_skill/SKILL.md)
+routes agents to this runbook; read it from the checkout without automatic installation. It is
+separate from the application CLI skill and grants no host-action authority.
 
 The [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) defines the architecture,
 authority boundaries, and rationale behind these procedures.
 
 Only the [supported artifact and record baseline](../specs/2026-09-18-operations-contracts.md#one-time-compatibility-boundary)
 is accepted. Do not convert, adopt or delete unsupported authority to make a command pass.
-Dated acceptance findings belong to the
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md); environment observations and obligations belong
-to the [environment inventory](../inventories/operations-environments.md). Neither is proof of current host state
-or authorization for reset, provider changes or deletion.
+The [native acceptance guide](native-acceptance.md) defines portable verification requirements.
+Actual environment observations, acceptance receipts and recovery custody belong in private
+operator storage under the [inventory privacy policy](../inventories/operations-environments.md).
+Public procedures are not proof of current host state or authority for reset, provider changes
+or deletion.
 
 The supported topology is deliberately narrow. The paths below are the defaults; alternate
 absolute roots are supported only when they pass the configuration topology checks described
@@ -37,7 +42,8 @@ configure Resend, rotate production credentials, or copy backups off the host. B
 the operator must:
 
 1. create a disposable or production host through the chosen provider;
-2. obtain its SSH host-key fingerprint through a trusted, out-of-band channel;
+2. obtain its SSH host-key fingerprint through a trusted, out-of-band channel and enroll the
+   matching server key in the workstation's `~/.ssh/known_hosts`;
 3. configure the provider firewall so the chosen SSH port remains reachable and public TCP 80/443
    can reach the host;
 4. publish direct `A` and optional `AAAA` records for the Taskman hostname;
@@ -54,7 +60,7 @@ Run the controller from a reviewed, clean Taskman checkout. The workstation need
 - a POSIX shell, Git, Python 3.12 or newer, and
   [`uv`](https://docs.astral.sh/uv/);
 - Docker with BuildKit/buildx and `linux/amd64` build support;
-- OpenSSH tools (`ssh`, `ssh-keyscan`, and `ssh-keygen`);
+- OpenSSH tools (`ssh` and `ssh-keygen`);
 - [SOPS](https://github.com/getsops/sops) and
   [age](https://github.com/FiloSottile/age); and
 - access to the external age identity that decrypts the selected environment.
@@ -77,12 +83,32 @@ ssh-add -l
 ```
 
 Exports apply only to that shell and its child commands. `build` needs neither variable;
-read-only host commands need SSH authentication but do not necessarily decrypt secrets.
+all real-environment commands need the age identity to decrypt settings. Read-only host commands
+need SSH authentication but do not necessarily decrypt credential documents.
 The controller uses environment YAML and pinned host-key authority with
 `ssh_config_file=/dev/null`; it does not inherit an SSH alias's `IdentityAgent` setting.
 If alias-based SSH works but the controller reports `strict SSH connection setup failed`,
 inspect `ssh -G YOUR_HOST_ALIAS` and set `SSH_AUTH_SOCK` to the intended agent. Both variables
 contain paths, never credential bytes. Keep the private age identity outside the repository.
+
+Operator reports show ordinary configuration values, including hostnames, database identifiers
+and configured paths. SOPS encryption protects their repository storage. Keep reports containing
+real deployment details in private operator storage. Actual credentials must never be printed;
+sensitive command output is suppressed and secret containers hide their values.
+
+Both ordinary and interactive controller connections read the operator's `~/.ssh/known_hosts`.
+Native `ssh-keygen` selects entries for the configured hostname and port and checks their SHA-256
+fingerprints. The controller supplies only the public key matching the environment pin in a
+mode-0600 temporary file; the SSH client performs strict server-key verification, and the file is
+removed afterwards. The original `known_hosts` is never modified. Hashed entries are supported;
+certificate-authority entries do not replace the pinned raw server key.
+
+If the entry is missing, enroll it separately using ordinary SSH to the exact configured hostname
+and port. Compare the displayed fingerprint with the independently verified environment pin before
+accepting it. A missing, malformed, mismatched or pinned-revoked entry stops the controller before
+connecting. Investigate key-change warnings through the trusted channel before changing either
+the pin or `known_hosts`; do not remove entries just to bypass the warning. The controller never
+scans, accepts a new key or retries a failed connection automatically.
 
 The host must boot Ubuntu 26.04 LTS `amd64` with systemd as PID 1, Ubuntu's
 `python3-minimal`, and an administrator able to perform the required sudo operations.
@@ -94,8 +120,8 @@ See [architecture and ownership](../specs/2026-09-09-dedicated-host-deployment-d
 ## Configure SOPS and age
 
 `.sops.yaml` contains public age recipients and the selection rule for
-`ops/environments/*.secrets.sops.yaml`. Replace the example recipient with the intended public
-recipient. Keep every private age identity outside the repository and outside release artifacts.
+`ops/environments/*.config.sops.yaml` and `*.secrets.sops.yaml`. Replace the example recipient
+with the intended public recipient. Keep every private age identity outside the repository and outside release artifacts.
 Point SOPS at that protected identity through its normal external configuration, for example:
 
 ```sh
@@ -123,11 +149,18 @@ plaintext workstation file.
 
 ## Create the environment
 
-Copy the complete non-secret example and replace every documentation value:
+Create an encrypted settings document from the complete synthetic example:
 
 ```sh
-cp ops/environments/example.yaml ops/environments/production.yaml
+sops encrypt --filename-override ops/environments/production.config.sops.yaml \
+  --input-type yaml --output-type yaml < ops/environments/example.yaml \
+  > ops/environments/production.config.sops.yaml
+sops ops/environments/production.config.sops.yaml
 ```
+
+Replace every documentation value in the SOPS editor before using the environment.
+Keep settings in `production.config.sops.yaml` and credentials in
+`production.secrets.sops.yaml`; both documents use the external age identity.
 
 Review at least:
 
@@ -140,10 +173,18 @@ Review at least:
 - installation and backup roots (release, deployment, and current paths are derived);
 - backup schedule and backup/release retention (each an integer from 1 to 64);
 - readiness and connection timeouts; and
-- an explicitly selected PostgreSQL package track only when required.
+- `postgres_package_track`, an optional PostgreSQL major version used to select one registered
+  cluster. On a multi-version host, `18` selects the unique version-18 cluster; it does not upgrade
+  packages or select the first cluster. Multiple clusters in the requested major version refuse.
+  Without a track, multiple registered clusters also refuse.
 
-The configuration is validated before mutation. A real environment file is non-secret but still
-environment-sensitive; add it to version control only as a deliberate operator decision. The only
+The configuration is decrypted into controller memory and validated before mutation.
+Controller commands require `<name>.config.sops.yaml`; plaintext settings are not a fallback.
+The readable `example.yaml` is a synthetic template. Programmatic callers may explicitly select
+plaintext loading with `load_environment(name, encrypted=False)`; the default is encrypted for
+every environment name. Do not commit real readable settings or include private values in keys
+or comments; keep them generic. Environment files are excluded
+from release source snapshots. The only
 configurable filesystem roots are:
 
 ```yaml
@@ -160,7 +201,8 @@ Invalid configuration returns status 2 before SSH. See
 
 ## Helper cleanup and scheduled backups
 
-Host commands use a checksum-verified, short-lived standard-library helper; no resident agent
+Host commands use a checksum-verified, short-lived helper; the firewall adapter alone loads the
+trusted Ubuntu-packaged UFW library. Other operations remain standard-library-only; no resident agent
 or background recovery process remains. Read-only commands and dry runs still need temporary
 transport infrastructure. Provisioning separately installs the root-owned scheduled-backup
 executable and systemd timer. See
@@ -253,7 +295,7 @@ To retry exact bytes after a failure, pass the archive reported by that attempt:
 The adjacent manifest and checksum must be present and valid. A matching logical release ID with
 different bytes is a safety refusal; installed release directories are never edited in place.
 
-## Provision a clean host
+## Provision a supported host
 
 After reviewing a dry run:
 
@@ -266,30 +308,128 @@ that confirmation only. Downgrade/unknown ordering needs separate acknowledgment
 migrations need an explicit compatibility policy as described under deployment below.
 Provisioning converges packages, unattended security updates without automatic reboot, managed
 accounts/directories/configuration/units, Caddy and scheduled backups. UFW activation protects
-the active SSH path; Caddy validates configuration; PostgreSQL validates cluster/HBA authority.
+the active SSH path; Caddy follows the ownership branches below; PostgreSQL follows the resource
+and configuration ownership rules below.
+
+Provisioning checks installed packages for the baseline and the applicable Caddy/PostgreSQL
+installation branches before refreshing APT indexes. When all required packages are installed,
+ordinary baseline convergence skips `apt-get update`. Missing required packages permit an index
+refresh and normal authenticated installation; repository or installation failures still stop
+provisioning. Caddy installation retains its signed-source refresh after repository setup and its
+bound package inspection/install path. Existing Caddy and PostgreSQL ownership rules continue to
+exclude their packages from installation or upgrade. Repositories are never disabled to make
+convergence pass, and no unauthenticated or alternative-download fallback is used.
+
 Secret installation stays outside logged pyinfra commands. See
 [provisioning admission](../specs/2026-09-09-dedicated-host-deployment-design.md#provisioning-and-admission).
 
-PostgreSQL keeps its native `pg_hba.conf` path. Before reload/restart it validates installed
-candidate contents and restores prior bytes/metadata on parser failure. An interrupted attempt
-requires inspection: the brief installation-to-validation crash/power-loss window is accepted.
-Recovery is beside the native file in `pg_hba.conf.taskman-backup` (`pg_hba.conf` plus `metadata`);
-a leftover directory blocks another attempt until manually reconciled. Later restart/verification
-failure retains the copy, rather than reverting configuration under a running process.
-Do not restart PostgreSQL blindly or relocate HBA; see
-[HBA rationale and validation boundary](../specs/2026-09-09-dedicated-host-deployment-design.md#provisioning-and-admission).
+### PostgreSQL ownership and access
+
+On an existing cluster, default provisioning manages only the configured Taskman role, database
+and protected credentials. It preserves native HBA/settings, PostgreSQL packages and service state,
+and all other clusters/resources, including on reruns of a cluster originally bootstrapped by
+Taskman. Only proven installation absence permits the dedicated package/bootstrap path. A down,
+ambiguous, missing requested-track or non-loopback selected cluster refuses; provisioning does
+not start or repair it automatically.
+
+Selection binds the selected version/name/data directory/native paths and configured port to
+live administrator and listener identity. Administration uses peer access through
+`/var/run/postgresql` at that port. Application observations, backup size/dump and restore
+application queries require a native SCRAM exchange (`require_auth=scram-sha-256`), with a
+PostgreSQL client version 16 or later. A trust or plaintext-password connection is insufficient.
+An HBA `md5` rule can suffice when PostgreSQL actually negotiates SCRAM with a SCRAM verifier.
+Runtime Phoenix readiness is verified separately; this libpq option is not a Postgrex setting.
+
+The redacted preview names the selected endpoint, create/adopt resource actions and separate
+`access=ready` or `access=unproven` evidence. Catalog/schema readiness does not prove application
+access. Dry-run remains planned and performs no writes; missing-resource access can be proved
+only after creation. Failed access may therefore retain valid resources and private credentials.
+It stops before release preparation, migrations or successful history publication and never
+returns Caddy's pending-success exit 13.
+
+A compatible role-only installation is adopted without password rotation and may create the
+missing owned database after confirmation. Contradictory privileges, memberships, owner,
+protected credentials or migration provenance refuse. A compatible precreated empty database
+can admit planned creation of the missing Taskman OS account only with validated provenance;
+matching names alone do not grant adoption authority.
+
+### PostgreSQL operator setup and retry
+
+Exit `5 / postgresql` identifies unavailable native inspection, unsupported client or failed
+SCRAM application proof. Exit `10 / postgresql` identifies selected-target, listener, resource,
+recovery-file or confirmation safety refusal. Human and JSON output include configured
+host/port/role/database, selected cluster and observed HBA path when known, the failed check,
+known or possible mutation, retained-resource facts and the exact retry command.
+Lost replies report uncertainty rather than claiming successful resource creation or unchanged state.
+
+For example, a failed proof after role/database creation retains those resources and credentials;
+no migration runs. Inspect the reported HBA and independently protected credentials. Access
+configuration or the existing password/verifier may need correction; provisioning never diagnoses
+the cause from native stderr or rotates an adopted password automatically. For an environment
+named `production`, the reported retry is:
+
+```sh
+./ops/taskman provision production
+```
+
+An illustrative effective HBA rule is below; use the validated environment's exact identifiers
+and address (`::1/128` for IPv6), rather than copying these example names into production:
+
+```text
+host    taskman_prod    taskman    127.0.0.1/32    scram-sha-256
+```
+
+Broader existing coverage may already suffice. PostgreSQL uses the first matching rule and does
+not fall through after authentication failure. Place effective coverage before conflicting
+matching rules, inspect `pg_hba_file_rules` for native parser errors, then reload only the selected
+cluster after separately authorized operator changes. Listener/port changes may require a
+coordinated restart. Rediscovery/reconfirmation on retry adopts compatible retained resources
+and continues only after a fresh successful application proof.
+
+### Explicit PostgreSQL configuration override and recovery
+
+`--force-postgresql-config` on `provision` deliberately converges the selected existing cluster's
+native HBA and `listen_addresses`, `port`, `password_encryption` and native HBA-path setting.
+It can remove authentication coverage for other applications and restart that cluster, interrupting
+all its consumers. Arrange a coordinated maintenance window and review the displayed exact
+replacement policy, settings and recovery scope before authorizing execution:
+
+```sh
+./ops/taskman provision production --force-postgresql-config --dry-run
+./ops/taskman provision production --force-postgresql-config
+```
+
+`--yes` never implies this flag. The override performs no existing-cluster package install/upgrade,
+password rotation, foreign-resource changes or data reset. Identity, loopback, resource, provenance
+and confirmation safety checks still apply; it is not a generic remedy for an unknown failure.
+Other clusters remain outside its scope. Exact native no-op convergence writes/restarts nothing
+and creates no recovery run directory.
+
+Before an actual existing configuration change, both originals and their uid/gid/mode/digests
+are retained under `/etc/taskman/postgresql-config-recovery/<random-uuid>/`. The root-owned parent
+and run directory are mode `0700`; `postgresql.conf`, `pg_hba.conf` and `metadata.json` are mode
+`0600`. These copies may contain operator secrets: keep them private. A failed capture stops
+before native modification. Copies remain on success and downstream failure and their known
+location survives result/transport errors; uncertain replies retain possible mutation.
+
+The native HBA path also uses the scoped `pg_hba.conf.taskman-backup` directory beside HBA,
+containing `pg_hba.conf` and metadata. It restores that HBA's bytes/metadata on parser failure;
+this does not restore all settings or running service state. A leftover native recovery directory
+blocks another attempt until manually reconciled. Later restart/verification failure retains it.
+The brief installation-to-validation crash/power-loss window remains an accepted inspection boundary.
+
+Never infer restored runtime from restored files. Configuration restoration, reload/restart and
+cleanup of either recovery location require separate operator authorization. There is no automatic
+whole-configuration rollback, pruning or overwrite of protected recovery runs. Review native
+identity and retained evidence before manual recovery; default shared provisioning captures and
+changes none of these files. The [shared PostgreSQL design](../specs/2026-10-07-shared-postgresql-design.md)
+owns the accepted ownership, SCRAM and recovery contract.
 
 The transient helper reconciles the desired first release from validated resources, records and
 live migrations. Before the first durable successful selection, a rerun may retry or replace the
 target while preserving compatible partial state. Missing managed resources can be created after
 confirmation; conflicting present resources refuse. Resource inspection and confirmed convergence
 do not adopt an unknown installation or invent provenance for applied migrations.
-
-Fresh database creation requires both the configured PostgreSQL role and database to be absent.
-A retained role with a missing database refuses before mutation; inspect that partial authority
-deliberately before retrying. When both identities already exist, preflight requires the exact
-least-authority role, its owned database, compatible protected credentials, and successful
-application database authentication.
 
 The first successful selection is the command boundary. Once it exists, release replacement uses
 `deploy`, even if the controller lost the successful response. Replaying the exact completed first
@@ -328,6 +468,203 @@ Failure preserves compatible partial resources rather than removing packages, da
 or secrets. If execution began, mutation evidence can be conservative: inspect before retrying.
 A rerun still validates resources and refuses unknown authority. Provisioning does not create an
 administrator; use the real-terminal procedure after readiness succeeds.
+
+### Caddy ownership and provisioning outcomes
+
+Taskman manages `/etc/caddy/sites-enabled/taskman.caddy` as root:root:0644. A newly created
+`sites-enabled` directory is root:root:0755; safe existing directory metadata is preserved.
+The site contains only the configured hostname and loopback reverse proxy. The preview identifies
+current/desired site digests, metadata, branch, import predicate, package/service consequences,
+conditional validation/reload, recovery scope and manual activation requirements. Confirmation
+covers those facts; relevant authority/import drift requires a new preview (exit 10).
+
+| Observed Caddy state | Provisioning boundary |
+| --- | --- |
+| Trusted installed Caddy, including a dedicated-host rerun or interrupted bootstrap | Manage only Taskman's site. Preserve main configuration, other sites, package/source state and service masks/enablement. Only an active, unmasked service with a recognized import permits conditional reload. |
+| Package, executable, underlying units and configuration positively absent; public ports free; no existing masks | Install from the signed source under persistent service masks, publish the initial main import/site, validate as the Caddy user, remove only invocation-created masks, start/enable `caddy.service`, then require full deployment verification. Keep `caddy-api.service` disabled. |
+| Caddy absent but a safe `/etc/caddy` directory exists, including an absent main | Install while preserving existing configuration/directory metadata and keeping masks/service inactive. A package-created default where main was absent does not authorize bootstrap. Application setup may pass with proxy activation pending. |
+
+Missing-package installation first masks `caddy.service` and `caddy-api.service` persistently,
+preserving pre-existing masks. The helper trusts the authenticated upstream stable source, checks
+package identity and binds the selected version/checksum within each run. It installs from the
+private cache without downloads, recommendations or package removals, retaining `--force-confold`.
+It derives an empty-bootstrap default from that archive rather than a permanent release allowlist.
+The [package contract](../specs/2026-10-01-shared-caddy-design.md#authenticated-stable-package-selection)
+defines bounds and source-trust limits; missing dependencies need operator resolution.
+For preserved configuration it protects bounded main bytes/metadata or absence and checks
+preservation before site publication. Package/preservation failure is exit 8: retain masks and
+protected evidence for operator repair, without automatic package removal or main restoration.
+Interruption after installation returns through site-only ownership on the next invocation;
+manual main/import/mask completion may be needed.
+
+Existing `/etc/caddy/Caddyfile` stays operator-owned, including safe root:caddy:0640 files.
+The helper reads only this regular file within 64 KiB to recognize the exact absolute or relative
+`sites-enabled/*.caddy` import, optionally double-quoted with spaces/tabs and a trailing comment.
+The [literal predicate](../specs/2026-10-01-shared-caddy-design.md#supported-literal-forms) does not
+interpret nesting, expand includes, adapt JSON or query admin configuration. Failed/oversized
+inspection is exit 5, never missing-import evidence. A match proves neither valid syntax nor the
+loaded configuration; native validation and full public verification remain required.
+
+Existing Caddy without a recognized import, or with an inactive/masked service, permits application
+preparation. Exit `13`, stage `application-provisioned-proxy-pending`, JSON schema 1
+`status: "failed"`, `proxy_activation: "pending"` and `deployment_verified: false` mean Taskman is
+ready on the deployment host while public completion is pending. The five-check application report
+proves service/release/topology/journal/loopback readiness; it excludes Caddy/public HTTPS/HSTS.
+Actual application, validation, activation, transport or publication failures retain their own
+statuses and never become 13. Pending can be a no-op with `changed: false`.
+
+Preparation publishes no new successful selection and retains recovery protections. Until the
+first successful selection, `deploy` refuses and scheduled backup runs may remain unavailable even
+though their package/timer is installed. Existing successful history on an exact completed replay
+is retained. Verify backup operation after activation; a pending result does not prove a healthy
+backup schedule. `verify` is read-only and cannot finalize the first installation.
+
+### Activate a pending Taskman site
+
+These are operator directions, not additional authority for an agent to edit a host. Coordinate a
+quiet proxy activation window with every operator, watcher and automated reloader. Taskman's
+lifecycle lock does not provide a host-wide Caddy lock. Keep unrelated unapplied disk changes out
+of the window: publishing the site makes it eligible for another reload/restart before Taskman's
+own activation.
+
+1. Inspect the reported site path, import predicate, masks/service state and exact candidate identity.
+   If the recognized import is absent, add this line once at the **top level** of
+   `/etc/caddy/Caddyfile`, outside site blocks:
+
+   ```caddyfile
+   import /etc/caddy/sites-enabled/*.caddy
+   ```
+
+   If the configured Taskman hostname already has a block, reconcile that old block before
+   importing the reserved site to avoid duplicate hostname definitions. A recognized existing
+   import needs no second import. Alternate main locations or service/admin policies require the
+   operator's equivalent procedure.
+2. Validate the complete main configuration as its service user:
+
+   ```sh
+   sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+   Resolve validation failure before activation. Review diagnostics privately; automated native
+   validation/package/reload stdout and stderr are suppressed because configuration can be private.
+3. For an active, unmasked standard service, reload after validation:
+
+   ```sh
+   sudo systemctl reload caddy
+   ```
+
+   For an inactive service, deliberately start and enable it after validation; if masked, explicitly
+   authorize removing the `caddy.service` mask first:
+
+   ```sh
+   sudo systemctl unmask caddy.service
+   sudo systemctl start caddy.service
+   sudo systemctl enable caddy.service
+   ```
+
+   Run `unmask` only for the masked case. Preserve other service masks; keep `caddy-api.service`
+   disabled. Provisioning never starts/enables/unmasks an existing Caddy service.
+4. Rerun provisioning with the **same exact retained artifact** or unchanged source/build identity,
+   with a new reviewed preview and ordinary confirmation:
+
+   ```sh
+   ./ops/taskman provision production --artifact /secure/artifacts/taskman-RELEASE.tar.gz --dry-run
+   ./ops/taskman provision production --artifact /secure/artifacts/taskman-RELEASE.tar.gz
+   ```
+
+   Retain its adjacent manifest/checksum. A different clean checkout selects a new target and needs
+   ordinary confirmation/migration policy; it is not exact replay. Once active with the recognized
+   import, provisioning validates and reloads once if the site changed or its advisory public probe
+   is not ready. An unchanged healthy site skips reload. Manual validation/reload before rerun is
+   supported. Full eight-check verification and durable history publication still gate exit 0.
+5. After full completion, use `verify` and a validated backup to establish public/backup operation;
+   subsequent release changes use `deploy`. Public HTTPS/HSTS failure after reload remains a real
+   verification failure, not completion or missing-import pending.
+
+### Caddy site recovery and runtime uncertainty
+
+With a recognized import, the helper validates the current whole configuration as Caddy before a
+site change, protects the original Taskman site bytes/metadata or absence, publishes atomically,
+and validates the actual imported candidate. Before automatic reload it refreshes validation and
+site/service/import authority. Candidate-validation failure restores only Taskman's original site
+(or removes the exact newly created site), without reload. Reload failure attempts that same
+site-only disk restoration, validates the restored whole configuration and checks service activity.
+New containing directories remain; main/other sites/certificates/Caddy data are never rolled back.
+Root-only recovery evidence remains under `/etc/taskman/caddy-recovery/` for inspection, without
+automatic garbage collection.
+
+Restoration is a mutation and cannot make `changed` false. A lost reload reply or failed recovery
+leaves runtime uncertainty: restored disk bytes do not prove which configuration Caddy loaded.
+Retain the primary failure and recovery facts, inspect actual service/runtime state and establish
+quiescence before a new preview. Do not restart or blindly repeat reload as automatic recovery.
+Manual main edits belong to the operator and require their own reconciliation if validation/reload
+fails. Native routing, ACME, WebSockets/reconnection, restart and package-interruption behavior
+require separately authorized disposable-host acceptance; local fixtures cannot establish them.
+
+### UFW ownership, preview and recovery
+
+Provisioning assumes ordinary UFW ownership: rules and generated files are maintained through
+UFW, without custom hooks, hidden hand edits or independent packet-filter policy. Inspection
+uses UFW's structured saved-rule API, which can omit raw directives; it is not a complete
+firewall audit. Provider firewalls and unrelated UDP services remain operator responsibilities.
+
+For each of IPv4 and IPv6, Taskman requires incoming TCP allows for the configured SSH port,
+80 and 443, and incoming TCP denies for the configured application, database, distribution and
+fixed EPMD port 4369. Public/private port intersection is invalid before SSH. Missing fallback
+rules are appended in that order, IPv4 then IPv6 for each port, only to uncovered families.
+Existing rules, comments, saved profile associations and
+relative order are preserved. Complete active coverage is a no-op. Equivalent unrestricted
+ranges, multiport rules and saved application-profile expansions can satisfy coverage.
+
+Supported saved forms are incoming/outgoing host rules with allow, deny, reject or limit;
+TCP, UDP or omitted protocol; numeric ports, ranges, comma-separated sets and omitted ports;
+literal IP/CIDR or any; and supported interface, source-port, logging and comment fields.
+Service names must resolve unambiguously through the host's service database. Profile rules
+use saved numeric expansion rather than a changed profile definition. Routing rules, unknown
+or malformed exposed forms, unresolved predicates and reader warnings refuse convergence.
+
+Proper-subset source IP/CIDR rules remain operator-owned exceptions, including private-port
+permits and public denies/rejects/limits. Their existing precedence remains effective; appended
+fallbacks do not override them. Several exceptions are not combined into an all-source rule.
+Any and explicit IPv4/IPv6 `/0` sources are all-source: incoming TCP allow/limit overlap with a
+private port, or deny/reject/limit overlap with a public port, refuses even with destination,
+source-port or interface restrictions. Interface restriction alone is not a source exception.
+
+Persisted defaults must be incoming DROP, outgoing ACCEPT, forwarding DROP or REJECT, with
+`IPV6=yes`. They are preserved; provisioning never changes defaults or enables IPv6 settings.
+Inactive UFW with compatible saved rules is supported: enabling it makes every preserved saved
+rule effective. The material preview, including `--dry-run`, identifies that consequence,
+required additions, accepted exceptions, defaults and authenticated controller addresses.
+
+The controller derives its SSH source/destination from the authenticated remote connection.
+A possibly matching deny/reject/limit before a definite SSH allow refuses; uncertain interface
+or future source-port predicates cannot establish a safe allow. Material policy or controller
+address drift after confirmation requires a new invocation and preview. Counters and ephemeral
+source ports do not change authority. For initially absent UFW, approved native installation
+is followed by helper validation of actual defaults, saved rules and administrator access. The
+installation preview authorizes preserving compatible saved policy, including source exceptions,
+and activating it if inactive; shown fallback commands are the maximum additions, and existing
+coverage can reduce them. Convergence binds the actual inspected snapshot with unchanged
+controller addresses. Conflicting or unreadable state, a still-missing package or changed
+controller identity refuses. This installation exception preserves the ordinary installed-policy
+drift check.
+
+The transient firewall helper runs with `/usr/bin/python3 -I -S` and lazily loads only the trusted
+root-owned Ubuntu UFW package at `/usr/lib/python3/dist-packages/ufw`. An installed but unreadable
+or unsupported package refuses; do not substitute pip or vendored code. Exact unprivileged
+package/interpreter evidence and remaining privileged checks are recorded in the
+[UFW API evaluation](../research/2026-10-01-ufw-python-api-evaluation.md). Local fixtures and builds
+do not establish privileged initialization, activation or remote lockout acceptance.
+
+After additions or enablement, provisioning requires a fresh strict pinned-host-key SSH
+connection. It proves controller connectivity, not complete private-port reachability or a
+whole-firewall audit. If a native command, result, postcheck or reconnect fails, provisioning
+stops and retains known or possible changes, including earlier baseline changes. No automatic
+reset, deletion, disablement or policy rollback occurs. Inspect retained UFW rules/defaults and
+partial resources before retrying through a new preview. If SSH is lost, use operator console
+recovery, restore the intended access path and verify the pinned host identity before retrying;
+console access is not supplied by the controller. See
+[SSH lockout recovery through the provider console](#ssh-lockout-recovery-through-the-provider-console).
 
 ## Deploy an existing host
 
@@ -384,7 +721,9 @@ configuration or reconverge Caddy. Required recovery backups survive interrupted
 later target replacement. Pruning names exact eligible intermediate backups in the confirmed plan.
 
 Manual adoption is not part of replayable deployment. `deploy` requires a current release proven
-by completed Taskman records, and `provision` requires an unambiguous clean host. The retained
+by completed Taskman records and successful history. Before the first successful selection,
+`provision` admits validated compatible partial resources, including an existing trusted Caddy
+installation; conflicting or unavailable authority still refuses. The retained
 `--adopt-manual-current` parser flag returns a safety refusal; do not use it as a migration path.
 Bring an existing manually managed installation into automation only through a separately reviewed
 procedure.
@@ -556,15 +895,16 @@ Afterward:
 | `0` | Success, including an already-satisfied no-op |
 | `2` | Invalid command, argument, configuration, or unsupported target |
 | `3` | Missing local prerequisite or release build failure |
-| `4` | SOPS/age decryption, secret validation, or secret installation failure |
+| `4` | SOPS/age settings or credential decryption, secret validation, or secret installation failure |
 | `5` | SSH, host-key, privilege, or remote preflight failure |
 | `6` | Database backup or backup-validation failure |
 | `7` | Migration failure |
-| `8` | Release staging, selection, or systemd service failure |
+| `8` | Release staging, selection, service lifecycle, or Caddy package/validation/activation failure |
 | `9` | Post-start readiness or public verification failure |
 | `10` | Safety refusal, state conflict, or incompatible rollback |
 | `11` | Database restore or restored-database validation failure |
 | `12` | A lifecycle-lock acquisition was unavailable; this is not whole-command conflict detection |
+| `13` | Application setup passed on the deployment host; proxy activation/public verification remains pending |
 
 The interactive `create-admin` bridge returns the remote command status after it has successfully
 opened the session.
@@ -581,7 +921,11 @@ accepted plan's exact authority, or null before any confirmation; it is not the 
 observation. Lost or invalid replies do not make earlier facts or desired targets current evidence.
 A failed verification report retains fixed failing checks without raw output. Verification checks
 selected release/service identity, Caddy, loopback topology/no EPMD, startup journal, exact local/public
-readiness and HSTS within a bounded startup budget. Unsafe topology fails immediately.
+readiness and HSTS within independent bounded phases. Full verification has a 185-second wait
+envelope; application proof has 160 seconds, including command cleanup allowances under responsive
+local I/O and normal scheduling. These bounds cover verification, not the entire deployment.
+Unsafe topology fails immediately; see the
+[phase timing contract](../specs/2026-09-18-operations-contracts.md#verification-phases-have-independent-finite-limits).
 See [verification details](../specs/2026-09-09-dedicated-host-deployment-design.md#verification-and-reporting)
 and [failure/result contracts](../specs/2026-09-18-operations-contracts.md#failures-and-reporting).
 Completed restore cleanup may succeed without new readiness; that does not establish current health.
@@ -595,6 +939,8 @@ Use those facts and the failed boundary to choose the next action:
 | Migration failed | Keep Taskman stopped. Preserve the pre-deploy backup and determine whether committed migrations allow forward repair or require restore. |
 | Selection or startup failed | Do not automatically select old code. Inspect `current`, completed selections, service state, the fresh backup, and live migrations. Rerun only when those facts describe a recognized transition. |
 | Local readiness failed | Inspect fresh service state, fixed verification summaries and journal. Verification failure does not automatically stop Taskman; stop it explicitly if needed while investigating. Do not assume the previous release is schema-compatible. |
+| Proxy activation pending (13) | Follow the [operator activation and exact-target retry procedure](#activate-a-pending-taskman-site); retain protections/history and verify backups after full completion. |
+| Caddy validation/reload failed or its reply was lost | Preserve primary failure and site recovery evidence; inspect runtime uncertainty and coordinate a new quiet window before retry. |
 | Public HTTPS failed after local readiness | Preserve the selected healthy local release; repair DNS/provider firewall/Caddy/ACME without exposing Phoenix directly. |
 | Lock is held | Wait for the other controller command or scheduled backup to finish. The lock file contains no operation identity; do not remove it merely because the path exists. |
 | Metadata is contradictory | Stop mutation. Reconcile managed records and exact paths before retrying. |
@@ -602,6 +948,98 @@ Use those facts and the failed boundary to choose the next action:
 | Restore failed before swap | The canonical database remains authoritative. Rerun the same backup request only when the completed facts and deterministic temporary database are recognizable. |
 | Restore failed during/after swap | Keep Taskman stopped and retain all database names plus the pre-restore backup. A recognized deterministic arrangement can converge on rerun; any other arrangement requires manual inspection. |
 | Cleanup revalidation raced | No newly protected target is removed; recompute and reconfirm the exact plan. |
+
+## SSH lockout recovery through the provider console
+
+A guest firewall or broken SSH configuration does not prevent provider console access. Recovery
+requires operator access to the correct provider project/server and permission to restart it.
+A missing installed-system root password is not itself a blocker: obtain a console login through
+password reset, a temporary GRUB root shell or a separate rescue OS. These are manual emergency
+procedures, not controller rollback. Host-specific downtime tolerance and recovery evidence belong in private operator storage;
+the [inventory privacy policy](../inventories/operations-environments.md) defines that boundary.
+An SSH pin is the expected fingerprint of the server's host key, used to authenticate the server
+on a new connection. Retain the installed server's trusted pin through recovery; a rescue OS
+may present its own different host key and must be verified separately.
+
+
+### Get a root console login
+
+Choose one route appropriate to the failure:
+
+1. **Hetzner password reset:** in Hetzner Console select the correct server, then **Rescue → Reset
+   Root Password**. If this succeeds, use the resulting password for the provider console login.
+   If unavailable or unsuccessful, use one of the boot-based routes below. Changing the local
+   root password does not require enabling SSH password authentication.
+2. **Temporary GRUB root shell:** open the provider console before restarting. Reveal GRUB with
+   Esc or Shift as appropriate, select the installed kernel and press `e`. Preserve its root-disk
+   and other arguments; append `init=/bin/bash` to the `linux` line. Boot with Ctrl-X or F10.
+   This one-boot edit starts a root shell instead of the normal init/login system, so no existing
+   root password is needed. Remount the installed root writable and set a password for subsequent
+   console login:
+
+   ```sh
+   mount -o remount,rw /
+   passwd root
+   sync
+   exec /sbin/init
+   ```
+
+   Let normal startup finish, then log in through the console with the new password. Do not
+   persist `init=/bin/bash` in GRUB configuration. A protected bootloader needs its credentials;
+   encrypted disks still need their unlock material. If GRUB or the installed OS cannot start,
+   use Rescue instead.
+3. **Hetzner Rescue:** select **Rescue → Enable rescue**, then restart the server, or select
+   **Enable rescue & power cycle**. Rescue supplies separate root credentials or a selected SSH
+   key; the installed OS root password and guest firewall are not used. Use the provider console
+   if rescue SSH is unavailable. For rescue SSH, verify its different host key out of band and use
+   a separate temporary known-hosts file; preserve the installed host's pin.
+
+   Identify the actual installed root filesystem using `lsblk -f`; do not assume `/dev/sda1`.
+   Unlock encryption/activate storage if needed. Mount that filesystem at `/mnt`, then follow
+   Hetzner's chroot preparation:
+
+   ```sh
+   mount /dev/ACTUAL_ROOT_DEVICE /mnt
+   chroot-prepare /mnt
+   chroot /mnt
+   passwd root
+   exit
+   sync
+   reboot
+   ```
+
+   `ACTUAL_ROOT_DEVICE` is a substitution, not a runnable device name. Reboot back to the local
+   disk with Rescue disabled and log in through the console. Never rebuild/reinstall the server
+   to repair an access problem; that is a separate destructive action. Commands in a chroot act
+   on installed files, not the installed system's running services or firewall.
+
+### Repair and verify access
+
+From a root console in the normally running installed OS, inspect `ss -ltnp`, `sshd -t`,
+`systemctl status ssh.socket ssh.service --no-pager` and `ufw status numbered`. Check provider
+firewall rules separately; guest repair cannot override a provider-level block. Preserve a protected
+copy of the affected configuration before repair. Correct the specific SSH setting or blocking
+UFW rule; verify current rule numbering before any deletion and preserve unrelated rules.
+An appended allow does not override an earlier matching deny.
+After SSH configuration repair, rerun `sshd -t` and apply the validated changes while retaining
+console access. Reload/restart the applicable SSH service; for socket-activated listening changes,
+inspect the effective socket unit/generator, reload systemd configuration and restart the applicable
+socket/service units. A service reload alone may not change the socket listener. Confirm the actual
+listening address/port with `ss -ltnp` before testing a new connection.
+
+If urgently necessary, the operator can temporarily run `ufw disable` from this normal-OS console
+to regain access. This preserves saved rules but removes guest UFW protection for every hosted
+service; use it only as an explicit emergency measure. Do not use `ufw reset`. Repair the intended
+policy, then re-enable it from the console and test a genuinely new pinned SSH connection before
+closing console access. Do not restore an old complete policy blindly if unrelated rules changed
+since the recovery copy. Validate the installed host identity against its original pin, not Rescue's,
+and verify existing services. Return temporary authentication changes to the intended policy after
+access is proven. Preserve failure receipts and obtain a new controller preview before retrying.
+
+Sources: [Hetzner password reset](https://docs.hetzner.com/cloud/servers/how-to-rescue/reset-password/),
+[Hetzner Rescue](https://docs.hetzner.com/cloud/servers/getting-started/rescue-system/),
+[Ubuntu password recovery](https://help.ubuntu.com/community/LostPassword), and
+[Ubuntu UFW manual](https://manpages.ubuntu.com/manpages/resolute/man8/ufw.8.html).
 
 ## Manual recovery without the controller
 
@@ -679,7 +1117,7 @@ It is a trusted-backup workflow, not a sandbox for arbitrary dumps.
 Validate and control services:
 
 ```sh
-sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl daemon-reload
 sudo systemctl start taskman.service
 curl --fail --silent --show-error "http://127.0.0.1:$application_port/healthz"
@@ -723,17 +1161,11 @@ output before sharing it.
 
 ## Recorded acceptance and future commissioning
 
-[Identified acceptance](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries)
-completed authenticated operations on an earlier retained database and first/repeat provisioning on
-a later empty database. The last recorded fresh installation had no administrator; refresh state
-and create fresh accounts before use. Never reuse archived passwords, signed links or bootstrap
-material. The closing artifact was verified/dry-run inspected but was not selected on the host.
-Later documentation changes are outside its artifact/CI proof.
-
-The inventory retains [staging/provider/mail observations](../inventories/operations-environments.md#taskman-host)
-and [reset recovery obligations](../inventories/operations-environments.md#staging-recovery-retention).
-Keep protected off-host copies, root-only quarantine and all six original backup pairs; no recovery
-point was pruned. This runbook grants no authority to reset/delete that environment.
+The [native acceptance guide](native-acceptance.md) defines portable scenarios and evidence limits.
+Actual commissioning results, inventories and recovery custody are private operator records.
+Refresh current state for every affected installation; never reuse archived passwords, signed links,
+bootstrap material or a historical approval. Preserve protected recovery until separately authorized
+disposal. This runbook grants no reset, deletion or native-operation authority.
 
 ### Future-installation commissioning checklist
 

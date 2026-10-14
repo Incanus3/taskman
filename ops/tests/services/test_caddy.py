@@ -8,232 +8,250 @@ from pyinfra.api import Config, Inventory, State, deploy
 from tests.support.environments import environment_config
 from taskman_ops.remote import ChangeSet, PyinfraRemote
 import taskman_ops.services.caddy as caddy
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository, build_caddy_plan, render_caddyfile
+from taskman_ops.services.caddy import render_caddyfile
 
 
-def test_caddy_plan_uses_the_official_signed_repository_and_loopback_renderer() -> None:
-    plan = build_caddy_plan(environment_config())
-
-    assert plan.repository.key_url == "https://dl.cloudsmith.io/public/caddy/stable/gpg.key"
-    assert plan.repository.keyring == "/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-    assert "signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg" in plan.repository.source
-    assert plan.packages == ("caddy",)
+def test_site_renderer_keeps_loopback_only_upstream():
     assert render_caddyfile(environment_config(application_port=4011)) == (
         "taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4011\n}\n"
     )
 
 
-def test_declare_caddy_stages_the_preconfirmed_plan_without_rendering_again(monkeypatch) -> None:
-    """Stable repository/file/service state stays built in around the validation boundary.
+def test_ownership_plan_freezes_site_branch_and_manual_activation():
+    import hashlib
+    import json
+    from tests.support.caddy import authority_result
+    result = authority_result(branch='existing', imported=True)
+    plan = caddy.build_caddy_ownership_plan(environment_config(), result)
+    assert plan.branch == 'existing'
+    assert plan.site_content == 'taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n'
+    assert plan.site_sha256 == hashlib.sha256(plan.site_content.encode()).hexdigest()
+    assert plan.main_content is None
+    assert json.loads(plan.authority_json)['branch'] == 'existing'
+    assert 'manual' in caddy.caddy_ownership_preview(plan)['activation']
 
-    Routing validation through the generic conditional-convergence adapter would
-    make this test fail: the direct Caddy action is the only custom step.
-    """
 
-    plan = CaddyPlan(
-        repository=CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-        repository_packages=("curl",),
-        packages=("caddy",),
-        caddyfile="taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n",
-    )
-    staged: list[tuple[str, str]] = []
-    validated: list[tuple[str, str]] = []
-    packages: list[dict[str, object]] = []
-    keys: list[dict[str, object]] = []
-    repositories: list[tuple[str, dict[str, object]]] = []
-    services: list[tuple[str, dict[str, object]]] = []
-    operations: list[str] = []
+def test_plan_confirms_narrow_authority_and_preserved_main_bytes(tmp_path, monkeypatch):
+    from tests.support.caddy import host, request
+    from taskman_ops.errors import OpsError
+    import pytest
+    import hashlib
+    config = environment_config(application_port=4011)
+    module, root, _ = host(tmp_path, monkeypatch)
+    first = module.caddy(request())
+    plan = caddy.build_caddy_ownership_plan(config, first)
+    main = root / 'etc/caddy/Caddyfile'
+    main.write_text('import sites-enabled/*.caddy\n# operator changes another site\n')
+    assert caddy.validate_caddy_plan_authority(plan, module.caddy(request())).outcome == 'succeeded'
+    main.write_text('# missing import\n')
+    with pytest.raises(OpsError) as error:
+        caddy.validate_caddy_plan_authority(plan, module.caddy(request()))
+    assert error.value.status == 10
 
-    class ValidatedConfiguration:
-        def did_change(self) -> bool:
-            return True
 
-    from pyinfra.operations import apt, files, systemd
+def test_preserved_main_and_site_change_require_new_preview(tmp_path, monkeypatch):
+    from tests.support.caddy import host, request
+    from taskman_ops.errors import OpsError
+    import pytest
+    module, root, _ = host(tmp_path, monkeypatch, installed=False, active=False)
+    config = environment_config(application_port=4011)
+    plan = caddy.build_caddy_ownership_plan(config, module.caddy(request()))
+    main = root / 'etc/caddy/Caddyfile'
+    main.write_text('import sites-enabled/*.caddy\n# same predicate different bytes\n')
+    with pytest.raises(OpsError) as error:
+        caddy.validate_caddy_plan_authority(plan, module.caddy(request()))
+    assert error.value.status == 10
 
-    monkeypatch.setattr(apt, "packages", lambda **kwargs: packages.append(kwargs))
-    monkeypatch.setattr(apt, "key", lambda **kwargs: keys.append(kwargs))
-    monkeypatch.setattr(apt, "repo", lambda source, **kwargs: repositories.append((source, kwargs)))
-    monkeypatch.setattr(
-        files,
-        "put",
-        lambda source, destination, **_kwargs: staged.append((source.getvalue(), destination))
-        or operations.append(destination)
-        or ValidatedConfiguration(),
-    )
-    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
-    monkeypatch.setattr(
-        caddy,
-        "_validate_and_install_caddy",
-        lambda staged_path, *_args, **_kwargs: validated.append((staged_path, "/etc/caddy/Caddyfile"))
-        or operations.append("validate")
-        or ValidatedConfiguration(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        caddy,
-        "conditional_convergence",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Caddy must not use generic convergence")),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        caddy,
-        "build_caddy_plan",
-        lambda _config: (_ for _ in ()).throw(AssertionError("Caddy must not render after confirmation")),
+
+def test_bootstrap_main_template_is_separate():
+    assert (Path(__file__).resolve().parents[2] / 'caddy/Caddyfile.main').read_bytes() == (
+        b'import /etc/caddy/sites-enabled/*.caddy\n'
     )
 
-    caddy.declare_caddy(plan)
 
-    assert packages == [
-        {"packages": ["curl"], "name": "Install Caddy repository prerequisites"},
-        {"packages": ["caddy"], "name": "Install Caddy"},
-    ]
-    assert keys == [
-        {
-            "src": "https://example.test/key",
-            "dest": "/keyring",
-            "name": "Install Caddy signing key",
-        }
-    ]
-    assert repositories == [
-        (
-            "deb https://example.test stable",
-            {"filename": "caddy-stable", "name": "Configure Caddy repository"},
-        )
-    ]
-    assert staged == [
-        (plan.caddyfile, "/etc/taskman/Caddyfile.staged"),
-        (plan.caddyfile, "/etc/caddy/Caddyfile"),
-    ]
-    assert validated == [("/etc/taskman/Caddyfile.staged", "/etc/caddy/Caddyfile")]
-    assert operations == ["/etc/taskman/Caddyfile.staged", "validate", "/etc/caddy/Caddyfile"]
-    assert services[0] == (
-        "caddy",
-        {"running": True, "enabled": True, "name": "Enable and start Caddy"},
-    )
-    assert services[1][0] == "caddy"
-    assert services[1][1]["reloaded"] is True
-    assert services[1][1]["name"] == "Reload Caddy after validated replacement"
-    assert services[1][1]["_if"]() is True
+def test_inspection_uses_allowlisted_helper_and_rejects_malformed_reply(tmp_path, monkeypatch):
+    from tests.support.caddy import host
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.errors import OpsError
+    import pytest
+    module, _, _ = host(tmp_path, monkeypatch)
+    remote = object()
+    def invoke(actual_remote, package, request):
+        assert actual_remote is remote
+        assert package.path.is_file()
+        assert request.paths == {}
+        assert request.expected_state == {}
+        return module.caddy(request)
+    monkeypatch.setattr(caddy, 'invoke_helper', invoke)
+    assert caddy.inspect_caddy(remote, environment_config()).state['authority']['branch'] == 'existing'
+    monkeypatch.setattr(caddy, 'invoke_helper', lambda _, package, request:
+        HostResult.for_request(request, 'succeeded', 'missing evidence', {}))
+    with pytest.raises(OpsError) as error:
+        caddy.inspect_caddy(remote, environment_config())
+    assert error.value.status == 5
 
 
-def test_caddy_uses_builtin_live_file_change_for_reload_after_custom_validation(monkeypatch) -> None:
-    """A validator result must not force reload when pyinfra's live file is unchanged."""
-
-    class Result:
-        def __init__(self, changed: bool) -> None:
-            self.changed = changed
-
-        def did_change(self) -> bool:
-            return self.changed
-
-    file_results = iter((Result(True), Result(False)))
-    puts: list[str] = []
-    services: list[tuple[str, dict[str, object]]] = []
-    from pyinfra.operations import apt, files, systemd
-
-    monkeypatch.setattr(apt, "packages", lambda **_kwargs: Result(False))
-    monkeypatch.setattr(apt, "key", lambda **_kwargs: Result(False))
-    monkeypatch.setattr(apt, "repo", lambda *_args, **_kwargs: Result(False))
-    monkeypatch.setattr(
-        files,
-        "put",
-        lambda _source, destination, **_kwargs: puts.append(destination) or next(file_results),
-    )
-    monkeypatch.setattr(caddy, "_validate_and_install_caddy", lambda *_args, **_kwargs: Result(True))
-    monkeypatch.setattr(systemd, "service", lambda service, **kwargs: services.append((service, kwargs)))
-    plan = CaddyPlan(
-        CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-        (),
-        ("caddy",),
-        "taskman.acme.tld {\n}\n",
-    )
-
-    caddy.declare_caddy(plan)
-
-    assert puts == ["/etc/taskman/Caddyfile.staged", "/etc/caddy/Caddyfile"]
-    assert services[-1][1]["_if"]() is False
+def test_confirmed_ownership_refuses_site_service_socket_trust_and_metadata_drift():
+    from tests.support.caddy import authority_result
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.errors import OpsError
+    import pytest
+    initial = authority_result(branch='existing', active=True, imported=True)
+    plan = caddy.build_caddy_ownership_plan(environment_config(application_port=4011), initial)
+    for changes in (
+        {'executable_sha256': '0' * 64}, {'unit_sha256': '0' * 64},
+        {'service_enabled': 'disabled'}, {'service_masked': True},
+        {'main': {'uid': 0, 'gid': 998, 'mode': 0o644}},
+        {'site_directory': {'uid': 0, 'gid': 0, 'mode': 0o755}},
+        {'site_directory': {'uid': 0, 'gid': 0, 'mode': 0o755},
+         'site': {'uid': 0, 'gid': 0, 'mode': 0o644}, 'site_sha256': '0' * 64},
+        {'public_listeners': [{'address': '127.0.0.1', 'port': 80, 'pid': 123},
+                              {'address': '::', 'port': 443, 'pid': 123}]},
+        {'service_active': False, 'main_pid': 0, 'public_listeners': []},
+    ):
+        mapping = initial.to_mapping()
+        mapping['state']['authority'].update(changes)
+        with pytest.raises(OpsError) as error:
+            caddy.validate_caddy_plan_authority(plan, HostResult.from_mapping(mapping))
+        assert error.value.status == 10
 
 
-def test_declare_caddy_programmatic_replay_reports_no_change_when_converged(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """The real Caddy declaration must preserve pyinfra's converged result."""
-
-    staged_path = tmp_path / "Caddyfile.staged"
-    live_path = tmp_path / "Caddyfile"
-    monkeypatch.setattr(caddy, "_STAGED_CADDYFILE", staged_path.as_posix())
-    monkeypatch.setattr(caddy, "_CADDYFILE", live_path.as_posix())
-
-    class Result:
-        def did_change(self) -> bool:
-            return False
-
-    from pyinfra.operations import apt, systemd
-
-    monkeypatch.setattr(apt, "packages", lambda **_kwargs: Result())
-    monkeypatch.setattr(apt, "key", lambda **_kwargs: Result())
-    monkeypatch.setattr(apt, "repo", lambda *_args, **_kwargs: Result())
-    monkeypatch.setattr(systemd, "service", lambda *_args, **_kwargs: Result())
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "caddy",
-        "#!/bin/sh\nexit 0\n",
-    )
-    _write_executable(
-        bin_dir / "sudo",
-        "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  case \"$1\" in\n"
-        "    -u|-g|-C) shift 2 ;;\n"
-        "    -*) shift ;;\n"
-        "    *) break ;;\n"
-        "  esac\n"
-        "done\n"
-        "exec \"$@\"\n",
-    )
-    _write_executable(bin_dir / "chown", "#!/bin/sh\nexit 0\n")
-    _write_executable(
-        bin_dir / "stat",
-        "#!/bin/sh\n"
-        "/usr/bin/stat \"$@\" | sed -E -e 's/^[^:]+:[^:]+:/root:root:/' -e 's/^user=[^ ]+ group=[^ ]+/user=root group=root/'\n",
-    )
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-
-    plan = CaddyPlan(
-        CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-        (),
-        ("caddy",),
-        "taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n",
-    )
-
-    def run_once() -> ChangeSet:
-        inventory = Inventory((["@local"], {}))
-        state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
-        host = inventory.get_host("@local")
-        state.activate_host(host)
-        remote = PyinfraRemote(
-            host,
-            environment_config(),
-            inventory=inventory,
-            state=state,
-        )
-
-        @deploy("Converge Caddy")
-        def converge() -> None:
-            caddy.declare_caddy(plan)
-
-        return remote.run_deploy(converge)
-
-    first = run_once()
-    second = run_once()
-
-    assert first.changed is True
-    assert second == ChangeSet(changed=False)
+def test_preserved_main_absence_and_metadata_are_confirmation_prerequisites(tmp_path, monkeypatch):
+    from tests.support.caddy import host, request
+    from taskman_ops.errors import OpsError
+    import pytest
+    module, root, _ = host(tmp_path, monkeypatch, installed=False, active=False, main=False)
+    config = environment_config(application_port=4011)
+    plan = caddy.build_caddy_ownership_plan(config, module.caddy(request()))
+    (root / 'etc/caddy/Caddyfile').write_text('# package or operator created main\n')
+    with pytest.raises(OpsError) as error:
+        caddy.validate_caddy_plan_authority(plan, module.caddy(request()))
+    assert error.value.status == 10
 
 
-def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
+def test_ownership_sources_existing_plan_queues_no_global_actions():
+    from tests.support.caddy import authority_result
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),
+        authority_result(branch='existing', active=True, imported=True))
+    inventory=Inventory((["@local"],{}));state=State(inventory,Config(PARALLEL=1),check_for_changes=False)
+    local=inventory.get_host('@local');state.activate_host(local)
+    remote=PyinfraRemote(local,environment_config(application_port=4011),inventory=inventory,state=state)
+    @deploy('Caddy source convergence')
+    def sources():
+        caddy.declare_caddy_sources(plan)
+    changes=remote.run_deploy(sources)
+    assert changes==ChangeSet(changed=False)
+    assert state.get_op_order()==[]
+
+
+def test_ownership_invocation_preserves_prepared_receipt_for_deferred_activation(tmp_path,monkeypatch):
+    from tests.support.caddy import mutation_host
+    from tests.support.caddy import request
+    module,root,calls=mutation_host(tmp_path,monkeypatch)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    def invoke(remote,package,request):
+        assert package.path.is_file()
+        from taskman_ops.host_helper.__main__ import _dispatch
+        return _dispatch(request)
+    monkeypatch.setattr(caddy,'invoke_helper',invoke)
+    prepared=caddy.prepare_caddy(object(),plan)
+    assert prepared.state['receipt']['site_changed'] is True
+    activated=caddy.activate_caddy(object(),plan,prepared,public_probe='not-ready')
+    assert activated.state['reload']=='succeeded'
+    assert activated.state['mutation_state']=='changed'
+    assert [argv for argv,_ in calls if argv[0]=='systemctl']==[('systemctl','reload','caddy.service')]
+
+
+def test_ownership_transport_loss_is_unknown_and_keeps_prior_receipt(tmp_path,monkeypatch):
+    import pytest
+    from tests.support.caddy import mutation_host
+    from tests.support.caddy import request
+    from taskman_ops.errors import OpsError
+    module,root,calls=mutation_host(tmp_path,monkeypatch)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    monkeypatch.setattr(caddy,'invoke_helper',lambda remote,package,req: module.caddy(req))
+    prepared=caddy.prepare_caddy(object(),plan)
+    def lost(*args,**kwargs):raise RuntimeError('private transport')
+    monkeypatch.setattr(caddy,'invoke_helper',lost)
+    with pytest.raises(OpsError) as error:
+        caddy.activate_caddy(object(),plan,prepared,public_probe='not-ready')
+    assert error.value.changed
+    assert error.value.state['mutation_state']=='unknown'
+    assert error.value.state['caddy_receipt']==prepared.to_mapping()['state']['receipt']
+    assert error.value.state['reload']=='unknown'
+    assert error.value.state['recovery']['runtime_uncertain'] is True
+    assert 'inspect' in str(error.value).lower()
+    assert 'private' not in str(error.value)
+
+
+def test_activation_loss_before_dispatch_retains_receipt_without_runtime_claim(tmp_path,monkeypatch):
+    import pytest
+    from tests.support.caddy import mutation_host,request
+    from taskman_ops.errors import OpsError
+    module,root,calls=mutation_host(tmp_path,monkeypatch)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    monkeypatch.setattr(caddy,'invoke_helper',lambda remote,package,req: module.caddy(req))
+    prepared=caddy.prepare_caddy(object(),plan)
+    def before_dispatch(*args,**kwargs):
+        error=RuntimeError('private pre-entry transport');error.helper_entry_dispatched=False;raise error
+    monkeypatch.setattr(caddy,'invoke_helper',before_dispatch)
+    with pytest.raises(OpsError) as error:caddy.activate_caddy(object(),plan,prepared,public_probe='not-ready')
+    assert error.value.changed is False
+    assert error.value.state['mutation_state']=='unchanged'
+    assert error.value.state['reload']=='not-attempted'
+    assert error.value.state['recovery']['runtime_uncertain'] is False
+    assert error.value.state['caddy_receipt']==prepared.to_mapping()['state']['receipt']
+    assert all(argv[:2]!=('systemctl','reload') for argv,_ in calls)
+
+
+def test_bootstrap_preparation_lost_reply_retains_possible_start_and_guard(tmp_path,monkeypatch):
+    import pytest
+    from tests.support.caddy import installation_host,request
+    from taskman_ops.errors import OpsError
+    module,root,state,calls=installation_host(tmp_path,monkeypatch,preserved=False,main=False)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    monkeypatch.setattr(caddy,'invoke_helper',lambda remote,package,req: module.caddy(req))
+    guard=caddy.guard_caddy_install(object(),plan)
+    def lost(remote,package,req):
+        assert module.caddy(req).outcome=='succeeded'
+        raise RuntimeError('private reply loss after bootstrap start')
+    monkeypatch.setattr(caddy,'invoke_helper',lost)
+    with pytest.raises(OpsError) as error:caddy.prepare_caddy(object(),plan,guard)
+    assert state['active'] is True
+    assert error.value.state['mutation_state']=='unknown'
+    assert error.value.state['activation']=='unknown'
+    assert error.value.state['recovery']['runtime_uncertain'] is True
+    assert error.value.state['caddy_receipt']==guard.to_mapping()['state']['receipt']
+    assert error.value.state['caddy_authority'] is None
+    assert 'reload' not in error.value.state
+    assert 'inspect' in str(error.value).lower()
+
+
+def test_existing_preparation_transport_loss_does_not_claim_runtime_activation(tmp_path,monkeypatch):
+    import pytest
+    from tests.support.caddy import mutation_host,request
+    from taskman_ops.errors import OpsError
+    module,root,calls=mutation_host(tmp_path,monkeypatch)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    def lost(*args):raise RuntimeError('private transport')
+    monkeypatch.setattr(caddy,'invoke_helper',lost)
+    with pytest.raises(OpsError) as error:caddy.prepare_caddy(object(),plan)
+    assert error.value.state['mutation_state']=='unknown'
+    assert 'reload' not in error.value.state and 'activation' not in error.value.state
+
+
+def test_ownership_package_failure_before_dispatch_proves_unchanged(tmp_path,monkeypatch):
+    import pytest
+    from contextlib import contextmanager
+    from tests.support.caddy import host,request
+    from taskman_ops.errors import OpsError
+    module,root,command=host(tmp_path,monkeypatch)
+    plan=caddy.build_caddy_ownership_plan(environment_config(application_port=4011),module.caddy(request()))
+    @contextmanager
+    def failed_package():
+        raise RuntimeError('local archive failure')
+        yield
+    monkeypatch.setattr(caddy,'temporary_helper_package',failed_package)
+    with pytest.raises(OpsError) as error:caddy.prepare_caddy(object(),plan)
+    assert error.value.changed is False
+    assert error.value.state['mutation_state']=='unchanged'

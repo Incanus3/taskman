@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import ipaddress
 import math
 import os
@@ -10,7 +11,9 @@ import re
 import time
 from typing import Mapping
 
-from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
+from taskman_ops.host_protocol import (
+    HostRequest, HostResult, PROTOCOL_VERSION, validate_application_report,
+)
 from taskman_ops.releases.identifiers import validate_release_id
 
 from .lock import LifecycleLockContention, lifecycle_lock
@@ -31,7 +34,6 @@ _MAX_OUTPUT = 9_216
 _MAX_JOURNAL_OUTPUT = 65_536
 _MAX_COMMAND_SECONDS = 3.0
 _MAX_READINESS_SECONDS = 30.0
-_VERIFY_DEADLINE_SECONDS = 45.0
 _MINIMUM_DISK_BYTES = 10 * 1024**3
 _SUDO_USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 
@@ -53,21 +55,64 @@ def verification_request(
     )
 
 
+@dataclass(frozen=True)
+class ApplicationVerification:
+    """Private application proof; advisory public evidence cannot finalize a release."""
+
+    local_report: Mapping[str, object]
+    public_probe: str
+
+
+class ApplicationVerificationError(RuntimeError):
+    """Pre-proof refusal retains its ordinary lifecycle category without a report."""
+
+    def __init__(self, exit_code: int, failed_boundary: str) -> None:
+        super().__init__("application verification authority could not be established")
+        self.exit_code = exit_code
+        self.failed_boundary = failed_boundary
+
+
 def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResult:
     """Verify health and topology against one completed HostState snapshot."""
 
-    deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
+    return _verify(request, lifecycle_locked=lifecycle_locked, application=False)
+
+
+def verify_application(request: HostRequest, *, lifecycle_locked: bool = False) -> ApplicationVerification:
+    """Verify the selected application before successful history/public activation."""
+
+    return _verify(request, lifecycle_locked=lifecycle_locked, application=True)
+
+
+def _preproof_failure(result: HostResult, *, application: bool) -> HostResult:
+    if application:
+        if result.state.get("preflight") is not None:
+            code = 2 if result.state["preflight"] == "unsupported" else 5
+            boundary = "input" if code == 2 else "inspection"
+        elif result.state.get("locked") is True:
+            code, boundary = 12, "lock"
+        else:
+            code, boundary = 10, "authority"
+        raise ApplicationVerificationError(code, boundary)
+    return result
+
+
+def _verify(
+    request: HostRequest, *, lifecycle_locked: bool, application: bool
+) -> HostResult | ApplicationVerification:
     try:
         paths = ManagedPaths.from_mapping(request.paths)
         paths.validate_existing(owner_uid=os.geteuid())
         settings = _settings(request.parameters)
         expected = _expected_release(request.expected_state)
+        if application and expected is None:
+            raise ValueError("application verification requires an expected release")
     except (PathAuthorityError, ValueError):
-        return _final_host_failure(request, "unsupported")
+        return _preproof_failure(_final_host_failure(request, "unsupported"), application=application)
 
-    authority = _host_authority(settings, paths, deadline)
+    authority = _host_authority(settings, paths)
     if authority is not None:
-        return _final_host_failure(request, authority)
+        return _preproof_failure(_final_host_failure(request, authority), application=application)
 
     if lifecycle_locked:
         try:
@@ -76,18 +121,23 @@ def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResul
             # record is deliberately published only after verification.
             state = observe_host_state(paths, allow_selection_transition=True)
         except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
-            return _final_refusal(request)
+            return _preproof_failure(_final_refusal(request), application=application)
     else:
         try:
             with lifecycle_lock(paths, timeout_seconds=5.0):
-                state = observe_host_state(paths)
+                state = (
+                    observe_host_state(paths, allow_selection_transition=True)
+                    if application else observe_host_state(paths)
+                )
         except LifecycleLockContention:
-            return _final_lock_failure(request)
+            return _preproof_failure(_final_lock_failure(request), application=application)
         except (PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
-            return _final_refusal(request)
+            return _preproof_failure(_final_refusal(request), application=application)
 
     release_id = state.selected_release_id
     if release_id is None:
+        if application:
+            raise ApplicationVerificationError(10, "authority")
         return HostResult(
             protocol_version=PROTOCOL_VERSION,
             operation=request.operation,
@@ -98,37 +148,47 @@ def verify(request: HostRequest, *, lifecycle_locked: bool = False) -> HostResul
             warnings=state.warnings,
         )
     if expected is not None and expected != release_id:
-        return _final_release_selection_failure(request, release_id, state.warnings)
+        return _preproof_failure(_final_release_selection_failure(request, release_id, state.warnings), application=application)
     if not any(record.release_id == release_id for record in state.releases):
-        return _final_release_selection_failure(request, release_id, state.warnings)
+        return _preproof_failure(_final_release_selection_failure(request, release_id, state.warnings), application=application)
 
     release_path = (paths.release_root / release_id).as_posix()
     checks: list[dict[str, object]] = []
-    service_ok, pid = _service_state(deadline)
+    service_ok, pid = _service_state()
     checks.append(_check("taskman-service", service_ok, "taskman.service is active with a positive MainPID", "taskman.service is not active with a usable MainPID"))
-    executable_ok = service_ok and _main_pid_matches_release(pid, release_path, deadline)
+    executable_ok = service_ok and _main_pid_matches_release(pid, release_path)
     checks.append(_check("release-identity", executable_ok, "systemd MainPID executable is under the selected release", "systemd MainPID executable does not match the selected release"))
-    caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _command_timeout(deadline))[0]
-    checks.append(_check("caddy-service", caddy_ok, "caddy.service is active", "caddy.service is not active"))
-    readiness_deadline = min(deadline, time.monotonic() + settings["readiness_timeout"])
+    if not application:
+        caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _MAX_COMMAND_SECONDS)[0]
+        checks.append(_check("caddy-service", caddy_ok, "caddy.service is active", "caddy.service is not active"))
+    topology_deadline = time.monotonic() + settings["readiness_timeout"]
     topology_ok = _listener_topology(
         settings["application_port"],
         settings["distribution_port"],
         settings["database_port"],
-        readiness_deadline,
+        topology_deadline,
     )
     checks.append(_check("listener-topology", topology_ok, "Taskman, distribution, and PostgreSQL listeners have the required topology", "listener topology is missing, public, malformed, or ambiguous"))
-    checks.append(_journal_check(deadline))
+    checks.append(_journal_check())
     if not _passed(checks):
-        return _final_result(request, "retryable", release_id, expected, checks, state)
+        return _final_result(request, "retryable", release_id, expected, checks, state, application=application)
 
-    local_ok = _local_ready(settings["application_port"], settings["connection_timeout"], readiness_deadline)
+    local_ok = _local_ready(settings["application_port"], settings["connection_timeout"], time.monotonic() + settings["readiness_timeout"])
     checks.append(_check("local-readiness", local_ok, "loopback health endpoint returned exact ready response", "loopback health endpoint did not return exact ready response before its bounded deadline"))
     if not local_ok:
-        return _final_result(request, "retryable", release_id, expected, checks, state)
+        return _final_result(request, "retryable", release_id, expected, checks, state, application=application)
 
-    remaining = min(deadline, readiness_deadline) - time.monotonic()
-    public = _curl(f"https://{settings['public_hostname']}/healthz", min(settings["connection_timeout"], remaining)) if remaining >= 0.001 else None
+    if application:
+        public_probe = "not-attempted"
+        caddy_ok = _successful(("systemctl", "is-active", "--quiet", "caddy.service"), _MAX_COMMAND_SECONDS)[0]
+        timeout = min(settings["connection_timeout"], _MAX_COMMAND_SECONDS)
+        if caddy_ok and timeout >= 0.001:
+            public = _curl(f"https://{settings['public_hostname']}/healthz", timeout)
+            public_probe = "ready" if _ready(public) and _hsts(public) else "not-ready"
+        return _final_result(request, "succeeded", release_id, expected, checks, state,
+                             application=True, public_probe=public_probe)
+
+    public = _curl(f"https://{settings['public_hostname']}/healthz", min(settings["connection_timeout"], _MAX_READINESS_SECONDS))
     ready = _ready(public)
     checks.append(_check("public-readiness", ready, "public HTTPS health endpoint returned exact ready response", "public HTTPS health endpoint did not return exact ready response"))
     hsts = _hsts(public)
@@ -143,13 +203,20 @@ def _final_result(
     expected: str | None,
     checks: list[dict[str, object]],
     state: HostState,
-) -> HostResult:
+    *,
+    application: bool = False,
+    public_probe: str = "not-attempted",
+) -> HostResult | ApplicationVerification:
     successful = outcome == "succeeded"
-    # Keep release and readiness safety categories distinct in the public
-    # report.  The first five checks are the release identity/topology proof;
-    # readiness checks run only after that prefix passes.
-    exit_status = 0 if successful else 8 if not _passed(checks[:5]) else 9
+    # Public verification includes Caddy in its lifecycle prefix; application
+    # verification has four lifecycle checks. Readiness keeps category 9
+    # only after the complete corresponding lifecycle prefix passes.
+    lifecycle_count = 4 if application else 5
+    exit_status = 0 if successful else 8 if not _passed(checks[:lifecycle_count]) else 9
     report = _report(exit_status, release_id, expected, checks)
+    if application:
+        report["scope"] = "application"
+        return ApplicationVerification(validate_application_report(report), public_probe)
     return HostResult(
         protocol_version=PROTOCOL_VERSION,
         operation=request.operation,
@@ -226,19 +293,18 @@ def host_preflight(paths: ManagedPaths, parameters: Mapping[str, object]) -> str
     Deploy and genesis call this before creating derived roots or unpacking an
     archive. Verification calls the same private checks later alongside its
     service/readiness observations, so fresh capacity, SSH/sudo and
-    PostgreSQL authority share one implementation and one bounded deadline.
+    PostgreSQL authority share one implementation with independent bounded commands.
     """
 
-    deadline = time.monotonic() + _VERIFY_DEADLINE_SECONDS
     paths.validate_existing(owner_uid=os.geteuid())
     settings = _settings(parameters)
-    return _host_authority(settings, paths, deadline)
+    return _host_authority(settings, paths)
 
 
 def available_bytes(path: Path) -> int:
     """Read safe filesystem capacity through the fixed host command."""
 
-    return _available_bytes(path, time.monotonic() + _MAX_COMMAND_SECONDS)
+    return _available_bytes(path)
 
 
 def _expected_release(value: Mapping[str, object]) -> str | None:
@@ -302,7 +368,6 @@ def _address(value: object, version: int) -> str:
 def _host_authority(
     settings: Mapping[str, int | str | float],
     paths: ManagedPaths,
-    deadline: float,
 ) -> str | None:
     """Return the stable preflight class before lifecycle/service verification.
 
@@ -314,26 +379,28 @@ def _host_authority(
     """
 
     if not all(
-        _available_bytes(paths.local(path), deadline) >= _MINIMUM_DISK_BYTES
+        _available_bytes(paths.local(path)) >= _MINIMUM_DISK_BYTES
         for path in (paths.install_root, paths.backup_root)
     ):
         return "unsupported"
-    if not _invoking_administrator_ok(str(settings["ssh_user"]), deadline):
+    if not _invoking_administrator_ok(str(settings["ssh_user"])):
         return "preflight"
     if not _active_ssh_connection_ok(int(settings["ssh_port"])):
         return "preflight"
-    if not _successful(("runuser", "-u", "postgres", "--", "psql", "-Atqc", "SELECT 1"), _command_timeout(deadline))[0]:
+    if not _successful(("runuser", "-u", "postgres", "--", "psql", "--no-psqlrc", "--no-password",
+                     "--host", "/var/run/postgresql", "--port", str(settings["database_port"]),
+                     "--username", "postgres", "--dbname", "postgres", "-Atqc", "SELECT 1"), _MAX_COMMAND_SECONDS)[0]:
         return "preflight"
     return None
 
 
-def _invoking_administrator_ok(expected_user: str, deadline: float) -> bool:
+def _invoking_administrator_ok(expected_user: str) -> bool:
     """Prove the configured non-root sudo invoker remains passwordless."""
 
     actual_user = os.environ.get("SUDO_USER")
     if actual_user != expected_user or _SUDO_USER_RE.fullmatch(actual_user) is None:
         return False
-    return _successful(("runuser", "-u", actual_user, "--", "sudo", "-n", "true"), _command_timeout(deadline))[0]
+    return _successful(("runuser", "-u", actual_user, "--", "sudo", "-n", "true"), _MAX_COMMAND_SECONDS)[0]
 
 
 def _active_ssh_connection_ok(expected_port: int) -> bool:
@@ -359,7 +426,7 @@ def _active_ssh_connection_ok(expected_port: int) -> bool:
     )
 
 
-def _available_bytes(path: Path, deadline: float) -> int:
+def _available_bytes(path: Path) -> int:
     candidate = path
     while True:
         try:
@@ -371,23 +438,23 @@ def _available_bytes(path: Path, deadline: float) -> int:
             candidate = candidate.parent
         except OSError:
             return 0
-    succeeded, output = _successful(("df", "--block-size=1", "--output=avail", "--", candidate.as_posix()), _command_timeout(deadline))
+    succeeded, output = _successful(("df", "--block-size=1", "--output=avail", "--", candidate.as_posix()), _MAX_COMMAND_SECONDS)
     lines = output.splitlines()
     if not succeeded or len(lines) != 2 or lines[0].strip() != "Avail" or not lines[1].strip().isdecimal():
         return 0
     return int(lines[1].strip())
 
 
-def _service_state(deadline: float) -> tuple[bool, int]:
-    succeeded, output = _successful(("systemctl", "show", "taskman.service", "--property=ActiveState", "--property=MainPID", "--value"), _command_timeout(deadline))
+def _service_state() -> tuple[bool, int]:
+    succeeded, output = _successful(("systemctl", "show", "taskman.service", "--property=ActiveState", "--property=MainPID", "--value"), _MAX_COMMAND_SECONDS)
     lines = output.splitlines()
     if not succeeded or len(lines) != 2 or lines[0] != "active" or not lines[1].isdecimal() or int(lines[1]) <= 0:
         return False, 0
     return True, int(lines[1])
 
 
-def _main_pid_matches_release(pid: int, release_path: str, deadline: float) -> bool:
-    succeeded, output = _successful(("readlink", "-f", f"/proc/{pid}/exe"), _command_timeout(deadline))
+def _main_pid_matches_release(pid: int, release_path: str) -> bool:
+    succeeded, output = _successful(("readlink", "-f", f"/proc/{pid}/exe"), _MAX_COMMAND_SECONDS)
     return succeeded and _one_path(output) is not None and _one_path(output).startswith(f"{release_path}/")
 
 
@@ -397,16 +464,11 @@ def _listener_values(deadline: float) -> tuple[tuple[str, int], ...] | None:
 
 
 def _listener_topology(application: int | str | float, distribution: int | str | float, database: int | str | float, deadline: float) -> bool:
-    attempts = max(1, math.ceil(deadline - time.monotonic()) + 1)
-    for attempt in range(attempts):
+    while deadline - time.monotonic() >= 0.001:
         state = _listener_topology_state(application, distribution, database, deadline)
         if state != "pending":
             return state == "ready"
-        if attempt + 1 < attempts:
-            remaining = deadline - time.monotonic()
-            if remaining < 0.001:
-                return False
-            time.sleep(min(1.0, remaining))
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
     return False
 
 
@@ -440,10 +502,10 @@ def _listener_topology_state(
     return "ready"
 
 
-def _journal_check(deadline: float) -> dict[str, object]:
+def _journal_check() -> dict[str, object]:
     succeeded, output = _successful(
         ("journalctl", "--no-pager", "--output=cat", "--unit", "taskman.service", "--lines=100"),
-        _command_timeout(deadline),
+        _MAX_COMMAND_SECONDS,
         output_limit=_MAX_JOURNAL_OUTPUT,
     )
     state = "unavailable" if not succeeded else "empty" if not output.strip() else "startup-failure" if _FAILURE_RE.search(output) else "clean"
@@ -457,16 +519,11 @@ def _journal_check(deadline: float) -> dict[str, object]:
 
 
 def _local_ready(port: int | str | float, timeout: int | str | float, deadline: float) -> bool:
-    attempts = max(1, math.ceil(deadline - time.monotonic()) + 1)
-    for attempt in range(attempts):
-        remaining = deadline - time.monotonic()
-        if remaining < 0.001:
-            return False
+    while (remaining := deadline - time.monotonic()) >= 0.001:
         response = _curl(f"http://127.0.0.1:{int(port)}/healthz", min(float(timeout), remaining))
         if _ready(response):
             return True
-        if attempt + 1 < attempts:
-            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
     return False
 
 
@@ -590,4 +647,4 @@ def _report(exit_status: int, release_id: str, expected: str | None, checks: lis
     return {"schema_version": 1, "status": "ok" if exit_status == 0 else "failed", "exit_status": exit_status, "release_id": release_id, "expected_release_id": expected, "checks": checks, "next_action": None if exit_status == 0 else _NEXT_ACTION}
 
 
-__all__ = ["verification_request", "verify"]
+__all__ = ["ApplicationVerification", "ApplicationVerificationError", "verification_request", "verify", "verify_application"]

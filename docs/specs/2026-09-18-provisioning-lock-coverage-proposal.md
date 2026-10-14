@@ -32,8 +32,8 @@ Current `workflows/provision.py` confirms and refreshes authority, then invokes
 `converge_provisioning` before locked genesis. `provisioning.py` executes a pyinfra deploy, database/
 pgpass convergence and runtime environment installation. Those writes are not serialized with
 helper lifecycle operations or scheduled backups. Sequential first/repeat native provisioning
-passed; its [identified acceptance evidence](../research/2026-09-17-operations-vps-acceptance.md)
-does not establish safe overlap or cover future changed source.
+passed in privately recorded acceptance; this does not establish safe overlap or cover future
+changed source. The [native acceptance guide](../guides/native-acceptance.md) defines portable criteria.
 
 The locked pyinfra dependency is 3.10.0. Inspection of its `connectors/ssh.py` and
 `connectors/util.py` establishes separate `client.exec_command` channels, closed command stdin,

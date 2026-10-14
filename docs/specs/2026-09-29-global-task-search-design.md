@@ -14,7 +14,6 @@ filtering, full-text, or saved-search system.
 
 The [MVP product specification](../product/mvp-spec.md) governs navigation and API/CLI parity.
 The [roadmap](../planning/roadmap.md) places this companion capability alongside blocking links.
-The [implementation plan](../archive/plans/2026-09-29-task-blocking-and-search.md) is implemented.
 
 ## Current implementation
 
@@ -258,8 +257,7 @@ loading presentation, geometry, or focus behavior changes.
 
 ## Delivery
 
-The completed [implementation plan](../archive/plans/2026-09-29-task-blocking-and-search.md)
-is archived as the historical execution record for this capability and the companion
-[blocking relationships](2026-09-27-task-blocking-relationships-design.md). Implementation is delivered in
+This capability and the companion
+[blocking relationships](2026-09-27-task-blocking-relationships-design.md) are delivered in
 [PR #23](https://github.com/Incanus3/taskman/pull/23) and operator accepted. Merge and deployment
 require separate authorization.

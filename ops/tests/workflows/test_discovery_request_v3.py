@@ -30,7 +30,7 @@ def _config() -> EnvironmentConfig:
     )
 
 
-@pytest.mark.parametrize("mode", ("strict", "deploy", "provision"))
+@pytest.mark.parametrize("mode", ("strict", "deploy"))
 def test_v3_discovery_request_has_only_common_mode_parameters(mode: str) -> None:
     """Adding a legacy state field would make inspection authority ambiguous."""
 
@@ -72,3 +72,60 @@ def test_v3_discovery_request_rejects_invalid_mode_specific_authority(
 
     with pytest.raises(ValueError):
         discovery_request(_config(), mode=mode, backup_id=backup_id)
+
+
+def test_provision_discovery_binds_configured_track_and_strict_false_configuration_context():
+    config = _config().model_copy(update={"postgres_package_track": "18"})
+    request = discovery_request(config, mode="provision")
+    assert request.parameters["postgres_package_track"] == "18"
+    assert request.parameters["force_postgresql_config"] is False
+    assert set(request.parameters) == {"credentials_path", "database", "mode",
+                                       "postgres_package_track", "force_postgresql_config"}
+
+
+def test_controller_rejects_provision_observation_for_another_track():
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.errors import OpsError
+    from taskman_ops.workflows.helper import run_request
+    config = _config().model_copy(update={"postgres_package_track": "18"})
+    request = discovery_request(config, mode="provision")
+    result = HostResult.for_request(request, "succeeded", "observed", {
+        "database_state": "ready", "applied_migrations": (),
+        "postgresql": {"branch": "existing", "cluster": {
+            "version": "16", "name": "main", "port": 5432,
+            "data_directory": "/var/lib/postgresql/16/main",
+            "config_file": "/etc/postgresql/16/main/postgresql.conf",
+            "hba_file": "/etc/postgresql/16/main/pg_hba.conf"},
+            "role": "compatible", "database": "compatible", "access": "unproven"},
+    })
+    with pytest.raises(OpsError):
+        run_request(object(), request, package=object(), invoker=lambda *_args: result)
+
+
+def test_provision_discovery_carries_explicit_configuration_context():
+    assert discovery_request(_config(), mode="provision", force_postgresql_config=True).parameters["force_postgresql_config"] is True
+
+
+@pytest.mark.parametrize("mode,value", [("strict", True), ("deploy", True), ("restore", True), ("provision", "true"), ("provision", 1), ("provision", None)])
+def test_configuration_override_requires_boolean_provision_context(mode, value):
+    with pytest.raises(ValueError):
+        discovery_request(_config(), mode=mode, force_postgresql_config=value, **({"backup_id": BACKUP_ID} if mode == "restore" else {}))
+
+
+@pytest.mark.parametrize("site", ["deployment_admission_authority", "_confirmed_expected_state", "_downgrade_acknowledgment"])
+def test_deploy_provision_mode_consumers_preserve_explicit_context(monkeypatch, site):
+    force = True
+    from taskman_ops.workflows import deploy as module
+    class Observed(Exception):
+        pass
+    captured = []
+    def observe(_remote, request):
+        captured.append(request)
+        raise Observed
+    monkeypatch.setattr(module, "run_request", observe)
+    with pytest.raises(Observed):
+        if site == "_downgrade_acknowledgment":
+            module._downgrade_acknowledgment(object(), _config(), object(), None, mode="provision", force_postgresql_config=force)
+        else:
+            getattr(module, site)(object(), _config(), mode="provision", force_postgresql_config=force)
+    assert captured[0].parameters["force_postgresql_config"] is force

@@ -272,11 +272,16 @@ def test_create_validated_backup_uses_pgpassfile_without_putting_the_password_in
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
     monkeypatch.setattr(backup_capability, "run_command", _command_double(calls))
 
-    backup_module.create_validated_backup(_state(), paths, database_mapping(), credentials, purpose="scheduled")
+    record = backup_module.create_validated_backup(_state(), paths, database_mapping(), credentials, purpose="scheduled")
 
     pg_dump, kwargs = next((argv, kwargs) for argv, kwargs in calls if argv[0] == "pg_dump")
     assert "database-password-canary" not in " ".join(pg_dump)
-    assert kwargs["env"] == {"PGPASSFILE": credentials.as_posix()}
+    assert kwargs["env"] == {"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"}
+    assert record.source_database_size_bytes == 1024
+    for argv, kwargs in calls[:2]:
+        assert argv[argv.index("--dbname") + 1] == "dbname=taskman require_auth=scram-sha-256"
+        assert kwargs["env"] == {"PGPASSFILE": str(credentials), "LC_ALL": "C"}
+        assert "--no-password" in argv
 
 
 def test_create_validated_backup_refuses_insufficient_capacity_before_dumping(

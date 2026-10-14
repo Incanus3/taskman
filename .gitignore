@@ -48,8 +48,9 @@ npm-debug.log
 __pycache__/
 *.py[cod]
 /ops/taskman_ops.egg-info/
-/ops/environments/*.secrets.yaml
-/ops/environments/*.decrypted.yaml
+/ops/environments/*.yaml
+!/ops/environments/*.sops.yaml
+!/ops/environments/example.yaml
 *.agekey
 # br doctor per-run artifacts
 .doctor/

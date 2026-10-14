@@ -51,7 +51,7 @@ _ENVIRONMENT_COMMANDS = {
 
 _COMMAND_HELP = {
     "build": "build a target-compatible release artifact",
-    "provision": "provision a supported clean host",
+    "provision": "provision a supported host and prepare its first release",
     "deploy": "deploy an immutable release",
     "verify": "verify the deployed topology",
     "releases": "list managed releases",
@@ -78,6 +78,7 @@ class Invocation:
     yes: bool = False
     allow_dirty: bool = False
     allow_downgrade: bool = False
+    force_postgresql_config: bool = False
     replace_unfinished: bool = False
     reapply: bool = False
     json: bool = False
@@ -133,9 +134,23 @@ def build_parser() -> argparse.ArgumentParser:
     for command in (
         command for command in APPROVED_COMMANDS if command in _ENVIRONMENT_COMMANDS
     ):
-        subparser = subparsers.add_parser(command, help=_COMMAND_HELP[command])
+        subparser = subparsers.add_parser(
+            command,
+            help=_COMMAND_HELP[command],
+            description=(
+                "Provision a supported host with site-only ownership of existing Caddy configuration. "
+                "On existing PostgreSQL, Taskman owns only role/database/private credentials; preserve "
+                "operator-owned PostgreSQL configuration unless --force-postgresql-config is explicit. "
+                "Exit 13 means Taskman is ready on the deployment host while proxy activation and "
+                "public verification remain pending; activate the proxy and rerun the same exact target."
+                if command == "provision" else None
+            ),
+        )
         subparser.add_argument("environment")
         _add_common_options(subparser)
+        if command == "provision":
+            subparser.add_argument("--force-postgresql-config", action="store_true",
+                help="replace the selected cluster's HBA/settings with retained private recovery copies; a restart may interrupt all consumers")
         if command in {"provision", "deploy"}:
             subparser.add_argument("--artifact", type=Path, metavar="ARCHIVE")
             subparser.add_argument("--yes", action="store_true", help="confirm the displayed plan")
@@ -206,6 +221,7 @@ def parse_invocation(argv: Sequence[str] | None = None) -> Invocation:
         migration_policy=migration_policy,
         manual_adoption_confirmed=manual_adoption_confirmed,
         yes=bool(getattr(namespace, "yes", False)),
+        force_postgresql_config=bool(getattr(namespace, "force_postgresql_config", False)),
         allow_dirty=bool(getattr(namespace, "allow_dirty", False)),
         allow_downgrade=bool(getattr(namespace, "allow_downgrade", False)),
         replace_unfinished=bool(getattr(namespace, "replace_unfinished", False)),
@@ -224,6 +240,9 @@ def parse_args(argv: Sequence[str] | None = None) -> Invocation:
 def dispatch(invocation: Invocation) -> WorkflowResult:
     """Run one validated invocation through its concrete workflow."""
 
+    if type(invocation.force_postgresql_config) is not bool or invocation.force_postgresql_config and invocation.command != "provision":
+        raise OpsError(ExitStatus.INVALID, "arguments", "PostgreSQL configuration override is valid only for provision",
+            next_action="remove the provision-only PostgreSQL configuration flag")
     if (invocation.reapply or invocation.replace_unfinished) and invocation.command != "restore":
         raise OpsError(
             ExitStatus.INVALID,

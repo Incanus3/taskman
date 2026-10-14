@@ -46,7 +46,7 @@ private transient helper transfer and correlated JSON results. Reuse those mecha
 create another SSH connection, upload implementation, or arbitrary-code executor.
 
 The
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#authenticated-retained-database-acceptance) owns identified release/recovery evidence and its dated qualifications. This design authorizes neither host mutation nor release retirement, push, merge, or publication.
+[native acceptance guide](../guides/native-acceptance.md) defines portable release/recovery criteria; actual evidence and dated qualifications are retained privately. This design authorizes neither host mutation nor release retirement, push, merge, or publication.
 
 ## Scope and exclusions
 

@@ -1,4 +1,4 @@
-"""Validated, non-secret deployment environment configuration.
+"""Validated deployment settings loaded from encrypted configuration.
 
 The controller treats an environment file as untrusted input.  This module
 keeps the accepted shape deliberately small and validates values before they
@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from .errors import ExitStatus, OpsError
+from .sops import SopsRunner, decrypt_yaml
 
 
 ENVIRONMENTS_DIR = Path(__file__).resolve().parents[1] / "environments"
@@ -228,6 +229,7 @@ class EnvironmentConfig(BaseModel):
         populate_by_name=True,
         str_strip_whitespace=False,
         validate_default=True,
+        hide_input_in_errors=True,
     )
 
     # ``name`` is derived from the filename by :func:`load_environment`; it
@@ -431,12 +433,10 @@ class EnvironmentConfig(BaseModel):
 
     @field_validator("readiness_timeout")
     @classmethod
-    def validate_readiness_budget(cls, value: int) -> int:
-        # The helper has a 45-second total deadline inside the runner's
-        # 60-second transport allowance.  Reserve time for public DNS/HTTPS
-        # verification and conservative cleanup after local readiness.
+    def validate_readiness_window(cls, value: int) -> int:
+        # Topology and local readiness each have their own bounded window.
         if value > 30:
-            raise ValueError("readiness timeout must leave budget for public verification")
+            raise ValueError("readiness timeout must not exceed the 30-second window maximum")
         return value
 
     @model_validator(mode="after")
@@ -451,6 +451,10 @@ class EnvironmentConfig(BaseModel):
             raise ValueError("service ports must not overlap")
         if any(port in {80, 443} for port in ports.values()):
             raise ValueError("public proxy ports are reserved")
+        public_ports = {self.ssh_port, 80, 443}
+        private_ports = {self.application_port, self.database_port, self.distribution_port, 4369}
+        if public_ports & private_ports:
+            raise ValueError("public and private service ports must not overlap")
 
         release_root = self.release_root
         deployment_root = self.deployment_root
@@ -490,20 +494,46 @@ class EnvironmentConfig(BaseModel):
         return self.install_root / "current"
 
 
-def load_environment(name: str) -> EnvironmentConfig:
-    """Load and validate ``ops/environments/<name>.yaml``.
+def _encrypted_configuration_error() -> OpsError:
+    return OpsError(
+        status=ExitStatus.SECRET,
+        stage="configuration",
+        message="unable to decrypt deployment configuration",
+        changed=False,
+        next_action="check the external age identity and encrypted environment configuration",
+    )
 
-    Validation happens before path construction and all parse/validation
-    failures are translated to the controller's stable status ``2``.
+
+def load_environment(
+    name: str, runner: SopsRunner | None = None, *, encrypted: bool = True,
+) -> EnvironmentConfig:
+    """Load ``<name>.config.sops.yaml`` without writing decrypted settings.
+
+    Encryption is required by default for every environment name. Passing
+    ``encrypted=False`` explicitly selects ``<name>.yaml`` without SOPS.
+    Neither mode falls back to the other. Decryption failures use status 4;
+    plaintext read/parse and schema/name failures use status 2.
     """
 
     safe_name = validate_environment_name(name)
     root = Path(ENVIRONMENTS_DIR)
-    path = root / f"{safe_name}.yaml"
+    suffix = ".config.sops.yaml" if encrypted else ".yaml"
+    path = root / f"{safe_name}{suffix}"
+    unavailable = False
     try:
-        if path.parent.resolve() != root.resolve() or not path.is_file():
-            raise FileNotFoundError(path)
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        unavailable = path.parent.resolve() != root.resolve() or not path.is_file()
+    except OSError:
+        unavailable = True
+    if unavailable:
+        raise _encrypted_configuration_error() if encrypted else _invalid("invalid environment configuration")
+
+    payload: object = None
+    if encrypted:
+        payload = decrypt_yaml(path, error=_encrypted_configuration_error, runner=runner,
+                               register=None)
+    try:
+        if not encrypted:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("environment YAML must contain a mapping")
         supplied_name = payload.get("name", payload.get("environment", payload.get("environment_name")))
@@ -512,12 +542,13 @@ def load_environment(name: str) -> EnvironmentConfig:
         if supplied_name is None:
             payload = {"name": safe_name, **payload}
         return EnvironmentConfig.model_validate(payload)
-    except OpsError:
-        raise
-    except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
-        # Do not chain parser details: a malformed file could contain a
-        # canary or an accidental credential and must remain secret-free.
-        raise _invalid("invalid environment configuration") from None
+    except (OSError, ValueError, yaml.YAMLError, ValidationError, OpsError):
+        pass
+    finally:
+        payload = None
+    # Raise after leaving the handler so the raw parser/model error does
+    # not remain attached to the public exception.
+    raise _invalid("invalid environment configuration")
 
 
 __all__ = [

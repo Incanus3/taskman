@@ -16,7 +16,7 @@ from .envelope import HostRequest
 from .identifiers import ProtocolError, validate_absolute_path, validate_string
 
 
-MUTATION_OPERATIONS = frozenset({"deploy", "genesis", "restore", "cleanup"})
+MUTATION_OPERATIONS = frozenset({"deploy", "genesis", "prepare_genesis", "restore", "cleanup"})
 MUTATION_STATES = frozenset({"unchanged", "changed", "unknown"})
 
 _COMMON_FIELDS = frozenset(
@@ -33,6 +33,7 @@ _COMMON_FIELDS = frozenset(
 _ADDITIONAL_FIELDS = {
     "deploy": frozenset({"desired_release_id", "backup_id"}),
     "genesis": frozenset({"desired_release_id", "backup_id"}),
+    "prepare_genesis": frozenset({"desired_release_id", "backup_id", "public_probe"}),
     "restore": frozenset({"desired_release_id", "backup_id", "pre_restore_backup_id"}),
     "cleanup": frozenset({"completed_targets"}),
 }
@@ -54,6 +55,7 @@ _COMMON_OBSERVATIONS = frozenset(
 _OBSERVATION_FIELDS = {
     "deploy": _COMMON_OBSERVATIONS,
     "genesis": _COMMON_OBSERVATIONS,
+    "prepare_genesis": _COMMON_OBSERVATIONS,
     "restore": _COMMON_OBSERVATIONS | {"restore_database_state"},
     "cleanup": frozenset(
         {
@@ -172,7 +174,9 @@ def validate_mutation_state(
         "manual",
     }:
         raise ProtocolError("invalid mutation outcome")
-    mapping = _exact(state, _COMMON_FIELDS | _ADDITIONAL_FIELDS[operation], "mutation state")
+    report_field = "local_report" if operation == "prepare_genesis" else "report"
+    common_fields = (_COMMON_FIELDS - {"report"}) | {report_field}
+    mapping = _exact(state, common_fields | _ADDITIONAL_FIELDS[operation], "mutation state")
 
     mutation_state = mapping["mutation_state"]
     if type(mutation_state) is not str or mutation_state not in MUTATION_STATES:
@@ -203,7 +207,20 @@ def validate_mutation_state(
         mapping["unavailable_fields"],
         mapping["inspection_error"],
     )
-    verification_report = _optional_report(mapping["report"])
+    verification_report = (
+        None if mapping[report_field] is None else
+        validate_application_report(mapping[report_field]) if operation == "prepare_genesis" else
+        validate_verification_report(mapping[report_field])
+    )
+    if operation == "prepare_genesis":
+        probe = _enum(mapping["public_probe"], {"ready", "not-ready", "not-attempted"}, "public probe")
+        if probe != "not-attempted" and (verification_report is None or verification_report["exit_status"] != 0):
+            raise ProtocolError("public probe requires passing application verification")
+        if verification_report is not None and (
+            verification_report["expected_release_id"] != mapping["desired_release_id"]
+            or verification_report["release_id"] != mapping["desired_release_id"]
+        ):
+            raise ProtocolError("application report does not match the desired release")
 
     if boundary == "verification":
         if (
@@ -220,7 +237,7 @@ def validate_mutation_state(
         _validate_success_authority(operation, mapping, observations, unavailable, verification_report)
 
     result = {key: _mutable(value) for key, value in mapping.items()}
-    if operation in {"deploy", "genesis", "restore"}:
+    if operation in {"deploy", "genesis", "prepare_genesis", "restore"}:
         result["desired_release_id"] = _release_id(
             mapping["desired_release_id"], nullable=outcome != "succeeded"
         )
@@ -236,7 +253,7 @@ def validate_mutation_state(
             raise ProtocolError("cleanup result cannot contain a verification report")
     result["observations"] = observations
     result["unavailable_fields"] = unavailable
-    result["report"] = verification_report
+    result[report_field] = verification_report
     return result
 
 
@@ -271,13 +288,14 @@ def validate_cleanup_completion(
 
 
 def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bool:
-    if boundary == "inspection" and operation in {"deploy", "genesis"} and exit_code == 5:
+    if boundary == "inspection" and operation in {"deploy", "genesis", "prepare_genesis"} and exit_code == 5:
         return True
     expected = _EXIT_CODES_BY_BOUNDARY[boundary]
     if boundary in {"selection", "service", "history", "inspection"}:
         expected = {
             "deploy": frozenset({8}),
             "genesis": frozenset({8}),
+            "prepare_genesis": frozenset({8}),
             "restore": (
                 frozenset({11})
                 if boundary in {"history", "inspection"}
@@ -289,9 +307,9 @@ def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bo
         return False
     if boundary == "cleanup" and operation != "cleanup":
         return False
-    if boundary == "backup_helper" and operation not in {"deploy", "genesis", "restore"}:
+    if boundary == "backup_helper" and operation not in {"deploy", "genesis", "prepare_genesis", "restore"}:
         return False
-    if boundary in {"staging", "protection", "migration"} and operation not in {"deploy", "genesis"}:
+    if boundary in {"staging", "protection", "migration"} and operation not in {"deploy", "genesis", "prepare_genesis"}:
         return False
     return exit_code in expected
 
@@ -299,7 +317,26 @@ def _valid_failure_category(operation: str, boundary: str, exit_code: int) -> bo
 def validate_verification_report(value: object) -> dict[str, object]:
     """Validate the one secret-free report schema used in mutation evidence."""
 
-    report = _exact(value, _REPORT_FIELDS, "verification report")
+    return _validate_report(value, application=False)
+
+
+def validate_application_report(value: object) -> dict[str, object]:
+    """Validate private application proof without accepting public deployment proof."""
+
+    return _validate_report(value, application=True)
+
+
+def _validate_report(value: object, *, application: bool) -> dict[str, object]:
+    names_required = (
+        tuple(name for name in _CHECK_NAMES if name not in {"caddy-service", "public-readiness", "public-hsts"})
+        if application else _CHECK_NAMES
+    )
+    lifecycle_checks = frozenset(names_required[:4]) if application else _LIFECYCLE_CHECKS
+    readiness_checks = frozenset(names_required[4:]) if application else _READINESS_CHECKS
+    fields = _REPORT_FIELDS | {"scope"} if application else _REPORT_FIELDS
+    report = _exact(value, fields, "application report" if application else "verification report")
+    if application and (report["scope"] != "application" or type(report["schema_version"]) is not int):
+        raise ProtocolError("invalid application report scope or schema")
     if report["schema_version"] != 1 or type(report["exit_status"]) is not int:
         raise ProtocolError("invalid verification report")
     exit_status = report["exit_status"]
@@ -308,8 +345,8 @@ def validate_verification_report(value: object) -> dict[str, object]:
     status = report["status"]
     if status != ("ok" if exit_status == 0 else "failed"):
         raise ProtocolError("verification report status is contradictory")
-    release_id = _release_id(report["release_id"], nullable=True)
-    expected_release_id = _release_id(report["expected_release_id"], nullable=True)
+    release_id = _release_id(report["release_id"], nullable=not application)
+    expected_release_id = _release_id(report["expected_release_id"], nullable=not application)
 
     raw_checks = report["checks"]
     if not isinstance(raw_checks, (list, tuple)) or not raw_checks:
@@ -317,7 +354,7 @@ def validate_verification_report(value: object) -> dict[str, object]:
     checks: list[dict[str, object]] = []
     for raw_check in raw_checks:
         check = _exact(raw_check, _CHECK_FIELDS, "verification check")
-        if check["schema_version"] != 1:
+        if check["schema_version"] != 1 or (application and type(check["schema_version"]) is not int):
             raise ProtocolError("invalid verification check schema")
         name = check["name"]
         status_value = check["status"]
@@ -339,33 +376,35 @@ def validate_verification_report(value: object) -> dict[str, object]:
             }
         )
     names = tuple(str(check["name"]) for check in checks)
-    if names != _CHECK_NAMES[: len(names)]:
+    if names != names_required[: len(names)]:
         raise ProtocolError("verification checks are not an ordered unique prefix")
     failed_names = {
         str(check["name"]) for check in checks if check["status"] == "failed"
     }
     if exit_status == 0:
         if (
-            names != _CHECK_NAMES
+            names != names_required
             or failed_names
             or report["next_action"] is not None
+            or (application and release_id != expected_release_id)
         ):
             raise ProtocolError("successful verification report is incomplete")
     else:
         if report["next_action"] != _FAILED_REPORT_ACTION or not failed_names:
             raise ProtocolError("failed verification report is incomplete")
         if exit_status == 8 and (
-            len(checks) > len(_LIFECYCLE_CHECKS) or not failed_names <= _LIFECYCLE_CHECKS
+            len(checks) > len(lifecycle_checks) or not failed_names <= lifecycle_checks
         ):
             raise ProtocolError("verification lifecycle report is contradictory")
         if exit_status == 9 and (
-            len(checks) < len(_LIFECYCLE_CHECKS) + 1
-            or any(check["status"] != "passed" for check in checks[: len(_LIFECYCLE_CHECKS)])
-            or not failed_names <= _READINESS_CHECKS
+            len(checks) < len(lifecycle_checks) + 1
+            or any(check["status"] != "passed" for check in checks[: len(lifecycle_checks)])
+            or not failed_names <= readiness_checks
         ):
             raise ProtocolError("verification readiness report is contradictory")
 
     return {
+        **({"scope": "application"} if application else {}),
         "schema_version": 1,
         "status": status,
         "exit_status": exit_status,
@@ -482,7 +521,7 @@ def _validate_unavailable(
         "backup_timer_enabled",
         "restore_database_state",
     }
-    if operation in {"deploy", "genesis"}:
+    if operation in {"deploy", "genesis", "prepare_genesis"}:
         null_requires_unavailable.add("applied_migrations")
     for field in null_requires_unavailable & set(observations):
         if observations[field] is None and field not in unavailable:
@@ -507,6 +546,20 @@ def _validate_success_authority(
         return
 
     desired = _release_id(state["desired_release_id"], nullable=False)
+    if operation == "prepare_genesis":
+        if (
+            unavailable
+            or observations["selected_release_id"] != desired
+            or observations["restore_target_sha256"] is not None
+            or report is None
+            or report["exit_status"] != 0
+            or report["release_id"] != desired
+            or report["expected_release_id"] != desired
+            or observations["database_state"] != "ready"
+            or observations["service_state"] != "running"
+        ):
+            raise ProtocolError("application preparation lacks passing selected authority")
+        return
     essential = {
         "selected_release_id",
         "last_successful_selection_id",
@@ -549,10 +602,6 @@ def _validate_success_authority(
     restore_databases = observations["restore_database_state"]
     if restore_databases is None or restore_databases["canonical"] is None:
         raise ProtocolError("restore success lacks canonical database identity")
-
-
-def _optional_report(value: object) -> dict[str, object] | None:
-    return None if value is None else validate_verification_report(value)
 
 
 def _restore_database_state(value: object) -> dict[str, object] | None:
@@ -707,4 +756,5 @@ __all__ = [
     "validate_cleanup_completion",
     "validate_mutation_state",
     "validate_verification_report",
+    "validate_application_report",
 ]

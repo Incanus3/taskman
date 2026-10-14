@@ -6,8 +6,8 @@
 This specification owns implemented account behavior and the original hosted-access design.
 Later [deployment architecture](2026-09-09-dedicated-host-deployment-design.md) and
 [operations contracts](2026-09-18-operations-contracts.md) own host automation/recovery details.
-[Identified native acceptance](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries)
-remains qualified to its historical source/database.
+Identified native acceptance is retained privately and remains qualified to its historical
+source/database; the [native acceptance guide](../guides/native-acceptance.md) defines portable criteria.
 
 ## Context
 
@@ -31,10 +31,8 @@ excluded.
 
 The design baseline is upstream commit
 `7a0a664caa6c2ef050649b98202df6db8c1ee415` (`Add immediate cooperative workspace updates`). The
-workspace was clean when this design was finalized. The
-[completed implementation plan](../archive/plans/2026-09-02-authenticated-hosted-access.md)
-is retained for historical provenance; Beads feature `tas-authenticated-hosted-access-2a8`
-records its delivery graph.
+workspace was clean when this design was finalized. Delivery is complete; Beads feature
+`tas-authenticated-hosted-access-2a8` records its delivery graph.
 
 ## Outcome
 

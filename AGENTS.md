@@ -9,6 +9,9 @@ Commit verified work after each bounded task or material checkpoint. This grants
 authorization for local commits; pushing, merging, deployment and history rewriting retain their
 separate authorization gates.
 
+Keep review corrections local and batch pushes until the operator requests one or confirms review
+completion.
+
 When stopping, state the next concrete step, the decision it requires, and the consequences of
 each available choice. Distinguish design approval from implementation and external-action approval.
 
@@ -25,6 +28,24 @@ placement and retirement rules. These rules are binding alongside this file. Use
 [documentation index](docs/README.md) to find the relevant canonical owners, and update affected
 indexes and references when documentation changes. Keep the detailed
 placement rules in that document rather than duplicating them here.
+
+## Public repository privacy
+
+Treat every tracked file and commit as publishable. Never put real deployment-host or workstation
+details in readable repository content, including documentation, handoffs, examples, test fixtures,
+generated artifacts or tracker exports. This includes actual addresses, domains, host-key pins,
+personal accounts, local identity-file paths, recovery locations and machine-specific inventories.
+
+Keep actual deployment settings and credentials in SOPS-encrypted deployment configuration.
+Keep operator identities, operational inventories, raw receipts and the local tracker database outside
+version control. Keep `.beads/issues.jsonl` tracked with portable issue content and sanitized metadata.
+Use clearly synthetic examples and project-defined standard paths in public docs.
+Required SOPS cryptographic metadata may remain readable; private identity locations may not.
+
+Audit the changes being committed for privacy before each commit. Audit the whole tree only as
+part of an explicitly scoped privacy review. Historical snapshots are subject to the same privacy
+boundary. A clean current tree does not sanitize earlier commits: do not publish private history;
+prepare a clean public history separately when explicitly authorized.
 
 ## Handoffs
 

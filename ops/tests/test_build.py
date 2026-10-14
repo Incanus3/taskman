@@ -86,6 +86,36 @@ def _dirty_git_repository(tmp_path: Path) -> tuple[Path, str]:
     return repo, revision
 
 
+@pytest.mark.parametrize("dirty", [False, True])
+def test_source_snapshots_exclude_the_complete_environment_directory(
+    tmp_path: Path, dirty: bool,
+) -> None:
+    """Host builds must never receive encrypted settings or private inventories."""
+    repo, _ = _dirty_git_repository(tmp_path)
+    environments = repo / "ops" / "environments"
+    (environments / "nested").mkdir(parents=True)
+    for name in ("example.yaml", "production.yaml", "production.config.sops.yaml",
+                 "production.secrets.sops.yaml", "private-inventory.txt", "nested/receipt.json"):
+        (environments / name).write_text("synthetic-private-input", encoding="utf-8")
+    (repo / "ops" / "builder").mkdir()
+    (repo / "ops" / "builder" / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "synthetic environment fixtures"), check=True)
+    revision = subprocess.run(("git", "-C", str(repo), "rev-parse", "HEAD"),
+                              check=True, capture_output=True, text=True).stdout.strip()
+    snapshot = tmp_path / "snapshot"
+    if dirty:
+        (environments / "production.yaml").write_text("changed-synthetic-input", encoding="utf-8")
+        (environments / "untracked-private-input").write_text("synthetic-private-input", encoding="utf-8")
+        build_module._copy_dirty_source(repo, revision, snapshot)
+    else:
+        build_module._export_source_from_git(repo, revision, snapshot)
+
+    assert (snapshot / "ops" / "builder" / "Containerfile").read_text(encoding="utf-8") == "FROM scratch\n"
+    assert (snapshot / "tracked.txt").read_text(encoding="utf-8") == "committed\n"
+    assert not (snapshot / "ops" / "environments").exists()
+
+
 @pytest.mark.parametrize("name", ("tracked.txt", "untracked.txt"))
 def test_dirty_snapshot_rejects_each_file_changed_during_its_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str

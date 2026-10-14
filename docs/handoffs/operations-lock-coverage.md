@@ -59,7 +59,7 @@ protocol/ownership decisions before their later execution without absorbing thei
 Written-design review found no remaining material contradictions. Changed-document links/anchors
 and whitespace passed at the design checkpoint; `mix precommit` stopped before tests because local
 PostgreSQL at localhost:5432 refused connection. This is document verification, not implementation
-or native acceptance. Historical native/source/artifact baselines remain qualified in the
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md); protected recovery obligations
-remain in the [environment inventory](../inventories/operations-environments.md#staging-recovery-retention).
+or native acceptance. Historical native/source/artifact baselines are retained privately and do not establish current
+readiness. The [native acceptance guide](../guides/native-acceptance.md) defines portable criteria;
+[private recovery obligations](../inventories/operations-environments.md#private-evidence-and-recovery) remain.
 No new host action, deployment, publication or merge is authorized by this transfer.

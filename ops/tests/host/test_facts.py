@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-import hashlib
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -26,74 +25,25 @@ from taskman_ops.host.facts import (
 from taskman_ops.remote import CommandResult
 
 from tests.support.environments import environment_config, valid_environment
+from tests.support.caddy import authority_result
+from tests.support.listeners import write_ss_fixture
+
+
+@pytest.fixture(autouse=True)
+def inspected_proxy(monkeypatch):
+    monkeypatch.setattr("taskman_ops.host.facts.inspect_caddy", lambda *_args: authority_result())
 
 
 def direct_dns(_hostname: str) -> tuple[str, ...]:
     return ("203.0.113.10",)
 
 
-_CADDYFILE = "taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n"
-_CADDYFILE_SHA256 = hashlib.sha256(_CADDYFILE.encode()).hexdigest()
-
-
-def caddy_evidence(
-    *,
-    config_hash: str | None = None,
-    config_metadata: str = "root:root:644",
-    unit_load: str = "loaded",
-    unit_active: str = "active",
-    unit_pid: str = "402",
-    unit_fragment: str = "/usr/lib/systemd/system/caddy.service",
-    unit_metadata: str = "root:root:644",
-    unit_package: str = "caddy",
-    unit_verified: str = "clean",
-    unit_executable: str = "/usr/bin/caddy",
-) -> CommandResult:
-    """Return the decision-relevant managed Caddy authority evidence."""
-
-    expected_hash = config_hash or _CADDYFILE_SHA256
-    return CommandResult(
-        0,
-        "\n".join(
-            (
-                "config=regular",
-                f"config_hash={expected_hash}",
-                f"config_metadata={config_metadata}",
-                f"unit_load={unit_load}",
-                f"unit_active={unit_active}",
-                f"unit_pid={unit_pid}",
-                f"unit_fragment={unit_fragment}",
-                f"unit_metadata={unit_metadata}",
-                f"unit_package={unit_package}",
-                f"unit_verified={unit_verified}",
-                f"unit_executable={unit_executable}",
-                "",
-            )
-        ),
-    )
-
-
-def managed_caddy_responses(
-    *,
-    listener_owners: str,
-    evidence: CommandResult | None = None,
-) -> list[CommandResult]:
-    """Model compatible Caddy resources plus process ownership evidence."""
-
-    responses = fact_responses()
-    responses[8] = CommandResult(0, "LISTEN 0 4096 *:80 0.0.0.0:*\nLISTEN 0 4096 *:443 0.0.0.0:*\n")
-    responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
-    responses[10] = CommandResult(0, "caddy.service enabled\n")
-    responses[-2:] = [CommandResult(0, listener_owners), evidence or caddy_evidence()]
-    return responses
-
-
 def managed_postgresql_responses(*, database_listeners: tuple[str, ...]) -> list[CommandResult]:
     responses = fact_responses(postgres=True)
     responses[8] = CommandResult(
         0,
-        "LISTEN 0 4096 *:80 0.0.0.0:*\n"
-        "LISTEN 0 4096 *:443 0.0.0.0:*\n"
+        "LISTEN 0 4096 0.0.0.0:80 0.0.0.0:*\n"
+        "LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*\n"
         + "".join(f"LISTEN 0 4096 {listener} *:*\n" for listener in database_listeners),
     )
     responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
@@ -101,59 +51,13 @@ def managed_postgresql_responses(*, database_listeners: tuple[str, ...]) -> list
     responses[11] = CommandResult(0, "taskman:x:1000:1000::/var/lib/taskman:/usr/sbin/nologin\n")
     responses[12] = CommandResult(0, "taskman:x:1000:1000::\n")
     responses[16] = CommandResult(0, "taskman_prod\n")
-    responses[-2] = CommandResult(
+    responses[-1] = CommandResult(
         0,
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
+        'LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("caddy",pid=123,fd=6))\n'
+        'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("caddy",pid=123,fd=7))\n',
     )
-    responses[-1] = caddy_evidence()
     return responses
 
-
-def absent_caddy_evidence() -> CommandResult:
-    return CommandResult(
-        0,
-        "\n".join(
-            (
-                "config=absent",
-                "config_hash=",
-                "config_metadata=",
-                "unit_load=not-found",
-                "unit_active=inactive",
-                "unit_pid=0",
-                "unit_fragment=",
-                "unit_metadata=",
-                "unit_package=missing",
-                "unit_verified=missing",
-                "unit_executable=",
-                "",
-            )
-        ),
-    )
-
-
-def inactive_caddy_evidence(*, configured: bool) -> CommandResult:
-    config_hash = hashlib.sha256(_CADDYFILE.encode()).hexdigest() if configured else ""
-    config_metadata = "root:root:644" if configured else ""
-    return CommandResult(
-        0,
-        "\n".join(
-            (
-                f"config={'regular' if configured else 'absent'}",
-                f"config_hash={config_hash}",
-                f"config_metadata={config_metadata}",
-                "unit_load=loaded",
-                "unit_active=inactive",
-                "unit_pid=0",
-                "unit_fragment=/usr/lib/systemd/system/caddy.service",
-                "unit_metadata=root:root:644",
-                "unit_package=caddy",
-                "unit_verified=clean",
-                "unit_executable=",
-                "",
-            )
-        ),
-    )
 
 
 def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
@@ -181,7 +85,6 @@ def fact_responses(*, postgres: bool = False) -> list[CommandResult]:
     responses.extend(
         (
             CommandResult(0, 'LISTEN 0 4096 *:2202 0.0.0.0:* users:(("sshd",pid=101,fd=3))\n'),
-            absent_caddy_evidence(),
         )
     )
     return responses
@@ -194,7 +97,6 @@ def test_provisionable_pristine_host_returns_normalized_immutable_facts() -> Non
         remote,
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     facts = discovery.facts
 
@@ -228,6 +130,70 @@ def test_listener_owner_parser_accepts_ss_field_padding() -> None:
         Listener("*", 80): ("caddy", 402),
         Listener("*", 443): ("caddy", 402),
     }
+
+
+@pytest.mark.parametrize('socket_state', ['valid', 'malformed', 'oversized'])
+def test_bounded_owner_query_retains_public_and_configured_taskman_evidence(tmp_path, monkeypatch, socket_state):
+    from taskman_ops.host.facts import collect_host_facts
+    from taskman_ops.host_helper.commands import run_command
+    from taskman_ops.remote import PyinfraRemote
+
+    config = environment_config(application_port=4101, distribution_port=9201)
+    query = ('ss', '-H', '-ltnp', '( sport = :80 or sport = :443 or sport = :4101 or sport = :9201 )')
+    public = ''.join(f'LISTEN 0 4096 0.0.0.0:{port} *:* users:(("caddy",pid=123,fd=8))\n' for port in (80, 443))
+    taskman = ''.join(f'LISTEN 0 4096 127.0.0.1:{port} *:* users:(("beam.smp",pid=812,fd=9))\n' for port in (4101, 9201))
+    selected = public + taskman
+    if socket_state == 'malformed':
+        selected = selected.replace('pid=812,fd=9))', 'pid=812,fd=9)) unexpected')
+    if socket_state == 'oversized':
+        selected += ' ' * (16 * 1024)
+    executable = write_ss_fixture(tmp_path, query[1:], selected.encode())
+    responses = fact_responses()
+    responses[8] = CommandResult(0, public + taskman + 'LISTEN 0 4096 *:10050 *:*\n')
+    responses[9] = CommandResult(0, '/etc/systemd/system/taskman.service\tregular file:root:root:644\n')
+    responses[10] = CommandResult(0, 'taskman.service enabled\n')
+    responses[-1] = CommandResult(0)
+    responses.append(CommandResult(0,
+        'active=active\npid=812\ncgroup=/system.slice/taskman.service\n'
+        'executable=/opt/taskman/releases/release-a/erts-16.0/bin/beam.smp\n'
+        'owner=taskman:taskman\nprocess_cgroup=/system.slice/taskman.service\n'
+        'release_root=/opt/taskman/releases/release-a\n'))
+    scripted = ScriptedRemote.from_responses(responses)
+    remote = PyinfraRemote(object(), config)
+    owner_calls = []
+
+    def bounded_command(argv, **kwargs):
+        response = scripted.run(argv)
+        if argv[:3] == ('ss', '-H', '-ltnp'):
+            owner_calls.append((argv, kwargs))
+            assert kwargs['sudo'] is True
+            assert kwargs['stdout_limit'] == 16 * 1024
+            result = run_command((str(executable), *argv[1:]), timeout_seconds=kwargs['timeout'],
+                                 output_limit=kwargs['stdout_limit'])
+            return CommandResult(result.returncode, result.stdout.decode(), result.stderr.decode())
+        return response
+
+    monkeypatch.setattr(remote, '_run_bounded_command', bounded_command)
+    if socket_state == 'oversized':
+        with pytest.raises(OpsError) as error:
+            collect_host_facts(remote, config, resolver=direct_dns, caddy_authority=authority_result(branch='existing', active=True))
+        assert error.value.status is ExitStatus.REMOTE_PREFLIGHT
+    else:
+        facts = collect_host_facts(remote, config, resolver=direct_dns, caddy_authority=authority_result(branch='existing', active=True))
+        assert Listener('*', 10050) in facts.listeners
+        assert ('ss', '-H', '-ltn') in [argv for argv, _ in scripted.calls]
+        assert not scripted.responses
+        if socket_state == 'valid':
+            assert facts.taskman_listener_owners == (
+                (Listener('127.0.0.1', 4101), ('beam.smp', 812)),
+                (Listener('127.0.0.1', 9201), ('beam.smp', 812)),
+            )
+            assert _provisioning_state(facts, config) is ProvisioningState.PARTIAL
+        else:
+            with pytest.raises(OpsError) as error:
+                _provisioning_state(facts, config)
+            assert error.value.status is ExitStatus.SAFETY
+    assert [argv for argv, _ in owner_calls] == [query]
 
 
 def test_listener_owner_parser_omits_shared_socket_owners_without_discarding_unique_owners() -> None:
@@ -267,151 +233,14 @@ def test_listener_owner_parser_rejects_a_duplicate_after_an_omitted_shared_socke
     assert _listener_owners(listener_owners) is None
 
 
-@pytest.mark.parametrize(
-    "listener_owners",
-    (
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("nginx",pid=901,fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("nginx",pid=901,fd=7))\n',
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6),("sidecar",pid=403,fd=7))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
-    ),
-)
-def test_resource_based_caddy_listener_refuses_foreign_or_ambiguous_owners(
-    listener_owners: str,
-) -> None:
-    """Accepting a foreign or ambiguous public listener would adopt foreign HTTPS."""
-
-    remote = ScriptedRemote.from_responses(managed_caddy_responses(listener_owners=listener_owners))
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            remote,
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_shared_ssh_socket_keeps_valid_caddy_admissible() -> None:
-    """An unrelated shared listener cannot erase Caddy's exact ownership proof."""
-
-    discovery = validate_provisionable_host(
-        ScriptedRemote.from_responses(
-            managed_caddy_responses(
-                listener_owners=(
-                    'LISTEN 0 4096 *:22 0.0.0.0:* users:(("sshd",pid=1115,fd=3),("systemd",pid=1,fd=199))\n'
-                    'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                    'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-                )
-            )
-        ),
-        environment_config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
-
-    assert discovery.state is ProvisioningState.PARTIAL
-    assert discovery.caddy_state.value == "active"
 
 
-@pytest.mark.parametrize(
-    "evidence",
-    (
-        caddy_evidence(config_hash="f" * 64),
-        caddy_evidence(config_metadata="root:root:600"),
-    ),
-)
-def test_resource_based_caddy_requires_the_exact_owned_configuration(
-    evidence: CommandResult,
-) -> None:
-    """Matching paths alone must not adopt arbitrary Caddy bytes or modes."""
-
-    remote = ScriptedRemote.from_responses(
-        managed_caddy_responses(
-            listener_owners=(
-                'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-            ),
-            evidence=evidence,
-        )
-    )
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            remote,
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_resource_based_caddy_refuses_a_service_pid_with_a_foreign_executable() -> None:
-    """A process named caddy is not sufficient attribution for public listeners."""
-
-    remote = ScriptedRemote.from_responses(
-        managed_caddy_responses(
-            listener_owners=(
-                'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-            ),
-            evidence=caddy_evidence(unit_executable="/usr/local/bin/foreign-caddy"),
-        )
-    )
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            remote,
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_resource_based_caddy_owner_is_recognized_on_a_rerun_without_mutation() -> None:
-    """A known packaged Caddy owning both public ports remains an accepted partial state."""
-
-    first_remote = ScriptedRemote.from_responses(
-        managed_caddy_responses(
-            listener_owners=(
-                'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-            )
-        )
-    )
-    second_remote = ScriptedRemote.from_responses(
-        managed_caddy_responses(
-            listener_owners=(
-                'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-            )
-        )
-    )
-
-    first = validate_provisionable_host(
-        first_remote,
-        environment_config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
-    second = validate_provisionable_host(
-        second_remote,
-        environment_config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
-
-    assert first.state is ProvisioningState.PARTIAL
-    assert second.state is ProvisioningState.PARTIAL
-    assert first.caddy_state.value == "active"
-    assert second.caddy_state.value == "active"
 
 
 def test_managed_postgresql_bracketed_ipv6_loopback_is_admitted_as_partial() -> None:
@@ -423,7 +252,7 @@ def test_managed_postgresql_bracketed_ipv6_loopback_is_admitted_as_partial() -> 
         remote,
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
+        caddy_authority=authority_result(branch="existing", active=True, imported=True),
     )
 
     assert discovery.state is ProvisioningState.PARTIAL
@@ -446,111 +275,12 @@ def test_loopback_rejects_bracketed_wildcard_public_and_malformed_addresses(addr
     assert not _loopback(address)
 
 
-def test_resource_based_caddy_process_drift_is_repaired_by_declarative_convergence() -> None:
-    """Managed Caddy configuration makes ordinary process drift repairable."""
-
-    drifted_evidence = caddy_evidence()
-    discovery = validate_provisionable_host(
-        ScriptedRemote.from_responses(
-            managed_caddy_responses(
-                listener_owners=(
-                    'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-                    'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-                ),
-                evidence=drifted_evidence,
-            )
-        ),
-        environment_config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
-
-    assert discovery.state is ProvisioningState.PARTIAL
-    assert discovery.caddy_state.value == "active"
 
 
-@pytest.mark.parametrize(
-    "evidence",
-    (
-        caddy_evidence(unit_verified="modified"),
-        absent_caddy_evidence(),
-    ),
-)
-def test_resource_based_caddy_service_drift_cannot_be_activated_unsafely(
-    evidence: CommandResult,
-) -> None:
-    """A modified or missing package-owned unit is refused before activation."""
-
-    responses = managed_caddy_responses(
-        listener_owners=(
-            'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-            'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-        ),
-        evidence=evidence,
-    )
-    if evidence.stdout.startswith("config=absent"):
-        responses[9] = CommandResult(0, "/etc/caddy/Caddyfile\n")
-        responses[10] = CommandResult(0)
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            ScriptedRemote.from_responses(responses),
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
-@pytest.mark.parametrize(
-    "listener_owners",
-    (
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=401,fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n',
-        'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=999,fd=6))\n'
-        'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=999,fd=7))\n',
-    ),
-)
-def test_resource_based_caddy_requires_one_authorized_listener_pid(
-    listener_owners: str,
-) -> None:
-    """A named process is not enough without one service-correlated PID."""
-
-    remote = ScriptedRemote.from_responses(managed_caddy_responses(listener_owners=listener_owners))
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            remote,
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
-def test_resource_based_named_caddy_without_service_authority_is_refused() -> None:
-    """A process name on both ports cannot establish managed service ownership."""
-
-    responses = managed_caddy_responses(
-        listener_owners=(
-            'LISTEN 0 4096 *:80 0.0.0.0:* users:(("caddy",pid=402,fd=6))\n'
-            'LISTEN 0 4096 *:443 0.0.0.0:* users:(("caddy",pid=402,fd=7))\n'
-        ),
-        evidence=caddy_evidence(unit_load="not-found", unit_active="inactive", unit_pid="0", unit_fragment="", unit_metadata="", unit_package="missing", unit_verified="missing"),
-    )
-    responses[10] = CommandResult(0)
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            ScriptedRemote.from_responses(responses),
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
 def test_resource_based_pre_caddy_partial_state_remains_safe_without_any_public_listener() -> None:
@@ -562,7 +292,6 @@ def test_resource_based_pre_caddy_partial_state_remains_safe_without_any_public_
         ScriptedRemote.from_responses(responses),
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
 
     assert discovery.state is ProvisioningState.PARTIAL
@@ -580,8 +309,7 @@ def test_resource_based_admission_refuses_an_unverified_managed_directory() -> N
             ScriptedRemote.from_responses(responses),
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.SAFETY
 
@@ -598,56 +326,13 @@ def test_resource_based_admission_refuses_a_foreign_taskman_account() -> None:
             ScriptedRemote.from_responses(responses),
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.SAFETY
 
 
-@pytest.mark.parametrize(
-    ("configured", "expected_state"),
-    ((False, "prepared"), (True, "staged")),
-)
-def test_resource_based_caddy_installation_partial_states_remain_safe_to_retry(
-    configured: bool,
-    expected_state: str,
-) -> None:
-    """The Caddy package and a validated pre-start config are legitimate retry boundaries."""
-
-    responses = fact_responses()
-    paths = "/etc/taskman\tdirectory:root:taskman:750\n"
-    if configured:
-        paths += "/etc/caddy/Caddyfile\n"
-    responses[9] = CommandResult(0, paths)
-    responses[10] = CommandResult(0, "caddy.service enabled\n")
-    responses[-1] = inactive_caddy_evidence(configured=configured)
-
-    discovery = validate_provisionable_host(
-        ScriptedRemote.from_responses(responses),
-        environment_config(),
-        resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
-    )
-
-    assert discovery.state is ProvisioningState.PARTIAL
-    assert discovery.caddy_state.value == expected_state
 
 
-def test_provisioning_refuses_contradictory_caddy_evidence() -> None:
-    """Conflicting immutable unit evidence must prevent a clean-host classification."""
-
-    responses = fact_responses()
-    responses[-1] = caddy_evidence()
-
-    with pytest.raises(OpsError) as raised:
-        validate_provisionable_host(
-            ScriptedRemote.from_responses(responses),
-            environment_config(),
-            resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
-
-    assert raised.value.status is ExitStatus.SAFETY
 
 
 def test_unsupported_platform_is_refused_only_after_all_facts_are_collected() -> None:
@@ -660,8 +345,7 @@ def test_unsupported_platform_is_refused_only_after_all_facts_are_collected() ->
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.INVALID
     assert not remote.responses
@@ -688,8 +372,7 @@ def test_unsupported_host_facts_map_to_status_two(index: int, result: CommandRes
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.INVALID
 
@@ -713,8 +396,7 @@ def test_privilege_or_active_connection_port_failures_map_to_status_five(
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
 
@@ -729,8 +411,7 @@ def test_failed_required_fact_command_maps_to_status_five_after_the_snapshot() -
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert not remote.responses
@@ -757,8 +438,7 @@ def test_inability_to_inspect_non_database_managed_state_refuses_preflight(
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert not remote.responses
@@ -771,7 +451,6 @@ def test_pristine_host_skips_postgresql_sudo_and_database_discovery() -> None:
         remote,
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     facts = discovery.facts
 
@@ -808,7 +487,6 @@ def test_absent_managed_units_pass_native_systemd_discovery(
         remote,
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     facts = discovery.facts
     assert facts.existing_units == ()
@@ -838,7 +516,6 @@ def test_absent_postgresql_passes_shell_discovery(
         remote,
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     facts = discovery.facts
     assert facts.postgres_available is False
@@ -855,8 +532,7 @@ def test_present_postgresql_requires_sudo_and_detects_a_managed_database() -> No
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.SAFETY
 
@@ -871,8 +547,7 @@ def test_partial_postgresql_installation_refuses_without_running_privileged_insp
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert ("sudo", "-n", "-u", "postgres", "true") not in [argv for argv, _kwargs in remote.calls]
@@ -898,8 +573,7 @@ def test_inability_to_inspect_present_postgresql_refuses_preflight(
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
 
@@ -917,7 +591,6 @@ def test_preflight_requests_integer_memory_and_nearest_existing_ancestor_capacit
         remote,
         nested_config,
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
 
     memory_command, _kwargs = remote.calls[4]
@@ -952,8 +625,7 @@ def test_direct_public_dns_must_include_only_the_configured_vps_address() -> Non
             remote,
             environment_config(),
             resolver=lambda _hostname: ("198.51.100.7",),
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.INVALID
 
@@ -980,8 +652,7 @@ def test_foreign_or_unverifiable_managed_listener_path_unit_or_account_is_a_safe
             remote,
             environment_config(),
             resolver=direct_dns,
-            expected_caddyfile_sha256=_CADDYFILE_SHA256,
-        )
+            )
 
     assert raised.value.status is ExitStatus.SAFETY
 
@@ -993,7 +664,6 @@ def test_taskman_listener_requires_the_exact_managed_beam_process() -> None:
         ScriptedRemote.from_responses(fact_responses()),
         environment_config(),
         resolver=direct_dns,
-        expected_caddyfile_sha256=_CADDYFILE_SHA256,
     )
     listener = Listener("127.0.0.1", 4000)
     managed = replace(
@@ -1022,3 +692,83 @@ def test_taskman_listener_requires_the_exact_managed_beam_process() -> None:
         with pytest.raises(OpsError) as raised:
             _provisioning_state(foreign, environment_config())
         assert raised.value.status is ExitStatus.SAFETY
+
+
+def test_precreated_database_without_taskman_account_requires_validated_schema_proof():
+    from taskman_ops.host.facts import collect_host_facts
+    config = environment_config()
+    remote = ScriptedRemote.from_responses(fact_responses())
+    facts = collect_host_facts(remote, config, resolver=direct_dns)
+    cluster = {"version": "18", "name": "main", "port": 5432,
+               "data_directory": "/var/lib/postgresql/18/main",
+               "config_file": "/etc/postgresql/18/main/postgresql.conf",
+               "hba_file": "/etc/postgresql/18/main/pg_hba.conf"}
+    pg = {"branch": "existing", "cluster": cluster, "role": "compatible",
+          "database": "compatible", "access": "unproven"}
+    facts = replace(facts, postgres_available=True, existing_databases=(config.database_name,),
+                    postgresql=pg, initial_database_empty=True)
+    assert _provisioning_state(facts, config) is ProvisioningState.PARTIAL
+    with pytest.raises(OpsError):
+        _provisioning_state(replace(facts, initial_database_empty=False), config)
+
+
+def test_provision_facts_use_selected_authority_without_a_second_catalog_query():
+    config = environment_config()
+    responses = fact_responses(postgres=True)
+    del responses[15:17]
+    remote = ScriptedRemote.from_responses(responses)
+    observed = {
+        "postgresql": {"branch": "existing", "cluster": {
+            "version": "18", "name": "main", "port": 5432,
+            "data_directory": "/var/lib/postgresql/18/main",
+            "config_file": "/etc/postgresql/18/main/postgresql.conf",
+            "hba_file": "/etc/postgresql/18/main/pg_hba.conf"},
+            "role": "compatible", "database": "compatible", "access": "unproven"},
+        "database_state": "ready", "initial_database_empty": True, "applied_migrations": (),
+    }
+    discovery = validate_provisionable_host(remote, config, resolver=direct_dns,
+                                           provision_authority=observed)
+    assert discovery.state is ProvisioningState.PARTIAL
+    assert discovery.facts.existing_databases == ("taskman_prod",)
+    assert discovery.facts.postgresql["cluster"]["version"] == "18"
+    assert discovery.facts.initial_database_empty is True
+    assert discovery.facts.failed_checks == ()
+
+
+def test_operational_catalog_fallback_uses_the_configured_socket_port():
+    from taskman_ops.host.facts import collect_host_facts
+    config = environment_config(database_port=5439)
+    remote = ScriptedRemote.from_responses(fact_responses(postgres=True))
+    collect_host_facts(remote, config, resolver=direct_dns)
+    queries = [argv for argv, _ in remote.calls if any("SELECT datname" in part for part in argv)]
+    assert len(queries) == 1
+    assert queries[0][-1] == "5439"
+    assert '--host /var/run/postgresql --port "$1"' in queries[0][2]
+
+
+@pytest.mark.parametrize("requested,branch,accepted", [
+    (True, "configure-existing", True),
+    (False, "configure-existing", False),
+])
+def test_provision_admission_binds_configuration_authority_to_requested_boolean(requested, branch, accepted):
+    from taskman_ops.host_protocol import ProtocolError
+    responses = fact_responses(postgres=True)
+    del responses[15:17]
+    remote = ScriptedRemote.from_responses(responses)
+    observed = {"postgresql": {"branch": branch, "cluster": {
+        "version": "18", "name": "main", "port": 5432,
+        "data_directory": "/var/lib/postgresql/18/main",
+        "config_file": "/etc/postgresql/18/main/postgresql.conf",
+        "hba_file": "/etc/postgresql/18/main/pg_hba.conf"},
+        "role": "compatible", "database": "compatible", "access": "unproven"},
+        "database_state": "ready", "initial_database_empty": True, "applied_migrations": ()}
+    if accepted:
+        result = validate_provisionable_host(remote, environment_config(), resolver=direct_dns,
+            provision_authority=observed, force_postgresql_config=requested)
+        assert result.facts.postgresql["branch"] == branch
+        assert result.state is ProvisioningState.PARTIAL
+    else:
+        with pytest.raises(ProtocolError):
+            validate_provisionable_host(remote, environment_config(), resolver=direct_dns,
+                provision_authority=observed, force_postgresql_config=requested)
+        assert remote.calls == []

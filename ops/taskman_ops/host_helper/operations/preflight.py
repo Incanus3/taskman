@@ -7,13 +7,14 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import BinaryIO
 
 from taskman_ops.host_protocol import HostRequest, HostResult, MAX_INPUT_BYTES
 
 from ..commands import CommandError, run_command
 from ..credentials import validate_credentials
-from ..database import database_mapping
+from ..database import database_mapping, prove_scram_access
 from ..lock import LifecycleLockContention, lifecycle_lock
 from ..paths import ManagedPaths, PathAuthorityError
 from ..restore_database import RestoreDatabaseError, restore_database_names
@@ -120,9 +121,9 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
     """Prove one exact supplied pgpass record and expose only a status code."""
 
     try:
-        if len(arguments) != 5:
+        if len(arguments) != 6:
             return 2
-        host, port_text, role, database_name, database_state = arguments
+        host, port_text, role, database_name, database_state, authentication_mode = arguments
         if (
             host not in {"127.0.0.1", "::1"}
             or not port_text.isdecimal()
@@ -131,6 +132,7 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
             or _IDENTIFIER_RE.fullmatch(role) is None
             or _IDENTIFIER_RE.fullmatch(database_name) is None
             or database_state not in {"ready", "absent"}
+            or authentication_mode not in {"authenticate", "defer-for-configuration"}
         ):
             return 2
         raw = source.read(MAX_INPUT_BYTES + 1)
@@ -141,56 +143,52 @@ def provision_pgpass_authority(arguments: tuple[str, ...], source: BinaryIO) -> 
             return 10
         authenticate_pgpass(
             _PGPASS_PATH, raw, host=host, port=port_text,
-            role=role, database=database_name, password=fields[4],
-            database_state=database_state,
+            role=role, database=database_name,
+            database_state=database_state, authentication_mode=authentication_mode,
         )
         return 0
-    except (CommandError, OSError, UnicodeError, ValueError):
+    except CommandError:
+        return 5
+    except (OSError, UnicodeError, ValueError):
         return 10
 
 
 def authenticate_pgpass(
     path: Path, raw: bytes, *, host: str, port: str,
-    role: str, database: str, password: str,
-    database_state: str,
+    role: str, database: str, database_state: str, authentication_mode: str,
 ) -> None:
-    """Validate retained bytes or authenticate absent supplied bytes without writes."""
-
+    """Check retained authority before any optionally deferred application probe."""
     try:
         details = path.lstat()
     except FileNotFoundError:
-        if database_state == "absent":
-            return
-        argv = (
-            "psql", "--no-psqlrc", "--quiet", "--host", host, "--port", port,
-            "--username", role, "--dbname", database, "--no-password",
-            "--command", "SELECT 1", "--output", "/dev/null",
-        )
-        run_command(
-            argv, env={"PGPASSWORD": password},
-            timeout_seconds=_COMMAND_TIMEOUT_SECONDS, output_limit=1024,
-        )
+        retained = False
+    else:
+        retained = True
+        if (
+            stat.S_ISLNK(details.st_mode)
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_uid != 0
+            or details.st_gid != 0
+            or stat.S_IMODE(details.st_mode) != 0o600
+            or path.read_bytes() != raw
+        ):
+            raise ValueError("existing pgpass authority is invalid")
+    if database_state == "absent" or authentication_mode == "defer-for-configuration":
         return
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != 0
-        or details.st_gid != 0
-        or stat.S_IMODE(details.st_mode) != 0o600
-        or path.read_bytes() != raw
-    ):
-        raise ValueError("existing pgpass authority is invalid")
-    if database_state == "absent":
+    settings = {"host": host, "port": int(port), "role": role, "name": database}
+    if retained:
+        prove_scram_access(settings, path)
         return
-    run_command(
-        (
-            "psql", "--no-psqlrc", "--quiet", "--host", host, "--port", port,
-            "--username", role, "--dbname", database, "--no-password",
-            "--command", "SELECT 1", "--output", "/dev/null",
-        ),
-        env={"PGPASSFILE": path.as_posix()}, timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
-        output_limit=1024,
-    )
+    # The verified runner owns this root-only invocation directory. Derive one
+    # finite cleanup target rather than accepting a path from the caller.
+    probe = Path(sys.argv[0]).parent / "pgpass.probe"
+    descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            destination.write(raw)
+        prove_scram_access(settings, probe)
+    finally:
+        probe.unlink()
 
 
 def _parse_pgpass(raw: bytes) -> tuple[str, str, str, str, str]:

@@ -12,13 +12,17 @@ from .identifiers import ProtocolError
 OPERATION_NAMES = frozenset(
     {
         "backup",
+        "caddy",
         "cleanup",
         "deploy",
         "discover",
+        "firewall",
         "genesis",
+        "prepare_genesis",
         "list_backups",
         "list_releases",
         "provision_authority",
+        "postgresql_config_recovery",
         "restore",
         "restore_preflight",
         "rollback",

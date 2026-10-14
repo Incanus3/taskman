@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 import ipaddress
@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
 from ..remote import Remote
+from ..host_protocol import HostResult
 from .facts import (
     CaddyState,
     HostFacts,
@@ -90,7 +91,9 @@ def validate_provisionable_host(
     config: EnvironmentConfig,
     *,
     resolver: Callable[[str], Iterable[str]] | None = None,
-    expected_caddyfile_sha256: str,
+    caddy_authority: HostResult | None = None,
+    provision_authority: Mapping[str, object] | None = None,
+    force_postgresql_config: bool = False,
 ) -> ProvisioningDiscovery:
     """Classify a pristine host or compatible unfinished resource state."""
 
@@ -98,7 +101,9 @@ def validate_provisionable_host(
         remote,
         config,
         resolver=resolver,
-        expected_caddyfile_sha256=expected_caddyfile_sha256,
+        caddy_authority=caddy_authority,
+        provision_authority=provision_authority,
+        force_postgresql_config=force_postgresql_config,
     )
     _validate_host_platform(facts, config)
     return ProvisioningDiscovery(
@@ -175,7 +180,12 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
     _validate_existing_paths(facts, config)
     if facts.existing_accounts and not facts.taskman_account_compatible:
         raise _safety("Taskman account ownership is unrecognized or contradictory")
-    if facts.existing_databases and (not facts.postgres_available or not facts.existing_accounts):
+    validated_database = (
+        facts.postgresql is not None and facts.postgresql["role"] == "compatible"
+        and facts.postgresql["database"] == "compatible"
+        and (facts.initial_database_empty or bool(facts.applied_migrations))
+    )
+    if facts.existing_databases and (not facts.postgres_available or not facts.existing_accounts and not validated_database):
         raise _safety("Taskman database evidence is missing its managed service boundaries")
     if units.intersection(taskman_units) and service_path not in paths:
         raise _safety("Taskman service units are missing their managed unit boundary")
@@ -185,10 +195,6 @@ def _validate_managed_service_boundaries(facts: HostFacts, config: EnvironmentCo
         "caddy.service" in units or _CADDYFILE in paths
     ):
         raise _safety("Caddy artifacts are missing validated ownership evidence")
-    if facts.caddy_state is CaddyState.PREPARED and _CADDYFILE in paths:
-        raise _safety("Caddy configuration is missing validated ownership evidence")
-    if facts.caddy_state in {CaddyState.STAGED, CaddyState.ACTIVE} and _CADDYFILE not in paths:
-        raise _safety("Caddy service evidence is missing its managed configuration boundary")
 
     for listener in _reserved_listeners(facts, config):
         if listener.port in {80, 443}:

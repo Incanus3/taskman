@@ -12,13 +12,13 @@ owns current commands and concurrency precautions. The
 [reconciliation specification](../specs/2026-09-18-operations-contracts.md#growing-inventories-and-bounded-responses)
 owns coverage requirements, and the
 [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md#implemented-simplification-decisions)
-owns architecture decisions. The [acceptance report](2026-09-17-operations-vps-acceptance.md)
-owns later identified readiness evidence; these dated measurements are not current readiness claims.
+owns architecture decisions. The [native acceptance guide](../guides/native-acceptance.md) defines readiness criteria; actual
+receipts are retained privately. These dated measurements are not current readiness claims.
 
 Initial source: `8f1918614123fcba78fd874d45c20d1c9d51cfb4`, with the preceding
 restore-retention fixture optimization and the collection-order correction below.
-Workstation: Intel Core i9-10980XE, 18 physical cores / 36 logical CPUs, Python 3.12.12,
-pytest 8.4.2, pytest-xdist 3.8.0, execnet 2.1.2. Trials were sequential without concurrent
+Interpreter/tool versions: Python 3.12.12, pytest 8.4.2, pytest-xdist 3.8.0 and execnet 2.1.2.
+Workstation inventory is retained privately. Trials were sequential without concurrent
 application verification. Times are pytest wall times, excluding dependency installation and
 outer uv startup unless stated otherwise. Instrumented aggregate times are not parallel wall time.
 No timing is a CI guarantee or controlled attribution of every second saved.
@@ -193,6 +193,6 @@ otherwise produce 0700; production correctly preserves an existing root's permis
 checks passed all three lifecycle-lock cases under both 077 and 022. This precondition improves verification
 reliability without changing production behavior or assertions; it is not a speed optimization.
 
-Raw profiling receipts were retained privately under
-`/tmp/taskman-vps-acceptance.89wn5h8s/premerge-repeat`; they are provenance, not a permanent artifact
-availability guarantee. Identified acceptance findings belong to the acceptance report.
+Raw profiling receipts and workstation details are retained privately outside version control;
+they are provenance, not a permanent artifact-availability guarantee. Public acceptance requirements
+belong to the native acceptance guide.

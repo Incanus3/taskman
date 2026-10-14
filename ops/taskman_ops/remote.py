@@ -44,6 +44,10 @@ _DEFAULT_STDERR_LIMIT = 16 * 1024
 _CHANNEL_READ_CHUNK_BYTES = 64 * 1024
 _SETUP_CANCEL_GRACE_SECONDS = 0.2
 _REMOTE_RETRY_NEXT_ACTION = "check the SSH host, host key, and administrator sudo access before retrying"
+_HOST_KEY_NEXT_ACTION = (
+    "check the endpoint's ordinary public key in ~/.ssh/known_hosts against an independently "
+    "verified fingerprint and the configured host_key_fingerprint before retrying"
+)
 _PARTIAL_PROVISIONING_NEXT_ACTION = "inspect the host's partial provisioning state, then retry provisioning"
 
 
@@ -77,6 +81,27 @@ class ChangeSet:
 
     changed: bool
     operations: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+def merge_change_warnings(
+    *groups: tuple[str, ...], changed: bool = False, next_action: str | None = None,
+) -> tuple[str, ...]:
+    """Retain bounded, deduplicated warning evidence across provisioning stages."""
+
+    if any(not isinstance(group, tuple) or any(type(item) is not str for item in group)
+           for group in groups):
+        raise TypeError("provisioning warning evidence is invalid")
+    warnings = tuple(dict.fromkeys(item for group in groups for item in group))
+    # Enough for four full protocol warning collections. Never truncate an
+    # oversized receipt into apparent successful evidence.
+    if len(warnings) > 256:
+        raise _remote_error(
+            "provisioning warning evidence exceeds its bounded carrier",
+            changed=changed,
+            next_action=next_action or (_PARTIAL_PROVISIONING_NEXT_ACTION if changed else None),
+        )
+    return warnings
 
 
 class Remote(Protocol):
@@ -117,8 +142,8 @@ def run_interactive(
 ) -> int:
     """Run one fixed remote argv with the caller's terminal attached.
 
-    The known-hosts file is rebuilt from the configured out-of-band
-    fingerprint for this separate SSH process.  Standard streams and the
+    The known-hosts file contains only local keys matching the configured
+    out-of-band fingerprint for this separate SSH process. Standard streams and the
     process environment are deliberately not supplied to ``subprocess.run``:
     OpenSSH inherits the real terminal, so interactive release input never
     crosses a controller data structure.
@@ -140,6 +165,8 @@ def run_interactive(
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={known_hosts}",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
             "-o",
             f"ConnectTimeout={config.connection_timeout}",
             "-p",
@@ -183,7 +210,7 @@ class PyinfraRemote:
         self._host = host
         self._config = config
         self._inventory = inventory or getattr(host, "inventory", None)
-        self._state = state or getattr(host, "state", None)
+        self._state = state if state is not None else getattr(host, "state", None)
         self._facts: HostFacts | None = None
 
     def facts(self) -> HostFacts:
@@ -729,8 +756,8 @@ def connect(
 ) -> PyinfraRemote:
     """Verify an out-of-band fingerprint before constructing the SSH client.
 
-    The scan is untrusted until ``ssh-keygen`` confirms its fingerprint.  The
-    resulting one-key known-hosts file is mode 0600, passed to pyinfra with
+    Native ``ssh-keygen`` selects keys from the operator's known-hosts file
+    and confirms the configured fingerprint. The pinned subset is mode 0600, passed to pyinfra with
     ``StrictHostKeyChecking=yes``, loaded during connection, and unlinked
     immediately afterwards.  ``accept-new`` is never enabled.
     """
@@ -809,50 +836,69 @@ def summarize_deploy(state: State) -> ChangeSet:
                 continue
             for name in sorted(state.get_op_meta(op_hash).names):
                 operations.append(name)
-    return ChangeSet(changed=bool(operations), operations=tuple(dict.fromkeys(operations)))
+    return ChangeSet(changed=bool(operations), operations=tuple(dict.fromkeys(operations)),
+                     warnings=getattr(state, "_taskman_warnings", ()))
 
 
 def _verified_host_key_lines(
     config: EnvironmentConfig,
     command_runner: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> tuple[str, ...]:
-    scan = _run_local(
-        command_runner,
-        [
-            "ssh-keyscan",
-            "-T",
-            str(config.connection_timeout),
-            "-p",
-            str(config.ssh_port),
-            config.ssh_host,
-        ],
-    )
-    if scan.returncode != 0:
-        raise _remote_error("SSH host-key scan failed")
+    """Let OpenSSH match local records and validate their public-key fingerprints.
 
+    Only marker classification and transport host spelling belong here. Native
+    tools own hashed/pattern host matching and public-key parsing; clients own
+    strict verification of the server's actual key during connection.
+    """
     expected_host = config.ssh_host if config.ssh_port == 22 else f"[{config.ssh_host}]:{config.ssh_port}"
-    verified: list[str] = []
-    for raw_line in _text(scan.stdout).splitlines():
-        line = raw_line.strip()
-        fields = line.split()
-        if len(fields) != 3 or fields[0] != expected_host:
-            continue
-        fingerprint = _host_key_fingerprint(command_runner, line)
-        if fingerprint == config.host_key_fingerprint:
-            verified.append(line)
-
-    if not verified:
-        raise _remote_error("SSH host key does not match the configured fingerprint")
-    return tuple(verified)
+    try:
+        lookup = _run_local(
+            command_runner,
+            ["ssh-keygen", "-F", expected_host, "-f", str(Path.home() / ".ssh" / "known_hosts")],
+            timeout=config.connection_timeout,
+        )
+        if lookup.returncode != 0:
+            raise ValueError("local known-host lookup failed")
+        verified: list[str] = []
+        for raw_line in _text(lookup.stdout).splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            marker = line.split(None, 1)[0]
+            # ssh-keygen -lf accepts ordinary known-host lines but not markers.
+            # Remove only the marker; native parsing still validates the key.
+            key_line = line.split(None, 1)[1] if marker.startswith("@") else line
+            fingerprint = _host_key_fingerprint(
+                command_runner, key_line, timeout=config.connection_timeout,
+            )
+            if fingerprint is None:
+                raise ValueError("invalid local known-host key")
+            if fingerprint != config.host_key_fingerprint:
+                continue
+            if marker == "@revoked":
+                raise ValueError("configured key is revoked")
+            if marker.startswith("@"):
+                continue
+            # Native lookup already matched this record. Express the exact
+            # endpoint for both clients, since Paramiko does not match patterns.
+            verified.append(expected_host + " " + line.split(None, 1)[1])
+        if not verified:
+            raise ValueError("no ordinary pinned local key")
+        return tuple(verified)
+    except Exception:
+        raise _remote_error(
+            "local SSH known_hosts verification failed", next_action=_HOST_KEY_NEXT_ACTION,
+        ) from None
 
 
 def _host_key_fingerprint(
-    command_runner: Callable[..., subprocess.CompletedProcess[bytes]], line: str
+    command_runner: Callable[..., subprocess.CompletedProcess[bytes]], line: str, *, timeout: int,
 ) -> str | None:
     result = _run_local(
         command_runner,
         ["ssh-keygen", "-lf", "-", "-E", "sha256"],
         input=line.encode("utf-8") + b"\n",
+        timeout=timeout,
     )
     if result.returncode != 0:
         return None
@@ -958,7 +1004,9 @@ def _text(value: object) -> str:
 def _pyinfra_deploy_error(message: str, state: State) -> OpsError:
     changed = _pyinfra_deploy_may_have_changed(state)
     next_action = _PARTIAL_PROVISIONING_NEXT_ACTION if changed else None
-    return _remote_error(message, changed=changed, next_action=next_action)
+    error = _remote_error(message, changed=changed, next_action=next_action)
+    error.warnings = getattr(state, "_taskman_warnings", ())
+    return error
 
 
 def _merge_pyinfra_change_evidence(error: OpsError, state: State) -> OpsError:
@@ -966,6 +1014,10 @@ def _merge_pyinfra_change_evidence(error: OpsError, state: State) -> OpsError:
 
     if not error.changed and _pyinfra_deploy_may_have_changed(state):
         error.changed = True
+    error.warnings = merge_change_warnings(
+        getattr(state, "_taskman_warnings", ()), error.warnings,
+        changed=error.changed, next_action=error.next_action,
+    )
     return error
 
 
@@ -1006,6 +1058,7 @@ __all__ = [
     "PyinfraRemote",
     "Remote",
     "connect",
+    "merge_change_warnings",
     "run_interactive",
     "summarize_deploy",
 ]

@@ -21,7 +21,7 @@ from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ArtifactManifest
 from taskman_ops.services.systemd import build_systemd_plan
 from taskman_ops.provisioning import ProvisioningInputs, validate_preconvergence_authority
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from tests.support.caddy import controller_plan, authority_result, prepared_result
 from tests.support.environments import environment_config
 
 
@@ -38,12 +38,21 @@ RELEASE_ID = build_release_id("0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256
 SELECTED_AT = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
 
 
+
+def _pg_authority(state):
+    return {"branch": "existing", "cluster": {"version": "16", "name": "main", "port": 5432,
+        "data_directory": "/var/lib/postgresql/16/main", "config_file": "/etc/postgresql/16/main/postgresql.conf",
+        "hba_file": "/etc/postgresql/16/main/pg_hba.conf"}, "role": "compatible" if state == "ready" else "absent",
+        "database": "compatible" if state == "ready" else "absent", "access": "unproven"}
+
 def _request(*, mode: str = "strict", backup_id: str | None = None) -> HostRequest:
     parameters: dict[str, object] = {
         "credentials_path": "/etc/taskman/pgpass",
         "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
         "mode": mode,
     }
+    if mode == "provision":
+        parameters.update(postgres_package_track=None, force_postgresql_config=False)
     if backup_id is not None:
         parameters["backup_id"] = backup_id
     return HostRequest(3, "discover", CORRELATION, {}, {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"}, parameters)
@@ -96,7 +105,9 @@ def _restore_state(*, migrations: tuple[int, ...] = (20260905120000,)) -> HostSt
 
 
 def _install_observer(monkeypatch: pytest.MonkeyPatch, observed: HostState) -> None:
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: observed.database_state)
+    monkeypatch.setattr(discover_module, "require_scram_client", lambda: None)
+    monkeypatch.setattr(discover_module, "prove_scram_access", lambda *_: None)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: _pg_authority(observed.database_state))
     monkeypatch.setattr(discover_module, "validate_credentials", lambda *_args: None)
     monkeypatch.setattr(discover_module, "observe_database_state", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations})
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_args: {"state": observed.database_state, "applied_migrations": observed.applied_migrations, "initial_empty": not observed.applied_migrations})
@@ -402,6 +413,8 @@ def _local_discovery_request(tmp_path: Path, *, mode: str = "provision") -> Host
 
 
 def _missing_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discover_module, "require_scram_client", lambda: None)
+    monkeypatch.setattr(discover_module, "prove_scram_access", lambda *_: None)
     monkeypatch.setattr(discover_module, "_scheduler_facts", lambda *_: {
         "scheduled_backup_sha256": None, "backup_timer_enabled": False, "backup_timer_state": "inactive",
     })
@@ -419,7 +432,7 @@ def test_public_provision_discovery_admits_absent_identities_without_pgpass(tmp_
     assert not (tmp_path / "pgpass").exists()
 
 
-def test_public_provision_discovery_refuses_retained_role_without_database(tmp_path, monkeypatch):
+def test_public_provision_discovery_admits_retained_role_without_database(tmp_path, monkeypatch):
     _install_postgresql_authority_commands(
         tmp_path, monkeypatch,
         '#!/bin/sh\nsql=$(cat)\ncase "$sql" in *pg_roles*) printf "1\\n" ;; esac\n',
@@ -432,13 +445,15 @@ def test_public_provision_discovery_refuses_retained_role_without_database(tmp_p
 
     result = discover_module.discover(_local_discovery_request(tmp_path))
 
-    assert result.outcome == "refused"
+    assert result.outcome == "succeeded"
+    assert result.state["postgresql"]["role"] == "compatible"
+    assert result.state["database_state"] == "absent"
     assert not (tmp_path / "pgpass").exists()
 
 
 def test_public_provision_discovery_uses_admin_template_proof_when_ready_pgpass_is_missing(tmp_path, monkeypatch):
     _missing_scheduler(monkeypatch)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: "ready")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: _pg_authority("ready"))
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_: {
         "state": "ready", "applied_migrations": (), "initial_empty": True,
     })
@@ -457,12 +472,12 @@ def test_other_public_discovery_modes_still_require_pgpass(tmp_path, mode):
     assert result.outcome == "refused"
 
 
-@pytest.mark.parametrize("failure,expected", [(None, "succeeded"), ("credentials", "refused"), ("authentication", "refused")])
+@pytest.mark.parametrize("failure,expected", [(None, "succeeded"), ("credentials", "refused"), ("authentication", "manual")])
 def test_public_ready_provision_discovery_retains_credential_and_application_authentication_guards(tmp_path, monkeypatch, failure, expected):
     _missing_scheduler(monkeypatch)
     (tmp_path / "pgpass").write_bytes(b"retained-credential")
     calls = []
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: "ready")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: _pg_authority("ready"))
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_: pytest.fail("present credentials require application authentication"))
 
     def credentials(path):
@@ -487,7 +502,7 @@ def test_public_ready_provision_discovery_retains_credential_and_application_aut
 
 def test_public_provision_discovery_refuses_conflicting_admin_observation(tmp_path, monkeypatch):
     _missing_scheduler(monkeypatch)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: "ready")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: _pg_authority("ready"))
     monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_: {
         "state": "absent", "applied_migrations": (), "initial_empty": False,
     })
@@ -510,7 +525,7 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
         {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
         {
             "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
-            "postgres_package_track": None,
+            "postgres_package_track": None, "force_postgresql_config": False,
             "resource_digests": RESOURCE_DIGESTS,
         },
     )
@@ -518,7 +533,7 @@ def test_preconvergence_authority_uses_the_same_locked_record_observer_before_py
     monkeypatch.setattr(
         discover_module,
         "_observe_postgresql_authority",
-        lambda *_args: calls.append("postgres") or "ready",
+        lambda *_args: calls.append("postgres") or _pg_authority("ready"),
         raising=False,
     )
 
@@ -542,7 +557,7 @@ def test_preconvergence_authority_binds_live_partial_migrations_before_pyinfra(
 
     observed = _state(migrations=())
     _install_observer(monkeypatch, observed)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "ready")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: _pg_authority("ready"))
     monkeypatch.setattr(
         discover_module,
         "observe_database_state_or_empty",
@@ -557,7 +572,7 @@ def test_preconvergence_authority_binds_live_partial_migrations_before_pyinfra(
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "force_postgresql_config": False, "resource_digests": RESOURCE_DIGESTS},
         )
     )
 
@@ -574,7 +589,7 @@ def test_preconvergence_authority_refuses_existing_resource_digest_drift(
     monkeypatch.setattr(
         discover_module,
         "_observe_postgresql_authority",
-        lambda *_args: postgres_calls.append("postgres") or "ready",
+        lambda *_args: postgres_calls.append("postgres") or _pg_authority("ready"),
     )
     service = tmp_path / "taskman.service"
     expected = b"expected taskman service"
@@ -605,7 +620,7 @@ def test_preconvergence_authority_refuses_existing_resource_digest_drift(
                 "host": "127.0.0.1", "port": 5432,
                 "role": "taskman", "name": "taskman",
             },
-            "postgres_package_track": None,
+            "postgres_package_track": None, "force_postgresql_config": False,
             "resource_digests": {
                 **RESOURCE_DIGESTS,
                 "taskman_service": hashlib.sha256(expected).hexdigest(),
@@ -628,7 +643,7 @@ def test_preconvergence_authority_preserves_database_absence_without_empty_evide
 
     observed = _state(migrations=())
     _install_observer(monkeypatch, observed)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "absent")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: _pg_authority("absent"))
     monkeypatch.setattr(
         discover_module,
         "observe_database_state_or_empty",
@@ -638,7 +653,7 @@ def test_preconvergence_authority_preserves_database_absence_without_empty_evide
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "force_postgresql_config": False, "resource_digests": RESOURCE_DIGESTS},
         )
     )
 
@@ -676,12 +691,12 @@ def test_real_provision_authority_projection_passes_the_production_controller_sc
 
     observed = _state(migrations=())
     _install_observer(monkeypatch, observed)
-    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: "ready")
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_args: _pg_authority("ready"))
     helper_result = discover_module.provision_authority(
         HostRequest(
             3, "provision_authority", CORRELATION, {},
             {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
-            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "resource_digests": RESOURCE_DIGESTS},
+            {"database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "postgres_package_track": None, "force_postgresql_config": False, "resource_digests": RESOURCE_DIGESTS},
         )
     )
     import taskman_ops.workflows.helper as helper_module
@@ -691,23 +706,30 @@ def test_real_provision_authority_projection_passes_the_production_controller_sc
     inputs = ProvisioningInputs(
         config=config,
         systemd_plan=build_systemd_plan(config),
-        caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/key", "deb example"), (), (), ""),
+        caddy_plan=controller_plan(),
         runtime_environment=b"runtime", pgpass=b"pgpass", role_password_input=b"password",
     )
 
-    assert validate_preconvergence_authority(object(), inputs) == helper_result.state
+    remote = SimpleNamespace(run=lambda *_a, **_k: SimpleNamespace(succeeded=True))
+    assert validate_preconvergence_authority(remote, inputs) == helper_result.state
 
 
 def _install_postgresql_authority_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runuser: str
 ) -> None:
+    # Each native command receives the real argv; only host-specific identity
+    # files are synthetic. SQL still arrives on stdin with psql variables.
+    original = tmp_path / "query-runuser"
+    original.write_text(runuser)
+    original.chmod(0o755)
     scripts = {
-        "pg_lsclusters": "#!/bin/sh\nprintf '%s\\n' '16 main 5432 online postgres'\n",
-        "pg_conftool": "#!/bin/sh\nprintf '%s\\n' /var/lib/postgresql/16/main\n",
-        "sed": "#!/bin/sh\nif [ \"$1\" = -n ]; then printf '42\\n'; else /bin/sed \"$1\"; fi\n",
-        "readlink": "#!/bin/sh\nprintf '%s\\n' /usr/lib/postgresql/16/bin/postgres\n",
-        "stat": "#!/bin/sh\nprintf '%s\\n' postgres:postgres\n",
-        "runuser": runuser,
+        "pg_lsclusters": "#!/bin/sh\nprintf '%s\\n' '16 main 5432 online postgres /var/lib/postgresql/16/main /var/log/postgresql/16.log'\n",
+        "pg_conftool": "#!/bin/sh\ncase \"$*\" in *hba_file*) printf '/etc/postgresql/16/main/pg_hba.conf\\n';; *) printf '/var/lib/postgresql/16/main\\n';; esac\n",
+        "cat": "#!/bin/sh\ncase \"$*\" in */postmaster.pid*) printf '42\\n/var/lib/postgresql/16/main\\n1\\n5432\\n/var/run/postgresql\\n';; *) exec /bin/cat \"$@\";; esac\n",
+        "readlink": "#!/bin/sh\ncase \"$*\" in */proc/*) printf '%s\\n' /usr/lib/postgresql/16/bin/postgres;; *) for path do :; done; printf '%s\\n' \"$path\";; esac\n",
+        "stat": "#!/bin/sh\ncase \"$*\" in */proc/*) printf 'postgres:postgres\\n';; */var/lib/*) printf 'directory:postgres:postgres:700\\n';; *) printf 'regular file:postgres:postgres:640\\n';; esac\n",
+        "ss": '#!/bin/sh\nprintf \'%s\\n\' \'LISTEN 0 100 127.0.0.1:5432 *:* users:(("postgres",pid=42,fd=5))\'\n',
+        "runuser": '#!/bin/sh\nsql=$(/bin/cat)\ncase "$sql" in *current_setting*) printf "16|/var/lib/postgresql/16/main|/etc/postgresql/16/main/postgresql.conf|/etc/postgresql/16/main/pg_hba.conf|5432\\n";; *) printf "%s\\n" "$sql" | ' + str(original) + ' "$@";; esac\n',
     }
     for name, source in scripts.items():
         path = tmp_path / name
@@ -733,7 +755,7 @@ def test_preconvergence_postgresql_observer_uses_a_nonempty_any_track_selector_a
 
     assert discover_module._observe_postgresql_authority(
         {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, None
-    ) == "ready"
+    )["database"] == "compatible"
 
 
 def test_preconvergence_postgresql_observer_provides_identity_sql_through_psql_input(
@@ -750,14 +772,14 @@ def test_preconvergence_postgresql_observer_provides_identity_sql_through_psql_i
         "sql=$(cat)\n"
         "case \"$sql:$*\" in\n"
         "  *\"pg_roles WHERE rolname = :'role'\"*'--set=role=taskman'*) printf '1\\n' ;;\n"
-        "  *\"pg_database WHERE datname = :'database'\"*'--set=database=taskman'*'--set=role=taskman'*) printf '1\\n' ;;\n"
+        "  *\"pg_database WHERE datname = :'database'\"*'--set=role=taskman'*'--set=database=taskman'*) printf '1\\n' ;;\n"
         "  *) exit 99 ;;\n"
         "esac\n",
     )
 
     assert discover_module._observe_postgresql_authority(
         {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "16"
-    ) == "ready"
+    )["database"] == "compatible"
 
 
 def test_preconvergence_postgresql_observer_refuses_a_failed_identity_sql_execution(
@@ -772,7 +794,7 @@ def test_preconvergence_postgresql_observer_refuses_a_failed_identity_sql_execut
         "case \"$*\" in *'--file=-'*) exit 1;; *) exit 97;; esac\n",
     )
 
-    with pytest.raises(discover_module.CommandError):
+    with pytest.raises(discover_module.PostgresqlObservationError):
         discover_module._observe_postgresql_authority(
             {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "16"
         )
@@ -789,7 +811,7 @@ def test_postgresql_observer_does_not_confuse_filtered_incompatible_identities_w
         "[ \"$identity\" = incompatible ] || exit 0\n"
         "case \"$sql\" in *'CASE WHEN'*'THEN 1 ELSE 0 END'*) printf '0\\n' ;; esac\n",
     )
-    with pytest.raises(discover_module.CommandError):
+    with pytest.raises(discover_module.PostgresqlObservationError):
         discover_module._observe_postgresql_authority(
             {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "16"
         )
@@ -827,32 +849,31 @@ def test_native_postgresql_identity_sql_distinguishes_absence_privileges_members
     assert parent.encode() not in before_roles.splitlines()
     assert name.encode() not in before_databases.splitlines()
     try:
-        assert discover_module._observe_postgresql_authority(database, "16") == "absent"
+        assert discover_module._observe_postgresql_authority(database, "16")["database"] == "absent"
         query(f"CREATE ROLE {role} LOGIN SUPERUSER")
-        with pytest.raises(discover_module.CommandError):
+        with pytest.raises(discover_module.PostgresqlObservationError):
             discover_module._observe_postgresql_authority(database, "16")
         query(f"ALTER ROLE {role} NOSUPERUSER")
-        with pytest.raises(discover_module.CommandError):
-            discover_module._observe_postgresql_authority(database, "16")
+        assert discover_module._observe_postgresql_authority(database, "16")["role"] == "compatible"
         query(f"CREATE DATABASE {name} OWNER {role}")
-        assert discover_module._observe_postgresql_authority(database, "16") == "ready"
+        assert discover_module._observe_postgresql_authority(database, "16")["database"] == "compatible"
         for incompatible, compatible in (
             ("NOLOGIN", "LOGIN"), ("SUPERUSER", "NOSUPERUSER"), ("CREATEDB", "NOCREATEDB"),
             ("CREATEROLE", "NOCREATEROLE"), ("REPLICATION", "NOREPLICATION"),
             ("BYPASSRLS", "NOBYPASSRLS"), ("NOINHERIT", "INHERIT"),
         ):
             query(f"ALTER ROLE {role} {incompatible}")
-            with pytest.raises(discover_module.CommandError):
+            with pytest.raises(discover_module.PostgresqlObservationError):
                 discover_module._observe_postgresql_authority(database, "16")
             query(f"ALTER ROLE {role} {compatible}")
         query(f"CREATE ROLE {parent}; GRANT {parent} TO {role}")
-        with pytest.raises(discover_module.CommandError):
+        with pytest.raises(discover_module.PostgresqlObservationError):
             discover_module._observe_postgresql_authority(database, "16")
         query(f"REVOKE {parent} FROM {role}; ALTER DATABASE {name} OWNER TO postgres")
-        with pytest.raises(discover_module.CommandError):
+        with pytest.raises(discover_module.PostgresqlObservationError):
             discover_module._observe_postgresql_authority(database, "16")
         query(f"DROP ROLE {role}")
-        with pytest.raises(discover_module.CommandError):
+        with pytest.raises(discover_module.PostgresqlObservationError):
             discover_module._observe_postgresql_authority(database, "16")
     finally:
         query(f"DROP DATABASE IF EXISTS {name}")
@@ -869,64 +890,33 @@ def test_preconvergence_postgresql_observer_refuses_a_failed_cluster_listing(
     _install_postgresql_authority_commands(tmp_path, monkeypatch, "#!/bin/sh\nexit 99\n")
     (tmp_path / "pg_lsclusters").write_text("#!/bin/sh\nexit 1\n")
 
-    with pytest.raises(discover_module.CommandError):
+    with pytest.raises(discover_module.PostgresqlObservationError):
         discover_module._observe_postgresql_authority(
             {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, "16"
         )
 
 
-def _postgres_authority_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    clusters: str,
-    executable: str = "/usr/lib/postgresql/16/bin/postgres",
-    owner: str = "postgres:postgres",
-    role: str = "1",
-    database: str = "1",
-) -> subprocess.CompletedProcess[bytes]:
-    captured: list[tuple[str, ...]] = []
-    monkeypatch.setattr(
-        discover_module,
-        "run_command",
-        lambda argv, **_kwargs: captured.append(argv) or subprocess.CompletedProcess(argv, 0, b"ready\n", b""),
-    )
-    discover_module._observe_postgresql_authority(
-        {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"}, None
-    )
-    scripts = {
-        "pg_lsclusters": f"#!/bin/sh\nprintf '%s\\n' '{clusters}'\n",
-        "pg_conftool": "#!/bin/sh\nprintf '/var/lib/postgresql/16/main\\n'\n",
-        "sed": "#!/bin/sh\nif [ \"$1\" = -n ]; then printf '42\\n'; elif [ \"$1\" = '/^$/d' ]; then /bin/sed \"$1\"; else cat; fi\n",
-        "readlink": f"#!/bin/sh\nprintf '%s\\n' '{executable}'\n",
-        "stat": f"#!/bin/sh\nprintf '%s\\n' '{owner}'\n",
-        "runuser": "#!/bin/sh\nsql=$(cat)\ncase \"$sql\" in *pg_roles*) printf '%s\\n' \"${ROLE_RESULT-1}\" ;; *pg_database*) printf '%s\\n' \"${DATABASE_RESULT-1}\" ;; esac\n",
-    }
-    for name, source in scripts.items():
-        path = tmp_path / name
-        path.write_text(source)
-        path.chmod(0o755)
-    environment = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "ROLE_RESULT": role,
-        "DATABASE_RESULT": database,
-    }
-    completed = subprocess.run(captured[0], env=environment, capture_output=True, check=False)
-    return completed
-
+def _postgres_authority_exit(tmp_path, monkeypatch, *, clusters,
+    executable="/usr/lib/postgresql/16/bin/postgres", owner="postgres:postgres", role="1", database="1"):
+    _install_postgresql_authority_commands(tmp_path, monkeypatch,
+        "#!/bin/sh\nsql=$(cat)\ncase \"$sql\" in *pg_roles*) printf '%s\\n' '" + role + "';; *pg_database*) printf '%s\\n' '" + database + "';; esac\n")
+    # Preserve real seven-column Ubuntu rows in compatibility fixtures.
+    rows = clusters.replace("\\n", "\n").splitlines()
+    rows = [line + " /var/lib/postgresql/16/" + line.split()[1] + " /var/log/postgresql/16.log" if len(line.split()) == 5 else line for line in rows]
+    (tmp_path / "pg_lsclusters").write_text("#!/bin/sh\nprintf '%s\\n' '" + "\n".join(rows) + "'\n")
+    (tmp_path / "readlink").write_text("#!/bin/sh\ncase \"$*\" in */proc/*) printf '%s\\n' '" + executable + "';; *) for path do :; done; printf '%s\\n' \"$path\";; esac\n")
+    (tmp_path / "stat").write_text("#!/bin/sh\ncase \"$*\" in */proc/*) printf '%s\\n' '" + owner + "';; */var/lib/*) printf 'directory:postgres:postgres:700\\n';; *) printf 'regular file:postgres:postgres:640\\n';; esac\n")
+    try:
+        discover_module._observe_postgresql_authority(_request().parameters["database"], None)
+    except discover_module.PostgresqlObservationError:
+        return subprocess.CompletedProcess((), 1, b"", b"")
+    return subprocess.CompletedProcess((), 0, b"", b"")
 
 @pytest.mark.parametrize(
     ("clusters", "executable", "owner", "role", "database", "expected"),
     (
-        ("invalid", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
-        ("16 main 5432 online postgres\\n16 other 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
-        ("16 main 5433 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
-        ("16 main 5432 down postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "1", 1),
         ("16 main 5432 online postgres", "/foreign/postgres", "postgres:postgres", "1", "1", 1),
         ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "root:root", "1", "1", 1),
-        ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "", "", 0),
-        ("16 main 5432 online postgres", "/usr/lib/postgresql/16/bin/postgres", "postgres:postgres", "1", "", 1),
     ),
 )
 def test_preconvergence_postgresql_observer_refuses_every_present_incompatible_authority(
@@ -1338,3 +1328,262 @@ def test_authoritative_state_ambiguity_is_a_bounded_refusal(monkeypatch: pytest.
 
     assert result.outcome == "refused"
     assert result.state == {}
+
+
+def test_major_version_filter_preserves_other_clusters():
+    from taskman_ops.host_helper.postgresql import parse_cluster_rows
+    rows = parse_cluster_rows(
+        "16 main 5433 down postgres /var/lib/postgresql/16/main /var/log/postgresql/postgresql-16-main.log\n"
+        "18 main 5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/postgresql-18-main.log\n",
+        "18",
+    )
+    assert len(rows) == 1
+    assert (rows[0]["version"], rows[0]["name"], rows[0]["port"]) == ("18", "main", 5432)
+
+
+@pytest.mark.parametrize("rows", [
+    "16 main 5433 down postgres\n18 main 5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n",
+    "18 main invalid online postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n",
+    "18 main 5432 online foreign /var/lib/postgresql/18/main /var/log/postgresql/18.log\n",
+])
+def test_full_inventory_is_validated_before_track_filter(rows):
+    from taskman_ops.host_helper.postgresql import parse_cluster_rows
+    with pytest.raises(ValueError):
+        parse_cluster_rows(rows, "18")
+
+
+@pytest.fixture
+def selected_postgresql(monkeypatch):
+    from taskman_ops.host_helper import postgresql as module
+    from subprocess import CompletedProcess
+    values = {
+        "inventory": "16 main 5433 down postgres /var/lib/postgresql/16/main /var/log/postgresql/16.log\n18 main 5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n",
+        "role": "1\n", "database": "1\n", "pid": "42\n/var/lib/postgresql/18/main\n1\n5432\n/var/run/postgresql\nlocalhost\n",
+        "listeners": 'LISTEN 0 100 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=42,fd=5))\nLISTEN 0 100 [::1]:5432 [::]:* users:(("postgres",pid=42,fd=6))\n',
+        "retained": False, "admin_unavailable": False, "hba": "/etc/postgresql/18/main/pg_hba.conf",
+    }
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(module, "_retained_authority", lambda: values["retained"])
+    def command(argv, **kwargs):
+        if argv[0] == "pg_lsclusters": output = values["inventory"]
+        elif argv[0] == "pg_conftool":
+            output = {"data_directory": "/var/lib/postgresql/18/main\n", "hba_file": values["hba"] + "\n"}[argv[-1]]
+        elif argv[0] == "cat": output = values["pid"]
+        elif argv[0] == "readlink": output = argv[-1] + "\n" if argv[-1].startswith(("/var/lib/", "/etc/")) else "/usr/lib/postgresql/18/bin/postgres\n"
+        elif argv[0] == "stat":
+            output = ("directory:postgres:postgres:700\n" if argv[-1].startswith("/var/lib/") else "regular file:postgres:postgres:640\n") if "--format=%F:%U:%G:%a" in argv else "postgres:postgres\n"
+        elif argv[0] == "ss": output = values["listeners"]
+        elif argv[0] == "runuser":
+            assert "--host" in argv and argv[argv.index("--host") + 1] == "/var/run/postgresql"
+            assert argv[argv.index("--port") + 1] == "5432"
+            assert "--file=-" in argv and "--command" not in argv
+            if values["admin_unavailable"]: raise module.CommandError("unavailable")
+            sql = kwargs["stdin"].decode()
+            if "current_setting" in sql:
+                output = "18|/var/lib/postgresql/18/main|/etc/postgresql/18/main/postgresql.conf|" + values["hba"] + "|5432\n"
+            elif "pg_roles" in sql: output = values["role"]
+            elif "pg_database" in sql: output = values["database"]
+            else: pytest.fail("unexpected SQL")
+        else: pytest.fail(f"unexpected command {argv[0]}")
+        return CompletedProcess(argv, 0, str(output).encode(), b"")
+    monkeypatch.setattr(module, "run_command", command)
+    return module, values
+
+
+def test_selected_cluster_keeps_down_other_track_and_binds_native_identity(selected_postgresql):
+    module, _ = selected_postgresql
+    result = module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+    assert result["cluster"]["version"] == "18"
+    assert result["cluster"]["port"] == 5432
+    assert result["access"] == "unproven"
+
+
+@pytest.mark.parametrize("role,database,want", [("", "", ("absent", "absent")),
+    ("1\n", "", ("compatible", "absent")), ("1\n", "1\n", ("compatible", "compatible"))])
+def test_compatible_partial_resources_are_not_invented_as_ready(selected_postgresql, role, database, want):
+    module, values = selected_postgresql
+    values.update(role=role, database=database)
+    result = module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+    assert (result["role"], result["database"]) == want
+    assert result["access"] == "unproven"
+
+
+@pytest.mark.parametrize("change", [
+    {"inventory": "16 main 5433 down postgres /var/lib/postgresql/16/main /var/log/postgresql/16.log\n"},
+    {"inventory": "18 main 5432 down postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n"},
+    {"inventory": "18 main 5433 online postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n"},
+    {"inventory": "18 main 5432 online postgres /var/lib/postgresql/18/main /var/log/postgresql/18.log\n18 other 5433 online postgres /var/lib/postgresql/18/other /var/log/postgresql/other.log\n"},
+    {"role": "0\n"}, {"database": "0\n"}, {"role": "", "database": "1\n"},
+    {"listeners": 'LISTEN 0 100 0.0.0.0:5432 *:* users:(("postgres",pid=42,fd=5))\n'},
+    {"listeners": 'LISTEN 0 100 127.0.0.1:5432 *:* users:(("other",pid=99,fd=5))\n'},
+    {"pid": "42\n/var/lib/postgresql/16/main\n1\n5432\n/var/run/postgresql\nlocalhost\n"},
+])
+def test_selected_cluster_refuses_unsafe_or_contradictory_evidence(selected_postgresql, change):
+    module, values = selected_postgresql
+    values.update(change)
+    with pytest.raises(module.PostgresqlObservationError) as error:
+        module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+    assert error.value.exit_code == 10
+
+
+def test_unavailable_administrator_is_access_failure(selected_postgresql):
+    module, values = selected_postgresql
+    values["admin_unavailable"] = True
+    with pytest.raises(module.PostgresqlObservationError) as error:
+        module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+    assert error.value.exit_code == 5
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_missing_inspection_tools_require_independent_absence_proof(selected_postgresql, monkeypatch, retained):
+    module, values = selected_postgresql
+    values["retained"] = retained
+    monkeypatch.setattr(module.shutil, "which", lambda _: None)
+    if retained:
+        with pytest.raises(module.PostgresqlObservationError):
+            module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+    else:
+        values["listeners"] = ""
+        assert module.observe_postgresql_authority(_request().parameters["database"], "18", False)["branch"] == "bootstrap"
+
+
+def test_native_cluster_paths_must_not_be_linked_or_foreign(selected_postgresql, monkeypatch):
+    module, _ = selected_postgresql
+    original = module.run_command
+    def foreign(argv, **kwargs):
+        if argv[0] == "stat" and argv[-1].endswith("postgresql.conf"):
+            return subprocess.CompletedProcess(argv, 0, b"symbolic link:root:root:777\n", b"")
+        return original(argv, **kwargs)
+    monkeypatch.setattr(module, "run_command", foreign)
+    with pytest.raises(module.PostgresqlObservationError):
+        module.observe_postgresql_authority(_request().parameters["database"], "18", False)
+
+
+def test_default_observer_preserves_selected_safe_alternate_hba(selected_postgresql):
+    module, values = selected_postgresql
+    values["hba"] = "/etc/postgresql/shared-authentication.conf"
+    assert module.observe_postgresql_authority(_request().parameters["database"], "18", False)["cluster"]["hba_file"] == values["hba"]
+    with pytest.raises(module.PostgresqlObservationError) as error:
+        module.observe_postgresql_authority(_request().parameters["database"], "18", True)
+    assert error.value.exit_code == 10
+
+
+@pytest.mark.parametrize("artifact,want", [("data", True), ("config", True), ("service", True), ("none", False)])
+def test_absence_checks_retained_native_data_configuration_and_service(tmp_path, monkeypatch, artifact, want):
+    from taskman_ops.host_helper import postgresql as module
+    monkeypatch.setattr(module, "Path", lambda value: tmp_path / value.lstrip("/"))
+    def absent_account(_):
+        raise KeyError("postgres")
+    monkeypatch.setattr(module.pwd, "getpwnam", absent_account)
+    if artifact in {"data", "config"}:
+        retained = tmp_path / ("var/lib/postgresql" if artifact == "data" else "etc/postgresql")
+        retained.mkdir(parents=True)
+        (retained / "18").mkdir()
+    monkeypatch.setattr(module, "run_command", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, b"postgresql.service enabled\n" if artifact == "service" else b"", b""))
+    assert module._retained_authority() is want
+
+
+@pytest.mark.parametrize("value", [None, "false", 0])
+def test_provision_discovery_refuses_non_boolean_configuration_authority(tmp_path, value):
+    request = _local_discovery_request(tmp_path)
+    malformed = HostRequest(3, request.operation, request.correlation_id, {}, request.paths,
+                            {**request.parameters, "force_postgresql_config": value})
+    assert discover_module.discover(malformed).outcome == "refused"
+
+
+@pytest.mark.parametrize("deferred,failure", [(False, "native-query"), (True, "provenance")],
+    ids=["missing-passfile-native-query", "deferred-configuration-provenance"])
+def test_public_admin_schema_failure_preserves_access_and_provenance_categories(tmp_path, monkeypatch, deferred, failure):
+    from taskman_ops.host_helper.database import DatabaseObservationError
+    from taskman_ops.errors import ExitStatus
+    from taskman_ops.workflows.helper import result_error
+
+    _missing_scheduler(monkeypatch)
+    selected = _pg_authority("ready")
+    if deferred:
+        selected["branch"] = "configure-existing"
+        (tmp_path / "pgpass").write_bytes(b"retained-credential")
+        monkeypatch.setattr(discover_module, "validate_credentials", lambda *_: None)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: selected)
+    def schema_query(*_args):
+        if failure == "native-query":
+            raise discover_module.CommandError("native query unavailable")
+        raise DatabaseObservationError("unrecognized initial data provenance")
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", schema_query)
+    original = _local_discovery_request(tmp_path)
+    request = HostRequest(3, original.operation, original.correlation_id, {}, original.paths,
+                         {**original.parameters, "force_postgresql_config": deferred})
+    result = discover_module.discover(request)
+    error = result_error(result)
+    if failure == "native-query":
+        assert result.outcome == "manual"
+        assert result.state == {"failed_boundary": "postgresql", "exit_code": 5,
+            "failed_check": "schema-inspection", "postgresql_observation": selected}
+        assert error.status is ExitStatus.REMOTE_PREFLIGHT
+        assert error.stage == "postgresql"
+    else:
+        assert result.outcome == "refused"
+        assert error.status is ExitStatus.SAFETY
+    assert error.changed is False
+
+
+def test_parsed_native_command_uses_c_locale_and_preserves_path(tmp_path, monkeypatch):
+    from taskman_ops.host_helper import postgresql as module
+    if b"cs_CZ.utf8" not in subprocess.check_output(("locale", "-a")):
+        pytest.skip("native Czech locale is unavailable")
+    # Use GNU stat's actual translated output at the production bounded
+    # subprocess boundary, including executable lookup through the retained PATH.
+    (tmp_path / "stat").symlink_to("/usr/bin/stat")
+    native_file = tmp_path / "postgresql.conf"
+    native_file.write_text("synthetic local configuration\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("LC_ALL", "cs_CZ.utf8")
+    monkeypatch.setenv("LANG", "cs_CZ.utf8")
+    assert module._command(("stat", "--format=%F", str(native_file))) == "regular file"
+
+
+def test_native_subprocess_locale_is_pinned_even_without_installed_translations(tmp_path, monkeypatch):
+    from taskman_ops.host_helper import postgresql as module
+    command = tmp_path / "metadata-locale"
+    command.write_text("#!/bin/sh\nprintf '%s\\n%s\\n' \"$LC_ALL\" \"$PATH\"\n")
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("LC_ALL", "operator-locale")
+    assert module._command(("metadata-locale",)) == "C\n" + str(tmp_path)
+
+
+def test_configuration_admission_defers_scram_only_after_safe_selected_authority(tmp_path, monkeypatch):
+    _missing_scheduler(monkeypatch)
+    (tmp_path / "pgpass").write_bytes(b"protected")
+    selected = _pg_authority("ready")
+    selected["branch"] = "configure-existing"
+    calls = []
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: selected)
+    monkeypatch.setattr(discover_module, "validate_credentials", lambda *_: calls.append("credentials"))
+    def denied(*_):
+        calls.append("scram")
+        raise discover_module.CommandError("PostgreSQL SCRAM access proof failed")
+    monkeypatch.setattr(discover_module, "prove_scram_access", denied)
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty", lambda *_: pytest.fail("failed authentication cannot inspect application schema"))
+    monkeypatch.setattr(discover_module, "observe_database_state_or_empty_as_admin", lambda *_: calls.append("schema") or {"state": "ready", "applied_migrations": (), "initial_empty": True})
+    original = _local_discovery_request(tmp_path)
+    request = HostRequest(3, original.operation, original.correlation_id, {}, original.paths, {**original.parameters, "force_postgresql_config": True})
+    result = discover_module.discover(request)
+    assert calls == ["credentials", "schema"]
+    assert result.outcome == "succeeded"
+    assert result.state["postgresql"]["access"] == "unproven"
+    assert result.state["database_state"] == "ready"
+
+
+def test_missing_application_resources_still_require_capable_existing_client(tmp_path, monkeypatch):
+    _missing_scheduler(monkeypatch)
+    monkeypatch.setattr(discover_module, "_observe_postgresql_authority", lambda *_: _pg_authority("absent"))
+    def unsupported():
+        raise discover_module.CommandError("PostgreSQL client must support require_auth")
+    monkeypatch.setattr(discover_module, "require_scram_client", unsupported)
+    result = discover_module.discover(_local_discovery_request(tmp_path))
+    assert result.outcome == "manual"
+    assert result.state == {"failed_boundary": "postgresql", "exit_code": 5,
+        "failed_check": "scram-client-prerequisite", "postgresql_observation": _pg_authority("absent")}
+    assert "require_auth" in result.message

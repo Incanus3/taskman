@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import fnmatch
 import gzip
 import io
 import json
@@ -265,16 +264,16 @@ def _source_member_parts(name: object) -> tuple[str, ...]:
 
 
 def _excluded_source_member(parts: tuple[str, ...]) -> bool:
-    """Keep controller state and common private inputs outside a dirty snapshot."""
+    """Keep controller state and private inputs outside every source snapshot."""
 
+    if parts[:2] == ("ops", "environments"):
+        return True
     if any(part in _SOURCE_EXCLUDED_COMPONENTS for part in parts):
         return True
     name = parts[-1]
     return (
         name.endswith(".agekey")
         or name in {".env", ".envrc"}
-        or (len(parts) >= 3 and parts[:2] == ("ops", "environments") and fnmatch.fnmatch(name, "*.secrets.yaml"))
-        or (len(parts) >= 3 and parts[:2] == ("ops", "environments") and fnmatch.fnmatch(name, "*.decrypted.yaml"))
     )
 
 
@@ -421,7 +420,8 @@ def _export_source_from_git(repo: Path, revision: str, destination: Path) -> Non
     except tarfile.TarError:
         raise _build_error("identified source archive is invalid") from None
     with archive:
-        members = archive.getmembers()
+        members = [member for member in archive.getmembers()
+                   if not _excluded_source_member(_source_member_parts(member.name))]
         if not members:
             raise _build_error("identified source archive is empty")
         for member in members:

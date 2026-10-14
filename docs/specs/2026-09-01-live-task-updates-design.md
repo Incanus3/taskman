@@ -268,9 +268,12 @@ submit a long-lived full-record version. The controller's freshly fetched Task i
 the context operation, so optimistic locking protects writes that race during the request.
 
 Disjoint concurrent field changes are retried transparently. A same-field race returns HTTP
-`409 Conflict` using a stable `concurrent_update` error code and names the conflicting fields in
-the existing error envelope. The CLI renders that API error through its existing human-readable
-and JSON error paths and exits unsuccessfully; it does not retry a same-field conflict silently.
+`409 Conflict` with `error.code: "concurrent_update"`, `error.message: "Task changed concurrently"`
+and a nonempty `error.fields` mapping each conflicting field to `["changed concurrently"]`.
+The envelope includes neither the current Task nor its internal version. The CLI renders this
+error through its existing readable and JSON paths and exits with status `3`; it does not retry
+a same-field conflict silently. A mismatched status/code or malformed conflict fields is an
+`invalid_response` with exit status `5`.
 
 `lock_version` is internal concurrency metadata and is not added to the public Task representation
 in this increment. Long-lived compare-and-set semantics for external clients would require a

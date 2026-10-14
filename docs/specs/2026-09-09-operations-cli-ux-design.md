@@ -47,7 +47,7 @@ requires `--reapply`, since it selects a different operation rather than merely 
 Provisioning admission is based on validated resources and plan confirmation; the historical
 provisioning marker is neither required nor sufficient and is no longer written.
 This UX proposal builds on the implemented contracts and qualified evidence in the operations
-reference and [acceptance report](../research/2026-09-17-operations-vps-acceptance.md).
+reference and [native acceptance criteria](../guides/native-acceptance.md).
 
 The one-time compatibility boundary also applies: only the supported artifact,
 runtime, and record baseline is a valid UX input. Do not add old-staging adoption or conversion
@@ -100,8 +100,8 @@ Implemented baseline, observed on 2026-09-18:
 - `output.py::render_human` serializes nested facts as JSON on one line. `cli.py` emits normal
   results on stdout but exception results on stderr; provisioning prints plans/prompts directly.
 
-The [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified source,
-artifact, native and CI evidence. Historical incident identities above do not establish acceptance
+Identified source, artifact, native and CI evidence is retained privately; the
+[native acceptance guide](../guides/native-acceptance.md) defines portable criteria. Historical incident identities above do not establish acceptance
 of the current source or the proposed UX. The separate
 [lock-coverage proposal](2026-09-18-provisioning-lock-coverage-proposal.md) belongs to its [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md);
 early UX inspection does not itself serialize provisioning convergence.

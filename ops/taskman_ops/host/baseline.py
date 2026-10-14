@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from io import StringIO
 
 from ..config import EnvironmentConfig
+from ..host_protocol import HostResult
 from .firewall import declare_firewall
 
 
@@ -71,7 +72,25 @@ def build_baseline_plan(config: EnvironmentConfig) -> BaselinePlan:
     )
 
 
-def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
+def refresh_required_packages(packages: tuple[str, ...], *, name: str) -> None:
+    """Check all branch-scoped packages at execution before refreshing indexes."""
+    from pyinfra import host
+    from pyinfra.facts.deb import DebPackages
+    from pyinfra.operations import apt
+
+    def packages_missing() -> bool:
+        installed = host.get_fact(DebPackages)
+        return any(package not in installed for package in packages)
+
+    apt.update(name=name, _if=packages_missing)
+
+
+def declare_baseline(
+    config: EnvironmentConfig,
+    *,
+    confirmed_firewall: HostResult | None = None,
+    required_packages: tuple[str, ...] = (),
+) -> BaselinePlan:
     """Add built-in package, account, directory, and update operations.
 
     All fact and diff decisions remain in pyinfra's execution lifecycle.  This
@@ -82,10 +101,12 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
     from pyinfra.operations import apt, files, server
 
     plan = build_baseline_plan(config)
+    refresh_required_packages(
+        tuple(dict.fromkeys((*plan.packages, *required_packages))),
+        name="Refresh package indexes when required packages are missing",
+    )
     apt.packages(
         packages=list(plan.packages),
-        update=True,
-        cache_time=3600,
         name="Install Taskman baseline packages",
     )
     server.user(
@@ -119,7 +140,7 @@ def declare_baseline(config: EnvironmentConfig) -> BaselinePlan:
         enabled=True,
         name="Enable unattended upgrades",
     )
-    declare_firewall(config)
+    declare_firewall(config, confirmed=confirmed_firewall)
     return plan
 
 

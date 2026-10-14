@@ -51,7 +51,8 @@ def _config() -> EnvironmentConfig:
     return EnvironmentConfig.model_validate(valid_environment())
 
 
-def test_deployment_request_carries_exact_v3_authority_without_consent_fields(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("operation", ("deploy", "genesis", "prepare_genesis"))
+def test_deployment_request_carries_exact_v3_authority_without_consent_fields(tmp_path, monkeypatch, operation) -> None:
     """A host request cannot gain authority from public confirmation flags."""
     from taskman_ops.workflows import helper
 
@@ -69,12 +70,14 @@ def test_deployment_request_carries_exact_v3_authority_without_consent_fields(tm
         _config(),
         DeploymentTarget(artifact=artifact, release_record=None, source="built"),
         expected_state=EXPECTED,
+        operation=operation,
         migration_policy="backward-compatible",
         backup_helper={"sha256": "e" * 64, "upload_path": None},
         prune_backup_ids=("backup-00000000000000000000000000000001",),
     )
 
     request = captured[0]
+    assert request.operation == operation
     assert request.protocol_version == PROTOCOL_VERSION
     assert request.expected_state == EXPECTED
     assert set(request.parameters) == {

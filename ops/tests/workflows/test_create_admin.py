@@ -25,6 +25,7 @@ from taskman_ops.workflows.create_admin import (
 )
 
 from tests.support.environments import environment_config, valid_environment
+from tests.support.ssh_keys import generate_host_key, write_known_hosts
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,14 @@ def _valid_operational_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         "taskman_ops.workflows.create_admin.validate_operational_preflight",
         lambda remote, _config: remote.facts(),
     )
+
+
+@pytest.fixture
+def local_ssh_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EnvironmentConfig:
+    key = generate_host_key(tmp_path, "pinned")
+    write_known_hosts(tmp_path, f"[203.0.113.10]:2202 {key.public}\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return environment_config(host_key_fingerprint=key.fingerprint)
 
 
 @dataclass
@@ -118,26 +127,18 @@ def test_create_admin_uses_only_the_fixed_constrained_release_command_and_propag
 
 
 def test_create_admin_session_allocates_a_strict_ssh_tty_without_credential_arguments_or_environment(
-    tmp_path: Path,
+    tmp_path: Path, local_ssh_config: EnvironmentConfig,
 ) -> None:
-    config = environment_config()
+    config = local_ssh_config
     canary_email = "admin-canary@example.invalid"
     canary_password = "create-admin-password-canary-c12ec4"
-    key_line = "[203.0.113.10]:2202 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEexamplekey"
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         calls.append((argv, kwargs))
-        if argv[0] == "ssh-keyscan":
-            return subprocess.CompletedProcess(argv, 0, key_line.encode() + b"\n", b"")
         if argv[0] == "ssh-keygen":
-            fingerprint = config.host_key_fingerprint
-            return subprocess.CompletedProcess(
-                argv,
-                0,
-                f"256 {fingerprint} test (ED25519)\n".encode(),
-                b"",
-            )
+            return subprocess.run(argv, **kwargs)
+        assert argv[0] == "ssh"
         return subprocess.CompletedProcess(argv, 37)
 
     status = run_create_admin_session(
@@ -150,6 +151,7 @@ def test_create_admin_session_allocates_a_strict_ssh_tty_without_credential_argu
     assert status == 37
     assert ssh_argv[:4] == ["ssh", "-tt", "-F", "/dev/null"]
     assert "StrictHostKeyChecking=yes" in ssh_argv
+    assert "GlobalKnownHostsFile=/dev/null" in ssh_argv
     assert f"ConnectTimeout={config.connection_timeout}" in ssh_argv
     assert shlex.split(ssh_argv[-1]) == list(CREATE_ADMIN_COMMAND)
     assert ssh_kwargs == {"check": False}
@@ -157,7 +159,7 @@ def test_create_admin_session_allocates_a_strict_ssh_tty_without_credential_argu
     assert canary_password not in repr(calls)
     assert "env" not in ssh_kwargs
     assert "input" not in ssh_kwargs
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.glob("taskman-known-hosts-*"))
 
 
 @pytest.mark.parametrize("install_root", [
@@ -166,34 +168,24 @@ def test_create_admin_session_allocates_a_strict_ssh_tty_without_credential_argu
     "/srv/taskman;:",
 ])
 def test_create_admin_preserves_the_validated_install_root_through_the_remote_shell(
-    tmp_path: Path, install_root: str,
+    tmp_path: Path, install_root: str, local_ssh_config: EnvironmentConfig,
 ) -> None:
     """Configurable roots must not silently launch the default installation."""
 
     config = EnvironmentConfig.model_validate(
         valid_environment(
             name="production",
+            host_key_fingerprint=local_ssh_config.host_key_fingerprint,
             install_root=install_root,
             backup_root="/srv/taskman-backups",
         )
     )
     observed: list[str] = []
 
-    def runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if argv[0] == "ssh-keyscan":
-            return subprocess.CompletedProcess(
-                argv,
-                0,
-                b"[203.0.113.10]:2202 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEexamplekey\n",
-                b"",
-            )
+    def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         if argv[0] == "ssh-keygen":
-            return subprocess.CompletedProcess(
-                argv,
-                0,
-                f"256 {config.host_key_fingerprint} test (ED25519)\n".encode(),
-                b"",
-            )
+            return subprocess.run(argv, **kwargs)
+        assert argv[0] == "ssh"
         remote_command = " ".join(argv[argv.index(config.ssh_host) + 1:])
         shell = subprocess.run(
             ["/bin/sh", "-c", 'sudo() { printf "%s\\0" "$@"; }; ' + remote_command],
@@ -218,26 +210,19 @@ def test_create_admin_preserves_the_validated_install_root_through_the_remote_sh
 
 
 def test_run_interactive_quotes_both_quote_types_with_a_validated_configuration(
-    tmp_path: Path,
+    tmp_path: Path, local_ssh_config: EnvironmentConfig,
 ) -> None:
     """The SSH shell bridge must retain literal quote characters in argv values."""
 
-    config = environment_config()
+    config = local_ssh_config
     literal = 'single\' and double" quote; $(printf CANARY)'
     command = ("printf", "%s", literal)
-    key_line = "[203.0.113.10]:2202 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEexamplekey"
     observed: list[bytes] = []
 
-    def runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if argv[0] == "ssh-keyscan":
-            return subprocess.CompletedProcess(argv, 0, (key_line + "\n").encode(), b"")
+    def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         if argv[0] == "ssh-keygen":
-            return subprocess.CompletedProcess(
-                argv,
-                0,
-                f"256 {config.host_key_fingerprint} test (ED25519)\n".encode(),
-                b"",
-            )
+            return subprocess.run(argv, **kwargs)
+        assert argv[0] == "ssh"
         completed = subprocess.run(
             ["/bin/sh", "-c", argv[-1]],
             capture_output=True,
@@ -260,7 +245,9 @@ def test_real_pty_keeps_the_packaged_password_prompt_out_of_every_bridge_boundar
 ) -> None:
     """Removing ssh -tt, the fixed command, or terminal raw mode must fail this acceptance."""
 
-    config_values = valid_environment(name="production")
+    key = generate_host_key(tmp_path, "pinned")
+    write_known_hosts(tmp_path, f"[203.0.113.10]:2202 {key.public}\n")
+    config_values = valid_environment(name="production", host_key_fingerprint=key.fingerprint)
     config = EnvironmentConfig.model_validate(config_values)
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -277,22 +264,6 @@ def test_real_pty_keeps_the_packaged_password_prompt_out_of_every_bridge_boundar
     create_admin_wrapper.chmod(0o700)
     email = "pty-admin@example.invalid"
     password = "pty-password-canary-7d3fc2"
-    key_line = (
-        "[203.0.113.10]:2202 ssh-ed25519 "
-        "AAAAC3NzaC1lZDI1NTE5AAAAIEexamplekey"
-    )
-
-    _write_executable(
-        commands / "ssh-keyscan",
-        f"#!/bin/sh\nprintf '%s\\n' '{key_line}'\n",
-    )
-    _write_executable(
-        commands / "ssh-keygen",
-        (
-            "#!/bin/sh\n"
-            f"printf '%s\\n' '256 {config.host_key_fingerprint} test (ED25519)'\n"
-        ),
-    )
     _write_executable(
         commands / "ssh",
         """#!/usr/bin/env python3
@@ -442,6 +413,7 @@ from taskman_ops.output import render_json
 from taskman_ops.workflows.create_admin import run_create_admin
 import taskman_ops.workflows.create_admin as create_admin_workflow
 from taskman_ops.config import EnvironmentConfig
+from pathlib import Path
 import json
 import os
 
@@ -450,6 +422,7 @@ class Remote:
         return object()
 
 create_admin_workflow.validate_operational_preflight = lambda remote, config: remote.facts()
+Path.home = staticmethod(lambda: Path(os.environ["TASKMAN_TEST_SSH_HOME"]))
 result = run_create_admin(
     Remote(),
     EnvironmentConfig.model_validate(json.loads(os.environ["CREATE_ADMIN_CONFIG"])),
@@ -460,6 +433,7 @@ raise SystemExit(result.process_status if result.process_status is not None else
     environment = {
         **os.environ,
         "PATH": f"{commands}:{os.environ['PATH']}",
+        "TASKMAN_TEST_SSH_HOME": str(tmp_path),
         "PYTHONPATH": str(repository / "ops"),
         "CREATE_ADMIN_CONFIG": json.dumps(config_values),
         "CREATE_ADMIN_BRIDGE_LOG": str(bridge_log),
@@ -508,6 +482,8 @@ raise SystemExit(result.process_status if result.process_status is not None else
 
     assert os.waitstatus_to_exitcode(wait_status) == 37
     assert invocation["argv"][1:5] == ["-tt", "-F", "/dev/null", "-o"]
+    assert "GlobalKnownHostsFile=/dev/null" in invocation["argv"]
+    assert "StrictHostKeyChecking=yes" in invocation["argv"]
     assert shlex.split(invocation["argv"][-1]) == list(
         CREATE_ADMIN_COMMAND
     )

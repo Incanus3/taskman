@@ -521,8 +521,7 @@ same-origin iframe; this evidence does not establish behavior in native mobile b
 
 ## Delivery
 
-The completed [implementation plan](../archive/plans/2026-09-29-task-blocking-and-search.md)
-is archived as the historical execution record for this capability and the companion
-[global Task search](2026-09-29-global-task-search-design.md). Implementation is delivered in
+This capability and the companion
+[global Task search](2026-09-29-global-task-search-design.md) are delivered in
 [PR #23](https://github.com/Incanus3/taskman/pull/23) and operator accepted. Merge and deployment
 require separate authorization.

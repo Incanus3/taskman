@@ -57,7 +57,13 @@ from ..state import (
     mutation_observations,
     observe_host_state,
 )
-from ..verification import host_preflight, verification_request, verify
+from ..verification import (
+    ApplicationVerificationError,
+    host_preflight,
+    verification_request,
+    verify,
+    verify_application,
+)
 
 
 _POLICIES = frozenset({"no-change", "backward-compatible", "restore-required"})
@@ -125,7 +131,15 @@ def genesis(request: HostRequest) -> HostResult:
     return converge_deployment(request, first_release=True)
 
 
-def converge_deployment(request: HostRequest, *, first_release: bool = False) -> HostResult:
+def prepare_genesis(request: HostRequest) -> HostResult:
+    """Prepare the first release through application proof, preserving recovery authority."""
+
+    return converge_deployment(request, first_release=True, _termination="application")
+
+
+def converge_deployment(
+    request: HostRequest, *, first_release: bool = False, _termination: str = "deployment"
+) -> HostResult:
     """Replay the explicit deploy procedure from authoritative completed facts.
 
     There is deliberately no operation record or stage journal.  A retry reads
@@ -133,6 +147,8 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     deterministic release staging directory, then repeats only still-safe work.
     """
 
+    if _termination not in {"application", "deployment"} or (_termination == "application" and not first_release):
+        raise ValueError("invalid private deployment termination")
     inputs: _Inputs | None = None
     state: HostState | None = None
     backup: BackupRecord | None = None
@@ -140,23 +156,26 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
     changed = False
     database_changed = False
     report: object | None = None
+    public_probe = "not-attempted"
     final_observations: Mapping[str, object] | None = None
     final_unavailable: tuple[str, ...] = ()
     final_inspection_error: str | None = None
     try:
         inputs = _inputs(request, first_release=first_release)
-        _validate_request_operation(request, first_release)
+        _validate_request_operation(request, first_release, _termination)
         validate_credentials(inputs.credentials)
         _safe_artifact(inputs)
         authority = host_preflight(inputs.paths, inputs.verification)
         if authority is not None:
             return _result(
                 request,
-                "refused",
+                "retryable" if request.operation == "prepare_genesis" and authority == "preflight" else "refused",
                 "host deployment prerequisites are unsafe",
                 state,
                 changed=changed,
                 report=report,
+                public_probe=public_probe,
+                boundary="inspection" if request.operation == "prepare_genesis" and authority == "preflight" else "input",
             )
 
         with lifecycle_lock(inputs.paths, timeout_seconds=_LOCK_TIMEOUT_SECONDS) as lock:
@@ -265,9 +284,8 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                     _migrate(inputs)
                 except CommandError as error:
                     # Migration commands may commit before their result is
-                    # lost.  Capture the real versions so the next rerun can
-                    # continue only the same compatible candidate forward.
-                    state = _observe(inputs)
+                    # lost. The final failure observer owns fresh versions;
+                    # its failure must not replace the primary migration error.
                     raise _RetryableError("migration") from error
                 state = _observe(inputs)
                 if state.applied_migrations != inputs.candidate_versions:
@@ -300,13 +318,24 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
                 except CommandError as error:
                     raise _RetryableError("service") from error
                 changed = True
-            verification = _verify(request, inputs)
-            report = verification.state.get("report") or None
-            if verification.outcome != "succeeded":
-                raise _RetryableError("verification", may_have_mutated=False)
-            state = _observe(inputs)
-            state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
-            changed = changed or recorded_selection
+            if _termination == "application":
+                verification = verify_application(
+                    verification_request(request, inputs.candidate.release_id, inputs.verification),
+                    lifecycle_locked=True,
+                )
+                report = verification.local_report
+                public_probe = verification.public_probe
+                if report["exit_status"] != 0:
+                    raise _RetryableError("verification", may_have_mutated=False)
+                state = _observe(inputs, include_runtime=True)
+            else:
+                verification = _verify(request, inputs)
+                report = verification.state.get("report") or None
+                if verification.outcome != "succeeded":
+                    raise _RetryableError("verification", may_have_mutated=False)
+                state = _observe(inputs)
+                state, recorded_selection, backup = _record_successful_selection(inputs, state, backup)
+                changed = changed or recorded_selection
             try:
                 scheduler = _scheduler_facts(inputs.paths)
             except (CommandError, OSError, StateAmbiguityError):
@@ -323,6 +352,28 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             final_unavailable, final_inspection_error = mutation_observation_availability(
                 request.operation, final_observations
             )
+    except ApplicationVerificationError as error:
+        if error.exit_code == 12 and not changed:
+            return _result(
+                request, "retryable", "lifecycle lock is unavailable", state,
+                locked=True, changed=False, report=report,
+                public_probe=public_probe,
+                backup_id=None if backup is None else backup.backup_id,
+            )
+        # Locked verification never reacquires the lifecycle lock. A contradictory
+        # cooperative late lock exception cannot erase earlier consequences.
+        late_lock = error.exit_code == 12
+        return _failure_result(
+            request, "refused" if error.exit_code == 2 else "retryable",
+            ("application verification reported a lock refusal after deployment consequences"
+             if late_lock else "application verification could not establish prerequisites"),
+            state, inputs,
+            boundary="inspection" if late_lock else error.failed_boundary,
+            exit_code=8 if late_lock else error.exit_code, changed=changed,
+            backup_id=None if backup is None else backup.backup_id,
+            report=report,
+            public_probe=public_probe,
+        )
     except LifecycleLockContention:
         return _result(
             request,
@@ -333,28 +384,33 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             changed=changed,
             backup_id=None if backup is None else backup.backup_id,
             report=report,
+            public_probe=public_probe,
         )
     except DeploymentManualError:
         return _failure_result(
             request, "manual", "deployment state is contradictory", state, inputs,
             changed=changed, backup_id=None if backup is None else backup.backup_id, report=report,
+            public_probe=public_probe,
         )
     except _RetryableError as error:
         return _failure_result(
             request, "retryable", "deployment did not complete; rerun to converge", state, inputs,
             boundary=error.boundary, changed=changed, possibly_changed=error.may_have_mutated,
             backup_id=None if backup is None else backup.backup_id, report=report,
+            public_probe=public_probe,
         )
     except StateAmbiguityError:
         return _failure_result(
             request, "manual", "deployment authority is contradictory", state, inputs,
             changed=changed, backup_id=None if backup is None else backup.backup_id, report=report,
+            public_probe=public_probe,
         )
     except CommandError:
         return _failure_result(
             request, "retryable", "deployment observation did not complete; rerun to converge", state, inputs,
             boundary="inspection", changed=changed, backup_id=None if backup is None else backup.backup_id,
             report=report,
+            public_probe=public_probe,
         )
     except (PathAuthorityError, TypeError, ValueError):
         return _result(
@@ -365,6 +421,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             changed=changed,
             backup_id=None if backup is None else backup.backup_id,
             report=report,
+            public_probe=public_probe,
         )
     except (OSError, tarfile.TarError, RecordError):
         return _result(
@@ -375,6 +432,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
             changed=changed,
             backup_id=None if backup is None else backup.backup_id,
             report=report,
+            public_probe=public_probe,
         )
 
     return _result(
@@ -387,6 +445,7 @@ def converge_deployment(request: HostRequest, *, first_release: bool = False) ->
         database_state="changed" if database_changed else "unchanged",
         service_state="running",
         report=report,
+        public_probe=public_probe,
         final_observations=final_observations,
         final_unavailable=final_unavailable,
         final_inspection_error=final_inspection_error,
@@ -498,8 +557,9 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
     )
 
 
-def _validate_request_operation(request: HostRequest, first_release: bool) -> None:
-    if request.operation != ("genesis" if first_release else "deploy"):
+def _validate_request_operation(request: HostRequest, first_release: bool, termination: str = "deployment") -> None:
+    expected = "prepare_genesis" if termination == "application" else ("genesis" if first_release else "deploy")
+    if request.operation != expected:
         raise ValueError("invalid deployment operation")
 
 
@@ -1159,10 +1219,12 @@ def _failure_result(
     inputs: _Inputs | None,
     *,
     boundary: str | None = None,
+    exit_code: int | None = None,
     changed: bool = False,
     possibly_changed: bool = False,
     backup_id: str | None = None,
     report: object | None = None,
+    public_probe: str = "not-attempted",
 ) -> HostResult:
     """Return one fresh final observation without treating a retry as success."""
 
@@ -1175,10 +1237,12 @@ def _failure_result(
         message,
         final_state,
         boundary=boundary,
+        exit_code=exit_code,
         changed=changed,
         possibly_changed=possibly_changed,
         backup_id=backup_id,
         report=report,
+        public_probe=public_probe,
         final_observations=observations,
         final_unavailable=unavailable,
         final_inspection_error=inspection_error,
@@ -1231,6 +1295,7 @@ def _result(
     state: HostState | None,
     *,
     boundary: str | None = None,
+    exit_code: int | None = None,
     locked: bool = False,
     changed: bool | None = None,
     possibly_changed: bool = False,
@@ -1238,6 +1303,7 @@ def _result(
     database_state: str | None = None,
     service_state: str | None = None,
     report: object | None = None,
+    public_probe: str = "not-attempted",
     final_observations: Mapping[str, object] | None = None,
     final_unavailable: tuple[str, ...] = (),
     final_inspection_error: str | None = None,
@@ -1248,7 +1314,7 @@ def _result(
         exit_code, failed_boundary = 12, "lock"
     else:
         failed_boundary = boundary or ("authority" if outcome == "manual" else "input")
-        exit_code = {
+        exit_code = exit_code if exit_code is not None else {
             "input": 2,
             "authority": 10,
             "expected_state": 10,
@@ -1279,10 +1345,12 @@ def _result(
         "observations": observations,
         "unavailable_fields": unavailable,
         "inspection_error": inspection_error,
-        "report": report,
+        ("local_report" if request.operation == "prepare_genesis" else "report"): report,
         "desired_release_id": desired,
         "backup_id": backup_id,
     }
+    if request.operation == "prepare_genesis":
+        facts["public_probe"] = public_probe
     return HostResult(
         PROTOCOL_VERSION,
         request.operation,
@@ -1328,4 +1396,4 @@ def _mutable(value: object) -> object:
     return value
 
 
-__all__ = ["converge_deployment", "deploy", "genesis"]
+__all__ = ["converge_deployment", "deploy", "genesis", "prepare_genesis"]

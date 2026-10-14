@@ -20,17 +20,23 @@ from taskman_ops.host_protocol import (
     encode_result,
     unavailable_observations,
     validate_cleanup_completion,
+    validate_firewall_result,
+    validate_caddy_result,
     validate_mutation_state,
     validate_verification_report,
+    validate_application_report,
 )
+from taskman_ops.host_protocol.postgresql import validate_postgresql_recovery_request, validate_postgresql_recovery_result
+from taskman_ops.host_helper.postgresql_recovery import postgresql_config_recovery, postgresql_recovery_failure_result
 from taskman_ops.host_protocol.envelope import validate_result_for_request
 from taskman_ops.host_helper.credentials import validate_credentials
 from taskman_ops.host_helper.database import database_mapping, observe_database_state
 from taskman_ops.host_helper.lock import LifecycleLockContention, lifecycle_lock
 from taskman_ops.host_helper.restore_database import observe_restore_databases
 from taskman_ops.host_helper.operations.backup import backup
+from taskman_ops.host_helper.operations.caddy import caddy, caddy_failure_result
 from taskman_ops.host_helper.operations.cleanup import cleanup
-from taskman_ops.host_helper.operations.deploy import deploy, genesis
+from taskman_ops.host_helper.operations.deploy import deploy, genesis, prepare_genesis
 from taskman_ops.host_helper.operations.discover import (
     _scheduler_facts,
     discover,
@@ -38,6 +44,7 @@ from taskman_ops.host_helper.operations.discover import (
     list_releases,
     provision_authority,
 )
+from taskman_ops.host_helper.operations.firewall import firewall, firewall_failure_result
 from taskman_ops.host_helper.operations.rollback import rollback
 from taskman_ops.host_helper.operations.restore import restore
 from taskman_ops.host_helper.operations.preflight import provision_pgpass_authority, restore_preflight
@@ -111,9 +118,9 @@ def _mutation_failure_result(
         "observations": observations,
         "unavailable_fields": unavailable,
         "inspection_error": inspection_error,
-        "report": None,
+        _report_key(request): None,
     }
-    if request.operation in {"deploy", "genesis"}:
+    if request.operation in {"deploy", "genesis", "prepare_genesis"}:
         state.update(desired_release_id=_requested_release(request), backup_id=None)
     elif request.operation == "restore":
         state.update(
@@ -123,6 +130,8 @@ def _mutation_failure_result(
         )
     else:
         state["completed_targets"] = ()
+    if request.operation == "prepare_genesis":
+        state["public_probe"] = "not-attempted"
     try:
         state = validate_mutation_state(request.operation, outcome, state)
     except ProtocolError:
@@ -328,14 +337,29 @@ def _matching_completion(
     return candidate["completed_targets"]
 
 
-def _matching_report(request: HostRequest, state: Mapping[str, object]) -> dict[str, object] | None:
+def _report_key(request: HostRequest) -> str:
+    return "local_report" if request.operation == "prepare_genesis" else "report"
+
+
+def _matching_report(
+    request: HostRequest, state: Mapping[str, object], recovered: Mapping[str, object], base: HostResult
+) -> dict[str, object] | None:
     if request.operation == "cleanup":
         return None
-    value = state.get("report")
+    value = state.get(_report_key(request))
     if value is None:
         return None
     try:
-        return validate_verification_report(value)
+        report = (
+            validate_application_report(value)
+            if request.operation == "prepare_genesis" else validate_verification_report(value)
+        )
+        if request.operation == "prepare_genesis":
+            candidate = {**recovered, "local_report": report}
+            if report["exit_status"] != 0:
+                candidate.update(exit_code=report["exit_status"], failed_boundary="verification")
+            validate_mutation_state(request.operation, base.outcome, candidate)
+        return report
     except ProtocolError:
         return None
 
@@ -353,7 +377,7 @@ def _primary_failure(
     if report is not None and report["status"] == "failed":
         candidate = {
             **recovered,
-            "report": report,
+            _report_key(request): report,
             "exit_code": report["exit_status"],
             "failed_boundary": "verification",
         }
@@ -383,7 +407,7 @@ def _primary_failure(
         )
 
     candidate = dict(recovered)
-    candidate["report"] = report
+    candidate[_report_key(request)] = report
     for key in ("exit_code", "failed_boundary"):
         if key not in state:
             return (
@@ -439,7 +463,7 @@ def _invalid_mutation_result(request: HostRequest, result: HostResult) -> HostRe
 
     identity_keys = (
         ("desired_release_id", "backup_id")
-        if request.operation in {"deploy", "genesis"}
+        if request.operation in {"deploy", "genesis", "prepare_genesis"}
         else ("desired_release_id", "backup_id", "pre_restore_backup_id")
         if request.operation == "restore"
         else ()
@@ -457,8 +481,12 @@ def _invalid_mutation_result(request: HostRequest, result: HostResult) -> HostRe
             request, state, recovered, base.outcome
         )
 
-    report = _matching_report(request, state)
-    recovered["report"] = report
+    report = _matching_report(request, state, recovered, base)
+    recovered[_report_key(request)] = report
+    if request.operation == "prepare_genesis":
+        probe = _state_projection(request, base.outcome, state, recovered, ("public_probe",))
+        if probe is not None:
+            recovered["public_probe"] = probe["public_probe"]
     outcome, message, exit_code, boundary, _source = _primary_failure(
         request, result, state, recovered, base, report
     )
@@ -505,8 +533,12 @@ _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
     "list_backups": list_backups,
     "provision_authority": provision_authority,
     "verify": verify,
+    "firewall": firewall,
+    "caddy": caddy,
+    "postgresql_config_recovery": postgresql_config_recovery,
     "deploy": deploy,
     "genesis": genesis,
+    "prepare_genesis": prepare_genesis,
     "backup": backup,
     "cleanup": cleanup,
     "rollback": rollback,
@@ -514,7 +546,7 @@ _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
     "restore_preflight": restore_preflight,
 }
 
-if frozenset(_DISPATCH) != frozenset(OPERATION_NAMES):
+if frozenset(_DISPATCH) != OPERATION_NAMES:
     raise RuntimeError("helper dispatch does not cover the protocol operations")
 
 
@@ -530,6 +562,12 @@ def _encode_or_internal_failure(
     try:
         return encode_result(result)
     except Exception:
+        if request is not None and request.operation == "postgresql_config_recovery":
+            return encode_result(postgresql_recovery_failure_result(request, result))
+        if request is not None and request.operation == "caddy":
+            return encode_result(caddy_failure_result(request, result, exit_code=8))
+        if request is not None and request.operation == "firewall":
+            return encode_result(firewall_failure_result(request, result))
         if request is not None and request.operation in MUTATION_OPERATIONS:
             if (
                 request.operation == "cleanup"
@@ -582,6 +620,33 @@ def _dispatch(request: HostRequest) -> HostResult:
         handler = _DISPATCH[request.operation]
     except KeyError as error:
         raise ValueError("helper operation is unsupported") from error
+    if request.operation == "postgresql_config_recovery":
+        result = None
+        try:
+            validate_postgresql_recovery_request(request)
+        except ProtocolError:
+            failure = postgresql_recovery_failure_result(request, exit_code=10)
+            return HostResult.for_request(request, "refused", failure.message,
+                {**dict(failure.state), "mutation_state": "unchanged"})
+        try:
+            result = handler(request)
+            return validate_postgresql_recovery_result(request, result)
+        except (Exception, SystemExit):
+            return postgresql_recovery_failure_result(request, result)
+    if request.operation == "caddy":
+        result = None
+        try:
+            result = handler(request)
+            return validate_caddy_result(request, result)
+        except (Exception, SystemExit):
+            return caddy_failure_result(request, result)
+    if request.operation == "firewall":
+        result = None
+        try:
+            result = handler(request)
+            return validate_firewall_result(request, result)
+        except (Exception, SystemExit):
+            return firewall_failure_result(request, result)
     result = handler(request)
     try:
         result = validate_result_for_request(request, result)
@@ -626,18 +691,21 @@ def main() -> int:
             try:
                 result = _dispatch(request)
             except Exception:
-                result = (
-                    _mutation_failure_result(
-                        request,
-                        message="helper internal failure",
+                if request.operation == "postgresql_config_recovery":
+                    result = postgresql_recovery_failure_result(request)
+                else:
+                    result = (
+                        _mutation_failure_result(
+                            request,
+                            message="helper internal failure",
+                        )
+                        if request.operation in MUTATION_OPERATIONS
+                        else _failure_result(
+                            operation=operation,
+                            correlation_id=correlation_id,
+                            message="helper internal failure",
+                        )
                     )
-                    if request.operation in MUTATION_OPERATIONS
-                    else _failure_result(
-                        operation=operation,
-                        correlation_id=correlation_id,
-                        message="helper internal failure",
-                    )
-                )
 
     sys.stdout.buffer.write(
         _encode_or_internal_failure(

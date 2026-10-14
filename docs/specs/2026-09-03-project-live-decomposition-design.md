@@ -24,10 +24,8 @@ Those modules isolate transient state and domain transitions, but the LiveView s
 event handlers and socket orchestration for every workflow. The result is difficult to navigate and
 makes otherwise independent changes collide in one file.
 
-The existing LiveView behavior is well covered by the tests under
-`test/taskman_web/live/project_live/`. The
-[archived implementation plan](../archive/plans/2026-09-04-project-live-decomposition.md) records
-the completed extraction sequence.
+The extraction is implemented. Existing LiveView behavior is covered by the tests under
+`test/taskman_web/live/project_live/`.
 If the separately designed directory removal runs first, preserve its then-current Project
 form/navigation contract; neither workstream requires the other.
 
@@ -495,8 +493,7 @@ This refactor does not introduce new error semantics.
 ### Missing-location behavior follow-up
 
 The approved and implemented contract lives in the [Missing List recovery design](2026-09-18-missing-list-recovery-design.md).
-Its [archived implementation plan](../archive/plans/2026-09-18-missing-list-recovery.md) preserves
-execution provenance. The evidence below describes the 2026-09-18 extraction baseline before
+The evidence below describes the 2026-09-18 extraction baseline before
 recovery was implemented; it does not describe current behavior. That investigation established
 the need to invalidate stale location-bound actions while retaining recoverable input. Product
 List deletion remains unsupported, so its controlled disappearance fixtures do not define a
@@ -506,9 +503,8 @@ deletion event producer or ordering contract.
 
 A 2026-09-18 read-only investigation used three temporary LiveView probes against
 `MIX_ENV=test`, database `taskman_test`, with `Ecto.Adapters.SQL.Sandbox`. All three probes
-passed and rolled their synthetic fixtures back. The temporary command was
-`MIX_ENV=test mix test /tmp/taskman_missing_location_probe_test.exs --trace`; the temporary
-probe is not a repository regression suite or an approved behavior contract.
+passed and rolled their synthetic fixtures back. The temporary probe was run outside the repository; it is not a repository regression suite
+or an approved behavior contract.
 
 | Active workflow | Observed disappearance outcome | Observed stale or pending action |
 | --- | --- | --- |

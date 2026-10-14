@@ -1,6 +1,6 @@
 # Dedicated-host deployment architecture
 
-Status: accepted, implemented design. Updated: 2026-09-18.
+Status: accepted, implemented design. Updated: 2026-10-14.
 
 This is the canonical design for Taskman's repository-owned deployment controller. It describes
 the implemented architecture and accepted constraints, not an implementation sequence. The
@@ -12,12 +12,20 @@ deployment, publication, or changes to an external host.
 The [operations contracts](2026-09-18-operations-contracts.md) own exact artifact/record/protocol shapes,
 admission, confirmation, migration/restore/cleanup recovery, bounds and failure evidence.
 The
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified
-local/build/native results and accepted limits.
+[native acceptance guide](../guides/native-acceptance.md) defines portable verification criteria.
+Identified local/build/native results and accepted limits are retained privately.
 
 The [one-time compatibility boundary](2026-09-18-operations-contracts.md#one-time-compatibility-boundary)
 excludes unsupported staging formats/runtime; future supported upgrades retain compatibility and
 recovery obligations.
+
+## Environment storage decision
+
+| ID | Status | Decision | Cost | Rationale |
+|---|---|---|---|---|
+| D1 | Accepted | Encrypt real settings separately from credentials; decrypt in controller memory | Every real-environment command requires the external age identity | [Configuration authority](#configuration-and-path-authority) |
+| D3 | Accepted | Select loader storage explicitly with `encrypted=True` by default | Programmatic plaintext callers must opt in; no name-based exceptions | [Configuration authority](#configuration-and-path-authority) |
+| D2 | Superseded | Version real settings as readable YAML because they are non-credential inputs | Exposes private deployment inventory in a public repository | [Replaced by D1](#configuration-and-path-authority) |
 
 ## Purpose and supported scope
 
@@ -54,14 +62,14 @@ library, not the controller dependency environment.
 | Boundary | Responsibility | Does not own |
 | --- | --- | --- |
 | Controller workflows | Input validation, artifact resolution, admission, plans, confirmation, requests, and public results | Host transaction reconstruction or a second remote-state model |
-| pyinfra provisioning | Stable packages, accounts, directories, non-secret files, units, and service convergence | Release, migration, restore, or cleanup procedures |
-| Transient host helper | Coherent observation, locking, immutable installation, backup, selection, restore, cleanup, and final verification | Operator interaction, SOPS, building, or provider resources |
+| pyinfra provisioning | Stable packages, accounts, directories, non-secret files, units, service convergence, and branch-specific Caddy source setup | Release/recovery lifecycle or Caddy native authority, guarded installation, site mutation and activation |
+| Transient host helper | Coherent observation, locking, immutable installation, backup, selection, restore, cleanup, Caddy guarded native work, and scoped/full verification | Operator interaction, SOPS, building, or provider resources |
 | Scheduled backup executable | Fixed environment/status adapter invoking shared backup and retention capabilities | Deployment, restore, SSH, or interactive controller behavior |
 | Shared protocol and small capabilities | Bounded serialization, request correlation, checksums, and common invariants | Configurable workflows or generalized policy engines |
 
 Each operation remains an explicit readable procedure. Deploy and first-release provisioning share
-one deployment procedure; rollback and restore retain their own consequence ordering and ambiguity
-decisions. Shared capabilities serve the same invariant, not merely similar-looking syntax.
+one deployment procedure with application preparation or fully verified completion; rollback and
+restore retain their own consequence ordering and ambiguity decisions. Shared capabilities serve the same invariant, not merely similar-looking syntax.
 
 ### Repository map
 
@@ -70,12 +78,13 @@ Paths below are relative to `ops/taskman_ops/` unless otherwise stated.
 | Owner | Responsibility |
 | --- | --- |
 | `cli.py`, `errors.py`, `output.py` | Finite public CLI, stable status categories, typed errors, recursive redaction, human/JSON rendering |
-| `config.py`, `secrets.py` | Validated non-secret environment, SOPS decryption, private runtime/pgpass rendering |
+| `config.py`, `secrets.py`, `sops.py` | Validated private settings and credentials, shared in-memory SOPS decryption, private runtime/pgpass rendering |
 | `releases/` | Clean/frozen source identity, builder execution, installed/cache target resolution, archive and manifest validation |
 | `remote.py` | Strict SSH identity, bounded workstation transport, private uploads, and interactive terminal bridge |
 | `helper_client/package.py`, `helper_client/runner.py` | Workstation-side deterministic allowlisted packages, checksum-verified transfer/invocation, and exact cleanup |
 | `host_protocol/` | Standard-library request/result schema, finite vocabulary, bounds, and correlation validation |
 | `host/facts.py`, `host/acceptance.py`, `workflows/operational_preflight.py` | Host evidence and admission before existing-host plans |
+| `services/caddy.py`, `host_protocol/caddy.py`, `host_helper/operations/caddy.py` | Frozen proxy ownership/rendering/source plan, closed request/result authority, native guarded package/site/activation and scoped recovery |
 | `provisioning.py`, `host/baseline.py`, `host/firewall.py`, `services/` | One programmatic pyinfra deploy and narrowly justified native/secret boundaries |
 | `host_helper/paths.py`, `records.py`, `state.py`, `lock.py` | Derived path authority, completed records, coherent observation, and one lifecycle lock |
 | `host_helper/backups.py`, `database.py`, `credentials.py` | Backup creation/retention, live migration observation, and private credential authority |
@@ -103,10 +112,36 @@ records, and deployed executable contracts remain meaningful boundaries.
 
 ## Configuration and path authority
 
-Non-secret environment data lives in `ops/environments/<environment>.yaml`; encrypted values live
-in the adjacent `<environment>.secrets.sops.yaml`. `.sops.yaml` contains only public recipients and
-selection rules. Private age identities remain external. Real environment files are deliberately
-versioned by the operator, not inferred from examples or historical staging information.
+Real settings live in `ops/environments/<environment>.config.sops.yaml`; credentials remain in
+the adjacent `<environment>.secrets.sops.yaml`. Both are decrypted into controller memory, then
+validated without persistent plaintext output. The loader
+`load_environment(name, runner=None, *, encrypted=True)` selects `<name>.config.sops.yaml` by
+default for every name. Explicit
+`encrypted=False` selects `<name>.yaml` for programmatic callers, including synthetic templates.
+The environment name never selects storage; there is no fallback between formats. All controller
+commands keep the encrypted default. The former name-based template exception is superseded:
+explicit selection separates storage authority from environment labels. Plaintext read, parse and
+validation failures return status `2`.
+Missing or undecryptable encrypted settings, decoding/parsing failures and non-mapping SOPS
+output fail with status `4`;
+decrypted name/schema validation failures return status `2`.
+
+Readable real settings are superseded because non-credential inputs still expose private host
+inventory. Keeping settings and credentials separate preserves existing schemas and permits
+read-only commands to decrypt settings without loading credentials. An external age identity is
+now required even for read-only real-environment commands. Ordinary configuration values remain
+visible in operator reports in both loading modes; encryption protects repository storage, while
+the controller trusts the operator who can decrypt it. Configuration values must not be registered
+as secrets: short identifiers can otherwise corrupt commands, report keys and release evidence.
+This supersedes the earlier registration of private identity and custom path settings.
+Actual credentials must never be included in report facts or diagnostics; credential redaction
+remains a final defense alongside protected representations, fixed errors and suppressed sensitive
+subprocess output. All environment files are excluded from release source snapshots.
+
+`.sops.yaml` contains only public recipients and selection rules. Private age identities remain
+external. Real encrypted environment files are deliberately versioned by the operator, not inferred
+from examples or historical staging information. The [runbook](../guides/deployment.md#create-the-environment)
+owns creation and editing commands.
 
 Configuration includes SSH destination/port/user and pinned fingerprint, direct public hostname
 and addresses, supported target, distinct application/distribution/database ports, loopback database
@@ -173,10 +208,23 @@ not TLS, and must not be exposed or forwarded beyond loopback.
 
 ### SSH and bounded execution
 
-SSH requires a fingerprint verified through an independent trusted channel. Automation constructs
-strict known-host authority; it does not use silent trust-on-first-use, accept-new, or unrelated
-user SSH configuration. Firewall changes must prove a fresh strict SSH connection on the configured
-administrator path.
+SSH requires a fingerprint verified through an independent trusted channel. The operator enrolls
+the server key in their ordinary `~/.ssh/known_hosts`. The controller uses native `ssh-keygen`
+lookup and fingerprint checks to select the ordinary public key matching the configured endpoint
+and pin, then supplies a private temporary copy containing only that key to the strict SSH client.
+The copy uses the exact configured endpoint with unchanged key type/bytes, allowing both clients
+to use the native lookup result even when the original host token is hashed or a pattern.
+OpenSSH or pyinfra performs server-key verification during connection. Hashed host entries and
+nonstandard ports are supported; missing, invalid, mismatched or pinned-revoked entries refuse
+before connecting. Certificate-authority entries do not satisfy the raw server-key pin.
+
+The accepted local lookup replaces automatic network key discovery. It preserves the independent
+pin while avoiding repeated unauthenticated scans and additional persistent trust state. The cost
+is operator enrollment on each workstation and a temporary filtered file: trusting every recorded
+key would allow a different key from the configured pin. The original file stays unchanged;
+there is no automatic enrollment, scan fallback, trust-on-first-use or connection retry. Unrelated
+user SSH configuration and unpinned global known-host entries cannot broaden trust. Firewall
+changes must prove a fresh strict SSH connection on the configured administrator path.
 
 Workstation transport and host-local subprocess execution remain separate implementations because
 their trust domains, inputs, cleanup authority, and termination semantics differ. Each has finite
@@ -209,9 +257,15 @@ temporary helper transfer and execution infrastructure are still required.
 Protocol version 3 has a finite request-correlated operation vocabulary. The shared standard-library
 codec owns strict envelope/state/report schemas, 1-MiB messages, schema-specific collection limits
 and fixed operation/correlation validation. Controllers consume validated evidence without
-reconstructing host policy or a second report model. Outcomes are succeeded/refused/retryable/manual;
-mutation classification distinguishes unchanged/changed/unknown and unavailable final facts from
-proved absence. [Operations contracts](2026-09-18-operations-contracts.md#reconciliation-procedure-and-transport)
+reconstructing host policy or a second report model. Outcomes are succeeded/refused/retryable/manual.
+The internal vocabulary includes `prepare_genesis` and finite `caddy` modes
+`inspect`, `guard-install`, `prepare`, `activate`; no new public command or protocol version is added.
+Caddy has empty paths and a separate closed proxy-authority/result contract. Application preparation
+uses genesis admission/request keys and `local_report`/`public_probe`, without successful-history
+publication. Existing operation schemas/manifest and persisted-record versions remain unchanged;
+[shared-Caddy contracts](2026-09-18-operations-contracts.md#shared-caddy-preparation-and-completion)
+define these additive interfaces. Mutation classification distinguishes unchanged/changed/unknown
+and unavailable final facts from proved absence. [Operations contracts](2026-09-18-operations-contracts.md#reconciliation-procedure-and-transport)
 define exact schemas, budgets, inventories and failure handling.
 
 Provisioning credential authority is the one private exit-only package entry. It consumes bounded
@@ -330,8 +384,43 @@ Three native custom operations are retained for specific material risks:
 | Operation | Why ordinary convergence is insufficient |
 | --- | --- |
 | UFW activation | SSH must be allowed before enablement and verified with a fresh pinned connection afterward |
-| Caddy validation/install | Candidate configuration must validate immediately before replacing the live configuration |
+| Caddy authority/install/site/activation | Installation branch, persistent service masks, authenticated exact package preservation, site-only atomic publication/recovery and Caddy-user full validation precede activation |
 | PostgreSQL cluster/HBA configuration | Cluster selection and live endpoint identity precede candidate installation; parser-backed HBA/SCRAM validation precedes reload/restart |
+
+Caddy ownership is discovered independently of Taskman state before freezing `CaddyOwnershipPlan`.
+`ProvisioningInputs` retains that immutable plan; `ProvisioningResult` carries ordinary convergence
+changes and the validated proxy result/receipt. Stable signed-source/prerequisite convergence runs
+only for missing installation, after persistent guard masks. Native helper work authenticates and
+inspects the exact package, installs under `--force-confold`, checks configuration preservation,
+and publishes the reserved Taskman site. Existing Caddy runs declare no package/source/global-service
+work. Main configuration and siblings remain operator-owned; safe root:caddy:0640 main metadata is
+supported, with bounded literal-import observation rather than generated-main digest admission.
+
+Only positively absent installation/configuration, free public ports and absent pre-existing masks
+permit full bootstrap: create the main import/site, validate as Caddy, remove only owned masks and
+start/enable the Caddyfile service. Safe existing `/etc/caddy` configuration, including absent main,
+selects preservation with retained masks and manual activation. Every later installed-Caddy rerun
+is site-only; no bootstrap journal or whole-main adoption. Package/preservation failures retain
+masks/evidence without automatic main restoration or package removal.
+
+Existing Caddy first prepares Taskman with five application checks on the deployment host. A missing
+recognized import or inactive/masked service returns controller exit 13,
+`application-provisioned-proxy-pending`, schema-1 `status: "failed"`, with explicit application
+proof, pending/public-unverified facts, site/activation directions and real mutation evidence.
+It publishes no new successful selection; protections remain, deploy waits for first success, and
+scheduled backups can remain unavailable. An active/unmasked service with recognized import permits
+Caddy-user native validation and one reload after preparation if the site changed or the advisory
+public probe is not ready; unchanged ready sites skip reload. Full genesis then finalizes the same
+immutable target with fresh expected state; unrelated drift refuses, while public starting state
+remains the original confirmation. Eight-check full verification/history still gates exit 0.
+
+Operators coordinate a quiet activation window including watchers/reloaders; lifecycle locking is
+not a host-wide Caddy lock. Recovery restores only Taskman's site (or exact prior absence), retains
+protected evidence and primary failure, and never proves loaded runtime after a lost reload reply.
+Do not restart/blindly reload or roll back main/other sites/certificates/data. The
+[shared-Caddy design](2026-10-01-shared-caddy-design.md) owns detailed ownership/validation contracts;
+[runbook activation](../guides/deployment.md#activate-a-pending-taskman-site) owns top-level import,
+duplicate-hostname reconciliation, validation, deliberate service activation and exact-target retry.
 
 Database role/password authority and private runtime/pgpass installation remain outside pyinfra's
 logged command path. PostgreSQL retains one-cluster authority, least-privilege role/database
@@ -384,7 +473,7 @@ it does not acknowledge downgrade, authorize restore/cleanup, or turn JSON into 
 | Command | Principal outcome and confirmation |
 | --- | --- |
 | `build` | Produce and verify a local artifact; no host interaction |
-| `provision ENV` | Converge supported host and first release; ordinary confirmation |
+| `provision ENV` | Converge supported host and prepare its first release; ordinary confirmation; exit 0 requires full completion, exit 13 reports proxy pending |
 | `deploy ENV` | Resolve, install, and verify the candidate; ordinary confirmation |
 | `verify ENV` | Report fresh service, release, topology, and readiness checks |
 | `releases ENV`, `backups ENV` | List exact completed records and bounded warnings |
@@ -454,23 +543,30 @@ This proves availability through Caddy/Phoenix/PostgreSQL, not release identity 
 
 Before service/readiness proof, the helper freshly checks host capacity,
 the configured invoking administrator through `SUDO_USER` and passwordless sudo, the active SSH
-connection port through `SSH_CONNECTION`, and PostgreSQL authority. These checks run within the
-same bounded verification deadline; root execution alone does not prove administrator authority.
+connection port through `SSH_CONNECTION`, and PostgreSQL authority. Each command retains its own three-second bound; root execution alone does not prove administrator
+authority. State observation has a separate 60-second cooperative deadline.
 The helper independently proves service MainPID/executable under the selected release, Caddy
 activity, required listener topology, absence of ordinary EPMD, bounded startup-journal evidence,
 exact loopback/public readiness, and public HSTS. During startup, absent application or distribution
-listeners may appear within the configured readiness timeout; topology and subsequent local/public
-readiness share that budget, bounded by the overall 45-second verification deadline. PostgreSQL
+listeners may appear within the configured readiness timeout. Topology and local readiness each
+receive a fresh window of at most 30 seconds; full public HTTP gets its separate bounded attempt. PostgreSQL
 must already be present on loopback. Failed or malformed listener observations, public managed
 listeners, and ordinary EPMD fail immediately; every fresh observation retains those checks.
 Startup-journal inspection reads the latest 100 service lines with a 64 KiB output limit per stream;
 other fixed command observations retain their 9,216-byte bound. Empty journal evidence, failure
 matches, command failure, timeout or output overflow fail closed. The three-second command cap and
-overall verification deadline remain unchanged.
+independent phase limits follow the
+[exact timing contract](2026-09-18-operations-contracts.md#verification-phases-have-independent-finite-limits).
 Ordered fixed summaries distinguish lifecycle
 failure from readiness failure; public verify preserves the typed failed report. A deployment or new restore cannot
-report success without a complete successful report for its expected release. Authority-validated
-cleanup of an already successful restore is exempt from repeating readiness; it does not claim the
+report success without a complete successful report for its expected release. The internal
+application-preparation report has exactly five ordered checks (`taskman-service`, `release-identity`,
+`listener-topology`, `startup-journal`, `local-readiness`), schema 1 and scope `application`.
+It omits Caddy activity/public readiness/public HSTS only for preparation, preserving independent
+phase bounds, three-second command caps, observation/journal bounds and 8/9 failure mapping.
+The advisory public probe does not replace full verification or publish history. Preparation helper
+success is 0; controller-only pending is 13 and actual failures retain their existing categories.
+Authority-validated cleanup of an already successful restore is exempt from repeating readiness; it does not claim the
 application is currently healthy.
 
 Human and JSON results share bounded redacted facts/warnings and public schema 1. A coarse stage or
@@ -573,7 +669,7 @@ These distinctions explain why superficially repeated code remains:
   authority. A recursive projection could erase unrelated drift; refreshed admission separately
   refuses insufficient capacity. Free-space-only change is allowed, material drift is not.
 - Listener topology distinguishes pending from unsafe evidence and refuses unsafe topology
-  immediately. HTTP readiness retries another condition; both share one finite readiness budget.
+  immediately. HTTP readiness retries another condition; each has its own finite readiness window.
   Merging their polling loops would obscure policy without removing state. Journal capture
   remains bounded to 64 KiB per stream with fixed public summaries.
 - PostgreSQL parent-PID checks at inspection and before/after mutation answer different freshness
@@ -661,8 +757,8 @@ not an automatic whole-branch review for every edit.
 
 ## Evidence, caveats, and acceptance
 
-Identified local/native baselines and artifacts belong to the
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#scope-and-evidence-boundaries).
+Identified local/native baselines and artifacts are retained privately. The
+[native acceptance guide](../guides/native-acceptance.md) defines portable verification criteria.
 They do not prove later changed source or authorize future external actions.
 
 The transient archive's required runtime dependency set includes the release manifest and error
@@ -672,8 +768,8 @@ was established by reproducing a missing-dependency startup failure, not just in
 
 Local tests and container builds do not prove systemd PID 1, UFW, public DNS, ACME, Resend delivery,
 reboot behavior, or a complete real PostgreSQL restore. Identified completed native
-acceptance and its limits are recorded in the
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md). Future runs require
+acceptance and its limits are recorded privately; the
+[native acceptance guide](../guides/native-acceptance.md) defines portable criteria. Future runs require
 separate authorization and must cover first/second provision, HTTPS/HSTS,
 interactive administrator/sign-in/email/API/LiveView use, another release and rollback/forward
 deployment, controlled migration failure, backup/restore, firewall/listeners, and secret/cookie

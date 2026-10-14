@@ -23,4 +23,5 @@ def test_every_public_exit_category_is_retained() -> None:
         ("OK", 0), ("INVALID", 2), ("LOCAL_PREREQUISITE", 3), ("SECRET", 4),
         ("REMOTE_PREFLIGHT", 5), ("BACKUP", 6), ("MIGRATION", 7), ("RELEASE", 8),
         ("READINESS", 9), ("SAFETY", 10), ("RESTORE", 11), ("LOCKED", 12),
+        ("PROXY_PENDING", 13),
     )

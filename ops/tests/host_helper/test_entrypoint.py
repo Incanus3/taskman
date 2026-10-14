@@ -172,7 +172,7 @@ def test_built_zipapp_private_pgpass_entry_is_exit_only_and_finite(tmp_path: Pat
         [
             sys.executable, "-I", "-S", str(package.path), "provision-pgpass-authority",
             "127.0.0.1", "5432", "taskman", "taskman_prod",
-            "ready",
+            "ready", "authenticate",
         ],
         input=b"127.0.0.1:5432:other:taskman:secret-canary\n",
         capture_output=True, check=False,
@@ -208,6 +208,7 @@ def test_entrypoint_dispatches_bounded_preconvergence_authority_without_mutation
         {
             "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman"},
             "postgres_package_track": None,
+            "force_postgresql_config": False,
             "resource_digests": {
                 "taskman_service": "1" * 64,
                 "backup_environment": "2" * 64,
@@ -1419,3 +1420,256 @@ def test_reduced_restore_encoding_fits_true_escaped_report_and_identity_maxima(
     assert exact["report"] == report
     assert exact["desired_release_id"] == release
     assert exact["pre_restore_backup_id"] == "backup-" + "b" * 32
+
+
+def _preparation_evidence(*, failed=False):
+    report = passing_report()
+    report["scope"] = "application"
+    report["checks"] = [c for c in report["checks"] if c["name"] not in {"caddy-service", "public-readiness", "public-hsts"}]
+    if failed:
+        report.update(status="failed", exit_status=9, next_action="inspect the fixed verification summaries and correct the reported host state before retrying")
+        report["checks"][-1]["status"] = "failed"
+    return {
+        "mutation_state": "changed", "exit_code": 9 if failed else 0,
+        "failed_boundary": "verification" if failed else None,
+        "observations": {**mutation_observations(), "last_successful_selection_id": None},
+        "unavailable_fields": [], "inspection_error": None,
+        "local_report": report, "public_probe": "not-attempted",
+        "desired_release_id": RELEASE, "backup_id": None,
+    }
+
+
+def test_preparation_dispatch_recovers_matching_attempted_local_report(monkeypatch):
+    request = HostRequest(3, "prepare_genesis", CORRELATION, {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {"target": {"kind": "upload", "manifest": {"release_id": RELEASE}}})
+    state = _preparation_evidence(failed=True)
+    state["observations"] = {}
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", lambda _r: (mutation_observations(), (), None))
+    monkeypatch.setitem(entrypoint._DISPATCH, "prepare_genesis", lambda r: HostResult.for_request(r, "retryable", "failed", state))
+    recovered = entrypoint._dispatch(request)
+    exact = validate_mutation_state(request.operation, recovered.outcome, recovered.state)
+    assert exact["local_report"] == state["local_report"]
+    assert exact["public_probe"] == "not-attempted"
+    assert exact["exit_code"] == 9
+    assert exact["desired_release_id"] == RELEASE
+    assert exact["mutation_state"] == "changed"
+
+
+@pytest.mark.parametrize("failed", (False, True))
+def test_preparation_encoding_keeps_maximum_escaped_local_proof_without_observer(monkeypatch, failed):
+    request = HostRequest(3, "prepare_genesis", CORRELATION, {},
+        {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"},
+        {"target": {"kind": "upload", "manifest": {"release_id": RELEASE}}})
+    state = _preparation_evidence(failed=failed)
+    for check in state["local_report"]["checks"]:
+        check["summary"] = "\x01" * 4096
+    state["observations"]["applied_migrations"] = [10 ** 4300]
+    release = RELEASE.replace("0.2.0", "1" * (255 - len(RELEASE) + 1) + ".1.1")
+    assert len(release) == 255
+    state["desired_release_id"] = release
+    state["backup_id"] = "backup-" + "a" * 32
+    state["local_report"].update(release_id=release, expected_release_id=release)
+    state["observations"]["selected_release_id"] = release
+    result = HostResult.for_request(request, "retryable" if failed else "succeeded", "proof", state)
+    monkeypatch.setattr(entrypoint, "_observe_final_mutation", lambda _: pytest.fail("encoding must not observe"))
+    original_encode = entrypoint.encode_result
+    attempts = []
+    def encode(value):
+        attempts.append("encode")
+        return original_encode(value)
+    monkeypatch.setattr(entrypoint, "encode_result", encode)
+    payload = entrypoint._encode_or_internal_failure(result, operation=request.operation, correlation_id=CORRELATION, request=request)
+    recovered = decode_result(payload)
+    exact = validate_mutation_state(request.operation, recovered.outcome, recovered.state)
+    assert attempts == ["encode", "encode"]
+    assert len(payload) <= MAX_OUTPUT_BYTES
+    assert exact["desired_release_id"] == release
+    assert exact["backup_id"] == state["backup_id"]
+    assert exact["local_report"] == state["local_report"]
+    assert exact["public_probe"] == "not-attempted"
+    assert exact["mutation_state"] == "changed"
+    assert exact["exit_code"] == (9 if failed else 8)
+    assert set(exact["unavailable_fields"]) == set(exact["observations"])
+
+
+@pytest.mark.parametrize("foreign", (False,True))
+def test_preparation_dispatch_missing_or_foreign_proof_cannot_reconstruct_success(monkeypatch,foreign):
+    request = HostRequest(3,"prepare_genesis",CORRELATION,{},
+        {"install_root":"/opt/taskman","backup_root":"/var/backups/taskman"},
+        {"target":{"kind":"upload","manifest":{"release_id":RELEASE}}})
+    raw = _preparation_evidence(failed=True)
+    if foreign:
+        other = RELEASE.replace("aaaaaaaaaaaa","dddddddddddd")
+        raw["local_report"].update(release_id=other,expected_release_id=other)
+    else:
+        raw["local_report"] = {}
+    attempts = []
+    def observe(_request):
+        attempts.append("observe")
+        return mutation_observations(),(),None
+    monkeypatch.setattr(entrypoint,"_observe_final_mutation",observe)
+    monkeypatch.setitem(entrypoint._DISPATCH,"prepare_genesis",lambda r: HostResult.for_request(r,"retryable","failed",raw))
+    result = entrypoint._dispatch(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert state["exit_code"] == 8
+    assert state["failed_boundary"] == "inspection"
+    assert state["local_report"] is None
+    assert state["public_probe"] == "not-attempted"
+    assert state["mutation_state"] == "changed"
+    assert state["desired_release_id"] == RELEASE
+    assert attempts == []
+
+
+def test_isolated_preparation_entrypoint_recovers_local_evidence_without_repeating_handler(tmp_path):
+    package = build_helper_package(tmp_path / "original.pyz")
+    state = _preparation_evidence()
+    injection = f'''
+preparation_calls = []
+preparation_observations = []
+preparation_state = {state!r}
+'''
+    injection += "preparation_state['observations']['applied_migrations'] = [10**4300]\n"
+    injection += f'''
+def preparation_handler(request):
+    preparation_calls.append('mutation')
+    assert len(preparation_calls) == 1
+    return HostResult.for_request(request, {'succeeded'!r}, 'application proof', preparation_state)
+def preparation_observer(request):
+    preparation_observations.append('observation')
+    assert len(preparation_observations) == 1
+    return {mutation_observations()!r}, (), None
+_DISPATCH['prepare_genesis'] = preparation_handler
+_observe_final_mutation = preparation_observer
+'''
+    copied = tmp_path / "fixture.pyz"
+    with zipfile.ZipFile(package.path) as original, copied.open("wb") as output:
+        output.write(b"#!/usr/bin/python3\n")
+        with zipfile.ZipFile(output,"w",compression=zipfile.ZIP_DEFLATED) as archive:
+            for info in original.infolist():
+                source = original.read(info.filename)
+                if info.filename == "taskman_ops/host_helper/__main__.py":
+                    source = source.replace(b'if __name__ == "__main__":',injection.encode()+b'\nif __name__ == "__main__":')
+                archive.writestr(info.filename,source)
+    completed = subprocess.run(["python3","-I","-S",str(copied)],input=request_bytes(operation="prepare_genesis"),capture_output=True,check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == b""
+    result = decode_result(completed.stdout)
+    exact = validate_mutation_state(result.operation,result.outcome,result.state)
+    assert exact["exit_code"] == 8
+    assert exact["local_report"] == state["local_report"]
+    assert exact["public_probe"] == "not-attempted"
+    assert exact["desired_release_id"] == RELEASE
+    assert exact["mutation_state"] == "changed"
+
+
+@pytest.mark.parametrize("failure",("operation","correlation","exception"))
+def test_preparation_entrypoint_rejects_mismatched_reply_without_salvage(monkeypatch,failure):
+    request = HostRequest(3,"prepare_genesis",CORRELATION,{},
+        {"install_root":"/opt/taskman","backup_root":"/var/backups/taskman"},
+        {"target":{"kind":"upload","manifest":{"release_id":RELEASE}}})
+    mutations = []; observations = []
+    def handler(_request):
+        mutations.append("attempt")
+        if failure == "exception": raise RuntimeError("secret-canary")
+        return HostResult(3,"genesis" if failure == "operation" else "prepare_genesis",
+            "op-"+"a"*32 if failure == "correlation" else CORRELATION,
+            "retryable","secret-canary",_preparation_evidence(failed=True),())
+    def observe(_request):
+        observations.append("attempt")
+        return mutation_observations(),(),None
+    monkeypatch.setattr(entrypoint,"_observe_final_mutation",observe)
+    with invoke_entrypoint(encode_request(request),handler,operation="prepare_genesis") as stdout:
+        assert entrypoint.main() == 0
+    result = decode_result(stdout.buffer.getvalue())
+    exact = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert mutations == observations == ["attempt"]
+    assert exact["mutation_state"] == "unknown"
+    assert exact["desired_release_id"] == RELEASE
+    assert exact["local_report"] is None
+    assert exact["public_probe"] == "not-attempted"
+    assert result.operation == request.operation and result.correlation_id == CORRELATION
+    assert b"secret-canary" not in stdout.buffer.getvalue()
+
+
+def test_preparation_internal_recovery_retains_passing_proof_and_attempted_public_probe(monkeypatch):
+    request = HostRequest(3,"prepare_genesis",CORRELATION,{},
+        {"install_root":"/opt/taskman","backup_root":"/var/backups/taskman"},
+        {"target":{"kind":"upload","manifest":{"release_id":RELEASE}}})
+    state = _preparation_evidence()
+    state["public_probe"] = "ready"
+    state["observations"] = {}
+    attempts = []
+    def observe(_request):
+        attempts.append("observe")
+        return mutation_observations(),(),None
+    monkeypatch.setattr(entrypoint,"_observe_final_mutation",observe)
+    monkeypatch.setitem(entrypoint._DISPATCH,"prepare_genesis",lambda r:HostResult.for_request(r,"succeeded","local proof",state))
+    result = entrypoint._dispatch(request)
+    exact = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.outcome == "retryable"
+    assert exact["exit_code"] == 8
+    assert exact["local_report"] == state["local_report"]
+    assert exact["public_probe"] == "ready"
+    assert exact["mutation_state"] == "changed"
+    assert attempts == ["observe"]
+
+
+@pytest.mark.parametrize("failure", ["extra-state", "encoding", "exception", "dispatch"])
+def test_postgresql_recovery_internal_failures_keep_capture_evidence(monkeypatch, failure):
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY, CLUSTER
+    request = recovery_request()
+    result = recovery_result(request)
+    if failure == "extra-state":
+        result = replace(result, state={**result.to_mapping()["state"], "unexpected": "secret-native-canary"})
+    def handler(_request):
+        if failure == "exception":
+            raise RuntimeError("secret-native-canary")
+        return result
+    monkeypatch.setitem(entrypoint._DISPATCH, request.operation, handler)
+    if failure == "dispatch":
+        monkeypatch.setattr(entrypoint, "_dispatch", lambda _request: (_ for _ in ()).throw(RuntimeError("secret-native-canary")))
+    original = entrypoint.encode_result
+    if failure == "encoding":
+        def encoding(value):
+            if value.outcome == "succeeded":
+                raise ProtocolError("secret-native-canary")
+            return original(value)
+        monkeypatch.setattr(entrypoint, "encode_result", encoding)
+    with invoke_entrypoint(encode_request(request), handler, operation=request.operation) as stdout:
+        assert entrypoint.main() == 0
+    payload = stdout.buffer.getvalue()
+    final = decode_result(payload)
+    assert final.state["exit_code"] == 8
+    assert final.state["failed_boundary"] == "postgresql"
+    assert final.state["mutation_state"] == ("unknown" if failure in {"exception", "dispatch"} else "changed")
+    assert final.state["recovery_directory"] == (None if failure in {"exception", "dispatch"} else DIRECTORY)
+    assert final.state["cluster"] == (None if failure in {"exception", "dispatch"} else CLUSTER)
+    assert b"secret-native-canary" not in payload
+
+
+def test_postgresql_recovery_invalid_request_refuses_before_capture(monkeypatch):
+    from tests.host_helper.test_postgresql_recovery import recovery_request
+    request = replace(recovery_request(), parameters={"cluster": {"port": 5432}})
+    def unexpected(_request):
+        pytest.fail("capture invoked for invalid native target")
+    with invoke_entrypoint(encode_request(request), unexpected, operation=request.operation) as stdout:
+        assert entrypoint.main() == 0
+    result = decode_result(stdout.buffer.getvalue())
+    assert result.outcome == "refused"
+    assert result.state["exit_code"] == 10
+    assert result.state["mutation_state"] == "unchanged"
+
+
+def test_postgresql_recovery_dispatch_reduces_unproven_failure_evidence(monkeypatch):
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, CLUSTER, DIRECTORY
+    request = recovery_request()
+    result = replace(recovery_result(request, mutation="changed", directory=DIRECTORY, exit_code=5), outcome="manual")
+    with invoke_entrypoint(encode_request(request), lambda _request: result, operation=request.operation) as stdout:
+        assert entrypoint.main() == 0
+    final = decode_result(stdout.buffer.getvalue())
+    assert final.outcome == "retryable"
+    assert final.state["exit_code"] == 8 and final.state["failed_boundary"] == "postgresql"
+    assert final.state["mutation_state"] == "changed"
+    assert final.state["recovery_directory"] == DIRECTORY
+    assert final.state["cluster"] == CLUSTER

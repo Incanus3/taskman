@@ -35,6 +35,9 @@ ARCHIVE_MEMBERS = (
     "taskman_ops/host_helper/backup_helper.py",
     "taskman_ops/host_helper/backup_protection.py",
     "taskman_ops/host_helper/backups.py",
+    "taskman_ops/host_helper/caddy_execution.py",
+    "taskman_ops/host_helper/caddy_files.py",
+    "taskman_ops/host_helper/caddy_package.py",
     "taskman_ops/host_helper/commands.py",
     "taskman_ops/host_helper/credentials.py",
     "taskman_ops/host_helper/database.py",
@@ -42,25 +45,33 @@ ARCHIVE_MEMBERS = (
     "taskman_ops/host_helper/lock.py",
     "taskman_ops/host_helper/operations/__init__.py",
     "taskman_ops/host_helper/operations/backup.py",
+    "taskman_ops/host_helper/operations/caddy.py",
     "taskman_ops/host_helper/operations/cleanup.py",
     "taskman_ops/host_helper/operations/deploy.py",
     "taskman_ops/host_helper/operations/discover.py",
+    "taskman_ops/host_helper/operations/firewall.py",
     "taskman_ops/host_helper/operations/preflight.py",
     "taskman_ops/host_helper/operations/restore.py",
     "taskman_ops/host_helper/operations/rollback.py",
     "taskman_ops/host_helper/paths.py",
+    "taskman_ops/host_helper/postgresql.py",
+    "taskman_ops/host_helper/postgresql_recovery.py",
     "taskman_ops/host_helper/records.py",
     "taskman_ops/host_helper/restore_database.py",
     "taskman_ops/host_helper/restore_target.py",
     "taskman_ops/host_helper/selection.py",
     "taskman_ops/host_helper/services.py",
     "taskman_ops/host_helper/state.py",
+    "taskman_ops/host_helper/ufw_adapter.py",
     "taskman_ops/host_helper/verification.py",
     "taskman_ops/host_protocol/__init__.py",
+    "taskman_ops/host_protocol/caddy.py",
     "taskman_ops/host_protocol/envelope.py",
+    "taskman_ops/host_protocol/firewall.py",
     "taskman_ops/host_protocol/identifiers.py",
     "taskman_ops/host_protocol/mutation_results.py",
     "taskman_ops/host_protocol/operations.py",
+    "taskman_ops/host_protocol/postgresql.py",
     "taskman_ops/migrations.py",
     "taskman_ops/releases/__init__.py",
     "taskman_ops/releases/identifiers.py",
@@ -94,6 +105,14 @@ BACKUP_ARCHIVE_MEMBERS = (
 )
 
 _SOURCE_MEMBERS = {
+    "taskman_ops/host_helper/postgresql_recovery.py": _SOURCE_ROOT / "host_helper" / "postgresql_recovery.py",
+    "taskman_ops/host_helper/postgresql.py": _SOURCE_ROOT / "host_helper" / "postgresql.py",
+    "taskman_ops/host_protocol/postgresql.py": _SOURCE_ROOT / "host_protocol" / "postgresql.py",
+    "taskman_ops/host_helper/caddy_package.py": _SOURCE_ROOT / "host_helper" / "caddy_package.py",
+    "taskman_ops/host_helper/caddy_execution.py": _SOURCE_ROOT / "host_helper" / "caddy_execution.py",
+    "taskman_ops/host_helper/caddy_files.py": _SOURCE_ROOT / "host_helper" / "caddy_files.py",
+    "taskman_ops/host_helper/operations/caddy.py": _SOURCE_ROOT / "host_helper" / "operations" / "caddy.py",
+    "taskman_ops/host_protocol/caddy.py": _SOURCE_ROOT / "host_protocol" / "caddy.py",
     "taskman_ops/migrations.py": _SOURCE_ROOT / "migrations.py",
     "taskman_ops/checksums.py": _SOURCE_ROOT / "checksums.py",
     "taskman_ops/errors.py": _SOURCE_ROOT / "errors.py",
@@ -111,6 +130,7 @@ _SOURCE_MEMBERS = {
     "taskman_ops/host_helper/operations/backup.py": _SOURCE_ROOT / "host_helper" / "operations" / "backup.py",
     "taskman_ops/host_helper/operations/cleanup.py": _SOURCE_ROOT / "host_helper" / "operations" / "cleanup.py",
     "taskman_ops/host_helper/operations/discover.py": _SOURCE_ROOT / "host_helper" / "operations" / "discover.py",
+    "taskman_ops/host_helper/operations/firewall.py": _SOURCE_ROOT / "host_helper" / "operations" / "firewall.py",
     "taskman_ops/host_helper/operations/preflight.py": _SOURCE_ROOT / "host_helper" / "operations" / "preflight.py",
     "taskman_ops/host_helper/operations/deploy.py": _SOURCE_ROOT / "host_helper" / "operations" / "deploy.py",
     "taskman_ops/host_helper/operations/restore.py": _SOURCE_ROOT / "host_helper" / "operations" / "restore.py",
@@ -122,6 +142,7 @@ _SOURCE_MEMBERS = {
     "taskman_ops/host_helper/selection.py": _SOURCE_ROOT / "host_helper" / "selection.py",
     "taskman_ops/host_helper/services.py": _SOURCE_ROOT / "host_helper" / "services.py",
     "taskman_ops/host_helper/state.py": _SOURCE_ROOT / "host_helper" / "state.py",
+    "taskman_ops/host_helper/ufw_adapter.py": _SOURCE_ROOT / "host_helper" / "ufw_adapter.py",
     "taskman_ops/host_helper/verification.py": _SOURCE_ROOT / "host_helper" / "verification.py",
     "taskman_ops/releases/__init__.py": _SOURCE_ROOT / "releases" / "__init__.py",
     "taskman_ops/releases/identifiers.py": _SOURCE_ROOT / "releases" / "identifiers.py",
@@ -130,6 +151,7 @@ _SOURCE_MEMBERS = {
     "taskman_ops/host_helper/scheduled_backup.py": _SOURCE_ROOT / "host_helper" / "scheduled_backup.py",
     "taskman_ops/host_protocol/__init__.py": _SOURCE_ROOT / "host_protocol" / "__init__.py",
     "taskman_ops/host_protocol/envelope.py": _SOURCE_ROOT / "host_protocol" / "envelope.py",
+    "taskman_ops/host_protocol/firewall.py": _SOURCE_ROOT / "host_protocol" / "firewall.py",
     "taskman_ops/host_protocol/identifiers.py": _SOURCE_ROOT / "host_protocol" / "identifiers.py",
     "taskman_ops/host_protocol/mutation_results.py": _SOURCE_ROOT / "host_protocol" / "mutation_results.py",
     "taskman_ops/host_protocol/operations.py": _SOURCE_ROOT / "host_protocol" / "operations.py",
@@ -171,13 +193,13 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
 
 
 def _build_package(destination: Path, members: tuple[str, ...], main: bytes) -> HelperPackage:
-    """Write one lexical standard-library-only allowlist as a reproducible zipapp."""
+    """Write one lexical allowlist with its scoped dependency policy as a reproducible zipapp."""
 
     if not isinstance(destination, Path):
         raise TypeError("helper package destination must be a Path")
     if tuple(sorted(members)) != members:
         raise RuntimeError("helper package allowlist is not lexical")
-    _validate_imports(members)
+    _validate_imports(members, allow_ufw=main == _FIXED_MAIN)
 
     with destination.open("wb") as output:
         output.write(_ZIPAPP_SHEBANG)
@@ -217,7 +239,7 @@ def build_scheduled_backup_package(destination: Path) -> HelperPackage:
     return _build_package(destination, BACKUP_ARCHIVE_MEMBERS, _FIXED_BACKUP_MAIN)
 
 
-def _validate_imports(members: tuple[str, ...]) -> None:
+def _validate_imports(members: tuple[str, ...], *, allow_ufw: bool = False) -> None:
     """Refuse dependencies outside Taskman itself and the Python standard library."""
 
     allowed = set(getattr(sys, "stdlib_module_names", ())) | {"taskman_ops", "__future__"}
@@ -228,6 +250,9 @@ def _validate_imports(members: tuple[str, ...]) -> None:
             tree = ast.parse(_member_bytes(name, _FIXED_MAIN), filename=name)
         except SyntaxError as error:
             raise RuntimeError("helper package source is invalid") from error
+        member_allowed = allowed
+        if allow_ufw and name == "taskman_ops/host_helper/ufw_adapter.py":
+            member_allowed = allowed | {"ufw"}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 roots = (alias.name.split(".", 1)[0] for alias in node.names)
@@ -235,7 +260,7 @@ def _validate_imports(members: tuple[str, ...]) -> None:
                 roots = (node.module.split(".", 1)[0],)
             else:
                 continue
-            if any(root not in allowed for root in roots):
+            if any(root not in member_allowed for root in roots):
                 raise RuntimeError("helper package contains a third-party import")
 
 

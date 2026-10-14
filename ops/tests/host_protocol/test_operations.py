@@ -18,13 +18,17 @@ import taskman_ops.host_protocol as host_protocol
 EXPECTED_OPERATIONS = frozenset(
     {
         "backup",
+        "caddy",
         "cleanup",
         "deploy",
         "discover",
+        "firewall",
         "genesis",
+        "prepare_genesis",
         "list_backups",
         "list_releases",
         "provision_authority",
+        "postgresql_config_recovery",
         "restore",
         "restore_preflight",
         "rollback",

@@ -114,9 +114,10 @@ def invoke_helper(
             cleanup_targets.remove((transfer_directory, transfer_path, False))
 
         entry_dispatched = True
+        interpreter = ("/usr/bin/python3", "-I", "-S") if request.operation == "firewall" else ("python3",)
         command = _run(
             remote,
-            ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed_path.as_posix()),
+            ("sudo", "--preserve-env=SSH_CONNECTION", "--", *interpreter, installed_path.as_posix()),
             sudo=False,
             stdin=encode_request(request),
             stdout_limit=MAX_OUTPUT_BYTES,
@@ -164,6 +165,7 @@ def invoke_sensitive_pgpass_authority(
     database: str,
     pgpass: bytes,
     database_state: str,
+    authentication_mode: str = "authenticate",
     deadline: float | None = None,
 ) -> SensitiveHelperReceipt:
     """Stage the verified helper and invoke its one secret-bearing entry."""
@@ -178,6 +180,8 @@ def invoke_sensitive_pgpass_authority(
         or type(database) is not str
         or type(database_state) is not str
         or database_state not in {"ready", "absent"}
+        or type(authentication_mode) is not str
+        or authentication_mode not in {"authenticate", "defer-for-configuration"}
         or type(pgpass) is not bytes
         or not pgpass
         or len(pgpass) > MAX_INPUT_BYTES
@@ -191,6 +195,7 @@ def invoke_sensitive_pgpass_authority(
     transfer_path = transfer_directory / _HELPER_NAME
     invocation_directory = _INVOCATION_ROOT / correlation
     installed_path = invocation_directory / _HELPER_NAME
+    probe_path = invocation_directory / "pgpass.probe"
     cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]] = []
     entry_dispatched = False
     cleanup_warning = False
@@ -229,7 +234,7 @@ def invoke_sensitive_pgpass_authority(
             (
                 "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed_path.as_posix(),
                 "provision-pgpass-authority", host, str(port), role, database,
-                database_state,
+                database_state, authentication_mode,
             ),
             sudo=False,
             stdin=pgpass,
@@ -238,17 +243,17 @@ def invoke_sensitive_pgpass_authority(
             stderr_limit=1,
             timeout=_CONTROL_TIMEOUT_SECONDS,
         )
-        if type(command.returncode) is not int or command.returncode not in {0, 2, 10}:
+        if type(command.returncode) is not int or command.returncode not in {0, 2, 5, 10}:
             raise _safety_error("sensitive host helper returned invalid status")
         status = command.returncode
     except OpsError as error:
-        raise _cleanup_failure(error, remote, cleanup_targets, cleanup_warning, entry_dispatched) from None
+        raise _cleanup_failure(error, remote, cleanup_targets, cleanup_warning, entry_dispatched, probe_path=probe_path) from None
     except Exception:
         raise _cleanup_failure(
             _safety_error("transient helper invocation failed"), remote,
-            cleanup_targets, cleanup_warning, entry_dispatched,
+            cleanup_targets, cleanup_warning, entry_dispatched, probe_path=probe_path,
         ) from None
-    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets) or cleanup_warning
+    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets, probe_path=probe_path) or cleanup_warning
     warnings = (_CLEANUP_WARNING,) if cleanup_warning else ()
     return SensitiveHelperReceipt(status, warnings, cleanup_warning)
 
@@ -286,8 +291,9 @@ def _cleanup_failure(
     cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]],
     cleanup_warning: bool,
     entry_dispatched: bool,
+    *, probe_path: PurePosixPath | None = None,
 ) -> HelperTransportError:
-    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets) or cleanup_warning or entry_dispatched
+    cleanup_warning = _best_effort_cleanup(remote, cleanup_targets, probe_path=probe_path) or cleanup_warning or entry_dispatched
     if cleanup_warning and _CLEANUP_WARNING not in error.warnings:
         error = OpsError(
             error.status,
@@ -368,11 +374,18 @@ def _remove_transfer(remote: Remote, directory: PurePosixPath, path: PurePosixPa
 def _best_effort_cleanup(
     remote: Remote,
     cleanup_targets: list[tuple[PurePosixPath, PurePosixPath, bool]],
+    *, probe_path: PurePosixPath | None = None,
 ) -> bool:
     incomplete = False
     for directory, path, sudo in reversed(cleanup_targets):
         # We cannot prove the administrator identity after a transport fault;
         # ``rm``/``rmdir`` is still restricted to the derived private path.
+        if probe_path is not None and probe_path.parent == directory:
+            try:
+                removed = _run(remote, ("rm", "-f", "--", probe_path.as_posix()), sudo=sudo, sensitive=True)
+                incomplete = not _succeeded(removed) or incomplete
+            except Exception:
+                incomplete = True
         incomplete = not _remove_plain(remote, directory, path, sudo=sudo) or incomplete
     return incomplete
 

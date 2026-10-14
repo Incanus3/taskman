@@ -256,6 +256,7 @@ def mutation_observations(
     if not isinstance(state, HostState) or operation not in {
         "deploy",
         "genesis",
+        "prepare_genesis",
         "restore",
         "cleanup",
     }:
@@ -337,7 +338,7 @@ def mutation_observation_availability(
 ) -> tuple[tuple[str, ...], str | None]:
     """Describe only domains that the final locked observation could not prove."""
 
-    if operation not in {"deploy", "genesis", "restore", "cleanup"}:
+    if operation not in {"deploy", "genesis", "prepare_genesis", "restore", "cleanup"}:
         raise ValueError("mutation observation operation is invalid")
     unavailable = {
         field
@@ -461,12 +462,15 @@ def observe_host_state(
         deadline = time.monotonic() + _STATE_LOADING_TIMEOUT_SECONDS
     if type(deadline) not in {int, float}:
         raise TypeError("host-state deadline is invalid")
+    deadline = float(deadline)
+    _require_observation_deadline(deadline)
     owner_uid = os.geteuid()
     try:
         paths.validate_existing(owner_uid=owner_uid)
     except PathAuthorityError as error:
         raise StateAmbiguityError(str(error)) from error
 
+    _require_observation_deadline(deadline)
     temporary: list[PurePosixPath] = []
     warnings: list[str] = []
     install_root = Path(paths.local(paths.install_root))
@@ -476,9 +480,11 @@ def observe_host_state(
 
     _check_or_note_directory(install_root, owner_uid, "install root")
     deployment_root = Path(paths.local(paths.deployment_root))
-    _note_unknown_deployment_entries(deployment_root, owner_uid, warnings, temporary)
+    _note_unknown_deployment_entries(deployment_root, owner_uid, warnings, temporary, deadline)
     restore_target_path = Path(paths.local(paths.restore_target_path))
+    _require_observation_deadline(deadline)
     restore_target = _read_restore_target(restore_target_path, owner_uid)
+    _require_observation_deadline(deadline)
     optional_restore_inputs: set[str] = set()
     if restore_target is not None:
         optional_restore_inputs.add(restore_target.backup_id)
@@ -488,16 +494,19 @@ def observe_host_state(
             str(item["backup_id"]) for item in restore_target.safety_backup_attempts
         )
         optional_restore_inputs.discard(restore_target.safety_backup_id)
-    releases = _read_releases(release_root, owner_uid, temporary, warnings)
+    releases = _read_releases(release_root, owner_uid, temporary, warnings, deadline)
     backups, unavailable_restore_inputs = _read_backups(
         backup_root,
         owner_uid,
         temporary,
         warnings,
+        deadline,
         optional_dump_ids=optional_restore_inputs,
     )
+    _require_observation_deadline(deadline)
     release_by_id = {item.release_id: item for item in releases}
     backup_by_id = {item.backup_id: item for item in backups}
+    _require_observation_deadline(deadline)
     history = _read_selections(
         selection_root,
         owner_uid,
@@ -508,12 +517,13 @@ def observe_host_state(
         float(deadline),
     )
     try:
+        _require_history_deadline(deadline)
         backup_protection_root = Path(paths.local(paths.backup_protection_root))
         backup_protections = _read_backup_protections(
-            backup_protection_root, owner_uid, temporary, warnings
+            backup_protection_root, owner_uid, temporary, warnings, deadline
         )
         retiring_backup_protections = _read_retiring_backup_protections(
-            backup_protection_retirement_root(paths), owner_uid
+            backup_protection_retirement_root(paths), owner_uid, deadline
         )
         retiring_dump_paths = {
             Path(paths.local(paths.backup_root / f"{item.backup_id}.dump"))
@@ -549,6 +559,7 @@ def observe_host_state(
             history,
             float(deadline),
         )
+        _require_observation_deadline(deadline)
         independently_required = {
             *history.successful_backup_ids,
             *(item.backup_id for item in backup_protections),
@@ -563,6 +574,7 @@ def observe_host_state(
             raise StateAmbiguityError(
                 "an unavailable restore input is independently required for recovery"
             )
+        _require_observation_deadline(deadline)
         selected_from_history = (
             history.projection[-1].release_id if history.projection else None
         )
@@ -570,6 +582,7 @@ def observe_host_state(
         history.close()
         raise
     try:
+        _require_observation_deadline(deadline)
         selected_from_link = _selected_link(paths, release_by_id)
         if selected_from_history != selected_from_link:
             if selected_from_history is None and selected_from_link is None:
@@ -583,13 +596,16 @@ def observe_host_state(
         else:
             selected = selected_from_history
 
+        _require_observation_deadline(deadline)
         applied_migrations, database_state, initial_database_empty = _database_state(
             database
         )
         service_state = _service_state(include_runtime)
+        _require_observation_deadline(deadline)
         temporary.sort(key=lambda item: item.as_posix())
         warnings = sorted(set(warnings))[:MAX_WARNINGS]
-        return HostState(
+        _require_observation_deadline(deadline)
+        snapshot = HostState(
             selected_release_id=selected,
             releases=tuple(sorted(releases, key=lambda item: item.release_id)),
             backups=tuple(sorted(backups, key=lambda item: item.backup_id)),
@@ -613,6 +629,8 @@ def observe_host_state(
             ),
             initial_database_empty=initial_database_empty,
         )
+        _require_observation_deadline(deadline)
+        return snapshot
     finally:
         history.close()
 
@@ -638,10 +656,12 @@ def _note_unknown_deployment_entries(
     owner_uid: int,
     warnings: list[str],
     temporary: list[PurePosixPath],
+    deadline: float,
 ) -> None:
     """Bound the non-authoritative deployment area without reading old records."""
 
-    for entry in _entries(root, owner_uid, "deployment root"):
+    for entry in _entries(root, owner_uid, "deployment root", deadline):
+        _require_observation_deadline(deadline)
         if entry.name in {
             "selections",
             "backup-protections",
@@ -654,6 +674,7 @@ def _note_unknown_deployment_entries(
             temporary.append(PurePosixPath(entry.as_posix()))
             continue
         warnings.append(f"unknown deployment entry: {entry.name}")
+    _require_observation_deadline(deadline)
 
 
 def _read_releases(
@@ -661,11 +682,13 @@ def _read_releases(
     owner_uid: int,
     temporary: list[PurePosixPath],
     warnings: list[str],
+    deadline: float,
 ) -> list[ReleaseRecord]:
-    entries = _entries(root, owner_uid, "release root")
+    entries = _entries(root, owner_uid, "release root", deadline)
     result: list[ReleaseRecord] = []
     seen: set[str] = set()
     for entry in entries:
+        _require_observation_deadline(deadline)
         if _RELEASE_TEMP_RE.fullmatch(entry.name):
             # Deployment staging is a deterministic directory containing an
             # extracted immutable release.  It is recognizable on rerun and
@@ -709,7 +732,8 @@ def _read_releases(
         if release_id in seen:
             raise StateAmbiguityError("duplicate release identity")
         seen.add(release_id)
-        _read_release_manifest_temporaries(entry, owner_uid, temporary)
+        _read_release_manifest_temporaries(entry, owner_uid, temporary, deadline)
+        _require_observation_deadline(deadline)
         result.append(
             _read_record(
                 manifest,
@@ -719,10 +743,12 @@ def _read_releases(
                 maximum=MAX_RELEASE_RECORD_BYTES,
             )
         )
+        _require_observation_deadline(deadline)
         if result[-1].release_id != release_id:
             raise StateAmbiguityError(
                 "release manifest identity conflicts with its path"
             )
+    _require_observation_deadline(deadline)
     return result
 
 
@@ -731,14 +757,16 @@ def _read_backups(
     owner_uid: int,
     temporary: list[PurePosixPath],
     warnings: list[str],
+    deadline: float,
     *,
     optional_dump_ids: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[list[BackupRecord], frozenset[str]]:
-    entries = _entries(root, owner_uid, "backup root")
+    entries = _entries(root, owner_uid, "backup root", deadline)
     result: list[BackupRecord] = []
     unavailable: set[str] = set()
     seen: set[str] = set()
     for entry in entries:
+        _require_observation_deadline(deadline)
         if _BACKUP_TEMP_RE.fullmatch(entry.name):
             _validate_temporary(entry, owner_uid, "backup temporary")
             temporary.append(PurePosixPath(entry.as_posix()))
@@ -766,12 +794,11 @@ def _read_backups(
         if BACKUP_ID_RE.fullmatch(entry.stem) is None:
             warnings.append(f"unknown backup entry: {entry.name}")
             continue
-        try:
-            record = _read_record(
-                entry, BackupRecord.from_mapping, "backup manifest", owner_uid
-            )
-        except StateAmbiguityError:
-            raise
+        _require_observation_deadline(deadline)
+        record = _read_record(
+            entry, BackupRecord.from_mapping, "backup manifest", owner_uid
+        )
+        _require_observation_deadline(deadline)
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup identity")
         if record.backup_id != entry.stem:
@@ -794,8 +821,10 @@ def _read_backups(
         if record.backup_id in optional_dump_ids:
             try:
                 available = (
-                    details.st_size > 0 and sha256_file(dump) == record.dump_sha256
+                    details.st_size > 0 and sha256_file(dump, deadline=deadline) == record.dump_sha256
                 )
+            except TimeoutError as error:
+                raise StateAmbiguityError("host state observation timed out") from error
             except OSError:
                 available = False
             if not available:
@@ -804,6 +833,7 @@ def _read_backups(
                     f"completed backup dump is unavailable or corrupt: {record.backup_id}"
                 )
         result.append(record)
+    _require_observation_deadline(deadline)
     return result, frozenset(unavailable)
 
 
@@ -902,6 +932,11 @@ def _selection_entries(root: Path, owner_uid: int, deadline: float):
         raise StateAmbiguityError("unable to enumerate selection root") from error
 
 
+def _require_observation_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise StateAmbiguityError("host state observation timed out")
+
+
 def _require_history_deadline(deadline: float) -> None:
     if time.monotonic() >= deadline:
         raise StateAmbiguityError("selection history inspection timed out")
@@ -930,11 +965,13 @@ def _read_backup_protections(
     owner_uid: int,
     temporary: list[PurePosixPath],
     warnings: list[str],
+    deadline: float,
 ) -> list[BackupProtection]:
-    entries = _entries(root, owner_uid, "backup protection root")
+    entries = _entries(root, owner_uid, "backup protection root", deadline)
     result: list[BackupProtection] = []
     seen: set[str] = set()
     for entry in entries:
+        _require_observation_deadline(deadline)
         if _BACKUP_PROTECTION_TEMP_RE.fullmatch(entry.name):
             _validate_temporary(entry, owner_uid, "backup protection temporary")
             temporary.append(PurePosixPath(entry.as_posix()))
@@ -942,12 +979,14 @@ def _read_backup_protections(
         if not _BACKUP_PROTECTION_FILE_RE.fullmatch(entry.name):
             warnings.append(f"unknown backup protection entry: {entry.name}")
             continue
+        _require_observation_deadline(deadline)
         record = _read_record(
             entry,
             BackupProtection.from_mapping,
             "backup protection record",
             owner_uid,
         )
+        _require_observation_deadline(deadline)
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup protection identity")
         if record.backup_id != entry.stem:
@@ -956,23 +995,27 @@ def _read_backup_protections(
             )
         seen.add(record.backup_id)
         result.append(record)
+    _require_observation_deadline(deadline)
     return result
 
 
 def _read_retiring_backup_protections(
-    root: Path, owner_uid: int
+    root: Path, owner_uid: int, deadline: float
 ) -> list[BackupProtection]:
     result: list[BackupProtection] = []
     seen: set[str] = set()
-    for entry in _entries(root, owner_uid, "backup protection retirement root"):
+    for entry in _entries(root, owner_uid, "backup protection retirement root", deadline):
+        _require_observation_deadline(deadline)
         if not _BACKUP_PROTECTION_FILE_RE.fullmatch(entry.name):
             raise StateAmbiguityError("unknown backup protection retirement entry")
+        _require_observation_deadline(deadline)
         record = _read_record(
             entry,
             BackupProtection.from_mapping,
             "backup protection retirement marker",
             owner_uid,
         )
+        _require_observation_deadline(deadline)
         if record.backup_id in seen:
             raise StateAmbiguityError("duplicate backup protection retirement identity")
         if record.backup_id != entry.stem:
@@ -981,6 +1024,7 @@ def _read_retiring_backup_protections(
             )
         seen.add(record.backup_id)
         result.append(record)
+    _require_observation_deadline(deadline)
     return result
 
 
@@ -998,12 +1042,14 @@ def _read_release_manifest_temporaries(
     release_directory: Path,
     owner_uid: int,
     temporary: list[PurePosixPath],
+    deadline: float,
 ) -> None:
     """Recognize only the private temporary shape emitted by the manifest writer."""
 
     try:
         with os.scandir(release_directory) as entries:
             for index, entry in enumerate(entries, start=1):
+                _require_observation_deadline(deadline)
                 if index > MAX_INVENTORY_ENTRIES:
                     raise StateAmbiguityError(
                         "release directory inventory exceeds safe bound"
@@ -1016,6 +1062,7 @@ def _read_release_manifest_temporaries(
         raise
     except OSError as error:
         raise StateAmbiguityError("unable to inspect release directory") from error
+    _require_observation_deadline(deadline)
 
 
 def _validate_temporary(
@@ -1071,7 +1118,8 @@ def _read_record(
         raise StateAmbiguityError(f"{label} is invalid") from error
 
 
-def _entries(root: Path, owner_uid: int, label: str) -> tuple[Path, ...]:
+def _entries(root: Path, owner_uid: int, label: str, deadline: float) -> tuple[Path, ...]:
+    _require_observation_deadline(deadline)
     try:
         details = root.lstat()
     except FileNotFoundError:
@@ -1086,10 +1134,14 @@ def _entries(root: Path, owner_uid: int, label: str) -> tuple[Path, ...]:
         paths: list[Path] = []
         with os.scandir(root) as entries:
             for index, entry in enumerate(entries, start=1):
+                _require_observation_deadline(deadline)
                 if index > MAX_INVENTORY_ENTRIES:
                     raise StateAmbiguityError(f"{label} inventory exceeds safe bound")
                 paths.append(Path(entry.path))
-        return tuple(sorted(paths, key=lambda item: item.name))
+        _require_observation_deadline(deadline)
+        result = tuple(sorted(paths, key=lambda item: item.name))
+        _require_observation_deadline(deadline)
+        return result
     except StateAmbiguityError:
         raise
     except OSError as error:

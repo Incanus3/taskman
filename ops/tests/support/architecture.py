@@ -25,12 +25,9 @@ _EXECUTABLE_MARKERS = (
 # controller orchestration.
 _REVIEWED_EXECUTABLE_OWNERS = frozenset(
     {
-        ("taskman_ops/host/facts.py", "_CADDY_CONFIG_SCRIPT"),
         ("taskman_ops/host/facts.py", "_RUNTIME_PREFLIGHT"),
         ("taskman_ops/host/facts.py", "_DATABASE_PREFLIGHT"),
         ("taskman_ops/host/facts.py", "_TASKMAN_SERVICE_AUTHORITY_SCRIPT"),
-        ("taskman_ops/host/firewall.py", "render_firewall_convergence_script"),
-        ("taskman_ops/host/firewall.py", "_render_firewall_change_probe"),
         ("taskman_ops/services/postgresql.py", "_render_postgresql_native_predicates"),
         ("taskman_ops/services/postgresql.py", "render_postgresql_native_configuration_script"),
     }
@@ -324,7 +321,8 @@ def _helper_import_violations(relative: str, tree: ast.AST) -> Iterable[str]:
             continue
         for module in modules:
             root = module.partition(".")[0]
-            if root and root not in standard and root != "taskman_ops":
+            os_ufw = relative == "ops/taskman_ops/host_helper/ufw_adapter.py" and root == "ufw"
+            if root and root not in standard and root != "taskman_ops" and not os_ufw:
                 violations.append(f"{relative}:{node.lineno}: helper imports third-party module {root}")
     return violations
 

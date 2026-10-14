@@ -8,11 +8,13 @@ with the credential in its argv.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 from io import StringIO
 from pathlib import PurePosixPath
+import re
 import shlex
+from types import MappingProxyType
 from typing import Mapping
 
 from pyinfra.api import operation
@@ -90,6 +92,8 @@ class PostgreSQLPlan:
     role_setup_argv: tuple[str, ...]
     role_creation_argv: tuple[str, ...]
     database_creation_argv: tuple[str, ...]
+    cluster: SelectedPostgreSQLCluster | None = None
+    resource_authority: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,56 @@ class PostgreSQLCluster:
     version: str
     name: str
     configured_port: str
+
+
+@dataclass(frozen=True)
+class SelectedPostgreSQLCluster:
+    """Immutable physical target supplied by privileged admission."""
+
+    version: str
+    name: str
+    port: int
+    data_directory: str
+    config_file: str
+    hba_file: str
+
+
+@dataclass(frozen=True)
+class PostgreSQLOwnershipPlan:
+    """Confirmed resource scope and the selected physical PostgreSQL target."""
+
+    branch: str
+    cluster: SelectedPostgreSQLCluster | None
+    role: str
+    database: str
+    access: str
+    desired: PostgreSQLPlan
+
+    def __post_init__(self) -> None:
+        from ..host_protocol.postgresql import validate_postgresql_authority
+        validate_postgresql_authority(
+            {"branch": self.branch, "cluster": None if self.cluster is None else asdict(self.cluster),
+             "role": self.role, "database": self.database, "access": self.access},
+            package_track=self.desired.package_track, port=int(self.desired.settings["port"]),
+            force_postgresql_config=self.branch == "configure-existing")
+        if (self.desired.cluster != self.cluster or
+                self.desired.resource_authority != (self.role, self.database)):
+            raise ValueError("PostgreSQL desired target does not match ownership")
+
+
+def build_postgresql_ownership_plan(
+    config: EnvironmentConfig, observation: Mapping[str, object], *, force_postgresql_config: bool,
+) -> PostgreSQLOwnershipPlan:
+    """Bind closed host authority without rediscovering clusters on the controller."""
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("PostgreSQL ownership requires an environment configuration")
+    from ..host_protocol.postgresql import validate_postgresql_authority
+    selected = validate_postgresql_authority(observation, package_track=config.postgres_package_track,
+        port=config.database_port, force_postgresql_config=force_postgresql_config)
+    cluster = None if selected["cluster"] is None else SelectedPostgreSQLCluster(**selected["cluster"])
+    return PostgreSQLOwnershipPlan(selected["branch"], cluster, selected["role"], selected["database"],
+        selected["access"], replace(build_postgresql_plan(config), cluster=cluster,
+            resource_authority=(selected["role"], selected["database"])))
 
 
 def build_postgresql_plan(config: EnvironmentConfig) -> PostgreSQLPlan:
@@ -113,11 +167,11 @@ def build_postgresql_plan(config: EnvironmentConfig) -> PostgreSQLPlan:
     return PostgreSQLPlan(
         packages=(f"postgresql{suffix}", f"postgresql-client{suffix}"),
         package_track=config.postgres_package_track,
-        settings={
+        settings=MappingProxyType({
             "listen_addresses": config.database_host,
             "port": str(config.database_port),
             "password_encryption": "scram-sha-256",
-        },
+        }),
         hba=(
             "# Managed by Taskman; do not add public database access here.\n"
             "local   all             postgres                                peer\n"
@@ -162,19 +216,36 @@ def build_postgresql_plan(config: EnvironmentConfig) -> PostgreSQLPlan:
     )
 
 
-def declare_postgresql(config: EnvironmentConfig) -> PostgreSQLPlan:
-    """Declare package and native configuration convergence through pyinfra.
+def declare_postgresql(ownership: PostgreSQLOwnershipPlan, *, config: EnvironmentConfig | None = None) -> PostgreSQLPlan:
+    """Declare only the native operations permitted by frozen ownership.
 
-    Role/database discovery and creation are intentionally not hidden in this
-    prepare-time function: they depend on the server just installed here and
-    are coordinated after these operations have executed by a release or
-    provision workflow.
+    Existing clusters return resource state without global operations. Bootstrap
+    installs packages; explicit configuration authority uses the selected native
+    cluster without packages. Resources converge after these operations execute.
     """
 
     from pyinfra.operations import apt, files
 
-    plan = build_postgresql_plan(config)
-    apt.packages(packages=list(plan.packages), name="Install PostgreSQL")
+    if not isinstance(ownership, PostgreSQLOwnershipPlan):
+        raise TypeError("PostgreSQL declaration requires frozen ownership authority")
+    plan = ownership.desired
+    if ownership.branch == "existing":
+        return plan
+    recovery_request = None
+    if ownership.branch == "configure-existing":
+        if not isinstance(config, EnvironmentConfig):
+            raise TypeError("PostgreSQL override requires bound environment configuration")
+        observation = {"branch": ownership.branch, "cluster": asdict(ownership.cluster),
+            "role": ownership.role, "database": ownership.database, "access": ownership.access}
+        if build_postgresql_ownership_plan(config, observation, force_postgresql_config=True) != ownership:
+            raise ValueError("PostgreSQL override does not match environment configuration")
+        from ..host_protocol import HostRequest, PROTOCOL_VERSION
+        from ..helper_client.runner import new_correlation_id
+        recovery_request = HostRequest(PROTOCOL_VERSION, "postgresql_config_recovery", new_correlation_id(), {},
+            {"install_root": config.install_root.as_posix(), "backup_root": config.backup_root.as_posix()},
+            {"cluster": asdict(ownership.cluster)})
+    if ownership.branch == "bootstrap":
+        apt.packages(packages=list(plan.packages), name="Install PostgreSQL")
     files.put(
         StringIO(plan.hba),
         "/etc/taskman/pg_hba.conf.staged",
@@ -187,6 +258,8 @@ def declare_postgresql(config: EnvironmentConfig) -> PostgreSQLPlan:
     _configure_postgresql_cluster(
         plan,
         name="Validate and configure PostgreSQL",
+        recovery_request=recovery_request,
+        config=config,
         _sudo=True,
     )
     return plan
@@ -200,23 +273,31 @@ def _configure_postgresql_cluster(
     hba_final: str | None = None,
     hba_owner: str | None = "postgres",
     hba_group: str | None = "postgres",
+    recovery_request=None,
+    config: EnvironmentConfig | None = None,
 ):
     """Keep native cluster selection and HBA transition in one guarded action."""
 
     from pyinfra.context import state
 
-    if state.is_executing and not _postgresql_configuration_required(
-        plan,
-        hba_stage=hba_stage,
-        hba_final=hba_final,
-        hba_owner=hba_owner,
-        hba_group=hba_group,
-    ):
-        return
+    if state.is_executing:
+        try:
+            required = _postgresql_configuration_required(plan, hba_stage=hba_stage,
+                hba_final=hba_final, hba_owner=hba_owner, hba_group=hba_group)
+        except Exception:
+            if recovery_request is None:
+                raise
+            failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration inspection failed",
+                changed=False,
+                next_action="establish selected PostgreSQL native inspection access before retrying")
+            setattr(state, "_taskman_categorized_error", failure)
+            raise failure from None
+        if not required:
+            return
     yield FunctionCommand(
         _run_postgresql_native_configuration,
         (plan, hba_stage, hba_final, hba_owner, hba_group),
-        {},
+        {"recovery_request": recovery_request, "config": config},
     )
 
 
@@ -263,43 +344,64 @@ def _run_postgresql_native_configuration(
     hba_final: str | None,
     hba_owner: str | None,
     hba_group: str | None,
+    *, recovery_request=None, config: EnvironmentConfig | None = None,
 ) -> None:
     """Carry a native safety refusal through pyinfra's public deploy boundary."""
 
-    runner = getattr(host, "run_shell_command", None)
-    if not callable(runner):
-        raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
-    script = render_postgresql_native_configuration_script(
-        plan,
-        hba_stage=hba_stage,
-        hba_final=hba_final,
-        hba_owner=hba_owner,
-        hba_group=hba_group,
-    )
-    wrapped = StringCommand(
-        "sh",
-        "-c",
-        QuoteString(
+    from ..host_protocol.postgresql import validate_postgresql_recovery_request
+    from ..remote import PyinfraRemote
+    from ..workflows.helper import run_request, result_error
+
+    recovery = None
+    try:
+        if recovery_request is not None:
+            validate_postgresql_recovery_request(recovery_request)
+            if (not isinstance(config, EnvironmentConfig) or plan.cluster is None or
+                    recovery_request.parameters["cluster"] != asdict(plan.cluster) or
+                    dict(recovery_request.paths) != {"install_root": config.install_root.as_posix(),
+                                                    "backup_root": config.backup_root.as_posix()}):
+                raise ValueError("PostgreSQL recovery request is not bound to native target")
+            recovery = run_request(PyinfraRemote(host, config, state=state), recovery_request)
+            if recovery.outcome != "succeeded":
+                raise result_error(recovery)
+            setattr(state, "_taskman_postgresql_recovery", recovery)
+        runner = getattr(host, "run_shell_command", None)
+        if not callable(runner):
+            raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
+        script = render_postgresql_native_configuration_script(plan, hba_stage=hba_stage,
+            hba_final=hba_final, hba_owner=hba_owner, hba_group=hba_group)
+        wrapped = StringCommand("sh", "-c", QuoteString(
             f"({script}); taskman_status=$?; "
-            "printf '__taskman_postgresql_status=%s\\n' \"$taskman_status\"; exit 0"
-        ),
-    )
-    succeeded, output = runner(
-        wrapped,
-        print_output=False,
-        print_input=False,
-        _sudo=operation_sudo(host),
-    )
-    if not succeeded:
-        raise RuntimeError("PostgreSQL configuration transport failed")
-    status = _captured_status(output)
-    if status == 0:
-        return
-    failure = _cluster_refusal()
-    if status == int(failure.status):
+            "printf '__taskman_postgresql_status=%s\\n' \"$taskman_status\"; exit 0"))
+        succeeded, output = runner(wrapped, print_output=False, print_input=False,
+                                   _sudo=operation_sudo(host))
+        if not succeeded:
+            raise RuntimeError("PostgreSQL configuration transport failed")
+        status = _captured_status(output)
+        if status == 0:
+            return
+        if status == int(ExitStatus.SAFETY):
+            raise _cluster_refusal()
+        raise RuntimeError("PostgreSQL configuration failed")
+    except Exception as error:
+        if isinstance(error, OpsError):
+            failure = error
+            if recovery_request is not None and error.stage != "postgresql":
+                failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration convergence failed",
+                    changed=error.changed, state=error.state, warnings=error.warnings,
+                    next_action="inspect selected PostgreSQL settings/runtime and retained recovery copies before retrying")
+        elif recovery_request is not None:
+            failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration convergence failed",
+                changed=recovery is not None, next_action="inspect selected PostgreSQL settings/runtime and retained recovery copies before retrying")
+        else:
+            raise
+        if recovery is not None and recovery.outcome == "succeeded":
+            failure.state = {**failure.state, **dict(recovery.state), "postgresql_recovery": dict(recovery.state)}
+            failure.changed = True
+            failure.warnings = (*recovery.warnings, *failure.warnings)
+            failure.next_action = "inspect retained PostgreSQL recovery copies; HBA rollback does not restore all settings/runtime; restoration and cleanup require separate authorization"
         setattr(state, "_taskman_categorized_error", failure)
-        raise failure
-    raise RuntimeError("PostgreSQL configuration failed")
+        raise failure from None
 
 
 def _validate_native_configuration_inputs(
@@ -333,6 +435,16 @@ def _render_postgresql_native_predicates(plan: PostgreSQLPlan) -> str:
     listen = plan.settings["listen_addresses"]
     port = plan.settings["port"]
     encryption = plan.settings["password_encryption"]
+    target_guard = ""
+    if plan.cluster is not None:
+        selected = plan.cluster
+        target_guard = f"""[ "$version" = {shlex.quote(selected.version)} ] &&
+  [ "$cluster" = {shlex.quote(selected.name)} ] &&
+  [ "$3" = {shlex.quote(str(selected.port))} ] &&
+  [ "$data_directory" = {shlex.quote(selected.data_directory)} ] &&
+  [ "$config_file" = {shlex.quote(selected.config_file)} ] &&
+  [ "$native_hba_file" = {shlex.quote(selected.hba_file)} ] || refuse_runtime
+"""
     return f"""clusters=$(pg_lsclusters --no-header)
 if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
   track == "" || $1 == track {{
@@ -360,7 +472,7 @@ esac
 config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
 postgres_binary="/usr/lib/postgresql/$version/bin/postgres"
 native_hba_file="/etc/postgresql/$version/$cluster/pg_hba.conf"
-pid_file="$data_directory/postmaster.pid"
+{target_guard}pid_file="$data_directory/postmaster.pid"
 admin_query() {{
   endpoint=$1
   query=$2
@@ -505,6 +617,7 @@ def render_role_password_input(role: DatabaseRole, password: str) -> bytes:
     return (
         "\\set ON_ERROR_STOP on\n"
         "BEGIN;\n"
+        "SET LOCAL password_encryption = 'scram-sha-256';\n"
         f"CREATE ROLE {role.name} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;\n"
         f"\\password {role.name}\n"
         f"{password}\n{password}\n"
@@ -591,6 +704,7 @@ def converge_database(
         raise TypeError("database convergence requires a PostgreSQL plan")
     if not isinstance(role_password_input, bytes) or not role_password_input:
         raise ValueError("database role password input must be non-empty bytes")
+    _validate_selected_resource_target(remote, plan)
     role = _read_existing_role(remote, plan)
     if role is not None:
         role = ExistingRole(
@@ -606,11 +720,24 @@ def converge_database(
         )
     database = _read_existing_database(remote, plan)
     validate_existing_database_state(plan, role=role, database=database)
+    if plan.resource_authority is not None and plan.resource_authority != (
+        "absent" if role is None else "compatible", "absent" if database is None else "compatible"
+    ):
+        raise OpsError(ExitStatus.SAFETY, "postgresql", "PostgreSQL resources changed before consequence",
+            changed=False, next_action="inspect the selected resources and rerun provision for a new plan")
+    _require_scram_client(remote)
     # Refuse contradictory authority before any persistent credential write.
     pgpass_result = install_pgpass(remote, pgpass)
     operations = list(pgpass_result.operations)
+    resources = {"role": "retained" if role is not None else "absent",
+                 "database": "retained" if database is not None else "absent",
+                 "credentials": "installed" if pgpass_result.changed else "retained"}
+    failed_check = "scram-application-access"
     try:
         if role is None:
+            failed_check = "role-creation"
+            resources["role"] = "creation-unproven"
+            operations.append("role-attempt")
             _require_success(
                 remote.run(
                     ("runuser", "-u", "postgres", "--", *plan.role_setup_argv),
@@ -620,18 +747,33 @@ def converge_database(
                 ),
                 "unable to create and initialize PostgreSQL role",
             )
+            operations.remove("role-attempt")
             operations.append("role")
+            resources["role"] = "created"
         if database is None:
+            failed_check = "database-creation"
+            resources["database"] = "creation-unproven"
+            operations.append("database-attempt")
             _require_success(
                 remote.run(("runuser", "-u", "postgres", "--", *plan.database_creation_argv), sudo=True),
                 "unable to create PostgreSQL database",
             )
+            operations.remove("database-attempt")
             operations.append("database")
+            resources["database"] = "created"
+        failed_check = "scram-application-access"
         _verify_application_connection(remote, plan)
     except OpsError as error:
+        if error.stage != "postgresql":
+            error = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql",
+                "PostgreSQL resource convergence reply could not be established",
+                changed=error.changed, state=error.state, warnings=error.warnings,
+                next_action="inspect retained PostgreSQL resources and credentials before retrying")
+        error.state = {**error.state, "failed_check": failed_check, "postgresql_resources": resources}
         if operations:
             error.changed = True
-        raise
+            error.state = {**error.state, "mutation_state": "changed" if any(item in {"pgpass", "role", "database"} for item in operations) else "unknown"}
+        raise error from None
     return ChangeSet(changed=bool(operations), operations=tuple(operations))
 
 
@@ -737,28 +879,62 @@ def _postgres_boolean(value: str) -> bool:
     raise ValueError("invalid PostgreSQL boolean")
 
 
+def _require_scram_client(remote: Remote) -> None:
+    """Inspect the host client after bootstrap installation and before resource writes."""
+    try:
+        result = remote.run(("psql", "--version"), sudo=True, timeout=60,
+            stdout_limit=1024, stderr_limit=1024)
+    except OpsError:
+        raise _access_failure("PostgreSQL SCRAM client prerequisite could not be inspected", check="scram-client-prerequisite") from None
+    version = re.fullmatch(r"psql \(PostgreSQL\) ([0-9]+)\.[^\r\n]+\n", result.stdout)
+    if not result.succeeded or version is None or int(version[1]) < 16:
+        raise _access_failure("PostgreSQL client must support require_auth (version 16 or later)", check="scram-client-prerequisite")
+
+
 def _verify_application_connection(remote: Remote, plan: PostgreSQLPlan) -> None:
-    result = remote.run(
-        (
-            "env",
-            "PGPASSFILE=/etc/taskman/pgpass",
-            "psql",
-            "--no-psqlrc",
-            "--set=ON_ERROR_STOP=1",
-            "--host",
-            plan.settings["listen_addresses"],
-            "--port",
-            plan.settings["port"],
-            "--username",
-            plan.role.name,
-            "--dbname",
-            plan.database.name,
-            "--command",
-            "SELECT 1",
-        ),
-        sudo=True,
-    )
-    _require_success(result, "application PostgreSQL connection verification failed")
+    from ..host_helper.database import scram_psql_argv
+    database = {"host": plan.settings["listen_addresses"], "port": int(plan.settings["port"]),
+                "role": plan.role.name, "name": plan.database.name}
+    query = "SELECT current_user, current_database(), inet_server_addr(), inet_server_port()"
+    try:
+        result = remote.run(("env", "PGPASSFILE=/etc/taskman/pgpass", "LC_ALL=C",
+            *scram_psql_argv(database, query=query)), sudo=True, timeout=60,
+            stdout_limit=1024, stderr_limit=1024)
+    except OpsError:
+        raise _access_failure("PostgreSQL SCRAM application access proof failed") from None
+    expected = f"{plan.role.name}|{plan.database.name}|{database['host']}|{database['port']}\n"
+    if not result.succeeded or result.stdout != expected:
+        raise _access_failure("PostgreSQL SCRAM application access proof failed")
+
+
+def _access_failure(message: str, *, check: str = "scram-application-access") -> OpsError:
+    return OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", message, changed=False,
+        next_action="inspect selected-cluster SCRAM access and protected credentials, then rerun provision",
+        state={"failed_check": check})
+
+
+def _validate_selected_resource_target(remote: Remote, plan: PostgreSQLPlan) -> None:
+    if plan.cluster is None:
+        return
+    cluster = plan.cluster
+    query = "SELECT current_setting('data_directory'), current_setting('config_file'), current_setting('hba_file'), current_setting('port')"
+    try:
+        result = _run_postgresql_admin_query(remote, plan, query, field_separator="|")
+    except OpsError as error:
+        raise OpsError(
+            ExitStatus.REMOTE_PREFLIGHT,
+            "postgresql",
+            "unable to revalidate selected PostgreSQL target",
+            changed=error.changed,
+            next_action="inspect the selected PostgreSQL administrator endpoint and service state, then rerun provision",
+            state=error.state,
+            warnings=error.warnings,
+        ) from None
+    _require_success(result, "unable to revalidate selected PostgreSQL target")
+    expected = f"{cluster.data_directory}|{cluster.config_file}|{cluster.hba_file}|{cluster.port}\n"
+    if result.stdout != expected:
+        raise OpsError(ExitStatus.SAFETY, "postgresql", "selected PostgreSQL target changed before consequence",
+            changed=False, next_action="inspect the selected target and rerun provision for a new plan")
 
 
 def _require_success(result: CommandResult, message: str) -> None:
@@ -1047,6 +1223,9 @@ __all__ = [
     "ManagedFile",
     "PostgreSQLCluster",
     "PostgreSQLPlan",
+    "PostgreSQLOwnershipPlan",
+    "SelectedPostgreSQLCluster",
+    "build_postgresql_ownership_plan",
     "build_postgresql_plan",
     "converge_database",
     "declare_postgresql",

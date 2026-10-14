@@ -24,6 +24,11 @@ from ..host_protocol import (
     validate_cleanup_completion,
     validate_mutation_state,
     validate_verification_report,
+    validate_application_report,
+)
+from ..host_protocol.postgresql import (
+    validate_postgresql_recovery_request, validate_postgresql_recovery_result,
+    reduce_postgresql_recovery_evidence,
 )
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
@@ -85,11 +90,14 @@ def discovery_request(
     *,
     mode: str = "strict",
     backup_id: str | None = None,
+    force_postgresql_config: bool = False,
 ) -> HostRequest:
     """Build credential-safe live host and database discovery authority."""
 
     if type(mode) is not str or mode not in _DISCOVERY_MODES:
         raise ValueError("discovery mode is invalid")
+    if type(force_postgresql_config) is not bool or force_postgresql_config and mode != "provision":
+        raise ValueError("PostgreSQL configuration context is valid only for provision")
     if mode == "restore":
         if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
             raise ValueError("restore discovery requires a valid backup identifier")
@@ -101,6 +109,8 @@ def discovery_request(
         "database": database_settings(config),
         "mode": mode,
     }
+    if mode == "provision":
+        parameters.update(postgres_package_track=config.postgres_package_track, force_postgresql_config=force_postgresql_config)
     if backup_id is not None:
         parameters["backup_id"] = backup_id
 
@@ -143,6 +153,12 @@ def run_request(
     """Invoke once and enforce final protocol/version/operation/correlation."""
 
     aggregate_mutation_state(prior_mutation_state)
+    if request.operation == "postgresql_config_recovery":
+        try:
+            validate_postgresql_recovery_request(request)
+        except ProtocolError:
+            raise _postgresql_recovery_error(request, exit_code=10,
+                mutation_state="unchanged", prior_mutation_state=prior_mutation_state) from None
     manager = temporary_helper_package() if package is None else nullcontext(package)
     try:
         with manager as selected:
@@ -151,6 +167,10 @@ def run_request(
             else:
                 result = invoker(remote, selected, request, deadline=deadline)
     except HelperTransportError as error:
+        if request.operation == "postgresql_config_recovery":
+            raise _postgresql_recovery_error(request, exit_code=5,
+                mutation_state="unknown" if error.helper_entry_dispatched else "unchanged",
+                prior_mutation_state=prior_mutation_state, warnings=error.warnings) from None
         if (
             error.helper_entry_dispatched and _mutating_request(request)
         ) or prior_mutation_state != "unchanged":
@@ -162,6 +182,12 @@ def run_request(
             ) from None
         raise
 
+    if request.operation == "postgresql_config_recovery":
+        try:
+            return validate_postgresql_recovery_result(request, result)
+        except (TypeError, ValueError, AttributeError):
+            raise _postgresql_recovery_error(request, result,
+                prior_mutation_state=prior_mutation_state) from None
     try:
         result = validate_result_for_request(request, result)
     except ProtocolError:
@@ -182,11 +208,43 @@ def run_request(
             "host helper result does not match its request",
             warnings=warnings,
         )
+    if result.outcome == "succeeded" and (
+        request.operation == "provision_authority" or
+        request.operation == "discover" and request.parameters.get("mode") == "provision"
+    ):
+        from ..host_protocol.postgresql import validate_postgresql_authority
+        try:
+            validate_postgresql_authority(result.state["postgresql"],
+                package_track=request.parameters["postgres_package_track"],
+                port=request.parameters["database"]["port"],
+                force_postgresql_config=request.parameters["force_postgresql_config"])
+            if (result.state["database_state"] == "ready") != (result.state["postgresql"]["database"] == "compatible"):
+                raise ProtocolError("inconsistent PostgreSQL schema presence")
+            if result.state["database_state"] == "absent" and result.state["applied_migrations"]:
+                raise ProtocolError("absent PostgreSQL database has migrations")
+        except (KeyError, TypeError, ValueError):
+            raise _safety(request.operation, "host helper returned invalid PostgreSQL authority", warnings=result.warnings) from None
+    if (result.outcome != "succeeded" and result.state.get("failed_boundary") == "postgresql" and
+            (request.operation == "provision_authority" or
+             request.operation == "discover" and request.parameters.get("mode") == "provision")):
+        from ..host_protocol.postgresql import validate_postgresql_failure_context
+        try:
+            validate_postgresql_failure_context(result.state,
+                package_track=request.parameters["postgres_package_track"],
+                port=request.parameters["database"]["port"],
+                force_postgresql_config=request.parameters["force_postgresql_config"])
+        except (KeyError, TypeError, ValueError):
+            raise _safety(request.operation, "host helper returned invalid PostgreSQL failure context",
+                warnings=result.warnings) from None
     if _mutation_result_required(request, result):
         try:
             validated = validate_mutation_state(result.operation, result.outcome, result.state)
             if request.operation == "cleanup":
                 validate_cleanup_completion(request, result.outcome, validated)
+            elif request.operation == "prepare_genesis" and validated["desired_release_id"] not in {
+                None, _request_target_release(request)
+            }:
+                raise ProtocolError("preparation result does not match its target")
         except ProtocolError:
             if _mutating_request(request):
                 raise _mutation_protocol_error(
@@ -204,6 +262,20 @@ def run_request(
     return result
 
 
+def _postgresql_recovery_error(request, result=None, *, exit_code=8, mutation_state=None,
+                               prior_mutation_state="unchanged", warnings=()):
+    state = reduce_postgresql_recovery_evidence(request, result)
+    if mutation_state is not None:
+        state["mutation_state"] = mutation_state
+    state["mutation_state"] = aggregate_mutation_state(prior_mutation_state, state["mutation_state"])
+    state.update(exit_code=exit_code, failed_boundary="postgresql")
+    if isinstance(result, HostResult):
+        warnings = merge_warnings(warnings, result.warnings)
+    return OpsError(ExitStatus(exit_code), "postgresql", "PostgreSQL configuration recovery capture failed",
+        changed=state["mutation_state"] != "unchanged", state=state, warnings=warnings,
+        next_action="inspect selected PostgreSQL configuration and retained recovery copies before retrying; cleanup requires separate authorization")
+
+
 def result_error(
     result: HostResult,
     *,
@@ -215,6 +287,12 @@ def result_error(
 
     if not isinstance(result, HostResult) or result.outcome == "succeeded":
         raise ValueError("result_error requires a final unsuccessful result")
+    if result.operation == "postgresql_config_recovery":
+        state = dict(result.state)
+        state["mutation_state"] = aggregate_mutation_state(prior_mutation_state, state["mutation_state"])
+        return OpsError(ExitStatus(state["exit_code"]), "postgresql", result.message,
+            changed=state["mutation_state"] != "unchanged", state=state, warnings=result.warnings,
+            next_action="inspect retained PostgreSQL recovery copies and selected cluster before retrying; cleanup requires separate authorization")
     if result.operation in MUTATION_OPERATIONS:
         state = mutation_result_facts(
             result,
@@ -241,6 +319,8 @@ def result_error(
         status = ExitStatus.LOCKED
     elif result.outcome == "refused" or result.operation == "cleanup":
         status = ExitStatus.SAFETY
+    elif boundary == "postgresql" and state.get("exit_code") == 5:
+        status = ExitStatus.REMOTE_PREFLIGHT
     elif boundary == "backup":
         status = ExitStatus.BACKUP
     elif result.operation == "backup":
@@ -303,9 +383,11 @@ def mutation_result_facts(
         "observations": mutable(state["observations"]),
         "unavailable_fields": list(state["unavailable_fields"]),
         "inspection_error": state["inspection_error"],
-        "report": mutable(state["report"]),
+        ("local_report" if result.operation == "prepare_genesis" else "report"): mutable(
+            state["local_report" if result.operation == "prepare_genesis" else "report"]
+        ),
     }
-    if result.operation in {"deploy", "genesis"}:
+    if result.operation in {"deploy", "genesis", "prepare_genesis"}:
         facts.update(
             desired_release_id=state["desired_release_id"],
             backup_id=state["backup_id"],
@@ -321,14 +403,18 @@ def mutation_result_facts(
             completed_targets,
             state["completed_targets"],
         )
+    if result.operation == "prepare_genesis":
+        facts["public_probe"] = state["public_probe"]
     return facts
 
 
-def successful_verification(value: object, expected_release_id: str) -> dict[str, object]:
+def successful_verification(
+    value: object, expected_release_id: str, *, application: bool = False
+) -> dict[str, object]:
     """Validate the complete fresh readiness proof for a mutation success."""
 
     try:
-        report = validate_verification_report(mutable(value))
+        report = (validate_application_report if application else validate_verification_report)(mutable(value))
     except ProtocolError:
         raise ValueError("verification report is invalid") from None
     if (
@@ -383,11 +469,11 @@ def run_deployment_request(
     backup_helper: Mapping[str, object],
     prune_backup_ids: tuple[str, ...],
     backup_helper_package: HelperPackage | None = None,
-    genesis: bool = False,
+    operation: str = "deploy",
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
 ) -> HostResult:
-    """Dispatch one exact confirmed deploy/genesis request.
+    """Dispatch one exact confirmed deploy, genesis, or preparation request.
 
     Consent belongs exclusively to the public controller.  The helper receives
     only the material state that the confirmed plan bound, plus a target and
@@ -395,7 +481,8 @@ def run_deployment_request(
     """
 
     if (
-        not isinstance(target, DeploymentTarget)
+        operation not in {"deploy", "genesis", "prepare_genesis"}
+        or not isinstance(target, DeploymentTarget)
         or migration_policy not in {"no-change", "backward-compatible", "restore-required"}
         or not _valid_deployment_expected_state(expected_state)
         or not isinstance(backup_helper, Mapping)
@@ -457,7 +544,7 @@ def run_deployment_request(
             helper_value["upload_path"] = scheduler_upload.as_posix()
         request_value = HostRequest(
             protocol_version=PROTOCOL_VERSION,
-            operation="genesis" if genesis else "deploy",
+            operation=operation,
             correlation_id=correlation_id,
             expected_state=expected_state,
             paths=helper_paths(config),
@@ -633,7 +720,7 @@ def _mutation_result_required(request_value: HostRequest, result: HostResult) ->
 
 
 def _mutating_request(request_value: HostRequest) -> bool:
-    if request_value.operation in {"deploy", "genesis", "restore"}:
+    if request_value.operation in {"deploy", "genesis", "prepare_genesis", "restore"}:
         return True
     return (
         request_value.operation == "cleanup"
@@ -708,9 +795,9 @@ def _unavailable_mutation_facts(
         "unavailable_fields": unavailable,
         "failed_boundary": "helper",
         "inspection_error": None,
-        "report": None,
+        ("local_report" if request_value.operation == "prepare_genesis" else "report"): None,
     }
-    if request_value.operation in {"deploy", "genesis"}:
+    if request_value.operation in {"deploy", "genesis", "prepare_genesis"}:
         facts.update(desired_release_id=_request_target_release(request_value), backup_id=None)
     elif request_value.operation == "restore":
         facts.update(
@@ -720,6 +807,8 @@ def _unavailable_mutation_facts(
         )
     elif request_value.operation == "cleanup":
         facts["completed_targets"] = _merge_completed_targets(completed_targets, ())
+    if request_value.operation == "prepare_genesis":
+        facts["public_probe"] = "not-attempted"
     return facts
 
 

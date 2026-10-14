@@ -92,8 +92,10 @@ def test_postgresql_keeps_package_and_staged_hba_convergence_built_in(monkeypatc
         raising=False,
     )
 
-    expected = build_postgresql_plan(environment_config())
-    assert postgresql.declare_postgresql(environment_config()) == expected
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(),
+        _ownership_observation(branch="bootstrap"), force_postgresql_config=False)
+    expected = ownership.desired
+    assert postgresql.declare_postgresql(ownership) == expected
 
     assert package_calls == [{"packages": list(expected.packages), "name": "Install PostgreSQL"}]
     assert staged == [(expected.hba, "/etc/taskman/pg_hba.conf.staged")]
@@ -128,7 +130,7 @@ def test_postgresql_applies_staged_hba_mode_through_actual_pyinfra_commands(
 
     @deploy("PostgreSQL mode semantics")
     def converge() -> None:
-        postgresql.declare_postgresql(config)
+        postgresql.declare_postgresql(postgresql.build_postgresql_ownership_plan(config, _ownership_observation(branch="bootstrap"), force_postgresql_config=False))
 
     inventory = Inventory((["@local"], {}))
     state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
@@ -1708,6 +1710,7 @@ def test_role_password_input_is_sensitive_stdin_not_a_password_argument() -> Non
     assert rendered == (
         b"\\set ON_ERROR_STOP on\n"
         b"BEGIN;\n"
+        b"SET LOCAL password_encryption = 'scram-sha-256';\n"
         b"CREATE ROLE taskman LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;\n"
         b"\\password taskman\npostgres-sensitive-canary\npostgres-sensitive-canary\nCOMMIT;\n"
     )
@@ -1805,10 +1808,11 @@ def test_database_convergence_creates_a_missing_least_authority_role_and_databas
         [
             CommandResult(0),
             CommandResult(0),
+            CommandResult(0, "psql (PostgreSQL) 18.6\n"),
             CommandResult(3),
             CommandResult(0),
             CommandResult(0),
-            CommandResult(0, "1\n"),
+            CommandResult(0, "taskman|taskman_prod|127.0.0.1|5432\n"),
         ]
     )
     plan = build_postgresql_plan(environment_config())
@@ -1822,28 +1826,13 @@ def test_database_convergence_creates_a_missing_least_authority_role_and_databas
     )
 
     commands = [argv for argv, _kwargs in remote.calls]
-    assert commands[3][-len(plan.role_setup_argv) :] == plan.role_setup_argv
-    assert commands[4][-len(plan.database_creation_argv) :] == plan.database_creation_argv
-    assert commands[-1] == (
-        "env",
-        "PGPASSFILE=/etc/taskman/pgpass",
-        "psql",
-        "--no-psqlrc",
-        "--set=ON_ERROR_STOP=1",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "5432",
-        "--username",
-        "taskman",
-        "--dbname",
-        "taskman_prod",
-        "--command",
-        "SELECT 1",
-    )
+    assert commands[4][-len(plan.role_setup_argv) :] == plan.role_setup_argv
+    assert commands[5][-len(plan.database_creation_argv) :] == plan.database_creation_argv
+    assert "dbname=taskman_prod require_auth=scram-sha-256" in commands[-1]
+    assert commands[-1][-1] == "SELECT current_user, current_database(), inet_server_addr(), inet_server_port()"
     assert all(canary not in " ".join(command) for command in commands)
-    assert remote.calls[3][1]["stdin"] == render_role_password_input(plan.role, canary)
-    assert remote.calls[3][1]["sensitive"] is True
+    assert remote.calls[4][1]["stdin"] == render_role_password_input(plan.role, canary)
+    assert remote.calls[4][1]["sensitive"] is True
 
 
 def test_database_safety_refusal_happens_before_pgpass_or_role_mutation() -> None:
@@ -1878,8 +1867,9 @@ def test_existing_compatible_database_rerun_only_repairs_pgpass_and_verifies_the
             CommandResult(0, "taskman|t|f|f|f|f|f|t\n"),
             CommandResult(0, ""),
             CommandResult(0, "taskman_prod|taskman\n"),
+            CommandResult(0, "psql (PostgreSQL) 18.6\n"),
             CommandResult(0),
-            CommandResult(0, "1\n"),
+            CommandResult(0, "taskman|taskman_prod|127.0.0.1|5432\n"),
         ]
     )
 
@@ -2000,6 +1990,7 @@ def test_database_convergence_preserves_pgpass_change_when_role_creation_fails()
         [
             CommandResult(0, ""),
             CommandResult(0, ""),
+            CommandResult(0, "psql (PostgreSQL) 18.6\n"),
             CommandResult(3),
             CommandResult(1),
         ]
@@ -2025,6 +2016,7 @@ def test_database_convergence_preserves_role_change_when_database_creation_fails
         [
             CommandResult(0, ""),
             CommandResult(0, ""),
+            CommandResult(0, "psql (PostgreSQL) 18.6\n"),
             CommandResult(0),
             CommandResult(0),
             CommandResult(1),
@@ -2053,6 +2045,8 @@ class _PeerOnlyAdministrativeRemote:
 
     def run(self, argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
         command = " ".join(argv)
+        if argv == ("psql", "--version"):
+            return CommandResult(0, "psql (PostgreSQL) 18.6\n")
         if "taskman-pgpass" in argv:
             return CommandResult(3)
         if "--username postgres" in command:
@@ -2068,5 +2062,267 @@ class _PeerOnlyAdministrativeRemote:
             host = argv[argv.index("--host") + 1]
             port = argv[argv.index("--port") + 1]
             self.application_connections.append((host, port))
-            return CommandResult(0, "1\n")
+            return CommandResult(0, f"taskman|taskman_prod|{host}|{port}\n")
         return CommandResult(0)
+
+
+def _ownership_observation(*, branch="existing", role="absent", database="absent"):
+    return {"branch": branch, "role": role, "database": database, "access": "unproven",
+        "cluster": None if branch == "bootstrap" else {"version": "18", "name": "main", "port": 5432,
+            "data_directory": "/var/lib/postgresql/18/main", "config_file": "/etc/postgresql/18/main/postgresql.conf",
+            "hba_file": "/etc/postgresql/18/main/pg_hba.conf"}}
+
+
+def test_existing_postgresql_declares_no_pyinfra_operations():
+    """Existing installations, including previously bootstrapped ones, never gain global authority."""
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(),
+        _ownership_observation(role="compatible", database="compatible"), force_postgresql_config=False)
+    @deploy("Observe PostgreSQL declaration")
+    def converge():
+        postgresql.declare_postgresql(ownership)
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    state.activate_host(inventory.get_host("@local"))
+    add_deploy(state, converge)
+    assert all(not operations for operations in state.ops.values())
+
+
+def test_postgresql_declaration_rejects_unobserved_configuration():
+    with pytest.raises(TypeError):
+        postgresql.declare_postgresql(environment_config())
+
+
+def test_application_proof_requires_scram_and_exact_identity_without_native_diagnostics():
+    remote = ScriptedRemote.from_responses([CommandResult(0, "taskman|taskman_prod|127.0.0.1|5432\n")])
+    postgresql._verify_application_connection(remote, build_postgresql_plan(environment_config()))
+    argv, kwargs = remote.calls[0]
+    assert "dbname=taskman_prod require_auth=scram-sha-256" in argv
+    assert "--no-password" in argv
+    assert kwargs["timeout"] == 60 and kwargs["stdout_limit"] == 1024
+    wrong = ScriptedRemote.from_responses([CommandResult(0, "taskman|foreign|127.0.0.1|5432\n", "secret-canary")])
+    with pytest.raises(OpsError) as raised:
+        postgresql._verify_application_connection(wrong, build_postgresql_plan(environment_config()))
+    assert raised.value.status == ExitStatus.REMOTE_PREFLIGHT
+    assert "secret-canary" not in str(raised.value)
+
+
+def test_role_only_adoption_preserves_password_and_creates_database():
+    remote = ScriptedRemote.from_responses([
+        CommandResult(0, "taskman|t|f|f|f|f|f|t\n"), CommandResult(0), CommandResult(0),
+        CommandResult(0, "psql (PostgreSQL) 18.6\n"), CommandResult(0), CommandResult(0),
+        CommandResult(0, "taskman|taskman_prod|127.0.0.1|5432\n")])
+    plan = build_postgresql_plan(environment_config())
+    result = converge_database(remote, plan, role_password_input=render_role_password_input(plan.role, "secret"), pgpass=b"pgpass\n")
+    assert result.operations == ("database",)
+    assert not any(kwargs.get("stdin") == render_role_password_input(plan.role, "secret") for _, kwargs in remote.calls)
+
+
+@pytest.mark.parametrize("late", [CommandResult(1, stderr="password-secret"), OpsError(ExitStatus.REMOTE_PREFLIGHT, "transport", "reply lost", changed=False)])
+def test_late_access_failure_retains_created_resources(late):
+    remote = ScriptedRemote.from_responses([CommandResult(0), CommandResult(0),
+        CommandResult(0, "psql (PostgreSQL) 18.6\n"), CommandResult(3), CommandResult(0), CommandResult(0), late])
+    plan = build_postgresql_plan(environment_config())
+    with pytest.raises(OpsError) as raised:
+        converge_database(remote, plan, role_password_input=render_role_password_input(plan.role, "secret"), pgpass=b"pgpass\n")
+    assert raised.value.status == ExitStatus.REMOTE_PREFLIGHT
+    assert raised.value.stage == "postgresql"
+    assert raised.value.changed is True
+    assert raised.value.state["mutation_state"] == "changed"
+    assert not any("dropdb" in argv for argv, _ in remote.calls)
+    assert raised.value.state["failed_check"] == "scram-application-access"
+    assert raised.value.state["postgresql_resources"] == {"role": "created", "database": "created", "credentials": "installed"}
+    assert "password-secret" not in repr(raised.value.state)
+    assert "reply lost" not in repr(raised.value.state)
+
+
+def test_resource_drift_refuses_before_credential_installation():
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(), _ownership_observation(), force_postgresql_config=False)
+    remote = ScriptedRemote.from_responses([
+        CommandResult(0, "/var/lib/postgresql/18/main|/etc/postgresql/18/main/postgresql.conf|/etc/postgresql/18/main/pg_hba.conf|5432\n"),
+        CommandResult(0, "taskman|t|f|f|f|f|f|t\n"), CommandResult(0), CommandResult(0),
+        CommandResult(0, "psql (PostgreSQL) 18.6\n"), CommandResult(0), CommandResult(0),
+        CommandResult(0, "taskman|taskman_prod|127.0.0.1|5432\n")])
+    with pytest.raises(OpsError) as raised:
+        converge_database(remote, ownership.desired, role_password_input=render_role_password_input(ownership.desired.role, "secret"), pgpass=b"pgpass\n")
+    assert raised.value.status == ExitStatus.SAFETY
+    assert not any("sh" == argv[0] for argv, _ in remote.calls)
+
+
+def test_native_configuration_refuses_reselected_physical_target(tmp_path):
+    fixture = _native_configuration_fixture(tmp_path, initial_config="listen_addresses = '127.0.0.1'\n")
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(),
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    fixture["plan"] = ownership.desired
+    completed = _run_native_configuration_fixture(fixture)
+    assert completed.returncode == int(ExitStatus.SAFETY)
+    assert not fixture["restart_log"].exists()
+
+
+def test_unsupported_native_client_refuses_before_pgpass_and_resource_creation():
+    remote = ScriptedRemote.from_responses([CommandResult(0), CommandResult(0), CommandResult(0, "psql (PostgreSQL) 15.9\n")])
+    plan = build_postgresql_plan(environment_config())
+    with pytest.raises(OpsError) as raised:
+        converge_database(remote, plan, role_password_input=render_role_password_input(plan.role, "secret"), pgpass=b"pgpass\n")
+    assert raised.value.status == ExitStatus.REMOTE_PREFLIGHT
+    assert "require_auth" in raised.value.message
+    assert raised.value.state["failed_check"] == "scram-client-prerequisite"
+    assert not any(argv[0] == "sh" or "createdb" in argv for argv, _ in remote.calls)
+
+
+@pytest.mark.parametrize("mutation", ["unchanged", "unknown"])
+def test_selected_target_transport_failure_is_postgresql_inspection_with_preserved_evidence(mutation):
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(),
+        _ownership_observation(), force_postgresql_config=False)
+    transport = OpsError(ExitStatus.REMOTE_PREFLIGHT, "remote", "native-diagnostic-canary",
+        changed=mutation != "unchanged", state={"mutation_state": mutation, "inspection_dispatched": True},
+        warnings=("bounded transport cleanup was incomplete",))
+    remote = ScriptedRemote.from_responses([transport])
+    with pytest.raises(OpsError) as refused:
+        converge_database(remote, ownership.desired,
+            role_password_input=render_role_password_input(ownership.desired.role, "secret"), pgpass=b"pgpass\n")
+    assert refused.value.status == ExitStatus.REMOTE_PREFLIGHT
+    assert refused.value.stage == "postgresql"
+    assert refused.value.message == "unable to revalidate selected PostgreSQL target"
+    assert "selected PostgreSQL" in refused.value.next_action
+    assert refused.value.changed is (mutation != "unchanged")
+    assert refused.value.state == transport.state
+    assert refused.value.warnings == transport.warnings
+    assert "native-diagnostic-canary" not in str(refused.value)
+    assert len(remote.calls) == 1
+
+
+def test_override_declaration_requires_bound_environment_and_excludes_packages(monkeypatch):
+    from pyinfra.operations import apt, files
+    config = environment_config()
+    ownership = postgresql.build_postgresql_ownership_plan(config,
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    with pytest.raises((TypeError, ValueError)):
+        postgresql.declare_postgresql(ownership)
+    native = []
+    staged = []
+    monkeypatch.setattr(apt, "packages", lambda **_: pytest.fail("existing override cannot install packages"))
+    monkeypatch.setattr(files, "put", lambda source, path, **kwargs: staged.append((source.getvalue(), path, kwargs)))
+    monkeypatch.setattr(postgresql, "_configure_postgresql_cluster", lambda plan, **kwargs: native.append(kwargs))
+    postgresql.declare_postgresql(ownership, config=config)
+    assert len(staged) == len(native) == 1
+    content, path, options = staged[0]
+    assert content == ownership.desired.hba
+    assert path == "/etc/taskman/pg_hba.conf.staged"
+    assert (options["user"], options["group"], options["mode"]) == ("root", "postgres", "640")
+    assert native[0]["recovery_request"].parameters["cluster"]["version"] == "18"
+    assert native[0]["recovery_request"].paths["install_root"] == config.install_root.as_posix()
+    with pytest.raises(ValueError):
+        postgresql.declare_postgresql(ownership, config=environment_config(database_port=5433))
+
+
+@pytest.mark.parametrize("native_failure", [None, "native-error", "lost-reply", "raised-transport"])
+def test_override_captures_before_native_configuration_and_keeps_recovery(monkeypatch, native_failure):
+    from types import SimpleNamespace
+    from taskman_ops.workflows import helper
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY
+    config = environment_config()
+    ownership = postgresql.build_postgresql_ownership_plan(config,
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    events = []
+    state = SimpleNamespace()
+    def capture(remote, request):
+        events.append("capture")
+        assert isinstance(remote, PyinfraRemote)
+        return recovery_result(request)
+    monkeypatch.setattr(helper, "run_request", capture)
+    def native(*_args, **_kwargs):
+        events.append("native")
+        assert state._taskman_postgresql_recovery.state["recovery_directory"] == DIRECTORY
+        if native_failure == "raised-transport":
+            raise OpsError(5, "remote", "native-secret-canary", changed=True)
+        if native_failure == "lost-reply":
+            return False, SimpleNamespace(stdout_lines=[])
+        return True, SimpleNamespace(stdout_lines=["__taskman_postgresql_status=" + ("1" if native_failure else "0")])
+    host = SimpleNamespace(run_shell_command=native)
+    if native_failure:
+        with pytest.raises(OpsError) as caught:
+            postgresql._run_postgresql_native_configuration(state, host, ownership.desired,
+                "/etc/taskman/pg_hba.conf.staged", None, "postgres", "postgres", recovery_request=recovery_request(), config=config)
+        assert caught.value.stage == "postgresql"
+        assert "native-secret-canary" not in str(caught.value)
+        assert caught.value.changed
+        assert caught.value.state["mutation_state"] == "changed"
+        assert caught.value.state["recovery_directory"] == DIRECTORY
+        assert state._taskman_categorized_error is caught.value
+    else:
+        postgresql._run_postgresql_native_configuration(state, host, ownership.desired,
+            "/etc/taskman/pg_hba.conf.staged", None, "postgres", "postgres", recovery_request=recovery_request(), config=config)
+    assert events == ["capture", "native"]
+
+
+def test_override_capture_failure_refuses_native_write(monkeypatch):
+    from types import SimpleNamespace
+    from taskman_ops.workflows import helper
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result
+    ownership = postgresql.build_postgresql_ownership_plan(environment_config(),
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    monkeypatch.setattr(helper, "run_request", lambda _remote, request: recovery_result(request, mutation="unchanged", directory=None, exit_code=10))
+    state = SimpleNamespace()
+    host = SimpleNamespace(run_shell_command=lambda *_a, **_k: pytest.fail("native write after refused capture"))
+    with pytest.raises(OpsError) as caught:
+        postgresql._run_postgresql_native_configuration(state, host, ownership.desired,
+            "/etc/taskman/pg_hba.conf.staged", None, "postgres", "postgres", recovery_request=recovery_request(), config=environment_config())
+    assert caught.value.status == 10
+    assert not caught.value.changed
+
+
+def test_exact_override_configuration_does_not_invoke_recovery(monkeypatch):
+    from tests.host_helper.test_postgresql_recovery import recovery_request
+    from taskman_ops.workflows import helper
+    config = environment_config()
+    ownership = postgresql.build_postgresql_ownership_plan(config,
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    monkeypatch.setattr(postgresql, "_postgresql_configuration_required", lambda *_a, **_k: False)
+    monkeypatch.setattr(helper, "run_request", lambda *_a, **_k: pytest.fail("recovery capture for exact no-op"))
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host("@local")
+    state.activate_host(host)
+    @deploy("Inspect exact selected PostgreSQL configuration")
+    def converge():
+        postgresql._configure_postgresql_cluster(ownership.desired, recovery_request=recovery_request(), config=config,
+            _sudo=False)
+    remote = PyinfraRemote(host, config, inventory=inventory, state=state)
+    assert remote.run_deploy(converge) == ChangeSet(False)
+    assert getattr(state, "_taskman_postgresql_recovery", None) is None
+
+
+def test_override_inspection_failure_has_postgresql_category_before_capture(monkeypatch):
+    from taskman_ops.workflows import helper
+    from tests.host_helper.test_postgresql_recovery import recovery_request
+    config = environment_config()
+    ownership = postgresql.build_postgresql_ownership_plan(config,
+        _ownership_observation(branch="configure-existing"), force_postgresql_config=True)
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("native-inspection-secret-canary")
+    monkeypatch.setattr(postgresql, "_postgresql_configuration_required", fail)
+    monkeypatch.setattr(helper, "run_request", lambda *_a, **_k: pytest.fail("capture after failed native inspection"))
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host = inventory.get_host("@local")
+    state.activate_host(host)
+    @deploy("Inspect selected PostgreSQL configuration")
+    def converge():
+        postgresql._configure_postgresql_cluster(ownership.desired, recovery_request=recovery_request(), config=config, _sudo=False)
+    with pytest.raises(OpsError) as caught:
+        PyinfraRemote(host, config, inventory=inventory, state=state).run_deploy(converge)
+    assert caught.value.status == 5
+    assert caught.value.stage == "postgresql"
+    assert "native-inspection-secret-canary" not in str(caught.value)
+    assert getattr(state, "_taskman_postgresql_recovery", None) is None
+
+def test_lost_role_creation_reply_does_not_claim_created_database_resources():
+    remote = ScriptedRemote.from_responses([CommandResult(0), CommandResult(0),
+        CommandResult(0, "psql (PostgreSQL) 18.6\n"), CommandResult(0),
+        OpsError(5, "remote", "lost reply")])
+    plan = build_postgresql_plan(environment_config())
+    with pytest.raises(OpsError) as raised:
+        converge_database(remote, plan, role_password_input=render_role_password_input(plan.role, "synthetic-secret"), pgpass=b"synthetic-passfile\n")
+    assert raised.value.changed
+    assert raised.value.state["mutation_state"] == "unknown"
+    assert raised.value.state["postgresql_resources"] == {"role": "creation-unproven", "database": "absent", "credentials": "retained"}
