@@ -23,10 +23,17 @@ from taskman_ops.host_protocol import (
 )
 
 from ..commands import CommandError, run_command
+from ..postgresql import (
+    PostgresqlObservationError,
+    observe_postgresql_authority as _observe_postgresql_authority,
+)
+from ...host_protocol.postgresql import validate_postgresql_context
 from ...checksums import sha256_file
 from ..credentials import validate_credentials
 from ..database import (
     database_mapping,
+    prove_scram_access,
+    require_scram_client,
     observe_database_state,
     observe_database_state_or_empty,
     observe_database_state_or_empty_as_admin,
@@ -42,6 +49,7 @@ from ..state import HostState, StateAmbiguityError, observe_host_state
 
 _SNAPSHOT_TIMEOUT_SECONDS = 5.0
 _DISCOVERY_PARAMETERS = frozenset({"credentials_path", "database", "mode"})
+_PROVISION_DISCOVERY_PARAMETERS = _DISCOVERY_PARAMETERS | {"postgres_package_track", "force_postgresql_config"}
 _RESTORE_DISCOVERY_PARAMETERS = _DISCOVERY_PARAMETERS | {"backup_id"}
 _DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
 _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
@@ -71,9 +79,11 @@ def discover(request: HostRequest) -> HostResult:
     """Return one bounded projection of completed records and physical state."""
 
     try:
-        state, scheduler, restore_database_state = _observe(request)
+        state, scheduler, restore_database_state, postgresql = _observe(request)
     except LifecycleLockContention:
         return _locked(request)
+    except PostgresqlObservationError as error:
+        return _postgresql_failure(request, error)
     except _RestoreBackupFailure:
         return _backup_failure(request)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
@@ -83,6 +93,8 @@ def discover(request: HostRequest) -> HostResult:
     if mode in {"deploy", "provision"}:
         assert scheduler is not None
         projection.update(_deployment_projection(state, scheduler, mode=mode))
+        if mode == "provision":
+            projection["postgresql"] = postgresql
     elif mode == "restore":
         assert scheduler is not None and restore_database_state is not None
         projection.update(
@@ -103,11 +115,10 @@ def provision_authority(request: HostRequest) -> HostResult:
     try:
         if request.operation != "provision_authority" or request.expected_state:
             raise ValueError("provision authority request is incomplete")
-        if set(request.parameters) != {"database", "postgres_package_track", "resource_digests"}:
+        if set(request.parameters) != {"database", "postgres_package_track", "force_postgresql_config", "resource_digests"}:
             raise ValueError("provision authority request is incomplete")
         package_track = request.parameters["postgres_package_track"]
-        if package_track is not None and (type(package_track) is not str or not package_track.isdecimal()):
-            raise ValueError("PostgreSQL package track is invalid")
+        validate_postgresql_context(package_track, request.parameters["force_postgresql_config"])
         database = database_mapping(request.parameters["database"])
         resource_digests = request.parameters["resource_digests"]
         if (
@@ -125,7 +136,7 @@ def provision_authority(request: HostRequest) -> HostResult:
             )
             state = observe_host_state(paths, allow_selection_transition=True)
             database_observation = _observe_provision_database(
-                database, Path("/etc/taskman/pgpass"), package_track,
+                database, Path("/etc/taskman/pgpass"), package_track, request.parameters["force_postgresql_config"],
             )
             state = replace(
                 state,
@@ -135,6 +146,8 @@ def provision_authority(request: HostRequest) -> HostResult:
             )
     except LifecycleLockContention:
         return _locked(request)
+    except PostgresqlObservationError as error:
+        return _postgresql_failure(request, error)
     except (CommandError, PathAuthorityError, StateAmbiguityError, OSError, TypeError, ValueError):
         return _refused(request)
     # The controller separately obtains complete installed records through the
@@ -147,6 +160,7 @@ def provision_authority(request: HostRequest) -> HostResult:
     projection.update(
         {
             "authority": "validated",
+            "postgresql": database_observation["postgresql"],
             "initial_database_empty": database_observation["initial_empty"],
             "installed_release_count": len(release_rows),
             "installed_release_sha256": hashlib.sha256(_canonical_ascii(release_rows)).hexdigest(),
@@ -209,91 +223,61 @@ def _validate_managed_resources(
 
 def _observe_provision_database(
     database: Mapping[str, object], credentials_path: Path, package_track: str | None = None,
+    force_postgresql_config: bool = False,
 ) -> dict[str, object]:
-    """Observe absent or ready provisioning identities without inventing schema evidence."""
-
-    database_state = _observe_postgresql_authority(database, package_track)
-    # A provision plan may only call an existing database empty when
-    # the controlled-template probe proved it.  Preserve observed
-    # migrations as authority; missing observation is never an empty
-    # tuple for the convenience of first-install planning.
-    if database_state == "absent":
-        # A missing cluster/database is a planned provisioning delta,
-        # not an observed empty schema.  Do not touch absent
-        # credentials or manufacture controlled-template evidence.
-        database_observation = {
-            "state": "absent",
-            "applied_migrations": (),
-            "initial_empty": False,
-        }
-    else:
-        try:
-            credentials_path.lstat()
-        except FileNotFoundError:
-            # The controller proves its supplied pgpass through a
-            # sensitive, read-only authentication command before
-            # pyinfra. Keep this catalog observation secret-free so
-            # supplied credential bytes never enter the wire result,
-            # request, or diagnostics.
-            database_observation = observe_database_state_or_empty_as_admin(database)
+    """Preserve separate resource/schema authority and completed application access."""
+    postgresql = _observe_postgresql_authority(database, package_track, force_postgresql_config)
+    try:
+        if postgresql["cluster"] is not None:
+            try:
+                require_scram_client()
+            except CommandError:
+                raise PostgresqlObservationError("PostgreSQL client require_auth prerequisite is unavailable", 5,
+                    failed_check="scram-client-prerequisite") from None
+        if postgresql["database"] == "absent":
+            observation = {"state": "absent", "applied_migrations": (), "initial_empty": False}
         else:
-            validate_credentials(credentials_path)
-            database_observation = observe_database_state_or_empty(database, credentials_path)
-        if database_observation["state"] != database_state:
-            raise ValueError("PostgreSQL authority observations disagree")
-    return database_observation
+            try:
+                credentials_path.lstat()
+            except FileNotFoundError:
+                observation = _observe_provision_schema_as_admin(database)
+            else:
+                validate_credentials(credentials_path)
+                if force_postgresql_config:
+                    observation = _observe_provision_schema_as_admin(database)
+                else:
+                    try:
+                        prove_scram_access(database, credentials_path)
+                        observation = observe_database_state_or_empty(database, credentials_path)
+                    except CommandError:
+                        raise PostgresqlObservationError("PostgreSQL SCRAM application access could not be established", 5,
+                            failed_check="scram-application-access") from None
+                    postgresql = {**postgresql, "access": "ready"}
+            if observation["state"] != "ready":
+                raise PostgresqlObservationError("PostgreSQL resource and schema observations disagree; inspect operator setup",
+                    failed_check="resource-schema-consistency")
+    except PostgresqlObservationError as error:
+        error.observation = postgresql
+        raise
+    return {**observation, "postgresql": postgresql}
 
 
-def _observe_postgresql_authority(
-    database: Mapping[str, object], package_track: str | None,
-) -> str:
-    """Observe a selected cluster, its listener process, and database identities."""
-
-    script = "\n".join(
-        (
-            "set -eu",
-            "track=$1 port=$2 role=$3 database=$4",
-            "command -v pg_lsclusters >/dev/null 2>&1 || { printf '%s\\n' absent; exit 0; }",
-            "cluster_rows=$(pg_lsclusters --no-header 2>/dev/null)",
-            "candidates=$(printf '%s\\n' \"$cluster_rows\" | awk -v track=\"$track\" '(track == \"*\" || $1 == track) { if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ || $3 !~ /^[0-9]+$/ || ($4 != \"online\" && $4 != \"down\") || $5 != \"postgres\") exit 2; print $1, $2, $3, $4 }')",
-            "count=$(printf '%s\\n' \"$candidates\" | sed '/^$/d' | wc -l | tr -d ' ')",
-            "[ \"$count\" -le 1 ] || exit 1",
-            "[ \"$count\" -eq 0 ] && { printf '%s\\n' absent; exit 0; }",
-            "set -- $candidates",
-            "version=$1 cluster=$2 configured_port=$3 state=$4",
-            "[ \"$state\" = online ] && [ \"$configured_port\" = \"$port\" ] || exit 1",
-            "data=$(pg_conftool -s \"$version\" \"$cluster\" show data_directory 2>/dev/null) || exit 1",
-            "pid=$(sed -n '1p' \"$data/postmaster.pid\" 2>/dev/null || true)",
-            "case \"$pid\" in ''|*[!0-9]*) exit 1 ;; esac",
-            "[ \"$(readlink -f \"/proc/$pid/exe\" 2>/dev/null || true)\" = \"/usr/lib/postgresql/$version/bin/postgres\" ] || exit 1",
-            "[ \"$(stat --format='%U:%G' \"/proc/$pid\" 2>/dev/null || true)\" = postgres:postgres ] || exit 1",
-            "admin() { runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --host /var/run/postgresql --port \"$port\" --username postgres --dbname postgres --set=ON_ERROR_STOP=1 \"$@\" --file=-; }",
-            "role_ok=$(printf '%s\\n' \"SELECT CASE WHEN rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND rolinherit AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership JOIN pg_roles member ON member.oid = membership.member WHERE member.rolname = :'role') THEN 1 ELSE 0 END FROM pg_roles WHERE rolname = :'role'\" | admin --set=role=\"$role\" 2>/dev/null)",
-            "database_ok=$(printf '%s\\n' \"SELECT CASE WHEN pg_get_userbyid(datdba) = :'role' THEN 1 ELSE 0 END FROM pg_database WHERE datname = :'database'\" | admin --set=database=\"$database\" --set=role=\"$role\" 2>/dev/null)",
-            "case \"$role_ok:$database_ok\" in :) printf '%s\\n' absent ;; 1:1) printf '%s\\n' ready ;; *) exit 1 ;; esac",
-        )
-    )
-    result = run_command(
-        (
-            "sh", "-ceu", script, "taskman-provision-authority",
-            "*" if package_track is None else package_track,
-            str(database["port"]), str(database["role"]), str(database["name"]),
-        ),
-        timeout_seconds=_SNAPSHOT_TIMEOUT_SECONDS,
-        output_limit=1024,
-    )
-    if result.stdout == b"ready\n":
-        return "ready"
-    if result.stdout == b"absent\n":
-        return "absent"
-    raise ValueError("PostgreSQL authority observation is incomplete")
+def _observe_provision_schema_as_admin(database: Mapping[str, object]) -> dict[str, object]:
+    """Classify native inspection failure without reclassifying provenance refusal."""
+    try:
+        return observe_database_state_or_empty_as_admin(database)
+    except CommandError as error:
+        raise PostgresqlObservationError(
+            "administrator PostgreSQL schema inspection failed; establish selected-cluster database access",
+            5, failed_check="schema-inspection"
+        ) from error
 
 
 def list_releases(request: HostRequest) -> HostResult:
     """Return completed release manifests from one coherent snapshot."""
 
     try:
-        state, _scheduler, _restore_database_state = _observe(request)
+        state, _scheduler, _restore_database_state, _postgresql = _observe(request)
         cursor = _inventory_cursor(request, "list_releases")
     except _InvalidCursor:
         return _invalid_cursor(request)
@@ -312,7 +296,7 @@ def list_backups(request: HostRequest) -> HostResult:
     """Return validated backup manifests from one coherent snapshot."""
 
     try:
-        state, _scheduler, _restore_database_state = _observe(request)
+        state, _scheduler, _restore_database_state, _postgresql = _observe(request)
         cursor = _inventory_cursor(request, "list_backups")
     except _InvalidCursor:
         return _invalid_cursor(request)
@@ -329,7 +313,7 @@ def list_backups(request: HostRequest) -> HostResult:
 
 def _observe(
     request: HostRequest,
-) -> tuple[HostState, dict[str, object] | None, dict[str, object] | None]:
+) -> tuple[HostState, dict[str, object] | None, dict[str, object] | None, dict[str, object] | None]:
     paths = ManagedPaths.from_mapping(request.paths)
     # The lock is held only while the completed records and physical selection
     # are read.  Health/readiness commands run after this snapshot is released.
@@ -341,10 +325,13 @@ def _observe(
             if type(mode) is not str or mode not in _DISCOVERY_MODES:
                 raise ValueError("discovery mode is invalid")
             expected_parameters = (
-                _RESTORE_DISCOVERY_PARAMETERS if mode == "restore" else _DISCOVERY_PARAMETERS
+                _RESTORE_DISCOVERY_PARAMETERS if mode == "restore" else
+                _PROVISION_DISCOVERY_PARAMETERS if mode == "provision" else _DISCOVERY_PARAMETERS
             )
             if set(request.parameters) != expected_parameters:
                 raise ValueError("discovery request is incomplete")
+            if mode == "provision":
+                validate_postgresql_context(request.parameters["postgres_package_track"], request.parameters["force_postgresql_config"])
             backup_id = request.parameters.get("backup_id")
             if mode == "restore":
                 if type(backup_id) is not str or _BACKUP_ID_RE.fullmatch(backup_id) is None:
@@ -381,13 +368,13 @@ def _observe(
                     observation = {"state": "absent", "applied_migrations": ()}
             else:
                 observation = (
-                    _observe_provision_database(database, credentials_path)
+                    _observe_provision_database(database, credentials_path, request.parameters["postgres_package_track"], request.parameters["force_postgresql_config"])
                     if mode == "provision"
                     else observe_database_state(database, credentials_path)
                 )
             state = observe_host_state(
                 paths,
-                database=observation,
+                database={key: value for key, value in observation.items() if key != "postgresql"},
                 allow_selection_transition=mode in {"deploy", "provision", "restore"},
             )
             if mode == "restore":
@@ -423,14 +410,14 @@ def _observe(
                 if mode in {"deploy", "provision", "restore"}
                 else None
             )
-            return state, scheduler, restore_database_state
+            return state, scheduler, restore_database_state, observation.get("postgresql")
         if request.expected_state or set(request.parameters) != {"cursor"}:
             raise ValueError("listing request is invalid")
         return observe_host_state(
             paths,
             allow_selection_transition=request.operation
             in {"list_releases", "list_backups"},
-        ), None, None
+        ), None, None, None
 
 
 def _validate_restore_backup(paths: ManagedPaths, backup_id: object) -> BackupRecord:
@@ -904,6 +891,13 @@ def _locked(request: HostRequest) -> HostResult:
         state={"locked": True},
         warnings=(),
     )
+
+
+def _postgresql_failure(request: HostRequest, error: PostgresqlObservationError) -> HostResult:
+    return HostResult.for_request(request, "refused" if error.exit_code == 10 else "manual",
+        str(error), {"failed_boundary": "postgresql", "exit_code": error.exit_code,
+                     "failed_check": error.failed_check,
+                     "postgresql_observation": error.observation}, ())
 
 
 __all__ = ["discover", "list_backups", "list_releases", "provision_authority"]

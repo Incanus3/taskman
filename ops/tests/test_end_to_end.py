@@ -29,8 +29,8 @@ from taskman_ops.releases.artifacts import DeploymentTarget
 from taskman_ops.releases.manifests import ArtifactManifest, VerifiedArtifact
 from taskman_ops.remote import CommandResult, UploadReceipt
 from taskman_ops.remote import ChangeSet
-from taskman_ops.provisioning import validate_existing_authority
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.provisioning import ProvisioningResult, validate_existing_authority
+from tests.support.caddy import controller_plan, authority_result, prepared_result
 from taskman_ops.workflows.helper import mutable
 from taskman_ops.workflows.provision import ProvisionCapabilities, provision
 from tests.host_helper import test_cleanup as host_cleanup_tests
@@ -141,6 +141,9 @@ class _ControllerRemote:
             shutil.copyfile(source, destination)
             destination.chmod(0o500)
             return CommandResult(0)
+        if isinstance(args, tuple) and args[:3] == ("rm", "-f", "--"):
+            self._local_path(args[-1]).unlink(missing_ok=True)
+            return CommandResult(0)
         if isinstance(args, tuple) and args[:2] == ("rm", "--"):
             self._local_path(args[-1]).unlink()
             return CommandResult(0)
@@ -149,7 +152,7 @@ class _ControllerRemote:
             return CommandResult(0)
         if (
             isinstance(args, tuple)
-            and len(args) == 11
+            and len(args) == 12
             and args[:4] == ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3")
             and args[5] == "provision-pgpass-authority"
             and isinstance(stdin, bytes)
@@ -167,7 +170,16 @@ import sys
 archive, *arguments = sys.argv[1:]
 sys.path.insert(0, archive)
 from taskman_ops.host_helper.operations import preflight
-preflight.run_command = lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, b"", b"")
+from taskman_ops.host_helper import database
+
+def native_command(argv, **_kwargs):
+    if argv == ("psql", "--version"):
+        return subprocess.CompletedProcess(argv, 0, b"psql (PostgreSQL) 18.6\n", b"")
+    assert argv[argv.index("--dbname") + 1] == f"dbname={arguments[4]} require_auth=scram-sha-256"
+    assert "--no-password" in argv
+    output = f"{arguments[3]}|{arguments[4]}|{arguments[1]}|{arguments[2]}\n".encode()
+    return subprocess.CompletedProcess(argv, 0, output, b"")
+database.run_command = native_command
 sys.argv = [archive, *arguments]
 runpy.run_path(archive, run_name="__main__")
 '''
@@ -517,7 +529,7 @@ def backup(current, paths, *_args, **_kwargs):
     write_state(value)
     return record
 
-def report(release_id, ok):
+def report(release_id, ok, failing_check="local-readiness"):
     names = (
         "taskman-service", "release-identity", "caddy-service", "listener-topology",
         "startup-journal", "local-readiness", "public-readiness", "public-hsts",
@@ -529,11 +541,21 @@ def report(release_id, ok):
         "release_id": release_id,
         "expected_release_id": release_id,
         "checks": [
-            {"schema_version": 1, "name": name, "status": "passed" if ok or name != "local-readiness" else "failed", "summary": "checked"}
+            {"schema_version": 1, "name": name, "status": "passed" if ok or name != failing_check else "failed", "summary": "checked"}
             for name in names
         ],
         "next_action": None if ok else "inspect the fixed verification summaries and correct the reported host state before retrying",
     }
+
+def verify_application(request, **_kwargs):
+    from taskman_ops.host_helper.verification import ApplicationVerification
+    value = read_state()
+    proof = report(request.expected_state["expected_release_id"], True)
+    proof["scope"] = "application"
+    proof["checks"] = [item for item in proof["checks"] if item["name"] not in {"caddy-service", "public-readiness", "public-hsts"}]
+    value["events"].append("application-proof")
+    write_state(value)
+    return ApplicationVerification(proof, value.get("public_probe", "not-ready"))
 
 def verify(request, **_kwargs):
     expected = request.expected_state["expected_release_id"]
@@ -542,7 +564,7 @@ def verify(request, **_kwargs):
     if value.get("track_deploy_protection_sequence"):
         value["events"].append("verification")
         write_state(value)
-    return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "succeeded" if ok else "retryable", "verified" if ok else "not ready", {"report": report(expected, ok)}, ())
+    return HostResult(PROTOCOL_VERSION, "verify", request.correlation_id, "succeeded" if ok else "retryable", "verified" if ok else "not ready", {"report": report(expected, ok, value.get("failing_check", "local-readiness"))}, ())
 
 _write_backup_protection = protection_module.write_backup_protection
 def write_backup_protection(paths, protection):
@@ -614,7 +636,27 @@ deploy_module.observe_database_state_or_empty = database
 discover_module.observe_database_state = database
 discover_module.observe_database_state_or_empty = database
 discover_module.observe_database_state_or_empty_as_admin = database
-discover_module._observe_postgresql_authority = lambda *_args: read_state()["database_state"]
+def postgresql_authority(*_args):
+    present = read_state()["database_state"] == "ready"
+    return {"branch": "existing", "cluster": {"version": "18", "name": "main", "port": 5432,
+        "data_directory": "/var/lib/postgresql/18/main", "config_file": "/etc/postgresql/18/main/postgresql.conf",
+        "hba_file": "/etc/postgresql/18/main/pg_hba.conf"}, "role": "compatible" if present else "absent",
+        "database": "compatible" if present else "absent", "access": "unproven"}
+discover_module._observe_postgresql_authority = postgresql_authority
+from taskman_ops.host_helper import database as database_module
+
+def application_command(argv, **_kwargs):
+    if argv == ("psql", "--version"):
+        return subprocess.CompletedProcess(argv, 0, b"psql (PostgreSQL) 18.6\n", b"")
+    connection = argv[argv.index("--dbname") + 1]
+    assert connection == "dbname=taskman_prod require_auth=scram-sha-256"
+    assert "--no-password" in argv
+    role = argv[argv.index("--username") + 1]
+    host = argv[argv.index("--host") + 1]
+    port = argv[argv.index("--port") + 1]
+    return subprocess.CompletedProcess(argv, 0, f"{role}|taskman_prod|{host}|{port}\n".encode(), b"")
+
+database_module.run_command = application_command
 discover_module._validate_managed_resources = lambda *_args, **_kwargs: None
 deploy_module.create_validated_backup = backup
 deploy_module.run_command = command
@@ -629,6 +671,7 @@ discover_module.validate_credentials = validate_discovery_credentials
 deploy_module._taskman_gid = os.getegid
 state_module._service_state = lambda include_runtime: "running" if include_runtime and read_state()["service_running"] else "stopped"
 deploy_module.verify = verify
+deploy_module.verify_application = verify_application
 def scheduler_facts(_paths):
     value = read_state()
     helper_present = value["scheduler_resources"]["helper"]
@@ -1040,6 +1083,28 @@ def _install_public_controller(
 
     from taskman_ops.workflows import deploy as deploy_workflow
     from taskman_ops.workflows import helper, inventory
+
+    # Model an already compatible active native firewall at the host edge. Keep
+    # controller inspection, helper runner, closed protocol and policy real;
+    # lifecycle/scheduler tests below do not perform firewall convergence.
+    from taskman_ops.host import firewall as controller_firewall
+    from taskman_ops.host_helper.ufw_adapter import UfwSnapshot
+    from taskman_ops.workflows import provision as provision_module
+    from tests.host.test_firewall import DEFAULTS, FirewallRemote, rule
+
+    firewall_remote = FirewallRemote(monkeypatch)
+    def inspect_firewall(_remote, config):
+        monkeypatch.setenv("SSH_CONNECTION", f"192.0.2.1 12345 203.0.113.10 {config.ssh_port}")
+        public = (config.ssh_port, 80, 443)
+        private = (config.application_port, config.database_port, config.distribution_port, 4369)
+        firewall_remote.snapshot = UfwSnapshot(True, DEFAULTS, tuple(
+            rule(port, family, action)
+            for family in (4, 6)
+            for action, ports in (("allow", public), ("deny", private))
+            for port in ports
+        ))
+        return controller_firewall.inspect_firewall(firewall_remote, config)
+    monkeypatch.setattr(provision_module, "inspect_firewall", inspect_firewall)
 
     package = integration_packages.materialize_helper(tmp_path / "taskman-host.pyz")
     remote = _ControllerRemote() if remote is None else remote
@@ -2049,7 +2114,7 @@ def _converge_native_provision_writers(runtime_path: Path):
             runtime["migrations"] = runtime["post_pyinfra_migrations"]
         runtime["native_provision_writes"] = runtime.get("native_provision_writes", 0) + 1
         runtime_path.write_text(json.dumps(runtime, sort_keys=True))
-        return ChangeSet(changed=True, operations=("pyinfra", "postgresql", "scheduler"))
+        return ProvisioningResult(ChangeSet(changed=True, operations=("pyinfra", "postgresql", "scheduler")), prepared_result(inputs.caddy_plan))
 
     return converge
 
@@ -2101,6 +2166,7 @@ def _configure_default_public_provision(
         lambda _name: SimpleNamespace(database_password="test-password"),
     )
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "inspect_caddy", lambda *_args: authority_result())
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
     monkeypatch.setattr(
         provision_module,
@@ -2110,11 +2176,8 @@ def _configure_default_public_provision(
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
     monkeypatch.setattr(
         provision_module,
-        "build_caddy_plan",
-        lambda _config: CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (), ("caddy",), "taskman.example.test {\n}\n",
-        ),
+        "build_caddy_ownership_plan",
+        lambda *_args: controller_plan(),
     )
     monkeypatch.setattr(
         provision_module,
@@ -2672,6 +2735,7 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
     """Provision reaches real genesis after its bounded local convergence seam."""
 
     from taskman_ops.workflows.deploy import deploy_first_release
+    from taskman_ops.workflows import provision as provision_module
 
     request = host_deploy_tests._request(tmp_path / "genesis", operation="genesis", previous=None)
     remote, runtime_path = _install_public_controller(monkeypatch, tmp_path, integration_packages, verification="passing")
@@ -2690,17 +2754,17 @@ def test_public_provision_executes_genesis_through_the_packaged_helper(
         connect=lambda _config: remote,
         discover=lambda _remote, _config, **_kwargs: {"admission": "isolated"},
         render_role_password_input=lambda _role, _password: b"role-password-input\n",
-        provisioning=lambda _remote, _inputs: ChangeSet(changed=False),
-        caddy_plan=lambda _config: CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (),
-            ("caddy",),
-            "taskman.example.test {\n}\n",
-        ),
+        provisioning=lambda _remote, inputs: ProvisioningResult(ChangeSet(changed=False), prepared_result(inputs.caddy_plan)),
+        caddy_plan=lambda *_args: controller_plan(),
+        caddy=lambda *_args: authority_result(),
+        preparation=lambda *_a, **_kw: pytest.fail("bootstrap uses genesis"),
+        activation=lambda *_a, **_kw: pytest.fail("bootstrap already active"),
+        completion=lambda *_a, **_kw: pytest.fail("bootstrap uses genesis"),
         genesis=deploy_first_release,
         preflight=validate_existing_authority,
         target_resolution=lambda _remote, _config, _invocation, _clean_inputs: target,
         downgrade_authority=lambda _remote, _config, _target: (False, ()),
+        firewall=provision_module.inspect_firewall,
     )
 
     result = provision(
@@ -2769,6 +2833,7 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
         lambda _name: SimpleNamespace(database_password="test-password"),
     )
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "inspect_caddy", lambda *_args: authority_result())
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
     monkeypatch.setattr(
         provision_module,
@@ -2778,11 +2843,8 @@ def test_default_public_provision_creates_confirmed_absent_scheduler_through_pac
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
     monkeypatch.setattr(
         provision_module,
-        "build_caddy_plan",
-        lambda _config: CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (), ("caddy",), "taskman.example.test {\n}\n",
-        ),
+        "build_caddy_ownership_plan",
+        lambda *_args: controller_plan(),
     )
     monkeypatch.setattr(
         provision_module,
@@ -2890,6 +2952,7 @@ def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_b
     monkeypatch.setattr(provision_module, "load_environment", lambda _name: config)
     monkeypatch.setattr(provision_module, "decrypt_secrets", lambda _name: SimpleNamespace(database_password="test-password"))
     monkeypatch.setattr(provision_module, "connect", lambda _config: remote)
+    monkeypatch.setattr(provision_module, "inspect_caddy", lambda *_args: authority_result())
     monkeypatch.setattr(provision_module, "render_runtime_environment", lambda *_args: b"RUNTIME=value\n")
     monkeypatch.setattr(
         provision_module,
@@ -2897,10 +2960,7 @@ def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_b
         lambda *_args: b"127.0.0.1:5432:taskman_prod:taskman:test-password\n",
     )
     monkeypatch.setattr(provision_module, "render_role_password_input", lambda *_args: b"role-password\n")
-    monkeypatch.setattr(provision_module, "build_caddy_plan", lambda _config: CaddyPlan(
-        CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-        (), ("caddy",), "taskman.example.test {\n}\n",
-    ))
+    monkeypatch.setattr(provision_module, "build_caddy_ownership_plan", lambda *_args: controller_plan())
     monkeypatch.setattr(provision_module, "converge_provisioning", _converge_native_provision_writers(runtime_path))
 
     result = provision(Invocation(
@@ -2918,3 +2978,434 @@ def test_default_public_provision_recovers_a_partial_schema_with_null_baseline_b
     assert state.selections[0].previous_release_id is None
     assert state.selections[0].observed_previous_release_id is None
     assert state.backups
+
+
+def _shared_proxy_public_capabilities(monkeypatch, tmp_path, integration_packages, *, imported=False, original=None, migrations=None, applied_migrations=()):
+    from taskman_ops.services import caddy
+    from taskman_ops.workflows.deploy import prepare_first_release, finalize_first_release, deploy_first_release
+    from taskman_ops.workflows import provision as workflow
+    from tests.support.caddy import mutation_host, request as proxy_request
+    request = host_deploy_tests._request(tmp_path / "application", operation="genesis", previous=None,
+        **({"migrations": migrations} if migrations is not None else {}))
+    remote, runtime_path = _install_public_controller(monkeypatch,tmp_path,integration_packages, verification="passing",
+        migrations=applied_migrations, migration_result=tuple(int(item.filename[:14]) for item in migrations) if migrations is not None else None)
+    native, proxy_root, proxy_calls = mutation_host(tmp_path / "proxy",monkeypatch,imported=imported,original=original)
+    config = _controller_config(dict(request.paths))
+    target = _artifact_target(request)
+    monkeypatch.setattr(caddy,"invoke_helper",lambda _r,_p,req:native.caddy(req))
+    caps = ProvisionCapabilities(
+        load_environment=lambda _:config, decrypt_secrets=lambda _:SimpleNamespace(database_password="password"),
+        render_runtime_environment=lambda *_:b"RUNTIME=value\n", render_pgpass=lambda *_:b"127.0.0.1:5432:taskman_prod:taskman:password\n",
+        render_role_password_input=lambda *_:b"role-password\n", render_plan=lambda *_:{}, present_plan=lambda _:None,
+        confirm=lambda _:True, connect=lambda _:remote, discover=lambda *_a,**_kw:{"admission":"isolated"},
+        provisioning=lambda remote,inputs:ProvisioningResult(ChangeSet(False),caddy.prepare_caddy(remote,inputs.caddy_plan)),
+        caddy=lambda remote,config:caddy.inspect_caddy(remote,config), caddy_plan=caddy.build_caddy_ownership_plan,
+        genesis=deploy_first_release,preparation=prepare_first_release,activation=caddy.activate_caddy,completion=finalize_first_release,
+        preflight=validate_existing_authority,target_resolution=lambda *_:target,
+        downgrade_authority=lambda *_:(False,()),firewall=workflow.inspect_firewall,
+    )
+    invocation=Invocation(command="provision",environment="production",yes=True,artifact=target.artifact.archive)
+    return caps, invocation, remote, runtime_path, native, proxy_root, proxy_calls, target
+
+
+def test_shared_proxy_pending_rerun_activation_full_history_and_later_deploy(tmp_path,monkeypatch,integration_packages):
+    from taskman_ops.workflows.deploy import deploy
+    caps,invocation,remote,runtime_path,native,root,calls,target=_shared_proxy_public_capabilities(monkeypatch,tmp_path,integration_packages)
+    first=provision(invocation,capabilities=caps)
+    assert first.exit_status == ExitStatus.PROXY_PENDING
+    assert first.facts["deployment_verified"] is False
+    assert first.facts["local_report"]["status"] == "ok"
+    config=caps.load_environment("")
+    paths={"install_root":str(config.install_root),"backup_root":str(config.backup_root)}
+    assert _state(paths, runtime_path).selections == ()
+    path=root/"etc/caddy/sites-enabled/taskman.caddy";mtime=path.stat().st_mtime_ns
+    repeated=provision(invocation,capabilities=caps)
+    assert repeated.exit_status == ExitStatus.PROXY_PENDING
+    assert repeated.changed is False
+    assert path.stat().st_mtime_ns == mtime
+    assert all(argv[0]!="systemctl" for argv,_ in calls)
+    (root/"etc/caddy/Caddyfile").write_text("import sites-enabled/*.caddy\n")
+    completed=provision(invocation,capabilities=caps)
+    assert completed.exit_status == 0
+    assert completed.facts["deployment_verified"] is True
+    assert [argv for argv,_ in calls].count(("systemctl","reload","caddy.service")) == 1
+    config=caps.load_environment("");paths={"install_root":str(config.install_root),"backup_root":str(config.backup_root)}
+    history=_state(paths,runtime_path).selections
+    assert len(history)==1
+    assert history[0].observed_previous_release_id == target.release_id
+    assert history[0].previous_release_id is None
+    replay=provision(invocation,capabilities=caps)
+    assert replay.exit_status == 0
+    assert _state(paths,runtime_path).selections == history
+    later_request=replace(host_deploy_tests._request(tmp_path/"later",application_version="0.3.0"),paths=paths)
+    later=deploy(remote,config,_artifact_target(later_request),yes=True,allow_downgrade=True)
+    assert later.exit_status == 0
+    assert len(_state(paths,runtime_path).selections)==2
+
+
+def test_shared_proxy_conditional_activation_before_real_full_verification(tmp_path,monkeypatch,integration_packages):
+    caps,invocation,remote,runtime_path,native,root,calls,target=_shared_proxy_public_capabilities(monkeypatch,tmp_path/"host",integration_packages,imported=True)
+    value=json.loads(runtime_path.read_text());value["public_probe"]="ready";runtime_path.write_text(json.dumps(value))
+    result=provision(invocation,capabilities=caps)
+    assert result.exit_status == 0
+    assert [argv for argv,_ in calls].count(("systemctl","reload","caddy.service")) == 1
+    assert result.facts["verification"]["status"] == "ok"
+
+
+@pytest.mark.parametrize("final_state", ("tls-failed", "lost"))
+def test_shared_proxy_reload_keeps_actual_final_failure_and_earlier_mutations(tmp_path,monkeypatch,integration_packages,final_state):
+    caps,invocation,remote,runtime_path,native,root,calls,target=_shared_proxy_public_capabilities(monkeypatch,tmp_path,integration_packages,imported=True)
+    value=json.loads(runtime_path.read_text())
+    if final_state=="tls-failed":
+        value["verification"]="failing"
+        value["failing_check"]="public-hsts"
+    elif final_state=="lost":
+        value["lose_genesis_result_once"]=True
+    runtime_path.write_text(json.dumps(value))
+    uploads=[]
+    original_put=remote.put
+    def put(source,destination,**kwargs):
+        if source == target.artifact.archive:
+            uploads.append(Path(destination))
+            if len(uploads)==2:
+                assert not uploads[0].exists(), "first dispatch upload cleanup must already have run"
+        return original_put(source,destination,**kwargs)
+    monkeypatch.setattr(remote,"put",put)
+    result=provision(invocation,capabilities=caps)
+    assert result.exit_status != 0
+    assert result.exit_status != ExitStatus.PROXY_PENDING
+    assert result.changed is True
+    assert result.facts["mutation_state"]=="changed"
+    assert result.facts["caddy_receipt"]["site_changed"] is True
+    assert result.facts["preparation"]["local_report"]["status"] == "ok"
+    assert [argv for argv,_ in calls].count(("systemctl","reload","caddy.service"))==1
+    assert len(uploads)==2
+    assert uploads[0] != uploads[1]
+    if final_state == "lost":
+        assert result.facts["selected_release_id"] is None
+        assert result.facts["applied_migrations"] is None
+        assert result.facts["verification"] is None
+        assert result.facts["unavailable_fields"]
+    else:
+        assert result.exit_status == ExitStatus.READINESS
+        assert result.facts["verification"]["status"] == "failed"
+        assert any(item["name"]=="public-hsts" and item["status"]=="failed" for item in result.facts["verification"]["checks"])
+
+
+def test_shared_proxy_preparation_backup_transfers_to_first_success_history(tmp_path,monkeypatch,integration_packages):
+    from taskman_ops.releases.manifests import MigrationFingerprint
+    migrations=(host_deploy_tests.MIGRATION, MigrationFingerprint("20260906120000_add_projects.exs","e"*64))
+    caps,invocation,remote,runtime_path,native,root,calls,target=_shared_proxy_public_capabilities(monkeypatch,tmp_path,integration_packages,
+        imported=True,migrations=migrations,applied_migrations=(20260905120000,))
+    source=host_deploy_tests._request(tmp_path/"provenance",operation="genesis",previous=None)
+    config=caps.load_environment("");paths={"install_root":str(config.install_root),"backup_root":str(config.backup_root)}
+    source=replace(source,paths=paths)
+    host_deploy_tests._install_unselected_candidate(source)
+    completed=provision(replace(invocation,migration_policy="backward-compatible",allow_downgrade=True),capabilities=caps)
+    assert completed.exit_status==0
+    state=_state(paths,runtime_path)
+    assert state.backup_protections==()
+    assert len(state.selections)==1
+    selection=state.selections[0]
+    assert selection.previous_release_id is None
+    assert selection.observed_previous_release_id==target.release_id
+    assert selection.recovery_backup_ids==(f"backup-{1:032x}",)
+    assert Path(paths["backup_root"],f"backup-{1:032x}.dump").is_file()
+    assert completed.facts["starting_state"]["host_authority"]["selected_release_id"] is None
+
+
+def test_shared_proxy_fresh_scheduler_drift_after_reload_refuses_full_dispatch(tmp_path,monkeypatch,integration_packages):
+    caps,invocation,remote,runtime_path,native,root,calls,target=_shared_proxy_public_capabilities(monkeypatch,tmp_path,integration_packages,imported=True)
+    original=caps.activation
+    def activate(*args,**kwargs):
+        result=original(*args,**kwargs)
+        value=json.loads(runtime_path.read_text());value["scheduler_sha256"]="f"*64;runtime_path.write_text(json.dumps(value))
+        return result
+    uploads=[];original_put=remote.put
+    def put(source,destination,**kwargs):
+        if source==target.artifact.archive:uploads.append(destination)
+        return original_put(source,destination,**kwargs)
+    monkeypatch.setattr(remote,"put",put)
+    result=provision(invocation,capabilities=replace(caps,activation=activate))
+    assert result.exit_status==ExitStatus.SAFETY
+    assert result.changed is True
+    assert result.facts["mutation_state"]=="changed"
+    assert result.facts["selected_release_id"] is None
+    assert result.facts["scheduled_backup_sha256"] is None
+    assert result.facts["unavailable_fields"]
+    assert result.facts["preparation"]["scheduled_backup_sha256"] != "f"*64
+    assert result.facts["caddy_receipt"]["site_changed"] is True
+    assert len(uploads)==1
+    assert [argv for argv,_ in calls].count(("systemctl","reload","caddy.service"))==1
+
+
+def _provision_created_database(runtime_path, provisioning, *, database_state="ready"):
+    """Substitute only the native creation boundary after actual local proxy preparation."""
+    def create_database(remote, inputs):
+        result = provisioning(remote, inputs)
+        value = json.loads(runtime_path.read_text())
+        value.update(database_state=database_state, pgpass_present=True)
+        runtime_path.write_text(json.dumps(value))
+        return result
+    return create_database
+
+
+def test_shared_proxy_confirmed_absent_database_completes_empty_initialization(tmp_path, monkeypatch, integration_packages):
+    caps, invocation, remote, runtime_path, native, root, calls, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages, imported=True)
+    value = json.loads(runtime_path.read_text())
+    value.update(database_state="absent", pgpass_present=False)
+    runtime_path.write_text(json.dumps(value))
+    preparation = []
+    original_prepare = caps.preparation
+    def prepare(*args, **kwargs):
+        result = original_prepare(*args, **kwargs)
+        preparation.append(result)
+        return result
+    caps = replace(caps, preparation=prepare,
+        provisioning=_provision_created_database(runtime_path, caps.provisioning))
+    result = provision(invocation, capabilities=caps)
+    assert result.exit_status == ExitStatus.OK
+    assert result.facts["deployment_verified"] is True
+    original = result.facts["starting_state"]["host_authority"]
+    assert original["database_state"] == "absent"
+    assert original["initial_database_empty"] is False
+    assert tuple(original["applied_migrations"]) == ()
+    assert preparation[0].facts["backup_id"] is None
+    assert preparation[0].facts["local_report"]["status"] == "ok"
+    assert result.facts["caddy_receipt"]["site_changed"] is True
+    assert result.facts["mutation_state"] == "changed"
+    assert [argv for argv, _ in calls].count(("systemctl", "reload", "caddy.service")) == 1
+    config = caps.load_environment("")
+    state = _state({"install_root": str(config.install_root), "backup_root": str(config.backup_root)}, runtime_path)
+    assert len(state.selections) == 1
+    assert state.selections[0].release_id == target.release_id
+    assert state.selections[0].recovery_backup_ids == ()
+    assert state.backups == ()
+
+
+def _install_shared_proxy_ordering_baseline(tmp_path, config, *, version="0.3.0", digit="e"):
+    """Publish real installed record/protection authority for a higher unresolved target."""
+    from taskman_ops.host_helper.paths import ManagedPaths
+    from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, write_backup_manifest, write_release_manifest
+    from taskman_ops.host_helper.backup_protection import BackupProtection, write_backup_protection
+    paths_mapping = {"install_root": str(config.install_root), "backup_root": str(config.backup_root)}
+    paths = ManagedPaths.from_mapping(paths_mapping)
+    higher = replace(host_deploy_tests._request(tmp_path, operation="genesis", previous=None,
+        application_version=version), paths=paths_mapping)
+    manifest = _artifact_target(higher).manifest
+    record = ReleaseRecord(manifest.release_id, manifest.source_revision, manifest.artifact_sha256,
+        tuple(item.to_mapping() for item in manifest.migrations), 2, manifest)
+    host_deploy_tests._release_tree(Path(paths.local(paths.release_root / record.release_id)))
+    write_release_manifest(paths, record)
+    payload = b"protected recovery dump"
+    backup_id = "backup-" + digit * 32
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(mode=0o700, exist_ok=True)
+    dump = backup_root / (backup_id + ".dump")
+    dump.write_bytes(payload)
+    dump.chmod(0o600)
+    now = datetime(2026, 10, 6, 12, tzinfo=UTC)
+    release_id = higher.parameters["target"]["manifest"]["release_id"]
+    write_backup_manifest(paths, BackupRecord(backup_id, now, hashlib.sha256(payload).hexdigest(),
+        release_id, (), len(payload)))
+    Path(paths.local(paths.backup_protection_root)).mkdir(mode=0o750, exist_ok=True)
+    write_backup_protection(paths, BackupProtection(1, backup_id, None, release_id,
+        0 if digit == "e" else 1, now))
+    return backup_id
+
+
+@pytest.mark.parametrize("accepted", (True, False))
+def test_shared_proxy_interactive_ordering_acknowledgment_controls_completion(tmp_path, monkeypatch, integration_packages, accepted):
+    from taskman_ops.workflows import provision as workflow
+    caps, invocation, remote, runtime_path, native, root, calls, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages, imported=True)
+    config = caps.load_environment("")
+    backup_id = _install_shared_proxy_ordering_baseline(tmp_path / "higher", config)
+    acknowledgments = []
+    def acknowledge(plan):
+        acknowledgments.append(plan)
+        return accepted
+    monkeypatch.setattr(workflow, "_confirm_downgrade", acknowledge)
+    passed_approval = []
+    original_prepare, original_complete = caps.preparation, caps.completion
+    def prepare(*args, **kwargs):
+        passed_approval.append(("prepare", kwargs["allow_downgrade"]))
+        return original_prepare(*args, **kwargs)
+    def complete(*args, **kwargs):
+        passed_approval.append(("complete", kwargs["allow_downgrade"]))
+        return original_complete(*args, **kwargs)
+    caps = replace(caps, downgrade_authority=workflow._provision_downgrade_authority,
+        preparation=prepare, completion=complete)
+    result = provision(replace(invocation, yes=False), capabilities=caps)
+    assert len(acknowledgments) == 1
+    assert acknowledgments[0]["requires_downgrade_acknowledgment"] is True
+    state = _state({"install_root": str(config.install_root), "backup_root": str(config.backup_root)}, runtime_path)
+    if accepted:
+        assert result.exit_status == ExitStatus.OK
+        assert passed_approval == [("prepare", True), ("complete", True)]
+        assert result.facts["deployment_verified"] is True
+        assert state.selections[0].release_id == target.release_id
+        assert state.selections[0].recovery_backup_ids == (backup_id,)
+        assert [argv for argv, _ in calls].count(("systemctl", "reload", "caddy.service")) == 1
+    else:
+        assert result.exit_status == ExitStatus.SAFETY
+        assert result.stage == "downgrade-acknowledgment-cancelled"
+        assert result.changed is False
+        assert passed_approval == []
+        assert state.selected_release_id is None
+        assert state.selections == ()
+        assert not (root / "etc/caddy/sites-enabled/taskman.caddy").exists()
+        assert calls == []
+
+
+def test_shared_proxy_nonempty_existing_database_keeps_migration_backup_requirement(tmp_path, monkeypatch, integration_packages):
+    caps, invocation, remote, runtime_path, native, root, calls, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages, imported=True)
+    # The native database observer proves nonempty user data even though no
+    # schema_migrations versions exist yet. Keep all lifecycle/codec owners real.
+    needle = '"initial_empty": value["database_state"] == "ready" and not migrations,'
+    assert _ISOLATED_HELPER_HARNESS.count(needle) == 1
+    harness = _ISOLATED_HELPER_HARNESS.replace(needle, '"initial_empty": False,')
+    original_runner = _run_isolated_helper
+    monkeypatch.setitem(globals(), "_run_isolated_helper",
+        lambda *args, **kwargs: original_runner(*args, harness=harness, **kwargs))
+    config = caps.load_environment("")
+    paths = {"install_root": str(config.install_root), "backup_root": str(config.backup_root)}
+    source = replace(host_deploy_tests._request(tmp_path / "prior", operation="genesis", previous=None,
+        migrations=()), paths=paths)
+    host_deploy_tests._install_unselected_candidate(source)
+    proofs = []
+    original_prepare = caps.preparation
+    def prepare(*args, **kwargs):
+        result = original_prepare(*args, **kwargs)
+        proofs.append(result)
+        return result
+    result = provision(replace(invocation, allow_downgrade=True), capabilities=replace(caps, preparation=prepare))
+    assert result.exit_status == ExitStatus.OK
+    original = result.facts["starting_state"]["host_authority"]
+    assert original["database_state"] == "ready"
+    assert original["initial_database_empty"] is False
+    backup_id = proofs[0].facts["backup_id"]
+    assert backup_id == "backup-" + f"{1:032x}"
+    assert proofs[0].facts["protected_backup_ids"] == [backup_id]
+    state = _state(paths, runtime_path)
+    assert state.selections[0].recovery_backup_ids == (backup_id,)
+    assert (Path(config.backup_root) / (backup_id + ".dump")).is_file()
+    assert state.backup_protections == ()
+
+
+def test_shared_proxy_unknown_database_after_creation_refuses_without_reload(tmp_path, monkeypatch, integration_packages):
+    caps, invocation, remote, runtime_path, native, root, calls, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages, imported=True)
+    value = json.loads(runtime_path.read_text())
+    value.update(database_state="absent", pgpass_present=False)
+    runtime_path.write_text(json.dumps(value))
+    # A real native database observer refuses an unavailable query; it does
+    # not return a successful "unknown" snapshot that permits migration.
+    needle = '    migrations = tuple(value["migrations"])\n    return {'
+    assert _ISOLATED_HELPER_HARNESS.count(needle) == 1
+    harness = _ISOLATED_HELPER_HARNESS.replace(needle,
+        '    if value["database_state"] == "unknown":\n        raise CommandError("database observation unavailable")\n' + needle)
+    original_runner = _run_isolated_helper
+    monkeypatch.setitem(globals(), "_run_isolated_helper",
+        lambda *args, **kwargs: original_runner(*args, harness=harness, **kwargs))
+    result = provision(invocation, capabilities=replace(caps,
+        provisioning=_provision_created_database(runtime_path, caps.provisioning, database_state="unknown")))
+    assert result.exit_status == ExitStatus.REMOTE_PREFLIGHT
+    assert result.exit_status != ExitStatus.PROXY_PENDING
+    assert result.changed is True
+    assert result.facts["caddy_receipt"]["site_changed"] is True
+    assert all(argv[0] != "systemctl" for argv, _ in calls)
+    assert not json.loads(runtime_path.read_text())["migrations"]
+
+
+def test_preserved_configuration_absent_database_prepares_then_completes_after_operator_activation(tmp_path, monkeypatch, integration_packages):
+    from taskman_ops.services import caddy
+    from tests.support.caddy import installation_host
+    caps, invocation, remote, runtime_path, _, _, _, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages)
+    native, root, service, calls = installation_host(tmp_path / "preserved", monkeypatch)
+    main = root / "etc/caddy/Caddyfile"
+    original_main = main.read_bytes(), main.stat().st_mtime_ns
+    value = json.loads(runtime_path.read_text())
+    value.update(database_state="absent", pgpass_present=False)
+    runtime_path.write_text(json.dumps(value))
+    def converge(remote, inputs):
+        guard = caddy.guard_caddy_install(remote, inputs.caddy_plan) if inputs.caddy_plan.branch != "existing" else None
+        prepared = caddy.prepare_caddy(remote, inputs.caddy_plan, guard)
+        return ProvisioningResult(ChangeSet(prepared.state["mutation_state"] != "unchanged"), prepared)
+    caps = replace(caps, provisioning=_provision_created_database(runtime_path, converge))
+    pending = provision(invocation, capabilities=caps)
+    assert pending.exit_status == ExitStatus.PROXY_PENDING
+    assert pending.facts["local_report"]["status"] == "ok"
+    assert pending.facts["backup_id"] is None
+    assert pending.facts["starting_state"]["host_authority"]["database_state"] == "absent"
+    assert pending.facts["starting_state"]["host_authority"]["initial_database_empty"] is False
+    assert pending.facts["caddy_receipt"]["installed_package_version"] == "2.11.7"
+    assert all(argv[:2] not in {("systemctl", "reload"), ("systemctl", "start")} for argv, _ in calls)
+    assert original_main == (main.read_bytes(), main.stat().st_mtime_ns)
+    # Model an operator's deliberate activation; the controller never starts
+    # the preserved inactive service automatically.
+    (root / "etc/systemd/system/caddy.service").unlink()
+    service.update(active=True, enabled=True)
+    completed = provision(invocation, capabilities=caps)
+    assert completed.exit_status == ExitStatus.OK
+    assert completed.facts["deployment_verified"] is True
+    assert original_main == (main.read_bytes(), main.stat().st_mtime_ns)
+    config = caps.load_environment("")
+    state = _state({"install_root": str(config.install_root), "backup_root": str(config.backup_root)}, runtime_path)
+    assert state.selections[0].release_id == target.release_id
+    assert state.backups == ()
+
+
+@pytest.mark.parametrize("point", ("confirmation", "activation"))
+def test_shared_proxy_interactive_acknowledgment_does_not_adopt_changed_baseline(tmp_path, monkeypatch, integration_packages, point):
+    from taskman_ops.workflows import provision as workflow
+    caps, invocation, remote, runtime_path, native, root, calls, target = _shared_proxy_public_capabilities(
+        monkeypatch, tmp_path, integration_packages, imported=True)
+    config = caps.load_environment("")
+    _install_shared_proxy_ordering_baseline(tmp_path / "higher", config)
+    acknowledgments = []
+    def change_baseline():
+        _install_shared_proxy_ordering_baseline(tmp_path / "different", config, version="0.4.0", digit="f")
+    def acknowledge(plan):
+        acknowledgments.append(plan)
+        if point == "confirmation":
+            change_baseline()
+        return True
+    monkeypatch.setattr(workflow, "_confirm_downgrade", acknowledge)
+    original_activate = caps.activation
+    def activate(*args, **kwargs):
+        result = original_activate(*args, **kwargs)
+        if point == "activation":
+            change_baseline()
+        return result
+    uploads = []
+    original_put = remote.put
+    def put(source, destination, **kwargs):
+        if source == target.artifact.archive:
+            uploads.append(destination)
+        return original_put(source, destination, **kwargs)
+    monkeypatch.setattr(remote, "put", put)
+    caps = replace(caps, downgrade_authority=workflow._provision_downgrade_authority, activation=activate)
+    result = provision(replace(invocation, yes=False), capabilities=caps)
+    assert result.exit_status == ExitStatus.SAFETY
+    assert len(acknowledgments) == 1
+    state = _state({"install_root": str(config.install_root), "backup_root": str(config.backup_root)}, runtime_path)
+    assert state.selections == ()
+    if point == "confirmation":
+        assert result.changed is False
+        assert uploads == []
+        assert calls == []
+        assert not (root / "etc/caddy/sites-enabled/taskman.caddy").exists()
+    else:
+        assert result.changed is True
+        assert result.facts["mutation_state"] == "changed"
+        assert result.facts["caddy_receipt"]["site_changed"] is True
+        assert result.facts["preparation"]["local_report"]["status"] == "ok"
+        assert result.facts["selected_release_id"] is None
+        assert result.facts["protected_backup_ids"] is None
+        assert result.facts["unavailable_fields"]
+        assert len(uploads) == 1
+        assert [argv for argv, _ in calls].count(("systemctl", "reload", "caddy.service")) == 1

@@ -54,7 +54,8 @@ class DeploymentAdmissionAuthority:
 
 
 def deployment_admission_authority(
-    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy"
+    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy",
+    force_postgresql_config: bool = False
 ) -> DeploymentAdmissionAuthority:
     """Collect complete release authority before resolving an automatic target."""
 
@@ -62,8 +63,10 @@ def deployment_admission_authority(
 
     if mode not in {"deploy", "provision"}:
         raise ValueError("deployment admission mode is invalid")
-    result = run_request(remote, discovery_request(config, mode=mode))
-    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+    result = run_request(remote, discovery_request(config, mode=mode, force_postgresql_config=force_postgresql_config))
+    if result.outcome != "succeeded":
+        raise result_error(result)
+    if not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused host state")
     state = mutable(result.state)
     try:
@@ -302,7 +305,227 @@ def deploy_first_release(
     prune_backup_ids: tuple[str, ...] | None = None,
     scheduler_create: tuple[str, ...] | None = None,
 ) -> WorkflowResult:
-    """Run genesis only for an unfinished install or its exact durable replay."""
+    """Complete an unfinished first install or its exact durable replay."""
+
+    return _first_release(
+        remote, config, target,
+        migration_policy=migration_policy, yes=yes, allow_downgrade=allow_downgrade,
+        dry_run=dry_run, starting_state=starting_state, prune_backup_ids=prune_backup_ids,
+        scheduler_create=scheduler_create, operation="genesis",
+    )
+
+
+def prepare_first_release(
+    remote: Remote,
+    config: EnvironmentConfig,
+    target: DeploymentTarget | VerifiedArtifact,
+    *,
+    migration_policy: str | None = None,
+    yes: bool = False,
+    allow_downgrade: bool = False,
+    dry_run: bool = False,
+    starting_state: Mapping[str, object] | None = None,
+    prune_backup_ids: tuple[str, ...] | None = None,
+    scheduler_create: tuple[str, ...] | None = None,
+) -> WorkflowResult:
+    """Prepare an unfinished first install through application proof."""
+
+    return _first_release(
+        remote, config, target,
+        migration_policy=migration_policy, yes=yes, allow_downgrade=allow_downgrade,
+        dry_run=dry_run, starting_state=starting_state, prune_backup_ids=prune_backup_ids,
+        scheduler_create=scheduler_create, operation="prepare_genesis",
+    )
+
+
+def finalize_first_release(
+    remote: Remote,
+    config: EnvironmentConfig,
+    target: DeploymentTarget | VerifiedArtifact,
+    *,
+    preparation: WorkflowResult,
+    starting_state: Mapping[str, object],
+    migration_policy: str | None = None,
+    yes: bool = False,
+    allow_downgrade: bool = False,
+    dry_run: bool = False,
+    prune_backup_ids: tuple[str, ...] | None = None,
+    scheduler_create: tuple[str, ...] | None = None,
+) -> WorkflowResult:
+    """Complete the same confirmed target after validated application preparation.
+
+    This private controller capability changes no helper operation or public
+    admission semantics. The ordinary genesis request uses a fresh exact
+    snapshot, after checking every permitted preparation consequence.
+    """
+    from ..host_protocol.mutation_results import unavailable_observations
+
+    desired = target if isinstance(target, DeploymentTarget) else DeploymentTarget(
+        artifact=target, release_record=None, source="explicit"
+    )
+    try:
+        # Configuration admission has ended: fresh release evidence must prove
+        # application authentication after convergence.
+        fresh = run_request(remote, discovery_request(config, mode="provision", force_postgresql_config=False))
+        if fresh.outcome != "succeeded":
+            raise result_error(fresh)
+        expected = _prepared_completion_authority(
+            desired, starting_state, preparation, mutable(fresh.state),
+            prune_backup_ids=prune_backup_ids or (), scheduler_create=scheduler_create or (),
+        )
+        required, _evidence = _downgrade_acknowledgment(remote, config, desired, None, mode="provision")
+        if required and not allow_downgrade:
+            raise _safety("first-release completion requires an explicit downgrade acknowledgment")
+    except OpsError as error:
+        observations, unavailable = unavailable_observations("genesis")
+        error.state = {**error.state, "observations": observations,
+                       "unavailable_fields": unavailable,
+                       "inspection_error": "fresh completion admission was not established",
+                       "mutation_state": "unchanged"}
+        result = _failure_result(config, error, candidate=desired.release_id, genesis=True)
+        return WorkflowResult(result.command, result.environment, result.changed, result.stage,
+            {**result.facts, "starting_state": dict(starting_state)}, result.warnings,
+            result.next_action, result.exit_status)
+    return _first_release(
+        remote, config, desired, operation="genesis", migration_policy="no-change",
+        yes=yes, allow_downgrade=allow_downgrade, dry_run=dry_run,
+        starting_state=starting_state, prune_backup_ids=(), scheduler_create=scheduler_create,
+        prepared_expected_state=expected,
+    )
+
+
+def _prepared_completion_authority(
+    target: DeploymentTarget,
+    starting_state: Mapping[str, object],
+    preparation: WorkflowResult,
+    fresh: Mapping[str, object],
+    *,
+    prune_backup_ids: tuple[str, ...],
+    scheduler_create: tuple[str, ...],
+) -> dict[str, object]:
+    """Derive allowed changes from the confirmed request, never from fresh drift."""
+    def refused():
+        return _safety("release, schema, protection, or scheduler authority changed after application preparation; rerun to confirm a new plan")
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=True, sort_keys=True,
+                                        separators=(",", ":")).encode("ascii")).hexdigest()
+
+    try:
+        original = starting_state["host_authority"]
+        before = _starting_expected_state(starting_state)
+        if (before is None or preparation.exit_status is not ExitStatus.OK
+            or starting_state["candidate_release_id"] != target.release_id
+            or starting_state["artifact_sha256"] != target.artifact_sha256):
+            raise ValueError
+        facts = preparation.facts
+        observed = facts["observations"]
+        successful_verification(facts["local_report"], target.release_id, application=True)
+        versions = versions_from_filenames(tuple(item.filename for item in target.manifest.migrations))
+        applied_before = tuple(before["applied_migrations"])
+        if versions[:len(applied_before)] != applied_before:
+            raise ValueError
+        database_state = original["database_state"]
+        initial_empty = original["initial_database_empty"]
+        if (database_state not in {"absent", "ready"} or type(initial_empty) is not bool
+            or database_state == "absent" and (initial_empty or applied_before)
+            or initial_empty and applied_before):
+            raise ValueError
+        if (facts["candidate_release_id"] != target.release_id
+            or facts["unavailable_fields"] or facts["inspection_error"] is not None
+            or observed["selected_release_id"] != target.release_id
+            or tuple(observed["applied_migrations"]) != versions
+            or observed["last_successful_selection_id"] != before["last_successful_selection_id"]
+            or observed["database_state"] != "ready" or observed["service_state"] != "running"
+            or observed["restore_target_sha256"] is not None):
+            raise ValueError
+        old = tuple(BackupProtection.from_mapping(row) for row in original["backup_protections"])
+        if digest([row.to_mapping() for row in sorted(old,key=lambda row:row.backup_id)]) != before["backup_protection_sha256"]:
+            raise ValueError
+        current = tuple(BackupProtection.from_mapping(row) for row in fresh["backup_protections"])
+        old_by_id = {row.backup_id: row for row in old}
+        current_by_id = {row.backup_id: row for row in current}
+        if len(current_by_id) != len(current) or len(old_by_id) != len(old):
+            raise ValueError
+        removed = set(old_by_id) - set(current_by_id)
+        if not removed.issubset(prune_backup_ids):
+            raise ValueError
+        for backup_id in set(old_by_id) & set(current_by_id):
+            if current_by_id[backup_id] != old_by_id[backup_id]:
+                raise ValueError
+        additions = set(current_by_id) - set(old_by_id)
+        backup_id = facts["backup_id"]
+        pending = tuple(before["applied_migrations"]) != versions
+        if additions:
+            if additions != {backup_id} or not pending or initial_empty:
+                raise ValueError
+            added = current_by_id[backup_id]
+            attempt = max((row.attempt_number for row in old if row.base_selection_id == before["last_successful_selection_id"]), default=-1) + 1
+            if (added.base_selection_id != before["last_successful_selection_id"]
+                or added.target_release_id != target.release_id or added.attempt_number != attempt):
+                raise ValueError
+        elif backup_id is not None and (backup_id not in current_by_id or current_by_id[backup_id].target_release_id != target.release_id):
+            raise ValueError
+        elif pending and not initial_empty and database_state != "absent" and backup_id is None:
+            raise ValueError
+        # Confirmed absence authorizes database creation, not an assertion of
+        # pre-existing emptiness. With pending initial migrations, the validated
+        # preparation lifecycle can succeed without a backup only after its
+        # locked observer positively proves the provision-created database empty.
+        # Unknown authority and nonempty existing databases retain their refusal
+        # and backup requirements; all final proof/fresh comparisons still apply.
+        if not pending and removed:
+            raise ValueError
+        rows = [row.to_mapping() for row in sorted(current,key=lambda row:row.backup_id)]
+        protection_digest = digest(rows)
+        if (observed["backup_protection_sha256"] != protection_digest
+            or tuple(observed["protected_backup_ids"]) != tuple(sorted(current_by_id))
+            or fresh["backup_protection_sha256"] != protection_digest):
+            raise ValueError
+        with temporary_scheduled_backup_helper_package() as package:
+            scheduler_digest = package.sha256
+        enabled = before["backup_timer_enabled"] or "/etc/systemd/system/taskman-backup.timer" in scheduler_create
+        if (observed["scheduled_backup_sha256"] != scheduler_digest
+            or observed["backup_timer_enabled"] != enabled
+            or observed["backup_timer_state"] != ("active" if enabled else "inactive")
+            or fresh["backup_timer_state"] != observed["backup_timer_state"]):
+            raise ValueError
+        baselines = {target.release_id, *(row.target_release_id for row in current)}
+        last = original["last_successful_selection"]
+        if last is not None:
+            baselines.add(SelectionRecord.from_mapping(last).release_id)
+        expected = {"selected_release_id": target.release_id,
+                    "last_successful_selection_id": before["last_successful_selection_id"],
+                    "applied_migrations": versions,
+                    "backup_protection_sha256": protection_digest,
+                    "scheduled_backup_sha256": scheduler_digest,
+                    "backup_timer_enabled": enabled,
+                    "downgrade_baseline_sha256": digest(sorted(baselines))}
+        for key,value in expected.items():
+            actual = tuple(fresh[key]) if key == "applied_migrations" else fresh[key]
+            if actual != value:
+                raise ValueError
+        return expected
+    except (KeyError, TypeError, ValueError):
+        raise refused() from None
+
+
+def _first_release(
+    remote: Remote,
+    config: EnvironmentConfig,
+    target: DeploymentTarget | VerifiedArtifact,
+    *,
+    operation: str,
+    migration_policy: str | None = None,
+    yes: bool = False,
+    allow_downgrade: bool = False,
+    dry_run: bool = False,
+    starting_state: Mapping[str, object] | None = None,
+    prune_backup_ids: tuple[str, ...] | None = None,
+    scheduler_create: tuple[str, ...] | None = None,
+    prepared_expected_state: Mapping[str, object] | None = None,
+) -> WorkflowResult:
+    """Share first-release admission and request construction for both proof boundaries."""
 
     if not isinstance(config, EnvironmentConfig) or not isinstance(target, (DeploymentTarget, VerifiedArtifact)):
         raise TypeError("first release requires validated configuration and target")
@@ -335,12 +558,12 @@ def deploy_first_release(
     )
     candidate = deployment_target.release_id
     try:
-        expected_state = _confirmed_expected_state(remote, config, mode="provision")
-        confirmed_preconvergence = _starting_expected_state(starting_state)
+        expected_state = _confirmed_expected_state(remote, config, mode="provision", force_postgresql_config=False)
+        confirmed_preconvergence = prepared_expected_state or _starting_expected_state(starting_state)
         if (
             confirmed_preconvergence is not None
             and not _matches_confirmed_preconvergence(
-                expected_state, confirmed_preconvergence, scheduler_create
+                expected_state, confirmed_preconvergence, None if prepared_expected_state is not None else scheduler_create
             )
         ):
             raise _safety(
@@ -354,7 +577,7 @@ def deploy_first_release(
         if expected_state["last_successful_selection_id"] is not None and current != candidate:
             raise _safety("a completed installation requires deploy for a different release")
         if expected_state["last_successful_selection_id"] is not None:
-            completed = deployment_admission_authority(remote, config, mode="provision")
+            completed = deployment_admission_authority(remote, config, mode="provision", force_postgresql_config=False)
             if (
                 completed.selected_release_id != candidate
                 or completed.last_successful_release_id != candidate
@@ -422,10 +645,10 @@ def deploy_first_release(
                 },
                 prune_backup_ids=prune_backup_ids,
                 backup_helper_package=scheduler_package,
-                genesis=True,
+                operation=operation,
             )
         if result.outcome != "succeeded":
-            raise result_error(result)
+            raise result_error(result, starting_state=starting_state or expected_state)
         return _payload_result(
             config,
             candidate,
@@ -436,6 +659,12 @@ def deploy_first_release(
             starting_state=starting_state or expected_state,
         )
     except OpsError as error:
+        if prepared_expected_state is not None and not error.state:
+            from ..host_protocol.mutation_results import unavailable_observations
+            observations, unavailable = unavailable_observations("genesis")
+            error.state = {"observations": observations, "unavailable_fields": unavailable,
+                           "inspection_error": "fresh completion admission was not established",
+                           "mutation_state": "unchanged"}
         result = _failure_result(config, error, candidate=candidate, genesis=True)
         if starting_state is None:
             return result
@@ -491,12 +720,15 @@ def _planning_authority(
 
 
 def _confirmed_expected_state(
-    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy"
+    remote: Remote, config: EnvironmentConfig, *, mode: str = "deploy",
+    force_postgresql_config: bool = False,
 ) -> dict[str, object]:
     """Reobserve exactly the material deploy facts immediately before apply."""
 
-    result = run_request(remote, discovery_request(config, mode=mode))
-    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+    result = run_request(remote, discovery_request(config, mode=mode, force_postgresql_config=force_postgresql_config))
+    if result.outcome != "succeeded":
+        raise result_error(result)
+    if not isinstance(result.state, Mapping):
         raise _safety("deployment apply helper refused host state")
     state = mutable(result.state)
     required = {
@@ -598,6 +830,7 @@ def _downgrade_acknowledgment(
     repo: Path | None,
     *,
     mode: str = "deploy",
+    force_postgresql_config: bool = False,
 ) -> tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]:
     """Classify every validated deploy baseline without treating uncertainty as forward."""
 
@@ -605,8 +838,10 @@ def _downgrade_acknowledgment(
 
     if mode not in {"deploy", "provision"}:
         raise ValueError("downgrade authority mode is invalid")
-    result = run_request(remote, discovery_request(config, mode=mode))
-    if result.outcome != "succeeded" or not isinstance(result.state, Mapping):
+    result = run_request(remote, discovery_request(config, mode=mode, force_postgresql_config=force_postgresql_config))
+    if result.outcome != "succeeded":
+        raise result_error(result)
+    if not isinstance(result.state, Mapping):
         raise _safety("deployment planning helper refused downgrade authority")
     state = mutable(result.state)
     try:
@@ -696,6 +931,11 @@ def _payload_result(
     )
     changed = facts["changed"]
     assert isinstance(changed, bool)
+    if result.operation == "prepare_genesis":
+        return WorkflowResult(
+            "deploy", config.name or "", changed, "application-prepared", facts, tuple(result.warnings),
+            "activate the proxy and complete full deployment verification for this exact target",
+        )
     if not changed:
         return WorkflowResult(
             "deploy", config.name or "", False, "already-current", facts, tuple(result.warnings),
@@ -719,7 +959,10 @@ def _facts(
     try:
         evidence = mutation_result_facts(result)
         observations = evidence["observations"]
-        verification = successful_verification(evidence["report"], candidate)
+        application = result.operation == "prepare_genesis"
+        verification = successful_verification(
+            evidence["local_report" if application else "report"], candidate, application=application
+        )
     except (TypeError, ValueError):
         raise _safety("deployment helper returned invalid success evidence")
     if (
@@ -751,7 +994,11 @@ def _facts(
         "backup_timer_state": observations["backup_timer_state"],
         "unavailable_fields": evidence["unavailable_fields"],
         "inspection_error": evidence["inspection_error"],
-        "verification": verification,
+        **({
+            "local_report": verification,
+            "public_probe": evidence["public_probe"],
+            "observations": dict(observations),
+        } if application else {"verification": verification}),
     }
 
 
@@ -787,7 +1034,12 @@ def _failure_result(
             "database_state": observations.get("database_state", "unknown"),
             "service_state": observations.get("service_state", "unknown"),
             "failure_boundary": state.get("failed_boundary", error.stage),
-            "verification": state.get("report"),
+            **({
+                "local_report": state["local_report"],
+                "public_probe": state["public_probe"],
+                "starting_state": state.get("starting_state"),
+                "observations": dict(observations),
+            } if "local_report" in state else {"verification": state.get("report")}),
             "mutation_state": state.get("mutation_state", "unknown"),
             "last_successful_selection_id": observations.get("last_successful_selection_id"),
             "applied_migrations": observations.get("applied_migrations"),
@@ -1064,4 +1316,4 @@ def _with_artifact_source(result: WorkflowResult, source: str) -> WorkflowResult
     )
 
 
-__all__ = ["DeploymentAdmissionAuthority", "deploy", "deploy_first_release", "deployment_admission_authority"]
+__all__ = ["DeploymentAdmissionAuthority", "deploy", "deploy_first_release", "prepare_first_release", "deployment_admission_authority"]

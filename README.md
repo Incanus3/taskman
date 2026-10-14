@@ -8,7 +8,13 @@ records. The MVP product definition and delivery context live in [the project do
 For a dedicated HTTPS host, use the repository-owned `./ops/taskman` automation and follow the
 self-contained [deployment runbook](docs/guides/deployment.md). It provisions and operates the supported
 Ubuntu host while retaining Taskman's OTP release, Caddy, systemd, and loopback PostgreSQL
-topology. VPS creation, DNS, provider firewall, Resend, and off-host backups remain operator-owned.
+topology. Existing Caddy main configuration and other sites stay operator-owned; Taskman manages
+its reserved site. Provisioning can return exit `13` when application setup passes but proxy
+activation/public verification remains pending; follow the runbook's
+[activation and exact-target retry procedure](docs/guides/deployment.md#activate-a-pending-taskman-site).
+Repository-bundled [operations reference skill](priv/taskman_ops_skill/SKILL.md) covers the
+`./ops/taskman` controller; the application CLI skill remains separate. VPS creation, DNS, provider
+firewall, Resend, and off-host backups remain operator-owned.
 Local source development remains supported as described below.
 
 ## Local setup

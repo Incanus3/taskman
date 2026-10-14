@@ -68,11 +68,11 @@ def test_deploy_help_marks_manual_adoption_as_unsupported(capsys: pytest.Capture
 
 
 def test_root_help_makes_every_operator_workflow_discoverable() -> None:
-    help_text = build_parser().format_help()
+    help_text = " ".join(build_parser().format_help().split())
 
     for summary in (
         "build a target-compatible release artifact",
-        "provision a supported clean host",
+        "provision a supported host and prepare its first release",
         "deploy an immutable release",
         "verify the deployed topology",
         "list managed releases",
@@ -753,3 +753,49 @@ def test_cyclic_result_facts_map_to_stable_secret_free_json_error(
     assert captured.out == ""
     assert captured.err
     assert "Traceback" not in captured.err
+
+
+def test_pending_result_preserves_nonzero_cli_status(capsys):
+    import json
+    from taskman_ops.cli import main
+    from taskman_ops.errors import ExitStatus
+    from taskman_ops.output import WorkflowResult
+
+    result = WorkflowResult(
+        command="provision", environment="staging", changed=False,
+        stage="application-provisioned-proxy-pending",
+        facts={"proxy_activation": "pending", "deployment_verified": False},
+        exit_status=ExitStatus.PROXY_PENDING,
+    )
+    assert main(["provision", "staging", "--yes", "--json"],
+                dispatch_fn=lambda invocation: result) == 13
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "failed"
+    assert payload["facts"]["deployment_verified"] is False
+
+
+def test_postgresql_override_is_explicit_provision_authority():
+    from taskman_ops.cli import parse_invocation
+    assert not parse_invocation(["provision", "staging", "--yes"]).force_postgresql_config
+    assert parse_invocation(["provision", "staging", "--force-postgresql-config"]).force_postgresql_config
+    assert parse_invocation(["provision", "staging", "--force-postgresql-config", "--dry-run"]).dry_run
+
+
+@pytest.mark.parametrize("command", ["deploy", "verify", "backup", "cleanup"])
+def test_postgresql_override_rejected_outside_provision(command):
+    from taskman_ops.cli import parse_invocation
+    with pytest.raises(SystemExit) as caught:
+        parse_invocation([command, "staging", "--force-postgresql-config"])
+    assert caught.value.code == 2
+
+
+def test_provision_help_explains_default_database_ownership_and_override_recovery(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        build_parser().parse_args(["provision", "--help"])
+    assert stopped.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "role/database/private credentials" in help_text
+    assert "operator-owned PostgreSQL configuration" in help_text
+    assert "recovery copies" in help_text
+    assert "all consumers" in help_text

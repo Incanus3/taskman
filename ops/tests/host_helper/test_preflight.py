@@ -20,7 +20,7 @@ def test_absent_database_pgpass_admission_omits_only_authentication(tmp_path, mo
     path = tmp_path / "pgpass"
     monkeypatch.setattr(preflight_module, "_PGPASS_PATH", path)
     monkeypatch.setattr(preflight_module, "run_command", lambda *_args, **_kwargs: pytest.fail("absent database cannot authenticate"))
-    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent")
+    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent", "authenticate")
 
     assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 0
     assert not path.exists()
@@ -44,7 +44,7 @@ def test_absent_database_retains_exact_pgpass_file_authority(monkeypatch, mode, 
     monkeypatch.setattr(preflight_module, "_PGPASS_PATH", retained)
     monkeypatch.setattr(preflight_module, "run_command", lambda *_args, **_kwargs: pytest.fail("absent database cannot authenticate"))
     assert preflight_module.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "absent", "authenticate"),
         BytesIO(b"127.0.0.1:5432:taskman_prod:taskman:secret\n"),
     ) == expected
 
@@ -55,7 +55,7 @@ def test_pgpass_private_entry_refuses_invalid_presence_without_reading_secret(da
         def read(self, _limit):
             pytest.fail("invalid presence cannot consume secret input")
     assert preflight_module.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod", database_state), UnreadableSecret(),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", database_state, "authenticate"), UnreadableSecret(),
     ) == 2
 
 
@@ -208,7 +208,7 @@ def test_pgpass_private_entry_refuses_mismatched_connection_without_writes(
 
     monkeypatch.setattr(preflight_module, "authenticate_pgpass", authenticate)
     status = preflight_module.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate"),
         BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
     )
 
@@ -242,21 +242,14 @@ def test_pgpass_private_entry_validates_retained_file_before_using_pgpassfile(
 
     retained = RetainedPgpass()
 
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
+    def prove(database, path):
+        calls.append((database, path))
 
     monkeypatch.setattr(preflight_module, "_PGPASS_PATH", retained)
-    monkeypatch.setattr(preflight_module, "run_command", run)
-    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready")
-
+    monkeypatch.setattr(preflight_module, "prove_scram_access", prove)
+    arguments = ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate")
     assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 0
-    assert calls[0][1]["env"] == {"PGPASSFILE": "/etc/taskman/pgpass"}
-    assert calls[0][0] == (
-        "psql", "--no-psqlrc", "--quiet", "--host", "127.0.0.1",
-        "--port", "5432", "--username", "taskman", "--dbname", "taskman_prod",
-        "--no-password", "--command", "SELECT 1", "--output", "/dev/null",
-    )
+    assert calls == [({"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}, retained)]
 
     retained.contents = b"different\n"
     assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 10
@@ -264,3 +257,84 @@ def test_pgpass_private_entry_validates_retained_file_before_using_pgpassfile(
     retained.mode = 0o640
     assert preflight_module.provision_pgpass_authority(arguments, BytesIO(raw)) == 10
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("response", [b"1\n", b"other|taskman_prod|127.0.0.1|5432\n", b"taskman|other|127.0.0.1|5432\n", b"taskman|taskman_prod|::1|5432\n", b"taskman|taskman_prod|127.0.0.1|5433\n", b"taskman|taskman_prod|127.0.0.1|5432\nextra\n"])
+def test_scram_proof_refuses_successful_query_without_exact_identity(monkeypatch, response):
+    from taskman_ops.host_helper import database as module
+    from taskman_ops.host_helper.commands import CommandError
+    monkeypatch.setattr(module, "run_command", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, b"psql (PostgreSQL) 18.6\n" if "--version" in argv else response, b""))
+    with pytest.raises(CommandError):
+        module.prove_scram_access({"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}, Path("/private/pgpass"))
+
+
+def test_scram_proof_bounds_identity_and_supplies_only_passfile(monkeypatch):
+    from taskman_ops.host_helper import database as module
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"psql (PostgreSQL) 18.6\n" if "--version" in argv else b"taskman|taskman_prod|127.0.0.1|5432\n", b"")
+    monkeypatch.setattr(module, "run_command", run)
+    module.prove_scram_access({"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}, Path("/private/pgpass"))
+    argv, kwargs = calls[-1]
+    assert argv[argv.index("--dbname") + 1] == "dbname=taskman_prod require_auth=scram-sha-256"
+    assert "--no-psqlrc" in argv and "--no-password" in argv
+    assert "--set=ON_ERROR_STOP=1" in argv
+    assert kwargs["env"] == {"PGPASSFILE": "/private/pgpass", "LC_ALL": "C"}
+    assert kwargs["output_limit"] == 1024
+    assert kwargs["timeout_seconds"] == 60.0
+    assert all(key in argv[-1] for key in ("current_user", "current_database", "inet_server_addr", "inet_server_port"))
+
+
+@pytest.mark.parametrize("failure", [None, "command", "timeout"])
+def test_supplied_probe_passfile_is_private_and_always_cleaned(tmp_path, monkeypatch, failure):
+    from taskman_ops.host_helper.commands import CommandError, CommandTimeout
+    raw = b"127.0.0.1:5432:taskman_prod:taskman:secret\n"
+    monkeypatch.setattr(preflight_module, "_PGPASS_PATH", tmp_path / "missing")
+    monkeypatch.setattr(preflight_module.sys, "argv", [str(tmp_path / "taskman-host.pyz")])
+    probe = tmp_path / "pgpass.probe"
+    def prove(database, credentials):
+        assert credentials == probe
+        assert probe.read_bytes() == raw
+        assert stat.S_IMODE(probe.stat().st_mode) == 0o600
+        if failure:
+            raise (CommandTimeout if failure == "timeout" else CommandError)("secret diagnostics")
+    monkeypatch.setattr(preflight_module, "prove_scram_access", prove)
+    assert preflight_module.provision_pgpass_authority(("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate"), BytesIO(raw)) == (5 if failure else 0)
+    assert not probe.exists()
+
+
+def test_configuration_deferral_still_checks_retained_credential_bytes(tmp_path, monkeypatch):
+    raw = b"127.0.0.1:5432:taskman_prod:taskman:secret\n"
+    retained = SimpleNamespace(lstat=lambda: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0), read_bytes=lambda: raw)
+    monkeypatch.setattr(preflight_module, "_PGPASS_PATH", retained)
+    monkeypatch.setattr(preflight_module, "prove_scram_access", lambda *_: pytest.fail("deferred authentication"))
+    args = ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "defer-for-configuration")
+    assert preflight_module.provision_pgpass_authority(args, BytesIO(raw)) == 0
+    assert preflight_module.provision_pgpass_authority(args, BytesIO(raw.replace(b"secret", b"wrong"))) == 10
+
+
+@pytest.mark.parametrize("response", [b"unknown\n", b"psql (PostgreSQL) 16\n", b"psql (PostgreSQL) 0.1\n"])
+def test_scram_client_refuses_unknown_version(monkeypatch, response):
+    from taskman_ops.host_helper import database as module
+    from taskman_ops.host_helper.commands import CommandError
+    monkeypatch.setattr(module, "run_command", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, response, b""))
+    with pytest.raises(CommandError, match="require_auth"):
+        module.require_scram_client()
+
+
+def test_scram_native_access_failure_never_uses_diagnostics_or_falls_back(monkeypatch):
+    from taskman_ops.host_helper import database as module
+    from taskman_ops.host_helper.commands import CommandError
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "--version" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"psql (PostgreSQL) 18.6\n", b"")
+        assert "require_auth=scram-sha-256" in argv[argv.index("--dbname") + 1]
+        raise CommandError("sensitive localized diagnostic")
+    monkeypatch.setattr(module, "run_command", run)
+    with pytest.raises(CommandError) as raised:
+        module.prove_scram_access({"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}, Path("/private/pgpass"))
+    assert "sensitive" not in str(raised.value)
+    assert len(calls) == 2

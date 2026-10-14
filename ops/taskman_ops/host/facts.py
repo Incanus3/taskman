@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from enum import Enum
-import hashlib
 import ipaddress
 import re
 import socket
@@ -13,7 +13,9 @@ from typing import Callable, Iterable
 
 from ..config import EnvironmentConfig
 from ..remote import CommandResult, Remote
-from ..services.caddy import render_caddyfile
+from ..services.caddy import build_caddy_ownership_plan, inspect_caddy
+from ..host_protocol import HostResult
+from ..host_protocol.caddy import validate_caddy_authority
 
 
 # These minimums deliberately describe the smallest useful single-host
@@ -25,92 +27,6 @@ MINIMUM_DISK_BYTES = 10 * 1024**3
 _SYSTEMD_UNITS = ("taskman.service", "taskman-backup.service", "taskman-backup.timer", "caddy.service")
 _ACCOUNT_NAME = "taskman"
 _CADDYFILE = PurePosixPath("/etc/caddy/Caddyfile")
-_CADDY_AUTHORITY_KEYS = (
-    "config",
-    "config_hash",
-    "config_metadata",
-    "unit_load",
-    "unit_active",
-    "unit_pid",
-    "unit_fragment",
-    "unit_metadata",
-    "unit_package",
-    "unit_verified",
-    "unit_executable",
-)
-_CADDY_CONFIG_SCRIPT = r'''set -eu
-config=$1
-emit() { printf '%s=%s\n' "$1" "$2"; }
-
-if [ ! -e "$config" ] && [ ! -L "$config" ]; then
-  config_state=absent
-  config_hash=
-  config_metadata=
-elif [ -f "$config" ] && [ ! -L "$config" ]; then
-  config_state=regular
-  config_hash=$(sha256sum "$config" | awk '{print $1}')
-  config_metadata=$(stat --format='%U:%G:%a' "$config")
-else
-  config_state=invalid
-  config_hash=
-  config_metadata=
-fi
-
-property() { systemctl show caddy.service "--property=$1" --value 2>/dev/null || true; }
-unit_load=$(property LoadState)
-unit_active=$(property ActiveState)
-unit_pid=$(property MainPID)
-unit_fragment=$(property FragmentPath)
-unit_metadata=
-unit_package=missing
-unit_verified=missing
-unit_executable=
-
-if [ -n "$unit_fragment" ] && [ -f "$unit_fragment" ] && [ ! -L "$unit_fragment" ]; then
-  unit_metadata=$(stat --format='%U:%G:%a' "$unit_fragment" 2>/dev/null || true)
-  package_state=$(dpkg-query --showformat='${db:Status-Status}' --show caddy 2>/dev/null || true)
-  package_path=
-  for package_candidate in /lib/systemd/system/caddy.service /usr/lib/systemd/system/caddy.service; do
-    package_owner=$(dpkg-query --search "$package_candidate" 2>/dev/null || true)
-    case "$package_owner" in
-      "caddy: $package_candidate") package_path=$package_candidate; break ;;
-    esac
-  done
-  unit_resolved=$(readlink -f "$unit_fragment" 2>/dev/null || true)
-  package_resolved=$(readlink -f "$package_path" 2>/dev/null || true)
-  if [ "$package_state" = installed ] && [ -n "$package_path" ] \
-    && [ -n "$unit_resolved" ] && [ -n "$package_resolved" ] \
-    && [ "$unit_resolved" = "$package_resolved" ]; then
-    unit_package=caddy
-    unit_relative=${package_path#/}
-    unit_expected=$(dpkg-query --control-show caddy md5sums 2>/dev/null | awk -v path="$unit_relative" '$2 == path {print $1}')
-    unit_actual=$(md5sum "$unit_fragment" | awk '{print $1}')
-    if [ -n "$unit_expected" ] && [ "$unit_actual" = "$unit_expected" ]; then
-      unit_verified=clean
-    else
-      unit_verified=modified
-    fi
-  else
-    unit_package=foreign
-    unit_verified=unknown
-  fi
-fi
-
-if [ "$unit_pid" -gt 0 ] 2>/dev/null; then
-  unit_executable=$(readlink -f "/proc/$unit_pid/exe" 2>/dev/null || true)
-fi
-
-emit config "$config_state"
-emit config_hash "$config_hash"
-emit config_metadata "$config_metadata"
-emit unit_load "$unit_load"
-emit unit_active "$unit_active"
-emit unit_pid "$unit_pid"
-emit unit_fragment "$unit_fragment"
-emit unit_metadata "$unit_metadata"
-emit unit_package "$unit_package"
-emit unit_verified "$unit_verified"
-emit unit_executable "$unit_executable"'''
 _CAPACITY_SCRIPT = (
     'path=$1; while [ ! -e "$path" ]; do parent=${path%/*}; '
     '[ "$parent" != "$path" ] || exit 1; path=$parent; done; '
@@ -237,6 +153,9 @@ class HostFacts:
     taskman_account_compatible: bool
     existing_databases: tuple[str, ...]
     failed_checks: tuple[str, ...]
+    postgresql: Mapping[str, object] | None = None
+    initial_database_empty: bool = False
+    applied_migrations: tuple[int, ...] = ()
     taskman_service_pid: int | None = None
     taskman_service_executable: str = ""
     taskman_service_owner: str = ""
@@ -254,10 +173,23 @@ def collect_host_facts(
     config: EnvironmentConfig,
     *,
     resolver: Callable[[str], Iterable[str]] | None = None,
-    expected_caddyfile_sha256: str | None = None,
+    caddy_authority: HostResult | None = None,
+    provision_authority: Mapping[str, object] | None = None,
+    force_postgresql_config: bool = False,
 ) -> HostFacts:
     """Gather the complete immutable preflight snapshot without mutation."""
 
+    postgresql = None
+    if provision_authority is not None:
+        from ..host_protocol.postgresql import validate_postgresql_authority
+        postgresql = validate_postgresql_authority(provision_authority["postgresql"],
+            package_track=config.postgres_package_track, port=config.database_port,
+            force_postgresql_config=force_postgresql_config)
+        if (provision_authority["database_state"] == "ready") != (postgresql["database"] == "compatible"):
+            raise ValueError("inconsistent PostgreSQL schema authority")
+        if (type(provision_authority["initial_database_empty"]) is not bool or
+                not isinstance(provision_authority["applied_migrations"], tuple)):
+            raise ValueError("invalid PostgreSQL schema authority")
     paths = _managed_paths(config)
 
     # Keep this collection step unconditional. An unsupported fact must not
@@ -313,28 +245,32 @@ def collect_host_facts(
 
     postgres_sudo: CommandResult | None = None
     databases: CommandResult | None = None
-    if postgres_available:
+    if postgres_available and postgresql is None:
         postgres_sudo = remote.run(("sudo", "-n", "-u", "postgres", "true"))
         databases = remote.run(
             (
                 "sh",
                 "-c",
-                "sudo -n -u postgres psql -Atq -c 'SELECT datname FROM pg_database'",
+                "sudo -n -u postgres psql --no-psqlrc --host /var/run/postgresql --port \"$1\" --username postgres --dbname postgres --no-password --set=ON_ERROR_STOP=1 -Atq -c 'SELECT datname FROM pg_database'",
                 "taskman-host-facts",
+                str(config.database_port),
             )
         )
+    if postgresql is not None:
+        postgres_available = postgresql["cluster"] is not None
+        postgres_partially_present = False
+        postgres_sudo = CommandResult(0) if postgres_available else None
 
-    caddy_listener_owners = remote.run(("ss", "-H", "-ltnp"), sudo=True)
-    caddy_config = remote.run(
-        (
-            "sh",
-            "-c",
-            _CADDY_CONFIG_SCRIPT,
-            "taskman-caddy-config",
-            str(_CADDYFILE),
-        ),
+    caddy_listener_owners = remote.run(
+        ("ss", "-H", "-ltnp",
+         f"( sport = :80 or sport = :443 or sport = :{config.application_port} or sport = :{config.distribution_port} )"),
         sudo=True,
     )
+    proxy_result = inspect_caddy(remote, config) if caddy_authority is None else caddy_authority
+    if not isinstance(proxy_result, HostResult) or proxy_result.operation != "caddy" or proxy_result.outcome != "succeeded":
+        raise ValueError("host facts require validated Caddy inspection")
+    build_caddy_ownership_plan(config, proxy_result)
+    proxy_authority = validate_caddy_authority(proxy_result.state["authority"])
 
     found_paths, path_metadata = _existing_paths(_stdout(existing_paths), paths)
     found_units = _existing_units(_stdout(units))
@@ -353,16 +289,10 @@ def collect_host_facts(
     found_databases = _existing_databases(
         _stdout(databases) if databases is not None else "", config.database_name
     )
-    expected_config_hash = _expected_caddyfile_hash(config, expected_caddyfile_sha256)
+    if postgresql is not None:
+        found_databases = (config.database_name,) if postgresql["database"] == "compatible" else ()
     parsed_listener_owners = _listener_owners(_stdout(caddy_listener_owners))
-    caddy_state = _caddy_state(
-        paths=found_paths,
-        units=found_units,
-        listeners=observed_listeners,
-        listener_owners=parsed_listener_owners,
-        config=_caddy_config(_stdout(caddy_config)),
-        expected_config_hash=expected_config_hash,
-    )
+    caddy_state = _caddy_state(proxy_authority, observed_listeners, parsed_listener_owners)
     conflict_states = (
         _output_state(existing_paths, detected=bool(found_paths)),
         _output_state(units, detected=bool(found_units)),
@@ -382,7 +312,6 @@ def collect_host_facts(
         ("active SSH connection", active_ssh),
         ("TCP listeners", listeners),
         ("Caddy listener ownership", caddy_listener_owners),
-        ("Caddy configuration", caddy_config),
     )
     failed_checks = [name for name, result in required_results if not result.succeeded]
     failed_checks.extend(
@@ -433,6 +362,9 @@ def collect_host_facts(
         taskman_account_compatible=taskman_account_compatible,
         existing_databases=found_databases,
         failed_checks=tuple(failed_checks),
+        postgresql=postgresql,
+        initial_database_empty=provision_authority["initial_database_empty"] if provision_authority is not None else False,
+        applied_migrations=provision_authority["applied_migrations"] if provision_authority is not None else (),
         **(_taskman_authority(_stdout(taskman_authority)) if taskman_authority is not None and taskman_authority.succeeded else {}),
         taskman_listener_owners=(
             tuple(sorted(
@@ -457,16 +389,6 @@ def _managed_paths(config: EnvironmentConfig) -> tuple[PurePosixPath, ...]:
         PurePosixPath("/etc/systemd/system/taskman.service"),
         _CADDYFILE,
     )
-
-
-def _expected_caddyfile_hash(config: EnvironmentConfig, supplied_hash: str | None) -> str:
-    """Use provisioning's rendered Caddy bytes when they are available."""
-
-    if supplied_hash is not None:
-        if re.fullmatch(r"[0-9a-f]{64}", supplied_hash) is None:
-            raise ValueError("expected Caddyfile hash must be a lowercase SHA-256 digest")
-        return supplied_hash
-    return hashlib.sha256(render_caddyfile(config).encode("utf-8")).hexdigest()
 
 
 def collect_operational_preflight(
@@ -650,95 +572,20 @@ def _listener_from_fields(fields: list[str]) -> Listener | None:
     return Listener(address=address or "*", port=port)
 
 
-def _caddy_config(value: str) -> dict[str, str] | None:
-    evidence: dict[str, str] = {}
-    for line in value.splitlines():
-        key, separator, field = line.partition("=")
-        if not separator or key not in _CADDY_AUTHORITY_KEYS or key in evidence:
-            return None
-        evidence[key] = field
-    return evidence if tuple(evidence) == _CADDY_AUTHORITY_KEYS else None
-
-
-def _caddy_state(
-    *,
-    paths: tuple[PurePosixPath, ...],
-    units: tuple[str, ...],
-    listeners: tuple[Listener, ...],
-    listener_owners: dict[Listener, tuple[str, int]] | None,
-    config: dict[str, str] | None,
-    expected_config_hash: str,
-) -> CaddyState:
-    """Classify only the Caddy state that admission must distinguish."""
-
-    if config is None or listener_owners is None:
+def _caddy_state(authority, listeners, listener_owners) -> CaddyState:
+    """Use native trust policy and require agreement with the host socket snapshot."""
+    if listener_owners is None:
         return CaddyState.INVALID
-    caddy_path_present = _CADDYFILE in paths
-    public_listeners = tuple(listener for listener in listeners if listener.port in {80, 443})
-    config_state = config["config"]
-
-    caddy_unit_present = "caddy.service" in units
-    no_caddy_evidence = not caddy_path_present and not caddy_unit_present and not public_listeners
-    if no_caddy_evidence:
-        return CaddyState.ABSENT if config_state == "absent" else CaddyState.INVALID
-
-    if not caddy_unit_present or not _trusted_caddy_unit(config):
+    public = {listener for listener in listeners if listener.port in {80, 443}}
+    expected = {(item["address"], item["port"]) for item in authority["public_listeners"]}
+    observed = {(item.address.removeprefix("[").removesuffix("]"), item.port) for item in public}
+    if observed != expected or any(listener_owners.get(item) != ("caddy", authority["main_pid"]) for item in public):
         return CaddyState.INVALID
-    if not caddy_path_present and not public_listeners:
-        return CaddyState.PREPARED if config_state == "absent" and _inactive_caddy_unit(config) else CaddyState.INVALID
-    if not caddy_path_present or not _trusted_caddy_config(config, expected_config_hash):
-        return CaddyState.INVALID
-    if not public_listeners:
-        return CaddyState.STAGED if _inactive_caddy_unit(config) else CaddyState.INVALID
-    if {listener.port for listener in public_listeners} != {80, 443}:
-        return CaddyState.INVALID
-    main_pid = _caddy_pid(config)
-    if (
-        config["unit_active"] != "active"
-        or main_pid is None
-        or not _trusted_caddy_process(config, main_pid)
-    ):
-        return CaddyState.INVALID
-    public_owners = {listener: owner for listener, owner in listener_owners.items() if listener.port in {80, 443}}
-    if any(public_owners.get(listener) != ("caddy", main_pid) for listener in public_listeners):
-        return CaddyState.INVALID
-    if set(public_owners) != set(public_listeners):
-        return CaddyState.INVALID
-    return CaddyState.ACTIVE
-
-
-def _trusted_caddy_unit(config: dict[str, str]) -> bool:
-    return (
-        config["unit_load"] == "loaded"
-        and config["unit_fragment"]
-        in {"/lib/systemd/system/caddy.service", "/usr/lib/systemd/system/caddy.service"}
-        and config["unit_metadata"] == "root:root:644"
-        and config["unit_package"] == "caddy"
-        and config["unit_verified"] == "clean"
-    )
-
-
-def _trusted_caddy_process(config: dict[str, str], main_pid: int) -> bool:
-    """Bind public sockets to the package-owned service process, not its name."""
-
-    return main_pid > 0 and config["unit_executable"] == "/usr/bin/caddy"
-
-
-def _inactive_caddy_unit(config: dict[str, str]) -> bool:
-    return config["unit_active"] == "inactive" and config["unit_pid"] == "0"
-
-
-def _caddy_pid(config: dict[str, str]) -> int | None:
-    value = config["unit_pid"]
-    return int(value) if value.isdecimal() and int(value) > 0 else None
-
-
-def _trusted_caddy_config(config: dict[str, str], expected_hash: str) -> bool:
-    return (
-        config["config"] == "regular"
-        and config["config_hash"] == expected_hash
-        and config["config_metadata"] == "root:root:644"
-    )
+    if authority["branch"] == "bootstrap":
+        return CaddyState.ABSENT
+    if authority["branch"] == "preserve-configuration":
+        return CaddyState.PREPARED
+    return CaddyState.ACTIVE if authority["service_active"] else CaddyState.STAGED
 
 
 def _existing_paths(

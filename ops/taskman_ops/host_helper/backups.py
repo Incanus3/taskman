@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from .commands import CommandError, run_command
 from .credentials import CredentialError, validate_credentials
-from .database import database_mapping
+from .database import database_mapping, scram_psql_argv
 from ..checksums import sha256_file
 from ..migrations import versions_from_filenames
 from .filesystem import fsync_directory
@@ -141,7 +141,7 @@ def create_validated_backup(
     published = root / f"{backup_id}.dump"
     source_size = database_size(database, credentials)
     ensure_capacity(root, source_size)
-    environment = {"PGPASSFILE": credentials.as_posix()}
+    environment = {"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"}
 
     run_command(
         (
@@ -155,7 +155,7 @@ def create_validated_backup(
             "--username",
             str(database["role"]),
             "--dbname",
-            str(database["name"]),
+            f"dbname={database['name']} require_auth=scram-sha-256",
             "--no-password",
         ),
         env=environment,
@@ -306,24 +306,8 @@ def prepare_backup_root(paths: ManagedPaths) -> None:
 
 def database_size(database: Mapping[str, object], credentials: Path) -> int:
     completed = run_command(
-        (
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--host",
-            str(database["host"]),
-            "--port",
-            str(database["port"]),
-            "--username",
-            str(database["role"]),
-            "--dbname",
-            str(database["name"]),
-            "--no-password",
-            "--command",
-            "SELECT pg_database_size(current_database())",
-        ),
-        env={"PGPASSFILE": credentials.as_posix()},
+        scram_psql_argv(database, query="SELECT pg_database_size(current_database())"),
+        env={"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"},
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     )
     try:

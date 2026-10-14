@@ -4,6 +4,7 @@ import stat
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from pyinfra.api import Config, Inventory, State, deploy
 from pyinfra.api.deploy import add_deploy
 from pyinfra.api.operations import run_ops
@@ -15,6 +16,12 @@ from taskman_ops.host.baseline import (
     TASKMAN_DIRECTORIES,
     build_baseline_plan,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_package_refresh(monkeypatch):
+    """Package behavior has native-boundary coverage in test_packages.py."""
+    monkeypatch.setattr(baseline, "refresh_required_packages", lambda *_args, **_kwargs: None)
 
 
 def test_baseline_plan_uses_built_in_owned_packages_account_and_directories() -> None:
@@ -49,26 +56,6 @@ def test_baseline_plan_uses_validated_configured_roots() -> None:
     assert plan.directories[5].path == "/srv/backups/taskman"
 
 
-def test_baseline_refreshes_apt_metadata_with_a_bounded_cache_before_installing_packages(monkeypatch) -> None:
-    """A clean host must populate package indexes before its first install."""
-
-    package_calls: list[dict[str, object]] = []
-    from pyinfra.operations import apt, files, server
-
-    monkeypatch.setattr(apt, "packages", lambda **kwargs: package_calls.append(kwargs))
-    monkeypatch.setattr(files, "directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(files, "put", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "user", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "service", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: None)
-
-    baseline.declare_baseline(environment_config())
-
-    assert package_calls[0]["packages"] == list(BASELINE_PACKAGES)
-    assert package_calls[0]["update"] is True
-    assert package_calls[0]["cache_time"] == 3600
-
-
 def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to_pyinfra(monkeypatch) -> None:
     """Replacing any stable baseline state with a custom action must fail this boundary contract."""
 
@@ -87,7 +74,7 @@ def test_baseline_delegates_ordinary_account_directory_file_and_service_state_to
         lambda source, destination, **kwargs: files_written.append((source.getvalue(), destination, kwargs)),
     )
     monkeypatch.setattr(server, "service", lambda service, **kwargs: services.append((service, kwargs)))
-    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: None)
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config, **_kwargs: None)
 
     plan = baseline.declare_baseline(environment_config())
 
@@ -142,7 +129,7 @@ def test_baseline_declares_only_managed_resources(monkeypatch) -> None:
         lambda _source, destination, **_kwargs: events.append(("file", destination)),
     )
     monkeypatch.setattr(server, "service", lambda service, **_kwargs: events.append(("service", service)))
-    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: events.append(("firewall", "")))
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config, **_kwargs: events.append(("firewall", "")))
 
     baseline.declare_baseline(environment_config())
 
@@ -184,12 +171,12 @@ def test_baseline_applies_domain_modes_through_actual_pyinfra_commands(
             for directory_plan in plan.directories
         ),
     )
-    monkeypatch.setattr(baseline, "build_baseline_plan", lambda _config: mapped_plan)
+    monkeypatch.setattr(baseline, "build_baseline_plan", lambda _config, **_kwargs: mapped_plan)
     monkeypatch.setattr(files, "put", put)
     monkeypatch.setattr(apt, "packages", lambda **_kwargs: None)
     monkeypatch.setattr(server, "user", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, "service", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(baseline, "declare_firewall", lambda _config: None)
+    monkeypatch.setattr(baseline, "declare_firewall", lambda _config, **_kwargs: None)
 
     @deploy("Baseline mode semantics")
     def converge() -> None:

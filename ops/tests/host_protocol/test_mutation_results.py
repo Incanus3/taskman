@@ -643,3 +643,137 @@ def test_restore_database_observations_receive_only_their_exact_512_version_allo
     unrelated["observations"]["restore_database_state"]["canonical"]["unrelated"] = list(range(65))
     with pytest.raises(ProtocolError):
         HostResult(3, "restore", CORRELATION, "succeeded", "done", unrelated, ())
+
+
+APPLICATION_CHECKS = (
+    "taskman-service", "release-identity", "listener-topology", "startup-journal", "local-readiness",
+)
+
+
+def application_report(*, failed_check: str | None = None) -> dict[str, object]:
+    checks = [
+        {"schema_version": 1, "name": name,
+         "status": "failed" if name == failed_check else "passed", "summary": "bounded evidence"}
+        for name in APPLICATION_CHECKS[:4 if failed_check in APPLICATION_CHECKS[:4] else 5]
+    ]
+    return {
+        "schema_version": 1, "scope": "application", "release_id": RELEASE,
+        "expected_release_id": RELEASE, "status": "failed" if failed_check else "ok",
+        "exit_status": 9 if failed_check == "local-readiness" else 8 if failed_check else 0,
+        "checks": checks,
+        "next_action": "inspect the fixed verification summaries and correct the reported host state before retrying" if failed_check else None,
+    }
+
+
+def preparation_state(*, failed_check: str | None = None) -> dict[str, object]:
+    state = deploy_state()
+    del state["report"]
+    local_report = application_report(failed_check=failed_check)
+    state.update(local_report=local_report, public_probe="not-attempted",
+                 exit_code=local_report["exit_status"], failed_boundary="verification" if failed_check else None)
+    state["observations"]["last_successful_selection_id"] = None
+    return state
+
+
+def test_preparation_accepts_local_proof_without_publishing_successful_history() -> None:
+    state = preparation_state()
+    assert validate_mutation_state("prepare_genesis", "succeeded", state) == state
+    # The same absent history cannot satisfy full genesis or deployment.
+    for operation in ("genesis", "deploy"):
+        full = deploy_state()
+        full["observations"]["last_successful_selection_id"] = None
+        with pytest.raises(ProtocolError):
+            validate_mutation_state(operation, "succeeded", full)
+
+
+@pytest.mark.parametrize("failed_check", ("taskman-service", "local-readiness"))
+def test_preparation_keeps_attempted_application_report_with_its_exact_category(failed_check: str) -> None:
+    state = preparation_state(failed_check=failed_check)
+    exact = validate_mutation_state("prepare_genesis", "retryable", state)
+    assert exact["local_report"] == application_report(failed_check=failed_check)
+    with pytest.raises(ProtocolError):
+        validate_mutation_state("prepare_genesis", "retryable", {**state, "local_report": None})
+    with pytest.raises(ProtocolError):
+        validate_mutation_state("prepare_genesis", "retryable", {**state, "public_probe": "ready"})
+
+
+@pytest.mark.parametrize("change", (
+    "missing-probe", "extra-field", "wrong-scope", "full-report", "duplicate", "reordered", "missing-check",
+    "release-mismatch", "expected-mismatch", "schema-bool", "check-schema-bool", "category-mismatch",
+    "unavailable", "unselected", "stopped", "database-unknown",
+))
+def test_preparation_rejects_incomplete_or_cross_scope_success(change: str) -> None:
+    state = preparation_state()
+    local = state["local_report"]
+    if change == "missing-probe": del state["public_probe"]
+    elif change == "extra-field": state["report"] = None
+    elif change == "wrong-scope": local["scope"] = "deployment"
+    elif change == "full-report": state["local_report"] = report(successful=True)
+    elif change == "duplicate": local["checks"][1] = local["checks"][0]
+    elif change == "reordered": local["checks"][0], local["checks"][1] = local["checks"][1], local["checks"][0]
+    elif change == "missing-check": local["checks"].pop()
+    elif change == "release-mismatch": local["release_id"] = OTHER_RELEASE
+    elif change == "expected-mismatch": local["expected_release_id"] = OTHER_RELEASE
+    elif change == "schema-bool": local["schema_version"] = True
+    elif change == "check-schema-bool": local["checks"][0]["schema_version"] = True
+    elif change == "category-mismatch": state["exit_code"] = 9
+    elif change == "unavailable":
+        state["observations"]["scheduled_backup_sha256"] = None
+        state["unavailable_fields"] = ["scheduled_backup_sha256"]
+        state["inspection_error"] = "inspection-failed"
+    elif change == "unselected": state["observations"]["selected_release_id"] = OTHER_RELEASE
+    elif change == "stopped": state["observations"]["service_state"] = "stopped"
+    elif change == "database-unknown":
+        state["observations"]["database_state"] = "unknown"
+        state["unavailable_fields"] = ["database_state"]
+        state["inspection_error"] = "inspection-failed"
+    with pytest.raises(ProtocolError):
+        validate_mutation_state("prepare_genesis", "succeeded", state)
+
+
+def test_application_report_is_closed_and_never_accepted_as_full_verification() -> None:
+    import taskman_ops.host_protocol as protocol
+    validator = getattr(protocol, "validate_application_report", None)
+    assert callable(validator), "application report validator is missing"
+    local = application_report()
+    assert validator(local) == local
+    with pytest.raises(ProtocolError):
+        protocol.validate_verification_report(local)
+    with pytest.raises(ProtocolError):
+        validator({**local, "unexpected": True})
+    for field in ("release_id", "expected_release_id"):
+        with pytest.raises(ProtocolError):
+            validator({**local, field: None})
+
+
+def test_preparation_preflight_failure_still_requires_public_probe() -> None:
+    from taskman_ops.host_protocol import unavailable_observations
+    observations, unavailable = unavailable_observations("prepare_genesis")
+    state = preparation_state()
+    state.update(exit_code=12, failed_boundary="lock", mutation_state="unchanged", local_report=None,
+                 observations=observations, unavailable_fields=unavailable, inspection_error="lock-unavailable")
+    assert validate_mutation_state("prepare_genesis", "retryable", state)["public_probe"] == "not-attempted"
+    with pytest.raises(ProtocolError):
+        validate_mutation_state("prepare_genesis", "retryable", {**state, "public_probe": "not-ready"})
+
+
+@pytest.mark.parametrize("mismatch", ("operation", "correlation"))
+def test_preparation_envelope_must_match_its_exact_request(mismatch: str) -> None:
+    from dataclasses import replace
+    from taskman_ops.host_protocol.envelope import validate_result_for_request
+    request = HostRequest(3, "prepare_genesis", CORRELATION, {},
+                          {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"}, {})
+    result = HostResult.for_request(request, "succeeded", "prepared", preparation_state())
+    assert validate_result_for_request(request, result) == result
+    mismatched = replace(result, operation="genesis") if mismatch == "operation" else replace(result, correlation_id="op-" + "f" * 32)
+    with pytest.raises(ProtocolError):
+        validate_result_for_request(request, mismatched)
+
+
+@pytest.mark.parametrize("probe", ("ready", "not-ready", "not-attempted"))
+def test_preparation_passing_local_report_and_probe_survive_later_failure(probe: str) -> None:
+    state = preparation_state()
+    state.update(exit_code=8, failed_boundary="service", public_probe=probe)
+    exact = validate_mutation_state("prepare_genesis", "retryable", state)
+    assert exact["local_report"] == application_report()
+    assert exact["public_probe"] == probe

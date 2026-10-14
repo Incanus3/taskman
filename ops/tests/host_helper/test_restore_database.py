@@ -186,14 +186,15 @@ def test_observation_distinguishes_absent_table_missing_table_empty_and_populate
     canonical_call = next(
         (argv, kwargs)
         for argv, kwargs in calls
-        if argv[0] == "psql" and argv[argv.index("--dbname") + 1] == "taskman"
+        if argv[0] == "psql" and argv[argv.index("--dbname") + 1] == "dbname=taskman require_auth=scram-sha-256"
     )
     temporary_call = next(
         (argv, kwargs)
         for argv, kwargs in calls
         if argv[0] == "runuser" and argv[argv.index("--dbname") + 1] == "taskman__restore_tmp"
     )
-    assert canonical_call[1]["env"] == {"PGPASSFILE": "/etc/taskman/pgpass"}
+    assert canonical_call[1]["env"] == {"PGPASSFILE": "/etc/taskman/pgpass", "LC_ALL": "C"}
+    assert "--no-password" in canonical_call[0]
     assert temporary_call[0][temporary_call[0].index("--host") + 1] == "/var/run/postgresql"
     assert "env" not in temporary_call[1]
 

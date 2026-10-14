@@ -402,7 +402,7 @@ def test_malformed_public_or_epmd_listener_topology_is_a_release_failure(
     assert report["checks"][3]["status"] == "failed"
 
 
-def test_verification_waits_within_the_readiness_budget_for_delayed_safe_listeners(
+def test_late_safe_listeners_leave_a_fresh_local_window_and_public_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A newly active release may bind its safe listeners after systemd reports active."""
@@ -446,11 +446,11 @@ def test_verification_waits_within_the_readiness_budget_for_delayed_safe_listene
 
     assert result.outcome == "succeeded"
     assert sleeps == [1.0]
-    assert local_deadlines == [2.0]
+    assert local_deadlines == [3.0]
     assert public_timeouts == [1.0]
 
 
-def test_verification_refuses_when_safe_listener_wait_exhausts_the_shared_budget(
+def test_verification_refuses_when_safe_listener_window_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_healthy_observation(monkeypatch, observed=_state(), patch_local_ready=False)
@@ -516,7 +516,7 @@ LISTEN 0 244 [::1]:5432 [::]:*
 """
     monkeypatch.setattr(verification_module, "_successful", lambda *_args, **_kwargs: (True, output))
 
-    assert verification_module._listener_topology(4000, 6789, 5432, 1.0)
+    assert verification_module._listener_topology(4000, 6789, 5432, verification_module.time.monotonic() + 1.0)
 
 
 def test_listener_topology_rejects_a_scoped_public_managed_address(
@@ -529,7 +529,7 @@ LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*
 """
     monkeypatch.setattr(verification_module, "_successful", lambda *_args, **_kwargs: (True, output))
 
-    assert not verification_module._listener_topology(4000, 6789, 5432, 1.0)
+    assert not verification_module._listener_topology(4000, 6789, 5432, verification_module.time.monotonic() + 1.0)
 
 
 @pytest.mark.parametrize(
@@ -612,7 +612,7 @@ def test_startup_journal_accepts_a_normal_native_capture_above_the_general_outpu
 
     monkeypatch.setattr(verification_module, "run_command", journal_fixture)
 
-    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+    check = verification_module._journal_check()
 
     assert check["status"] == "passed"
 
@@ -669,7 +669,7 @@ def test_startup_journal_detects_a_failure_after_the_old_output_cutoff(
 
     monkeypatch.setattr(verification_module, "run_command", journal_fixture)
 
-    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+    check = verification_module._journal_check()
 
     assert check["status"] == "failed"
     assert check["summary"] == "recent startup journal evidence indicates a startup failure"
@@ -708,7 +708,7 @@ def test_startup_journal_fails_closed_for_timeout_nonzero_and_empty_output(
 
     monkeypatch.setattr(verification_module, "run_command", journal_fixture)
 
-    check = verification_module._journal_check(verification_module.time.monotonic() + 3.0)
+    check = verification_module._journal_check()
 
     assert check["status"] == "failed"
     assert check["summary"] == summary
@@ -847,3 +847,451 @@ def test_public_hsts_requires_a_single_positive_numeric_max_age(
     assert report["exit_status"] == 9
     assert report["checks"][-1]["name"] == "public-hsts"
     assert report["checks"][-1]["status"] == "failed"
+
+
+class _ApplicationHost:
+    """Native-command boundary fixture; records/selection/locking stay real."""
+
+    def __init__(self, request: HostRequest):
+        self.request = request
+        self.caddy_active = False
+        self.local_response = b"HTTP/2 200\r\ncache-control: no-store\r\n\r\nready"
+        self.public_response = b"HTTP/2 200\r\ncache-control: no-store\r\nstrict-transport-security: max-age=31536000\r\n\r\nready"
+        self.listeners = "LISTEN 0 128 127.0.0.1:4000 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:6789 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n"
+        self.journal = b"clean startup"
+        self.service = b"active\n1234\n"
+        self.executable = f"{request.paths['install_root']}/releases/{RELEASE_ID}/erts-16.0/bin/beam.smp\n".encode()
+        self.clock = 100.0
+        self.public_requests: list[float] = []
+        self.local_advance = 0.0
+        self.command_advance = 0.0
+        self.limits: list[tuple[str, float, int]] = []
+
+    def run(self, argv, *, timeout_seconds, output_limit):
+        import subprocess
+        from taskman_ops.host_helper.commands import CommandError
+        self.limits.append((argv[0], timeout_seconds, output_limit))
+        self.clock += self.command_advance
+        if argv[0] == "df": output = b"Avail\n20000000000\n"
+        elif argv[:2] == ("runuser", "-u"): output = b"1\n" if "psql" in argv else b""
+        elif argv[:2] == ("systemctl", "show"): output = self.service
+        elif argv[0] == "readlink": output = self.executable
+        elif argv[:2] == ("systemctl", "is-active"):
+            if not self.caddy_active: raise CommandError("inactive")
+            output = b""
+        elif argv[0] == "ss": output = self.listeners.encode()
+        elif argv[0] == "journalctl": output = self.journal
+        elif argv[0] == "curl":
+            if argv[-1].startswith("https://"):
+                self.public_requests.append(timeout_seconds)
+                output = self.public_response
+            else:
+                self.clock += self.local_advance
+                output = self.local_response
+        else: pytest.fail(f"unexpected native command: {argv[0]}")
+        return subprocess.CompletedProcess(argv, 0, output, b"")
+
+
+def _application_host(tmp_path, monkeypatch, *, connection_timeout=1) -> tuple[HostRequest, _ApplicationHost]:
+    from pathlib import Path
+    from taskman_ops.host_helper.records import write_release_manifest
+    request = _request(expected_release_id=RELEASE_ID, readiness_timeout=30)
+    paths = {"install_root": str(tmp_path / "install"), "backup_root": str(tmp_path / "backups")}
+    managed = ManagedPaths.from_mapping(paths)
+    Path(managed.release_root / RELEASE_ID).mkdir(parents=True)
+    Path(managed.backup_root).mkdir()
+    write_release_manifest(managed, _state().releases[0])
+    Path(managed.current_link).symlink_to(managed.release_root / RELEASE_ID)
+    request = HostRequest(3, "verify", CORRELATION, request.expected_state, paths,
+                          {**request.parameters, "connection_timeout": connection_timeout})
+    host = _ApplicationHost(request)
+    monkeypatch.setattr(verification_module, "run_command", host.run)
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: host.clock)
+    monkeypatch.setattr(verification_module.time, "sleep", lambda seconds: setattr(host, "clock", host.clock + seconds))
+    monkeypatch.setenv("SUDO_USER", "deployer")
+    monkeypatch.setenv("SSH_CONNECTION", "198.51.100.7 51324 203.0.113.10 22")
+    return request, host
+
+
+def _application_verify(request, **kwargs):
+    verify_application = getattr(verification_module, "verify_application", None)
+    assert callable(verify_application), "private application verifier is missing"
+    return verify_application(request, **kwargs)
+
+
+def test_application_verification_admits_selected_candidate_without_history_or_caddy(tmp_path, monkeypatch) -> None:
+    from taskman_ops.host_protocol import validate_application_report
+    request, host = _application_host(tmp_path, monkeypatch)
+    result = _application_verify(request)
+    report = validate_application_report(result.local_report)
+    assert report["exit_status"] == 0
+    assert [check["name"] for check in report["checks"]] == [
+        "taskman-service", "release-identity", "listener-topology", "startup-journal", "local-readiness",
+    ]
+    assert result.public_probe == "not-attempted"
+    assert not host.public_requests
+    assert not (tmp_path / "install" / "deployments" / "selections").exists()
+    assert all(0 < timeout <= 3 for _command, timeout, _limit in host.limits)
+    assert all(limit == (65536 if command == "journalctl" else 9216) for command, _timeout, limit in host.limits)
+    assert verification_module.verify(request).outcome == "refused"
+
+
+@pytest.mark.parametrize("public", (
+    b"HTTP/2 200\r\ncache-control: no-store\r\nstrict-transport-security: max-age=31536000\r\n\r\nready",
+    b"HTTP/2 503\r\ncache-control: no-store\r\nstrict-transport-security: max-age=31536000\r\n\r\nunavailable",
+    b"HTTP/2 200\r\ncache-control: no-store\r\n\r\nready",
+))
+def test_application_public_probe_is_single_advisory_health_and_hsts_attempt(tmp_path, monkeypatch, public) -> None:
+    request, host = _application_host(tmp_path, monkeypatch)
+    host.caddy_active = True
+    host.public_response = public
+    result = _application_verify(request)
+    assert result.local_report["exit_status"] == 0
+    assert result.public_probe == ("ready" if public.endswith(b"ready") and b"strict-transport-security" in public else "not-ready")
+    assert len(host.public_requests) == 1
+    assert 0 < host.public_requests[0] <= 3.0
+
+
+@pytest.mark.parametrize("failure", ("service", "executable", "topology", "journal", "readiness"))
+def test_application_failure_retains_fixed_attempted_prefix_and_never_probes_public(tmp_path, monkeypatch, failure) -> None:
+    request, host = _application_host(tmp_path, monkeypatch)
+    host.caddy_active = True
+    if failure == "service": host.service = b"inactive\n0\n"
+    elif failure == "executable": host.executable = b"/usr/bin/beam.smp\n"
+    elif failure == "topology": host.listeners += "LISTEN 0 128 0.0.0.0:4000 0.0.0.0:*\n"
+    elif failure == "journal": host.journal = b"database startup failed"
+    else: host.local_response = b"HTTP/2 503\r\ncache-control: no-store\r\n\r\nunavailable"
+    result = _application_verify(request)
+    assert result.local_report["exit_status"] == (9 if failure == "readiness" else 8)
+    assert len(result.local_report["checks"]) == (5 if failure == "readiness" else 4)
+    assert result.local_report["status"] == "failed"
+    if failure in {"readiness", "journal"}:
+        assert result.local_report["checks"][-1]["status"] == "failed"
+    assert result.public_probe == "not-attempted"
+    assert not host.public_requests
+
+
+def test_application_advisory_has_its_own_bound_after_late_local_success(tmp_path, monkeypatch) -> None:
+    request, host = _application_host(tmp_path, monkeypatch, connection_timeout=30)
+    host.caddy_active = True
+    host.local_advance = 29.75
+    result = _application_verify(request)
+    assert result.public_probe == "ready"
+    assert host.public_requests == [3.0]
+
+
+@pytest.mark.parametrize("failure,expected", (("input", 2), ("administrator", 5), ("authority", 10), ("lock", 12)))
+def test_application_preproof_errors_keep_existing_categories_without_fabricating_report(tmp_path, monkeypatch, failure, expected) -> None:
+    request, host = _application_host(tmp_path, monkeypatch)
+    if failure == "input": request = HostRequest(3, "verify", CORRELATION, {}, request.paths, {})
+    elif failure == "administrator": monkeypatch.setenv("SUDO_USER", "other")
+    elif failure == "authority": (tmp_path / "install" / "current").unlink()
+    else:
+        from taskman_ops.host_helper.lock import LifecycleLockContention
+        from contextlib import contextmanager
+        @contextmanager
+        def contention(*args, **kwargs):
+            raise LifecycleLockContention("busy")
+            yield
+        monkeypatch.setattr(verification_module, "lifecycle_lock", contention)
+    error_class = getattr(verification_module, "ApplicationVerificationError", None)
+    assert isinstance(error_class, type), "private application error is missing"
+    with pytest.raises(error_class) as captured:
+        _application_verify(request)
+    assert captured.value.exit_code == expected
+    assert not host.public_requests
+
+
+@pytest.mark.parametrize("expected", (None,))
+def test_application_requires_exact_expected_release_before_observing_host(tmp_path, monkeypatch, expected) -> None:
+    request, host = _application_host(tmp_path, monkeypatch)
+    request = HostRequest(3, "verify", CORRELATION, {"expected_release_id": expected}, request.paths, request.parameters)
+    with pytest.raises(verification_module.ApplicationVerificationError) as captured:
+        _application_verify(request)
+    assert captured.value.exit_code == 2
+    assert host.limits == []
+
+
+def test_full_verification_requires_active_caddy(tmp_path, monkeypatch) -> None:
+    from taskman_ops.host_helper.records import append_selection
+    from taskman_ops.host_protocol import validate_verification_report
+    request, host = _application_host(tmp_path, monkeypatch)
+    append_selection(ManagedPaths.from_mapping(request.paths), _state().selections[0])
+    host.caddy_active = False
+    result = verification_module.verify(request)
+    report = validate_verification_report(result.state["report"])
+    assert report["exit_status"] == 8
+    assert any(check["name"] == "caddy-service" and check["status"] == "failed" for check in report["checks"])
+
+
+def test_application_retains_configured_local_http_timeout_and_caps_advisory_attempt(tmp_path, monkeypatch) -> None:
+    request, host = _application_host(tmp_path, monkeypatch, connection_timeout=10)
+    host.caddy_active = True
+    result = _application_verify(request)
+    assert result.local_report["exit_status"] == 0
+    assert [timeout for command, timeout, _limit in host.limits if command == "curl"] == [10, 3]
+    assert all(timeout <= 3 for command, timeout, _limit in host.limits if command != "curl")
+
+
+def test_verification_observation_has_a_fresh_sixty_second_window(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    from taskman_ops.host_helper.records import append_selection
+    request, host = _application_host(tmp_path, monkeypatch)
+    append_selection(ManagedPaths.from_mapping(request.paths), _state().selections[0])
+    host.caddy_active = True
+    host.command_advance = 3.0
+    read_bytes = Path.read_bytes
+
+    def delayed_manifest(path):
+        raw = read_bytes(path)
+        if path.name == ".taskman-release.json":
+            host.clock += 59.0
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", delayed_manifest)
+    result = verification_module.verify(request)
+    report = result.state["report"]
+    assert report["exit_status"] == 0
+    assert host.public_requests == [1.0]
+    assert all(timeout == 3.0 for command, timeout, _limit in host.limits if command != "curl")
+
+
+@pytest.mark.parametrize("application", (False, True))
+def test_expired_inventory_refuses_authority_without_readiness_report(tmp_path, monkeypatch, application) -> None:
+    from pathlib import Path
+    request, host = _application_host(tmp_path, monkeypatch)
+    read_bytes = Path.read_bytes
+
+    def expired_manifest(path):
+        raw = read_bytes(path)
+        host.clock += 60.0
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", expired_manifest)
+    if application:
+        with pytest.raises(verification_module.ApplicationVerificationError) as captured:
+            _application_verify(request)
+        assert (captured.value.exit_code, captured.value.failed_boundary) == (10, "authority")
+    else:
+        result = verification_module.verify(request)
+        assert result.outcome == "refused"
+        assert "report" not in result.state
+    assert not host.public_requests
+    assert [command for command, _timeout, _limit in host.limits] == ["df", "df", "runuser", "runuser"]
+
+
+def test_late_topology_and_local_readiness_have_independent_windows(tmp_path, monkeypatch) -> None:
+    from taskman_ops.host_helper.records import append_selection
+    request, host = _application_host(tmp_path, monkeypatch, connection_timeout=60)
+    append_selection(ManagedPaths.from_mapping(request.paths), _state().selections[0])
+    host.caddy_active = True
+    native_run = host.run
+
+    def delayed_readiness(argv, **kwargs):
+        result = native_run(argv, **kwargs)
+        if argv[0] == "ss" and host.clock < 129.0:
+            result.stdout = b"LISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n"
+        if argv[0] == "curl" and argv[-1].startswith("http://") and host.clock < 158.0:
+            result.stdout = b"HTTP/2 503\r\ncache-control: no-store\r\n\r\nunavailable"
+        return result
+
+    monkeypatch.setattr(verification_module, "run_command", delayed_readiness)
+    result = _application_verify(request)
+    report = result.local_report
+    assert report["exit_status"] == 0
+    assert host.clock == 158.0
+    assert host.public_requests == [3.0]
+    local_timeouts = [timeout for command, timeout, _limit in host.limits if command == "curl"][:-1]
+    assert local_timeouts[0] == 30.0
+    assert local_timeouts[-1] == 1.0
+
+
+@pytest.mark.parametrize("phase", ("topology", "local"))
+def test_polling_clips_the_final_attempt_and_stops_after_command_cleanup(monkeypatch, phase) -> None:
+    from taskman_ops.host_helper.commands import CommandTimeout
+    clock = [0.0]
+    timeouts = []
+    monkeypatch.setattr(verification_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(verification_module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def timed_out(argv, *, timeout_seconds, output_limit):
+        timeouts.append(timeout_seconds)
+        clock[0] += timeout_seconds + 0.4
+        if phase == "topology" and len(timeouts) == 1:
+            import subprocess
+            return subprocess.CompletedProcess(argv, 0, b"LISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n", b"")
+        raise CommandTimeout("timeout")
+
+    monkeypatch.setattr(verification_module, "run_command", timed_out)
+    if phase == "topology":
+        assert not verification_module._listener_topology(4000, 6789, 5432, 5.5)
+        assert timeouts == pytest.approx([3.0, 1.1])
+    else:
+        assert not verification_module._local_ready(4000, 3.0, 5.5)
+        assert timeouts == pytest.approx([3.0, 1.1])
+    assert clock[0] == pytest.approx(5.9)
+
+
+@pytest.mark.parametrize("application", (False, True))
+def test_public_command_timeout_keeps_full_failure_or_advisory_status(tmp_path, monkeypatch, application) -> None:
+    from taskman_ops.host_helper.commands import CommandTimeout
+    from taskman_ops.host_helper.records import append_selection
+    request, host = _application_host(tmp_path, monkeypatch, connection_timeout=90)
+    append_selection(ManagedPaths.from_mapping(request.paths), _state().selections[0])
+    host.caddy_active = True
+    native_run = host.run
+
+    def public_timeout(argv, **kwargs):
+        result = native_run(argv, **kwargs)
+        if argv[0] == "curl" and argv[-1].startswith("https://"):
+            raise CommandTimeout("request timeout")
+        return result
+
+    monkeypatch.setattr(verification_module, "run_command", public_timeout)
+    result = _application_verify(request) if application else verification_module.verify(request)
+    if application:
+        assert result.local_report["exit_status"] == 0
+        assert result.public_probe == "not-ready"
+    else:
+        assert result.state["report"]["exit_status"] == 9
+        assert len(result.state["report"]["checks"]) == 8
+    assert host.public_requests == ([3.0] if application else [30.0])
+
+
+def test_timed_out_advisory_caddy_is_not_attempted(tmp_path, monkeypatch) -> None:
+    from taskman_ops.host_helper.commands import CommandTimeout
+    request, host = _application_host(tmp_path, monkeypatch)
+    native_run = host.run
+
+    def caddy_timeout(argv, **kwargs):
+        if argv[:2] == ("systemctl", "is-active"):
+            assert kwargs["timeout_seconds"] == 3.0
+            raise CommandTimeout("Caddy timeout")
+        return native_run(argv, **kwargs)
+
+    monkeypatch.setattr(verification_module, "run_command", caddy_timeout)
+    result = _application_verify(request)
+    assert result.local_report["exit_status"] == 0
+    assert result.public_probe == "not-attempted"
+    assert not host.public_requests
+
+
+def test_submillisecond_http_bound_never_starts_an_advisory_request(tmp_path, monkeypatch) -> None:
+    request, host = _application_host(tmp_path, monkeypatch)
+    settings = verification_module._settings(request.parameters)
+    monkeypatch.setattr(verification_module, "_settings", lambda _parameters: {**settings, "connection_timeout": 0.0009})
+    host.caddy_active = True
+    # Local proof is already independently exercised; isolate the advisory's no-request branch.
+    monkeypatch.setattr(verification_module, "_local_ready", lambda *_args: True)
+    result = _application_verify(request)
+    assert result.local_report["exit_status"] == 0
+    assert result.public_probe == "not-attempted"
+    assert not host.public_requests
+
+
+@pytest.mark.parametrize("application,intentional_wait,envelope", ((False, 179.0, 185.0), (True, 152.0, 160.0)))
+def test_independent_phase_waits_fit_the_derived_envelope(tmp_path, monkeypatch, application, intentional_wait, envelope) -> None:
+    from contextlib import contextmanager
+    from pathlib import Path
+    from taskman_ops.host_helper.records import append_selection
+    request, host = _application_host(tmp_path, monkeypatch, connection_timeout=90)
+    append_selection(ManagedPaths.from_mapping(request.paths), _state().selections[0])
+    host.caddy_active = True
+    started = host.clock
+    native_run = host.run
+    read_bytes = Path.read_bytes
+    actual_lock = verification_module.lifecycle_lock
+    topology_started = []
+
+    @contextmanager
+    def delayed_lock(paths, timeout_seconds):
+        assert timeout_seconds == 5.0
+        host.clock += 5.0
+        with actual_lock(paths, timeout_seconds) as lock:
+            yield lock
+
+    def delayed_manifest(path):
+        raw = read_bytes(path)
+        if path.name == ".taskman-release.json":
+            host.clock += 59.999
+        return raw
+
+    def bounded_command(argv, **kwargs):
+        result = native_run(argv, **kwargs)
+        if argv[0] == "ss" and not topology_started:
+            topology_started.append(host.clock)
+        host.clock += kwargs["timeout_seconds"]
+        if argv[0] == "ss" and host.clock - topology_started[0] < 29.999:
+            result.stdout = b"LISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n"
+        return result
+
+    monkeypatch.setattr(verification_module, "lifecycle_lock", delayed_lock)
+    monkeypatch.setattr(Path, "read_bytes", delayed_manifest)
+    monkeypatch.setattr(verification_module, "run_command", bounded_command)
+    result = _application_verify(request) if application else verification_module.verify(request)
+    report = result.local_report if application else result.state["report"]
+    assert report["exit_status"] == 0
+    elapsed = host.clock - started
+    assert elapsed == pytest.approx(intentional_wait - 0.001)
+    # Eleven possible cleanup overruns contribute at most 4.4 seconds.
+    assert elapsed + 4.4 < envelope
+
+
+@pytest.mark.parametrize("application,caller_holds_lock", [(False, False), (True, True)])
+def test_observation_lock_boundary_preserves_caller_ownership(tmp_path, monkeypatch, application, caller_holds_lock) -> None:
+    from contextlib import nullcontext
+    from taskman_ops.host_helper.lock import lifecycle_lock, LifecycleLockContention
+    from taskman_ops.host_helper.records import append_selection
+    request, host = _application_host(tmp_path, monkeypatch)
+    paths = ManagedPaths.from_mapping(request.paths)
+    append_selection(paths, _state().selections[0])
+    host.caddy_active = True
+    observer = verification_module.observe_host_state
+    native_run = host.run
+    observations = []
+
+    def observed_under_lock(*args, **kwargs):
+        with pytest.raises(LifecycleLockContention):
+            with lifecycle_lock(paths, timeout_seconds=0):
+                pytest.fail("state observation requires the lifecycle lock")
+        observations.append(True)
+        return observer(*args, **kwargs)
+
+    def command_after_observation(argv, **kwargs):
+        if argv[:2] == ("systemctl", "show"):
+            if caller_holds_lock:
+                with pytest.raises(LifecycleLockContention):
+                    with lifecycle_lock(paths, timeout_seconds=0):
+                        pytest.fail("verification must retain its caller's lock")
+            else:
+                with lifecycle_lock(paths, timeout_seconds=0):
+                    pass
+        return native_run(argv, **kwargs)
+
+    monkeypatch.setattr(verification_module, "observe_host_state", observed_under_lock)
+    monkeypatch.setattr(verification_module, "run_command", command_after_observation)
+    with lifecycle_lock(paths, timeout_seconds=0) if caller_holds_lock else nullcontext() as lock:
+        result = (_application_verify(request, lifecycle_locked=caller_holds_lock) if application
+                  else verification_module.verify(request, lifecycle_locked=caller_holds_lock))
+        report = result.local_report if application else result.state["report"]
+        assert report["exit_status"] == 0
+        if caller_holds_lock:
+            assert lock.held
+    assert observations == [True]
+    with lifecycle_lock(paths, timeout_seconds=0):
+        pass
+
+
+def test_administrator_prerequisite_queries_the_configured_socket_and_port(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(verification_module, "_available_bytes", lambda *_: 20_000_000_000)
+    monkeypatch.setattr(verification_module, "_invoking_administrator_ok", lambda *_: True)
+    monkeypatch.setattr(verification_module, "_active_ssh_connection_ok", lambda *_: True)
+    monkeypatch.setattr(verification_module, "_successful", lambda argv, *_: calls.append(argv) or (True, b"1\n"))
+    paths = ManagedPaths.from_mapping({"install_root": str(tmp_path / "install"), "backup_root": str(tmp_path / "backups")})
+    assert verification_module._host_authority({"ssh_user": "deployer", "ssh_port": 22, "database_port": 5433}, paths) is None
+    argv = calls[0]
+    assert argv[argv.index("--host") + 1] == "/var/run/postgresql"
+    assert argv[argv.index("--port") + 1] == "5433"
+    assert argv[argv.index("--username") + 1] == "postgres"
+    assert "--no-psqlrc" in argv and "--no-password" in argv

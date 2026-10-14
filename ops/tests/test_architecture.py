@@ -427,3 +427,26 @@ def test_architecture_scan_rejects_superseded_module_import_aliases(source: str)
     assert tuple(_import_violations("ops/taskman_ops/workflows/unapproved.py", tree)) == (
         "ops/taskman_ops/workflows/unapproved.py:1: imports a superseded deployment module",
     )
+
+
+@pytest.mark.parametrize("source", ("import ufw\n", "from ufw import backend_iptables\n"))
+def test_architecture_scan_accepts_ufw_only_in_the_transient_adapter(source: str) -> None:
+    assert tuple(_import_violations("ops/taskman_ops/host_helper/ufw_adapter.py", ast.parse(source))) == ()
+
+
+@pytest.mark.parametrize("relative", (
+    "ops/taskman_ops/host_helper/operations/firewall.py",
+    "ops/taskman_ops/host_helper/ufw_adapter_extra.py",
+    "ops/taskman_ops/host_helper/nested/ufw_adapter.py",
+))
+def test_architecture_scan_rejects_ufw_in_other_helper_owners(relative: str) -> None:
+    assert tuple(_import_violations(relative, ast.parse("import ufw\n"))) == (
+        f"{relative}:1: helper imports third-party module ufw",
+    )
+
+
+def test_architecture_scan_rejects_other_dependencies_in_ufw_adapter() -> None:
+    relative = "ops/taskman_ops/host_helper/ufw_adapter.py"
+    assert tuple(_import_violations(relative, ast.parse("import requests\n"))) == (
+        f"{relative}:1: helper imports third-party module requests",
+    )

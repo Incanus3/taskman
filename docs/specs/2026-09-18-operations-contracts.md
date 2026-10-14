@@ -8,14 +8,15 @@ confirmation, recovery and failure-evidence contracts. The
 security boundaries, component ownership and architectural rationale. The
 [runbook](../guides/deployment.md) owns operator procedures; the
 [development guide](../guides/development.md#operations-verification) owns runnable verification commands.
-The [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns identified
-historical evidence and native limits. These contracts grant no host or publication authority.
+The [native acceptance guide](../guides/native-acceptance.md) defines portable native criteria;
+identified historical evidence and limits are retained privately. These contracts grant no host or publication authority.
 
 ## Reading map
 
 - [Compatibility](#one-time-compatibility-boundary) and [operator contract](#operator-contract).
 - [Artifact identity/resolution](#target-resolution-and-immutable-identity),
   [deployment admission](#observed-state-and-deployment-admission),
+  [shared Caddy preparation/completion](#shared-caddy-preparation-and-completion),
   [migration/downgrade safety](#database-and-downgrade-safety).
 - [Backup protection/history](#backup-protection-and-successful-history),
   [restore recovery](#explicit-restore-after-failed-deployment-or-provisioning),
@@ -67,8 +68,8 @@ permutation. The parked PostgreSQL refactor and proposed CLI UX do not alter the
 
 A one-time compatibility exception applies only to the historical pre-reconciliation disposable
 staging installation: its old authority is excluded rather than upgraded/adopted/converted.
-Identified evidence belongs to the acceptance report and recovery obligations to the
-[environment inventory](../inventories/operations-environments.md#staging-recovery-retention).
+Identified evidence and exact recovery custody belong in private operator storage under the
+[inventory privacy policy](../inventories/operations-environments.md#private-evidence-and-recovery).
 Any future reset/provider/DNS action needs its own authority; supported upgrades retain their
 compatibility and recovery obligations.
 
@@ -180,6 +181,52 @@ plan.
 Provisioning applies the same displayed-plan-only authorization rule to first installation and
 reconciliation of an unfinished first installation. `--yes` removes the interactive prompt; it does not weaken host
 admission, artifact validation, secret handling, or apply-time revalidation.
+
+### Shared Caddy preparation and completion
+
+Provision discovers Caddy authority before freezing the confirmed ownership plan. Existing trusted
+Caddy always selects site-only ownership, including interrupted bootstrap and dedicated-host reruns.
+Only positively absent installation/configuration with free public ports and no pre-existing masks
+permits full bootstrap. A safe existing `/etc/caddy` directory selects configuration-preserving
+installation, even when main is absent. Taskman's fixed site is
+`/etc/caddy/sites-enabled/taskman.caddy`, root:root:0644; a newly created containing directory is
+root:root:0755. Preserve safe existing directory metadata, operator main and every sibling site.
+The [shared-Caddy ownership contract](2026-10-01-shared-caddy-design.md#ownership-and-classification)
+defines installation trust, bounded literal-import inspection, mask/package preservation and scoped
+site recovery. Main root:caddy:0640 is supported without normalization. Failed inspection is exit 5;
+relevant confirmed authority/import drift is exit 10. Native validation/activation failure is 8,
+with primary failure, mutation and runtime-uncertainty evidence retained.
+
+`prepare_genesis` shares initial deployment's admission, locking, immutable target, credential,
+migration, backup protection, scheduler, selection and service procedure. It ends after application
+verification on the deployment host, without new successful history or resolved-protection removal.
+Its report excludes Caddy activity and public HTTPS/HSTS; ordinary `verify`, `genesis`, deploy and
+restore still require their complete full-verification contracts. A bounded advisory public probe
+is not successful deployment proof.
+
+For existing active/unmasked Caddy with the recognized import, native validation precedes site
+mutation; candidate validation reads the actual imported site. After application preparation,
+refresh validation/site/service/import authority and reload once when the site changed or the probe
+is not ready; unchanged ready sites skip reload. Full genesis finalizes the same immutable target
+against fresh preparation observations. Expected preparation effects are not authorization for
+unrelated release/schema/protection/scheduler drift. The public `facts.starting_state` remains the
+original confirmed pre-convergence mapping.
+
+Missing import or inactive/masked Caddy returns controller `PROXY_PENDING = 13`, stage
+`application-provisioned-proxy-pending`, public schema 1 `status: "failed"`, explicit
+`proxy_activation: "pending"`, `deployment_verified: false`, candidate identity, application report,
+site path, mutation/final observations and activation directions. Preparation helper success remains
+0; actual failures never become 13. Pending creates no successful selection, retains recovery
+inputs/protections and can prevent scheduled backups before first success. Existing completed replay
+history is retained. `deploy` still refuses before first durable success; `verify` cannot publish it.
+
+The operator owns coordinated top-level import/duplicate-hostname reconciliation and deliberate
+validation/reload or unmask/start/enable. Rerun the same retained artifact or unchanged source/build
+identity after activation; a different target needs ordinary confirmation/migration policy. Full
+verification/history publication gates completion, then verify backup operation. The
+[runbook](../guides/deployment.md#activate-a-pending-taskman-site) owns exact commands and quiet-window
+coordination, including watchers/reloaders. Site-only disk restoration never proves restored runtime
+after a lost reload reply; main/other sites/certificates/data remain outside rollback authority.
 
 ## Target resolution and immutable identity
 
@@ -373,10 +420,15 @@ Backup creation supports an unfinished installation without physical current; th
 format is unchanged. A partial-schema dump retains the existing manual-restore caveat.
 
 Provisioning convergence must preserve the existing database and its credentials during recovery.
-The final release procedure stops any running Taskman before migration, uses the desired installed
-target, verifies the complete outcome, and publishes the first successful selection with
-`previous_release_id: null`. It records the actual starting physical selection (possibly null) and
-all resolved recovery backups. Failed attempts never become synthetic successful predecessors.
+The release procedure stops any running Taskman before migration and uses the desired installed
+target. Application preparation can stop before completion; only full verification publishes the
+first successful selection with `previous_release_id: null`. It records the physical selection
+at the confirmed start of the completing helper invocation (possibly null), and all resolved
+recovery backups. After application preparation, full genesis sees
+the prepared candidate physically selected: this can make `observed_previous_release_id` that
+candidate while `previous_release_id` remains null for first success. Public `facts.starting_state`
+still retains the original provisioning confirmation. Failed attempts never become synthetic
+successful predecessors.
 Before publishing new records, provisioning must ensure the compatible scheduled helper using the
 same sequence as deploy when a scheduler already exists: pause scheduled backups, wait for any
 running backup to finish, replace and checksum-verify the backup program, then restart the timer
@@ -613,8 +665,11 @@ An active restore retains its existing exclusive recovery rules and does not run
 Successful selections use only schema version 2 with exactly `release_id`, `previous_release_id`,
 `backup_id`, `selected_at`, `schema_version: 2`, `observed_previous_release_id`, and `recovery_backup_ids` (sorted, unique, at
 most 64 IDs). `previous_release_id` names the last successful release, never an unverified physical
-candidate. `observed_previous_release_id` names physical current at the confirmed start (null only
-when no release was selected before first success, including a first successful restore).
+candidate. `observed_previous_release_id` names physical current at the confirmed start of the
+completing helper invocation (null when no release was then selected, including a first successful restore).
+When full genesis follows application preparation, that fresh physical predecessor is the prepared
+candidate; it is distinct from the last successful predecessor and the original public
+`facts.starting_state`.
 `recovery_backup_ids` includes all unresolved protections being resolved. `backup_id`
 continues, for deploy/provision, to identify the most recent pre-migration backup for this reconciliation, or null if the
 set is empty; choose the highest protection `attempt_number`, not by dump or protection timestamps.
@@ -745,8 +800,8 @@ administrator privileges. The accepted operations threat model therefore require
 root-managed validated backups; the role switch is not a sandbox for hostile dump contents.
 Native regressions must prove descriptor transport, execution/session identities and resulting
 object ownership. The
-[acceptance report](../research/2026-09-17-operations-vps-acceptance.md#native-restore-and-authentication)
-records final native findings and verification boundaries.
+[native acceptance guide](../guides/native-acceptance.md) defines portable verification boundaries;
+final native findings are retained privately.
 
 ### Rerunning an interrupted restore
 
@@ -1148,45 +1203,55 @@ warnings. It never relies on stdout from a sensitive SSH command, which intentio
 both output streams.
 
 `provision_authority` also validates the fixed managed resource metadata under its existing lock.
-Its parameters are exactly `database`, nullable `postgres_package_track`, and `resource_digests`.
+Its parameters are exactly `database`, nullable `postgres_package_track`, boolean
+`force_postgresql_config`, and `resource_digests`.
 The digest mapping has exactly `taskman_service`, `backup_environment`, `backup_service`, and
 `backup_timer`, each a lowercase SHA-256. The helper derives all permitted paths and required
 metadata; no arbitrary path list enters the request. Missing resources remain eligible for
 create-only convergence. The scheduled executable remains metadata-only until the lifecycle-locked
-refresh. The existing successful authority result remains unchanged.
+refresh. Selected-track and override context bind the same selected-cluster resource/schema authority
+used by provision discovery. The successful result includes its validated PostgreSQL observation.
 
 Supplied provisioning credential proof is a narrow private entry point in the same verified
 transient package, outside the secret-free JSON protocol:
 
 ```text
-python3 taskman-host.pyz provision-pgpass-authority HOST PORT ROLE DATABASE DATABASE_STATE
+python3 taskman-host.pyz provision-pgpass-authority HOST PORT ROLE DATABASE DATABASE_STATE AUTHENTICATION_MODE
 ```
 
-The literal mode and five-argument count are exact. DATABASE_STATE is exactly `ready` or `absent`,
-from validated native role/database authority. Host is an allowed loopback address, port a canonical
-decimal in 1–65535, and role/database use the existing PostgreSQL identifier grammar (at most
-63 ASCII characters, with any stricter database-name restriction retained). The pgpass path is
-fixed inside the helper. Raw stdin is a nonempty, bounded, single newline-terminated pgpass record
-with the existing colon/backslash escaping rules and exact connection-field equality. Secrets
-never enter argv, JSON requests/results, diagnostics, or temporary files. Existing pgpass requires
-exact non-link root:root mode-0600 bytes matching the supplied record. Ready mode must authenticate
-to the configured application database: retained pgpass uses PGPASSFILE; missing pgpass uses a
-restricted child environment with the parsed password, without creating a credential file.
-Absent mode validates the same exact record and any retained file, omitting only impossible database
-authentication. It is admitted only when both configured role and database are genuinely absent;
-incompatible presence or retained-role/missing-database refuses. It does not prove database
-emptiness or applied migrations. Runtime-file authority is unconditional. Convergence re-observes
-the exact identities, creates through protected stdin and proves final application authentication.
-Generic provision discovery shares this ready/absent observation policy so target admission and
-downgrade planning reach fresh creation even before pgpass exists. Ready missing-file discovery
-retains administrator catalog proof; ready present-file discovery requires application
-authentication and state agreement. Strict/deploy/restore still require their credentials.
-Native execution is bounded to 60 seconds and emits no retained stdout/stderr.
+The literal entry and six-argument count are exact. DATABASE_STATE is `ready` or `absent`;
+AUTHENTICATION_MODE is `authenticate` or `defer-for-configuration`, derived from validated
+selected-cluster authority and explicit configuration override. Host is an allowed loopback
+address, port a canonical decimal in 1–65535, and role/database use the existing PostgreSQL
+identifier grammar (at most 63 ASCII characters, with stricter database-name restrictions retained).
+Raw stdin is one nonempty, bounded, newline-terminated pgpass record with existing colon/backslash
+escaping and exact connection-field equality. Secrets never enter argv, JSON requests/results or diagnostics.
+Any retained `/etc/taskman/pgpass` must be a non-link regular root:root mode-0600 file with exactly
+matching bytes; runtime-file authority is unconditional.
+
+Ready authenticated admission proves native application access using `PGPASSFILE` and an explicit
+`require_auth=scram-sha-256` connection requirement. Missing retained credentials use the fixed
+mode-0600 `pgpass.probe` beside the verified archive in its root-only invocation workspace, never
+`PGPASSWORD`. The helper removes it in `finally`; the runner independently removes that exact probe
+before the archive and final directory cleanup, including helper loss or timeout before `finally`.
+Cleanup is limited to derived paths; uncertain removal remains a warning.
+
+Absent database state or configuration-repair admission omits only the application probe; retained
+credential bytes/metadata, compatible role/database authority and schema/provenance checks remain
+mandatory. The credential entry alone does not prove database emptiness or applied migrations.
+A compatible retained role with absent database is eligible for create-only convergence;
+unknown or incompatible state refuses. Default shared discovery proves application access for an
+existing database when credentials are available; missing-passfile discovery retains administrator
+catalog/schema authority until supplied-credential admission. The override uses explicit selected
+socket/port administrator observations before configuration, then proves SCRAM access immediately
+after configuration/resource convergence and credential installation. No preparation or migration
+crosses that proof boundary. Strict/deploy/restore still require their credentials. Native credential
+execution is bounded to sixty seconds and exposes no stdout/stderr.
 
 The private entry returns only status: 0 for successful proof, 2 for invalid private arguments or
-oversized input, and 10 for unsafe credential authority, malformed content, missing prerequisites,
-or failed authentication. The controller maps these to fixed admission errors. The runner reuses
-normal package validation, verified staging, deadlines and exact cleanup. Its receipt contains
+oversized input, 5 for native client/access failure, and 10 for unsafe credential authority,
+malformed content or credential-file failure. The controller maps these to fixed admission errors.
+The runner reuses normal package validation, verified staging, deadlines and exact cleanup. Its receipt contains
 `exit_status`, `warnings`, and `local_cleanup_incomplete`; transport exceptions retain whether the
 entry was dispatched. Successful temporary-cleanup warnings do not change admission success or
 participate in plan-drift comparison. This finite exit-only adapter is not a generic remote command
@@ -1251,9 +1316,11 @@ separate lifecycle obligation, not a requirement to accept old transient wire re
 | HostResult | `protocol_version`, `operation`, `correlation_id`, `outcome`, `message`, `state`, `warnings` |
 
 The finite vocabulary is `discover`, `list_releases`, `list_backups`, `verify`, `genesis`, `deploy`,
-`backup`, `rollback`, `restore`, `restore_preflight`, `provision_authority`, and `cleanup`.
+`backup`, `rollback`, `restore`, `restore_preflight`, `provision_authority`, `cleanup`, `firewall`,
+`caddy`, and `prepare_genesis`.
 Correlation is ephemeral transport identity, never persistent operation/release/backup/database
-identity. Paths contain exactly installation and backup roots; handlers own operation semantics.
+identity. Application paths contain exactly installation and backup roots; the internal `caddy`
+operation uses empty paths and its fixed reserved destinations. Handlers own operation semantics.
 Outcomes are `succeeded`, `refused`, `retryable`, `manual`. The strict codec rejects wrong types,
 unsupported version/operation, duplicate JSON keys, invalid UTF-8/JSON, oversized/trailing output
 and nonfinite values. Operation/correlation must match the request. Generic collection limit 64
@@ -1436,6 +1503,34 @@ each consuming package. Unknown required observation is a refusal, never a subst
 empty schema. The controller selects acknowledgment policy; the trusted helper independently
 enforces target, database, path, and expected-state safety rather than accepting a force boolean.
 
+`prepare_genesis` uses the same exact request keys and first-install/exact-replay admission as
+`genesis`, ending before successful history publication. Finalization carries the validated immutable
+target and preparation observations in memory, reuploads required transient inputs after preparation
+cleanup, and binds full genesis to fresh expected state. No persistent completion token is added.
+
+The internal `caddy` operation has finite modes `inspect`, `guard-install`, `prepare`, `activate`.
+Parameters are exactly `mode`, `hostname`, `application_port`, `site_content`, `site_sha256`,
+`receipt`, `public_probe`; `paths` is empty. Inspect expected state is empty; writes bind confirmed
+proxy authority. Receipts bind fixed site/digest/original metadata or absence, actual site-change,
+root-only recovery identity, invocation-created masks and nullable installed package version.
+The authenticated selected package version is bound after source setup before installation; dry-run
+does not install a source to discover it. Exact authority/receipt/result bounds belong to
+`host_protocol/caddy.py` and the
+[shared-Caddy interface contract](2026-10-01-shared-caddy-design.md#file-responsibilities-and-documentation).
+
+The internal `postgresql_config_recovery` operation captures the selected two configuration files
+without configuring or restarting PostgreSQL. Parameters are exactly `cluster`, expected state is
+empty, and paths are the derived `install_root` and `backup_root`. Success state is exactly
+`mutation_state` (`changed`), `recovery_directory` (a validated UUID child of the fixed private
+parent) and the bound `cluster`. Failure adds `exit_code` and `failed_boundary` (`postgresql`);
+mutation is `unchanged`, `changed` or `unknown`, and identities may be null only when unproven.
+Capture/inspection failures use 5 or 10; unexpected dispatch/encoding failure retains 8. Possible
+recovery-file creation survives failure reporting. The selected-cluster and recovery identity
+validators live in `host_protocol/postgresql.py`; this operation adds no public command.
+
+Existing operation contracts, wire version 3, public schema 1, manifest v3 and persisted records
+remain unchanged.
+
 The mutation sequence is:
 
 1. Lock, observe, validate managed authority and confirmed facts, and resolve only recognizable
@@ -1499,16 +1594,60 @@ The fixed public exit categories are:
 | 10 | Safety/state/schema/policy conflict, incompatible rollback or missing unattended acknowledgment |
 | 11 | Restore/restored-database validation failure |
 | 12 | Shared lifecycle lock unavailable |
+| 13 | Controller-only application-provisioned proxy pending; not completed deployment |
 
 Scheduler dependency refresh failures use 8 once its mutation begins; prior unsafe identity uses 10.
 Transport loss keeps its transport status and unknown consequence evidence, not an invented
 migration failure. Completing deployment or a newly restored release requires a complete passing
 report and durable successful history. Cleanup-only restore retries retain their explicit exception:
 they validate durable completion and recovery authority, not current application readiness.
-Topology and subsequent readiness share the configured finite readiness budget under the global
-45-second deadline. Only safe absent application/distribution listeners may wait; unsafe, malformed,
-public, EPMD or missing-PostgreSQL evidence fails immediately. A timeout retains failed checks.
-The deployment architecture defines journal capture and the complete verification boundary.
+### Verification phases have independent finite limits
+
+Verification uses independent phases rather than an aggregate 45-second deadline. Fixed host
+commands retain a three-second execution/output-drain bound; host authority uses at most four
+commands (two capacity checks, administrator sudo, PostgreSQL query). Lock acquisition remains
+five seconds when the caller does not already hold the lifecycle lock.
+
+| Phase | Limit |
+| --- | --- |
+| Complete state observation, including inventory and optional checksum progress | 60 seconds |
+| Taskman service, executable identity, full-mode Caddy activity, startup journal | Three seconds per command |
+| Safe absent Taskman/distribution listener polling | Configured `readiness_timeout`, positive and at most 30 seconds |
+| Local HTTP readiness polling, starting after topology/journal checks | A fresh configured `readiness_timeout` window |
+| Each local HTTP attempt | Smaller of `connection_timeout` and remaining local window |
+| One full public HTTP/HSTS attempt, after local success | Smaller of `connection_timeout` and 30 seconds |
+| Application advisory, after local success | Caddy check up to three seconds, then one HTTP/HSTS attempt up to `min(connection_timeout, 3)` seconds |
+
+Only safe absent application/distribution listeners may wait; unsafe, malformed, public, EPMD or
+missing-PostgreSQL evidence fails immediately. Each topology command also clips its three-second
+bound to the remaining topology window. Polling sleeps are at most one second and fit the remaining
+window. HTTP bounds round downward to milliseconds; below one millisecond no HTTP attempt starts.
+Timeout retains the checks actually attempted and existing lifecycle/readiness failure categories.
+Output limits remain 9,216 bytes per stream for general observations and 64 KiB per stream for
+startup journal capture. Command execution, output/pipe drain and process-group cleanup retain their
+separate bounded runner ownership.
+
+The intentional-wait sum is at most 179 seconds full / 152 seconds application, including optional
+lock acquisition. Command cleanup can add up to 4.4 seconds across fixed commands and final polling
+attempts; rounded wait envelopes are **185 seconds full / 160 seconds application**. These assume
+responsive local filesystem/kernel operations and normal process scheduling, not hard real-time
+termination of wedged I/O or process creation. See the
+[derivation and accepted trade-off](../research/2026-10-07-verification-timeout-review.md#phase-limits-and-total-envelope).
+No aggregate budget object or additional global verification timer is part of this contract.
+
+Both verification modes give state observation its own fresh 60-second cooperative deadline.
+Expiration during inventory/record/reference validation or optional checksum progress refuses
+without returning a partial snapshot or inventing a readiness report. Checksum timeout is not an
+optional corrupt-backup warning. Existing authority/refusal categories remain, including application
+error 10 at boundary `authority`.
+
+Read-only verification holds the lifecycle lock only for state observation. Lifecycle callers
+already holding it retain it through verification and successful-history publication, so the longer
+verification envelope can increase their occupancy; it does not bound the entire deployment or
+controller command. The helper's 660-second operation transport allowance is separate from the
+60-second control/transfer allowance. An explicit caller deadline can still interrupt a larger
+workflow with the existing transport/unknown-consequence semantics. The deployment architecture
+owns journal capture and the complete verification boundary.
 
 ### Public result envelope
 
@@ -1523,7 +1662,8 @@ No raw remote output, inspected exceptions or secret values become safe diagnost
 Keep the existing result envelope keys: `protocol_version`, `operation`, `correlation_id`,
 `outcome`, `message`, `state`, and `warnings`. Outcomes remain `succeeded`, `refused`, `retryable`,
 and `manual`. Validate correlation, operation, and the complete operation-specific state before
-consuming any result. Exact mutation-state fields are required for `deploy`, `genesis`, `restore`, and cleanup execution. Failed cleanup inspection also
+consuming any result. Exact mutation-state fields are required for `deploy`, `genesis`,
+`prepare_genesis`, `restore`, and cleanup execution. Failed cleanup inspection also
 uses this failure shape; successful inspection retains its separately specified paginated response.
 Other read-only operation results retain their own contracts.
 
@@ -1533,7 +1673,7 @@ fields in the following table. Required fields are never omitted on an error pat
 | Common field | Type and meaning |
 | --- | --- |
 | `mutation_state` | `unchanged`, `changed`, or `unknown`, for this helper invocation |
-| `exit_code` | Integer status from the categories above; 0 exactly when `outcome` is `succeeded`; local-build status 3 is not a helper result |
+| `exit_code` | Integer status from the categories above; 0 exactly when `outcome` is `succeeded`; local-build status 3 and controller pending status 13 are not helper results |
 | `failed_boundary` | Null on success; otherwise one of `input`, `lock`, `authority`, `expected_state`, `backup_helper`, `staging`, `backup`, `protection`, `migration`, `selection`, `service`, `verification`, `history`, `restore`, `cleanup`, or `inspection` |
 | `observations` | Exact final-observation mapping for the operation, defined below |
 | `unavailable_fields` | Sorted unique array of keys in `observations` whose final values could not be established |
@@ -1543,14 +1683,37 @@ fields in the following table. Required fields are never omitted on an error pat
 | Operation | Exact additional state fields |
 | --- | --- |
 | `deploy`, `genesis` | `desired_release_id`, `backup_id` |
+| `prepare_genesis` | `desired_release_id`, `backup_id`, `public_probe`; `local_report` replaces common `report` |
 | `restore` | `desired_release_id`, `backup_id`, `pre_restore_backup_id` |
 | `cleanup` | `completed_targets` |
+
+`prepare_genesis.local_report` has exactly `schema_version: 1`, `scope: "application"`,
+`release_id`, `expected_release_id`, `status`, `exit_status`, `checks`, `next_action`. Checks are
+an ordered unique prefix of `taskman-service`, `release-identity`, `listener-topology`,
+`startup-journal`, `local-readiness`; success requires all five passing with matching valid candidate
+identities and fresh running-service/ready-database authority. Lifecycle failure is 8; local-readiness
+failure is 9, retaining attempted checks. `public_probe` is always required: `ready`, `not-ready`
+or `not-attempted`; failed application proof, inactive/unavailable Caddy or a sub-millisecond
+HTTP allowance means not attempted. Only after application proof, one independent Caddy check
+(up to three seconds) permits one advisory public health/HSTS request when active. Its separate
+HTTP allowance is at most `min(connection_timeout, 3)` seconds; timeout is `not-ready` once a
+request was attempted. Earlier successful phases consuming their limits do not suppress this probe.
+It neither publishes history nor replaces the eight-check full report. Missing/malformed evidence
+never becomes preparation success. The independent phase limits above, three-second fixed-command
+cap, 9,216-byte observations and 64-KiB startup-journal stream bounds apply.
+
+Caddy results use their separate exact state: `exit_code`, `failed_boundary`, `mutation_state`,
+nullable fresh `authority`, `unavailable_fields`, `receipt`, `validation`, `reload`, `recovery`,
+`reason`. Validation/reload distinguish not-attempted/succeeded/failed/unknown; recovery additionally
+records scoped restoration and runtime uncertainty. No raw config/package/native diagnostics are
+returned. `host_protocol/caddy.py` validates mode/receipt/correlation/outcome/authority consistency;
+proxy state is not projected through release mutation observations.
 
 `desired_release_id` is the validated requested target, or null if validation failed before its
 identity was established; it is not an observation of current. For restore it names the requested
 backup's validated source release. Restore's `backup_id` identifies that validated input, while
 `pre_restore_backup_id` identifies the binding's validated `safety_backup_id` for the original
-database, not an arbitrary newer copy of a failed restored database. Deploy/genesis
+database, not an arbitrary newer copy of a failed restored database. Deploy/genesis/preparation
 `backup_id` identifies the validated pre-migration backup used by this invocation. These backup
 fields are null when no such validated identity was established; do not guess a completed backup
 from a temporary dump name. Their presence alone does not prove publication or a final reference.
@@ -1564,7 +1727,7 @@ further deletion. Across batches, retain earlier completions and mutation eviden
 
 ### Final observations and unavailable values
 
-Deploy, genesis, and restore `observations` contain exactly:
+Deploy, genesis, prepare_genesis, and restore `observations` contain exactly:
 
 `selected_release_id`, `last_successful_selection_id`, `applied_migrations`,
 `protected_backup_ids`, `backup_protection_sha256`, `restore_target_sha256`, `database_state`,
@@ -1625,6 +1788,7 @@ actions, database changes, and successful-history publication. Inspect-only requ
 
 | Result case | Required evidence |
 | --- | --- |
+| Application preparation success | Helper exit 0, null failed boundary, complete passing application report and fresh selected-candidate/running-service/ready-database observations; no new successful history required or published |
 | Deploy/genesis success, or restore that installs/reapplies a backup | Exit 0, null failed boundary, complete passing report, and fresh observations proving the required durable successful selection and resolved recovery state |
 | Restore completion/cleanup-only success | Exit 0 and null failed boundary; fresh selection/reference/database-identity evidence proves completion, without requiring service readiness; report is null unless verification was actually attempted |
 | Cleanup execution success | Exit 0 and null failed boundary; all batch targets accounted for, valid final filesystem/reference facts, null report |
@@ -1663,6 +1827,13 @@ evidence cannot be silently dropped to fit; cover worst-case result serializatio
 contract verification before publishing the matching helper package.
 
 ## Internal helper failure recovery
+
+Application preparation uses the same evidence-preserving recovery/encoding path with its exact
+`local_report` and required `public_probe`, rather than a full `report`. Independently valid
+application proof cannot reconstruct a successful preparation from an invalid result; encoding
+failure retains eligible report/mutation/identity proof and emits failure with unavailable final
+facts. Caddy uses its own closed failure state and never falls through to release mutation evidence.
+
 
 Only matching cooperative in-process handler results may contribute independently validated
 evidence. The wire consumer rejects any malformed/mismatched complete reply; it cannot use this
@@ -1794,6 +1965,7 @@ Paths are relative to `ops/taskman_ops/`. The architecture's
 | --- | --- |
 | `cli.py`, `workflows/deploy.py`, `workflows/provision.py`, `workflows/restore.py`, `workflows/cleanup.py` | Flags, target intent, plans, confirmations and command results. |
 | `releases/identifiers.py`, `manifests.py`, `build.py`, `artifacts.py`, `source_order.py` | Exact artifact/provenance identity, frozen source export, byte budgets, installed/cache resolution and bounded local source ordering. |
+| `host_protocol/caddy.py`, `host_helper/operations/caddy.py`, `services/caddy.py` | Closed proxy authority/results, guarded native package/site/activation/recovery, frozen ownership plan and signed-source declarations. |
 | `host_protocol/`, `workflows/helper.py` | Envelope and operation schema/budgets, request correlation, strict controller reply consumption and shared cleanup completion authority. |
 | `host_helper/records.py`, `state.py`, `paths.py`, `backup_protection.py` | Completed records, coherent authority, derived paths and protected migration-attempt lifecycle. |
 | `host_helper/restore_target.py`, `restore_database.py`, `operations/restore.py` | Restore binding/reference lifecycle, exact OID/authentication/load/arrangement authority and consequences. |
@@ -1814,7 +1986,7 @@ These are regression obligations for the supported behavior, not pending impleme
 proof that native acceptance has just been repeated. Use focused public controller-to-helper tests
 and direct capability tests for distinct recovery states. The
 [architecture test design](2026-09-09-dedicated-host-deployment-design.md#test-design) defines trust-domain
-coverage; the [acceptance report](../research/2026-09-17-operations-vps-acceptance.md) records identified results/limits.
+coverage; the [native acceptance guide](../guides/native-acceptance.md) defines portable criteria. Identified results/limits are retained privately.
 
 | Boundary | Required observable outcomes and consequential refusals |
 | --- | --- |
@@ -1824,6 +1996,7 @@ coverage; the [acceptance report](../research/2026-09-17-operations-vps-acceptan
 | Pagination | Byte-driven pages below 64, all-page public output, invalid cursor/snapshot drift/removed versus unknown continuation, bounded restarts and no partial success. Multi-page target/downgrade resolution and byte-batched cleanup with newly protected targets/interruption. |
 | Deploy reconciliation | Retry failed verification and retain original report/physical selection; replace unhealthy partial target without first repairing it. Distinct migration-prefix/backup/protection/selection/start/verification/history/removal interruptions; missing or conflicting authority/links/unknown side effects refuse. |
 | Confirmation/downgrade | Interactive/unattended/JSON/dry-run and explicit/clean/dirty targets; apply-time drift under yes. Lower SemVer/ancestor/divergent/missing objects/unorderable versions/mixed signals/rebuild equality/no-baseline; distinguish known downgrade and uncertainty. Unacknowledged noninteractive action refuses 10, dry-run reports acknowledgment. Before-first-success protected/live-prefix baselines retained even without current. |
+| Shared Caddy | Site-only existing/rerun authority, bounded literal imports/errors, persistent installation masks and preserved configuration, application-only proof/pending13, exact-target full completion, conditional reload/no-op and scoped recovery/runtime uncertainty. Native routing/ACME/WebSockets/restart remains separately gated. |
 | First provisioning | Partial convergence/staging/migrations/start/history/lost reply supports changed source or exact target without original archive; null-baseline safety and missing-current provenance, populated-state refusal, immutable candidates and no marker authority. After durable first success replacement uses deploy. Scheduler pause/quiescence before replacement. True absent identities reach mutation-free packaged dry-run and confirmed creation; incompatible/partial presence, wrong ready credentials, retained-byte mismatch and post-convergence foreign schema refuse. |
 | Restore before first success | Full-schema backup with installed provenance, with/without current; safety/typed confirmation/null-baseline binding/first success/reference transfer/swaps/lost output. Partial source-incompatible dump, missing infrastructure or corrupt authority refuses. |
 | Restore after failed deploy | Physical/history mismatch and partial migration prefix admit explicit typed restore to validated source; selected backup and pre-restore safety differ in full-schema versus manual-recovery guarantees. Corrupt backup/drift refuses; no automatic restore. |

@@ -27,6 +27,7 @@ class ExitStatus(IntEnum):
     SAFETY = 10
     RESTORE = 11
     LOCKED = 12
+    PROXY_PENDING = 13
 
 
 class OpsError(Exception):

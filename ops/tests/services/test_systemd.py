@@ -19,7 +19,7 @@ from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host.baseline import build_baseline_plan
 from taskman_ops.provisioning import ProvisioningInputs
 from taskman_ops.remote import ChangeSet, CommandResult
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from tests.support.caddy import controller_plan, authority_result, prepared_result
 import taskman_ops.services.systemd as taskman_systemd
 from taskman_ops.services.systemd import build_systemd_plan, install_runtime_environment, render_taskman_service
 
@@ -232,12 +232,7 @@ def test_daemon_reload_is_skipped_when_no_unit_file_changed(monkeypatch) -> None
         ProvisioningInputs(
             config=environment_config(),
             systemd_plan=build_systemd_plan(environment_config()),
-            caddy_plan=CaddyPlan(
-                CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-                (),
-                ("caddy",),
-                "taskman.acme.tld {}\n",
-            ),
+            caddy_plan=controller_plan(),
             runtime_environment=b"RUNTIME=value\n",
             pgpass=b"pgpass\n",
             role_password_input=b"role-password-input\n",
@@ -282,12 +277,7 @@ def test_systemd_uses_builtin_file_reload_enablement_and_service_convergence(mon
     inputs = ProvisioningInputs(
         config=environment_config(),
         systemd_plan=build_systemd_plan(environment_config()),
-        caddy_plan=CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (),
-            ("caddy",),
-            "taskman.acme.tld {}\n",
-        ),
+        caddy_plan=controller_plan(),
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"pgpass\n",
         role_password_input=b"role-password-input\n",
@@ -363,7 +353,7 @@ def test_systemd_does_not_overwrite_existing_scheduler_resources_before_genesis(
         ProvisioningInputs(
             config=environment_config(),
             systemd_plan=build_systemd_plan(environment_config()),
-            caddy_plan=CaddyPlan(CaddyRepository("https://example.test/key", "/keyring", "deb example"), (), (), ""),
+            caddy_plan=controller_plan(),
             runtime_environment=b"runtime",
             pgpass=b"pgpass",
             role_password_input=b"password",
@@ -413,12 +403,7 @@ def test_systemd_applies_asset_modes_through_actual_pyinfra_commands(
     inputs = ProvisioningInputs(
         config=config,
         systemd_plan=build_systemd_plan(config),
-        caddy_plan=CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (),
-            ("caddy",),
-            "taskman.acme.tld {}\n",
-        ),
+        caddy_plan=controller_plan(),
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"pgpass\n",
         role_password_input=b"role-password-input\n",

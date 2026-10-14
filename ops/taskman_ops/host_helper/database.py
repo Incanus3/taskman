@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 import re
 
-from .commands import run_command
+from .commands import CommandError, run_command
 from ..migrations import validate_migration_versions
 
 
@@ -258,22 +258,48 @@ def _state_from_versions(database: Mapping[str, object], credentials: Path | Non
     return {"state": "ready", "applied_migrations": versions}
 
 
-def _psql_argv(database: Mapping[str, object]) -> tuple[str, ...]:
+def scram_psql_argv(database: Mapping[str, object], *, query: str) -> tuple[str, ...]:
+    """Require a completed native SCRAM exchange for every application query."""
+    database_mapping(database)
+    if database["host"] not in {"127.0.0.1", "::1"} or any(
+        re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", str(database[key]), re.ASCII) is None
+        for key in ("role", "name")
+    ):
+        raise ValueError("application database settings are invalid")
     return (
-        "psql",
-        "--no-psqlrc",
-        "--tuples-only",
-        "--no-align",
-        "--host",
-        str(database["host"]),
-        "--port",
-        str(database["port"]),
-        "--username",
-        str(database["role"]),
-        "--dbname",
-        str(database["name"]),
-        "--no-password",
+        "psql", "--no-psqlrc", "--no-password", "--set=ON_ERROR_STOP=1",
+        "--host", str(database["host"]), "--port", str(database["port"]),
+        "--username", str(database["role"]),
+        "--dbname", f"dbname={database['name']} require_auth=scram-sha-256",
+        "--tuples-only", "--no-align", "--command", query,
     )
+
+
+def require_scram_client() -> None:
+    """Check the supported Ubuntu packaged client's explicit prerequisite."""
+    try:
+        result = run_command(("psql", "--version"), env={"LC_ALL": "C"},
+                             timeout_seconds=_COMMAND_TIMEOUT_SECONDS, output_limit=1024)
+    except CommandError:
+        raise CommandError("PostgreSQL client require_auth prerequisite could not be inspected") from None
+    version = re.fullmatch(rb"psql \(PostgreSQL\) ([0-9]+)\.[^\r\n]+\n", result.stdout)
+    if result.returncode != 0 or version is None or int(version[1]) < 16:
+        raise CommandError("PostgreSQL client must support require_auth (packaged client version 16 or later)")
+
+
+def prove_scram_access(database: Mapping[str, object], credentials: Path) -> None:
+    """Prove authentication and the exact selected application endpoint identity."""
+    query = "SELECT current_user, current_database(), inet_server_addr(), inet_server_port()"
+    argv = scram_psql_argv(database, query=query)
+    require_scram_client()
+    try:
+        result = run_command(argv, env={"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"},
+                             timeout_seconds=_COMMAND_TIMEOUT_SECONDS, output_limit=1024)
+    except CommandError:
+        raise CommandError("PostgreSQL SCRAM access proof failed; inspect selected-cluster access and credentials") from None
+    expected = f"{database['role']}|{database['name']}|{database['host']}|{database['port']}\n".encode("ascii")
+    if result.returncode != 0 or result.stdout != expected:
+        raise CommandError("PostgreSQL SCRAM access proof returned an unexpected application identity")
 
 
 def _database_query(
@@ -288,14 +314,17 @@ def _database_query(
         )
         env = None
     else:
-        argv = (*_psql_argv(database), "--command", command)
-        env = {"PGPASSFILE": credentials.as_posix()}
+        argv = scram_psql_argv(database, query=command)
+        env = {"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"}
     return run_command(argv, env=env, timeout_seconds=_COMMAND_TIMEOUT_SECONDS).stdout
 
 
 __all__ = [
     "DatabaseObservationError",
     "database_mapping",
+    "scram_psql_argv",
+    "prove_scram_access",
+    "require_scram_client",
     "migration_versions",
     "observe_database_migrations",
     "observe_database_state",

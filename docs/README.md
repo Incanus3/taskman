@@ -13,6 +13,10 @@
 
 ## Specifications
 
+- [PostgreSQL provisioning with operator-owned cluster configuration (approved; implementation and bounded native acceptance complete; results accepted)](specs/2026-10-07-shared-postgresql-design.md)
+
+- [Caddy provisioning with operator-owned configuration (implemented; bounded native results accepted)](specs/2026-10-01-shared-caddy-design.md)
+
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
 - [Projects and basic Tasks first slice (Project directory requirements superseded)](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
@@ -32,6 +36,7 @@
 - [Active Project selector (implemented and operator accepted)](specs/2026-09-22-active-project-selector-design.md)
 - [Projects without primary directories (implemented and operator accepted)](specs/2026-09-10-projects-without-primary-directories-design.md)
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
+- [Additive ordinary-UFW convergence (implemented; bounded native scope accepted)](specs/2026-09-30-additive-ufw-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
 - [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
@@ -43,19 +48,32 @@
 
 ## Guides
 
+- [Native operations acceptance contracts and limits](guides/native-acceptance.md)
+
 - [Documentation roles, placement and retirement](guides/documentation.md)
 - [Development guide](guides/development.md)
 - [Operations development guidelines](guides/development.md#operations-development)
 - [Dedicated-host deployment automation runbook](guides/deployment.md)
+- [PostgreSQL ownership and native access](guides/deployment.md#postgresql-ownership-and-access)
+- [PostgreSQL operator setup and retry](guides/deployment.md#postgresql-operator-setup-and-retry)
+- [Explicit PostgreSQL configuration override and recovery](guides/deployment.md#explicit-postgresql-configuration-override-and-recovery)
+- [Repository-bundled operations reference skill](../priv/taskman_ops_skill/SKILL.md)
+- [Pending Caddy activation and exact-target retry](guides/deployment.md#activate-a-pending-taskman-site)
+- [Provider-console SSH lockout recovery](guides/deployment.md#ssh-lockout-recovery-through-the-provider-console)
 
 ## Inventories
 
-- [Operations environment inventory and renewal obligations](inventories/operations-environments.md)
+- [Operations inventory privacy and operating obligations](inventories/operations-environments.md)
 
 ## Research
 
-- [Disposable VPS operations acceptance](research/2026-09-17-operations-vps-acceptance.md)
-- [Operations test overlap review (post-acceptance mapping retained coverage)](research/2026-09-17-operations-test-overlap.md)
+
+- [Verification timeout assessment and approved bounded-phase correction (implemented and locally verified)](research/2026-10-07-verification-timeout-review.md)
+
+
+- [UFW Python API and host-helper integration evaluation](research/2026-10-01-ufw-python-api-evaluation.md)
+
+- [Operations test overlap and branch coverage ownership](research/2026-09-17-operations-test-overlap.md)
 - [Operations test parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
 - [Cosmos capabilities](research/cosmos-capabilities.md)
 - [Emdash and Auggie capabilities](research/emdash-auggie-capabilities.md)
@@ -63,22 +81,3 @@
 ## Prototypes
 
 - [Navigation and MVP visual guidance](prototypes/navigation.html)
-
-## Archive
-
-- [Task blocking relationships and global Task search implementation plan](archive/plans/2026-09-29-task-blocking-and-search.md)
-- [Active Project selector implementation plan](archive/plans/2026-09-25-active-project-selector.md)
-- [Projects without primary directories implementation plan](archive/plans/2026-09-23-projects-without-primary-directories.md)
-- [Missing List recovery implementation plan](archive/plans/2026-09-18-missing-list-recovery.md)
-- [ProjectLive workflow decomposition implementation plan](archive/plans/2026-09-04-project-live-decomposition.md)
-- [Authenticated hosted access and release deployment implementation plan](archive/plans/2026-09-02-authenticated-hosted-access.md)
-- [Foundation documentation update implementation plan](archive/plans/2026-07-18-foundation-documentation-update.md)
-- [Projects and basic Tasks first slice implementation plan](archive/plans/2026-07-18-projects-basic-tasks-first-slice.md)
-- [Task editing and human-controlled lifecycle implementation plan](archive/plans/2026-07-31-task-editing-lifecycle.md)
-- [Full Task creation form](archive/plans/2026-08-03-full-task-creation-form.md)
-- [Alpine Elixir CI implementation plan](archive/plans/2026-08-10-alpine-elixir-ci.md)
-- [Task detail and navigation implementation plan](archive/plans/2026-08-24-task-detail-navigation.md)
-- [Lists and nested organization implementation plan](archive/plans/2026-08-26-lists-nested-organization.md)
-- [API, CLI, and agent skill implementation plan](archive/plans/2026-08-29-api-cli-agent-skill.md)
-- [Parent-child Task hierarchy implementation plan](archive/plans/2026-08-30-parent-child-task-hierarchy.md)
-- [Immediate cooperative workspace updates implementation plan](archive/plans/2026-09-01-live-workspace-updates.md)

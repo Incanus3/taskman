@@ -176,7 +176,10 @@ engine merely to reduce repeated syntax.
 
 Tests should cover distinct state transitions and consequential failure boundaries. Do not multiply
 every interruption by every command, flag, and timing permutation when they exercise the same
-invariant. Keep focused public-boundary coverage and direct tests for the distinct recovery states.
+invariant. Own detailed input combinations in the lowest layer that implements the behavior.
+Integration tests cover representative main paths, wiring and distinct cross-boundary failure
+consequences; crossing another boundary alone does not justify repeating the lower-level matrix.
+Keep focused public-boundary coverage and direct tests for distinct recovery states.
 Code-size and duplication measurements are signals to review complexity, not targets that justify
 hiding it. Confirm that a simplification removes redundant behavior or state rather than merely
 relocating it, and do not trade understandable boundaries or meaningful tests for a smaller count.
@@ -191,8 +194,11 @@ Python when it has a concrete advantage, not because of this operations implemen
 Use Python for nontrivial durable operations logic: branching workflows, structured parsing,
 filesystem state management, subprocess coordination, retries, and recovery. This applies to new
 code and substantial changes to existing operations workflows, whether controller-side or host-side.
-Host helpers retain their standard-library-only packaging boundary; reuse the existing helper
-transport rather than adding a second remote execution mechanism merely to run Python.
+Host helpers retain their standard-library-only packaging boundary, with one explicit exception:
+the transient helper's firewall adapter may lazily load the host's Ubuntu-packaged `ufw` library
+in process. Limit the import-validator exception to that adapter, verify trusted system-package
+origins, and retain stdlib-only behavior for other operations and the scheduled-backup archive.
+Do not vendor UFW or install it through pip. Reuse the existing helper transport.
 
 One-line shell calls, or a few lines where demonstrably simpler, remain appropriate when they
 improve clarity or have a concrete advantage. Keep native tools such as `systemctl`, `psql`, and
@@ -223,7 +229,9 @@ lower-layer test, and do not repeat those tests in Wallaby. Name the specific br
 test must prove. Examples include local storage, browser history, clipboard results, connection
 recovery, computed visibility that affects interaction, and functionality that changes with viewport
 size. Responsive visual acceptance may use direct browser inspection without adding an automated
-browser test. Run Wallaby tests through `mix test.browser` with Chromium and ChromeDriver; keep
+browser test. Measure the actual page-context CSS viewport dimensions and horizontal scroll width;
+device-emulation labels alone do not establish the tested width. Run Wallaby tests through
+`mix test.browser` with Chromium and ChromeDriver; keep
 them separate from the normal `mix test` gate.
 
 Test the current supported behavior. An absence assertion is appropriate when it is part of that
@@ -308,6 +316,9 @@ Architecture checks run within the operations pytest suite. Cross-suite test sup
 focused modules under `ops/tests/support/`; domain-specific support stays beside its consumers.
 Execute generated Python zipapps with `-I -S` in isolation tests: `-I` alone still loads site
 packages and can mask missing archive members through an editable workstation installation.
+Test non-firewall operations without UFW available. Exercise the firewall adapter's explicitly
+loaded OS dependency separately under the same isolation flags, and verify that packaging rejects
+third-party imports in every other helper module and in the scheduled-backup archive.
 Import shared fixtures explicitly to preserve their intended scope rather than enabling them
 globally. Treat code-size counts as diagnostic evidence, not a size target;
 the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md#simplicity-and-maintenance)

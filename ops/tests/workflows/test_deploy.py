@@ -15,6 +15,10 @@ from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import OTP_VERSION, MigrationFingerprint
 from tests.support.environments import valid_environment
 from tests.workflows.support import CANDIDATE, deployment_artifact, successful_verification_report
+from taskman_ops.workflows.deploy import (
+    _confirmed_expected_state as observed_expected_state,
+    _downgrade_acknowledgment as observed_downgrade_authority,
+)
 
 
 CURRENT = build_release_id(
@@ -45,7 +49,7 @@ def _valid_operational_preflights(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _confirmed_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args: _EXPECTED)
-    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args, **_kwargs: (False, ()))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy._planned_prune_backup_ids",
         lambda *_args, **_kwargs: ((), {"protections": (), "independent_backup_ids": frozenset()}),
@@ -231,7 +235,7 @@ def test_first_release_binds_the_exact_fresh_expected_state_to_genesis(
     result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
 
     assert captured["expected_state"] == fresh
-    assert captured["genesis"] is True
+    assert captured["operation"] == "genesis"
     assert result.facts["starting_state"] == fresh
 
 
@@ -297,8 +301,9 @@ def test_first_release_refuses_post_pyinfra_release_authority_drift(
     assert result.facts["starting_state"] == {"host_authority": confirmed}
 
 
+@pytest.mark.parametrize("operation", ("deploy_first_release", "prepare_first_release"))
 def test_first_release_refuses_a_changed_target_after_durable_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
 ) -> None:
     """Provision is idempotent only for its exact completed genesis target."""
 
@@ -310,14 +315,16 @@ def test_first_release_refuses_a_changed_target_after_durable_history(
         lambda *_args, **_kwargs: pytest.fail("a changed completed target must require deploy"),
     )
 
-    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+    from taskman_ops.workflows import deploy as module
+    result = getattr(module, operation)(object(), config(), deployment_artifact(tmp_path))
 
     assert result.exit_status is ExitStatus.SAFETY
     assert result.stage == "safety-refused"
 
 
+@pytest.mark.parametrize("operation", ("deploy_first_release", "prepare_first_release"))
 def test_first_release_refuses_when_history_names_a_different_completed_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
 ) -> None:
     """A physical current link cannot turn a changed completed target into provision."""
 
@@ -340,7 +347,8 @@ def test_first_release_refuses_when_history_names_a_different_completed_release(
         lambda *_args, **_kwargs: pytest.fail("changed completed target must require deploy"),
     )
 
-    result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
+    from taskman_ops.workflows import deploy as module
+    result = getattr(module, operation)(object(), config(), deployment_artifact(tmp_path))
 
     assert result.exit_status is ExitStatus.SAFETY
     assert result.stage == "safety-refused"
@@ -861,9 +869,218 @@ def test_equal_source_version_rebuild_needs_only_ordinary_acknowledgment(
     from taskman_ops.workflows.deploy import deploy
 
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
-    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args: (False, ()))
+    monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args, **_kwargs: (False, ()))
     monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: _success())
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
 
     assert result.stage == "deployed"
+
+
+def test_prepare_first_release_uses_shared_admission_and_local_proof(tmp_path, monkeypatch):
+    import taskman_ops.workflows.deploy as module
+    fresh = {**_EXPECTED, "selected_release_id": None, "last_successful_selection_id": None,
+             "scheduled_backup_sha256": None, "downgrade_baseline_sha256": "e" * 64}
+    artifact = deployment_artifact(tmp_path)
+    success = _success()
+    proof = dict(success.state["report"])
+    proof["scope"] = "application"
+    proof["checks"] = [c for c in proof["checks"] if c["name"] not in {"caddy-service", "public-readiness", "public-hsts"}]
+    state = {k: v for k, v in success.state.items() if k != "report"}
+    state.update(local_report=proof, public_probe="not-ready", observations={**state["observations"], "last_successful_selection_id": None})
+    prepared = HostResult(3, "prepare_genesis", success.correlation_id, "succeeded", "prepared", state, ())
+    captured = {}
+    monkeypatch.setattr(module, "_confirmed_expected_state", lambda *_a, **_k: fresh)
+    monkeypatch.setattr(module, "run_deployment_request", lambda *_a, **kw: captured.update(kw) or prepared)
+    handler = getattr(module, "prepare_first_release", None)
+    assert callable(handler), "controller preparation capability is missing"
+    result = handler(object(), config(), artifact)
+    assert result.exit_status == 0
+    assert result.stage == "application-prepared"
+    assert captured["operation"] == "prepare_genesis"
+    assert captured["expected_state"] == fresh
+    assert result.facts["starting_state"] == fresh
+    assert result.facts["local_report"] == proof
+    assert result.facts["public_probe"] == "not-ready"
+    assert result.facts["last_successful_selection_id"] is None
+
+
+def test_prepare_first_release_preserves_local_failure_report_and_probe(tmp_path, monkeypatch):
+    import taskman_ops.workflows.deploy as module
+    fresh = {**_EXPECTED,"selected_release_id":None,"last_successful_selection_id":None}
+    success = _success()
+    proof = dict(success.state["report"])
+    proof.update(scope="application", status="failed",exit_status=9,
+        next_action="inspect the fixed verification summaries and correct the reported host state before retrying")
+    proof["checks"] = [dict(c) for c in proof["checks"] if c["name"] not in {"caddy-service","public-readiness","public-hsts"}]
+    proof["checks"][-1]["status"] = "failed"
+    state = {k:v for k,v in success.state.items() if k != "report"}
+    state.update(exit_code=9,failed_boundary="verification",local_report=proof,public_probe="not-attempted")
+    failed = HostResult(3,"prepare_genesis",success.correlation_id,"retryable","readiness failed",state,())
+    monkeypatch.setattr(module,"_confirmed_expected_state",lambda *_a,**_kw:fresh)
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:failed)
+    result = module.prepare_first_release(object(),config(),deployment_artifact(tmp_path))
+    assert result.exit_status == 9
+    assert result.facts["local_report"] == proof
+    assert result.facts["public_probe"] == "not-attempted"
+    assert result.facts["starting_state"] == {**fresh, "applied_migrations": []}
+    assert result.facts["mutation_state"] == "changed"
+
+
+def _prepared_completion(tmp_path):
+    import hashlib
+    from taskman_ops.output import WorkflowResult
+    artifact = deployment_artifact(tmp_path)
+    original = {**_EXPECTED, "selected_release_id": None,
+                "last_successful_selection_id": None, "applied_migrations": (),
+                "backup_protections": (), "initial_database_empty": True, "database_state": "ready",
+                "last_successful_selection": None}
+    empty = hashlib.sha256(b"[]").hexdigest()
+    original["backup_protection_sha256"] = empty
+    observation = {**dict(_success().state["observations"]),
+                   "last_successful_selection_id": None,
+                   "backup_protection_sha256": empty}
+    proof = dict(_success().state["report"])
+    proof.update(scope="application")
+    proof["checks"] = [c for c in proof["checks"] if c["name"] not in {"caddy-service", "public-readiness", "public-hsts"}]
+    prepared = WorkflowResult("deploy", "production", True, "application-prepared",
+        {**observation, "observations": observation, "candidate_release_id": CANDIDATE,
+         "local_report": proof, "public_probe": "ready", "backup_id": None,
+         "unavailable_fields": [], "inspection_error": None, "mutation_state": "changed"})
+    fresh = {**original, **observation,
+             "downgrade_baseline_sha256": hashlib.sha256(json.dumps([CANDIDATE],separators=(",", ":")).encode()).hexdigest()}
+    return artifact, {"host_authority": original, "candidate_release_id": artifact.manifest.release_id,
+                      "artifact_sha256": artifact.sha256}, prepared, fresh
+
+
+def test_prepared_completion_uses_fresh_exact_authority_and_original_public_start(tmp_path, monkeypatch):
+    import taskman_ops.workflows.deploy as module
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    artifact, starting, prepared, fresh = _prepared_completion(tmp_path)
+    @contextmanager
+    def package():
+        yield SimpleNamespace(sha256="c" * 64)
+    monkeypatch.setattr(module, "temporary_scheduled_backup_helper_package", package)
+    monkeypatch.setattr(module, "run_request", lambda *_a: HostResult(3,"discover", "op-"+"1"*32,"succeeded","discovered",fresh,()))
+    monkeypatch.setattr(module,"_confirmed_expected_state",lambda *_a,**_kw:{key:fresh[key] for key in _EXPECTED})
+    calls = []
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**kw:calls.append(kw) or _success())
+    result = module.finalize_first_release(object(), config(), artifact, preparation=prepared,
+                                          starting_state=starting, migration_policy="restore-required",
+                                          prune_backup_ids=(), scheduler_create=())
+    assert result.exit_status == 0
+    assert calls[0]["expected_state"]["selected_release_id"] == CANDIDATE
+    assert calls[0]["migration_policy"] == "no-change"
+    assert calls[0]["operation"] == "genesis"
+    assert result.facts["starting_state"] == starting
+
+
+@pytest.mark.parametrize("field,value", [("selected_release_id",CURRENT), ("applied_migrations",(20260905120000,)),
+    ("backup_protection_sha256","f"*64),("scheduled_backup_sha256","e"*64),
+    ("backup_timer_enabled",False),("last_successful_selection_id","selection-"+"e"*64+".json"),
+    ("downgrade_baseline_sha256","f"*64)])
+def test_prepared_completion_refuses_drift_without_claiming_old_observations(tmp_path,monkeypatch,field,value):
+    import taskman_ops.workflows.deploy as module
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    artifact, starting, prepared, fresh = _prepared_completion(tmp_path)
+    @contextmanager
+    def package():
+        yield SimpleNamespace(sha256="c" * 64)
+    monkeypatch.setattr(module,"temporary_scheduled_backup_helper_package",package)
+    fresh[field] = value
+    monkeypatch.setattr(module,"run_request",lambda *_a:HostResult(3,"discover","op-"+"1"*32,"succeeded","discovered",fresh,()))
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:pytest.fail("drift must prevent full dispatch"))
+    result=module.finalize_first_release(object(),config(),artifact,preparation=prepared,starting_state=starting,
+                                         prune_backup_ids=(),scheduler_create=())
+    assert result.exit_status == ExitStatus.SAFETY
+    assert result.facts["selected_release_id"] is None
+    assert result.facts["applied_migrations"] is None
+    assert result.facts["inspection_error"]
+    assert "selected_release_id" in result.facts["unavailable_fields"]
+    assert result.facts["starting_state"] == starting
+
+
+@pytest.mark.parametrize("database_state,initial_empty", [
+    ("ready", False), ("unknown", False), ("unknown", True), ("absent", True)])
+def test_completion_without_migration_backup_requires_positive_empty_authority(
+    tmp_path, monkeypatch, database_state, initial_empty):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from taskman_ops.output import WorkflowResult
+    import taskman_ops.workflows.deploy as module
+    artifact, starting, prepared, fresh = _prepared_completion(tmp_path)
+    migration = MigrationFingerprint("20260905120000_create_tasks.exs", "d" * 64)
+    artifact = deployment_artifact(tmp_path, migrations=(migration,))
+    starting["host_authority"].update(database_state=database_state, initial_database_empty=initial_empty)
+    facts = dict(prepared.facts)
+    facts["observations"] = {**facts["observations"], "applied_migrations": [20260905120000]}
+    prepared = WorkflowResult(prepared.command, prepared.environment, prepared.changed, prepared.stage, facts)
+    fresh["applied_migrations"] = [20260905120000]
+    @contextmanager
+    def package():
+        yield SimpleNamespace(sha256="c" * 64)
+    monkeypatch.setattr(module, "temporary_scheduled_backup_helper_package", package)
+    from taskman_ops.releases.artifacts import DeploymentTarget
+    with pytest.raises(OpsError) as raised:
+        module._prepared_completion_authority(
+            DeploymentTarget(artifact=artifact, release_record=None, source="explicit"),
+            starting, prepared, fresh, prune_backup_ids=(), scheduler_create=())
+    assert raised.value.status == ExitStatus.SAFETY
+
+
+@pytest.mark.parametrize("site", ["admission", "confirmation", "downgrade"])
+def test_postgresql_discovery_failure_preserves_category_check_and_cleanup_warning(monkeypatch, site):
+    from taskman_ops.workflows import deploy as module
+    observed = []
+    def failed(_remote, request):
+        observed.append(request)
+        return HostResult.for_request(request, "manual", "PostgreSQL client must support require_auth",
+            {"failed_boundary": "postgresql", "exit_code": 5}, ("transient helper cleanup was incomplete",))
+    monkeypatch.setattr(module, "run_request", failed)
+    with pytest.raises(OpsError) as raised:
+        if site == "admission":
+            module.deployment_admission_authority(object(), config(), mode="provision", force_postgresql_config=True)
+        elif site == "confirmation":
+            observed_expected_state(object(), config(), mode="provision", force_postgresql_config=True)
+        else:
+            observed_downgrade_authority(object(), config(), object(), None, mode="provision", force_postgresql_config=True)
+    error = raised.value
+    assert error.status is ExitStatus.REMOTE_PREFLIGHT
+    assert error.stage == "postgresql"
+    assert error.message == "PostgreSQL client must support require_auth"
+    assert error.state == {"failed_boundary": "postgresql", "exit_code": 5}
+    assert error.warnings == ("transient helper cleanup was incomplete",)
+    assert error.changed is False
+    assert observed[0].parameters["force_postgresql_config"] is True
+
+
+@pytest.mark.parametrize("completed_preparation", [False, True], ids=["fresh-first-release", "prepared-completion"])
+def test_post_convergence_first_release_discovery_failure_preserves_postgresql_result(tmp_path, monkeypatch, completed_preparation):
+    from taskman_ops.workflows import deploy as module
+    from taskman_ops.output import WorkflowResult
+    calls = []
+    def failed(_remote, request):
+        calls.append(request)
+        return HostResult.for_request(request, "manual", "PostgreSQL SCRAM access proof failed",
+            {"failed_boundary": "postgresql", "exit_code": 5}, ("transient helper cleanup was incomplete",))
+    monkeypatch.setattr(module, "run_request", failed)
+    monkeypatch.setattr(module, "_confirmed_expected_state", observed_expected_state)
+    monkeypatch.setattr(module, "run_deployment_request", lambda *_args, **_kwargs: pytest.fail("failed SCRAM proof must stop release effects"))
+    target = deployment_artifact(tmp_path)
+    if completed_preparation:
+        result = module.finalize_first_release(object(), config(), target,
+            preparation=WorkflowResult("provision", "production", True, "prepared", {}),
+            starting_state={"confirmed": "before-convergence"})
+    else:
+        result = module.deploy_first_release(object(), config(), target)
+    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert result.stage == "postgresql-failed"
+    assert result.facts["failure_boundary"] == "postgresql"
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+    assert result.changed is False
+    assert calls[0].parameters["force_postgresql_config"] is False
+    if completed_preparation:
+        assert result.facts["mutation_state"] == "unchanged"
+        assert result.facts["starting_state"] == {"confirmed": "before-convergence"}

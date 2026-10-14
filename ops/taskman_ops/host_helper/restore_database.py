@@ -15,6 +15,7 @@ import re
 from .commands import CommandError, run_command
 from .database import (
     database_mapping,
+    scram_psql_argv,
     migration_versions,
     observe_database_state_or_empty_as_admin,
 )
@@ -502,26 +503,8 @@ def _application_query(
 ) -> bytes:
     settings = database_mapping(database)
     return run_command(
-        (
-            "psql",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--host",
-            str(settings["host"]),
-            "--port",
-            str(settings["port"]),
-            "--username",
-            str(settings["role"]),
-            "--dbname",
-            name,
-            "--no-password",
-            "--set",
-            "ON_ERROR_STOP=1",
-            "--command",
-            sql,
-        ),
-        env={"PGPASSFILE": credentials.as_posix()},
+        scram_psql_argv({**settings, "name": name}, query=sql),
+        env={"PGPASSFILE": credentials.as_posix(), "LC_ALL": "C"},
         timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
     ).stdout
 

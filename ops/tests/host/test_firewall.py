@@ -1,351 +1,320 @@
 from __future__ import annotations
 
-import os
+from dataclasses import replace
+import hashlib
 from pathlib import Path
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 from pyinfra.api import Config, Inventory, State, deploy
 from tests.support.environments import environment_config
-from tests.support.shell import write_shell_script
-from taskman_ops.config import EnvironmentConfig
-from taskman_ops.errors import ExitStatus
+from tests.support.remotes import HelperRunnerRemote
+from taskman_ops.errors import ExitStatus, OpsError
+from taskman_ops.host_protocol import HostResult, decode_request, encode_result
+from taskman_ops.host_helper.ufw_adapter import UfwInspectionError, UfwRule, UfwSnapshot
+from taskman_ops.host_helper.operations import firewall as native
+from taskman_ops.remote import CommandResult, PyinfraRemote, ChangeSet
 import taskman_ops.host.firewall as firewall
-from taskman_ops.host.firewall import (
-    build_firewall_plan,
-    render_firewall_convergence_script,
-    verify_fresh_ssh_connection,
-)
-from taskman_ops.remote import ChangeSet, CommandResult, PyinfraRemote
 
 
-def test_firewall_allows_the_active_ssh_port_before_any_enablement_and_only_exposes_http_https() -> None:
-    """Moving enablement above SSH access or exposing an application port must fail this."""
-
-    plan = build_firewall_plan(environment_config())
-
-    assert plan.packages == ("ufw",)
-    assert plan.commands_before_enablement == (
-        ("ufw", "allow", "2202/tcp"),
-        ("ufw", "allow", "80/tcp"),
-        ("ufw", "allow", "443/tcp"),
-        ("ufw", "deny", "4000/tcp"),
-        ("ufw", "deny", "5432/tcp"),
-        ("ufw", "deny", "6789/tcp"),
-        ("ufw", "deny", "4369/tcp"),
-        ("ufw", "default", "deny", "incoming"),
-    )
+DEFAULTS = (("default_forward_policy", "DROP"), ("default_input_policy", "DROP"),
+            ("default_output_policy", "ACCEPT"), ("ipv6", "yes"))
+IDENTITY = {"source_address": "192.0.2.1", "destination_address": "203.0.113.10"}
+ADDITIONS = tuple(("ufw", action, "from", source, "to", "any", "port", str(port), "proto", "tcp")
+    for action, values in (("allow", (2202, 80, 443)), ("deny", (4000, 5432, 6789, 4369)))
+    for port in values for source in ("0.0.0.0/0", "::/0")) + (("ufw", "--force", "enable"),)
 
 
-def test_firewall_does_not_export_an_ungated_mutating_pyinfra_capability() -> None:
-    """Scheduling a UFW mutation without the fresh SSH gate is not public API."""
-
-    assert "converge_firewall" not in firewall.__all__
-
-
-def test_firewall_keeps_builtin_package_convergence_outside_one_lockout_safe_action(monkeypatch) -> None:
-    """Replacing the direct UFW action with a generic adapter would fail this boundary test."""
-
-    package_calls: list[dict[str, object]] = []
-    activated: list[tuple[object, object]] = []
-    from pyinfra.operations import apt
-
-    monkeypatch.setattr(apt, "packages", lambda **kwargs: package_calls.append(kwargs))
-    monkeypatch.setattr(
-        firewall,
-        "_activate_firewall_with_fresh_ssh",
-        lambda plan, value, **_kwargs: activated.append((plan, value)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        firewall,
-        "conditional_convergence",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("UFW must not use generic convergence")),
-        raising=False,
-    )
-
-    expected = build_firewall_plan(environment_config())
-    assert firewall.declare_firewall(environment_config()) == expected
-
-    assert package_calls == [{"packages": ["ufw"], "name": "Install UFW"}]
-    assert activated == [(expected, environment_config())]
+def rule(port: int, family: int = 4, action: str = "allow") -> UfwRule:
+    any_address = "0.0.0.0/0" if family == 4 else "::/0"
+    return UfwRule(family, "in", action, "tcp", any_address, any_address,
+                   None, ((port, port),), "", "", "", "", "", "")
 
 
-def test_firewall_execution_refuses_preexisting_conflicting_or_unrecognized_rules() -> None:
-    """An existing allow for Taskman's private port must not be masked by a later deny."""
+class FirewallRemote(HelperRunnerRemote):
+    def __init__(self, monkeypatch):
+        super().__init__(checksum="0" * 64, helper_result=CommandResult(0))
+        self.snapshot = UfwSnapshot(False, DEFAULTS, ())
+        self.present = True
+        self.failure = None
+        self.requests = []
+        self.mutations = []
+        monkeypatch.setenv("SSH_CONNECTION", "192.0.2.1 12345 203.0.113.10 2202")
+        monkeypatch.setattr(native, "inspect_ufw", self.inspect)
+        monkeypatch.setattr(native, "run_command", self.mutate)
 
-    script = render_firewall_convergence_script(build_firewall_plan(environment_config()))
+    def inspect(self, **kwargs):
+        if not self.present:
+            raise UfwInspectionError("ufw_missing")
+        if self.failure == "api":
+            raise UfwInspectionError("inspection_failed")
+        return self.snapshot
 
-    assert "ufw status numbered" in script
-    assert "unrecognized or conflicting UFW rule" in script
-    assert "ufw allow 2202/tcp" in script
-    assert script.index("ufw allow 2202/tcp") < script.index("ufw --force enable")
+    def mutate(self, argv, **kwargs):
+        self.mutations.append(tuple(argv))
+        if argv[1:] == ("--force", "enable"):
+            self.snapshot = replace(self.snapshot, active=True)
+        else:
+            port = int(argv[7])
+            self.snapshot = replace(self.snapshot, rules=(*self.snapshot.rules,
+                rule(port, 4 if argv[3] == "0.0.0.0/0" else 6, argv[1])))
+        if self.failure == "native":
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
+    def put(self, source: Path, destination, **kwargs):
+        self.checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+        return super().put(source, destination, **kwargs)
 
-def test_firewall_script_executable_refuses_an_existing_allow_for_a_private_port(tmp_path: Path) -> None:
-    """A later deny must not mask an earlier active UFW allow rule."""
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    changes = tmp_path / "changes.log"
-    write_shell_script(
-        bin_dir / "ufw",
-        """case \"$1 ${2-}\" in
-  'status numbered') printf 'Status: active\\n[ 1] 4000/tcp ALLOW IN Anywhere\\n' ;;
-  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;
-  *) printf '%s\\n' \"$*\" >> \"$TASKMAN_UFW_CHANGES\" ;;
-esac""",
-    )
-    completed = subprocess.run(
-        ("sh", "-ceu", render_firewall_convergence_script(build_firewall_plan(environment_config()))),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TASKMAN_UFW_CHANGES": changes.as_posix(),
-        },
-    )
-
-    assert completed.returncode == int(ExitStatus.SAFETY)
-    assert not changes.exists()
-
-
-@pytest.mark.parametrize(
-    "saved_rules",
-    (
-        "ufw allow 4000/tcp",
-        "(None)\nufw allow 4000/tcp",
-        "unrecognized saved output",
-    ),
-    ids=("saved-rule", "none-with-saved-rule", "unrecognized-output"),
-)
-def test_firewall_script_executable_refuses_nonempty_or_unrecognized_saved_rules_before_enabling(
-    tmp_path: Path,
-    saved_rules: str,
-) -> None:
-    """Inactive UFW must refuse saved rules, mixed output, and unknown output."""
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    changes = tmp_path / "changes.log"
-    write_shell_script(
-        bin_dir / "ufw",
-        """case \"$1 ${2-}\" in
-  'status numbered') printf 'Status: inactive\\n' ;;
-  'show added')
-    printf '%s\\n' "Added user rules (see 'ufw status' for running firewall):"
-    printf '%s\\n' "$TASKMAN_UFW_SAVED_RULES"
-    ;;
-  *) printf '%s\\n' \"$*\" >> \"$TASKMAN_UFW_CHANGES\" ;;
-esac""",
-    )
-
-    completed = subprocess.run(
-        ("sh", "-ceu", render_firewall_convergence_script(build_firewall_plan(environment_config()))),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TASKMAN_UFW_CHANGES": changes.as_posix(),
-            "TASKMAN_UFW_SAVED_RULES": saved_rules,
-        },
-    )
-
-    assert completed.returncode == int(ExitStatus.SAFETY)
-    assert not changes.exists()
+    def run(self, argv, **kwargs):
+        if tuple(argv)[:3] == ("sudo", "--preserve-env=SSH_CONNECTION", "--"):
+            self.calls.append((tuple(argv), kwargs))
+            request = decode_request(kwargs["stdin"])
+            self.requests.append(request)
+            result = native.firewall(request)
+            if request.parameters["mode"] == "converge" and self.failure == "lost":
+                raise RuntimeError("lost result")
+            if self.failure == "identity":
+                result = replace(result, correlation_id="op-" + "f" * 32)
+            return CommandResult(0, encode_result(result).decode())
+        return super().run(argv, **kwargs)
 
 
-def test_firewall_script_executable_accepts_ufw_none_saved_rules_before_enabling(
-    tmp_path: Path,
-) -> None:
-    """UFW's literal ``(None)`` means inactive UFW has no saved user rules."""
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    changes = tmp_path / "changes.log"
-    write_shell_script(
-        bin_dir / "ufw",
-        """case \"$1 ${2-}\" in
-  'status numbered') printf 'Status: inactive\\n' ;;
-  'show added') cat <<'RULES'
-Added user rules (see 'ufw status' for running firewall):
-(None)
-RULES
-  ;;
-  *) printf '%s\\n' \"$*\" >> \"$TASKMAN_UFW_CHANGES\" ;;
-esac""",
-    )
-
-    completed = subprocess.run(
-        ("sh", "-ceu", render_firewall_convergence_script(build_firewall_plan(environment_config()))),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TASKMAN_UFW_CHANGES": changes.as_posix(),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == ""
-    assert changes.read_text(encoding="utf-8").splitlines() == [
-        "allow 2202/tcp",
-        "allow 80/tcp",
-        "allow 443/tcp",
-        "deny 4000/tcp",
-        "deny 5432/tcp",
-        "deny 6789/tcp",
-        "deny 4369/tcp",
-        "default deny incoming",
-        "--force enable",
-    ]
+def inspect(remote):
+    return firewall.inspect_firewall(remote, environment_config())
 
 
-def test_firewall_script_executable_accepts_only_the_known_owned_rule_set_as_a_noop(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    changes = tmp_path / "changes.log"
-    expected = (
-        (2202, "ALLOW"),
-        (80, "ALLOW"),
-        (443, "ALLOW"),
-        (4000, "DENY"),
-        (5432, "DENY"),
-        (6789, "DENY"),
-        (4369, "DENY"),
-    )
-    rules = "\n".join(
-        [
-            *(
-                f"[ {index}] {port}/tcp             {action} IN    Anywhere"
-                for index, (port, action) in enumerate(expected, start=1)
-            ),
-            *(
-                f"[{index + len(expected):2d}] {port}/tcp (v6)        {action} IN    Anywhere (v6)"
-                for index, (port, action) in enumerate(expected, start=1)
-            ),
-        ]
-    )
-    write_shell_script(
-        bin_dir / "ufw",
-        f"""case \"$1 ${{2-}}\" in
-  'status numbered') cat <<'RULES'
-Status: active
-
-     To                         Action      From
-     --                         ------      ----
-{rules}
-RULES
-  ;;
-  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;
-  *) : ;;
-esac""",
-    )
-
-    completed = subprocess.run(
-        ("sh", "-ceu", render_firewall_convergence_script(build_firewall_plan(environment_config()))),
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TASKMAN_UFW_CHANGES": changes.as_posix(),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == ""
-
-
-def test_direct_firewall_operation_reports_no_change_for_the_known_owned_rule_set(monkeypatch, tmp_path: Path) -> None:
-    """Yielding a direct action for an already-safe policy must fail this."""
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    expected = (
-        (2202, "ALLOW"),
-        (80, "ALLOW"),
-        (443, "ALLOW"),
-        (4000, "DENY"),
-        (5432, "DENY"),
-        (6789, "DENY"),
-        (4369, "DENY"),
-    )
-    rules = "\n".join(
-        [
-            *(f"[ {index}] {port}/tcp {action} IN Anywhere" for index, (port, action) in enumerate(expected, start=1)),
-            *(
-                f"[{index + len(expected):2d}] {port}/tcp (v6) {action} IN Anywhere (v6)"
-                for index, (port, action) in enumerate(expected, start=1)
-            ),
-        ]
-    )
-    write_shell_script(
-        bin_dir / "ufw",
-        f"""case \"$1 ${{2-}}\" in
-  'status numbered') cat <<'RULES'
-Status: active
-{rules}
-RULES
-  ;;
-  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;
-  *) exit 1 ;;
-esac""",
-    )
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda _config: None)
-
+def apply(remote, confirmed, monkeypatch):
     inventory = Inventory((["@local"], {}))
     state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
     host = inventory.get_host("@local")
     state.activate_host(host)
-    remote = PyinfraRemote(host, environment_config(), inventory=inventory, state=state)
-
-    @deploy("Converged direct firewall")
-    def converge() -> None:
-        firewall._activate_firewall_with_fresh_ssh(
-            build_firewall_plan(environment_config()),
-            environment_config(),
-            name="Activate Taskman firewall",
-            _sudo=False,
-        )
-
-    assert remote.run_deploy(converge) == ChangeSet(changed=False)
+    monkeypatch.setattr(firewall, "PyinfraRemote", lambda actual, config, **kwargs: remote)
+    firewall._run_firewall_convergence(state, host, environment_config(), confirmed)
+    return state
 
 
-def test_firewall_boundary_requires_a_fresh_strict_connection() -> None:
-    """A metadata-only SSH check must not let firewall activation succeed."""
+def test_inspection_uses_closed_helper_request_without_mutation(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    result = inspect(remote)
+    assert result.state["proposed"] == ADDITIONS
+    assert result.state["administrator_connection"] == IDENTITY
+    assert remote.mutations == []
+    assert remote.requests[0].paths == {}
+    assert remote.requests[0].expected_state == {"snapshot_sha256": None}
+    command = next(argv for argv, _ in remote.calls if argv[0] == "sudo")
+    assert command[3:6] == ("/usr/bin/python3", "-I", "-S")
 
-    fresh = _FreshRemote()
-    calls = 0
 
-    def connector(_config: EnvironmentConfig) -> _FreshRemote:
-        nonlocal calls
-        calls += 1
-        return fresh
+def test_convergence_uses_current_channel_then_fresh_ssh_and_is_repeatable(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    fresh = []
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: fresh.append(config))
+    confirmed = inspect(remote)
+    apply(remote, confirmed, monkeypatch)
+    assert [argv[1:] for argv in remote.mutations] == [argv[1:] for argv in ADDITIONS]
+    assert fresh == [environment_config()]
+    assert remote.requests[-1].expected_state == {"snapshot_sha256": confirmed.state["snapshot_sha256"]}
+    apply(remote, inspect(remote), monkeypatch)
+    assert len(remote.mutations) == 15
+    assert len(fresh) == 1
 
-    verify_fresh_ssh_connection(environment_config(), connector=connector)
 
-    assert calls == 1
-    assert fresh.calls == [("true",)]
+@pytest.mark.parametrize("failure,changed", (("native", True), ("lost", True), ("api", False)))
+def test_failures_preserve_firewall_mutation_evidence(monkeypatch, failure, changed):
+    remote = FirewallRemote(monkeypatch)
+    confirmed = inspect(remote)
+    remote.failure = failure
+    with pytest.raises(OpsError) as raised:
+        apply(remote, confirmed, monkeypatch)
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert raised.value.stage == "firewall"
+    assert raised.value.changed is changed
+
+
+def test_invalid_inspection_identity_is_not_authority(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    remote.failure = "identity"
+    with pytest.raises(OpsError) as raised:
+        inspect(remote)
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert raised.value.changed is False
+
+
+def test_policy_drift_refuses_before_mutation(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    confirmed = inspect(remote)
+    remote.snapshot = replace(remote.snapshot, rules=(rule(10050),))
+    with pytest.raises(OpsError) as raised:
+        apply(remote, confirmed, monkeypatch)
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.changed is False
+    assert remote.mutations == []
+
+
+@pytest.mark.parametrize("forward", ("DROP", "REJECT"))
+def test_absent_package_accepts_compatible_empty_policy_with_nonpermitting_forward_defaults(monkeypatch, forward):
+    remote = FirewallRemote(monkeypatch)
+    remote.present = False
+    confirmed = inspect(remote)
+    assert confirmed.state["reason"] == "ufw_missing"
+    remote.present = True
+    remote.snapshot = replace(remote.snapshot, defaults=(("default_forward_policy", forward), *DEFAULTS[1:]))
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: None)
+    apply(remote, confirmed, monkeypatch)
+    assert len(remote.mutations) == 15
+
+
+@pytest.mark.parametrize("change", ("identity", "conflict", "api", "missing"))
+def test_absent_package_refuses_conflict_unreadable_package_or_identity_change(monkeypatch, change):
+    remote = FirewallRemote(monkeypatch)
+    remote.present = False
+    confirmed = inspect(remote)
+    remote.present = True
+    if change == "conflict":
+        remote.snapshot = replace(remote.snapshot, rules=(rule(5432),))
+    elif change == "identity":
+        monkeypatch.setenv("SSH_CONNECTION", "192.0.2.2 12345 203.0.113.10 2202")
+    elif change == "missing":
+        remote.present = False
+    else:
+        remote.failure = "api"
+    with pytest.raises(OpsError):
+        apply(remote, confirmed, monkeypatch)
+    assert remote.mutations == []
+
+
+def test_installed_unreadable_api_is_failure_before_preview(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    remote.failure = "api"
+    with pytest.raises(OpsError) as raised:
+        inspect(remote)
+    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
+    assert remote.mutations == []
+
+
+def test_missing_authority_refuses_before_package_declaration(monkeypatch):
+    from pyinfra.operations import apt
+    monkeypatch.setattr(apt, "packages", lambda **kwargs: pytest.fail("no package authorization"))
+    with pytest.raises(OpsError):
+        firewall.declare_firewall(environment_config(), confirmed=None)
+
+
+def test_fresh_ssh_failure_retains_known_mutation(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    confirmed = inspect(remote)
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: (_ for _ in ()).throw(
+        OpsError(ExitStatus.REMOTE_PREFLIGHT, "firewall", "fresh SSH failed", False)))
+    with pytest.raises(OpsError) as raised:
+        apply(remote, confirmed, monkeypatch)
+    assert raised.value.changed is True
+
+
+def test_fresh_strict_connection_executes_true_and_closes():
+    class Fresh:
+        closed = False
+        def run(self, argv):
+            assert argv == ("true",)
+            return CommandResult(0)
+        def close(self):
+            self.closed = True
+    fresh = Fresh()
+    firewall.verify_fresh_ssh_connection(environment_config(), connector=lambda config: fresh)
     assert fresh.closed is True
 
 
-class _FreshRemote:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, ...]] = []
-        self.closed = False
+def test_local_packaging_failure_has_no_firewall_mutation_evidence(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    confirmed = inspect(remote)
+    def unavailable():
+        raise RuntimeError("local packaging failed")
+    monkeypatch.setattr(firewall, "temporary_helper_package", unavailable)
+    with pytest.raises(OpsError) as raised:
+        firewall._invoke(remote, firewall._request(environment_config(), mode="converge",
+            digest=confirmed.state["snapshot_sha256"]))
+    assert raised.value.changed is False
+    assert remote.mutations == []
 
-    def run(self, argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
-        self.calls.append(argv)
-        return CommandResult(0)
 
-    def close(self) -> None:
-        self.closed = True
+def test_addition_failure_after_success_preserves_known_and_possible_change(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    confirmed = inspect(remote)
+    original = remote.mutate
+    def fail_second(argv, **kwargs):
+        if remote.mutations:
+            remote.failure = "native"
+        return original(argv, **kwargs)
+    monkeypatch.setattr(native, "run_command", fail_second)
+    with pytest.raises(OpsError) as raised:
+        apply(remote, confirmed, monkeypatch)
+    assert raised.value.changed is True
+    assert len(remote.mutations) == 2
+    assert remote.snapshot.active is False
+
+
+def test_source_exception_is_previewed_and_preserved(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    exception = replace(rule(5432), src="192.0.2.0/24", comment="operator database access")
+    remote.snapshot = replace(remote.snapshot, rules=(exception,))
+    confirmed = inspect(remote)
+    preview = firewall.firewall_preview(environment_config(), confirmed)
+    assert preview["exceptions"][0]["comment"] == "operator database access"
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: None)
+    apply(remote, confirmed, monkeypatch)
+    assert remote.snapshot.rules[0] == exception
+    assert all(argv[1] != "default" for argv in remote.mutations)
+
+
+@pytest.mark.parametrize("mode", ("inspect", "converge"))
+@pytest.mark.parametrize("local_cleanup", (False, True))
+def test_invalid_reply_preserves_only_trusted_local_cleanup(monkeypatch, mode, local_cleanup):
+    remote = FirewallRemote(monkeypatch)
+    original = firewall.invoke_helper
+    def mismatched(*args):
+        result = original(*args)
+        return replace(result, correlation_id="op-" + "f" * 32,
+            warnings=("unvalidated remote warning",), local_cleanup_incomplete=local_cleanup)
+    monkeypatch.setattr(firewall, "invoke_helper", mismatched)
+    with pytest.raises(OpsError) as raised:
+        firewall._invoke(remote, firewall._request(environment_config(), mode=mode,
+            digest="a" * 64 if mode == "converge" else None))
+    assert raised.value.warnings == (("transient helper cleanup was incomplete",) if local_cleanup else ())
+    assert raised.value.changed is (mode == "converge")
+
+
+@pytest.mark.parametrize("case", ("unrelated", "active-complete"))
+def test_absent_package_binds_actual_compatible_saved_policy_and_preserves_rules(monkeypatch, case):
+    remote = FirewallRemote(monkeypatch)
+    remote.present = False
+    confirmed = inspect(remote)
+    remote.present = True
+    saved = (replace(rule(10050), comment="operator monitor"),)
+    if case == "active-complete":
+        saved += tuple(rule(port, family, action) for family in (4, 6)
+            for action, ports in (("allow", (2202, 80, 443)), ("deny", (4000, 5432, 6789, 4369))) for port in ports)
+    remote.snapshot = replace(remote.snapshot, rules=saved, active=case == "active-complete")
+    original = remote.snapshot
+    actual = inspect(remote)
+    maximum = firewall.firewall_preview(environment_config(), confirmed)["proposed"]
+    if case == "unrelated":
+        assert actual.state["proposed"] == maximum
+        assert actual.state["snapshot_sha256"] != firewall._empty_delta(environment_config(), IDENTITY).snapshot_sha256
+    else:
+        assert actual.state["proposed"] == ()
+    fresh = []
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: fresh.append(config))
+    apply(remote, confirmed, monkeypatch)
+    assert remote.requests[-1].expected_state == {"snapshot_sha256": actual.state["snapshot_sha256"]}
+    assert native._preserved(original, remote.snapshot)
+    assert remote.snapshot.active
+    assert bool(fresh) == (case != "active-complete")
+    assert len(remote.mutations) == len(actual.state["proposed"])
+
+
+def test_missing_package_preview_explains_compatible_saved_policy_activation_and_addition_bound(monkeypatch):
+    remote = FirewallRemote(monkeypatch)
+    remote.present = False
+    preview = firewall.firewall_preview(environment_config(), inspect(remote))
+    assert preview["post_install_gate"] == "preserve compatible saved policy; actual coverage may reduce these maximum fallback additions"
+    assert preview["activation"] == "activate preserved compatible saved rules if UFW is inactive"
+    assert len(preview["proposed"]) == 15

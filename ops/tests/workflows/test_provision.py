@@ -11,13 +11,16 @@ from types import SimpleNamespace
 import pytest
 
 from tests.support.environments import environment_config
+from tests.support.secrets import no_registered_secrets_between_tests as no_secrets_between_tests
 from taskman_ops.cli import Invocation
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.migrations import MigrationOrderError
 from taskman_ops.output import WorkflowResult
 from taskman_ops.remote import ChangeSet
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from taskman_ops.services.caddy import CaddyOwnershipPlan, CaddyRepository, build_caddy_ownership_plan
+from taskman_ops.provisioning import ProvisioningResult
+from tests.support.caddy import authority_result, prepared_result
 from taskman_ops.releases.artifacts import DeploymentTarget
 from taskman_ops.releases.manifests import ArtifactManifest, MigrationFingerprint, VerifiedArtifact
 from tests.workflows import support as workflow_support
@@ -136,13 +139,13 @@ def test_provision_builds_the_material_plan_after_all_preconvergence_authority()
 
     assert result.stage == "provisioned"
     assert host.events == [
-        "discovery",
         "preflight",
+        "discovery",
         "plan",
         "present-plan",
         "confirm",
-        "discovery",
         "preflight",
+        "discovery",
         "provisioning",
     ]
 
@@ -180,7 +183,7 @@ def test_provision_refuses_missing_preflight_authority_before_plan_or_mutation()
     )
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["discovery"]
+    assert host.events == []
     assert "plan" not in host.events
     assert "provisioning" not in host.events
 
@@ -201,7 +204,7 @@ def test_provision_refuses_missing_scheduler_creation_delta_before_plan_or_mutat
     )
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["discovery"]
+    assert host.events == []
     assert "plan" not in host.events
     assert "provisioning" not in host.events
 
@@ -235,7 +238,6 @@ def test_provision_refuses_invalid_first_observation_evidence_before_plan_or_mut
 
     assert result.exit_status is ExitStatus.SAFETY
     assert result.warnings == ("observer cleanup warning",)
-    assert host.events == ["discovery"]
     assert "plan" not in host.events
     assert "provisioning" not in host.events
 
@@ -309,7 +311,7 @@ def test_provision_refuses_existing_credential_authority_before_pyinfra_mutation
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["discovery", "credential-preflight"]
+    assert host.events == ["credential-preflight"]
     assert "provisioning" not in host.events
 
 
@@ -330,7 +332,7 @@ def test_each_preconvergence_authority_refusal_stops_before_pyinfra_mutation(aut
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
 
     assert result.exit_status is ExitStatus.SAFETY
-    assert host.events == ["discovery", authority]
+    assert host.events == [authority]
     assert "provisioning" not in host.events
 
 
@@ -772,7 +774,7 @@ def test_provision_passes_only_confirmed_absent_scheduler_resources_to_pyinfra_a
 
     def provisioning(_remote: object, inputs: object) -> ChangeSet:
         observed_inputs.append(inputs)
-        return ChangeSet(changed=False)
+        return ProvisioningResult(ChangeSet(changed=False), prepared_result(inputs.caddy_plan))
 
     def genesis(_remote: object, _config: object, _target: object, **kwargs: object) -> WorkflowResult:
         genesis_kwargs.update(kwargs)
@@ -1079,7 +1081,7 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
     plans = []
 
     def build(config):
-        assert resolved == [old_inputs, fresh_inputs]
+        assert len(resolved) == len(plans)
         plan = original_build(config)
         plans.append(plan)
         return plan
@@ -1098,8 +1100,8 @@ def test_provision_clean_input_drift_reidentifies_and_replans_before_confirmatio
 
     assert result.exit_status is ExitStatus.OK
     assert resolved == [old_inputs, fresh_inputs, fresh_inputs]
-    # Unstable source candidates never produce authority or rendered assets.
-    assert len(plans) == 1
+    # Draft host assets precede artifact resolution and are rebuilt on replan.
+    assert len(plans) == 2
     assert host.events.count("plan") == 1
     assert host.events.count("provisioning") == 1
 
@@ -1264,43 +1266,21 @@ def test_provision_dry_run_discovers_but_does_not_execute_the_pyinfra_deploy() -
     assert host.closed == 1
 
 
-def test_provision_uses_one_rendered_caddy_plan_for_discovery_and_convergence() -> None:
-    """One rendered Caddy plan is admitted, confirmed, then used for convergence."""
-
+def test_provision_freezes_site_plan_through_confirmation():
     host = Host()
-    rendered = CaddyPlan(
-        repository=CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-        repository_packages=(),
-        packages=("caddy",),
-        caddyfile="taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n",
-    )
-    renderer_calls = 0
-    expected_digest = hashlib.sha256(rendered.caddyfile.encode("utf-8")).hexdigest()
-
-    def caddy_plan(_config: EnvironmentConfig) -> CaddyPlan:
-        nonlocal renderer_calls
-        renderer_calls += 1
+    rendered = build_caddy_ownership_plan(environment_config(), authority_result())
+    calls = []
+    def build(*_args):
+        calls.append(rendered)
         return rendered
-
-    def discover(_remote: object, _config: EnvironmentConfig, *, expected_caddyfile_sha256: str) -> dict[str, str]:
-        assert expected_caddyfile_sha256 == expected_digest
-        host.events.append("discovery")
-        return {"admission": "validated"}
-
-    def provisioning(_remote: object, inputs: object) -> ChangeSet:
+    def convergence(_remote, inputs):
         assert inputs.caddy_plan is rendered
-        assert hashlib.sha256(inputs.caddy_plan.caddyfile.encode("utf-8")).hexdigest() == expected_digest
-        return host.converge("provisioning")
-
-    capabilities = _capabilities(host, provisioning=provisioning)
-    capabilities = ProvisionCapabilities(
-        **{**capabilities.__dict__, "caddy_plan": caddy_plan, "discover": discover}
-    )
-
+        assert inputs.caddy_plan.site_content == "taskman.acme.tld {\n\treverse_proxy 127.0.0.1:4000\n}\n"
+        return ProvisioningResult(host.converge("provisioning"), prepared_result(rendered))
+    capabilities = replace(_capabilities(host), caddy_plan=build, provisioning=convergence)
     result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
-
-    assert result.stage == "provisioned"
-    assert renderer_calls == 1
+    assert result.exit_status is ExitStatus.OK
+    assert calls == [rendered]
 
 
 def test_provision_freezes_systemd_bytes_through_confirmation(monkeypatch) -> None:
@@ -1358,13 +1338,14 @@ def _capabilities(
         confirm=confirm or (lambda _plan: True),
         connect=lambda _config: host,
         discover=lambda _remote, _config, **_kwargs: host.events.append("discovery") or {"admission": "validated"},
-        provisioning=provisioning or (lambda _remote, _inputs: host.converge("provisioning")),
-        caddy_plan=lambda _config: CaddyPlan(
-            CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-            (),
-            ("caddy",),
-            "taskman.acme.tld {\n}\n",
+        provisioning=lambda remote, inputs: _provisioned_result(
+            provisioning(remote, inputs) if provisioning else host.converge("provisioning"), inputs
         ),
+        caddy_plan=build_caddy_ownership_plan,
+        caddy=lambda *_args: authority_result(),
+        preparation=lambda *_args, **_kwargs: pytest.fail("bootstrap must use full deployment"),
+        activation=lambda *_args, **_kwargs: pytest.fail("bootstrap is already activated"),
+        completion=lambda *_args, **_kwargs: pytest.fail("bootstrap must use ordinary genesis"),
         genesis=(
             (lambda remote, config, supplied, **_kwargs: release(remote, config, supplied))
             if release is not None
@@ -1375,12 +1356,16 @@ def _capabilities(
         preflight=lambda _remote, _inputs: _authority(),
         target_resolution=lambda _remote, _config, _invocation, _clean_inputs: value,
         downgrade_authority=lambda _remote, _config, _target: (False, ()),
+        firewall=lambda *_args: _firewall_authority(),
     )
 
 
 def _authority() -> dict[str, object]:
     return {
         "authority": "validated",
+        "postgresql": {"branch": "existing", "cluster": {"version": "18", "name": "main", "port": 5432,
+            "data_directory": "/var/lib/postgresql/18/main", "config_file": "/etc/postgresql/18/main/postgresql.conf",
+            "hba_file": "/etc/postgresql/18/main/pg_hba.conf"}, "role": "compatible", "database": "compatible", "access": "ready"},
         "initial_database_empty": False,
         "selected_release_id": None,
         "last_successful_selection_id": None,
@@ -1418,4 +1403,742 @@ def _expected_starting_state() -> dict[str, object]:
         "source_dirty": False,
         "host_authority": _authority(),
         "resource_authority": {"admission": "validated"},
+    }
+
+
+def _firewall_authority(*, digest="a" * 64, source="192.0.2.1", missing=False):
+    from taskman_ops.host_protocol import HostResult
+    return HostResult(3, "firewall", "op-" + "1" * 32,
+        "retryable" if missing else "succeeded", "firewall observation", {
+            "reason": "ufw_missing" if missing else "compatible", "changed": False,
+            "possibly_changed": False, "snapshot_sha256": None if missing else digest,
+            "administrator_connection": {"source_address": source, "destination_address": "203.0.113.10"},
+            "exceptions": (), "proposed": (), "completed": (),
+        }, ())
+
+
+def firewall_drift_capabilities():
+    host = Host()
+    observations = iter((_firewall_authority(), _firewall_authority(digest="b" * 64)))
+    return host, replace(_capabilities(host), firewall=lambda *_args: next(observations))
+
+
+def test_firewall_drift_stops_before_provisioning():
+    host, capabilities = firewall_drift_capabilities()
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+    assert result.changed is False
+    assert "provisioning" not in host.events
+    assert result.stage == "firewall"
+    assert result.exit_status is ExitStatus.SAFETY
+
+
+def test_firewall_identity_change_stops_before_provisioning():
+    host = Host()
+    observations = iter((_firewall_authority(), _firewall_authority(source="192.0.2.2")))
+    capabilities = replace(_capabilities(host), firewall=lambda *_args: next(observations))
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+    assert result.stage == "firewall"
+    assert result.changed is False
+    assert "provisioning" not in host.events
+
+
+@pytest.mark.parametrize("dry_run,confirm", ((True, True), (False, False)))
+def test_firewall_preview_remains_read_only_for_dry_run_and_cancellation(dry_run, confirm):
+    host = Host()
+    plans = []
+    capabilities = _capabilities(host, confirm=lambda _plan: confirm, present_plan=plans.append)
+    capabilities = replace(capabilities, firewall=lambda *_args: _firewall_authority(missing=True))
+    result = provision(Invocation(command="provision", environment="production", dry_run=dry_run), capabilities=capabilities)
+    assert result.changed is False
+    assert "provisioning" not in host.events
+    assert plans[0]["firewall"]["package_installation"] is True
+    assert plans[0]["firewall"]["post_install_gate"] == "preserve compatible saved policy; actual coverage may reduce these maximum fallback additions"
+    assert plans[0]["firewall"]["activation"] == "activate preserved compatible saved rules if UFW is inactive"
+    assert plans[0]["firewall"]["proposed"][-1] == ("ufw", "--force", "enable")
+    assert plans[0]["firewall"]["administrator_connection"]["source_address"] == "192.0.2.1"
+    assert plans[0]["firewall"]["ownership_assumption"]
+    assert plans[0]["firewall"]["defaults"]
+
+
+def test_firewall_missing_api_stops_before_plan():
+    host = Host()
+    def inspect(*_args):
+        raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "firewall", "inspection_failed", False)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=replace(_capabilities(host), firewall=inspect))
+    assert result.stage == "firewall"
+    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert "plan" not in host.events
+    assert "provisioning" not in host.events
+
+
+def test_confirmed_firewall_authority_reaches_provisioning_inputs():
+    host = Host()
+    captured = []
+    capabilities = _capabilities(host, provisioning=lambda _remote, inputs: captured.append(inputs) or ChangeSet(False))
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+    assert result.exit_status is ExitStatus.OK
+    assert captured[0].firewall_authority == _firewall_authority()
+
+
+def test_lost_firewall_helper_result_keeps_provisioning_incomplete_and_changed():
+    host = Host()
+    def converge(*_args):
+        raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "firewall", "lost helper result", True)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=_capabilities(host, provisioning=converge))
+    assert result.changed is True
+    assert result.stage == "firewall"
+    assert result.facts["release_started"] is False
+
+
+@pytest.mark.parametrize("release_fails", (False, True))
+def test_public_provision_result_retains_execution_warnings(release_fails):
+    host = Host()
+    def convergence(_remote, _inputs):
+        # Model the already-executed pyinfra capability receipt.
+        return ChangeSet(True, ("firewall",), warnings=("transient helper cleanup was incomplete",))
+    def release(_remote, _config, value):
+        return WorkflowResult("deploy", "production", False,
+            "failed" if release_fails else "already-current", {},
+            exit_status=ExitStatus.REMOTE_PREFLIGHT if release_fails else ExitStatus.OK)
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=_capabilities(host, provisioning=convergence, release=release))
+    assert result.changed is True
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+
+
+def test_application_ready_proxy_pending_preserves_real_facts():
+    from tests.host_helper.test_deploy import _passing_verification_report
+    host = Host()
+    target = artifact()
+    report = _passing_verification_report(target.release_id)
+    report = {**report, 'scope': 'application', 'checks': [check for check in report['checks']
+        if check['name'] not in {'caddy-service', 'public-readiness', 'public-hsts'}]}
+    observations = dict(selected_release_id=target.release_id, last_successful_selection_id=None,
+        applied_migrations=(), protected_backup_ids=(), backup_protection_sha256='a'*64,
+        restore_target_sha256=None, database_state='ready', service_state='running',
+        scheduled_backup_sha256='c'*64, backup_timer_enabled=True, backup_timer_state='active')
+    capabilities = replace(_capabilities(host),
+        caddy=lambda *_args: authority_result(branch='existing', active=True, imported=False, masked=False),
+        preparation=lambda *_args, **_kwargs: WorkflowResult('deploy', 'production', False, 'application-prepared',
+            dict(candidate_release_id=target.release_id, mutation_state='unchanged', local_report=report,
+                 public_probe='ready', observations=observations, unavailable_fields=[])),
+        genesis=lambda *_args, **_kwargs: pytest.fail('pending cannot finalize history'),
+    )
+    result = provision(Invocation(command='provision', environment='production', yes=True), capabilities=capabilities)
+    assert result.exit_status == 13
+    assert result.stage == 'application-provisioned-proxy-pending'
+    assert result.facts['proxy_activation'] == 'pending'
+    assert result.facts['deployment_verified'] is False
+    assert result.facts['local_report'] == report
+    assert result.facts['public_probe'] == 'ready'
+    assert result.facts['observations'] == observations
+    assert result.facts['caddy_receipt']['site_path'] == '/etc/caddy/sites-enabled/taskman.caddy'
+    assert result.facts['starting_state']['host_authority']['selected_release_id'] is None
+    assert 'ready on the deployment host' in result.next_action
+    assert 'backup' in result.facts['scheduler_limitation']
+
+
+def test_application_preparation_failure_never_becomes_proxy_pending():
+    host = Host()
+    capabilities = replace(_capabilities(host),
+        caddy=lambda *_args: authority_result(branch='existing'),
+        preparation=lambda *_args, **_kwargs: WorkflowResult('deploy', 'production', True, 'verification-failed',
+            {'mutation_state': 'changed', 'local_report': None, 'public_probe': 'not-attempted',
+             'observations': {'selected_release_id': None}, 'unavailable_fields': ['selected_release_id']}, exit_status=ExitStatus.READINESS),
+    )
+    result = provision(Invocation(command='provision', environment='production', yes=True), capabilities=capabilities)
+    assert result.exit_status is ExitStatus.READINESS
+    assert result.facts['mutation_state'] == 'changed'
+    assert result.facts['caddy_receipt']['site_path'] == '/etc/caddy/sites-enabled/taskman.caddy'
+    assert result.facts['observations']['selected_release_id'] is None
+
+
+def _provisioned_result(value, inputs):
+    return value if isinstance(value, ProvisioningResult) else ProvisioningResult(value, prepared_result(inputs.caddy_plan))
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_configuration_override_reaches_confirmation_refresh_without_application_access(force):
+    host = Host()
+    modes = []
+    previews = []
+    target_calls = []
+    downgrade_calls = []
+    def preflight(_remote, inputs):
+        modes.append(inputs.force_postgresql_config)
+        if not inputs.force_postgresql_config:
+            raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "SCRAM authentication failed", changed=False)
+        authority = _authority()
+        authority["postgresql"] = {**authority["postgresql"], "branch": "configure-existing", "access": "unproven"}
+        return authority
+    def target(_remote, _config, invocation, _clean):
+        target_calls.append(invocation.force_postgresql_config)
+        return artifact()
+    def downgrade(_remote, _config, _target, *, force_postgresql_config=False):
+        downgrade_calls.append(force_postgresql_config)
+        return False, ()
+    def convergence(_remote, inputs):
+        host.events.append("access-proof")
+        # Later convergence owns actual proof. Its failure must prevent any
+        # application preparation or selection publication.
+        raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "post-convergence SCRAM proof failed", changed=False)
+    capabilities = replace(_capabilities(host), preflight=preflight,
+        target_resolution=target, downgrade_authority=downgrade,
+        present_plan=lambda value: previews.append(value),
+        provisioning=convergence,
+        genesis=lambda *_args, **_kwargs: pytest.fail("failed proof cannot run genesis"),
+        preparation=lambda *_args, **_kwargs: pytest.fail("failed proof cannot prepare application"))
+    invocation = SimpleNamespace(**{**Invocation(command="provision", environment="production").__dict__, "force_postgresql_config": force})
+    result = provision(invocation, capabilities=capabilities)
+    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert modes == ([True, True] if force else [False])
+    assert target_calls == ([True, True] if force else [])
+    assert downgrade_calls == ([True, True] if force else [])
+    if force:
+        assert previews[0]["starting_state"]["host_authority"]["postgresql"]["access"] == "unproven"
+        assert host.events[-1] == "access-proof"
+    else:
+        assert previews == []
+        assert host.events == []
+
+
+def test_provision_target_resolution_and_downgrade_bind_configuration_context(monkeypatch):
+    from taskman_ops.workflows import provision as module
+    from taskman_ops.workflows import deploy as deploy_module
+    calls = []
+    class Reached(Exception):
+        pass
+    def authority(*args, **kwargs):
+        calls.append(kwargs)
+        raise Reached
+    monkeypatch.setattr(deploy_module, "deployment_admission_authority", authority)
+    invocation = SimpleNamespace(force_postgresql_config=True)
+    with pytest.raises(Reached):
+        module._resolve_deployment_target(object(), environment_config(), invocation, None)
+    assert calls == [{"mode": "provision", "force_postgresql_config": True}]
+    monkeypatch.setattr(module, "_downgrade_acknowledgment", lambda *_args, **kwargs: calls.append(kwargs) or (False, ()))
+    assert module._provision_downgrade_authority(object(), environment_config(), artifact(), force_postgresql_config=True) == (False, ())
+    assert calls[-1] == {"mode": "provision", "force_postgresql_config": True}
+
+
+@pytest.mark.parametrize("status,expected", [(0, None), (5, ExitStatus.REMOTE_PREFLIGHT), (10, ExitStatus.SAFETY)])
+def test_sensitive_authority_maps_native_access_separately_from_credential_safety(monkeypatch, status, expected):
+    from taskman_ops import provisioning as module
+    from taskman_ops.services.systemd import build_systemd_plan
+    config = environment_config()
+    inputs = module.ProvisioningInputs(config=config,
+        caddy_plan=build_caddy_ownership_plan(config, authority_result()), systemd_plan=build_systemd_plan(config),
+        runtime_environment=b"runtime=value\n", pgpass=b"pgpass\n", role_password_input=b"role-password-input\n",
+        force_postgresql_config=True)
+    authority = _authority()
+    authority["postgresql"] = {**authority["postgresql"], "branch": "configure-existing", "access": "unproven"}
+    monkeypatch.setattr(module, "validate_preconvergence_authority", lambda *_: authority)
+    modes = []
+    def sensitive(*_args, **kwargs):
+        modes.append(kwargs["authentication_mode"])
+        return SimpleNamespace(exit_status=status, warnings=("cleanup warning",))
+    monkeypatch.setattr("taskman_ops.helper_client.runner.invoke_sensitive_pgpass_authority", sensitive)
+    remote = SimpleNamespace(run=lambda *_args, **_kwargs: SimpleNamespace(succeeded=True))
+    if expected is None:
+        assert module.validate_existing_authority(remote, inputs).warnings == ("cleanup warning",)
+    else:
+        with pytest.raises(OpsError) as raised:
+            module.validate_existing_authority(remote, inputs)
+        assert raised.value.status is expected
+        assert raised.value.stage == ("postgresql" if status == 5 else "credential-preflight")
+        assert raised.value.changed is False
+        assert raised.value.warnings == ("cleanup warning",)
+    assert modes == ["defer-for-configuration"]
+
+
+def test_provision_downgrade_observation_preserves_native_postgresql_failure(monkeypatch):
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.workflows import deploy as deploy_module
+    from taskman_ops.workflows import provision as provision_module
+    host = Host()
+    def failed(_remote, request):
+        return HostResult.for_request(request, "manual", "PostgreSQL SCRAM access proof failed",
+            {"failed_boundary": "postgresql", "exit_code": 5}, ("transient helper cleanup was incomplete",))
+    monkeypatch.setattr(deploy_module, "run_request", failed)
+    capabilities = replace(_capabilities(host), downgrade_authority=provision_module._provision_downgrade_authority)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+    assert result.exit_status is ExitStatus.REMOTE_PREFLIGHT
+    assert result.facts["failed_boundary"] == "postgresql"
+    assert result.facts["exit_code"] == 5
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+    assert result.changed is False
+    assert result.facts["release_started"] is False
+    assert "provisioning" not in host.events
+
+
+def test_provision_binds_frozen_postgresql_observation_only_after_preflight():
+    host = Host()
+    drafts, final = [], []
+    caps = _capabilities(host)
+    def preflight(_remote, inputs):
+        drafts.append(inputs.postgresql_plan)
+        return _authority()
+    def converge(_remote, inputs):
+        final.append(inputs.postgresql_plan)
+        return ProvisioningResult(host.converge("provisioning"), prepared_result(inputs.caddy_plan))
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=replace(caps, preflight=preflight, provisioning=converge))
+    assert result.stage == "provisioned"
+    assert drafts == [None, None]
+    assert final[0].cluster.version == "18"
+    assert final[0].branch == "existing"
+
+
+def test_provision_refuses_changed_postgresql_target_before_consequence():
+    host = Host()
+    calls = []
+    def preflight(*_):
+        authority = _authority()
+        if calls:
+            authority["postgresql"]["cluster"]["data_directory"] = "/var/lib/postgresql/18/other"
+        calls.append(True)
+        return authority
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=replace(_capabilities(host), preflight=preflight))
+    assert result.facts["failed_boundary"] == "postgresql"
+    assert result.exit_status == ExitStatus.SAFETY
+    assert "safety" in result.facts["postgresql"]["operator_setup"][0]
+    assert "provisioning" not in host.events
+
+
+def test_provision_does_not_prepare_or_publish_after_late_database_proof_failure():
+    host = Host()
+    def fail(_remote, _inputs):
+        raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "SCRAM proof failed", changed=True,
+            state={"mutation_state": "changed"})
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=replace(_capabilities(host), provisioning=fail))
+    assert result.exit_status == ExitStatus.REMOTE_PREFLIGHT
+    assert result.changed is True
+    assert result.facts["release_started"] is False
+    assert "release" not in host.events
+    assert "provisioning_changed" not in result.facts
+
+
+@pytest.mark.parametrize("earlier_change", [False, True])
+def test_selected_target_transport_loss_keeps_postgresql_boundary_and_earlier_mutation(monkeypatch, earlier_change):
+    from taskman_ops import provisioning as production
+    from taskman_ops.remote import PyinfraRemote
+    host = Host()
+    commands = []
+    class InspectionFailureRemote(PyinfraRemote):
+        def run_deploy(self, _deploy, *, inputs):
+            return ChangeSet(earlier_change, warnings=("prior deployment warning",))
+        def run(self, argv, **_kwargs):
+            commands.append(argv)
+            raise OpsError(ExitStatus.REMOTE_PREFLIGHT, "remote", "native-diagnostic-canary",
+                changed=False, state={"inspection_dispatched": True}, warnings=("inspection cleanup warning",))
+        def close(self):
+            host.close()
+    remote = object.__new__(InspectionFailureRemote)
+    monkeypatch.setattr(production, "guard_caddy_install", lambda *_: authority_result())
+    monkeypatch.setattr(production, "prepare_caddy", lambda _remote, plan, _guarded: prepared_result(plan, changed=False))
+    monkeypatch.setattr(production, "install_runtime_environment", lambda *_: pytest.fail("runtime write after failed inspection"))
+    caps = replace(_capabilities(host), connect=lambda _: remote, provisioning=production.converge_provisioning)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=caps)
+    assert result.exit_status == ExitStatus.REMOTE_PREFLIGHT
+    assert result.facts["failed_boundary"] == "postgresql"
+    assert result.facts["mutation_state"] == ("changed" if earlier_change else "unchanged")
+    assert result.changed is earlier_change
+    assert result.facts["inspection_dispatched"] is True
+    assert result.facts["release_started"] is False
+    assert result.warnings == ("prior deployment warning", "inspection cleanup warning")
+    assert "native-diagnostic-canary" not in str(result.facts)
+    assert len(commands) == 1
+
+
+def test_override_dry_run_displays_selected_replacement_and_never_captures():
+    host = Host()
+    previews = []
+    def preflight(*_):
+        authority = _authority()
+        authority["postgresql"].update(branch="configure-existing", access="unproven")
+        return authority
+    caps = replace(_capabilities(host), preflight=preflight, present_plan=previews.append,
+        downgrade_authority=lambda *_a, **_k: (False, ()), provisioning=lambda *_: pytest.fail("configuration or recovery during dry run"))
+    result = provision(Invocation(command="provision", environment="production", dry_run=True,
+        force_postgresql_config=True), capabilities=caps)
+    assert result.exit_status == 0 and result.stage == "planned" and not result.changed
+    pg = previews[0]["postgresql"]
+    assert pg["branch"] == "configure-existing" and pg["access"] == "unproven"
+    assert pg["cluster"]["version"] == "18"
+    assert pg["settings"]["listen_addresses"] == "127.0.0.1"
+    assert "all consumers" in pg["warning"]
+    assert "scram-sha-256" in pg["replacement_hba"]
+    assert pg["recovery_parent"] == "/etc/taskman/postgresql-config-recovery"
+
+
+@pytest.mark.parametrize("late_failure", [False, True, "later-deploy"])
+def test_public_provision_retains_recovery_after_configuration(monkeypatch, late_failure):
+    from taskman_ops import provisioning as production
+    from taskman_ops.remote import PyinfraRemote
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY
+    host = Host()
+    class RemoteWithRecovery(PyinfraRemote):
+        def run_deploy(self, _deploy, *, inputs):
+            self._state._taskman_postgresql_recovery = recovery_result(recovery_request())
+            if late_failure == "later-deploy":
+                raise OpsError(8, "provisioning", "later deployment failed", changed=True)
+            return ChangeSet(True, operations=("Validate and configure PostgreSQL",))
+        def close(self):
+            host.close()
+    remote = object.__new__(RemoteWithRecovery)
+    remote._state = SimpleNamespace()
+    def preflight(*_):
+        authority = _authority()
+        authority["postgresql"].update(branch="configure-existing", access="unproven")
+        return authority
+    monkeypatch.setattr(production, "guard_caddy_install", lambda *_: authority_result())
+    monkeypatch.setattr(production, "prepare_caddy", lambda _remote, plan, _guarded: prepared_result(plan, changed=False))
+    def database(*_args, **_kwargs):
+        if late_failure:
+            raise OpsError(5, "postgresql", "SCRAM proof failed", changed=False)
+        return ChangeSet(False)
+    monkeypatch.setattr(production, "converge_database", database)
+    monkeypatch.setattr(production, "install_runtime_environment", lambda *_: ChangeSet(False))
+    caps = replace(_capabilities(host), connect=lambda _: remote, preflight=preflight,
+        downgrade_authority=lambda *_a, **_k: (False, ()), provisioning=production.converge_provisioning)
+    result = provision(Invocation(command="provision", environment="production", yes=True,
+        force_postgresql_config=True), capabilities=caps)
+    assert result.changed
+    assert result.facts["recovery_directory"] == DIRECTORY
+    assert result.facts["postgresql_recovery"]["cluster"]["version"] == "18"
+    assert result.facts["mutation_state"] == "changed"
+    if late_failure:
+        assert result.exit_status == (8 if late_failure == "later-deploy" else 5)
+        assert result.facts["release_started"] is False
+        assert "release" not in host.events
+    else:
+        assert result.exit_status == 0
+
+@pytest.mark.parametrize("host_address,network", [("127.0.0.1", "127.0.0.1/32"), ("::1", "::1/128")])
+def test_postgresql_failure_renders_targeted_setup_and_retained_resource_facts(host_address, network):
+    from taskman_ops.output import render_human, render_json
+    host = Host()
+    def failed(_remote, _inputs):
+        raise OpsError(5, "postgresql", "SCRAM proof failed", changed=True,
+            state={"mutation_state": "changed", "failed_check": "scram-application-access",
+                "postgresql_resources": {"role": "created", "database": "created", "credentials": "installed"}})
+    caps = replace(_capabilities(host),
+        load_environment=lambda _: environment_config(database_host=host_address, database_port=5432,
+            **({"public_ipv6": "2001:db8::10"} if host_address == "::1" else {})),
+        provisioning=failed)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=caps)
+    assert result.exit_status == 5 and result.changed
+    context = result.facts["postgresql"]
+    assert context["endpoint"] == {"host": host_address, "port": 5432, "role": "taskman", "database": "taskman_prod"}
+    assert context["cluster"]["version"] == "18"
+    assert context["hba_file"] == "/etc/postgresql/18/main/pg_hba.conf"
+    assert context["failed_check"] == "scram-application-access"
+    assert context["hba_example"] == f"host    taskman_prod    taskman    {network}    scram-sha-256"
+    assert context["retry_command"] == "./ops/taskman provision production"
+    for encoded in (render_human(result), render_json(result)):
+        assert "pg_hba_file_rules" in encoded and "first matching" in encoded
+        assert "credentials" in encoded and "all consumers" in encoded
+        assert context["retry_command"] in encoded
+    assert result.facts["postgresql_resources"]["role"] == "created"
+    assert result.facts["release_started"] is False
+    assert "release" not in host.events
+
+@pytest.mark.parametrize("branch,role,database,access", [
+    ("bootstrap", "absent", "absent", "unproven"),
+    ("existing", "compatible", "absent", "unproven"),
+    ("existing", "compatible", "compatible", "ready"),
+    ("configure-existing", "compatible", "compatible", "unproven"),
+])
+def test_postgresql_preview_distinguishes_resource_delta_and_actual_access(branch, role, database, access):
+    from taskman_ops.output import render_human, render_json
+    host = Host()
+    def preflight(*_):
+        state = _authority()
+        state["postgresql"].update(branch=branch, role=role, database=database, access=access)
+        if branch == "bootstrap":
+            state["postgresql"]["cluster"] = None
+        return state
+    caps = replace(_capabilities(host), preflight=preflight,
+        downgrade_authority=lambda *_a, **_k: (False, ()),
+        provisioning=lambda *_: pytest.fail("dry-run consequence"))
+    result = provision(Invocation(command="provision", environment="production", dry_run=True,
+        force_postgresql_config=branch == "configure-existing"), capabilities=caps)
+    assert result.exit_status == 0 and result.stage == "planned" and not result.changed
+    pg = result.facts["plan"]["postgresql"]
+    assert pg["endpoint"] == {"host": "127.0.0.1", "port": 5432, "role": "taskman", "database": "taskman_prod"}
+    assert pg["resource_actions"] == {"role": "create" if role == "absent" else "adopt", "database": "create" if database == "absent" else "adopt"}
+    assert pg["access"] == access
+    assert pg["required_authentication"] == "scram-sha-256"
+    assert pg["post_creation_access_failure_possible"] is (role == "absent" or database == "absent")
+    assert pg["restart_possible"] is (branch != "existing")
+    for encoded in (render_human(result), render_json(result)):
+        assert 'scram-sha-256' in encoded and access in encoded
+
+
+def test_admission_access_failure_retains_selected_observation_for_operator_setup(monkeypatch):
+    from taskman_ops import provisioning as production
+    host = Host()
+    monkeypatch.setattr(production, "validate_preconvergence_authority", lambda *_: _authority())
+    def failed(*_args, **_kwargs):
+        raise OpsError(5, "postgresql", "application access failed", warnings=("cleanup warning",))
+    monkeypatch.setattr(production, "validate_existing_credential_authority", failed)
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=replace(_capabilities(host), preflight=production.validate_existing_authority))
+    assert result.exit_status == 5 and not result.changed
+    assert result.facts["postgresql"]["hba_file"] == "/etc/postgresql/18/main/pg_hba.conf"
+    assert result.facts["postgresql"]["retry_command"] == "./ops/taskman provision production"
+    assert result.warnings == ("cleanup warning",)
+    assert result.facts["release_started"] is False
+    assert "plan" not in host.events
+
+
+@pytest.mark.parametrize("prior_changed,lost_creation", [(True, False), (False, True)])
+def test_real_database_failure_boundary_preserves_prior_or_possible_mutation(monkeypatch, prior_changed, lost_creation):
+    from taskman_ops import provisioning as production
+    from taskman_ops.remote import PyinfraRemote, CommandResult
+    from taskman_ops.output import render_human, render_json
+    from tests.support.remotes import ScriptedRemote
+    host = Host()
+    responses = [CommandResult(0, "/var/lib/postgresql/18/main|/etc/postgresql/18/main/postgresql.conf|/etc/postgresql/18/main/pg_hba.conf|5432\n"),
+        CommandResult(0), CommandResult(0), CommandResult(0, "psql (PostgreSQL) 18.6\n"), CommandResult(0)]
+    if lost_creation:
+        responses += [OpsError(5, "remote", "native-secret-canary")]
+    else:
+        responses += [CommandResult(0), CommandResult(0), CommandResult(1, stderr="native-secret-canary")]
+    scripted = ScriptedRemote.from_responses(responses)
+    class Remote(PyinfraRemote):
+        def run_deploy(self, _deploy, *, inputs):
+            return ChangeSet(prior_changed, operations=("Install managed units",) if prior_changed else ())
+        def run(self, argv, **kwargs):
+            return scripted.run(argv, **kwargs)
+        def close(self):
+            host.close()
+    remote = object.__new__(Remote)
+    def preflight(*_):
+        authority = _authority()
+        authority["postgresql"].update(role="absent", database="absent", access="unproven")
+        return authority
+    monkeypatch.setattr(production, "guard_caddy_install", lambda *_: authority_result())
+    monkeypatch.setattr(production, "prepare_caddy", lambda _r, plan, _g: prepared_result(plan, changed=prior_changed))
+    monkeypatch.setattr(production, "install_runtime_environment", lambda *_: pytest.fail("runtime after failed access"))
+    result = provision(Invocation(command="provision", environment="production"), capabilities=replace(_capabilities(host),
+        connect=lambda _: remote, preflight=preflight, provisioning=production.converge_provisioning))
+    assert result.exit_status == 5 and result.changed
+    assert result.facts["mutation_state"] == ("changed" if prior_changed else "unknown")
+    assert result.facts["postgresql_resources"]["role"] == ("creation-unproven" if lost_creation else "created")
+    assert result.facts["postgresql_resources"]["database"] == ("absent" if lost_creation else "created")
+    assert result.facts["postgresql"]["cluster"]["version"] == "18"
+    assert result.facts["release_started"] is False
+    for encoded in (render_human(result), render_json(result)):
+        assert "native-secret-canary" not in encoded
+        assert "./ops/taskman provision production" in encoded
+    assert "release" not in host.events
+
+
+@pytest.mark.parametrize("failure,failed_check", [
+    ("unsupported-client", "scram-client-prerequisite"),
+    ("retained-access", "scram-application-access"),
+    ("unknown-selection", "selected-target-or-resource-safety"),
+])
+def test_first_helper_preflight_failure_retains_selected_setup_in_public_output(tmp_path, monkeypatch, failure, failed_check):
+    from contextlib import nullcontext
+    from subprocess import CompletedProcess
+    from taskman_ops import provisioning as production
+    from taskman_ops.host_helper import database as native
+    from taskman_ops.host_helper.operations import discover as observer
+    from taskman_ops.workflows import helper
+    from taskman_ops.host_protocol import encode_result, decode_result
+    from taskman_ops.output import render_human, render_json
+    from tests.host_helper.test_discovery import _state
+    credentials = tmp_path / "pgpass"
+    credentials.write_bytes(b"credential-secret-canary")
+    credentials.chmod(0o600)
+    monkeypatch.setattr(observer, "lifecycle_lock", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(observer, "_validate_managed_resources", lambda *_a, **_k: None)
+    monkeypatch.setattr(observer, "observe_host_state", lambda *_a, **_k: _state())
+    selected = _authority()["postgresql"]
+    selected["access"] = "unproven"
+    def selected_observation(*_):
+        if failure == "unknown-selection":
+            raise observer.PostgresqlObservationError("selected cluster inspection unavailable", 5)
+        return selected
+    monkeypatch.setattr(observer, "_observe_postgresql_authority", selected_observation)
+    monkeypatch.setattr(observer, "validate_credentials", lambda *_: None)
+    original_observe = observer._observe_provision_database
+    monkeypatch.setattr(observer, "_observe_provision_database", lambda db, _path, track, force:
+        original_observe(db, credentials, track, force))
+    calls = []
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if argv == ("psql", "--version"):
+            return CompletedProcess(argv, 0, b"psql (PostgreSQL) 15.8\n" if failure == "unsupported-client" else b"psql (PostgreSQL) 18.6\n", b"")
+        assert "require_auth=scram-sha-256" in argv[argv.index("--dbname") + 1]
+        return CompletedProcess(argv, 1, b"", b"native-secret-canary")
+    monkeypatch.setattr(native, "run_command", command)
+    original_run = helper.run_request
+    def local_request(remote, request):
+        return original_run(remote, request, invoker=lambda _r, _p, req:
+            decode_result(encode_result(observer.provision_authority(req))))
+    monkeypatch.setattr(helper, "run_request", local_request)
+    host = Host()
+    # Retained-byte transport is external to this native failure projection test.
+    host.run = lambda *_a, **_k: SimpleNamespace(succeeded=True)
+    result = provision(Invocation(command="provision", environment="production"),
+        capabilities=replace(_capabilities(host), preflight=production.validate_existing_authority))
+    assert result.exit_status == 5 and not result.changed
+    context = result.facts["postgresql"]
+    assert context["cluster"] == (None if failure == "unknown-selection" else selected["cluster"])
+    assert context["hba_file"] == (None if failure == "unknown-selection" else selected["cluster"]["hba_file"])
+    assert context["failed_check"] == failed_check
+    if failure == "unknown-selection":
+        assert calls == []
+    else:
+        assert calls[0] == ("psql", "--version")
+    for encoded in (render_human(result), render_json(result)):
+        assert failed_check in encoded
+        if context["hba_file"] is not None:
+            assert context["hba_file"] in encoded
+        assert "native-secret-canary" not in encoded and "credential-secret-canary" not in encoded
+        assert context["retry_command"] in encoded
+        if failure == "unsupported-client":
+            assert "version 16 or later" in encoded and "require_auth" in encoded
+    assert result.facts["release_started"] is False
+    assert not {"plan", "discovery", "provisioning", "release"}.intersection(host.events)
+
+
+@pytest.mark.parametrize("requested,dry_run", [(False, True), (True, False)])
+def test_provision_projects_protocol_frozen_authority_through_real_host_admission(
+    monkeypatch, requested, dry_run,
+):
+    """Frozen helper mappings must survive admission into the confirmed plan."""
+    from taskman_ops import provisioning as production
+    from taskman_ops.host.acceptance import validate_provisionable_host
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.output import register_secret, render_human, render_json
+    from taskman_ops.workflows import helper
+    from taskman_ops.remote import CommandResult
+    from tests.host.test_facts import fact_responses, direct_dns
+    from tests.support.remotes import ScriptedRemote
+
+    responses = fact_responses(postgres=True)
+    del responses[15:17]  # PostgreSQL authority replaces these native database reads.
+    scripted = ScriptedRemote.from_responses(responses * (1 if dry_run else 2))
+
+    class RemoteHost(Host):
+        def run(self, argv, **kwargs):
+            if argv[:2] == ("sh", "-ceu") and argv[3] == "taskman-credential-authority":
+                assert argv[-1] == "/etc/taskman/pgpass"
+                assert kwargs["sensitive"] is True
+                return CommandResult(0)
+            return scripted.run(argv, **kwargs)
+
+    host = RemoteHost()
+    state = _authority()
+    del state["scheduler_create"]  # The admitted scheduler delta is controller-derived.
+    state["postgresql"].update(
+        branch="configure-existing" if requested else "existing", access="unproven",
+    )
+    state["initial_database_empty"] = True
+    receipts = []
+
+    def helper_receipt(_remote, request):
+        result = HostResult.for_request(request, "succeeded", "authority observed", state)
+        receipts.append(result)
+        return result
+
+    monkeypatch.setattr(helper, "run_request", helper_receipt)
+    # Credential transport is external; retain real closed projection validation and admission.
+    monkeypatch.setattr(production, "validate_existing_credential_authority",
+        lambda *_args, **_kwargs: SimpleNamespace(warnings=()))
+    discoveries = []
+    authorities = []
+
+    def discover(remote, config, **kwargs):
+        authorities.append(kwargs["provision_authority"])
+        observed = validate_provisionable_host(remote, config, resolver=direct_dns, **kwargs)
+        discoveries.append(observed)
+        return observed
+
+    canary = "projection-credential-canary"
+    register_secret(canary)
+    presented = []
+    caps = replace(_capabilities(host, present_plan=presented.append),
+        preflight=production.validate_existing_authority, discover=discover,
+        render_plan=lambda *_args: {"credential_example": canary},
+        render_runtime_environment=lambda *_args: canary.encode(),
+        render_pgpass=lambda *_args: canary.encode(),
+        render_role_password_input=lambda *_args: canary.encode(),
+        downgrade_authority=lambda *_args, **_kwargs: (False, ()),
+    )
+    result = provision(Invocation(command="provision", environment="production",
+        artifact=Path("explicit.tar.gz"), dry_run=dry_run,
+        force_postgresql_config=requested), capabilities=caps)
+
+    assert result.exit_status is ExitStatus.OK
+    assert result.stage == ("planned" if dry_run else "provisioned")
+    starting_state = presented[0]["starting_state"]
+    resources = starting_state["resource_authority"]
+    assert starting_state["host_authority"]["postgresql"] == state["postgresql"]
+    assert resources["facts"]["postgresql"] == state["postgresql"]
+    assert resources["facts"]["listeners"] == ({"address": "*", "port": 2202},)
+    assert resources["facts"]["initial_database_empty"] is True
+    assert resources["state"] == "partial"
+    assert resources["caddy_state"] == resources["facts"]["caddy_state"]
+    assert starting_state["host_authority"]["scheduler_create"] == _authority()["scheduler_create"]
+    assert isinstance(authorities[0], production.ProvisionAuthority)
+    assert discoveries[0].facts.postgresql is receipts[0].state["postgresql"]
+    assert authorities[0]["postgresql"] is receipts[0].state["postgresql"]
+    assert resources["facts"]["postgresql"] is not discoveries[0].facts.postgresql
+    assert presented[0]["credential_example"] == "[REDACTED]"
+    assert canary not in render_human(result)
+    assert canary not in render_json(result)
+    if dry_run:
+        assert not result.changed
+        assert not host.converged
+    else:
+        assert result.facts["starting_state"] == starting_state
+        assert host.converged == {"provisioning"}
+    # Mutating the owned plan projection must not thaw or alter the original receipt/facts.
+    resources["facts"]["postgresql"]["cluster"]["name"] = "changed-plan"
+    assert discoveries[0].facts.postgresql["cluster"]["name"] == "main"
+    with pytest.raises(TypeError):
+        discoveries[0].facts.postgresql["cluster"]["name"] = "changed-input"
+    assert len(scripted.calls) == 16 * (1 if dry_run else 2)
+    assert not scripted.responses
+    assert host.closed == 1
+
+
+@pytest.mark.parametrize("dataclass_root", [False, True])
+def test_provision_compares_all_recursively_projected_authority_after_confirmation(dataclass_root):
+    """Mappings/dataclasses inside nested sequences must remain comparison authority."""
+    from types import MappingProxyType
+
+    @dataclass(frozen=True)
+    class Resource:
+        identity: object
+        metadata: str = field(default="preserved", init=False)
+
+    def discovery(identity):
+        nested = MappingProxyType({"resources": ([Resource(MappingProxyType({"name": identity}))],)})
+        return Resource(nested) if dataclass_root else nested
+
+    host = Host()
+    observations = iter((discovery("first"), discovery("changed")))
+    presented = []
+    caps = replace(_capabilities(host, present_plan=presented.append),
+        discover=lambda *_args, **_kwargs: next(observations))
+    result = provision(Invocation(command="provision", environment="production", yes=True),
+        capabilities=caps)
+
+    assert result.exit_status is ExitStatus.SAFETY
+    assert not result.changed
+    assert not host.converged
+    projected = presented[0]["starting_state"]["resource_authority"]
+    if dataclass_root:
+        assert projected["metadata"] == "preserved"
+        projected = projected["identity"]
+    assert projected == {
+        "resources": ([{"identity": {"name": "first"}, "metadata": "preserved"}],),
     }

@@ -2169,3 +2169,430 @@ def test_packaged_deploy_uses_the_final_protocol_directly(tmp_path: Path) -> Non
     assert result.outcome == "refused"
     assert result.state["failed_boundary"] == "input"
     assert validate_mutation_state("deploy", result.outcome, result.state)["mutation_state"] == "unchanged"
+
+
+@pytest.mark.parametrize("kind", ("upload", "installed"))
+def test_preparation_parses_the_same_exact_first_release_request(kind, tmp_path):
+    from dataclasses import replace
+    request = _request(tmp_path, operation="genesis", previous=None)
+    if kind == "installed":
+        candidate = deploy_module._inputs(request, first_release=True).candidate
+        request = replace(request, parameters={**request.parameters, "target": {"kind": "installed", "release_record": candidate.to_mapping()}})
+    prepared = replace(request, operation="prepare_genesis")
+    assert deploy_module._inputs(prepared, first_release=True) == deploy_module._inputs(request, first_release=True)
+    if kind == "upload":
+        for section in ("parameters", "expected_state"):
+            source = dict(getattr(prepared, section))
+            for key in source:
+                malformed = {name: value for name, value in source.items() if name != key}
+                with pytest.raises(ValueError):
+                    deploy_module._inputs(replace(prepared, **{section: malformed}), first_release=True)
+            with pytest.raises(ValueError):
+                deploy_module._inputs(replace(prepared, **{section: {**source, "unexpected": False}}), first_release=True)
+    assert not (tmp_path / "install" / "current").exists()
+
+
+def _prepare(request):
+    handler = getattr(deploy_module, "prepare_genesis", None)
+    assert callable(handler), "preparation lifecycle is missing"
+    return handler(request)
+
+
+def _application_runtime(monkeypatch, runtime, *, failure=None):
+    from taskman_ops.host_helper.verification import ApplicationVerification
+    _install_runtime(monkeypatch, runtime)
+    def verify_application(request, **kwargs):
+        assert kwargs == {"lifecycle_locked": True}
+        runtime.events.append("application")
+        report = _passing_verification_report(request.expected_state["expected_release_id"])
+        report["scope"] = "application"
+        report["checks"] = [item for item in report["checks"] if item["name"] in {
+            "taskman-service", "release-identity", "listener-topology", "startup-journal", "local-readiness"}]
+        if failure:
+            report.update(status="failed", exit_status=9, next_action="inspect the fixed verification summaries and correct the reported host state before retrying")
+            report["checks"][-1]["status"] = "failed"
+        return ApplicationVerification(report, "not-attempted")
+    monkeypatch.setattr(deploy_module, "verify_application", verify_application, raising=False)
+
+
+def test_preparation_migrates_selects_and_proves_application_without_success_history(tmp_path, monkeypatch):
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _application_runtime(monkeypatch, runtime)
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert result.outcome == "succeeded"
+    assert state["local_report"]["exit_status"] == 0
+    assert state["public_probe"] == "not-attempted"
+    assert state["observations"]["service_state"] == "running"
+    assert state["observations"]["last_successful_selection_id"] is None
+    assert runtime.events == ["stop", "migration", "start", "application"]
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    observed = deploy_module.observe_host_state(paths, database=runtime.observe_database(), allow_selection_transition=True)
+    assert observed.selected_release_id == _candidate_id(request)
+    assert observed.selections == ()
+    assert runtime.backup_calls == 0
+
+
+def test_preparation_partial_schema_keeps_recovery_protection_and_credentials(tmp_path, monkeypatch):
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, applied_migrations=(20260905120000,),
+                       migrations=(MIGRATION, SECOND_MIGRATION), policy="backward-compatible")
+    _install_unselected_candidate(request)
+    request = replace(request, expected_state={**request.expected_state, "downgrade_baseline_sha256":
+        hashlib.sha256(json.dumps([_candidate_id(request)], separators=(",", ":")).encode()).hexdigest()})
+    runtime = _Runtime((20260905120000,), migration_result=(20260905120000,20260906120000))
+    _application_runtime(monkeypatch, runtime)
+    credential_bytes = Path(request.parameters["credentials_path"]).read_bytes()
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert result.outcome == "succeeded"
+    assert state["backup_id"] == "backup-" + "0" * 31 + "1"
+    assert state["observations"]["protected_backup_ids"] == [state["backup_id"]]
+    assert state["observations"]["last_successful_selection_id"] is None
+    assert runtime.events == ["backup", "stop", "migration", "start", "application"]
+    assert Path(request.parameters["credentials_path"]).read_bytes() == credential_bytes
+
+
+def test_preparation_local_readiness_failure_retains_attempted_report(tmp_path, monkeypatch):
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, migrations=(), policy="no-change")
+    runtime = _Runtime()
+    _application_runtime(monkeypatch, runtime, failure="readiness")
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert state["exit_code"] == 9
+    assert state["failed_boundary"] == "verification"
+    assert [c["status"] for c in state["local_report"]["checks"]] == ["passed"] * 4 + ["failed"]
+    assert state["public_probe"] == "not-attempted"
+
+
+@pytest.mark.parametrize("code,boundary", ((2,"input"),(5,"inspection"),(10,"authority"),(12,"lock")))
+def test_preparation_preserves_typed_preproof_categories_on_completed_exact_replay(tmp_path, monkeypatch, code, boundary):
+    from taskman_ops.host_helper.verification import ApplicationVerificationError
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, migrations=(), policy="no-change")
+    _install_selected_candidate(request)
+    runtime = _Runtime()
+    runtime.service_running = True
+    _install_runtime(monkeypatch, runtime)
+    request = _replanned_request(request, runtime)
+    monkeypatch.setattr(deploy_module, "verify_application", lambda *_a, **_k: (_ for _ in ()).throw(ApplicationVerificationError(code,boundary)))
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert (state["exit_code"],state["failed_boundary"]) == (code,boundary)
+    assert state["local_report"] is None
+    assert state["public_probe"] == "not-attempted"
+    assert state["mutation_state"] == "unchanged"
+
+
+def test_preparation_contradictory_late_lock_exception_retains_mutation_in_internal_failure(tmp_path, monkeypatch):
+    from taskman_ops.host_helper.verification import ApplicationVerificationError
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, migrations=(), policy="no-change")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(deploy_module, "verify_application", lambda *_a, **_k: (_ for _ in ()).throw(ApplicationVerificationError(12,"lock")))
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert (state["exit_code"],state["failed_boundary"]) == (8,"inspection")
+    assert state["mutation_state"] == "changed"
+    assert state["local_report"] is None
+    assert state["public_probe"] == "not-attempted"
+
+
+@pytest.mark.parametrize("failure", (None,"readiness"))
+def test_preparation_entrypoint_uses_real_application_verifier(tmp_path, monkeypatch, failure):
+    from taskman_ops.host_helper import __main__ as entrypoint
+    from taskman_ops.host_helper import verification as verifier
+    from tests.host_helper.test_verification import _ApplicationHost
+    request = _request(tmp_path, operation="prepare_genesis", previous=None, policy="restore-required")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    verify_request = verifier.verification_request(request, _candidate_id(request), request.parameters["verification"])
+    host = _ApplicationHost(verify_request)
+    host.executable = f"{request.paths['install_root']}/releases/{_candidate_id(request)}/erts-16.0/bin/beam.smp\n".encode()
+    if failure: host.local_response = b"HTTP/2 503\r\ncache-control: no-store\r\n\r\nunavailable"
+    monkeypatch.setattr(verifier, "run_command", host.run)
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: host.clock)
+    monkeypatch.setattr(verifier.time, "sleep", lambda seconds: setattr(host,"clock",host.clock+seconds))
+    monkeypatch.setenv("SUDO_USER", "deployer")
+    monkeypatch.setenv("SSH_CONNECTION", "198.51.100.7 51324 203.0.113.10 22")
+    result = entrypoint._dispatch(request)
+    state = validate_mutation_state(request.operation, result.outcome, result.state)
+    assert state["exit_code"] == (9 if failure else 0)
+    assert [c["status"] for c in state["local_report"]["checks"]] == ["passed"] * 4 + ["failed" if failure else "passed"]
+    assert state["public_probe"] == "not-attempted"
+    assert host.public_requests == []
+    assert state["observations"]["last_successful_selection_id"] is None
+
+
+@pytest.mark.parametrize("operation,code", (("prepare_genesis",5),("genesis",2)))
+def test_first_release_preflight_refusal_preserves_operation_category_before_mutation(tmp_path, monkeypatch, operation, code):
+    request = _request(tmp_path, operation=operation, previous=None, migrations=(), policy="no-change")
+    runtime = _Runtime()
+    _install_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(deploy_module,"host_preflight",lambda *_a: "preflight")
+    result = _prepare(request) if operation == "prepare_genesis" else genesis(request)
+    state = validate_mutation_state(operation,result.outcome,result.state)
+    assert state["exit_code"] == code
+    assert state["mutation_state"] == "unchanged"
+    assert runtime.events == []
+
+
+@pytest.mark.parametrize("boundary", ("migration","service","inspection"))
+def test_preparation_failure_after_consequence_retains_actual_state_and_protection(tmp_path,monkeypatch,boundary):
+    request = _request(tmp_path, operation="prepare_genesis", previous=None,
+        applied_migrations=(20260905120000,), migrations=(MIGRATION,SECOND_MIGRATION),policy="backward-compatible")
+    _install_unselected_candidate(request)
+    request = replace(request, expected_state={**request.expected_state,"downgrade_baseline_sha256":
+        hashlib.sha256(json.dumps([_candidate_id(request)], separators=(",", ":")).encode()).hexdigest()})
+    runtime = _Runtime((20260905120000,),migration_result=(20260905120000,20260906120000))
+    _application_runtime(monkeypatch,runtime)
+    original_command = runtime.command
+    def command(argv,**kwargs):
+        result = original_command(argv,**kwargs)
+        if boundary == "migration" and argv[0] == "systemd-run": raise deploy_module.CommandError("lost migration result")
+        if boundary == "service" and argv[:2] == ("systemctl","start"): raise deploy_module.CommandError("lost service result")
+        return result
+    monkeypatch.setattr(deploy_module,"run_command",command)
+    monkeypatch.setattr(service_capability,"run_command",command)
+    if boundary == "inspection":
+        original_observe = deploy_module._observe
+        def observe(inputs,**kwargs):
+            if "application" in runtime.events: raise deploy_module.CommandError("unavailable final observation")
+            return original_observe(inputs,**kwargs)
+        monkeypatch.setattr(deploy_module,"_observe",observe)
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.outcome != "succeeded"
+    assert state["failed_boundary"] == boundary
+    assert state["exit_code"] == {"migration":7,"service":8,"inspection":5}[boundary]
+    assert state["mutation_state"] == "changed"
+    assert state["backup_id"] == "backup-" + "0" * 31 + "1"
+    assert runtime.migrations == (20260905120000,20260906120000)
+    assert state["public_probe"] == "not-attempted"
+    if boundary == "inspection":
+        assert state["local_report"]["exit_status"] == 0
+        assert set(state["unavailable_fields"]) == set(state["observations"])
+    else:
+        assert state["local_report"] is None
+        assert state["observations"]["protected_backup_ids"] == [state["backup_id"]]
+
+
+def test_preparation_exact_completed_replay_retains_history_and_refuses_replacement(tmp_path,monkeypatch):
+    request = _request(tmp_path, operation="prepare_genesis",previous=None,migrations=(),policy="no-change")
+    _install_selected_candidate(request)
+    runtime = _Runtime(); runtime.service_running = True
+    _application_runtime(monkeypatch,runtime)
+    request = _replanned_request(request,runtime)
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    history = tuple(Path(paths.selection_root).glob("*.json"))
+    before = {p: p.read_bytes() for p in history}
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.outcome == "succeeded"
+    assert state["mutation_state"] == "unchanged"
+    assert {p:p.read_bytes() for p in Path(paths.selection_root).glob("*.json")} == before
+    other = _request(tmp_path,operation="prepare_genesis",previous=None,migrations=(),policy="no-change",application_version="0.3.0")
+    other = replace(other,expected_state=request.expected_state)
+    refused = _prepare(other)
+    assert refused.outcome == "manual"
+    assert refused.state["exit_code"] == 10
+    assert {p:p.read_bytes() for p in Path(paths.selection_root).glob("*.json")} == before
+
+
+def test_isolated_packaged_preparation_runs_real_lifecycle_and_proof_with_many_migrations(tmp_path):
+    migrations = tuple(MigrationFingerprint(f"{20261001000000+i:014d}_change_{i}.exs", f"{i:064x}") for i in range(70))
+    request = _request(tmp_path,operation="prepare_genesis",previous=None,migrations=migrations,policy="restore-required")
+    package = build_helper_package(tmp_path / "prepare.pyz")
+    script = '''import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from taskman_ops.host_helper import __main__ as entry, state, services, verification
+from taskman_ops.host_helper.operations import deploy
+from taskman_ops.host_helper.backup_helper import BackupHelperConvergence, BackupHelperMutation
+from taskman_ops.host_protocol import decode_request
+payload = sys.stdin.buffer.read()
+request = decode_request(payload)
+manifest = request.parameters['target']['manifest']
+release = manifest['release_id']
+versions = tuple(int(m['filename'][:14]) for m in manifest['migrations'])
+runtime = {'running': False, 'migrations': (), 'mutations': []}
+def run(argv, **kwargs):
+    output = b''
+    if argv[:2] == ('systemctl', 'stop'):
+        runtime['mutations'].append('stop'); runtime['running'] = False
+    elif argv[:2] == ('systemctl', 'start'):
+        runtime['mutations'].append('start'); runtime['running'] = True
+    elif argv[0] == 'systemd-run':
+        runtime['mutations'].append('migration'); runtime['migrations'] = versions
+    elif argv[0] == 'df': output = b'Avail\\n20000000000\\n'
+    elif argv[0] == 'runuser': output = b'1\\n' if 'psql' in argv else b''
+    elif argv[:2] == ('systemctl','show'): output = b'active\\n1234\\n' if runtime['running'] else b'inactive\\n0\\n'
+    elif argv[0] == 'readlink': output = (request.paths['install_root']+'/releases/'+release+'/erts-16.0/bin/beam.smp\\n').encode()
+    elif argv[:2] == ('systemctl','is-active'):
+        raise deploy.CommandError('inactive Caddy')
+    elif argv[0] == 'ss': output = b'LISTEN 0 128 127.0.0.1:4000 0.0.0.0:*\\nLISTEN 0 128 127.0.0.1:6789 0.0.0.0:*\\nLISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\\n'
+    elif argv[0] == 'journalctl': output = b'clean startup'
+    elif argv[0] == 'curl':
+        assert argv[-1].startswith('http://127.0.0.1:')
+        output = b'HTTP/2 200\\r\\ncache-control: no-store\\r\\n\\r\\nready'
+    else: raise AssertionError('unexpected native command')
+    return subprocess.CompletedProcess(argv,0,output,b'')
+deploy.run_command = services.run_command = verification.run_command = run
+deploy.observe_database_state_or_empty = lambda *_a, **_k: {'state':'ready','applied_migrations':runtime['migrations'],'initial_empty':not runtime['migrations']}
+state._service_state = lambda include_runtime: 'running' if include_runtime and runtime['running'] else 'stopped'
+deploy._taskman_gid = os.getegid
+deploy._scheduler_facts = lambda _p: {'scheduled_backup_sha256':'a'*64,'backup_timer_enabled':True,'backup_timer_state':'active'}
+deploy.converge_backup_helper = lambda _p,_h,**kw: BackupHelperConvergence(kw['lock'],BackupHelperMutation())
+os.environ['SUDO_USER'] = 'deployer'
+os.environ['SSH_CONNECTION'] = '198.51.100.7 51324 203.0.113.10 22'
+# Feed the original encoded request through the production main framing/dispatch/codec.
+from io import BytesIO
+class Input:
+    buffer = BytesIO(payload)
+sys.stdin = Input()
+sys.argv = [sys.argv[0]]
+assert entry.main() == 0
+assert runtime['mutations'] == ['stop','migration','start']
+'''
+    completed = subprocess.run(["python3","-I","-S","-c",script,str(package.path)],
+        input=encode_request(request),capture_output=True,check=False,cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == b""
+    result = decode_result(completed.stdout)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.operation == "prepare_genesis"
+    assert result.correlation_id == CORRELATION
+    assert result.outcome == "succeeded"
+    assert len(state["observations"]["applied_migrations"]) == 70
+    assert state["observations"]["last_successful_selection_id"] is None
+    assert state["observations"]["service_state"] == "running"
+    assert len(state["local_report"]["checks"]) == 5
+    assert state["public_probe"] == "not-attempted"
+    assert not (Path(request.paths["install_root"]) / "deployments" / "selections").exists()
+
+
+def test_preparation_refreshes_scheduled_executable_under_shared_lock_sequence(tmp_path,monkeypatch):
+    from taskman_ops.host_helper import backup_helper
+    from taskman_ops.host_helper.lock import lifecycle_lock
+    request = _request(tmp_path,operation="prepare_genesis",previous=None,migrations=(),policy="no-change")
+    runtime = _Runtime()
+    _application_runtime(monkeypatch,runtime)
+    installed = tmp_path / "scheduler" / "taskman-backup.pyz"
+    installed.parent.mkdir(mode=0o750)
+    installed.write_bytes(b"old compatible scheduler"); installed.chmod(0o750)
+    upload = Path(request.paths["install_root"]) / "deployments" / "uploads" / "backup.pyz"
+    upload.write_bytes(b"new compatible scheduler"); upload.chmod(0o600)
+    old_digest = hashlib.sha256(installed.read_bytes()).hexdigest()
+    desired_digest = hashlib.sha256(upload.read_bytes()).hexdigest()
+    request = replace(request,expected_state={**request.expected_state,"scheduled_backup_sha256":old_digest},
+        parameters={**request.parameters,"backup_helper":{"sha256":desired_digest,"upload_path":str(upload)}})
+    monkeypatch.setattr(backup_helper,"_BACKUP_COMMAND",installed)
+    monkeypatch.setattr(deploy_module,"converge_backup_helper",backup_helper.converge_backup_helper)
+    timer = {"active":True,"events":[]}
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    def run(argv,**kwargs):
+        if argv[:2] == ("systemctl","stop"):
+            timer["events"].append("pause"); timer["active"] = False; output = b""
+        elif argv[:2] == ("systemctl","start"):
+            timer["events"].append("restart"); timer["active"] = True; output = b""
+        elif argv[-1] == "taskman-backup.service":
+            # The running backup can obtain the released lock before refresh.
+            with lifecycle_lock(paths,timeout_seconds=0.01):
+                assert installed.read_bytes() == b"old compatible scheduler"
+            timer["events"].append("wait"); output = b"inactive\n"
+        elif "--property=UnitFileState" in argv: output = b"enabled\n"
+        else: output = b"active\n" if timer["active"] else b"inactive\n"
+        return subprocess.CompletedProcess(argv,0,output,b"")
+    monkeypatch.setattr(backup_helper,"run_command",run)
+    monkeypatch.setattr(deploy_module,"_scheduler_facts",lambda _p:{
+        "scheduled_backup_sha256":backup_helper._verified_executable_checksum(),
+        "backup_timer_enabled":True,"backup_timer_state":"active" if timer["active"] else "inactive"})
+    result = _prepare(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.outcome == "succeeded"
+    assert timer["events"] == ["pause","wait","restart"]
+    assert installed.read_bytes() == b"new compatible scheduler"
+    assert state["observations"]["scheduled_backup_sha256"] == desired_digest
+    assert state["observations"]["backup_timer_state"] == "active"
+    assert state["observations"]["last_successful_selection_id"] is None
+
+
+def test_preparation_initial_lock_contention_has_unavailable_facts_and_no_consequence(tmp_path,monkeypatch):
+    from taskman_ops.host_helper.lock import lifecycle_lock
+    request = _request(tmp_path,operation="prepare_genesis",previous=None,migrations=(),policy="no-change")
+    runtime = _Runtime(); _install_runtime(monkeypatch,runtime)
+    monkeypatch.setattr(deploy_module,"_LOCK_TIMEOUT_SECONDS",0.01)
+    paths = deploy_module.ManagedPaths.from_mapping(dict(request.paths))
+    with lifecycle_lock(paths,timeout_seconds=0.01): result = _prepare(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert (state["exit_code"],state["failed_boundary"]) == (12,"lock")
+    assert state["mutation_state"] == "unchanged"
+    assert state["local_report"] is None and state["public_probe"] == "not-attempted"
+    assert set(state["unavailable_fields"]) == set(state["observations"])
+    assert runtime.events == []
+
+
+def test_preparation_final_runtime_is_fresh_and_cannot_invent_running_service(tmp_path,monkeypatch):
+    from taskman_ops.host_helper import __main__ as entrypoint
+    from taskman_ops.host_helper.verification import ApplicationVerification
+    request = _request(tmp_path,operation="prepare_genesis",previous=None,migrations=(),policy="no-change")
+    runtime = _Runtime(); _application_runtime(monkeypatch,runtime)
+    proof = deploy_module.verify_application
+    def stopped_after_proof(*args,**kwargs):
+        result = proof(*args,**kwargs)
+        runtime.service_running = False
+        return result
+    monkeypatch.setattr(deploy_module,"verify_application",stopped_after_proof)
+    result = entrypoint._dispatch(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert result.outcome == "retryable"
+    assert state["exit_code"] == 8
+    assert state["local_report"]["exit_status"] == 0
+    assert state["observations"]["service_state"] == "stopped"
+    assert state["observations"]["last_successful_selection_id"] is None
+    assert state["mutation_state"] == "changed"
+
+
+@pytest.mark.parametrize("operation", ("genesis","prepare_genesis"))
+def test_migration_failure_keeps_primary_category_when_final_observation_fails(tmp_path,monkeypatch,operation):
+    request = _request(tmp_path,operation=operation,previous=None,policy="restore-required")
+    runtime = _Runtime(); _application_runtime(monkeypatch,runtime)
+    original_command = runtime.command
+    def command(argv,**kwargs):
+        result = original_command(argv,**kwargs)
+        if argv[0] == "systemd-run": raise deploy_module.CommandError("lost migration result")
+        return result
+    monkeypatch.setattr(deploy_module,"run_command",command)
+    original_observe = deploy_module._observe
+    def observe(inputs,**kwargs):
+        if "migration" in runtime.events: raise deploy_module.CommandError("final database observation failed")
+        return original_observe(inputs,**kwargs)
+    monkeypatch.setattr(deploy_module,"_observe",observe)
+    result = _prepare(request) if operation == "prepare_genesis" else genesis(request)
+    state = validate_mutation_state(request.operation,result.outcome,result.state)
+    assert (state["exit_code"],state["failed_boundary"]) == (7,"migration")
+    assert state["mutation_state"] == "changed"
+    assert set(state["unavailable_fields"]) == set(state["observations"])
+    assert state["inspection_error"] is not None
+    assert runtime.events == ["stop","migration"]
+
+
+def test_preparation_installed_exact_retry_needs_no_archive_or_repeated_migration(tmp_path,monkeypatch):
+    request = _request(tmp_path,operation="prepare_genesis",previous=None,policy="restore-required")
+    runtime = _Runtime(); _application_runtime(monkeypatch,runtime)
+    first = _prepare(request)
+    assert first.outcome == "succeeded"
+    candidate = _candidate_id(request)
+    record_path = Path(request.paths["install_root"]) / "releases" / candidate / ".taskman-release.json"
+    record_bytes = record_path.read_bytes()
+    installed = _replanned_request(request,runtime)
+    installed = replace(installed,parameters={**installed.parameters,"target":{
+        "kind":"installed","release_record":json.loads(record_bytes)},"migration_policy":"no-change"})
+    Path(request.parameters["target"]["artifact_path"]).unlink()
+    runtime.events.clear()
+    result = _prepare(installed)
+    state = validate_mutation_state(result.operation,result.outcome,result.state)
+    assert result.outcome == "succeeded"
+    assert state["mutation_state"] == "unchanged"
+    assert runtime.events == ["application"]
+    assert state["desired_release_id"] == candidate
+    assert state["observations"]["last_successful_selection_id"] is None
+    assert record_path.read_bytes() == record_bytes

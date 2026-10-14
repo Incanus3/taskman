@@ -5,6 +5,12 @@ Read and follow this guide before creating, editing, moving or retiring reposito
 
 ## Documentation roles
 
+The repository is public. Documentation describes portable project behavior and synthetic examples,
+not actual deployment hosts or operator workstations. Keep real host settings in encrypted deployment
+configuration and operational inventories, recovery locations and raw evidence in private operator
+storage outside version control. This applies to historical snapshots and generated documents too.
+Never copy personal paths or real infrastructure values into repository documentation.
+
 - **Product** documents define current MVP behavior and domain rules. They are authoritative for
   what Taskman is and must do.
 - **Planning** documents describe the current delivery direction. They are intentionally less
@@ -13,9 +19,9 @@ Read and follow this guide before creating, editing, moving or retiring reposito
   instructions and procedures rather than environment-specific inventory or test evidence.
 - **Development** documents describe durable principles for building Taskman. They should contain
   project-wide working and architecture guidance, not session-specific instructions.
-- **Inventories** record identified resources, dated environment facts and ongoing obligations.
-  Store them under `docs/inventories/`; distinguish recorded observations from refreshed live
-  state and retain renewal, retention and recovery requirements.
+- **Inventories** may describe generic resource categories and obligations. Actual environment
+  inventories and dated machine observations belong in private operator storage outside version
+  control; link to generic operating procedures instead of exposing their contents or locations.
 - **Research** documents preserve external evidence and rationale. They inform decisions but do not
   override the current product documents.
 - **Specifications** describe the design context, requirements, final decisions, alternatives and
@@ -41,6 +47,14 @@ current status (for example, pending, approved, implemented or rejected) and use
 Gaps, simplification candidates and optimization candidates are examples, not an exhaustive list.
 Update the entry to its current conclusion rather than accumulating its development history. A dated
 before/after experiment that supports a finding is evidence; a sequence of delivery updates is not.
+
+### Completed implementation plans
+
+Implementation plans are temporary delivery artifacts. Once delivery is complete or explicitly
+superseded, harvest any still-relevant decisions, rationale, operating instructions and verification
+limits into their canonical specifications, guides or research. Update references and remove the
+obsolete plan. Do not archive completed plans by default; retain historical material only when it
+has a concrete continuing use, and keep only the material needed for that use.
 
 ## Handoffs
 

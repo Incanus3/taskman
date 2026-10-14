@@ -18,22 +18,25 @@ from taskman_ops.cli import Invocation
 from taskman_ops.output import WorkflowResult
 from taskman_ops.provisioning import taskman_provisioning
 from taskman_ops.remote import ChangeSet, PyinfraRemote, summarize_deploy
+from taskman_ops.host_protocol import decode_result
 from taskman_ops.config import EnvironmentConfig
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.provisioning import ProvisioningInputs
-from taskman_ops.services.caddy import CaddyPlan, CaddyRepository
+from tests.support.caddy import controller_plan, authority_result, prepared_result
 from taskman_ops.services.systemd import build_systemd_plan
+from taskman_ops.services.postgresql import build_postgresql_ownership_plan
 from tests.support.environments import environment_config, valid_environment
 from tests.support.shell import write_shell_script
-from tests.workflows.test_provision import _authority, artifact
+from tests.workflows.test_provision import _authority, _firewall_authority, artifact
 
 
-_CADDY_PLAN = CaddyPlan(
-    repository=CaddyRepository("https://example.test/key", "/keyring", "deb https://example.test stable"),
-    repository_packages=(),
-    packages=("caddy",),
-    caddyfile="taskman.acme.tld {\n}\n",
-)
+_CADDY_PLAN = controller_plan()
+
+
+@pytest.fixture(autouse=True)
+def isolated_proxy_actions(monkeypatch):
+    monkeypatch.setattr("taskman_ops.provisioning.guard_caddy_install", lambda *_args: authority_result())
+    monkeypatch.setattr("taskman_ops.provisioning.prepare_caddy", lambda _remote, plan, _guarded=None: prepared_result(plan))
 
 
 @pytest.mark.parametrize("database_state", ["absent", "ready"])
@@ -43,6 +46,7 @@ def test_validated_database_presence_reaches_sensitive_credential_admission(monk
     runtime = []
     config = environment_config()
     inputs = ProvisioningInputs(
+        firewall_authority=_firewall_authority(),
         config=config, systemd_plan=build_systemd_plan(config), caddy_plan=_CADDY_PLAN,
         runtime_environment=b"RUNTIME=value\n",
         pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", role_password_input=b"password\n",
@@ -67,6 +71,7 @@ def test_absent_database_does_not_bypass_runtime_credential_refusal(monkeypatch)
 
     config = environment_config()
     inputs = ProvisioningInputs(
+        firewall_authority=_firewall_authority(),
         config=config, systemd_plan=build_systemd_plan(config), caddy_plan=_CADDY_PLAN,
         runtime_environment=b"RUNTIME=value\n", pgpass=b"pgpass\n", role_password_input=b"password\n",
     )
@@ -98,6 +103,7 @@ def test_preconvergence_authority_hashes_the_exact_rendered_systemd_bytes(monkey
 
     monkeypatch.setattr(helper, "run_request", capture_request)
     inputs = ProvisioningInputs(
+        firewall_authority=_firewall_authority(),
         config=environment_config(install_root="/srv/taskman"),
         systemd_plan=build_systemd_plan(environment_config(install_root="/srv/taskman")),
         caddy_plan=_CADDY_PLAN,
@@ -113,7 +119,8 @@ def test_preconvergence_authority_hashes_the_exact_rendered_systemd_bytes(monkey
     )
 
     with pytest.raises(CapturedAuthorityRequest):
-        provisioning.validate_preconvergence_authority(object(), inputs)
+        provisioning.validate_preconvergence_authority(
+            SimpleNamespace(run=lambda *_a, **_k: SimpleNamespace(succeeded=True)), inputs)
 
     plan = inputs.systemd_plan
     rendered = {asset.destination: asset.content for asset in plan.assets}
@@ -127,6 +134,7 @@ def test_preconvergence_authority_hashes_the_exact_rendered_systemd_bytes(monkey
 
 def test_provisioning_inputs_without_confirmed_scheduler_authority_create_nothing() -> None:
     inputs = ProvisioningInputs(
+        firewall_authority=_firewall_authority(),
         config=environment_config(),
         systemd_plan=build_systemd_plan(environment_config()),
         caddy_plan=_CADDY_PLAN,
@@ -152,6 +160,7 @@ def test_missing_pgpass_requires_the_verified_sensitive_helper_before_writes(mon
         ),
     )
     inputs = ProvisioningInputs(
+        firewall_authority=_firewall_authority(),
         config=EnvironmentConfig.model_validate(valid_environment()), caddy_plan=_CADDY_PLAN,
         systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
         runtime_environment=b"RUNTIME=value\n",
@@ -175,12 +184,12 @@ def test_private_pgpass_parser_accepts_escaped_password_without_writes(tmp_path,
     monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *args, **kwargs: observed.append((args, kwargs)))
 
     status = preflight.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate"),
         BytesIO(br"127.0.0.1:5432:taskman_prod:taskman:sec\:ret\\value" + b"\n"),
     )
 
     assert status == 0
-    assert observed[0][1]["password"] == "sec:ret\\value"
+    assert observed[0][0][1] == br"127.0.0.1:5432:taskman_prod:taskman:sec\:ret\\value" + b"\n"
     assert list(tmp_path.iterdir()) == []
 
 
@@ -191,7 +200,7 @@ def test_private_pgpass_parser_refuses_mismatched_connection(tmp_path, monkeypat
     monkeypatch.setattr(preflight, "authenticate_pgpass", lambda *_args, **_kwargs: pytest.fail("must not authenticate"))
 
     status = preflight.provision_pgpass_authority(
-        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready"),
+        ("127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate"),
         BytesIO(b"127.0.0.1:5432:other:taskman:secret\n"),
     )
 
@@ -253,13 +262,15 @@ def test_default_provision_path_adds_and_executes_one_pyinfra_deploy(
     monkeypatch.setattr(workflow, "clean_inputs_match", lambda *_args: True)
     monkeypatch.setattr(workflow, "render_runtime_environment", lambda _config, _secrets: b"RUNTIME=value\n")
     monkeypatch.setattr(workflow, "render_pgpass", lambda _config, _secrets: b"pgpass\n")
-    monkeypatch.setattr(workflow, "build_caddy_plan", lambda _config: _CADDY_PLAN)
+    monkeypatch.setattr(workflow, "build_caddy_ownership_plan", lambda *_args: _CADDY_PLAN)
     monkeypatch.setattr(workflow, "_render_plan", lambda _config, _artifact: {"candidate_release_id": "release"})
     monkeypatch.setattr(workflow, "_present_plan", lambda _plan: None)
     monkeypatch.setattr(workflow, "_confirm", lambda _plan: True)
     monkeypatch.setattr(workflow, "connect", lambda _config: remote)
     monkeypatch.setattr(workflow, "validate_provisionable_host", lambda *_args, **_kwargs: {"admission": "validated"})
     monkeypatch.setattr(workflow, "validate_existing_authority", lambda *_args, **_kwargs: _authority())
+    monkeypatch.setattr(workflow, "inspect_caddy", lambda *_args: authority_result())
+    monkeypatch.setattr(workflow, "inspect_firewall", lambda *_args: _firewall_authority())
     monkeypatch.setattr(workflow, "_provision_downgrade_authority", lambda *_args: (False, ()))
     monkeypatch.setattr(
         workflow,
@@ -293,7 +304,7 @@ def test_real_taskman_deploy_converges_declared_state_then_repairs_drift(monkeyp
     }
 
     def declaration(name: str):
-        def declare(*_args: object) -> None:
+        def declare(*_args: object, **_kwargs: object) -> None:
             declaration_order.append(name)
             files.put(
                 StringIO(f"{name}=desired\n"),
@@ -305,7 +316,7 @@ def test_real_taskman_deploy_converges_declared_state_then_repairs_drift(monkeyp
         return declare
 
     monkeypatch.setattr("taskman_ops.host.baseline.declare_baseline", declaration("baseline"))
-    monkeypatch.setattr("taskman_ops.services.caddy.declare_caddy", declaration("caddy"))
+    monkeypatch.setattr("taskman_ops.services.caddy.declare_caddy_sources", declaration("caddy"))
     monkeypatch.setattr("taskman_ops.services.postgresql.declare_postgresql", declaration("postgresql"))
     monkeypatch.setattr("taskman_ops.services.systemd.declare_systemd", declaration("systemd"))
 
@@ -321,6 +332,8 @@ def test_real_taskman_deploy_converges_declared_state_then_repairs_drift(monkeyp
             state=state,
         )
         inputs = ProvisioningInputs(
+            postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+            firewall_authority=_firewall_authority(),
             config=EnvironmentConfig.model_validate(valid_environment()),
             systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
             caddy_plan=_CADDY_PLAN,
@@ -362,6 +375,8 @@ def test_converge_provisioning_orders_secret_and_database_boundaries_after_the_d
     changes = provisioning.converge_provisioning(
         remote,
         ProvisioningInputs(
+            postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+            firewall_authority=_firewall_authority(),
             config=EnvironmentConfig.model_validate(valid_environment()),
             systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
             caddy_plan=_CADDY_PLAN,
@@ -374,7 +389,7 @@ def test_converge_provisioning_orders_secret_and_database_boundaries_after_the_d
     assert len(remote.added) == 1
     assert remote.added[0][0] is taskman_provisioning
     assert events == ["postgresql", "runtime"]
-    assert changes.operations == ("Converge Taskman host", "postgresql", "runtime")
+    assert changes.changes.operations == ("Converge Taskman host", "postgresql", "runtime")
 
 
 def test_converge_provisioning_stops_later_mutation_after_a_database_refusal(monkeypatch) -> None:
@@ -394,6 +409,8 @@ def test_converge_provisioning_stops_later_mutation_after_a_database_refusal(mon
         provisioning.converge_provisioning(
             remote,
             ProvisioningInputs(
+                postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+                firewall_authority=_firewall_authority(),
                 config=EnvironmentConfig.model_validate(valid_environment()),
                 systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
@@ -429,6 +446,8 @@ def test_converge_provisioning_reports_deploy_changes_when_database_fails(monkey
         provisioning.converge_provisioning(
             remote,
             ProvisioningInputs(
+                postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+                firewall_authority=_firewall_authority(),
                 config=EnvironmentConfig.model_validate(valid_environment()),
                 systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
@@ -444,7 +463,8 @@ def test_converge_provisioning_reports_deploy_changes_when_database_fails(monkey
     assert error.value.stage == "postgresql"
     assert error.value.message == "database installation failed"
     assert error.value.next_action == "inspect PostgreSQL state before retrying"
-    assert error.value.state == {"boundary": "database"}
+    assert error.value.state["boundary"] == "database"
+    assert error.value.state["caddy_receipt"]["site_path"] == "/etc/caddy/sites-enabled/taskman.caddy"
     assert error.value.warnings == ("database warning",)
 
 
@@ -478,6 +498,8 @@ def test_converge_provisioning_reports_database_changes_when_runtime_fails(monke
         provisioning.converge_provisioning(
             remote,
             ProvisioningInputs(
+                postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+                firewall_authority=_firewall_authority(),
                 config=EnvironmentConfig.model_validate(valid_environment()),
                 systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
@@ -519,6 +541,8 @@ def test_converge_provisioning_keeps_unchanged_for_pre_mutation_refusal(monkeypa
         provisioning.converge_provisioning(
             remote,
             ProvisioningInputs(
+                postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False),
+                firewall_authority=_firewall_authority(),
                 config=EnvironmentConfig.model_validate(valid_environment()),
                 systemd_plan=build_systemd_plan(EnvironmentConfig.model_validate(valid_environment())),
                 caddy_plan=_CADDY_PLAN,
@@ -532,41 +556,32 @@ def test_converge_provisioning_keeps_unchanged_for_pre_mutation_refusal(monkeypa
     assert error.value.changed is False
 
 
-def test_direct_firewall_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """Changing a direct UFW refusal into a generic pyinfra error must fail this."""
-
+def test_firewall_refusal_preserves_safety_and_prior_changes_through_pyinfra(monkeypatch, tmp_path):
+    from tests.host.test_firewall import FirewallRemote, rule
+    from dataclasses import replace
     firewall = importlib.import_module("taskman_ops.host.firewall")
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    write_shell_script(
-        binaries / "ufw",
-        "case \"$1 ${2-}\" in\n"
-        "  'status numbered') printf 'Status: active\\n[ 1] 4000/tcp ALLOW IN Anywhere\\n' ;;\n"
-        "  'status verbose') printf 'Status: active\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n' ;;\n"
-        "  *) exit 1 ;;\n"
-        "esac",
-    )
-    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
-    target = tmp_path / "must-not-exist"
+    native_remote = FirewallRemote(monkeypatch)
+    confirmed = firewall.inspect_firewall(native_remote, environment_config())
+    native_remote.snapshot = replace(native_remote.snapshot, rules=(rule(4000),))
+    monkeypatch.setattr(firewall, "PyinfraRemote", lambda host, config, **kwargs: native_remote)
+    previous = tmp_path / "prior-change"
+    later = tmp_path / "must-not-exist"
     remote = _local_pyinfra_remote()
 
-    @deploy("Direct UFW refusal")
-    def converge() -> None:
-        firewall._activate_firewall_with_fresh_ssh(
-            firewall.build_firewall_plan(EnvironmentConfig.model_validate(valid_environment())),
-            EnvironmentConfig.model_validate(valid_environment()),
-            name="Activate Taskman firewall",
-            _sudo=False,
-        )
-        _later_touch(target)
+    @deploy("Firewall refusal")
+    def converge():
+        _later_touch(previous)
+        firewall._activate_firewall_with_fresh_ssh(environment_config(), confirmed,
+            name="Converge firewall", _sudo=False)
+        _later_touch(later)
 
-    with pytest.raises(OpsError) as error:
+    with pytest.raises(OpsError) as raised:
         remote.run_deploy(converge)
-
-    assert error.value.status is ExitStatus.SAFETY
-    assert target.exists() is False
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.changed is True
+    assert previous.exists()
+    assert not later.exists()
+    assert native_remote.mutations == []
 
 
 def test_direct_postgresql_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
@@ -785,3 +800,342 @@ def _later_touch(target: Path) -> None:
         yield f"touch {path}"
 
     touch(target.as_posix(), name="Later mutation")
+
+
+def test_converge_provisioning_requires_firewall_authority_before_any_deploy():
+    from taskman_ops.provisioning import converge_provisioning
+    remote = DeployTraceRemote()
+    inputs = ProvisioningInputs(config=environment_config(), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(environment_config()), runtime_environment=b"runtime",
+        pgpass=b"pgpass", role_password_input=b"password")
+    with pytest.raises(OpsError) as raised:
+        converge_provisioning(remote, inputs)
+    assert raised.value.stage == "firewall"
+    assert remote.added == []
+
+
+@pytest.mark.parametrize("missing", (False, True))
+def test_helper_firewall_action_executes_in_pyinfra_and_reports_noop(monkeypatch, tmp_path, missing):
+    from tests.host.test_firewall import ADDITIONS, FirewallRemote
+    firewall = importlib.import_module("taskman_ops.host.firewall")
+    native_remote = FirewallRemote(monkeypatch)
+    native_remote.present = not missing
+    confirmed = firewall.inspect_firewall(native_remote, environment_config())
+    fresh = []
+    class StrictFresh:
+        closed = False
+        def run(self, argv):
+            from taskman_ops.remote import CommandResult
+            assert argv == ("true",)
+            return CommandResult(0)
+        def close(self):
+            self.closed = True
+    def connector(config):
+        assert config.host_key_fingerprint == environment_config().host_key_fingerprint
+        value = StrictFresh()
+        fresh.append(value)
+        return value
+    monkeypatch.setattr("taskman_ops.remote.connect", connector)
+    connections = []
+    inspected_digests = []
+    def current_channel(self, argv, **kwargs):
+        # Keep construction real, including pyinfra's execution-time context
+        # proxies; replace only remote I/O with the stateful helper transport.
+        assert self._host.name == "@local"
+        assert self._state.is_executing
+        connections.append(self._host)
+        result = native_remote.run(argv, **kwargs)
+        if tuple(argv)[:3] == ("sudo", "--preserve-env=SSH_CONNECTION", "--"):
+            if native_remote.requests[-1].parameters["mode"] == "inspect":
+                inspected_digests.append(decode_result(result.stdout.encode()).state["snapshot_sha256"])
+        return result
+    monkeypatch.setattr(PyinfraRemote, "run", current_channel)
+    monkeypatch.setattr(PyinfraRemote, "put",
+        lambda self, source, destination, **kwargs: native_remote.put(source, destination, **kwargs))
+    from pyinfra.operations import apt
+    def install(**kwargs):
+        assert kwargs["packages"] == ["ufw"]
+        native_remote.present = True
+    monkeypatch.setattr(apt, "packages", install)
+    def run_once(authority):
+        remote = _local_pyinfra_remote()
+        @deploy("Firewall convergence")
+        def converge():
+            firewall.declare_firewall(environment_config(), confirmed=authority)
+        return remote.run_deploy(converge)
+    assert run_once(confirmed).changed is True
+    assert native_remote.mutations == [("/usr/sbin/ufw", *argv[1:]) for argv in ADDITIONS]
+    assert len(fresh) == 1 and fresh[0].closed
+    assert [request.parameters["mode"] for request in native_remote.requests] == [
+        "inspect", "inspect", "inspect", "converge"]
+    assert native_remote.requests[-1].expected_state == {
+        "snapshot_sha256": inspected_digests[-1]}
+    assert run_once(firewall.inspect_firewall(native_remote, environment_config())) == ChangeSet(False)
+    assert len(fresh) == 1
+    assert len(native_remote.mutations) == 15
+    assert [request.parameters["mode"] for request in native_remote.requests[-2:]] == ["inspect", "inspect"]
+    assert connections
+
+
+@pytest.mark.parametrize("scenario", ("noop", "mutation", "later-firewall-failure", "later-generic-failure"))
+def test_execution_firewall_cleanup_warning_survives_pyinfra_result(monkeypatch, tmp_path, scenario):
+    from tests.host.test_firewall import FirewallRemote
+    from dataclasses import replace
+    from taskman_ops.remote import CommandResult
+    firewall = importlib.import_module("taskman_ops.host.firewall")
+    native_remote = FirewallRemote(monkeypatch)
+    config = environment_config()
+    confirmed = firewall.inspect_firewall(native_remote, config)
+    monkeypatch.setattr(firewall, "PyinfraRemote", lambda host, config, **kwargs: native_remote)
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: None)
+    if scenario == "noop":
+        firewall._run_firewall_convergence(SimpleNamespace(), object(), config, confirmed)
+        confirmed = firewall.inspect_firewall(native_remote, config)
+    original = native_remote.run
+    def incomplete_cleanup(argv, **kwargs):
+        if tuple(argv)[:2] == ("rm", "--") and str(argv[-1]).startswith("/run/taskman-ops/"):
+            return CommandResult(1)
+        return original(argv, **kwargs)
+    monkeypatch.setattr(native_remote, "run", incomplete_cleanup)
+    if scenario == "later-firewall-failure":
+        native_remote.failure = "native"
+    remote = _local_pyinfra_remote()
+    @deploy("Firewall warning retention")
+    def converge():
+        firewall._activate_firewall_with_fresh_ssh(config, confirmed,
+            name="Converge firewall", _sudo=False)
+        if scenario == "later-generic-failure":
+            from pyinfra.operations import server
+            server.shell("exit 1", name="Subsequent failure")
+    if scenario.startswith("later"):
+        with pytest.raises(OpsError) as raised:
+            remote.run_deploy(converge)
+        assert raised.value.changed is True
+        warnings = raised.value.warnings
+    else:
+        result = remote.run_deploy(converge)
+        assert result.changed is (scenario == "mutation")
+        warnings = getattr(result, "warnings", ())
+    assert warnings == ("transient helper cleanup was incomplete",)
+
+
+@pytest.mark.parametrize("failure", (None, "database", "runtime"))
+def test_provisioning_merges_prior_warnings_into_success_and_later_failures(monkeypatch, failure):
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    remote = DeployTraceRemote()
+    monkeypatch.setattr(remote, "run_deploy", lambda *args, **kwargs: ChangeSet(
+        True, ("firewall",), warnings=("transient helper cleanup was incomplete",)))
+    def database(*args, **kwargs):
+        if failure == "database":
+            raise OpsError(ExitStatus.SAFETY, "postgresql", "database refusal", False,
+                warnings=("database warning",))
+        return ChangeSet(False, warnings=("database warning",))
+    def runtime(*args, **kwargs):
+        if failure == "runtime":
+            raise OpsError(ExitStatus.SAFETY, "runtime", "runtime refusal", False,
+                warnings=("database warning", "runtime warning"))
+        return ChangeSet(False, warnings=("database warning", "runtime warning"))
+    monkeypatch.setattr(provisioning, "converge_database", database)
+    monkeypatch.setattr(provisioning, "install_runtime_environment", runtime)
+    inputs = ProvisioningInputs(config=environment_config(), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(environment_config()), runtime_environment=b"runtime",
+        pgpass=b"pgpass", role_password_input=b"password", firewall_authority=_firewall_authority(),
+        postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False))
+    if failure:
+        with pytest.raises(OpsError) as raised:
+            provisioning.converge_provisioning(remote, inputs)
+        result = raised.value
+    else:
+        result = provisioning.converge_provisioning(remote, inputs)
+    changes = result if failure else result.changes
+    assert changes.changed is True
+    assert changes.warnings == (("transient helper cleanup was incomplete", "database warning")
+        if failure == "database" else
+        ("transient helper cleanup was incomplete", "database warning", "runtime warning"))
+
+
+@pytest.mark.parametrize("noop", (True, False))
+def test_firewall_execution_warning_reaches_public_provision_result(monkeypatch, noop):
+    from dataclasses import replace
+    from tests.host.test_firewall import FirewallRemote
+    from tests.workflows.test_provision import Host, _capabilities
+    from taskman_ops.remote import CommandResult
+    from taskman_ops.workflows import provision as workflow
+    firewall = importlib.import_module("taskman_ops.host.firewall")
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    native_remote = FirewallRemote(monkeypatch)
+    config = environment_config()
+    confirmed = firewall.inspect_firewall(native_remote, config)
+    monkeypatch.setattr(firewall, "PyinfraRemote", lambda host, config, **kwargs: native_remote)
+    monkeypatch.setattr(firewall, "verify_fresh_ssh_connection", lambda config: None)
+    if noop:
+        firewall._run_firewall_convergence(SimpleNamespace(), object(), config, confirmed)
+    actual_remote = _local_pyinfra_remote()
+    original = native_remote.run
+    def execution_cleanup_failure(argv, **kwargs):
+        if actual_remote._state.is_executing and tuple(argv)[:2] == ("rm", "--") and str(argv[-1]).startswith("/run/taskman-ops/"):
+            return CommandResult(1)
+        return original(argv, **kwargs)
+    monkeypatch.setattr(native_remote, "run", execution_cleanup_failure)
+    def baseline(config, *, confirmed_firewall, required_packages):
+        firewall._activate_firewall_with_fresh_ssh(config, confirmed_firewall,
+            name="Converge firewall", _sudo=False)
+    monkeypatch.setattr("taskman_ops.host.baseline.declare_baseline", baseline)
+    monkeypatch.setattr("taskman_ops.services.caddy.declare_caddy_sources", lambda *args: None)
+    monkeypatch.setattr("taskman_ops.services.postgresql.declare_postgresql", lambda *args, **kwargs: None)
+    monkeypatch.setattr("taskman_ops.services.systemd.declare_systemd", lambda *args: None)
+    monkeypatch.setattr(provisioning, "converge_database", lambda *args, **kwargs: ChangeSet(False))
+    monkeypatch.setattr(provisioning, "install_runtime_environment", lambda *args: ChangeSet(False))
+    monkeypatch.setattr(workflow, "identify_clean_inputs", lambda *args: object())
+    monkeypatch.setattr(workflow, "clean_inputs_match", lambda *args: True)
+    capabilities = replace(_capabilities(Host()), connect=lambda config: actual_remote,
+        firewall=lambda remote, config: firewall.inspect_firewall(native_remote, config),
+        provisioning=provisioning.converge_provisioning)
+    result = workflow.provision(Invocation(command="provision", environment="production"), capabilities=capabilities)
+    assert result.exit_status is ExitStatus.OK
+    assert result.changed is (not noop)
+    assert result.warnings == ("transient helper cleanup was incomplete",)
+
+
+@pytest.mark.parametrize("failure", (None, "database", "runtime"))
+def test_provisioning_warning_overflow_retains_prior_changes_and_recovery(monkeypatch, failure):
+    provisioning = importlib.import_module("taskman_ops.provisioning")
+    remote = DeployTraceRemote()
+    monkeypatch.setattr(remote, "run_deploy", lambda *args, **kwargs: ChangeSet(
+        True, ("firewall",), warnings=tuple(f"warning-{i}" for i in range(256))))
+    def database(*args, **kwargs):
+        if failure == "database":
+            raise OpsError(ExitStatus.SAFETY, "postgresql", "database refusal", False,
+                next_action="inspect retained database authority", warnings=("additional",))
+        return ChangeSet(False, warnings=())
+    def runtime(*args, **kwargs):
+        if failure == "runtime":
+            raise OpsError(ExitStatus.SAFETY, "runtime", "runtime refusal", False,
+                next_action="inspect retained runtime authority", warnings=("additional",))
+        return ChangeSet(False, warnings=("additional",))
+    monkeypatch.setattr(provisioning, "converge_database", database)
+    monkeypatch.setattr(provisioning, "install_runtime_environment", runtime)
+    inputs = ProvisioningInputs(config=environment_config(), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(environment_config()), runtime_environment=b"runtime",
+        pgpass=b"pgpass", role_password_input=b"password", firewall_authority=_firewall_authority(),
+        postgresql_plan=build_postgresql_ownership_plan(environment_config(), _authority()["postgresql"], force_postgresql_config=False))
+    with pytest.raises(OpsError, match="warning evidence exceeds") as raised:
+        provisioning.converge_provisioning(remote, inputs)
+    assert raised.value.changed is True
+    if failure:
+        assert raised.value.next_action == f"inspect retained {failure} authority"
+    else:
+        assert raised.value.next_action == "inspect the host's partial provisioning state, then retry provisioning"
+
+
+def test_caddy_preparation_uses_real_pyinfra_context_and_retains_unchanged_mtime(tmp_path,monkeypatch):
+    from pyinfra.api import operation
+    from pyinfra.api.command import FunctionCommand
+    from taskman_ops.services import caddy
+    from tests.support.caddy import mutation_host,request
+    from taskman_ops.host_helper.__main__ import _dispatch
+    module,root,calls=mutation_host(tmp_path,monkeypatch,original=request().parameters['site_content'].encode())
+    config=environment_config(application_port=4011)
+    plan=caddy.build_caddy_ownership_plan(config,module.caddy(request()))
+    receipts=[]
+    def invoke(remote,package,req):
+        # ContextObject.__len__ delegates to State, which has no length.
+        # Truthiness would raise; explicit None binding preserves the proxy.
+        assert remote._state is not None
+        assert remote._state.is_executing
+        from pyinfra.context import state as context_state
+        assert remote._state is context_state
+        assert package.path.is_file()
+        return _dispatch(req)
+    monkeypatch.setattr(caddy,'invoke_helper',invoke)
+    @operation(is_idempotent=True)
+    def prepare():
+        def run(state,host):
+            from pyinfra.context import state as context_state
+            remote=PyinfraRemote(host,config,state=context_state)
+            receipts.append(caddy.prepare_caddy(remote,plan))
+        yield FunctionCommand(run,(),{})
+    remote=_local_pyinfra_remote()
+    path=root/'etc/caddy/sites-enabled/taskman.caddy';mtime=path.stat().st_mtime_ns
+    @deploy('Prepare existing Caddy site')
+    def convergence():
+        caddy.declare_caddy_sources(plan)
+        prepare(name='Prepare owned site',_sudo=False)
+    remote.run_deploy(convergence)
+    assert receipts[0].state['mutation_state']=='unchanged'
+    assert path.stat().st_mtime_ns==mtime
+    assert all(argv[0]!='systemctl' for argv,_ in calls)
+
+
+@pytest.mark.parametrize("boundary,site_changed", [("database", True), ("runtime", False)])
+def test_public_provision_retains_native_receipt_after_real_sensitive_failure(tmp_path, monkeypatch, boundary, site_changed):
+    from dataclasses import replace
+    from taskman_ops import provisioning
+    from taskman_ops.remote import CommandResult
+    from taskman_ops.services import caddy
+    from taskman_ops.workflows.provision import provision
+    from tests.support.caddy import mutation_host, request
+    from tests.workflows.test_provision import Host, _capabilities
+    module, root, calls = mutation_host(tmp_path, monkeypatch,
+        original=None if site_changed else request().parameters["site_content"].encode())
+    config = environment_config(application_port=4011)
+    plan = caddy.build_caddy_ownership_plan(config, module.caddy(request()))
+    observed = module.caddy(request())
+    # Exercise the real native proxy action and its whole-result validation.
+    monkeypatch.setattr(caddy, "invoke_helper", lambda _remote, _package, req: module.caddy(req))
+    monkeypatch.setattr(provisioning, "prepare_caddy", caddy.prepare_caddy)
+    remote = _local_pyinfra_remote()
+    monkeypatch.setattr(remote, "run_deploy", lambda *_args, **_kwargs: ChangeSet(False))
+    def command(argv, **kwargs):
+        if boundary == "database":
+            assert "runuser" in argv and "postgres" in argv
+            return CommandResult(1)
+        assert kwargs["sensitive"] and kwargs["stdin"] == b"RUNTIME=value\n"
+        return CommandResult(1)
+    monkeypatch.setattr(remote, "run", command)
+    if boundary == "runtime":
+        monkeypatch.setattr(provisioning, "converge_database", lambda *_a, **_kw: ChangeSet(False))
+    host = Host()
+    monkeypatch.setattr("taskman_ops.workflows.provision.identify_clean_inputs", lambda *_: object())
+    monkeypatch.setattr("taskman_ops.workflows.provision.clean_inputs_match", lambda *_: True)
+    caps = replace(_capabilities(host), load_environment=lambda _: config,
+                   connect=lambda _: remote, caddy=lambda *_: observed,
+                   caddy_plan=lambda *_: plan, provisioning=provisioning.converge_provisioning,
+                   preparation=lambda *_a, **_kw: pytest.fail("sensitive failure must stop release preparation"))
+    monkeypatch.setattr(remote, "close", lambda: None)
+    result = provision(Invocation(command="provision", environment="production"), capabilities=caps)
+    assert result.exit_status == (ExitStatus.REMOTE_PREFLIGHT if boundary == "database" else ExitStatus.SECRET)
+    assert result.exit_status != ExitStatus.PROXY_PENDING
+    assert result.facts["caddy_receipt"]["site_sha256"] == plan.site_sha256
+    assert result.facts["caddy"]["authority"]["site_sha256"] == plan.site_sha256
+    assert result.changed == (site_changed or boundary == "runtime")
+    assert result.facts["mutation_state"] == ("changed" if site_changed else "unknown" if boundary == "runtime" else "unchanged")
+    assert (root / "etc/caddy/sites-enabled/taskman.caddy").read_bytes() == plan.site_content.encode()
+    assert all(argv[0] != "systemctl" for argv, _ in calls)
+
+
+def test_provisioning_without_postgresql_ownership_refuses_before_deploy():
+    from taskman_ops.provisioning import converge_provisioning
+    remote = DeployTraceRemote()
+    inputs = ProvisioningInputs(config=environment_config(), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(environment_config()), runtime_environment=b"runtime",
+        pgpass=b"pgpass", role_password_input=b"password", firewall_authority=_firewall_authority())
+    with pytest.raises(OpsError) as refused:
+        converge_provisioning(remote, inputs)
+    assert refused.value.stage == "postgresql"
+    assert refused.value.status == ExitStatus.SAFETY
+    assert remote.executions == 0
+
+
+def test_declaration_without_postgresql_ownership_has_no_earlier_consequences():
+    inputs = ProvisioningInputs(config=environment_config(), caddy_plan=_CADDY_PLAN,
+        systemd_plan=build_systemd_plan(environment_config()), runtime_environment=b"runtime",
+        pgpass=b"pgpass", role_password_input=b"password", firewall_authority=_firewall_authority())
+    inventory = Inventory((["@local"], {}))
+    state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    state.activate_host(inventory.get_host("@local"))
+    from pyinfra.api.deploy import add_deploy
+    with pytest.raises(OpsError) as refused:
+        add_deploy(state, taskman_provisioning, inputs=inputs)
+    assert refused.value.stage == "postgresql"
+    assert all(not operations for operations in state.ops.values())

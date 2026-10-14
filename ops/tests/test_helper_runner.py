@@ -71,6 +71,15 @@ def test_new_correlation_id_is_unique_and_uses_the_protocol_allowlist() -> None:
     assert all(re.fullmatch(r"op-[0-9a-f]{32}", value) for value in values)
 
 
+def test_firewall_helper_interpreter_is_isolated(tmp_path: Path) -> None:
+    value = replace(request(), operation="firewall")
+    helper = package(tmp_path)
+    remote = remote_for(value, helper)
+    helper_runner_module.invoke_helper(remote, helper, value)
+    installed = f"/run/taskman-ops/{value.correlation_id}/taskman-host.pyz"
+    assert ("sudo", "--preserve-env=SSH_CONNECTION", "--", "/usr/bin/python3", "-I", "-S", installed) in commands(remote)
+
+
 def test_helper_runner_has_one_created_path_cleanup_tracker() -> None:
     """Reintroducing parallel cleanup flags would split exact-path cleanup authority."""
 
@@ -116,7 +125,7 @@ def test_sensitive_pgpass_entry_retains_only_status_and_cleanup_warning(tmp_path
         (
             "sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed.as_posix(),
             "provision-pgpass-authority", "127.0.0.1", "5432", "taskman", "taskman_prod",
-            database_state,
+            database_state, "authenticate",
         ),
         CommandResult(0, "discarded secret output", "discarded secret error"),
     )
@@ -343,3 +352,100 @@ def test_invoke_helper_cleans_attempted_private_paths_after_lost_creation_respon
         and kwargs["stderr_limit"] == 4096
         for kwargs in cleanup.values()
     )
+
+
+@pytest.mark.parametrize("status", [0, 5])
+def test_sensitive_runner_tracks_probe_cleanup_before_archive(tmp_path, status):
+    helper = package(tmp_path)
+    remote = remote_for(request(), helper)
+    installed = f"/run/taskman-ops/{request().correlation_id}/taskman-host.pyz"
+    probe = f"/run/taskman-ops/{request().correlation_id}/pgpass.probe"
+    private = ("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed,
+               "provision-pgpass-authority", "127.0.0.1", "5432", "taskman", "taskman_prod", "ready", "authenticate")
+    remote.add_response(private, CommandResult(status, "suppressed", "suppressed"))
+    receipt = helper_runner_module.invoke_sensitive_pgpass_authority(remote, helper,
+        correlation_id=request().correlation_id, host="127.0.0.1", port=5432, role="taskman",
+        database="taskman_prod", pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", database_state="ready")
+    assert receipt.exit_status == status
+    assert commands(remote).index(("rm", "-f", "--", probe)) < commands(remote).index(("rm", "--", installed)) < commands(remote).index(("rmdir", "--", str(PurePosixPath(installed).parent)))
+    for command, kwargs in remote.calls:
+        assert "secret" not in repr(command)
+        if command == private or probe in command:
+            assert kwargs["sensitive"] is True
+            assert kwargs.get("env") is None
+
+
+@pytest.mark.parametrize("cleanup_lost", [False, True])
+def test_sensitive_timeout_attempts_probe_cleanup_and_preserves_uncertainty(tmp_path, cleanup_lost):
+    helper = package(tmp_path)
+    installed = f"/run/taskman-ops/{request().correlation_id}/taskman-host.pyz"
+    probe = f"/run/taskman-ops/{request().correlation_id}/pgpass.probe"
+    class InterruptedRemote(HelperRunnerRemote):
+        def run(self, argv, **kwargs):
+            if "provision-pgpass-authority" in argv:
+                self.calls.append((tuple(argv), kwargs))
+                raise TimeoutError("helper killed before finally")
+            if probe in argv and cleanup_lost:
+                self.calls.append((tuple(argv), kwargs))
+                raise ConnectionError("transport lost")
+            return super().run(argv, **kwargs)
+    remote = InterruptedRemote(checksum=helper.sha256, helper_result=CommandResult(0))
+    with pytest.raises(OpsError) as raised:
+        helper_runner_module.invoke_sensitive_pgpass_authority(remote, helper,
+            correlation_id=request().correlation_id, host="127.0.0.1", port=5432, role="taskman",
+            database="taskman_prod", pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", database_state="ready")
+    assert ("rm", "-f", "--", probe) in commands(remote)
+    assert ("rm", "--", installed) in commands(remote)
+    assert raised.value.warnings == ("transient helper cleanup was incomplete",)
+    assert raised.value.changed is False
+    assert "secret" not in str(raised.value)
+
+
+def test_runner_removes_real_probe_file_after_helper_process_is_killed(tmp_path):
+    """The remote cleanup owns the passfile when helper finally cannot run."""
+    import subprocess
+    import sys
+    helper = package(tmp_path)
+    probe = tmp_path / "pgpass.probe"
+    derived_probe = f"/run/taskman-ops/{request().correlation_id}/pgpass.probe"
+    script = '''import sys, signal
+from pathlib import Path
+sys.argv[0] = sys.argv.pop(1)
+sys.path.insert(0, sys.argv[0])
+from taskman_ops.host_helper.operations import preflight
+preflight._PGPASS_PATH = Path(sys.argv.pop(1))
+def blocked(*args):
+    print("probe-created", flush=True)
+    signal.pause()
+preflight.prove_scram_access = blocked
+raise SystemExit(preflight.provision_pgpass_authority(tuple(sys.argv[1:]), sys.stdin.buffer))
+'''
+    class KilledEntryRemote(HelperRunnerRemote):
+        def run(self, argv, **kwargs):
+            if "provision-pgpass-authority" in argv:
+                self.calls.append((tuple(argv), kwargs))
+                entry = argv.index("provision-pgpass-authority")
+                child = subprocess.Popen([sys.executable, "-I", "-S", "-c", script,
+                    str(helper.path), str(tmp_path / "missing"), *argv[entry + 1:]],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    child.communicate(kwargs["stdin"], timeout=1)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    stdout, stderr = child.communicate()
+                    assert stdout == b"probe-created\n" and stderr == b""
+                    assert probe.is_file()
+                    raise TimeoutError("helper process killed before cleanup")
+                pytest.fail("helper should have waited in the application proof")
+            if derived_probe in argv:
+                assert kwargs["sensitive"] is True
+                completed = subprocess.run(("rm", "-f", "--", str(probe)), capture_output=True, check=False)
+                self.calls.append((tuple(argv), kwargs))
+                return CommandResult(completed.returncode)
+            return super().run(argv, **kwargs)
+    remote = KilledEntryRemote(checksum=helper.sha256, helper_result=CommandResult(0))
+    with pytest.raises(OpsError):
+        helper_runner_module.invoke_sensitive_pgpass_authority(remote, helper,
+            correlation_id=request().correlation_id, host="127.0.0.1", port=5432, role="taskman",
+            database="taskman_prod", pgpass=b"127.0.0.1:5432:taskman_prod:taskman:secret\n", database_state="ready")
+    assert not probe.exists()

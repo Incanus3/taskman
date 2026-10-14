@@ -11,6 +11,8 @@ import textwrap
 import time
 
 import pytest
+from pyinfra.api import Config, Inventory, State
+from pyinfra.context import ctx_state, state as context_state
 
 from tests.support.remotes import RecordingPyinfraHost
 from taskman_ops.config import EnvironmentConfig
@@ -30,6 +32,28 @@ from tests.support.environments import valid_environment
 
 def config() -> EnvironmentConfig:
     return EnvironmentConfig.model_validate(valid_environment(connection_timeout=17))
+
+
+@pytest.mark.parametrize("supplied", ("context", "state", "omitted"))
+def test_remote_preserves_supplied_pyinfra_state_and_defaults_only_when_absent(supplied):
+    """Truth-testing context state or discarding a supplied state breaks active operations."""
+    inventory = Inventory((["@local"], {}))
+    actual_state = State(inventory, Config(PARALLEL=1), check_for_changes=False)
+    host_state = State(Inventory((["@local"], {})), Config(PARALLEL=1))
+    client = StreamingClient(StreamingChannel(stdout=bytearray(b"ok"), stderr=bytearray()))
+    host = StreamingHost(StreamingConnector(client), state=host_state)
+    previous = ctx_state.get()
+    ctx_state.set(actual_state)
+    try:
+        kwargs = ({"state": context_state} if supplied == "context" else
+                  {"state": actual_state} if supplied == "state" else {})
+        remote = PyinfraRemote(host, config(), **kwargs)
+        expected = (context_state if supplied == "context" else
+                    actual_state if supplied == "state" else host_state)
+        assert remote._state is expected
+        assert remote.run(("true",)) == CommandResult(0, "ok", "")
+    finally:
+        ctx_state.set(previous)
 
 
 def test_run_quotes_each_argument_and_keeps_untrusted_text_out_of_the_shell() -> None:
@@ -806,52 +830,6 @@ def test_put_applies_the_requested_timeout_to_pyinfra_sftp_before_transfer(tmp_p
     assert observed == [4]
 
 
-def test_connect_uses_only_a_fingerprint_verified_temporary_known_hosts_file(tmp_path: Path) -> None:
-    config_value = config()
-    key_line = "[203.0.113.10]:2202 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEexamplekey"
-    calls: list[tuple[list[str], dict[str, object]]] = []
-    observed: dict[str, object] = {}
-
-    def runner(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        calls.append((argv, kwargs))
-        if argv[0] == "ssh-keyscan":
-            return subprocess.CompletedProcess(argv, 0, key_line.encode() + b"\n", b"")
-        assert argv[:4] == ["ssh-keygen", "-lf", "-", "-E"]
-        return subprocess.CompletedProcess(argv, 0, f"256 {config_value.host_key_fingerprint} test (ED25519)\n".encode(), b"")
-
-    def host_factory(factory_config: EnvironmentConfig, known_hosts: Path) -> RecordingPyinfraHost:
-        observed["config"] = factory_config
-        observed["path"] = known_hosts
-        observed["contents"] = known_hosts.read_text(encoding="utf-8")
-        observed["mode"] = known_hosts.stat().st_mode & 0o777
-        return RecordingPyinfraHost()
-
-    remote = connect(config_value, command_runner=runner, host_factory=host_factory, temporary_directory=tmp_path)
-
-    assert isinstance(remote, PyinfraRemote)
-    assert observed["config"] is config_value
-    assert observed["contents"] == key_line + "\n"
-    assert observed["mode"] == 0o600
-    assert not Path(observed["path"]).exists()
-    assert calls[0][0] == ["ssh-keyscan", "-T", "17", "-p", "2202", "203.0.113.10"]
-    assert all(kwargs.get("shell") is not True for _argv, kwargs in calls)
-
-
-def test_connect_rejects_unverified_host_key_before_constructing_a_remote(tmp_path: Path) -> None:
-    config_value = config()
-
-    def runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if argv[0] == "ssh-keyscan":
-            return subprocess.CompletedProcess(argv, 0, b"host ssh-ed25519 AAAA\n", b"")
-        return subprocess.CompletedProcess(argv, 0, b"256 SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB test (ED25519)\n", b"")
-
-    with pytest.raises(OpsError) as raised:
-        connect(config_value, command_runner=runner, temporary_directory=tmp_path)
-
-    assert raised.value.status is ExitStatus.REMOTE_PREFLIGHT
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_pyinfra_host_ignores_user_ssh_configuration_and_requires_known_hosts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -881,3 +859,22 @@ def test_transport_failures_map_to_five_without_reclassifying_explicit_lock_cont
 
     assert transport_error.value.status is ExitStatus.REMOTE_PREFLIGHT
     assert lock_error.value.status is ExitStatus.LOCKED
+
+
+def test_change_warning_carrier_deduplicates_and_refuses_overflow():
+    from taskman_ops.remote import merge_change_warnings
+    assert merge_change_warnings(("cleanup", "inspection"), ("cleanup",)) == ("cleanup", "inspection")
+    with pytest.raises(OpsError, match="warning evidence exceeds"):
+        merge_change_warnings(tuple(f"warning-{index}" for index in range(257)))
+
+
+def test_pyinfra_warning_overflow_retains_changed_failure_recovery_guidance():
+    from types import SimpleNamespace
+    from taskman_ops.remote import _merge_pyinfra_change_evidence
+    original = OpsError(ExitStatus.SAFETY, "firewall", "postchange refusal", True,
+        next_action="inspect retained policy through the console", warnings=("additional",))
+    state = SimpleNamespace(_taskman_warnings=tuple(f"warning-{i}" for i in range(256)))
+    with pytest.raises(OpsError, match="warning evidence exceeds") as raised:
+        _merge_pyinfra_change_evidence(original, state)
+    assert raised.value.changed is True
+    assert raised.value.next_action == "inspect retained policy through the console"

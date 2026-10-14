@@ -111,9 +111,8 @@ rows and detail while preserving URL and autosave behavior. Focused tests, the f
 `ERL_FLAGS='+S 4' mix precommit` gate (124 passed), wide and measured 390×844 responsive browser
 acceptance, and independent implementation review have passed. The written
 [`Lists and nested organization specification`](../specs/2026-08-26-lists-nested-organization-design.md)
-is approved, implemented, and delivered. Its
-[`implementation plan`](../archive/plans/2026-08-26-lists-nested-organization.md) is archived, and the
-repository-local delivery graph is closed through `tas-lists-nested-organization-8qe.6`.
+is approved, implemented, and delivered. The repository-local delivery graph is closed through
+`tas-lists-nested-organization-8qe.6`.
 
 ### 4. API, CLI, and agent skill
 
@@ -181,8 +180,7 @@ permanent Ecto/Ash hybrid.
 **Current state:** Complete. Focused integrated coverage, migration check, full verification suite,
 production compilation/assets/release assembly, staged-root systemd validation, and Caddy 2.11.4
 configuration validation have passed. See the
-[`authenticated hosted access specification`](../specs/2026-09-02-authenticated-hosted-access-design.md)
-and [`archived implementation plan`](../archive/plans/2026-09-02-authenticated-hosted-access.md).
+[`authenticated hosted access specification`](../specs/2026-09-02-authenticated-hosted-access-design.md).
 
 ### 5. Task relationships
 

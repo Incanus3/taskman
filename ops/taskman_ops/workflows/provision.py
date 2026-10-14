@@ -8,7 +8,7 @@ capabilities provided by the established deployment workflow.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 import hashlib
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +17,8 @@ from ..config import EnvironmentConfig, load_environment
 from ..errors import ExitStatus, OpsError
 from ..migrations import versions_from_filenames
 from ..host.acceptance import validate_provisionable_host
+from ..host.firewall import inspect_firewall, firewall_preview, validate_firewall_authority
+from ..host_protocol import HostResult
 from ..host_helper.backup_protection import (
     BackupProtection,
     protection_prune_ids,
@@ -34,18 +36,24 @@ from ..releases.artifacts import (
 from ..output import WorkflowResult, redact, render_human
 from ..provisioning import (
     ProvisioningInputs,
+    ProvisioningResult,
     converge_provisioning,
     validate_existing_authority,
 )
-from ..remote import ChangeSet, connect
+from ..remote import connect
 from ..secrets import SecretConfig, decrypt_secrets, render_pgpass, render_runtime_environment
-from ..services.caddy import CaddyPlan, build_caddy_plan
+from ..services.caddy import (
+    CaddyOwnershipPlan, build_caddy_ownership_plan, inspect_caddy,
+    validate_caddy_plan_authority, caddy_ownership_preview, activate_caddy,
+)
 from ..services.systemd import build_systemd_plan
 from ..services.postgresql import (
     build_postgresql_plan,
+    build_postgresql_ownership_plan,
+    PostgreSQLOwnershipPlan,
     render_role_password_input,
 )
-from .deploy import _confirm_downgrade, _downgrade_acknowledgment, deploy_first_release
+from .deploy import _confirm_downgrade, _downgrade_acknowledgment, deploy_first_release, prepare_first_release
 from .helper import merge_warnings
 
 
@@ -72,7 +80,9 @@ class ProvisionDiscovery(Protocol):
         remote: object,
         config: EnvironmentConfig,
         *,
-        expected_caddyfile_sha256: str,
+        caddy_authority: HostResult,
+        provision_authority: Mapping[str, object],
+        force_postgresql_config: bool,
     ) -> object: ...
 
 
@@ -95,12 +105,17 @@ class ProvisionCapabilities:
     connect: Callable[[EnvironmentConfig], object]
     discover: ProvisionDiscovery
     render_role_password_input: Callable[[object, str], bytes]
-    provisioning: Callable[[object, ProvisioningInputs], ChangeSet]
-    caddy_plan: Callable[[EnvironmentConfig], CaddyPlan]
+    provisioning: Callable[[object, ProvisioningInputs], ProvisioningResult]
+    caddy_plan: Callable[[EnvironmentConfig, HostResult], CaddyOwnershipPlan]
+    caddy: Callable[[object, EnvironmentConfig], HostResult]
+    preparation: Callable[..., WorkflowResult]
+    activation: Callable[..., HostResult]
+    completion: Callable[..., WorkflowResult]
     genesis: Callable[..., WorkflowResult]
     preflight: Callable[[object, ProvisioningInputs], Mapping[str, object]]
     target_resolution: Callable[[object, EnvironmentConfig, object, CleanInputs | None], DeploymentTarget]
     downgrade_authority: Callable[[object, EnvironmentConfig, DeploymentTarget], tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]]
+    firewall: Callable[[object, EnvironmentConfig], HostResult]
 
 
 def provision(
@@ -141,10 +156,9 @@ def provision(
     # credential text never enters pyinfra command construction or reporting.
     database_plan = build_postgresql_plan(config)
     role_password_input = cap.render_role_password_input(database_plan.role, secrets.database_password)
-    caddy_plan = cap.caddy_plan(config)
-    expected_caddyfile_sha256 = _caddyfile_sha256(caddy_plan)
 
     remote = cap.connect(config)
+    postgresql_plan: PostgreSQLOwnershipPlan | None = None
     confirmed_starting_state: dict[str, object] | None = None
     warnings: tuple[str, ...] = ()
     clean_reresolutions = 0
@@ -153,7 +167,23 @@ def provision(
             # Discovery is a complete immutable snapshot.  It must precede every
             # consequence below, including plan presentation, confirmation, and
             # package installation.
-            discovery = cap.discover(remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256)
+            proxy_authority = cap.caddy(remote, config)
+            warnings = merge_warnings(warnings, proxy_authority.warnings)
+            caddy_plan = cap.caddy_plan(config, proxy_authority)
+            inputs = ProvisioningInputs(
+                config=config, caddy_plan=caddy_plan, systemd_plan=build_systemd_plan(config),
+                runtime_environment=runtime_environment, pgpass=pgpass,
+                role_password_input=role_password_input,
+                force_postgresql_config=getattr(invocation, "force_postgresql_config", False),
+            )
+            authority_evidence = cap.preflight(remote, inputs)
+            warnings = merge_warnings(warnings, tuple(getattr(authority_evidence, "warnings", ())))
+            authority = _required_authority(authority_evidence)
+            postgresql_plan = _postgresql_authority_plan(config, authority,
+                force_postgresql_config=inputs.force_postgresql_config)
+            discovery = cap.discover(remote, config, caddy_authority=proxy_authority,
+                                     provision_authority=authority,
+                                     force_postgresql_config=inputs.force_postgresql_config)
             try:
                 release_input = cap.target_resolution(remote, config, invocation, clean_inputs)
             except OpsError as error:
@@ -187,32 +217,24 @@ def provision(
                 clean_inputs = identify_clean_inputs(_repository_root())
                 clean_reresolutions += 1
                 continue
-            # A stable material plan owns these rendered assets through refreshed
-            # authority and installation; source retries above have no asset plan.
-            inputs = ProvisioningInputs(
-                config=config,
-                caddy_plan=caddy_plan,
-                systemd_plan=build_systemd_plan(config),
-                runtime_environment=runtime_environment,
-                pgpass=pgpass,
-                role_password_input=role_password_input,
+            firewall_authority = validate_firewall_authority(config, cap.firewall(remote, config))
+            warnings = merge_warnings(warnings, firewall_authority.warnings)
+            firewall_effects = firewall_preview(config, firewall_authority)
+            convergence_inputs = replace(
+                _scheduler_authorized_inputs(inputs, authority), firewall_authority=firewall_authority,
+                postgresql_plan=postgresql_plan
             )
-            authority_evidence = cap.preflight(remote, inputs)
-            warnings = merge_warnings(
-                warnings, tuple(getattr(authority_evidence, "warnings", ()))
-            )
-            authority = _required_authority(authority_evidence)
-            convergence_inputs = _scheduler_authorized_inputs(inputs, authority)
             starting_state = _starting_state(authority, discovery, release_input)
             plan_effects = _provision_plan_effects(starting_state, release_input, invocation)
             plan = _redacted_plan(cap.render_plan(config, release_input))
-            downgrade_required, downgrade_evidence = cap.downgrade_authority(remote, config, release_input)
+            downgrade_required, downgrade_evidence = cap.downgrade_authority(remote, config, release_input,
+                **({"force_postgresql_config": True} if inputs.force_postgresql_config else {}))
             plan = {
                 **plan,
                 "requires_downgrade_acknowledgment": downgrade_required,
                 "downgrade_baselines": _downgrade_plan_rows(downgrade_evidence),
             }
-            plan = {**plan, **plan_effects, "starting_state": starting_state}
+            plan = {**plan, **plan_effects, "starting_state": starting_state, "firewall": firewall_effects, "caddy": caddy_ownership_preview(caddy_plan), "postgresql": _postgresql_preview(postgresql_plan)}
             cap.present_plan(plan)
             if dry_run:
                 return _close_result(remote, WorkflowResult(
@@ -243,7 +265,10 @@ def provision(
             # that was confirmed rather than a later observation.
             confirmed_starting_state = _copy_authority(starting_state)
 
-            if downgrade_required and not getattr(invocation, "allow_downgrade", False):
+            # Carry the plan's accepted acknowledgment through preparation and
+            # completion only after the target and ordering evidence revalidate.
+            downgrade_acknowledged = getattr(invocation, "allow_downgrade", False)
+            if downgrade_required and not downgrade_acknowledged:
                 if yes or _noninteractive(invocation):
                     raise OpsError(
                         ExitStatus.SAFETY,
@@ -263,13 +288,25 @@ def provision(
                         exit_status=ExitStatus.SAFETY,
                         warnings=warnings,
                     ))
+                downgrade_acknowledged = True
 
             # Confirmation authorizes only the observed resource authority. A
             # drifted snapshot is refused; a later invocation must collect and
             # confirm a new plan before pyinfra receives a managed-write request.
-            refreshed_discovery = cap.discover(
-                remote, config, expected_caddyfile_sha256=expected_caddyfile_sha256
-            )
+            refreshed_proxy = cap.caddy(remote, config)
+            validate_caddy_plan_authority(caddy_plan, refreshed_proxy)
+            warnings = merge_warnings(warnings, refreshed_proxy.warnings)
+            refreshed_authority_evidence = cap.preflight(remote, inputs)
+            warnings = merge_warnings(warnings, tuple(getattr(refreshed_authority_evidence, "warnings", ())))
+            refreshed_authority = _required_authority(refreshed_authority_evidence)
+            refreshed_postgresql = _postgresql_authority_plan(config, refreshed_authority,
+                force_postgresql_config=inputs.force_postgresql_config)
+            if refreshed_postgresql != postgresql_plan:
+                raise OpsError(ExitStatus.SAFETY, "postgresql", "PostgreSQL authority changed after confirmation",
+                    changed=False, next_action="inspect the selected cluster/resources and rerun provision for a new plan")
+            refreshed_discovery = cap.discover(remote, config, caddy_authority=refreshed_proxy,
+                                               provision_authority=refreshed_authority,
+                                               force_postgresql_config=inputs.force_postgresql_config)
             try:
                 refreshed_input = cap.target_resolution(remote, config, invocation, clean_inputs)
             except OpsError as error:
@@ -290,14 +327,18 @@ def provision(
                     changed=False,
                     next_action="restore the intended clean checkout and rerun provision to review a new plan",
                 )
-            refreshed_authority_evidence = cap.preflight(remote, inputs)
-            warnings = merge_warnings(
-                warnings, tuple(getattr(refreshed_authority_evidence, "warnings", ()))
-            )
-            refreshed_authority = _required_authority(refreshed_authority_evidence)
             _scheduler_authorized_inputs(inputs, refreshed_authority)
+            refreshed_firewall = validate_firewall_authority(config, cap.firewall(remote, config))
+            warnings = merge_warnings(warnings, refreshed_firewall.warnings)
+            if firewall_preview(config, refreshed_firewall) != firewall_effects:
+                raise OpsError(
+                    ExitStatus.SAFETY, "firewall",
+                    "firewall authority changed after confirmation; review a new preview",
+                    changed=False, next_action="inspect UFW and rerun provision with a new confirmation",
+                )
             refreshed_downgrade_required, refreshed_downgrade_evidence = cap.downgrade_authority(
-                remote, config, refreshed_input
+                remote, config, refreshed_input,
+                **({"force_postgresql_config": True} if inputs.force_postgresql_config else {})
             )
             refreshed_starting_state = _starting_state(
                 refreshed_authority, refreshed_discovery, refreshed_input
@@ -321,9 +362,18 @@ def provision(
                     changed=False,
                     next_action="inspect the refreshed plan and rerun provision with a new confirmation",
                 )
-            provisioning_changed = _changed(cap.provisioning(remote, convergence_inputs))
+            provisioning_result = cap.provisioning(remote, convergence_inputs)
+            if not isinstance(provisioning_result, ProvisioningResult):
+                raise TypeError("provisioning requires validated convergence and proxy evidence")
+            provisioning_changed = provisioning_result.changes.changed
+            warnings = merge_warnings(warnings, provisioning_result.changes.warnings, provisioning_result.caddy.warnings)
             break
     except OpsError as error:
+        if error.stage == "postgresql":
+            error.state = {**error.state, "postgresql": _postgresql_failure_context(
+                config, environment_name, error, postgresql_plan,
+                force_postgresql_config=getattr(invocation, "force_postgresql_config", False))}
+            error.next_action = f"Inspect the reported PostgreSQL setup and protected credentials, then rerun: ./ops/taskman provision {environment_name}"
         return _close_result(
             remote,
             replace(
@@ -356,7 +406,7 @@ def provision(
         genesis_kwargs: dict[str, object] = {
             "migration_policy": getattr(invocation, "migration_policy", None),
             "yes": yes,
-            "allow_downgrade": getattr(invocation, "allow_downgrade", False),
+            "allow_downgrade": downgrade_acknowledged,
             "dry_run": dry_run,
             "starting_state": starting_state,
         }
@@ -364,59 +414,105 @@ def provision(
         if isinstance(planned_prune_ids, tuple):
             genesis_kwargs["prune_backup_ids"] = planned_prune_ids
         genesis_kwargs["scheduler_create"] = _scheduler_create_delta(authority)
-        release = cap.genesis(
-            remote,
-            config,
-            release_input,
-            **genesis_kwargs,
-        )
+        proxy = provisioning_result.caddy
+        proxy_facts = _proxy_facts(proxy)
+        if provisioning_result.postgresql_recovery is not None:
+            recovery_state = dict(provisioning_result.postgresql_recovery.state)
+            proxy_facts.update(postgresql_recovery=recovery_state, recovery_directory=recovery_state["recovery_directory"])
+        states = ["changed" if provisioning_changed else "unchanged", proxy.state["mutation_state"]]
+        local = None
+        if caddy_plan.branch == "bootstrap":
+            release = cap.genesis(remote, config, release_input, **genesis_kwargs)
+        else:
+            local = cap.preparation(remote, config, release_input, **genesis_kwargs)
+            states.append(_result_mutation(local))
+            warnings = merge_warnings(warnings, local.warnings)
+            if local.exit_status is not ExitStatus.OK:
+                return _close_result(remote, _combine_release(local, starting_state, proxy_facts, states, warnings))
+            observed_proxy = proxy.state["authority"]
+            automatic = (observed_proxy["glob_import_present"] and observed_proxy["service_active"]
+                         and not observed_proxy["service_masked"])
+            if not automatic:
+                return _close_result(remote, _pending_result(
+                    environment_name, release_input, local, starting_state, proxy_facts, states, warnings))
+            activated = cap.activation(remote, caddy_plan, proxy, public_probe=local.facts["public_probe"])
+            states.append(activated.state["mutation_state"])
+            warnings = merge_warnings(warnings, activated.warnings)
+            proxy_facts = {**proxy_facts, **_proxy_facts(activated)}
+            release = cap.completion(remote, config, release_input, preparation=local,
+                **genesis_kwargs)
+        states.append(_result_mutation(release))
+    except OpsError as error:
+        states.append(error.state.get("mutation_state", "unknown" if error.changed else "unchanged"))
+        return _close_result(remote, _combine_release(
+            _pre_release_failure(environment_name, error, starting_state=starting_state),
+            starting_state, {**proxy_facts, **error.state}, states,
+            merge_warnings(warnings, error.warnings), preparation=local))
     except BaseException:
         _close_remote(remote)
         raise
-
     if release.exit_status is not ExitStatus.OK:
-        return _close_result(
-            remote,
-            replace(
-                release,
-                command="provision",
-                changed=provisioning_changed or release.changed,
-                facts={
-                    **release.facts,
-                    "starting_state": starting_state,
-                    "mutation_state": _aggregate_mutation_state(
-                        "changed" if provisioning_changed else "unchanged",
-                        release.facts.get(
-                            "mutation_state",
-                            "changed" if release.changed else "unchanged",
-                        ),
-                    ),
-                },
-                warnings=merge_warnings(warnings, release.warnings),
-            ),
-        )
+        return _close_result(remote, _combine_release(
+            release, starting_state, proxy_facts, states, warnings, preparation=local))
+    aggregate = _aggregate_mutation_state(*states)
     return _close_result(remote, WorkflowResult(
-        command="provision",
-        environment=environment_name,
-        changed=provisioning_changed or release.changed,
-        stage="provisioned" if provisioning_changed or release.changed else "already-provisioned",
-        facts={
-            "candidate_release_id": _release_id(release_input),
-            "starting_state": starting_state,
-            "provisioning_changed": provisioning_changed,
-            "mutation_state": _aggregate_mutation_state(
-                "changed" if provisioning_changed else "unchanged",
-                release.facts.get(
-                    "mutation_state", "changed" if release.changed else "unchanged"
-                ),
-            ),
-            "release": _safe_result_facts(release),
-            "verification": release.facts.get("verification", {}),
-            "acceptance_steps": _ACCEPTANCE_STEPS,
-        },
+        command="provision", environment=environment_name, changed=aggregate != "unchanged",
+        stage="provisioned" if aggregate != "unchanged" else "already-provisioned",
+        facts={"candidate_release_id": _release_id(release_input), "starting_state": starting_state,
+               "provisioning_changed": provisioning_changed, "mutation_state": aggregate,
+               "release": _safe_result_facts(release), "verification": release.facts.get("verification", {}),
+               "proxy_activation": "completed", "deployment_verified": True,
+               **proxy_facts, "acceptance_steps": _ACCEPTANCE_STEPS},
         next_action="complete the listed interactive acceptance steps; they are not automated",
         warnings=merge_warnings(warnings, release.warnings),
     ))
+
+
+def _proxy_facts(result: HostResult) -> dict[str, object]:
+    state = result.to_mapping()["state"]
+    return {"caddy": state, "caddy_receipt": state["receipt"],
+            "site_path": "/etc/caddy/sites-enabled/taskman.caddy"}
+
+
+def _result_mutation(result: WorkflowResult) -> str:
+    return result.facts.get("mutation_state", "changed" if result.changed else "unchanged")
+
+
+def _combine_release(result, starting_state, proxy_facts, states, warnings, *, preparation=None):
+    aggregate = _aggregate_mutation_state(*states)
+    return replace(result, command="provision", changed=aggregate != "unchanged",
+        facts={**result.facts, **proxy_facts, "starting_state": starting_state,
+               "mutation_state": aggregate,
+               **({"preparation": _safe_result_facts(preparation)} if preparation is not None else {})},
+        warnings=merge_warnings(warnings, result.warnings))
+
+
+def _pending_result(environment, target, local, starting_state, proxy_facts, states, warnings):
+    authority = proxy_facts["caddy"]["authority"]
+    instructions = []
+    if not authority["glob_import_present"]:
+        instructions.append("add import /etc/caddy/sites-enabled/*.caddy once at the top level of /etc/caddy/Caddyfile; reconcile an existing hostname block before importing")
+    instructions.append("sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile")
+    if authority["service_masked"]:
+        instructions.append("deliberately sudo systemctl unmask caddy.service after validation")
+    instructions.append("sudo systemctl reload caddy" if authority["service_active"] and not authority["service_masked"]
+                        else "deliberately sudo systemctl start caddy.service and sudo systemctl enable caddy.service after validation")
+    instructions.append("rerun provision with the same retained artifact or unchanged source identity")
+    aggregate = _aggregate_mutation_state(*states)
+    return WorkflowResult("provision", environment, aggregate != "unchanged",
+        "application-provisioned-proxy-pending",
+        {**local.facts, **proxy_facts, "starting_state": starting_state,
+         "candidate_release_id": target.release_id, "mutation_state": aggregate,
+         "proxy_activation": "pending", "deployment_verified": False,
+         "glob_import_present": authority["glob_import_present"], "activation_instructions": instructions,
+         "scheduler_limitation": "scheduled backup runs can remain unavailable until the first successful selection; retained protections and recovery inputs remain; verify backup operation after activation"},
+        warnings, "Taskman is ready on the deployment host; proxy activation and public verification remain pending. " + "; ".join(instructions),
+        ExitStatus.PROXY_PENDING)
+
+
+def _complete_first_release(*args, **kwargs):
+    from .deploy import finalize_first_release
+    return finalize_first_release(*args, **kwargs)
 
 
 def _environment_name(invocation: object) -> str:
@@ -459,15 +555,6 @@ def _yes(invocation: object) -> bool:
     return value
 
 
-def _caddyfile_sha256(plan: CaddyPlan) -> str:
-    """Bind later remote Caddy ownership checks to the rendered plan bytes."""
-
-    caddyfile = plan.caddyfile
-    if not isinstance(caddyfile, str):  # pragma: no cover - static CaddyPlan contract
-        raise TypeError("Caddy plan must contain text Caddyfile bytes")
-    return hashlib.sha256(caddyfile.encode("utf-8")).hexdigest()
-
-
 def _default_capabilities() -> ProvisionCapabilities:
     return ProvisionCapabilities(
         load_environment=load_environment,
@@ -481,11 +568,16 @@ def _default_capabilities() -> ProvisionCapabilities:
         discover=validate_provisionable_host,
         render_role_password_input=render_role_password_input,
         provisioning=converge_provisioning,
-        caddy_plan=build_caddy_plan,
+        caddy_plan=build_caddy_ownership_plan,
+        caddy=inspect_caddy,
+        preparation=prepare_first_release,
+        activation=activate_caddy,
+        completion=_complete_first_release,
         genesis=deploy_first_release,
         preflight=validate_existing_authority,
         target_resolution=_resolve_deployment_target,
         downgrade_authority=_provision_downgrade_authority,
+        firewall=inspect_firewall,
     )
 
 
@@ -503,7 +595,8 @@ def _resolve_deployment_target(
 
     from .deploy import deployment_admission_authority
 
-    authority = deployment_admission_authority(remote, config, mode="provision")
+    authority = deployment_admission_authority(remote, config, mode="provision",
+        force_postgresql_config=getattr(invocation, "force_postgresql_config", False))
     target = resolve_deploy_target(
         _repository_root(),
         getattr(invocation, "artifact", None),
@@ -562,11 +655,13 @@ def _provision_downgrade_authority(
     remote: object,
     config: EnvironmentConfig,
     target: DeploymentTarget,
+    *, force_postgresql_config: bool = False,
 ) -> tuple[bool, tuple[tuple[str, str, tuple[str, ...]], ...]]:
     """Use deploy's complete baseline classifier for public genesis too."""
 
     return _downgrade_acknowledgment(
-        remote, config, target, _repository_root(), mode="provision"
+        remote, config, target, _repository_root(), mode="provision",
+        force_postgresql_config=force_postgresql_config
     )
 
 
@@ -750,10 +845,85 @@ def _authority_mapping(value: object) -> dict[str, object] | None:
     if isinstance(value, Mapping):
         return _copy_authority(value)
     if is_dataclass(value) and not isinstance(value, type):
-        projected = asdict(value)
-        if isinstance(projected, dict):
-            return _copy_authority(projected)
+        return _copy_authority({field.name: getattr(value, field.name) for field in fields(value)})
     return None
+
+
+def _postgresql_endpoint(ownership: PostgreSQLOwnershipPlan) -> dict[str, object]:
+    desired = ownership.desired
+    return {"host": desired.settings["listen_addresses"], "port": int(desired.settings["port"]),
+            "role": desired.role.name, "database": desired.database.name}
+
+
+def _postgresql_preview(ownership: PostgreSQLOwnershipPlan) -> dict[str, object]:
+    from ..host_protocol.postgresql import POSTGRESQL_RECOVERY_ROOT
+    override = ownership.branch == "configure-existing"
+    configures = ownership.branch != "existing"
+    return {
+        "branch": ownership.branch,
+        "cluster": None if ownership.cluster is None else asdict(ownership.cluster),
+        "endpoint": _postgresql_endpoint(ownership),
+        "role": ownership.role, "database": ownership.database, "access": ownership.access,
+        "resource_actions": {"role": "create" if ownership.role == "absent" else "adopt",
+                             "database": "create" if ownership.database == "absent" else "adopt"},
+        "required_authentication": "scram-sha-256",
+        "post_creation_access_failure_possible": ownership.role == "absent" or ownership.database == "absent",
+        "configuration_ownership": "taskman" if configures else "operator",
+        "force_postgresql_config": override,
+        "settings": dict(ownership.desired.settings) if configures else {},
+        "replacement_hba": ownership.desired.hba if configures else None,
+        "restart_possible": configures,
+        "recovery_parent": POSTGRESQL_RECOVERY_ROOT if override else None,
+        "warning": "Replace selected native HBA/settings; a restart may interrupt all consumers and remove authentication coverage for other connections. Recovery copies are retained; restoration and cleanup require separate authorization." if override else None,
+    }
+
+
+def _postgresql_failure_context(
+    config: EnvironmentConfig, environment: str, error: OpsError,
+    ownership: PostgreSQLOwnershipPlan | None,
+    *, force_postgresql_config: bool = False,
+) -> dict[str, object]:
+    """Project known target facts and setup advice without diagnosing native stderr."""
+    cluster = None if ownership is None or ownership.cluster is None else asdict(ownership.cluster)
+    if cluster is None:
+        observation = error.state.get("postgresql_observation")
+        if isinstance(observation, Mapping):
+            try:
+                plan = build_postgresql_ownership_plan(config, observation,
+                    force_postgresql_config=force_postgresql_config)
+                cluster = None if plan.cluster is None else asdict(plan.cluster)
+            except (ValueError, TypeError):
+                pass
+    network = "::1/128" if config.database_host == "::1" else "127.0.0.1/32"
+    return {
+        "endpoint": {"host": config.database_host, "port": config.database_port,
+                     "role": config.database_role, "database": config.database_name},
+        "cluster": cluster, "hba_file": None if cluster is None else cluster["hba_file"],
+        "failed_check": error.state.get("failed_check", "inspection-or-access" if error.status == ExitStatus.REMOTE_PREFLIGHT else "selected-target-or-resource-safety"),
+        "required_authentication": "scram-sha-256",
+        "hba_example": f"host    {config.database_name}    {config.database_role}    {network}    scram-sha-256",
+        "retry_command": f"./ops/taskman provision {environment}",
+        "operator_setup": (
+            ("PostgreSQL client must support require_auth (packaged client version 16 or later). Inspect the selected native client before retrying."
+             if error.state.get("failed_check") == "scram-client-prerequisite" else
+             "The required SCRAM-authenticated connection or prerequisite could not be established. Access configuration or existing credentials may need correction; do not rotate an adopted password automatically."
+             if error.status == ExitStatus.REMOTE_PREFLIGHT else
+             "PostgreSQL selection, resource or configuration safety refused this operation. Inspect the reported boundary and replan; authentication repair alone may not resolve it."),
+            "Review the example against effective HBA coverage; broader existing rules may suffice. The first matching rule decides authentication without fallback. Place effective coverage before conflicting rules and inspect pg_hba_file_rules for parser errors.",
+            "After your own configuration changes, reload only the selected cluster. Listener or port changes may require a coordinated restart; default existing-cluster provisioning preserves configuration and service state.",
+            "--force-postgresql-config is a deliberate alternative that replaces the selected native HBA/settings and may restart the selected cluster, interrupting all consumers. Arrange other consumers and recovery first; it cannot bypass identity, loopback, resource or provenance safety checks.",
+        ),
+    }
+
+
+def _postgresql_authority_plan(
+    config: EnvironmentConfig, authority: Mapping[str, object], *, force_postgresql_config: bool,
+) -> PostgreSQLOwnershipPlan:
+    try:
+        return build_postgresql_ownership_plan(config, authority["postgresql"],
+            force_postgresql_config=force_postgresql_config)
+    except (KeyError, TypeError, ValueError):
+        raise _projection_error() from None
 
 
 def _required_authority(value: object) -> Mapping[str, object]:
@@ -825,21 +995,21 @@ def _copy_authority(value: Mapping[str, object]) -> dict[str, object]:
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError("authority evidence keys must be strings")
-        if isinstance(item, Mapping):
-            copied[key] = _copy_authority(item)
-        elif isinstance(item, tuple):
-            copied[key] = tuple(
-                _copy_authority(member) if isinstance(member, Mapping) else member
-                for member in item
-            )
-        elif isinstance(item, list):
-            copied[key] = [
-                _copy_authority(member) if isinstance(member, Mapping) else member
-                for member in item
-            ]
-        else:
-            copied[key] = item
+        copied[key] = _copy_authority_value(item)
     return copied
+
+
+def _copy_authority_value(value: object) -> object:
+    """Project bounded evidence without deep-copying immutable protocol mappings."""
+
+    projected = _authority_mapping(value)
+    if projected is not None:
+        return projected
+    if isinstance(value, tuple):
+        return tuple(_copy_authority_value(member) for member in value)
+    if isinstance(value, list):
+        return [_copy_authority_value(member) for member in value]
+    return value
 
 
 def _redacted_plan(plan: Mapping[str, object]) -> Mapping[str, object]:
@@ -868,14 +1038,6 @@ def _confirm(_plan: Mapping[str, object]) -> bool:
     return input("Apply this redacted provisioning plan? Type yes to continue: ").strip().lower() == "yes"
 
 
-def _changed(result: object) -> bool:
-    if isinstance(result, (ChangeSet, WorkflowResult)):
-        return result.changed
-    if isinstance(result, bool):
-        return result
-    raise TypeError("provisioning convergence must return ChangeSet, WorkflowResult, or bool")
-
-
 def _aggregate_mutation_state(*states: object) -> str:
     """Retain proved provisioning consequences through a later genesis loss."""
 
@@ -898,8 +1060,9 @@ def _pre_release_failure(
         command="provision",
         environment=environment,
         changed=error.changed,
-        stage="provisioning-incomplete",
+        stage="firewall" if error.stage == "firewall" else "provisioning-incomplete",
         facts={
+            **error.state,
             "failed_boundary": error.stage,
             "release_started": False,
             **(

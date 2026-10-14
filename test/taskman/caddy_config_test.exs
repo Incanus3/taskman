@@ -35,6 +35,15 @@ defmodule Taskman.CaddyConfigTest do
            """
   end
 
+  test "renders only the hostname site and configured loopback upstream" do
+    assert {rendered, 0} =
+             System.cmd("sh", [renderer(), "tasks.acme.org", caddyfile(), "4011"],
+               stderr_to_stdout: true
+             )
+
+    assert rendered == "tasks.acme.org {\n\treverse_proxy 127.0.0.1:4011\n}\n"
+  end
+
   test "rejects malformed and reserved hostnames" do
     too_long_label = String.duplicate("a", 64) <> ".acme.org"
 

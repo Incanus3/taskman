@@ -1,5 +1,5 @@
-# Complete, non-secret environment configuration.
-# Replace the documentation values before using this file for a real host.
+# Complete synthetic environment configuration.
+# Create a SOPS-encrypted settings document and replace these values in its editor.
 ssh_host: 203.0.113.10
 ssh_port: 2202
 ssh_user: deployer

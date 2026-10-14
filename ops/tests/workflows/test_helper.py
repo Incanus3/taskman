@@ -568,3 +568,154 @@ def test_cleanup_reply_cannot_claim_completion_outside_the_confirmed_batch() -> 
 
     assert raised.value.state["mutation_state"] == "unknown"
     assert raised.value.state["completed_targets"] == []
+
+
+@pytest.mark.parametrize("lost", (False, True))
+def test_preparation_wire_failure_retains_intent_and_prior_mutation_without_local_proof(lost):
+    from dataclasses import replace
+    request = replace(_deploy_request(), operation="prepare_genesis")
+    def invoke(*_args):
+        if lost:
+            raise HelperTransportError(OpsError(ExitStatus.REMOTE_PREFLIGHT, "helper", "lost"), helper_entry_dispatched=True)
+        return HostResult(3, "genesis", CORRELATION, "retryable", "mismatched", {}, ())
+    with pytest.raises(OpsError) as raised:
+        run_request(object(), request, package=object(), invoker=invoke, prior_mutation_state="changed")
+    state = raised.value.state
+    assert state["mutation_state"] == "changed"
+    assert state["desired_release_id"] == RELEASE
+    assert state["local_report"] is None
+    assert state["public_probe"] == "not-attempted"
+    assert set(state["unavailable_fields"]) == set(state["observations"])
+
+
+def test_preparation_wire_target_identity_mismatch_invalidates_entire_reply():
+    from dataclasses import replace
+    request = replace(_deploy_request(),operation="prepare_genesis")
+    other = RELEASE.replace("aaaaaaaaaaaa","dddddddddddd")
+    state = {k:v for k,v in _failed_mutation_state().items() if k != "report"}
+    state.update(local_report=None,public_probe="not-attempted",desired_release_id=other)
+    result = HostResult.for_request(request,"retryable","staging failed",state)
+    with pytest.raises(OpsError) as raised:
+        run_request(object(),request,package=object(),invoker=lambda *_a:result)
+    assert raised.value.status == ExitStatus.SAFETY
+    assert raised.value.state["mutation_state"] == "unknown"
+    assert raised.value.state["desired_release_id"] == RELEASE
+    assert raised.value.state["local_report"] is None
+    assert raised.value.state["public_probe"] == "not-attempted"
+    assert set(raised.value.state["unavailable_fields"]) == set(raised.value.state["observations"])
+
+
+@pytest.mark.parametrize("exit_code", [5, 8, 10])
+def test_postgresql_recovery_controller_error_keeps_category_and_context(exit_code):
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY
+    request = recovery_request()
+    result = run_request(object(), request, invoker=lambda *_args: recovery_result(request, exit_code=exit_code))
+    error = result_error(result, prior_mutation_state="unknown")
+    assert error.status == exit_code
+    assert error.stage == "postgresql"
+    assert error.changed
+    assert error.state["mutation_state"] == "changed"
+    assert error.state["recovery_directory"] == DIRECTORY
+
+
+@pytest.mark.parametrize("dispatched", [False, True])
+def test_postgresql_recovery_transport_preserves_unknown_capture(dispatched):
+    from tests.host_helper.test_postgresql_recovery import recovery_request
+    def lost(*_args):
+        raise HelperTransportError(OpsError(ExitStatus.REMOTE_PREFLIGHT, "remote", "lost reply"), helper_entry_dispatched=dispatched)
+    with pytest.raises(OpsError) as caught:
+        run_request(object(), recovery_request(), invoker=lost)
+    assert caught.value.stage == "postgresql"
+    assert caught.value.status == 5
+    assert caught.value.changed == dispatched
+    assert caught.value.state["mutation_state"] == ("unknown" if dispatched else "unchanged")
+    assert caught.value.state["recovery_directory"] is None
+
+
+def test_postgresql_recovery_invalid_receipt_retains_valid_capture():
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY
+    from dataclasses import replace
+    request = recovery_request()
+    invalid = replace(recovery_result(request), state={**recovery_result(request).to_mapping()["state"], "extra": True})
+    with pytest.raises(OpsError) as caught:
+        run_request(object(), request, invoker=lambda *_args: invalid)
+    assert caught.value.status == 8
+    assert caught.value.changed
+    assert caught.value.state["mutation_state"] == "changed"
+    assert caught.value.state["recovery_directory"] == DIRECTORY
+
+
+@pytest.mark.parametrize("condition", ["success", "lost", "cleanup-warning"])
+def test_recovery_transport_cleans_only_transient_helper_paths(condition):
+    from taskman_ops.helper_client.package import temporary_helper_package
+    from taskman_ops.host_protocol import encode_result
+    from taskman_ops.remote import CommandResult
+    from tests.support.remotes import HelperRunnerRemote
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, DIRECTORY
+    request = recovery_request()
+    installed = f"/run/taskman-ops/{request.correlation_id}/taskman-host.pyz"
+    transfer = f"/tmp/taskman-ops/{request.correlation_id}/taskman-host.pyz"
+    with temporary_helper_package() as package:
+        local_path = package.path
+        remote = HelperRunnerRemote(package.sha256, CommandResult(0, encode_result(recovery_result(request)).decode()))
+        if condition == "lost":
+            remote.add_response(("sudo", "--preserve-env=SSH_CONNECTION", "--", "python3", installed),
+                OpsError(5, "remote", "transport lost"))
+        if condition == "cleanup-warning":
+            remote.add_response(("rm", "--", installed), CommandResult(1))
+        if condition == "lost":
+            with pytest.raises(OpsError) as caught:
+                run_request(remote, request, package=package)
+            assert caught.value.state["mutation_state"] == "unknown" and caught.value.changed
+            assert caught.value.state["recovery_directory"] is None
+        else:
+            result = run_request(remote, request, package=package)
+            assert result.state["recovery_directory"] == DIRECTORY
+            assert bool(result.warnings) == (condition == "cleanup-warning")
+        commands = [command for command, _ in remote.calls]
+        assert ("rm", "--", installed) in commands
+        assert ("rm", "--", transfer) in commands
+        assert not any(DIRECTORY in argument for command in commands for argument in command)
+    assert not local_path.exists()
+
+
+def test_postgresql_recovery_controller_reduces_unproven_failure_evidence():
+    from dataclasses import replace
+    from tests.host_helper.test_postgresql_recovery import recovery_request, recovery_result, CLUSTER, DIRECTORY
+    request = recovery_request()
+    result = replace(recovery_result(request, mutation="changed", directory=DIRECTORY, exit_code=5), outcome="manual")
+    with pytest.raises(OpsError) as caught:
+        run_request(object(), request, invoker=lambda *_args: result)
+    error = caught.value
+    assert error.status == 8 and error.stage == "postgresql"
+    assert error.changed
+    assert error.state["mutation_state"] == "changed"
+    assert error.state["recovery_directory"] == DIRECTORY
+    assert error.state["cluster"] == CLUSTER
+
+
+@pytest.mark.parametrize("alteration", ["port", "track", "branch", "check", "raw-diagnostic"])
+def test_provision_failure_context_rejects_forged_selection_or_diagnostics(alteration):
+    from taskman_ops.workflows.helper import request
+    from tests.support.environments import environment_config
+    config = environment_config(postgres_package_track="18")
+    req = request("provision_authority", config, parameters={
+        "postgres_package_track": "18", "force_postgresql_config": False,
+        "database": {"host": "127.0.0.1", "port": 5432, "role": "taskman", "name": "taskman_prod"}})
+    cluster = {"version": "18", "name": "main", "port": 5432,
+        "data_directory": "/var/lib/postgresql/18/main", "config_file": "/etc/postgresql/18/main/postgresql.conf",
+        "hba_file": "/etc/postgresql/18/main/pg_hba.conf"}
+    pg = {"branch": "existing", "cluster": cluster, "role": "compatible", "database": "compatible", "access": "unproven"}
+    state = {"failed_boundary": "postgresql", "exit_code": 5,
+        "failed_check": "scram-application-access", "postgresql_observation": pg}
+    if alteration == "port": cluster["port"] = 5439
+    elif alteration == "track": cluster["version"] = "16"
+    elif alteration == "branch": pg["branch"] = "configure-existing"
+    elif alteration == "check": state["failed_check"] = "native-secret-canary"
+    else: state["stderr"] = "native-secret-canary"
+    result = HostResult.for_request(req, "manual", "safe failure", state)
+    with pytest.raises(OpsError) as raised:
+        run_request(object(), req, package=object(), invoker=lambda *_: result)
+    assert raised.value.status is ExitStatus.SAFETY
+    assert raised.value.state == {}
+    assert "native-secret-canary" not in str(raised.value)

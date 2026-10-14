@@ -445,6 +445,3 @@ full branch review passed after a breadcrumb width-measurement cleanup. Focused 
 (5), the asset build, and `mix precommit` (906 tests) passed after that cleanup; both PR #18 Build
 and test checks passed at published implementation head `4ba789e2`. These checks establish the
 local and published baselines, not authorization to merge.
-
-The completed execution sequence is retained for provenance in the
-[archived implementation plan](../archive/plans/2026-09-18-missing-list-recovery.md).

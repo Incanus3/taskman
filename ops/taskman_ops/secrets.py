@@ -9,18 +9,17 @@ but has no value-bearing representation or mapping protocol of its own.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from pathlib import Path
 import subprocess
 from typing import Any, Callable, ClassVar
 from urllib.parse import quote
 
-import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .config import ENVIRONMENTS_DIR, EnvironmentConfig, validate_environment_name
 from .errors import ExitStatus, OpsError
 from .output import register_secret
+from .sops import decrypt_yaml
 
 
 SECRETS_DIR = ENVIRONMENTS_DIR
@@ -182,35 +181,6 @@ class SecretConfig(BaseModel):
         raise TypeError("SecretConfig does not expose a mapping interface")
 
 
-def _register_strings(value: object) -> None:
-    """Register all scalar strings before validation can construct errors."""
-
-    if isinstance(value, str):
-        register_secret(value)
-    elif isinstance(value, Mapping):
-        for key, item in value.items():
-            _register_strings(key)
-            _register_strings(item)
-    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-        for item in value:
-            _register_strings(item)
-
-
-def _as_buffer(value: object) -> bytearray:
-    if value is None:
-        return bytearray()
-    if isinstance(value, bytearray):
-        return value
-    if isinstance(value, bytes):
-        return bytearray(value)
-    raise TypeError("SOPS captures must be binary")
-
-
-def _wipe_buffer(buffer: bytearray) -> None:
-    buffer[:] = b"\x00" * len(buffer)
-    buffer.clear()
-
-
 def decrypt_secrets(
     name: str,
     runner: Callable[[list[str]], subprocess.CompletedProcess[bytes | bytearray]] | None = None,
@@ -231,46 +201,14 @@ def decrypt_secrets(
     if path.parent.resolve() != root.resolve() or not path.is_file():
         raise _secret_error("encrypted environment secrets are unavailable")
 
-    argv = ["sops", "decrypt", "--output-type", "yaml", str(path)]
-    result: subprocess.CompletedProcess[bytes | bytearray] | None = None
-    stdout_buffer = bytearray()
-    stderr_buffer = bytearray()
-    payload: object | None = None
+    payload = decrypt_yaml(path, error=_secret_error, runner=runner)
     try:
-        try:
-            result = subprocess.run(argv, check=False, capture_output=True) if runner is None else runner(argv)
-            if not isinstance(result, subprocess.CompletedProcess):
-                raise TypeError("SOPS runner must return CompletedProcess")
-            stdout_buffer = _as_buffer(result.stdout)
-            stderr_buffer = _as_buffer(result.stderr)
-        except Exception:
-            raise _secret_error() from None
-
-        if result.returncode != 0 or not stdout_buffer:
-            raise _secret_error()
-        try:
-            text = bytes(stdout_buffer).decode("utf-8")
-            payload = yaml.safe_load(text)
-            _register_strings(payload)
-            if not isinstance(payload, Mapping):
-                raise ValueError("SOPS output must be a mapping")
-            return SecretConfig.model_validate(payload)
-        except (UnicodeError, TypeError, ValueError, yaml.YAMLError, ValidationError, OpsError):
-            # Never include parser details: malformed SOPS data is untrusted
-            # and may contain a credential canary.
-            raise _secret_error() from None
+        return SecretConfig.model_validate(payload)
+    except (TypeError, ValueError, ValidationError, OpsError):
+        pass
     finally:
-        # Clear both CompletedProcess captures even when conversion failed before
-        # assigning a local buffer. Wipe caller-held mutable captures as well.
-        _wipe_buffer(stdout_buffer)
-        _wipe_buffer(stderr_buffer)
-        if isinstance(result, subprocess.CompletedProcess):
-            for attribute in ("stdout", "stderr"):
-                raw = getattr(result, attribute)
-                if isinstance(raw, bytearray):
-                    _wipe_buffer(raw)
-                setattr(result, attribute, b"")
         payload = None
+    raise _secret_error()
 
 
 def _systemd_quote(value: str) -> str:

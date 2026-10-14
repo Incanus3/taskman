@@ -403,3 +403,48 @@ def test_v3_accepts_an_exact_one_mebibyte_result_and_rejects_one_extra_byte() ->
     assert decode_result(payload).protocol_version == 3
     with pytest.raises(ProtocolError):
         decode_result(payload + b" ")
+
+
+@pytest.mark.parametrize('count', [65, 4096])
+def test_firewall_exception_budget_is_scoped_to_the_exact_result_path(count):
+    result = HostResult(3, 'firewall', CORRELATION, 'succeeded', 'observed',
+                        {'exceptions': [{}] * count}, ())
+    assert len(decode_result(encode_result(result)).state['exceptions']) == count
+
+
+@pytest.mark.parametrize('operation,state', [('firewall', {'exceptions': [{}] * 4097}),
+    ('discover', {'exceptions': [{}] * 65}), ('firewall', {'nested': {'exceptions': [{}] * 65}}),
+    ('firewall', {'proposed': [{}] * 65})])
+def test_firewall_allowance_keeps_every_other_collection_budget(operation, state):
+    with pytest.raises(ProtocolError):
+        HostResult(3, operation, CORRELATION, 'succeeded', 'observed', state, ())
+
+
+@pytest.mark.parametrize("kind", ("upload", "installed"))
+def test_preparation_has_genesis_exact_target_migration_budgets(kind: str) -> None:
+    count = 256
+    target = ({"kind": "upload", "manifest": {"migrations": _fingerprints(count)}} if kind == "upload" else
+              {"kind": "installed", "release_record": {"migrations": _fingerprints(count), "artifact_manifest": {"migrations": _fingerprints(count)}}})
+    request = HostRequest(3, "prepare_genesis", CORRELATION, {"applied_migrations": list(range(512))},
+                          {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"}, {"target": target})
+    assert decode_request(encode_request(request)) == request
+    result = HostResult(3, "prepare_genesis", CORRELATION, "retryable", "observed",
+                        {"observations": {"applied_migrations": list(range(512))}}, ())
+    assert decode_result(encode_result(result)) == result
+
+
+@pytest.mark.parametrize("location", ("too-many-fingerprints", "too-many-versions", "wrong-location", "nested-manifest-budget", "record-budget", "aggregate-budget"))
+def test_preparation_rejects_oversized_or_misplaced_evidence_before_transfer(location: str) -> None:
+    parameters = {"target": {"manifest": {"migrations": _fingerprints(256)}}}
+    expected = {"applied_migrations": list(range(512))}
+    if location == "too-many-fingerprints": parameters["target"]["manifest"]["migrations"] = _fingerprints(257)
+    elif location == "too-many-versions": expected["applied_migrations"] = list(range(513))
+    elif location == "wrong-location": parameters["unrelated"] = {"migrations": _fingerprints(65)}
+    elif location in {"nested-manifest-budget", "record-budget"}:
+        padding = {f"padding_{index}": "x" * 4096 for index in range(32 if location == "nested-manifest-budget" else 64)}
+        parameters = {"target": {"release_record": ({"artifact_manifest": padding} if location == "nested-manifest-budget" else padding)}}
+    else:
+        parameters = {f"group_{index}": {f"item_{item}": "x" * 4096 for item in range(64)} for index in range(5)}
+    with pytest.raises(ProtocolError):
+        encode_request(HostRequest(3, "prepare_genesis", CORRELATION, expected,
+                                   {"install_root": "/opt/taskman", "backup_root": "/var/backups/taskman"}, parameters))

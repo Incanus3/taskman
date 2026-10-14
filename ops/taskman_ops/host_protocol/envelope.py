@@ -235,9 +235,9 @@ _MIGRATION_PATHS = _MUTATION_REQUEST_MIGRATION_PATHS | _RESULT_MIGRATION_PATHS
 
 def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
     def collection_limit(path: tuple[str, ...]) -> int:
-        if operation in {"deploy", "genesis"} and path in _MUTATION_REQUEST_MIGRATION_PATHS:
+        if operation in {"deploy", "genesis", "prepare_genesis"} and path in _MUTATION_REQUEST_MIGRATION_PATHS:
             return MAX_MIGRATION_FINGERPRINTS
-        if operation in {"deploy", "genesis", "restore"} and path in _MUTATION_REQUEST_VERSION_PATHS:
+        if operation in {"deploy", "genesis", "prepare_genesis", "restore"} and path in _MUTATION_REQUEST_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         if operation == "restore" and path in _RESTORE_REQUEST_DATABASE_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
@@ -248,12 +248,14 @@ def _request_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int
 
 def _result_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]:
     def collection_limit(path: tuple[str, ...]) -> int:
+        if operation == "firewall" and path == ("state", "exceptions"):
+            return 4096
         if operation == "discover" and path in {
             ("state", "applied_migrations"),
             *_DISCOVERY_RESTORE_DATABASE_VERSION_PATHS,
         }:
             return MAX_MIGRATION_VERSIONS
-        if operation in {"deploy", "genesis", "restore"} and path in _MUTATION_RESULT_VERSION_PATHS:
+        if operation in {"deploy", "genesis", "prepare_genesis", "restore"} and path in _MUTATION_RESULT_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
         if operation == "restore" and path in _MUTATION_RESTORE_DATABASE_VERSION_PATHS:
             return MAX_MIGRATION_VERSIONS
@@ -274,7 +276,7 @@ def _result_collection_limit(operation: str) -> Callable[[tuple[str, ...]], int]
 
 def _request_record_budget(operation: str) -> Callable[[tuple[str, ...]], int | None]:
     def record_budget(path: tuple[str, ...]) -> int | None:
-        if operation not in {"deploy", "genesis"}:
+        if operation not in {"deploy", "genesis", "prepare_genesis"}:
             return None
         if path in {
             ("parameters", "target", "manifest"),

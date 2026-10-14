@@ -49,5 +49,5 @@ host changes are authorized here.
    and remaining acceptance, and retire proposal wording without erasing the rationale.
 
 No host changes are authorized by this design work. The separate
-[VPS acceptance report](../research/2026-09-17-operations-vps-acceptance.md) owns completed host acceptance and exact artifact context;
+[native acceptance guide](../guides/native-acceptance.md) defines portable criteria; actual host/artifact evidence is retained privately;
 the [PostgreSQL refactor](postgresql-host-python.md) remains parked.

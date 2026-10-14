@@ -19,6 +19,8 @@ from .envelope import (
     encode_request,
     encode_result,
 )
+from .caddy import validate_caddy_request, validate_caddy_result
+from .firewall import validate_firewall_request, validate_firewall_result
 from .identifiers import MAX_STRING_BYTES, ProtocolError, validate_correlation_id
 from .mutation_results import (
     MUTATION_OPERATIONS,
@@ -27,6 +29,7 @@ from .mutation_results import (
     validate_cleanup_completion,
     validate_mutation_state,
     validate_verification_report,
+    validate_application_report,
 )
 from .operations import OPERATION_NAMES
 
@@ -51,10 +54,15 @@ __all__ = [
     "HostResult",
     "ProtocolError",
     "validate_correlation_id",
+    "validate_caddy_request",
+    "validate_caddy_result",
+    "validate_firewall_request",
+    "validate_firewall_result",
     "unavailable_observations",
     "validate_cleanup_completion",
     "validate_mutation_state",
     "validate_verification_report",
+    "validate_application_report",
     "decode_request",
     "decode_result",
     "encode_request",

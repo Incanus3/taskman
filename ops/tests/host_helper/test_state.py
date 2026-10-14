@@ -786,7 +786,109 @@ def test_observe_enforces_deadline_during_history_relationship_validation(
             pass
 
     monkeypatch.setattr(state_module, "_read_selections", lambda *_args: CompletedEnumeration())
-    monkeypatch.setattr(state_module.time, "monotonic", lambda: 2.0)
+    clock = [0.0]
+    def completed_enumeration(*_args):
+        clock[0] = 2.0
+        return CompletedEnumeration()
+    monkeypatch.setattr(state_module, "_read_selections", completed_enumeration)
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: clock[0])
 
     with pytest.raises(StateAmbiguityError, match="selection history.*timed out"):
         observe_host_state(managed_paths(tmp_path), deadline=1.0)
+
+
+@pytest.mark.parametrize("root_kind", ("deployment", "release", "backup", "protection", "retirement", "release-manifest"))
+def test_observation_deadline_covers_inventory_enumeration(tmp_path, monkeypatch, root_kind) -> None:
+    paths = managed_paths(tmp_path)
+    if root_kind == "release-manifest":
+        _publish_release(paths, _release())
+        root = Path(paths.local(paths.release_root / RELEASE))
+    else:
+        root = Path(paths.local({
+            "deployment": paths.deployment_root,
+            "release": paths.release_root,
+            "backup": paths.backup_root,
+            "protection": paths.backup_protection_root,
+            "retirement": backup_protection_retirement_root(paths),
+        }[root_kind]))
+        root.mkdir(parents=True, exist_ok=True)
+    (root / "unknown-entry").touch(mode=0o600)
+    clock = [0.0]
+    scandir = os.scandir
+
+    class SlowInventory:
+        def __enter__(self):
+            self.entries = scandir(root)
+            return self
+        def __iter__(self):
+            for entry in self.entries:
+                clock[0] = 1.0
+                yield entry
+        def __exit__(self, *_args):
+            self.entries.close()
+
+    monkeypatch.setattr(os, "scandir", lambda path: SlowInventory() if Path(path) == root else scandir(path))
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: clock[0])
+    with pytest.raises(StateAmbiguityError, match="host state observation timed out"):
+        observe_host_state(paths, deadline=1.0)
+
+
+def test_observation_refuses_expiry_after_snapshot_construction(tmp_path, monkeypatch) -> None:
+    clock = [0.0]
+    original = HostState.__post_init__
+    def expired_snapshot(self):
+        original(self)
+        clock[0] = 1.0
+    monkeypatch.setattr(HostState, "__post_init__", expired_snapshot)
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: clock[0])
+    with pytest.raises(StateAmbiguityError, match="host state observation timed out"):
+        observe_host_state(managed_paths(tmp_path), deadline=1.0)
+
+
+@pytest.mark.parametrize("expiry", (None, "during-read", "checksum-error"))
+def test_optional_restore_checksum_expiry_refuses_instead_of_corruption_warning(tmp_path, monkeypatch, expiry) -> None:
+    paths = managed_paths(tmp_path)
+    _publish_release(paths, _release())
+    backup_root = Path(paths.local(paths.backup_root))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    for backup_id in (BACKUP, OTHER_BACKUP):
+        dump = backup_root / f"{backup_id}.dump"
+        dump.write_bytes(b"restore input")
+        dump.chmod(0o600)
+        write_backup_manifest(paths, BackupRecord(backup_id, AT, hashlib.sha256(b"restore input").hexdigest(), RELEASE, (), 1024))
+    write_restore_target(paths, RestoreTarget(
+        schema_version=1, backup_id=BACKUP,
+        dump_sha256=hashlib.sha256(b"restore input").hexdigest(),
+        source_release_id=RELEASE, base_selection_id=None,
+        observed_previous_release_id=None, original_database_oid=101,
+        restored_database_oid=None, temporary_creation_pending=True,
+        safety_backup_id=OTHER_BACKUP, replacement=None,
+        safety_backup_attempts=({"backup_id": OTHER_BACKUP, "attempt_number": 0},),
+    ))
+    clock = [0.0]
+    original_open = Path.open
+    dump_path = backup_root / f"{BACKUP}.dump"
+    class SlowDump:
+        def __enter__(self):
+            self.stream = original_open(dump_path, "rb")
+            return self
+        def read(self, size):
+            chunk = self.stream.read(size)
+            if expiry == "during-read":
+                clock[0] = 1.0
+            return chunk
+        def __exit__(self, *_args):
+            self.stream.close()
+    monkeypatch.setattr(Path, "open", lambda path, mode="r", *args, **kwargs: SlowDump() if path == dump_path and mode == "rb" else original_open(path, mode, *args, **kwargs))
+    monkeypatch.setattr(state_module.time, "monotonic", lambda: clock[0])
+    if expiry == "checksum-error":
+        def timed_out_checksum(_path, *, deadline):
+            raise TimeoutError("checksum deadline exhausted")
+        monkeypatch.setattr(state_module, "sha256_file", timed_out_checksum)
+    if expiry is not None:
+        with pytest.raises(StateAmbiguityError, match="host state observation timed out"):
+            observe_host_state(paths, deadline=1.0)
+    else:
+        state = observe_host_state(paths, deadline=1.0)
+        assert state.restore_target.backup_id == BACKUP
+        assert state.warnings == ()
