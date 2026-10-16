@@ -11,17 +11,16 @@ defmodule Taskman.CLI.OnboardingTest do
     assert text =~ "Lists"
     assert text =~ "Tasks"
     assert text =~ "mix phx.server"
-    assert text =~ "ordinary commands require a running backend"
+    assert text =~ "Ordinary commands require a running backend"
     assert text =~ "mix do escript.build + escript.install --force"
     assert text =~ "~/.mix/escripts/taskman"
     assert text =~ "export PATH=\"$HOME/.mix/escripts:$PATH\""
-    assert text =~ "http://localhost:4000"
-    assert text =~ "TASKMAN_API_URL"
+    assert text =~ "TASKMAN_HOST"
+    assert text =~ "TASKMAN_API_KEY_HOST"
     assert text =~ "TASKMAN_API_KEY"
-    assert text =~ "--api-url"
     assert text =~ "config.json"
-    assert text =~ "taskman config set-url https://taskman.example.com"
-    assert text =~ "taskman config set-key"
+    assert text =~ "taskman config hosts add personal --url https://taskman.example.com"
+    assert text =~ "taskman config hosts set-key personal"
     assert text =~ "one-time"
     assert text =~ "status 7"
     assert text =~ "taskman projects list --json"
@@ -38,6 +37,18 @@ defmodule Taskman.CLI.OnboardingTest do
 
     assert text =~
              "mkdir -p ~/.config/fish/completions\ntaskman completions fish > ~/.config/fish/completions/taskman.fish"
+  end
+
+  test "guidance covers clone context, explicit recovery and legacy binary ordering" do
+    text = Onboarding.text()
+    assert text =~ "taskman repo bind --host personal --project 7"
+    assert text =~ "linked worktrees"
+    assert text =~ "both --host and --project"
+    assert text =~ "taskman tasks search publish --all-projects"
+    assert text =~ "taskman repo unbind"
+    assert text =~ "same logical backend"
+    assert text =~ "Update the binary before"
+    assert text =~ "Legacy"
   end
 
   test "onboarding JSON mode wraps the same text in one data envelope" do

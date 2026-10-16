@@ -15,9 +15,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "list"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["projects", "list"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -32,9 +30,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "list"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["projects", "list"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -52,9 +48,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "show", "7", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -78,9 +72,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "show", "7"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -104,10 +96,8 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         ["projects", "create", "--name", "CLI", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -133,10 +123,8 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         ["projects", "create", "--name", "CLI", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -154,9 +142,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "show", "7", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["projects", "show", "7", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -197,7 +183,7 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         [
           "projects",
           "create",
@@ -211,8 +197,6 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
           "#ABCDEF",
           "--json"
         ],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 
@@ -233,9 +217,8 @@ defmodule Taskman.CLI.Commands.ProjectsTest do
     end)
 
     result =
-      Taskman.CLI.run(["projects", "update", "7", "--description", "", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(
+        ["projects", "update", "7", "--description", "", "--json"],
         req_options: [plug: {Req.Test, ProjectCommands}]
       )
 

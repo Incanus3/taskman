@@ -4,6 +4,37 @@ defmodule Taskman.CLI.Execution.ParserTest do
   alias Taskman.CLI.Execution.{Invocation, Parser}
   alias Taskman.CLI.Registry
 
+  test "bound Project requirements resolve after parsing" do
+    assert {:ok, invocation} = Parser.parse(["tasks", "list"])
+    assert invocation.options == %{}
+    assert invocation.command.context_role == :project_required
+    assert {:error, _, _} = Parser.parse(["tasks", "list", "--project", "0"])
+  end
+
+  test "all explicit host values validate and the last occurrence wins" do
+    assert {:ok, invocation} =
+             Parser.parse(["--host=personal", "tasks", "--host", "work", "list"])
+
+    assert invocation.globals == %{host: "work"}
+
+    assert {:error, _, _} =
+             Parser.parse(["--host", "INVALID", "projects", "list", "--host", "work"])
+
+    assert {:error, "Unknown option --unexpected", _} =
+             Parser.parse(["projects", "list", "--unexpected"])
+
+    assert {:error, "Unknown command: projects unexpected", _} =
+             Parser.parse(["projects", "unexpected"])
+  end
+
+  test "invalid named management targets do not echo raw values" do
+    for argv <- [~w(config hosts show tm_PrivateSecret_token), ~w(config hosts set-key INVALID)] do
+      assert {:error, message, _path} = Parser.parse(argv)
+      refute message =~ "tm_PrivateSecret_token"
+      refute message =~ "INVALID"
+    end
+  end
+
   test "registry keeps the declared command order" do
     assert Enum.map(Registry.commands(), & &1.path) == [
              ~w(projects list),
@@ -26,17 +57,25 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(tasks create),
              ~w(tasks update),
              ~w(tasks move),
-             ~w(config set-url),
-             ~w(config set-key),
              ~w(config show),
+             ~w(repo bind),
+             ~w(repo show),
+             ~w(repo unbind),
              ~w(completions bash),
              ~w(completions fish),
              ~w(agent onboarding),
-             ~w(agent skill install)
+             ~w(agent skill install),
+             ~w(config hosts add),
+             ~w(config hosts list),
+             ~w(config hosts show),
+             ~w(config hosts set-url),
+             ~w(config hosts set-key),
+             ~w(config hosts remove),
+             ~w(config default-host)
            ]
   end
 
-  test "Task search accepts an optional Project while Task list still requires it" do
+  test "Task search and list defer contextual Project selection" do
     assert {:ok, search} = Parser.parse(["tasks", "search", "42 publish"], %{})
     assert search.arguments == %{query: "42 publish"}
     assert search.options == %{}
@@ -44,7 +83,7 @@ defmodule Taskman.CLI.Execution.ParserTest do
     assert {:ok, filtered} = Parser.parse(~w(tasks search publish --project 9), %{})
     assert filtered.options == %{project: 9}
 
-    assert {:error, _, ["tasks", "list"]} = Parser.parse(~w(tasks list), %{})
+    assert {:ok, _} = Parser.parse(~w(tasks list), %{})
   end
 
   test "parses comment commands and opt-in Task show without inventing actor options" do
@@ -85,10 +124,10 @@ defmodule Taskman.CLI.Execution.ParserTest do
              )
   end
 
-  test "completion commands declare JSON as an incompatible global option" do
+  test "rejects completion commands with JSON before the command path" do
     for shell <- ~w(bash fish) do
-      assert {:ok, command} = Registry.find(["completions", shell])
-      assert {:forbidden_global, :json} in command.constraints
+      assert {:error, "Global options --json are not accepted", ["completions", ^shell]} =
+               Parser.parse(["--json", "completions", shell], %{})
     end
   end
 
@@ -98,11 +137,11 @@ defmodule Taskman.CLI.Execution.ParserTest do
               command: %{path: ["tasks", "update"]},
               arguments: %{task_id: 42},
               options: %{project: 7, status: "in_progress", clear_due_at: true},
-              globals: %{api_url: "http://localhost:4010", json: true}
+              globals: %{host: "personal", json: true}
             }} =
              Parser.parse(
                ~w(tasks update --project 7 42 --status in_progress --clear-due-at
-                  --json --api-url http://localhost:4010),
+                  --json --host personal),
                %{}
              )
   end
@@ -110,30 +149,28 @@ defmodule Taskman.CLI.Execution.ParserTest do
   test "accepts global options before and after the command path" do
     assert {:ok, first} =
              Parser.parse(
-               ~w(--json --api-url http://before projects list),
+               ~w(--json --host personal projects list),
                %{"TASKMAN_API_URL" => "http://environment"}
              )
 
-    assert first.globals == %{api_url: "http://before", json: true}
+    assert first.globals == %{host: "personal", json: true}
 
     assert {:ok, second} =
              Parser.parse(
-               ~w(projects list --api-url http://after --json),
+               ~w(projects list --host work --json),
                %{"TASKMAN_API_URL" => "http://environment"}
              )
 
-    assert second.globals == %{api_url: "http://after", json: true}
+    assert second.globals == %{host: "work", json: true}
   end
 
   test "rejects Bash completion with the global JSON flag" do
-    assert {:error, "Completion output is shell source and cannot be combined with --json",
-            ["completions", "bash"]} =
+    assert {:error, "Global options --json are not accepted", ["completions", "bash"]} =
              Parser.parse(~w(completions bash --json), %{})
   end
 
   test "rejects Fish completion with the global JSON flag" do
-    assert {:error, "Completion output is shell source and cannot be combined with --json",
-            ["completions", "fish"]} =
+    assert {:error, "Global options --json are not accepted", ["completions", "fish"]} =
              Parser.parse(~w(completions fish --json), %{})
   end
 

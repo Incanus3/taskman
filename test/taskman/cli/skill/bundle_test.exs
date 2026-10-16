@@ -19,11 +19,12 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "ordinary commands require a running backend"
     assert skill =~ "--json"
     assert skill =~ "stdout only on status 0"
-    assert skill =~ "TASKMAN_API_URL"
+    assert skill =~ "TASKMAN_HOST"
+    assert skill =~ "TASKMAN_API_KEY_HOST"
     assert skill =~ "TASKMAN_API_KEY"
     assert skill =~ "config.json"
-    assert skill =~ "taskman config set-url https://taskman.example.com"
-    assert skill =~ "taskman config set-key"
+    assert skill =~ "taskman config hosts add personal --url https://taskman.example.com"
+    assert skill =~ "taskman config hosts set-key personal"
     assert skill =~ "taskman config show"
     assert skill =~ "one-time"
     assert skill =~ "connection_failed"
@@ -47,7 +48,7 @@ defmodule Taskman.CLI.Skill.BundleTest do
     assert skill =~ "taskman projects update 7 --description"
     assert skill =~ "--icon"
     assert skill =~ "--color"
-    assert skill =~ "taskman tasks list --project 7 --include-descendants --json"
+    assert skill =~ "taskman tasks list --host personal --project 7 --include-descendants --json"
     assert skill =~ "--status pending --status in_progress --sort priority --direction desc"
     assert skill =~ "Repeat `--status` to include multiple lifecycle states"
     assert skill =~ "Location sorting requires `--include-descendants`"
@@ -88,6 +89,12 @@ defmodule Taskman.CLI.Skill.BundleTest do
         other -> flunk("invalid skill example #{example}: #{inspect(other)}")
       end
     end
+
+    assert skill =~ "linked worktrees"
+    assert skill =~ "both --host and --project"
+    assert skill =~ "Update the binary before"
+    assert skill =~ "same logical backend"
+    assert skill =~ "--all-projects"
 
     assert Bundle.cli_version() == Taskman.CLI.version()
   end

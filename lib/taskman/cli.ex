@@ -13,9 +13,7 @@ defmodule Taskman.CLI do
   @doc "Parse and run args, returning a result without writing to the process IO."
   @spec run([String.t()], keyword() | map()) :: Result.t()
   def run(args, runtime_options \\ []) do
-    env = runtime_env(runtime_options)
-
-    case Parser.parse(args, env) do
+    case Parser.parse(args) do
       {:ok, invocation} -> Runner.run(invocation, runtime_options)
       {:help, path} -> %Result{stdout: Help.render(path)}
       :version -> %Result{stdout: version() <> "\n"}
@@ -49,10 +47,4 @@ defmodule Taskman.CLI do
 
   defp json_requested?(args) when is_list(args), do: "--json" in args or "-j" in args
   defp json_requested?(_args), do: false
-
-  defp runtime_env(options) when is_list(options),
-    do: Keyword.get(options, :env, System.get_env())
-
-  defp runtime_env(options) when is_map(options), do: Map.get(options, :env, options)
-  defp runtime_env(_options), do: System.get_env()
 end

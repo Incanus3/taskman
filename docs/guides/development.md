@@ -218,6 +218,13 @@ Every implementation slice should have a clear user-visible or technical outcome
 meaningful verification gate: focused tests, formatting, a build, a smoke test, or another direct
 inspection appropriate to the change.
 
+ExUnit's default `:tmp_dir` may be beneath the checkout. CLI tests using real Git discovery must
+use private temporary roots outside the checkout with per-test cleanup, or an explicit
+`GIT_CEILING_DIRECTORIES` around the fixture. Prove the intended non-Git or disposable-repository
+classification with real Git using the same invocation environment; naming a directory "outside
+Git" does not isolate parent discovery. Pass cwd and environment per call rather than changing
+process-global state.
+
 Automated tests should cover observable behavior, interactions, and meaningful structure. Do not
 add assertions that only verify styling details such as spacing, colors, or alignment. CSS-class
 assertions are appropriate only when they establish functional user-visible state, such as whether
@@ -247,6 +254,23 @@ For hosted operation, preserve the public boundary: Caddy owns public HTTPS and 
 loopback. Forwarded client details are trusted only from that immediate loopback proxy. Keep
 runtime secrets outside version control, use versioned immutable releases selected by a `current`
 symlink, and treat migration compatibility and backup/restore evidence as release requirements.
+
+### CLI verification
+
+Run the focused suite and rebuilt executable gate from the repository root, sequentially:
+
+```sh
+mix test test/taskman/cli
+mix precommit
+mix escript.build
+TASKMAN_TEST_ESCRIPT="$PWD/taskman" mix test test/taskman/cli/escript_test.exs
+```
+
+Without `TASKMAN_TEST_ESCRIPT`, only the three explicit executable smoke tests are skipped.
+The final command must execute all three against the newly built binary. Keep the generated
+escript out of version control and use disposable HOME/XDG, Git and skill-installation roots;
+verification must not install into real user state. Source-level or Req.Test success does not
+establish built-executable parity, live-backend acceptance or the pinned release runtime.
 
 ### Operations verification
 

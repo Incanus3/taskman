@@ -308,9 +308,7 @@ defmodule Taskman.CLI.Commands.TaskBlockingTest do
   end
 
   defp run(argv) do
-    Taskman.CLI.run(argv,
-      env: %{"TASKMAN_API_KEY" => "tm_blocking_test_credential"},
-      config_root: Path.join(System.tmp_dir!(), "taskman-cli-blocking-tests"),
+    Taskman.CLI.Fixtures.run_with_host(argv,
       req_options: [plug: {Req.Test, TaskBlockingCommands}]
     )
   end

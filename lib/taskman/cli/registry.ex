@@ -27,6 +27,7 @@ defmodule Taskman.CLI.Registry do
         summary: "List Projects.",
         usage: "taskman projects list",
         handler: {:projects, :list},
+        context_role: :host_only,
         examples: ["taskman projects list", "taskman projects list --json"]
       },
       %Command{
@@ -34,6 +35,7 @@ defmodule Taskman.CLI.Registry do
         summary: "Inspect one Project by ID.",
         usage: "taskman projects show PROJECT_ID",
         handler: {:projects, :show},
+        context_role: :host_only,
         arguments: [argument(:project_id, "PROJECT_ID", :positive_integer, "Project ID.")],
         examples: ["taskman projects show 7"]
       },
@@ -43,6 +45,7 @@ defmodule Taskman.CLI.Registry do
         usage:
           "taskman projects create --name NAME [--description TEXT] [--icon ICON] [--color '#RRGGBB']",
         handler: {:projects, :create},
+        context_role: :host_only,
         options: [
           option(:name, "--name", :string, "NAME", "Project name.", required?: true),
           option(:description, "--description", :string, "TEXT", "Project description."),
@@ -57,6 +60,7 @@ defmodule Taskman.CLI.Registry do
         usage:
           "taskman projects update PROJECT_ID [--name NAME] [--description TEXT] [--icon ICON] [--color '#RRGGBB']",
         handler: {:projects, :update},
+        context_role: :host_only,
         arguments: [argument(:project_id, "PROJECT_ID", :positive_integer, "Project ID.")],
         options: [
           option(:name, "--name", :string, "NAME", "Replacement Project name."),
@@ -70,37 +74,34 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(lists list),
         summary: "List a Project's Lists in tree order.",
-        usage: "taskman lists list --project PROJECT_ID",
+        usage: "taskman lists list [--project PROJECT_ID]",
         handler: {:lists, :list},
+        context_role: :project_required,
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          )
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.")
         ],
         examples: ["taskman lists list --project 7"]
       },
       %Command{
         path: ~w(lists show),
         summary: "Inspect one List by ID.",
-        usage: "taskman lists show --project PROJECT_ID LIST_ID",
+        usage: "taskman lists show [--project PROJECT_ID] LIST_ID",
         handler: {:lists, :show},
+        context_role: :project_required,
         arguments: [argument(:list_id, "LIST_ID", :positive_integer, "List ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          )
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.")
         ],
         examples: ["taskman lists show --project 7 11"]
       },
       %Command{
         path: ~w(lists create),
         summary: "Create a root or child List.",
-        usage: "taskman lists create --project PROJECT_ID --name NAME [--parent LIST_ID]",
+        usage: "taskman lists create [--project PROJECT_ID] --name NAME [--parent LIST_ID]",
         handler: {:lists, :create},
+        context_role: :project_required,
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:name, "--name", :string, "NAME", "List name.", required?: true),
           option(:parent, "--parent", :positive_integer, "LIST_ID", "Optional parent List ID.")
         ],
@@ -109,13 +110,12 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(lists rename),
         summary: "Rename a List.",
-        usage: "taskman lists rename --project PROJECT_ID LIST_ID --name NAME",
+        usage: "taskman lists rename [--project PROJECT_ID] LIST_ID --name NAME",
         handler: {:lists, :rename},
+        context_role: :project_required,
         arguments: [argument(:list_id, "LIST_ID", :positive_integer, "List ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:name, "--name", :string, "NAME", "New List name.", required?: true)
         ],
         examples: ["taskman lists rename --project 7 11 --name Planning"]
@@ -124,12 +124,11 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks list),
         summary: "List Tasks for a Project or List.",
         usage:
-          "taskman tasks list --project PROJECT_ID [--list LIST_ID] [--include-descendants] [--status STATUS]... [--sort FIELD --direction asc|desc]",
+          "taskman tasks list [--project PROJECT_ID] [--list LIST_ID] [--include-descendants] [--status STATUS]... [--sort FIELD --direction asc|desc]",
         handler: {:tasks, :list},
+        context_role: :project_required,
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:list, "--list", :positive_integer, "LIST_ID", "Optional List ID."),
           option(
             :include_descendants,
@@ -155,28 +154,37 @@ defmodule Taskman.CLI.Registry do
       },
       %Command{
         path: ~w(tasks search),
-        summary: "Find Tasks by ID or title across Projects.",
-        usage: "taskman tasks search QUERY [--project PROJECT_ID] [--json]",
+        summary: "Find Tasks by ID or title in the selected scope.",
+        usage: "taskman tasks search QUERY [--project PROJECT_ID | --all-projects] [--json]",
         handler: {:tasks, :search},
+        context_role: :project_filter,
+        constraints: [{:mutually_exclusive, [:project, :all_projects]}],
         arguments: [argument(:query, "QUERY", :nonblank_string, "Task ID or title terms.")],
         options: [
+          option(
+            :all_projects,
+            "--all-projects",
+            :boolean,
+            nil,
+            "Search every Project on the host."
+          ),
           option(:project, "--project", :positive_integer, "PROJECT_ID", "Limit to one Project.")
         ],
         examples: [
           "taskman tasks search \"42 publish\"",
-          "taskman tasks search publish --project 9"
+          "taskman tasks search publish --host personal --project 9",
+          "taskman tasks search publish --host personal --all-projects"
         ]
       },
       %Command{
         path: ~w(tasks show),
         summary: "Inspect one Task by ID.",
-        usage: "taskman tasks show --project PROJECT_ID TASK_ID [--include-comments]",
+        usage: "taskman tasks show [--project PROJECT_ID] TASK_ID [--include-comments]",
         handler: {:tasks, :show},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(
             :include_comments,
             "--include-comments",
@@ -190,8 +198,9 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks blocking show),
         summary: "Show Tasks this Task blocks and Tasks blocking it.",
-        usage: "taskman tasks blocking show --project PROJECT_ID TASK_ID",
+        usage: "taskman tasks blocking show [--project PROJECT_ID] TASK_ID",
         handler: {:tasks, :blocking_show},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Selected Task ID.")],
         options: [
           option(
@@ -199,8 +208,7 @@ defmodule Taskman.CLI.Registry do
             "--project",
             :positive_integer,
             "PROJECT_ID",
-            "Selected Task's Project ID.",
-            required?: true
+            "Selected Task's Project ID."
           )
         ],
         examples: ["taskman tasks blocking show --project 9 42"]
@@ -208,8 +216,9 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks blocks add),
         summary: "Add a directed Blocks link from the named Task to a target Task.",
-        usage: "taskman tasks blocks add --project PROJECT_ID TASK_ID --target TARGET_TASK_ID",
+        usage: "taskman tasks blocks add [--project PROJECT_ID] TASK_ID --target TARGET_TASK_ID",
         handler: {:tasks, :blocks_add},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Blocking Task ID.")],
         options: [
           option(
@@ -217,8 +226,7 @@ defmodule Taskman.CLI.Registry do
             "--project",
             :positive_integer,
             "PROJECT_ID",
-            "Blocking Task's Project ID.",
-            required?: true
+            "Blocking Task's Project ID."
           ),
           option(
             :target,
@@ -234,8 +242,10 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks blocks remove),
         summary: "Remove a directed Blocks link from the named Task to a target Task.",
-        usage: "taskman tasks blocks remove --project PROJECT_ID TASK_ID --target TARGET_TASK_ID",
+        usage:
+          "taskman tasks blocks remove [--project PROJECT_ID] TASK_ID --target TARGET_TASK_ID",
         handler: {:tasks, :blocks_remove},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Blocking Task ID.")],
         options: [
           option(
@@ -243,8 +253,7 @@ defmodule Taskman.CLI.Registry do
             "--project",
             :positive_integer,
             "PROJECT_ID",
-            "Blocking Task's Project ID.",
-            required?: true
+            "Blocking Task's Project ID."
           ),
           option(
             :target,
@@ -260,13 +269,12 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks comments list),
         summary: "Read a Task's ordered comment thread.",
-        usage: "taskman tasks comments list --project PROJECT_ID TASK_ID",
+        usage: "taskman tasks comments list [--project PROJECT_ID] TASK_ID",
         handler: {:tasks, :comments_list},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          )
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.")
         ],
         examples: ["taskman tasks comments list --project 7 42 --json"]
       },
@@ -274,13 +282,12 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks comments add),
         summary: "Append a comment as the authenticated account.",
         usage:
-          "taskman tasks comments add --project PROJECT_ID TASK_ID --text TEXT [--author-name NAME]",
+          "taskman tasks comments add [--project PROJECT_ID] TASK_ID --text TEXT [--author-name NAME]",
         handler: {:tasks, :comments_add},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:text, "--text", :string, "TEXT", "Comment text.", required?: true),
           option(
             :author_name,
@@ -297,13 +304,12 @@ defmodule Taskman.CLI.Registry do
       %Command{
         path: ~w(tasks hierarchy),
         summary: "Inspect a Task's connected hierarchy.",
-        usage: "taskman tasks hierarchy --project PROJECT_ID TASK_ID",
+        usage: "taskman tasks hierarchy [--project PROJECT_ID] TASK_ID",
         handler: {:tasks, :hierarchy},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          )
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.")
         ],
         examples: ["taskman tasks hierarchy --project 7 42"]
       },
@@ -311,12 +317,11 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks create),
         summary: "Create a Task.",
         usage:
-          "taskman tasks create --project PROJECT_ID --title TITLE [--parent TASK_ID] [--list LIST_ID] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
+          "taskman tasks create [--project PROJECT_ID] --title TITLE [--parent TASK_ID] [--list LIST_ID] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
         handler: {:tasks, :create},
+        context_role: :project_required,
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:title, "--title", :string, "TITLE", "Task title.", required?: true),
           option(:parent, "--parent", :positive_integer, "TASK_ID", "Optional parent Task ID."),
           option(:list, "--list", :positive_integer, "LIST_ID", "Optional List ID."),
@@ -335,13 +340,12 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks update),
         summary: "Update editable Task fields or lifecycle state.",
         usage:
-          "taskman tasks update --project PROJECT_ID TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent] [--confirm-unresolved-blockers ID,ID | --force-done-with-unresolved-blockers]",
+          "taskman tasks update [--project PROJECT_ID] TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent] [--confirm-unresolved-blockers ID,ID | --force-done-with-unresolved-blockers]",
         handler: {:tasks, :update},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:title, "--title", :string, "TITLE", "Replacement Task title."),
           option(:description, "--description", :string, "TEXT", "Replacement description."),
           option(:status, "--status", :string, "STATUS", "Lifecycle status.", values: @statuses),
@@ -402,13 +406,12 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks move),
         summary: "Move a Task within its Project.",
         usage:
-          "taskman tasks move --project PROJECT_ID TASK_ID (--to-list LIST_ID | --to-project-root)",
+          "taskman tasks move [--project PROJECT_ID] TASK_ID (--to-list LIST_ID | --to-project-root)",
         handler: {:tasks, :move},
+        context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
         options: [
-          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID.",
-            required?: true
-          ),
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
           option(:to_list, "--to-list", :positive_integer, "LIST_ID", "Destination List ID."),
           option(
             :to_project_root,
@@ -425,33 +428,47 @@ defmodule Taskman.CLI.Registry do
         ]
       },
       %Command{
-        path: ~w(config set-url),
-        summary: "Store the Taskman API base URL.",
-        usage: "taskman config set-url URL",
-        handler: {:config, :set_url},
-        arguments: [argument(:api_url, "URL", :string, "HTTP or HTTPS Taskman API base URL.")],
-        examples: ["taskman config set-url https://taskman.example.com"]
-      },
-      %Command{
-        path: ~w(config set-key),
-        summary: "Prompt for and store a Taskman API key.",
-        usage: "taskman config set-key",
-        handler: {:config, :set_key},
-        examples: ["taskman config set-key"]
-      },
-      %Command{
         path: ~w(config show),
-        summary: "Show the resolved Taskman API configuration without revealing its key.",
+        summary: "Inspect effective host and Project context.",
         usage: "taskman config show",
         handler: {:config, :show},
-        examples: ["taskman config show", "taskman config show --json"]
+        context_role: :effective_inspection,
+        examples: ["taskman config show --json", "taskman config show --host personal"]
+      },
+      %Command{
+        path: ~w(repo bind),
+        summary: "Validate and bind this clone to a host and Project.",
+        usage: "taskman repo bind --host NAME --project PROJECT_ID",
+        handler: {:repo, :bind},
+        context_role: :bind,
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Project ID.",
+            required?: true
+          )
+        ],
+        constraints: [{:require_global, [:host]}],
+        examples: ["taskman repo bind --host personal --project 7"]
+      },
+      %Command{
+        path: ~w(repo show),
+        summary: "Inspect the clone binding offline.",
+        usage: "taskman repo show",
+        handler: {:repo, :show},
+        examples: ["taskman repo show --json"]
+      },
+      %Command{
+        path: ~w(repo unbind),
+        summary: "Remove the clone binding offline.",
+        usage: "taskman repo unbind",
+        handler: {:repo, :unbind},
+        examples: ["taskman repo unbind"]
       },
       %Command{
         path: ~w(completions bash),
         summary: "Print Bash completion source.",
         usage: "taskman completions bash",
         handler: {:completions, :bash},
-        constraints: [{:forbidden_global, :json}],
+        constraints: [{:forbid_global, [:json]}],
         examples: [
           "taskman completions bash > ~/.local/share/bash-completion/completions/taskman"
         ]
@@ -461,7 +478,7 @@ defmodule Taskman.CLI.Registry do
         summary: "Print Fish completion source.",
         usage: "taskman completions fish",
         handler: {:completions, :fish},
-        constraints: [{:forbidden_global, :json}],
+        constraints: [{:forbid_global, [:json]}],
         examples: ["taskman completions fish > ~/.config/fish/completions/taskman.fish"]
       },
       %Command{
@@ -479,14 +496,79 @@ defmodule Taskman.CLI.Registry do
         options: [option(:force, "--force", :boolean, nil, "Replace an unrecognized target.")],
         examples: ["taskman agent skill install", "taskman agent skill install --force"]
       }
-    ]
+    ] ++ host_commands()
   end
+
+  defp host_commands do
+    Enum.map(
+      [
+        {:host_add, ~w(config hosts add), true, true},
+        {:host_list, ~w(config hosts list), false, false},
+        {:host_show, ~w(config hosts show), true, false},
+        {:host_set_url, ~w(config hosts set-url), true, true},
+        {:host_set_key, ~w(config hosts set-key), true, false},
+        {:host_remove, ~w(config hosts remove), true, false},
+        {:default_host, ~w(config default-host), true, false}
+      ],
+      fn {action, path, named?, url?} ->
+        %Command{
+          path: path,
+          summary: host_summary(action),
+          usage:
+            "taskman " <>
+              Enum.join(path, " ") <>
+              if(named?, do: " NAME", else: "") <> if(url?, do: " --url URL", else: ""),
+          handler: {:config, action},
+          context_role: :local,
+          arguments:
+            if(named?,
+              do: [argument(:host, "NAME", :host_name, "Registered host name.")],
+              else: []
+            ),
+          options:
+            if(url?,
+              do: [option(:url, "--url", :string, "URL", "Host base URL.", required?: true)],
+              else: []
+            ),
+          constraints: [{:forbid_global, [:host]}],
+          examples: host_examples(action)
+        }
+      end
+    )
+  end
+
+  defp host_examples(:host_add),
+    do: ["taskman config hosts add personal --url https://taskman.example.com"]
+
+  defp host_examples(:host_list), do: ["taskman config hosts list --json"]
+  defp host_examples(:host_show), do: ["taskman config hosts show personal --json"]
+
+  defp host_examples(:host_set_url),
+    do: ["taskman config hosts set-url personal --url https://taskman.example.com"]
+
+  defp host_examples(:host_set_key), do: ["taskman config hosts set-key personal"]
+  defp host_examples(:host_remove), do: ["taskman config hosts remove personal"]
+  defp host_examples(:default_host), do: ["taskman config default-host personal"]
+
+  defp host_summary(:host_add), do: "Register a new host without a key or default selection."
+
+  defp host_summary(:host_list),
+    do: "List stored hosts and their credential/default status offline."
+
+  defp host_summary(:host_show), do: "Inspect one stored host without revealing its credential."
+  defp host_summary(:host_set_url), do: "Update the address of the same logical backend."
+  defp host_summary(:host_set_key), do: "Prompt without echo and save the named host's API key."
+
+  defp host_summary(:host_remove),
+    do: "Remove a host and clear its default, retaining clone bindings."
+
+  defp host_summary(:default_host), do: "Select an existing host as the configured default."
 
   @doc "Global options accepted before or after a command path."
   @spec global_options() :: [Option.t()]
   def global_options do
     [
-      option(:api_url, "--api-url", :string, "URL", "Taskman API base URL."),
+      option(:host, "--host", :host_name, "NAME", "Registered Taskman host."),
       option(
         :json,
         "--json",

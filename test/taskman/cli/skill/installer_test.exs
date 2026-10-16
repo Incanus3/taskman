@@ -31,8 +31,12 @@ defmodule Taskman.CLI.Skill.InstallerTest do
     assert {:ok, %{action: :installed}} = Installer.install(skills_root: root)
     skill = File.read!(Path.join([root, "taskman-cli", "SKILL.md"]))
 
-    assert {search_offset, _} = :binary.match(skill, "taskman tasks search publish\n")
-    assert {show_offset, _} = :binary.match(skill, "taskman tasks show --project 9 42")
+    assert {search_offset, _} =
+             :binary.match(skill, "taskman tasks search publish --all-projects\n")
+
+    assert {show_offset, _} =
+             :binary.match(skill, "taskman tasks show --host personal --project 9 42")
+
     assert search_offset < show_offset
     assert skill =~ "PROJECT` value `9: Website`"
     assert skill =~ "ID` value `42`"

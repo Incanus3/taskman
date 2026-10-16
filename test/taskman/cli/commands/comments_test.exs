@@ -182,9 +182,8 @@ defmodule Taskman.CLI.Commands.CommentsTest do
     assert run(~w(tasks comments add --project 7 42)).status == 2
     assert run(~w(tasks comments list --project 7 0)).status == 2
 
-    assert Taskman.CLI.run(~w(tasks comments list --project 7 42),
-             env: %{},
-             config_root: Path.join(System.tmp_dir!(), "taskman-cli-comment-tests-missing-key")
+    assert Taskman.CLI.Fixtures.run_with_host(~w(tasks comments list --project 7 42),
+             authenticated?: false
            ).status == 7
   end
 
@@ -207,9 +206,7 @@ defmodule Taskman.CLI.Commands.CommentsTest do
   end
 
   defp run(args) do
-    Taskman.CLI.run(args,
-      env: %{"TASKMAN_API_KEY" => "tm_comment_test_credential"},
-      config_root: Path.join(System.tmp_dir!(), "taskman-cli-comment-tests"),
+    Taskman.CLI.Fixtures.run_with_host(args,
       req_options: [plug: {Req.Test, CommentsCommands}]
     )
   end
