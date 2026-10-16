@@ -24,9 +24,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(["lists", "list", "--project", "7"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["lists", "list", "--project", "7"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -55,9 +53,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(["lists", "list", "--project", "7"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["lists", "list", "--project", "7"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -83,9 +79,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(["lists", "show", "--project", "7", "12", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -109,9 +103,7 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(["lists", "show", "--project", "7", "12", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
+      Taskman.CLI.Fixtures.run_with_host(["lists", "show", "--project", "7", "12", "--json"],
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -143,10 +135,8 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         ["lists", "create", "--project", "7", "--name", "Launch", "--parent", "11", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -172,10 +162,8 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         ["lists", "create", "--project", "7", "--name", "Planning"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ListCommands}]
       )
 
@@ -208,10 +196,8 @@ defmodule Taskman.CLI.Commands.ListsTest do
     end)
 
     result =
-      Taskman.CLI.run(
+      Taskman.CLI.Fixtures.run_with_host(
         ["lists", "rename", "--project", "7", "12", "--name", "Released", "--json"],
-        env: %{"TASKMAN_API_KEY" => "tm_command_test_credential"},
-        config_root: Path.join(System.tmp_dir!(), "taskman-cli-command-tests"),
         req_options: [plug: {Req.Test, ListCommands}]
       )
 

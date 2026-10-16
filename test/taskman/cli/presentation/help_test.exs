@@ -7,7 +7,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
   test "top-level help discovers every command group and global option" do
     help = Help.render([])
 
-    for group <- ~w(projects lists tasks config completions agent) do
+    for group <- ~w(projects lists tasks config repo completions agent) do
       assert help =~ "taskman #{group}"
     end
 
@@ -20,17 +20,18 @@ defmodule Taskman.CLI.Presentation.HelpTest do
       assert help =~ utility
     end
 
-    for option <- ["--api-url", "--json", "--help", "--version"] do
+    for option <- ["--host", "--json", "--help", "--version"] do
       assert help =~ option
     end
 
-    assert help =~ "TASKMAN_API_URL"
+    assert help =~ "TASKMAN_HOST"
+    assert help =~ "TASKMAN_API_KEY_HOST"
     assert help =~ "TASKMAN_API_KEY"
     assert help =~ "config.json"
   end
 
   test "group help lists every child command" do
-    for group <- ~w(projects lists tasks config completions agent) do
+    for group <- ~w(projects lists tasks config repo completions agent) do
       help = Help.render([group])
 
       Registry.commands()
@@ -44,7 +45,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
   test "leaf help documents usage, options, output, statuses, and an example" do
     help = Help.render(~w(tasks move))
 
-    assert help =~ "taskman tasks move --project PROJECT_ID TASK_ID"
+    assert help =~ "taskman tasks move [--project PROJECT_ID] TASK_ID"
     assert help =~ "--to-list LIST_ID"
     assert help =~ "--to-project-root"
     assert help =~ "Output"
@@ -54,7 +55,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
 
   test "Task hierarchy help documents the exact inspect invocation" do
     assert Help.render(~w(tasks hierarchy)) =~
-             "taskman tasks hierarchy --project PROJECT_ID TASK_ID"
+             "taskman tasks hierarchy [--project PROJECT_ID] TASK_ID"
   end
 
   test "Task search help shows optional Project filtering and summary output" do
@@ -62,10 +63,10 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     help = Help.render(~w(tasks search))
 
     assert group_help =~ "tasks search"
-    assert help =~ "taskman tasks search QUERY [--project PROJECT_ID] [--json]"
+    assert help =~ "taskman tasks search QUERY [--project PROJECT_ID | --all-projects] [--json]"
     assert help =~ "--project PROJECT_ID"
     assert help =~ "ID, TITLE, STATUS, PRIORITY, PROJECT, and LOCATION"
-    assert help =~ "taskman tasks search publish --project 9"
+    assert help =~ "taskman tasks search publish --host personal --project 9"
   end
 
   test "relationship leaf help names blocker-first source and exact target IDs" do
@@ -73,11 +74,11 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     add = Help.render(~w(tasks blocks add))
     remove = Help.render(~w(tasks blocks remove))
 
-    assert show =~ "taskman tasks blocking show --project PROJECT_ID TASK_ID"
+    assert show =~ "taskman tasks blocking show [--project PROJECT_ID] TASK_ID"
     assert show =~ "Tasks blocking it"
 
     for help <- [add, remove] do
-      assert help =~ "--project PROJECT_ID TASK_ID --target TARGET_TASK_ID"
+      assert help =~ "[--project PROJECT_ID] TASK_ID --target TARGET_TASK_ID"
       assert help =~ "Blocking Task's Project ID"
       assert help =~ "Blocked Task ID, even in another Project"
     end
@@ -94,7 +95,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
   test "Task comment help discovers commands and opt-in fields" do
     assert Help.render(~w(tasks)) =~ "tasks comments list"
     assert Help.render(~w(tasks comments)) =~ "tasks comments add"
-    assert Help.render(~w(tasks comments list)) =~ "--project PROJECT_ID TASK_ID"
+    assert Help.render(~w(tasks comments list)) =~ "[--project PROJECT_ID] TASK_ID"
     assert Help.render(~w(tasks comments add)) =~ "--text TEXT"
     assert Help.render(~w(tasks comments add)) =~ "--author-name NAME"
     assert Help.render(~w(tasks show)) =~ "--include-comments"
@@ -113,7 +114,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     update_help = Help.render(~w(tasks update))
 
     assert create_help =~
-             "taskman tasks create --project PROJECT_ID --title TITLE [--parent TASK_ID]"
+             "taskman tasks create [--project PROJECT_ID] --title TITLE [--parent TASK_ID]"
 
     assert update_help =~ "[--parent PARENT_TASK_ID | --no-parent]"
     assert update_help =~ "--parent PARENT_TASK_ID"
@@ -141,19 +142,53 @@ defmodule Taskman.CLI.Presentation.HelpTest do
   end
 
   test "config leaf help documents secret input, redaction, and authentication status 7" do
-    set_key = Help.render(~w(config set-key))
+    set_key = Help.render(~w(config hosts set-key))
     show = Help.render(~w(config show))
 
-    assert set_key =~ "taskman config set-key"
+    assert set_key =~ "taskman config hosts set-key NAME"
     assert set_key =~ "7 authentication required"
-    assert show =~ "without revealing its key"
+    assert show =~ "Inspect effective host and Project context"
+  end
+
+  test "contextual help explains bound defaults, paired overrides and search escape" do
+    scoped = Help.render(~w(tasks list))
+    assert scoped =~ "[--project PROJECT_ID]"
+    assert scoped =~ "bound Project"
+    assert scoped =~ "both --host and --project"
+    assert scoped =~ "Unbound"
+    search = Help.render(~w(tasks search))
+    assert search =~ "--all-projects"
+    assert search =~ "conflicts with --project"
+    assert search =~ "--host NAME --all-projects"
+  end
+
+  test "named-host and repository setup are discoverable offline" do
+    for path <- [
+          ~w(config hosts add),
+          ~w(config hosts set-url),
+          ~w(config hosts set-key),
+          ~w(config default-host),
+          ~w(repo bind),
+          ~w(repo show),
+          ~w(repo unbind)
+        ] do
+      result = Taskman.CLI.run(path ++ ["--help", "--json"], env: %{})
+      assert result.status == 0
+      assert result.stdout =~ Enum.join(path, " ")
+      assert result.stdout =~ "Output:"
+      assert result.stderr == ""
+    end
+
+    assert Help.render(~w(repo bind)) =~ "authenticated Project"
+    assert Help.render(~w(repo unbind)) =~ "offline"
+    assert Help.render(~w(config hosts set-url)) =~ "same logical backend"
   end
 
   test "every registered leaf has usage and an example" do
     for command <- Registry.commands() do
       help = Help.render(command.path)
       assert help =~ "Usage"
-      assert help =~ "Example"
+      assert help =~ "Examples:\n  taskman"
     end
   end
 

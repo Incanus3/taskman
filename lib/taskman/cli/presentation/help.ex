@@ -54,9 +54,12 @@ defmodule Taskman.CLI.Presentation.Help do
         [
           "",
           "Configuration:",
-          "  --api-url takes precedence over TASKMAN_API_URL; TASKMAN_API_KEY overrides config.json.",
+          "  Host selection: --host NAME, repository binding, TASKMAN_HOST, configured default.",
           "  Settings are read from ${XDG_CONFIG_HOME:-$HOME/.config}/taskman/config.json.",
-          "  The URL falls back to http://localhost:4000; ordinary API commands require an API key.",
+          "  Fresh configuration has no implicit host or URL; register one with config hosts add.",
+          "  Pair TASKMAN_API_KEY with TASKMAN_API_KEY_HOST matching the selected host.",
+          "  Local host management and repo show/unbind work offline.",
+          "  Use taskman agent onboarding for setup, legacy upgrade, and clone recovery.",
           "  Global options may appear before or after the command path.",
           "",
           "Use taskman <group> --help or taskman <group> <command> --help for details."
@@ -120,6 +123,7 @@ defmodule Taskman.CLI.Presentation.Help do
 
     lines =
       lines ++
+        context_lines(command) ++
         output_lines(command) ++
         [
           "",
@@ -141,6 +145,7 @@ defmodule Taskman.CLI.Presentation.Help do
   defp group_summary("projects"), do: "Manage Projects"
   defp group_summary("lists"), do: "Manage Lists"
   defp group_summary("tasks"), do: "Manage Tasks"
+  defp group_summary("repo"), do: "Manage shared clone bindings"
   defp group_summary("config"), do: "Manage CLI API configuration"
   defp group_summary("completions"), do: "Generate shell completions"
   defp group_summary("agent"), do: "Agent onboarding and skill tools"
@@ -160,14 +165,89 @@ defmodule Taskman.CLI.Presentation.Help do
     end)
   end
 
+  defp context_lines(%Command{context_role: role})
+       when role in [:project_required, :project_filter] do
+    common = [
+      "",
+      "Context:",
+      "  The bound Project is used when no explicit scope is supplied; linked worktrees share it.",
+      "  To override a bound Project, supply both --host and --project, even for matching values.",
+      "  Examples with only --project assume unbound context; add --host NAME for bound overrides."
+    ]
+
+    case role do
+      :project_required ->
+        common ++
+          [
+            "  Unbound commands require --project; select a registered host or configure a default."
+          ]
+
+      :project_filter ->
+        common ++
+          [
+            "  Unbound search spans all Projects unless --project is supplied.",
+            "  --all-projects searches the selected host and conflicts with --project.",
+            "  --host NAME --all-projects permits a host-only search override."
+          ]
+    end
+  end
+
+  defp context_lines(%Command{context_role: :bind}),
+    do: [
+      "",
+      "Context:",
+      "  Requires both selectors and validates the authenticated Project before saving.",
+      "  The clone binding is shared by linked worktrees; credentials stay in user configuration."
+    ]
+
+  defp context_lines(%Command{handler: {:config, :host_set_url}}),
+    do: [
+      "",
+      "Context:",
+      "  Change the address of the same logical backend; a different backend needs a new name.",
+      "  All repositories bound to this host use the updated URL. API key retained."
+    ]
+
+  defp context_lines(%Command{handler: {:config, action}})
+       when action in [
+              :host_add,
+              :host_list,
+              :host_show,
+              :host_set_key,
+              :host_remove,
+              :default_host
+            ],
+       do: [
+         "",
+         "Context:",
+         "  Management targets are named operands; --host is invalid here.",
+         "  These commands ignore transport-selection environment variables for offline recovery."
+       ]
+
+  defp context_lines(%Command{handler: {:repo, :show}}),
+    do: [
+      "",
+      "Context:",
+      "  Reports dangling host references offline; it does not validate backend or Project identity."
+    ]
+
+  defp context_lines(%Command{handler: {:repo, :unbind}}),
+    do: [
+      "",
+      "Context:",
+      "  Offline and idempotent; removes malformed bindings too. Inspect with repo show, then bind again."
+    ]
+
+  defp context_lines(_command), do: []
+
   defp output_lines(%Command{} = command) do
     output_description =
       cond do
-        forbidden_global?(command, :json) ->
+        Command.forbidden_global?(command, :json) ->
           "  This command writes shell source to stdout; --json is invalid."
 
-        config_command?(command) ->
-          "  This command operates on local configuration and does not contact the backend."
+        local_store_command?(command) ->
+          "  This command operates on local state offline and does not contact the backend."
 
         true ->
           "  Successful data is readable by default; add --json for one API-compatible JSON envelope."
@@ -191,12 +271,12 @@ defmodule Taskman.CLI.Presentation.Help do
       ]
   end
 
-  defp forbidden_global?(%Command{constraints: constraints}, option_name) do
-    Enum.any?(constraints, &match?({:forbidden_global, ^option_name}, &1))
-  end
+  defp local_store_command?(%Command{handler: {:config, _action}}), do: true
 
-  defp config_command?(%Command{handler: {:config, _action}}), do: true
-  defp config_command?(_command), do: false
+  defp local_store_command?(%Command{handler: {:repo, action}}) when action in [:show, :unbind],
+    do: true
+
+  defp local_store_command?(_command), do: false
 
   defp prefix?(path, prefix), do: Enum.take(path, length(prefix)) == prefix
 end

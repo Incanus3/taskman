@@ -4,37 +4,10 @@ defmodule Taskman.CLI.ConfigTest do
   import Bitwise
 
   alias Taskman.CLI.Config
+  alias Taskman.CLI.Fixtures
 
   @api_key "tm_b1BWqBOKyDOvG9UmpFc40u2BTKuySXY5HGGKYZGrIf23jgINXtEy2AqT94Y6W7pu_bGXTfd"
   @coordination_timeout 5_000
-
-  @tag :tmp_dir
-  test "resolves each setting independently with flag, environment, file, and default precedence",
-       %{
-         tmp_dir: tmp_dir
-       } do
-    root = Path.join(tmp_dir, "xdg")
-    write_config(root, %{"api_url" => "https://file.example", "api_key" => @api_key})
-
-    assert {:ok, %{api_url: "https://flag.example", api_key: @api_key}} =
-             Config.resolve(
-               %{api_url: "https://flag.example"},
-               env: %{
-                 "TASKMAN_API_URL" => "https://environment.example",
-                 "TASKMAN_API_KEY" => @api_key
-               },
-               config_root: root
-             )
-
-    assert {:ok, %{api_url: "https://environment.example", api_key: @api_key}} =
-             Config.resolve(%{},
-               env: %{"TASKMAN_API_URL" => "https://environment.example"},
-               config_root: root
-             )
-
-    assert {:ok, %{api_url: "http://localhost:4000", api_key: nil}} =
-             Config.resolve(%{}, env: %{}, config_root: Path.join(tmp_dir, "empty"))
-  end
 
   @tag :tmp_dir
   test "derives the standard XDG path from injected environment values", %{tmp_dir: tmp_dir} do
@@ -62,25 +35,25 @@ defmodule Taskman.CLI.ConfigTest do
 
     File.write!(path, "not-json")
     :ok = File.chmod(path, 0o600)
-    assert {:error, :invalid_configuration, message} = Config.resolve(%{}, config_root: root)
+    assert {:error, :invalid_configuration, message} = load_default(config_root: root)
     assert message =~ "valid JSON"
     refute message =~ "not-json"
 
     File.write!(path, Jason.encode!(["not", "an", "object"]))
-    assert {:error, :invalid_configuration, message} = Config.resolve(%{}, config_root: root)
+    assert {:error, :invalid_configuration, message} = load_default(config_root: root)
     assert message =~ "contain an object"
 
     File.write!(path, Jason.encode!(%{"api_url" => "https://file.example", "extra" => true}))
-    assert {:error, :invalid_configuration, message} = Config.resolve(%{}, config_root: root)
-    assert message =~ "only api_url and api_key"
+    assert {:error, :invalid_configuration, message} = load_default(config_root: root)
+    assert message =~ "unsupported fields"
 
     File.write!(path, Jason.encode!(%{"api_key" => 7}))
-    assert {:error, :invalid_configuration, message} = Config.resolve(%{}, config_root: root)
-    assert message =~ "strings"
+    assert {:error, :invalid_configuration, message} = load_default(config_root: root)
+    assert message =~ "valid server-issued credential"
 
     File.write!(path, Jason.encode!(%{"api_key" => @api_key}))
     File.chmod!(path, 0o644)
-    assert {:error, :invalid_configuration, message} = Config.resolve(%{}, config_root: root)
+    assert {:error, :invalid_configuration, message} = load_default(config_root: root)
     assert message =~ "chmod 600"
     refute message =~ @api_key
 
@@ -88,7 +61,7 @@ defmodule Taskman.CLI.ConfigTest do
     write_config(unreadable_root, %{"api_key" => @api_key})
 
     assert {:error, :invalid_configuration, message} =
-             Config.resolve(%{},
+             load_default(
                config_root: unreadable_root,
                read_file: fn _path -> {:error, :eacces} end
              )
@@ -103,8 +76,8 @@ defmodule Taskman.CLI.ConfigTest do
     root = Path.join(tmp_dir, "xdg")
     target = config_path(root)
 
-    assert :ok = Config.set_url("https://hosted.taskman.example", config_root: root)
-    assert :ok = Config.set_key(@api_key, config_root: root)
+    assert :ok = set_default_url("https://hosted.taskman.example", config_root: root)
+    assert :ok = Config.set_host_key("default", @api_key, config_root: root)
 
     assert {:ok, %File.Stat{mode: directory_mode}} = File.stat(Path.dirname(target))
     assert (directory_mode &&& 0o077) == 0
@@ -112,13 +85,13 @@ defmodule Taskman.CLI.ConfigTest do
     assert {:ok, %File.Stat{mode: file_mode}} = File.stat(target)
     assert (file_mode &&& 0o777) == 0o600
 
-    assert Jason.decode!(File.read!(target)) == %{
+    assert Jason.decode!(File.read!(target))["hosts"]["default"] == %{
              "api_key" => @api_key,
              "api_url" => "https://hosted.taskman.example"
            }
 
     assert :ok =
-             Config.set_url("https://replacement.taskman.example",
+             set_default_url("https://replacement.taskman.example",
                config_root: root,
                rename: fn from, to ->
                  assert Path.dirname(from) == Path.dirname(to)
@@ -132,7 +105,7 @@ defmodule Taskman.CLI.ConfigTest do
              )
 
     assert {:ok, %{api_url: "https://replacement.taskman.example", api_key: @api_key}} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     assert File.ls!(Path.dirname(target)) == ["config.json"]
   end
@@ -147,7 +120,7 @@ defmodule Taskman.CLI.ConfigTest do
 
     url_task =
       Task.async(fn ->
-        Config.set_url("https://held-lock.example",
+        set_default_url("https://held-lock.example",
           config_root: root,
           before_write: fn _path ->
             send(parent, :writer_holds_lock)
@@ -164,7 +137,7 @@ defmodule Taskman.CLI.ConfigTest do
     assert :ok = File.touch(lock_path, {{2000, 1, 1}, {0, 0, 0}})
 
     assert {:error, :invalid_configuration, message} =
-             Config.set_key(@api_key,
+             Config.set_host_key("default", @api_key,
                config_root: root,
                lock_retry_limit: 0
              )
@@ -176,7 +149,7 @@ defmodule Taskman.CLI.ConfigTest do
     assert :ok = Task.await(url_task)
 
     assert {:ok, %{api_url: "https://held-lock.example", api_key: @api_key}} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     refute File.exists?(lock_path)
   end
@@ -212,13 +185,13 @@ defmodule Taskman.CLI.ConfigTest do
       create_lock.()
 
       assert {:error, :invalid_configuration, message} =
-               Config.set_url("https://after-lock.example",
+               set_default_url("https://after-lock.example",
                  config_root: root,
                  lock_retry_limit: 0
                )
 
       assert message =~ "busy"
-      assert Jason.decode!(File.read!(target))["api_url"] == "https://before-lock.example"
+      assert stored_default_url(target) == "https://before-lock.example"
       assert {:ok, _stat} = File.lstat(lock_path)
       File.rm_rf!(lock_path)
     end
@@ -232,7 +205,7 @@ defmodule Taskman.CLI.ConfigTest do
     lock_path = target <> ".lock"
 
     assert :ok =
-             Config.set_url("https://token-owner.example",
+             set_default_url("https://token-owner.example",
                config_root: root,
                before_release: fn ^lock_path ->
                  File.rm_rf!(lock_path)
@@ -244,7 +217,7 @@ defmodule Taskman.CLI.ConfigTest do
              )
 
     assert File.read!(Path.join(lock_path, "owner")) == "taskman_config_lock_v1:foreign"
-    assert Jason.decode!(File.read!(target))["api_url"] == "https://token-owner.example"
+    assert stored_default_url(target) == "https://token-owner.example"
   end
 
   @tag :tmp_dir
@@ -258,14 +231,14 @@ defmodule Taskman.CLI.ConfigTest do
     write_config(root, %{"api_key" => @api_key})
 
     assert :ok =
-             Config.set_url("https://first-writer.example",
+             set_default_url("https://first-writer.example",
                config_root: root,
                after_lock_validation: fn ^lock_path ->
                  File.rm_rf!(lock_path)
 
                  replacement_task =
                    Task.async(fn ->
-                     Config.set_key(@api_key,
+                     Config.set_host_key("default", @api_key,
                        config_root: root,
                        before_write: fn _path ->
                          send(parent, :replacement_writer_holds_lock)
@@ -284,7 +257,7 @@ defmodule Taskman.CLI.ConfigTest do
     assert_receive {:replacement_writer, replacement_task}, @coordination_timeout
 
     assert {:error, :invalid_configuration, message} =
-             Config.set_url("https://third-writer.example",
+             set_default_url("https://third-writer.example",
                config_root: root,
                lock_retry_limit: 0
              )
@@ -296,7 +269,7 @@ defmodule Taskman.CLI.ConfigTest do
     assert :ok = Task.await(replacement_task)
 
     assert {:ok, %{api_url: "https://first-writer.example", api_key: @api_key}} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     refute File.exists?(lock_path)
   end
@@ -308,14 +281,14 @@ defmodule Taskman.CLI.ConfigTest do
     write_config(root, %{"api_url" => "https://before.example", "api_key" => @api_key})
 
     assert {:error, :invalid_configuration, message} =
-             Config.set_url("https://after.example",
+             set_default_url("https://after.example",
                config_root: root,
                rename: fn _from, _to -> {:error, :eacces} end
              )
 
     assert message =~ "atomically replace"
     refute message =~ @api_key
-    assert Jason.decode!(File.read!(target))["api_url"] == "https://before.example"
+    assert stored_default_url(target) == "https://before.example"
     assert File.ls!(Path.dirname(target)) == ["config.json"]
   end
 
@@ -323,10 +296,11 @@ defmodule Taskman.CLI.ConfigTest do
   test "serializes concurrent field updates so neither setting is lost", %{tmp_dir: tmp_dir} do
     root = Path.join(tmp_dir, "xdg")
     parent = self()
+    write_config(root, %{"api_url" => "https://before.example"})
 
     url_task =
       Task.async(fn ->
-        Config.set_url("https://concurrent.example",
+        set_default_url("https://concurrent.example",
           config_root: root,
           before_write: fn _path ->
             send(parent, :url_write_has_read_config)
@@ -338,14 +312,14 @@ defmodule Taskman.CLI.ConfigTest do
 
     assert_receive :url_write_has_read_config, @coordination_timeout
 
-    key_task = Task.async(fn -> Config.set_key(@api_key, config_root: root) end)
+    key_task = Task.async(fn -> Config.set_host_key("default", @api_key, config_root: root) end)
     send(url_task.pid, :finish_url_write)
 
     assert :ok = Task.await(url_task)
     assert :ok = Task.await(key_task)
 
     assert {:ok, %{api_url: "https://concurrent.example", api_key: @api_key}} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
   end
 
   @tag :tmp_dir
@@ -356,7 +330,7 @@ defmodule Taskman.CLI.ConfigTest do
     File.chmod!(directory, 0o770)
 
     assert {:error, :invalid_configuration, message} =
-             Config.set_key(@api_key, config_root: root)
+             Config.add_host("default", "https://personal.example", config_root: root)
 
     assert message =~ "directory permissions"
 
@@ -367,7 +341,7 @@ defmodule Taskman.CLI.ConfigTest do
           "https://taskman.example#fragment",
           "not a URL"
         ] do
-      assert {:error, :invalid_configuration, message} = Config.set_url(url, config_root: root)
+      assert {:error, :invalid_configuration, message} = set_default_url(url, config_root: root)
       assert message =~ "valid HTTP or HTTPS"
     end
   end
@@ -385,14 +359,14 @@ defmodule Taskman.CLI.ConfigTest do
     File.chmod!(Path.dirname(path), 0o755)
 
     assert {:error, :invalid_configuration, directory_message} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     assert directory_message =~ "directory permissions"
 
     File.chmod!(Path.dirname(path), 0o700)
     File.chmod!(path, 0o400)
 
-    assert {:error, :invalid_configuration, file_message} = Config.resolve(%{}, config_root: root)
+    assert {:error, :invalid_configuration, file_message} = load_default(config_root: root)
     assert file_message =~ "chmod 600"
   end
 
@@ -408,7 +382,7 @@ defmodule Taskman.CLI.ConfigTest do
 
     if (file_mode &&& 0o7000) != 0 do
       assert {:error, :invalid_configuration, file_message} =
-               Config.resolve(%{}, config_root: root)
+               load_default(config_root: root)
 
       assert file_message =~ "chmod 600"
     end
@@ -419,7 +393,7 @@ defmodule Taskman.CLI.ConfigTest do
 
     if (directory_mode &&& 0o7000) != 0 do
       assert {:error, :invalid_configuration, directory_message} =
-               Config.resolve(%{}, config_root: root)
+               load_default(config_root: root)
 
       assert directory_message =~ "directory permissions"
     end
@@ -439,7 +413,7 @@ defmodule Taskman.CLI.ConfigTest do
     File.ln_s!(linked_target, path)
 
     assert {:error, :invalid_configuration, symlink_message} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     assert symlink_message =~ "regular file"
 
@@ -447,7 +421,7 @@ defmodule Taskman.CLI.ConfigTest do
     File.ln!(linked_target, path)
 
     assert {:error, :invalid_configuration, hardlink_message} =
-             Config.resolve(%{}, config_root: root)
+             load_default(config_root: root)
 
     assert hardlink_message =~ "hard links"
 
@@ -456,7 +430,7 @@ defmodule Taskman.CLI.ConfigTest do
     File.chmod!(path, 0o600)
 
     assert {:error, :invalid_configuration, replacement_message} =
-             Config.resolve(%{},
+             load_default(
                config_root: root,
                before_open: fn config_path ->
                  File.rm!(config_path)
@@ -477,27 +451,13 @@ defmodule Taskman.CLI.ConfigTest do
   end
 
   @tag :tmp_dir
-  test "uses higher-precedence values without validating an ignored lower-precedence URL", %{
-    tmp_dir: tmp_dir
-  } do
-    root = Path.join(tmp_dir, "xdg")
-    write_config(root, %{"api_url" => "ftp://ignored.example", "api_key" => @api_key})
-
-    assert {:ok, %{api_url: "https://override.example", api_key: @api_key}} =
-             Config.resolve(%{api_url: "https://override.example"},
-               config_root: root,
-               env: %{"TASKMAN_API_KEY" => @api_key}
-             )
-  end
-
-  @tag :tmp_dir
   test "accepts only structurally valid Taskman keys and constrained base URLs", %{
     tmp_dir: tmp_dir
   } do
     root = Path.join(tmp_dir, "xdg")
 
-    assert :ok = Config.set_url("https://[::1]:4001/", config_root: root)
-    assert :ok = Config.set_url("http://localhost:4000", config_root: root)
+    assert :ok = set_default_url("https://[::1]:4001/", config_root: root)
+    assert :ok = set_default_url("http://localhost:4000", config_root: root)
 
     for url <- [
           "https://taskman.example/path",
@@ -506,7 +466,7 @@ defmodule Taskman.CLI.ConfigTest do
           "https://user:password@taskman.example",
           "ssh://taskman.example"
         ] do
-      assert {:error, :invalid_configuration, _message} = Config.set_url(url, config_root: root)
+      assert {:error, :invalid_configuration, _message} = set_default_url(url, config_root: root)
     end
 
     for key <- [
@@ -515,16 +475,381 @@ defmodule Taskman.CLI.ConfigTest do
           "tm_payload_checksum\n",
           "tm_payload checksum"
         ] do
-      assert {:error, :invalid_configuration, _message} = Config.set_key(key, config_root: root)
+      assert {:error, :invalid_configuration, _message} =
+               Config.set_host_key("default", key, config_root: root)
     end
   end
 
-  test "display confirms a configured key without revealing it" do
-    assert Config.display(%{api_url: "https://taskman.example", api_key: @api_key}) == %{
-             api_url: "https://taskman.example",
-             api_key_configured: true
+  @tag :tmp_dir
+  test "absent named configuration creates no directory or localhost host", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "absent")
+
+    assert {:ok, %{format: :absent, hosts: %{}, default_host: nil}} =
+             Config.load(config_root: root)
+
+    refute File.exists?(root)
+
+    assert :ok = Config.add_host("personal", "https://personal.example", config_root: root)
+
+    assert {:ok,
+            %{
+              format: :v2,
+              default_host: nil,
+              hosts: %{"personal" => %{api_url: "https://personal.example", api_key: nil}}
+            }} = Config.load(config_root: root)
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "hosts" => %{"personal" => %{"api_url" => "https://personal.example"}}
+           }
+
+    assert (File.stat!(config_path(root)).mode &&& 0o7777) == 0o600
+    assert (File.stat!(Path.dirname(config_path(root))).mode &&& 0o7777) == 0o700
+  end
+
+  @tag :tmp_dir
+  test "reads preserve legacy bytes and successful no-op mutation upgrades", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+
+    path =
+      Fixtures.legacy_config!(root, %{
+        "api_url" => "https://stored.example",
+        "api_key" => @api_key
+      })
+
+    bytes = File.read!(path)
+
+    assert {:ok,
+            %{
+              format: :legacy,
+              default_host: "default",
+              hosts: %{"default" => %{api_url: "https://stored.example", api_key: @api_key}}
+            }} = Config.load(config_root: root)
+
+    assert File.read!(path) == bytes
+
+    assert :ok =
+             Config.set_host_url("default", "https://stored.example",
+               config_root: root,
+               env: %{
+                 "TASKMAN_API_URL" => "https://injected.example",
+                 "TASKMAN_API_KEY" => "tm_injected_secret",
+                 "TASKMAN_HOST" => "injected"
+               }
+             )
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "default_host" => "default",
+             "hosts" => %{
+               "default" => %{"api_url" => "https://stored.example", "api_key" => @api_key}
+             }
+           }
+
+    assert {:ok, %{format: :v2}} = Config.load(config_root: root)
+  end
+
+  @tag :tmp_dir
+  test "failed host mutation preserves bytes and unrelated hosts", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+
+    path =
+      Fixtures.legacy_config!(root, %{
+        "api_url" => "https://legacy.example",
+        "api_key" => @api_key
+      })
+
+    bytes = File.read!(path)
+
+    failures = [
+      fn -> Config.add_host("default", "https://duplicate.example", config_root: root) end,
+      fn -> Config.set_host_url("missing", "https://missing.example", config_root: root) end,
+      fn -> Config.set_host_key("missing", @api_key, config_root: root) end,
+      fn -> Config.remove_host("missing", config_root: root) end,
+      fn -> Config.set_default_host("missing", config_root: root) end
+    ]
+
+    for mutate <- failures do
+      assert {:error, :invalid_invocation, message} = mutate.()
+      refute message =~ @api_key
+      assert File.read!(path) == bytes
+    end
+
+    assert {:error, :invalid_configuration, _} =
+             Config.set_host_url("default", "ftp://bad.example", config_root: root)
+
+    assert {:error, :invalid_configuration, _} =
+             Config.set_host_key("default", "invalid-secret", config_root: root)
+
+    assert File.read!(path) == bytes
+
+    assert :ok = Config.add_host("work", "https://work.example", config_root: root)
+    assert :ok = Config.set_host_key("work", "tm_work_secret", config_root: root)
+    bytes = File.read!(path)
+
+    assert {:error, :invalid_configuration, message} =
+             Config.set_host_url("default", "https://replacement.example",
+               config_root: root,
+               rename: fn _, _ -> {:error, :eacces} end
+             )
+
+    refute message =~ @api_key
+    assert File.read!(path) == bytes
+    assert File.ls!(Path.dirname(path)) == ["config.json"]
+  end
+
+  @tag :tmp_dir
+  test "same-host address changes retain key and default", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+
+    Fixtures.write_hosts!(root, %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{
+        "personal" => %{api_url: "https://before.example", api_key: @api_key},
+        "work" => %{api_url: "https://work.example", api_key: nil}
+      }
+    })
+
+    assert :ok = Config.set_host_url("personal", "https://after.example", config_root: root)
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "default_host" => "personal",
+             "hosts" => %{
+               "personal" => %{"api_url" => "https://after.example", "api_key" => @api_key},
+               "work" => %{"api_url" => "https://work.example"}
+             }
+           }
+
+    assert :ok = Config.set_default_host("work", config_root: root)
+    assert :ok = Config.set_host_key("work", "tm_work_secret", config_root: root)
+
+    assert {:ok,
+            %{
+              default_host: "work",
+              hosts: %{"personal" => %{api_key: @api_key}, "work" => %{api_key: "tm_work_secret"}}
+            }} = Config.load(config_root: root)
+  end
+
+  @tag :tmp_dir
+  test "removing the default leaves no replacement", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+
+    Fixtures.write_hosts!(root, %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{
+        "personal" => %{api_url: "https://personal.example", api_key: @api_key},
+        "work" => %{api_url: "https://work.example", api_key: nil}
+      }
+    })
+
+    assert :ok = Config.remove_host("personal", config_root: root)
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "hosts" => %{"work" => %{"api_url" => "https://work.example"}}
+           }
+
+    assert :ok = Config.remove_host("work", config_root: root)
+    assert persisted_hosts(root) == %{"version" => 2, "hosts" => %{}}
+  end
+
+  @tag :tmp_dir
+  test "removing another host preserves the selected default", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    assert :ok = Config.add_host("personal", "https://personal.example", config_root: root)
+    assert :ok = Config.add_host("work", "https://work.example", config_root: root)
+    assert :ok = Config.set_default_host("personal", config_root: root)
+    assert :ok = Config.remove_host("work", config_root: root)
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "default_host" => "personal",
+             "hosts" => %{"personal" => %{"api_url" => "https://personal.example"}}
            }
   end
+
+  @tag :tmp_dir
+  test "host loads and mutations refuse every invalid stored connection", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+
+    for settings <- [
+          %{"api_url" => "ftp://unsafe.example", "api_key" => @api_key},
+          %{"api_key" => "bad-secret"},
+          %{"version" => 2, "hosts" => %{}, "unexpected" => @api_key}
+        ] do
+      path = Fixtures.legacy_config!(root, settings)
+      bytes = File.read!(path)
+      assert {:error, :invalid_configuration, message} = Config.load(config_root: root)
+      refute message =~ @api_key
+
+      assert {:error, :invalid_configuration, _} =
+               Config.add_host("personal", "https://valid.example", config_root: root)
+
+      assert File.read!(path) == bytes
+    end
+  end
+
+  @tag :tmp_dir
+  test "named host access preserves private path and opened-file protections", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "xdg")
+    path = Fixtures.legacy_config!(root, %{"api_key" => @api_key})
+    File.chmod!(path, 0o644)
+    assert {:error, :invalid_configuration, _} = Config.load(config_root: root)
+
+    assert {:error, :invalid_configuration, _} =
+             Config.add_host("personal", "https://personal.example", config_root: root)
+
+    File.chmod!(path, 0o600)
+    File.chmod!(Path.dirname(path), 0o755)
+    assert {:error, :invalid_configuration, _} = Config.load(config_root: root)
+    assert {:error, :invalid_configuration, _} = Config.remove_host("default", config_root: root)
+    File.chmod!(Path.dirname(path), 0o700)
+
+    target = Path.join(tmp_dir, "linked-config.json")
+    File.rename!(path, target)
+    File.ln_s!(target, path)
+    assert {:error, :invalid_configuration, _} = Config.load(config_root: root)
+
+    assert {:error, :invalid_configuration, _} =
+             Config.set_host_key("default", @api_key, config_root: root)
+
+    File.rm!(path)
+    File.ln!(target, path)
+    assert {:error, :invalid_configuration, _} = Config.load(config_root: root)
+
+    assert {:error, :invalid_configuration, _} =
+             Config.set_default_host("default", config_root: root)
+
+    File.rm!(path)
+    File.rename!(target, path)
+
+    assert {:error, :invalid_configuration, _} =
+             Config.load(
+               config_root: root,
+               before_open: fn ^path ->
+                 File.rename!(path, target)
+                 Fixtures.legacy_config!(root, %{"api_url" => "https://replacement.example"})
+               end
+             )
+
+    assert {:error, :invalid_configuration, _} =
+             Config.load(config_root: root, read_file: fn _ -> {:error, :eacces} end)
+  end
+
+  @tag :tmp_dir
+  test "concurrent independent host edits re-read under the shared config lock", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+
+    Fixtures.write_hosts!(root, %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{
+        "personal" => %{api_url: "https://before.example", api_key: @api_key},
+        "work" => %{api_url: "https://work.example", api_key: nil}
+      }
+    })
+
+    supervisor = start_supervised!(Task.Supervisor)
+    parent = self()
+
+    first =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        Config.set_host_url("personal", "https://after.example",
+          config_root: root,
+          before_write: fn _ ->
+            send(parent, :first_has_read)
+            assert_receive :release_first, @coordination_timeout
+            :ok
+          end
+        )
+      end)
+
+    assert_receive :first_has_read, @coordination_timeout
+
+    second =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        Config.set_host_key("work", "tm_work_secret",
+          config_root: root,
+          read_file: fn device ->
+            contents = IO.binread(device, :eof)
+            send(parent, :second_has_read)
+            {:ok, contents}
+          end
+        )
+      end)
+
+    assert_receive :second_has_read, @coordination_timeout
+
+    assert {:error, :invalid_configuration, message} =
+             Config.set_default_host("work", config_root: root, lock_retry_limit: 0)
+
+    assert message =~ "busy"
+    send(first.pid, :release_first)
+    assert :ok = Task.await(first)
+    assert :ok = Task.await(second)
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "default_host" => "personal",
+             "hosts" => %{
+               "personal" => %{"api_url" => "https://after.example", "api_key" => @api_key},
+               "work" => %{"api_url" => "https://work.example", "api_key" => "tm_work_secret"}
+             }
+           }
+  end
+
+  @tag :tmp_dir
+  test "post-replacement sync failure reports possible mutation and retains new state", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "xdg")
+    Fixtures.legacy_config!(root, %{"api_url" => "https://before.example", "api_key" => @api_key})
+
+    assert {:error, :invalid_configuration, message} =
+             Config.set_host_url("default", "https://after.example",
+               config_root: root,
+               sync_directory: fn _ -> {:error, :eio} end
+             )
+
+    assert message =~ "may already have changed"
+    assert message =~ "config hosts"
+    refute message =~ @api_key
+
+    assert persisted_hosts(root) == %{
+             "version" => 2,
+             "default_host" => "default",
+             "hosts" => %{
+               "default" => %{"api_url" => "https://after.example", "api_key" => @api_key}
+             }
+           }
+
+    assert File.ls!(Path.dirname(config_path(root))) == ["config.json"]
+  end
+
+  defp load_default(options) do
+    with {:ok, document} <- Config.load(options),
+         do: {:ok, Map.get(document.hosts, "default", %{api_url: nil, api_key: nil})}
+  end
+
+  defp set_default_url(url, options) do
+    with {:ok, document} <- Config.load(options) do
+      if Map.has_key?(document.hosts, "default"),
+        do: Config.set_host_url("default", url, options),
+        else: Config.add_host("default", url, options)
+    end
+  end
+
+  defp stored_default_url(path) do
+    data = Jason.decode!(File.read!(path))
+    if Map.has_key?(data, "hosts"), do: data["hosts"]["default"]["api_url"], else: data["api_url"]
+  end
+
+  defp persisted_hosts(root), do: root |> config_path() |> File.read!() |> Jason.decode!()
 
   defp write_config(root, contents) do
     path = config_path(root)

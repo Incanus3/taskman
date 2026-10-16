@@ -3,17 +3,13 @@ defmodule Taskman.CLI.Config do
 
   import Bitwise
 
-  @default_api_url "http://localhost:4000"
+  alias Taskman.CLI.Config.Document
+
   @config_directory "taskman"
   @config_filename "config.json"
-  @allowed_keys ["api_url", "api_key"]
-  @api_key_pattern ~r/\Atm_[A-Za-z0-9_]+_[A-Za-z0-9]+\z/
   @lock_marker "taskman_config_lock_v1"
-  @lock_retry_limit 200
-  @lock_retry_delay_ms 10
-
-  @typedoc "The API connection settings after source precedence has been applied."
-  @type resolved_config :: %{api_url: String.t(), api_key: String.t() | nil}
+  @lock_retry_limit 100
+  @lock_retry_delay_ms 100
 
   @doc "Return the configuration file path, using an injected root or environment when supplied."
   @spec path(keyword() | map()) :: Path.t()
@@ -23,95 +19,118 @@ defmodule Taskman.CLI.Config do
     Path.join([root, @config_directory, @config_filename])
   end
 
-  @doc "Resolve the API URL and key from flags, environment, and the protected config file."
-  @spec resolve(map(), keyword() | map()) ::
-          {:ok, resolved_config()} | {:error, :invalid_configuration, String.t()}
-  def resolve(explicit \\ %{}, options \\ [])
+  @type local_error :: {:error, :invalid_configuration | :invalid_invocation, String.t()}
 
-  def resolve(explicit, options) when is_map(explicit) do
+  @doc "Read protected host configuration without creating or upgrading any files."
+  @spec load(keyword() | map()) :: {:ok, Document.t()} | local_error()
+  def load(options \\ []) do
     options = normalize_options(options)
-    env = option(options, :env, System.get_env())
-    api_url_override = explicit_value(explicit, :api_url) || env_value(env, "TASKMAN_API_URL")
-    api_key_override = env_value(env, "TASKMAN_API_KEY")
 
-    with {:ok, stored} <-
-           read_if_needed(api_url_override, api_key_override, path(options), options),
-         api_url <- api_url_override || stored["api_url"] || @default_api_url,
-         api_key <- api_key_override || stored["api_key"],
-         :ok <- validate_url(api_url),
-         :ok <- validate_optional_api_key(api_key) do
-      {:ok,
-       %{
-         api_url: api_url,
-         api_key: api_key
-       }}
-    end
+    read(path(options), options)
   end
 
-  def resolve(_explicit, _options), do: error("Configuration overrides must be a map")
-
-  @doc "Store a validated API URL without exposing any configured credential."
-  @spec set_url(String.t(), keyword() | map()) ::
-          :ok | {:error, :invalid_configuration, String.t()}
-  def set_url(api_url, options \\ [])
-
-  def set_url(api_url, options) when is_binary(api_url) do
-    options = normalize_options(options)
-
-    with :ok <- validate_url(api_url),
-         :ok <- ensure_directory(Path.dirname(path(options))) do
-      with_config_lock(path(options), options, fn ->
-        with {:ok, stored} <- read(path(options), options),
-             :ok <- before_write(path(options), options) do
-          write(Map.put(stored, "api_url", api_url), path(options), options)
+  @doc "Register a host without a credential or an implicit default selection."
+  @spec add_host(String.t(), String.t(), keyword() | map()) :: :ok | local_error()
+  def add_host(name, api_url, options \\ []) do
+    with :ok <- Document.validate_host_name(name),
+         :ok <- Document.validate_url(api_url) do
+      mutate_hosts(options, fn document ->
+        if Map.has_key?(document.hosts, name) do
+          invocation_error("The named Taskman host is already registered")
+        else
+          {:ok,
+           %{document | hosts: Map.put(document.hosts, name, %{api_url: api_url, api_key: nil})}}
         end
       end)
     end
   end
 
-  def set_url(_api_url, _options),
-    do: error("The Taskman API URL must be a valid HTTP or HTTPS base URL")
+  @doc "Change the address of the same host, retaining its key and default selection."
+  @spec set_host_url(String.t(), String.t(), keyword() | map()) :: :ok | local_error()
+  def set_host_url(name, api_url, options \\ []) do
+    with :ok <- Document.validate_host_name(name),
+         :ok <- Document.validate_url(api_url) do
+      mutate_hosts(options, &update_host(&1, name, fn host -> %{host | api_url: api_url} end))
+    end
+  end
 
-  @doc "Store a structurally valid prompted API key without displaying it."
-  @spec set_key(String.t(), keyword() | map()) ::
-          :ok | {:error, :invalid_configuration, String.t()}
-  def set_key(api_key, options \\ [])
+  @doc "Replace a registered host's credential without displaying it."
+  @spec set_host_key(String.t(), String.t(), keyword() | map()) :: :ok | local_error()
+  def set_host_key(name, api_key, options \\ []) do
+    with :ok <- Document.validate_host_name(name),
+         :ok <- Document.validate_api_key(api_key) do
+      mutate_hosts(options, &update_host(&1, name, fn host -> %{host | api_key: api_key} end))
+    end
+  end
 
-  def set_key(api_key, options) when is_binary(api_key) do
-    options = normalize_options(options)
-
-    with :ok <- validate_api_key(api_key),
-         :ok <- ensure_directory(Path.dirname(path(options))) do
-      with_config_lock(path(options), options, fn ->
-        with {:ok, stored} <- read(path(options), options),
-             :ok <- before_write(path(options), options) do
-          write(Map.put(stored, "api_key", api_key), path(options), options)
+  @doc "Remove a host and clear its default selection without choosing a replacement."
+  @spec remove_host(String.t(), keyword() | map()) :: :ok | local_error()
+  def remove_host(name, options \\ []) do
+    with :ok <- Document.validate_host_name(name) do
+      mutate_hosts(options, fn document ->
+        with {:ok, _host} <- fetch_host(document, name) do
+          default_host = if document.default_host == name, do: nil, else: document.default_host
+          {:ok, %{document | hosts: Map.delete(document.hosts, name), default_host: default_host}}
         end
       end)
     end
   end
 
-  def set_key(_api_key, _options), do: invalid_api_key()
-
-  @doc "Return a display-safe configuration summary."
-  @spec display(resolved_config()) :: %{api_url: String.t(), api_key_configured: boolean()}
-  def display(%{api_url: api_url, api_key: api_key}) when is_binary(api_url) do
-    %{api_url: api_url, api_key_configured: is_binary(api_key) and api_key != ""}
+  @doc "Select an existing host as the configured default."
+  @spec set_default_host(String.t(), keyword() | map()) :: :ok | local_error()
+  def set_default_host(name, options \\ []) do
+    with :ok <- Document.validate_host_name(name) do
+      mutate_hosts(options, fn document ->
+        with {:ok, _host} <- fetch_host(document, name) do
+          {:ok, %{document | default_host: name}}
+        end
+      end)
+    end
   end
 
-  defp read_if_needed(nil, _api_key_override, config_path, options),
-    do: read(config_path, options)
+  defp mutate_hosts(options, mutation) do
+    options = normalize_options(options)
+    config_path = path(options)
 
-  defp read_if_needed(_api_url_override, nil, config_path, options),
-    do: read(config_path, options)
+    with {:ok, document} <- load(options),
+         {:ok, _validated} <- mutation.(document),
+         :ok <- ensure_directory(Path.dirname(config_path)) do
+      with_config_lock(config_path, options, fn ->
+        with {:ok, current} <- load(options),
+             {:ok, updated} <- mutation.(current),
+             :ok <- before_write(config_path, options) do
+          write(Document.encode(updated), config_path, options)
+        else
+          {:error, code, _message} = result
+          when code in [:invalid_configuration, :invalid_invocation] ->
+            result
 
-  defp read_if_needed(_api_url_override, _api_key_override, _config_path, _options),
-    do: {:ok, %{}}
+          _other ->
+            error("The Taskman configuration file could not be prepared for writing")
+        end
+      end)
+    end
+  end
+
+  defp update_host(document, name, update) do
+    with {:ok, host} <- fetch_host(document, name) do
+      {:ok, %{document | hosts: Map.put(document.hosts, name, update.(host))}}
+    end
+  end
+
+  defp fetch_host(document, name) do
+    case Map.fetch(document.hosts, name) do
+      {:ok, host} -> {:ok, host}
+      :error -> invocation_error("The named Taskman host is not registered")
+    end
+  end
+
+  defp invocation_error(message), do: {:error, :invalid_invocation, message}
 
   defp read(config_path, options) do
     case lstat(config_path) do
       {:error, :enoent} ->
-        {:ok, %{}}
+        {:ok, %{format: :absent, hosts: %{}, default_host: nil}}
 
       {:ok, lstat} ->
         with :ok <- validate_directory(Path.dirname(config_path)),
@@ -122,8 +141,7 @@ defmodule Taskman.CLI.Config do
             with {:ok, contents} <- read_opened_file(device, options),
                  {:ok, opened_stat} <- file_info(device),
                  :ok <- validate_opened_file(lstat, opened_stat),
-                 {:ok, decoded} <- decode(contents),
-                 :ok <- validate_shape(decoded) do
+                 {:ok, decoded} <- Document.decode(contents) do
               {:ok, decoded}
             else
               {:error, :invalid_configuration, _message} = result -> result
@@ -174,67 +192,6 @@ defmodule Taskman.CLI.Config do
 
   defp close_file(nil), do: :ok
   defp close_file(device), do: :file.close(device)
-
-  defp decode(contents) do
-    case Jason.decode(contents) do
-      {:ok, decoded} -> {:ok, decoded}
-      {:error, _reason} -> error("The Taskman configuration file must contain valid JSON")
-    end
-  end
-
-  defp validate_shape(decoded) when is_map(decoded) do
-    cond do
-      not Enum.all?(Map.keys(decoded), &(&1 in @allowed_keys)) ->
-        error("The Taskman configuration file may contain only api_url and api_key")
-
-      not Enum.all?(decoded, fn {_key, value} -> is_binary(value) end) ->
-        error("The Taskman configuration values must be strings")
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_shape(_decoded),
-    do: error("The Taskman configuration file must contain an object")
-
-  defp validate_url(url) when is_binary(url) do
-    case URI.new(url) do
-      {:ok,
-       %URI{
-         scheme: scheme,
-         host: host,
-         port: port,
-         path: path,
-         query: nil,
-         fragment: nil,
-         userinfo: nil
-       }}
-      when scheme in ["http", "https"] and is_binary(host) and host != "" and
-             (is_nil(port) or (is_integer(port) and port in 1..65_535)) and
-             path in [nil, "", "/"] ->
-        if String.trim(url) == url, do: :ok, else: invalid_url()
-
-      _other ->
-        invalid_url()
-    end
-  end
-
-  defp validate_url(_url), do: invalid_url()
-
-  defp invalid_url, do: error("The Taskman API URL must be a valid HTTP or HTTPS base URL")
-
-  defp validate_optional_api_key(nil), do: :ok
-  defp validate_optional_api_key(api_key), do: validate_api_key(api_key)
-
-  defp validate_api_key(api_key) when is_binary(api_key) do
-    if Regex.match?(@api_key_pattern, api_key), do: :ok, else: invalid_api_key()
-  end
-
-  defp validate_api_key(_api_key), do: invalid_api_key()
-
-  defp invalid_api_key,
-    do: error("The Taskman API key must be a valid server-issued credential")
 
   defp write(config, config_path, options) do
     with :ok <- ensure_directory(Path.dirname(config_path)),
@@ -334,7 +291,15 @@ defmodule Taskman.CLI.Config do
                end
              end),
            :ok <- rename(stage, config_path, options) do
-        sync_directory(Path.dirname(config_path), options)
+        case sync_directory(Path.dirname(config_path), options) do
+          :ok ->
+            :ok
+
+          _other ->
+            error(
+              "The Taskman configuration may already have changed because directory sync failed; inspect with config hosts list"
+            )
+        end
       else
         {:error, _reason} -> error("Could not atomically replace the Taskman configuration file")
       end
@@ -343,9 +308,9 @@ defmodule Taskman.CLI.Config do
       :ok ->
         :ok
 
-      _other ->
+      {:error, :invalid_configuration, _message} = result ->
         _ = File.rm(stage)
-        error("Could not atomically replace the Taskman configuration file")
+        result
     end
   end
 
@@ -517,10 +482,6 @@ defmodule Taskman.CLI.Config do
     if File.exists?(stage), do: unique_stage(config_path), else: stage
   end
 
-  defp explicit_value(explicit, key) do
-    Map.get(explicit, key) || Map.get(explicit, Atom.to_string(key))
-  end
-
   defp config_root(env) do
     case env_value(env, "XDG_CONFIG_HOME") do
       value when is_binary(value) and value != "" -> value
@@ -538,8 +499,6 @@ defmodule Taskman.CLI.Config do
   defp env_value(env, key) when is_map(env) do
     Map.get(env, key) ||
       case key do
-        "TASKMAN_API_URL" -> Map.get(env, :TASKMAN_API_URL)
-        "TASKMAN_API_KEY" -> Map.get(env, :TASKMAN_API_KEY)
         "XDG_CONFIG_HOME" -> Map.get(env, :XDG_CONFIG_HOME)
         "HOME" -> Map.get(env, :HOME)
       end

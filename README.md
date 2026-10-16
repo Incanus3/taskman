@@ -67,14 +67,45 @@ the bare `taskman` command; the full path above works without that entry. Create
 Account settings, then configure the CLI without putting the key in a command or URL:
 
 ```sh
-taskman config set-url http://localhost:4000
-taskman config set-key
+taskman config hosts add local --url http://localhost:4000
+taskman config hosts set-key local
+taskman config default-host local
 taskman projects list --json
 ```
 
-For a hosted server, configure its HTTPS URL instead. The key is shown once, is stored in protected
-XDG configuration, and ordinary API commands return status `7` when authentication is unavailable.
-Run `taskman --help` for command groups, options, configuration, and examples.
+For a hosted server, register its HTTPS URL instead. Fresh configuration has no implicit endpoint;
+registration alone creates neither a credential nor a default. Keys are shown once, stored in
+protected XDG configuration, and never printed. Ordinary API commands return status `7` when
+required authentication is unavailable. Select hosts with global `--host NAME` before or after
+the command, a repository binding, `TASKMAN_HOST`, or the configured default, in that order.
+Injected secrets require both `TASKMAN_API_KEY` and matching `TASKMAN_API_KEY_HOST`.
+
+After inspecting or creating a Project, bind a Git clone to its exact ID:
+
+```sh
+taskman repo bind --host local --project 7
+taskman repo show
+taskman tasks list --include-descendants --json
+```
+
+The binding is shared by linked worktrees; independent clones bind separately. It contains only
+the host name and Project ID, while credentials remain in user configuration. Bound Lists and
+Tasks use this Project by default. Explicit overrides require both `--host` and `--project`, even
+for matching values. Unbound folders require `--project` for scoped commands. Search inherits the
+bound Project; `tasks search QUERY --all-projects` searches every Project on the selected host,
+and conflicts with `--project`. `--host NAME --all-projects` permits a host-only search override.
+
+Local host management and `repo show`/`repo unbind` work offline. Removing a host clears its default
+and leaves clone references intact. Inspect with `repo show`, then explicitly rebind, unbind, or
+re-register the same logical backend. Use `config hosts set-url NAME --url URL` only for an address
+change of the same backend: all bound repositories follow it and the API key is retained. A
+different backend needs a new name and explicit rebinding.
+
+Update the binary before the first config mutation. Valid legacy URL/key files are read as host
+`default` without writes; an explicit config mutation upgrades them to version 2, which old
+binaries cannot read. Replace unqualified `config set-url`/`config set-key` with named-host
+commands, and raw `--api-url`/`TASKMAN_API_URL` targeting with registered hosts. Run
+`taskman agent onboarding` for setup and recovery, or `taskman --help` for command discovery.
 
 ## Development
 

@@ -1,10 +1,11 @@
 defmodule Taskman.CLI.Execution.Runner do
   @moduledoc "Dispatch parsed invocations while keeping IO at the CLI boundary."
 
-  alias Taskman.CLI.{Config, Onboarding}
+  alias Taskman.CLI.{Context, Onboarding}
   alias Taskman.CLI.Commands.Config, as: ConfigCommand
   alias Taskman.CLI.Commands.Lists
   alias Taskman.CLI.Commands.Projects
+  alias Taskman.CLI.Commands.Repo
   alias Taskman.CLI.Commands.Tasks
   alias Taskman.CLI.Execution.{Invocation, Result}
   alias Taskman.CLI.Presentation.{Completions, Output}
@@ -15,46 +16,62 @@ defmodule Taskman.CLI.Execution.Runner do
   @spec run(Invocation.t(), keyword() | map()) :: Result.t()
   def run(invocation, runtime_options \\ [])
 
-  def run(
-        %Invocation{command: %Command{handler: {:projects, action}}} = invocation,
-        runtime_options
-      ) do
-    with_authentication(invocation, runtime_options, &Projects.execute(action, &1, &2))
+  def run(%Invocation{command: %Command{}} = invocation, runtime_options) do
+    case prepare_context(invocation, runtime_options) do
+      {:ok, invocation, runtime_options} -> dispatch(invocation, runtime_options)
+      %Result{} = result -> result
+    end
   end
 
-  def run(
-        %Invocation{command: %Command{handler: {:lists, action}}} = invocation,
-        runtime_options
-      ) do
-    with_authentication(invocation, runtime_options, &Lists.execute(action, &1, &2))
+  def run(_invocation, _runtime_options), do: %Result{status: 2, stderr: "Invalid invocation.\n"}
+
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:projects, action}}} = invocation,
+         runtime_options
+       ) do
+    Projects.execute(action, invocation, runtime_options)
   end
 
-  def run(
-        %Invocation{command: %Command{handler: {:tasks, action}}} = invocation,
-        runtime_options
-      ) do
-    with_authentication(invocation, runtime_options, &Tasks.execute(action, &1, &2))
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:lists, action}}} = invocation,
+         runtime_options
+       ) do
+    Lists.execute(action, invocation, runtime_options)
   end
 
-  def run(
-        %Invocation{command: %Command{handler: {:config, action}}} = invocation,
-        runtime_options
-      ) do
-    ConfigCommand.execute(action, invocation, runtime_options)
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:tasks, action}}} = invocation,
+         runtime_options
+       ) do
+    Tasks.execute(action, invocation, runtime_options)
   end
 
-  def run(%Invocation{command: %Command{handler: {:completions, :bash}}}, _runtime_options) do
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:config, action}}} = invocation,
+         runtime_options
+       ) do
+    ConfigCommand.execute(action, invocation, snapshot(runtime_options))
+  end
+
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:repo, action}}} = invocation,
+         runtime_options
+       ) do
+    Repo.execute(action, invocation, snapshot(runtime_options))
+  end
+
+  defp dispatch(%Invocation{command: %Command{handler: {:completions, :bash}}}, _runtime_options) do
     %Result{stdout: Completions.bash()}
   end
 
-  def run(%Invocation{command: %Command{handler: {:completions, :fish}}}, _runtime_options) do
+  defp dispatch(%Invocation{command: %Command{handler: {:completions, :fish}}}, _runtime_options) do
     %Result{stdout: Completions.fish()}
   end
 
-  def run(
-        %Invocation{command: %Command{handler: {:agent, :onboarding}}, globals: globals},
-        _runtime_options
-      ) do
+  defp dispatch(
+         %Invocation{command: %Command{handler: {:agent, :onboarding}}, globals: globals},
+         _runtime_options
+       ) do
     text = Onboarding.text()
 
     if Map.get(globals, :json, false) do
@@ -64,14 +81,14 @@ defmodule Taskman.CLI.Execution.Runner do
     end
   end
 
-  def run(
-        %Invocation{
-          command: %Command{handler: {:agent, :skill_install}},
-          options: options,
-          globals: globals
-        },
-        runtime_options
-      ) do
+  defp dispatch(
+         %Invocation{
+           command: %Command{handler: {:agent, :skill_install}},
+           options: options,
+           globals: globals
+         },
+         runtime_options
+       ) do
     force? = Map.get(options, :force, false) == true
     runtime_options = put_runtime_option(runtime_options, :force, force?)
     json? = Map.get(globals, :json, false)
@@ -86,7 +103,7 @@ defmodule Taskman.CLI.Execution.Runner do
     end
   end
 
-  def run(%Invocation{command: %Command{} = command, globals: globals}, _runtime_options) do
+  defp dispatch(%Invocation{command: %Command{} = command, globals: globals}, _runtime_options) do
     path = Enum.join(command.path, " ")
     message = "Command handler not installed for taskman #{path}"
 
@@ -99,11 +116,6 @@ defmodule Taskman.CLI.Execution.Runner do
       %Result{status: 5, stderr: "Internal error: #{message}.\n"}
     end
   end
-
-  def run(_invocation, _runtime_options), do: %Result{status: 2, stderr: "Invalid invocation.\n"}
-
-  @doc "Compatibility alias for callers that name dispatch explicitly."
-  def execute(invocation, runtime_options \\ []), do: run(invocation, runtime_options)
 
   defp render_skill_success(result, true),
     do: %Result{stdout: Jason.encode!(%{data: result}) <> "\n"}
@@ -125,52 +137,39 @@ defmodule Taskman.CLI.Execution.Runner do
 
   defp put_runtime_option(_options, key, value), do: [{key, value}]
 
-  defp with_authentication(invocation, runtime_options, execute) do
-    json? = Map.get(invocation.globals, :json, false)
+  defp prepare_context(
+         %Invocation{command: %Command{context_role: :local}} = invocation,
+         runtime_options
+       ),
+       do: {:ok, invocation, runtime_options}
 
-    case Config.resolve(invocation.globals, runtime_options) do
-      {:ok, %{api_url: api_url, api_key: api_key}} when is_binary(api_key) and api_key != "" ->
-        invocation = %{invocation | globals: Map.put(invocation.globals, :api_url, api_url)}
-        execute.(invocation, resolved_runtime_options(runtime_options, api_key))
+  defp prepare_context(invocation, runtime_options) do
+    runtime_options = snapshot(runtime_options)
 
-      {:ok, _resolved} ->
-        authentication_required(json?)
+    case Context.resolve(invocation, runtime_options) do
+      {:ok, context} ->
+        options =
+          if context.project_id,
+            do: Map.put(invocation.options, :project, context.project_id),
+            else: invocation.options
 
-      {:error, :invalid_configuration, message} ->
-        invalid_configuration(message, json?)
+        {:ok, %{invocation | options: options},
+         runtime_options
+         |> Map.drop([:api_url, :api_key, :resolved_api_key, :resolved_context])
+         |> Map.put(:resolved_context, context)}
+
+      {:error, code, message} ->
+        envelope = %{"error" => %{"code" => Atom.to_string(code), "message" => message}}
+
+        %Result{
+          status: if(code == :authentication_required, do: 7, else: 2),
+          stderr: Output.error(envelope, Map.get(invocation.globals, :json, false))
+        }
     end
   end
 
-  defp resolved_runtime_options(options, api_key) when is_list(options) do
-    options
-    |> Keyword.delete(:api_key)
-    |> Keyword.delete(:resolved_api_key)
-    |> Keyword.put(:resolved_api_key, api_key)
-  end
-
-  defp resolved_runtime_options(options, api_key) when is_map(options) do
-    options
-    |> Map.delete(:api_key)
-    |> Map.delete(:resolved_api_key)
-    |> Map.put(:resolved_api_key, api_key)
-  end
-
-  defp resolved_runtime_options(_options, api_key), do: [resolved_api_key: api_key]
-
-  defp authentication_required(json?) do
-    envelope = %{
-      "error" => %{
-        "code" => "authentication_required",
-        "message" =>
-          "A Taskman API key is required. Run taskman config set-key or set TASKMAN_API_KEY."
-      }
-    }
-
-    %Result{status: 7, stderr: Output.error(envelope, json?)}
-  end
-
-  defp invalid_configuration(message, json?) do
-    envelope = %{"error" => %{"code" => "invalid_configuration", "message" => message}}
-    %Result{status: 2, stderr: Output.error(envelope, json?)}
+  defp snapshot(options) do
+    options = Map.new(options)
+    options |> Map.put_new_lazy(:env, &System.get_env/0) |> Map.put_new_lazy(:cwd, &File.cwd!/0)
   end
 end

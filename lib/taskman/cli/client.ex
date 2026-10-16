@@ -3,7 +3,6 @@ defmodule Taskman.CLI.Client do
 
   alias Taskman.CLI.Registry
 
-  @default_api_url "http://localhost:4000"
   @connection_guidance "Start the backend from the Taskman repository with `mix phx.server`, or run `taskman agent onboarding` for setup guidance."
   @error_contract %{
     401 => {"unauthorized", 7},
@@ -34,12 +33,42 @@ defmodule Taskman.CLI.Client do
     request_options = normalize_options(request_options)
     runtime_options = normalize_options(runtime_options)
 
-    api_url =
-      option(runtime_options, :api_url) || option(request_options, :api_url) || @default_api_url
+    context = option(runtime_options, :resolved_context)
 
-    # Credentials are supplied only by the runner's resolved runtime channel.
-    # Neither the old :api_key seam nor request payload/options can select an actor.
-    api_key = option(runtime_options, :resolved_api_key)
+    cond do
+      not valid_context?(context) ->
+        {:error, 2,
+         error(
+           "invalid_configuration",
+           "A valid resolved host context is required before making a request"
+         )}
+
+      not relative_path?(path) ->
+        {:error, 2,
+         error("invalid_configuration", "API request paths must be relative to the resolved host")}
+
+      true ->
+        request_resolved(method, path, request_options, runtime_options, success_shape, context)
+    end
+  end
+
+  defp relative_path?(path) when is_binary(path) do
+    match?(%URI{scheme: nil, authority: nil}, URI.parse(path))
+  end
+
+  defp relative_path?(_path), do: false
+
+  defp valid_context?(%Taskman.CLI.Context{host: host, api_url: url, api_key: key}) do
+    Taskman.CLI.Config.Document.validate_host_name(host) == :ok and
+      Taskman.CLI.Config.Document.validate_url(url) == :ok and
+      Taskman.CLI.Config.Document.validate_api_key(key) == :ok
+  end
+
+  defp valid_context?(_context), do: false
+
+  defp request_resolved(method, path, request_options, runtime_options, success_shape, context) do
+    api_url = context.api_url
+    api_key = context.api_key
     req_options = safe_req_options(runtime_options)
 
     request_options =

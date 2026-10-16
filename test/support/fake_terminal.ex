@@ -27,7 +27,7 @@ defmodule Taskman.FakeTerminal do
     case Process.get(@responses_key, %{visible: [], secret: []}) do
       %{^kind => [response | rest]} = responses ->
         Process.put(@responses_key, %{responses | kind => rest})
-        response
+        if is_function(response, 0), do: response.(), else: response
 
       _ ->
         raise "no #{kind} response configured"

@@ -40,6 +40,12 @@ defmodule Taskman.CLI.EndToEndTest do
     api_url = "http://127.0.0.1:#{port}"
     write_config(config_root, api_url, api_key)
 
+    Taskman.CLI.Fixtures.write_hosts!(Path.join(config_root, "missing"), %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{"personal" => %{api_url: api_url, api_key: nil}}
+    })
+
     missing = cli_run(["projects", "list", "--json"], Path.join(config_root, "missing"))
     assert missing.status == 7
     assert %{"error" => %{"code" => "authentication_required"}} = Jason.decode!(missing.stderr)
@@ -487,15 +493,174 @@ defmodule Taskman.CLI.EndToEndTest do
     refute_patched(detail, detail_path)
   end
 
+  test "named hosts bind shared clone context and recover dangling references through loopback",
+       %{api_key: api_key, config_root: root, tmp_dir: tmp_dir} do
+    alias Taskman.CLI.{Config, Fixtures}
+
+    server =
+      start_supervised!(
+        {Bandit,
+         plug: TaskmanWeb.Endpoint, scheme: :http, port: 0, ip: {127, 0, 0, 1}, startup_log: false},
+        id: :context_loopback
+      )
+
+    assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
+    repo = Fixtures.git_repo!(tmp_dir, "bound clone")
+    linked = Fixtures.linked_worktree!(repo, Path.join(tmp_dir, "linked tree"))
+    opts = [config_root: root, cwd: repo.cwd, env: %{}, terminal: Taskman.FakeTerminal]
+    run = fn args -> Taskman.CLI.run(args ++ ["--json"], opts) end
+
+    data = fn args ->
+      result = run.(args)
+      assert result.status == 0, result.stderr
+      assert result.stderr == ""
+      assert String.ends_with?(result.stdout, "\n")
+      Jason.decode!(result.stdout)["data"]
+    end
+
+    for host <- ~w(personal work) do
+      assert data.(~w(config hosts add) ++ [host, "--url", "http://127.0.0.1:#{port}"]) == %{
+               "saved" => true
+             }
+
+      Taskman.FakeTerminal.set_responses([], [api_key])
+      assert data.(~w(config hosts set-key) ++ [host]) == %{"saved" => true}
+    end
+
+    assert data.(~w(config default-host personal)) == %{"saved" => true}
+
+    assert {:ok, %{default_host: "personal", hosts: %{"personal" => %{api_key: ^api_key}}}} =
+             Config.load(opts)
+
+    project = data.(~w(projects create --name Repository))
+    other = data.(~w(projects create --name Elsewhere))
+    project_id = project["id"]
+    other_id = other["id"]
+
+    assert data.(~w(repo bind --host personal --project) ++ [to_string(project_id)]) ==
+             %{"bound" => true, "host" => "personal", "project_id" => project_id}
+
+    binding_path = Path.join([repo.common_dir, "taskman", "binding.json"])
+
+    assert Jason.decode!(File.read!(binding_path)) == %{
+             "version" => 1,
+             "host" => "personal",
+             "project_id" => project_id
+           }
+
+    task = data.(~w(tasks create --title Context-acceptance))
+    task_id = task["id"]
+    assert task["project_id"] == project_id
+    assert Taskman.Tasks.get_task(task_id).project_id == project_id
+    assert data.(~w(tasks show) ++ [to_string(task_id)])["project_id"] == project_id
+
+    # The bound host wins over environment selection; injection labels only the key.
+    injected =
+      Keyword.merge(opts,
+        cwd: linked.cwd,
+        env: %{
+          "TASKMAN_HOST" => "work",
+          "TASKMAN_API_KEY_HOST" => "personal",
+          "TASKMAN_API_KEY" => api_key
+        }
+      )
+
+    shown = Taskman.CLI.run(~w(config show --json), injected)
+
+    assert Jason.decode!(shown.stdout)["data"]["sources"] == %{
+             "host" => "repository",
+             "project" => "repository",
+             "key" => "environment"
+           }
+
+    linked_show = Taskman.CLI.run(["tasks", "show", to_string(task_id), "--json"], injected)
+    assert linked_show.status == 0
+    assert Jason.decode!(linked_show.stdout)["data"]["id"] == task_id
+
+    assert data.(~w(repo show)) == %{
+             "common_git_dir" => repo.common_dir,
+             "binding" => %{"host" => "personal", "project_id" => project_id},
+             "host_registered" => true
+           }
+
+    override =
+      data.(
+        ~w(tasks create --host work --project) ++
+          [to_string(other_id), "--title", "Context-elsewhere"]
+      )
+
+    assert override["project_id"] == other_id
+    assert Taskman.Tasks.get_task(override["id"]).project_id == other_id
+    assert Enum.map(data.(~w(tasks search Context)), & &1["id"]) == [task_id]
+
+    assert Enum.sort(
+             Enum.map(data.(~w(tasks search Context --host work --all-projects)), & &1["id"])
+           ) == Enum.sort([task_id, override["id"]])
+
+    assert Enum.map(
+             data.(~w(tasks search Context --host work --project) ++ [to_string(other_id)]),
+             & &1["id"]
+           ) == [override["id"]]
+
+    for args <- [
+          ~w(tasks list --host personal),
+          ["tasks", "list", "--project", to_string(project_id)],
+          ["tasks", "search", "Context", "--all-projects", "--project", to_string(project_id)]
+        ] do
+      result = run.(args)
+      assert result.status == 2
+      assert result.stdout == ""
+      assert Jason.decode!(result.stderr)["error"]["code"] == "invalid_invocation"
+    end
+
+    assert Jason.decode!(File.read!(binding_path))["project_id"] == project_id
+
+    assert data.(~w(config hosts remove personal)) == %{"removed" => true}
+    assert {:ok, %{default_host: nil}} = Config.load(opts)
+    assert data.(~w(repo show))["host_registered"] == false
+    refused = run.(~w(tasks list))
+    assert refused.status == 2
+    assert Jason.decode!(refused.stderr)["error"]["code"] == "invalid_configuration"
+    # Complete scope overrides bypass the dangling binding.
+    assert Enum.map(
+             data.(~w(tasks list --host work --project) ++ [to_string(other_id)]),
+             & &1["id"]
+           ) == [override["id"]]
+
+    stop_supervised!(:context_loopback)
+
+    offline =
+      Keyword.merge(opts,
+        env: %{"TASKMAN_API_URL" => "retired", "TASKMAN_API_KEY_HOST" => "orphan"}
+      )
+
+    unbound = Taskman.CLI.run(~w(repo unbind --json), offline)
+    assert unbound.status == 0
+    assert Jason.decode!(unbound.stdout) == %{"data" => %{"unbound" => true}}
+    refute File.exists?(binding_path)
+
+    assert data.(~w(repo show)) == %{
+             "common_git_dir" => repo.common_dir,
+             "binding" => nil,
+             "host_registered" => nil
+           }
+  end
+
   defp sync_view(view), do: _ = :sys.get_state(view.pid)
 
-  defp cli_run(args, config_root), do: Taskman.CLI.run(args, config_root: config_root, env: %{})
+  defp cli_run(args, config_root),
+    do:
+      Taskman.CLI.run(args,
+        config_root: config_root,
+        env: %{},
+        git_runner: &Taskman.CLI.Fixtures.outside_git/3
+      )
 
   defp write_config(config_root, api_url, api_key) do
-    path = Path.join([config_root, "taskman", "config.json"])
-    File.mkdir_p!(Path.dirname(path))
-    :ok = File.chmod(Path.dirname(path), 0o700)
-    File.write!(path, Jason.encode!(%{"api_url" => api_url, "api_key" => api_key}))
-    :ok = File.chmod(path, 0o600)
+    Taskman.CLI.Fixtures.write_hosts!(config_root, %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{"personal" => %{api_url: api_url, api_key: api_key}}
+    })
   end
 end

@@ -25,6 +25,16 @@ navigation. Share copies the current route with both filters as an explicit snap
 [active Project selector specification](../specs/2026-09-22-active-project-selector-design.md) for
 navigation, filter, validation, and API/CLI contracts.
 
+## CLI connection context
+
+A **CLI host** is a locally registered name for a Taskman backend URL and optional credential in
+protected user configuration. A **repository binding** is a clone-local host name and Project ID
+stored in Git's common directory, shared by linked worktrees and independent across clones.
+It supplies the default CLI connection and Project scope without adding a directory to the
+server-side Project model, changing ownership, or granting execution/lifecycle authority. See the
+[named-host and repository-binding contract](../specs/2026-09-30-repository-backends-design.md)
+and [CLI setup and recovery](../../README.md#local-cli).
+
 ## Ownership rules
 
 - A Task belongs to exactly one Project and exactly one owning location at a time.

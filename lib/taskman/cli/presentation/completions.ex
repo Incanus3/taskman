@@ -2,6 +2,7 @@ defmodule Taskman.CLI.Presentation.Completions do
   @moduledoc "Generate offline Bash and Fish completion scripts from the CLI registry."
 
   alias Taskman.CLI.Registry
+  alias Taskman.CLI.Registry.Command
 
   @doc "Render the Bash completion script for the taskman command."
   @spec bash() :: String.t()
@@ -252,7 +253,7 @@ defmodule Taskman.CLI.Presentation.Completions do
     descendants = descendant_commands(commands, prefix)
 
     Enum.filter(global_options, fn option ->
-      Enum.any?(descendants, &(not forbidden_global?(&1, option.name)))
+      Enum.any?(descendants, &(not Command.forbidden_global?(&1, option.name)))
     end)
   end
 
@@ -406,7 +407,7 @@ defmodule Taskman.CLI.Presentation.Completions do
       |> Enum.filter(fn prefix ->
         commands
         |> Enum.filter(fn command -> Enum.take(command.path, length(prefix)) == prefix end)
-        |> Enum.all?(&forbidden_global?(&1, option.name))
+        |> Enum.all?(&Command.forbidden_global?(&1, option.name))
       end)
       |> Enum.sort_by(&length/1)
 
@@ -429,22 +430,8 @@ defmodule Taskman.CLI.Presentation.Completions do
 
   defp fish_global_option_function(option), do: "__taskman_global_#{option.name}"
 
-  defp forbidden_global?(command, option_name) do
-    Enum.any?(command.constraints, fn
-      {:forbidden_global, ^option_name} -> true
-      _constraint -> false
-    end)
-  end
-
   defp allowed_global_options(command, global_options) do
-    forbidden =
-      command.constraints
-      |> Enum.flat_map(fn
-        {:forbidden_global, field} -> [field]
-        _constraint -> []
-      end)
-
-    Enum.reject(global_options, &(&1.name in forbidden))
+    Enum.reject(global_options, &Command.forbidden_global?(command, &1.name))
   end
 
   defp fish_group_lines(commands) do

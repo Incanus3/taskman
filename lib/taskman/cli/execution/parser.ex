@@ -13,14 +13,14 @@ defmodule Taskman.CLI.Execution.Parser do
 
   @doc "Parse argv and retain only explicit global CLI options."
   @spec parse([String.t()], map() | keyword()) :: parse_result()
-  def parse(argv, env \\ System.get_env())
+  def parse(argv, env \\ %{})
 
   def parse(argv, _env) when is_list(argv) do
     case extract_globals(argv) do
       {:error, message, tokens} ->
         {:error, message, usage_path(tokens)}
 
-      {:ok, tokens, cli_api_url, json?, help?, version?} ->
+      {:ok, tokens, cli_host, json?, help?, version?} ->
         path = discover_path(tokens)
 
         cond do
@@ -34,22 +34,22 @@ defmodule Taskman.CLI.Execution.Parser do
             {:error, "Unknown option #{hd(tokens)}", []}
 
           true ->
-            parse_command(tokens, path, cli_api_url, json?)
+            parse_command(tokens, path, cli_host, json?)
         end
     end
   end
 
   def parse(_argv, _env), do: {:error, "Arguments must be a list", []}
 
-  defp parse_command(_tokens, [], _cli_api_url, _json?) do
+  defp parse_command(_tokens, [], _cli_host, _json?) do
     {:error, "A command is required", []}
   end
 
-  defp parse_command(tokens, path, cli_api_url, json?) do
+  defp parse_command(tokens, path, cli_host, json?) do
     case Registry.find(path) do
       {:ok, %Command{} = command} ->
         command_tokens = Enum.drop(tokens, length(path))
-        global_options = globals(cli_api_url, json?)
+        global_options = globals(cli_host, json?)
 
         with {:ok, options, positional} <- parse_tokens(command, command_tokens, path),
              {:ok, arguments} <- parse_arguments(command, positional, path),
@@ -202,6 +202,10 @@ defmodule Taskman.CLI.Execution.Parser do
           {:ok, value} ->
             {:cont, {:ok, Map.put(parsed, argument.name, value)}}
 
+          :error when argument.type == :host_name ->
+            {:halt,
+             {:error, "Invalid #{argument.value_name}; expected a lowercase host name", path}}
+
           :error ->
             {:halt, {:error, "Invalid #{argument.value_name}: #{inspect(raw_value)}", path}}
         end
@@ -215,6 +219,12 @@ defmodule Taskman.CLI.Execution.Parser do
       {integer, ""} when type == :positive_integer and integer > 0 -> {:ok, integer}
       _ -> :error
     end
+  end
+
+  defp cast_argument(:host_name, value) do
+    if Taskman.CLI.Config.Document.validate_host_name(value) == :ok,
+      do: {:ok, value},
+      else: :error
   end
 
   defp cast_argument(:string, value), do: {:ok, value}
@@ -273,13 +283,15 @@ defmodule Taskman.CLI.Execution.Parser do
           {:cont, :ok}
         end
 
-      {:forbidden_global, field}, :ok ->
-        if Map.has_key?(globals, field) do
-          {:halt,
-           {:error, "Completion output is shell source and cannot be combined with --json", path}}
-        else
-          {:cont, :ok}
-        end
+      {:forbid_global, fields}, :ok ->
+        if Enum.any?(fields, &Map.has_key?(globals, &1)),
+          do: {:halt, {:error, "Global options #{format_fields(fields)} are not accepted", path}},
+          else: {:cont, :ok}
+
+      {:require_global, fields}, :ok ->
+        if Enum.all?(fields, &Map.has_key?(globals, &1)),
+          do: {:cont, :ok},
+          else: {:halt, {:error, "Required global options: #{format_fields(fields)}", path}}
 
       _constraint, :ok ->
         {:cont, :ok}
@@ -292,9 +304,9 @@ defmodule Taskman.CLI.Execution.Parser do
     |> Enum.join(", ")
   end
 
-  defp globals(cli_api_url, json?) do
+  defp globals(cli_host, json?) do
     %{}
-    |> maybe_put_global(:api_url, cli_api_url)
+    |> maybe_put_global(:host, cli_host)
     |> maybe_put_global(:json, json?)
   end
 
@@ -304,40 +316,40 @@ defmodule Taskman.CLI.Execution.Parser do
 
   defp extract_globals(argv), do: extract_globals(argv, [], nil, false, false, false)
 
-  defp extract_globals([], kept, cli_api_url, json?, help?, version?),
-    do: {:ok, Enum.reverse(kept), cli_api_url, json?, help?, version?}
+  defp extract_globals([], kept, cli_host, json?, help?, version?),
+    do: {:ok, Enum.reverse(kept), cli_host, json?, help?, version?}
 
-  defp extract_globals([token | rest], kept, cli_api_url, json?, help?, version?) do
+  defp extract_globals([token | rest], kept, cli_host, json?, help?, version?) do
     cond do
       token in ["--json", "-j"] ->
-        extract_globals(rest, kept, cli_api_url, true, help?, version?)
+        extract_globals(rest, kept, cli_host, true, help?, version?)
 
       token in ["--help", "-h"] ->
-        extract_globals(rest, kept, cli_api_url, json?, true, version?)
+        extract_globals(rest, kept, cli_host, json?, true, version?)
 
       token in ["--version", "-v"] ->
-        extract_globals(rest, kept, cli_api_url, json?, help?, true)
+        extract_globals(rest, kept, cli_host, json?, help?, true)
 
-      token == "--api-url" ->
+      token == "--host" ->
         case rest do
           [value | remaining] when is_binary(value) ->
             if String.starts_with?(value, "--") do
-              {:error, "Missing value for --api-url", Enum.reverse(kept)}
+              {:error, "Missing value for --host", Enum.reverse(kept)}
             else
-              extract_globals(remaining, kept, value, json?, help?, version?)
+              validate_host_global(value, remaining, kept, json?, help?, version?)
             end
 
           _ ->
-            {:error, "Missing value for --api-url", Enum.reverse(kept)}
+            {:error, "Missing value for --host", Enum.reverse(kept)}
         end
 
-      String.starts_with?(token, "--api-url=") ->
-        value = String.replace_prefix(token, "--api-url=", "")
+      String.starts_with?(token, "--host=") ->
+        value = String.replace_prefix(token, "--host=", "")
 
         if value == "" do
-          {:error, "Missing value for --api-url", Enum.reverse(kept)}
+          {:error, "Missing value for --host", Enum.reverse(kept)}
         else
-          extract_globals(rest, kept, value, json?, help?, version?)
+          validate_host_global(value, rest, kept, json?, help?, version?)
         end
 
       token in [
@@ -351,8 +363,14 @@ defmodule Taskman.CLI.Execution.Parser do
         {:error, "Global boolean options do not take values", Enum.reverse(kept)}
 
       true ->
-        extract_globals(rest, [token | kept], cli_api_url, json?, help?, version?)
+        extract_globals(rest, [token | kept], cli_host, json?, help?, version?)
     end
+  end
+
+  defp validate_host_global(value, rest, kept, json?, help?, version?) do
+    if Taskman.CLI.Config.Document.validate_host_name(value) == :ok,
+      do: extract_globals(rest, kept, value, json?, help?, version?),
+      else: {:error, "Invalid host name for --host", Enum.reverse(kept)}
   end
 
   defp discover_path(tokens) do

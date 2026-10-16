@@ -19,19 +19,50 @@ defmodule Taskman.CLI.Onboarding do
   Ordinary commands require a running backend. From the Taskman repository, start the Phoenix application with:
   mix phx.server
 
-  In short, ordinary commands require a running backend; completion generation and onboarding remain available offline.
-
   The CLI does not start the backend for you. Completion generation and onboarding are offline and work while the backend is stopped.
 
   API configuration
 
-  The CLI reads ${XDG_CONFIG_HOME:-$HOME/.config}/taskman/config.json. Its URL defaults to http://localhost:4000. Set a hosted HTTPS URL and then enter an API key without echo:
-  taskman config set-url https://taskman.example.com
-  taskman config set-key
+  The CLI reads ${XDG_CONFIG_HOME:-$HOME/.config}/taskman/config.json. Fresh configuration has no implicit host or endpoint. Register a hosted HTTPS URL, enter an API key without echo, and explicitly choose a default:
+  taskman config hosts add personal --url https://taskman.example.com
+  taskman config hosts set-key personal
+  taskman config default-host personal
+  taskman config show
 
-  Create an API key in the browser from Account settings. Copy it when it is shown: its plaintext value is one-time only. Do not put the key in a command, URL, log, or report. `taskman config show` confirms configuration without revealing it.
+  For local development, register http://localhost:4000 under a named host instead. Registration alone neither selects a default nor creates a Project. Create an API key in the browser from Account settings. Copy it when it is shown: its plaintext value is one-time only. Do not put the key in a command, URL, log, or report. taskman config show confirms effective context without revealing it; config hosts list/show describe stored credentials only.
 
-  TASKMAN_API_URL and TASKMAN_API_KEY are temporary overrides for CI, containers, or secret injection. An explicit --api-url takes precedence over TASKMAN_API_URL; environment values take precedence over config.json. Ordinary API commands require a key and return status 7 when authentication is missing, rejected, or forbidden.
+  Host selection is --host NAME, repository binding, nonempty TASKMAN_HOST, then configured default. Global --host may appear before or after the command. For CI, containers, or secret injection, pair TASKMAN_API_KEY with TASKMAN_API_KEY_HOST matching the selected registered host. The label associates the secret, and never selects an endpoint. Incomplete or mismatched pairs refuse locally. Ordinary API commands require a key and return status 7 when authentication is missing, rejected, or forbidden.
+
+  Repository context
+
+  Create or inspect the Project first, then run these commands inside a Git working tree:
+  taskman projects create --name "My Project" --json
+  taskman repo bind --host personal --project 7
+  taskman repo show
+  taskman tasks list --json
+
+  Bind validates the authenticated Project before writing. The clone binding stores only host name and Project ID in Git's common metadata; linked worktrees share it, while independent clones bind separately. It supplies context, not permission to mutate or change lifecycle state.
+
+  Bound scoped commands need no repeated Project. To override, provide both --host and --project, even when they match the binding:
+  taskman tasks list --host personal --project 9 --json
+  Unbound Git clones and non-Git folders require --project for Lists and Tasks; there is no default Project. The representative Project-explicit examples below assume an unbound folder; add --host personal when overriding a bound clone.
+
+  Search inherits the bound Project. Use the explicit escape to search all Projects on the selected host:
+  taskman tasks search publish --all-projects
+  taskman tasks search publish --host personal --all-projects
+  --all-projects conflicts with --project. Host-only Project commands do not inherit the bound Project ID.
+
+  Recovery and upgrade
+
+  Host management and repo show/unbind work offline, ignoring transport-selection environment settings. Removing a host clears its default but leaves clone bindings intact. repo show reports dangling references. Re-register the same logical backend under its old name, bind explicitly to another host/Project, or remove the clone reference:
+  taskman repo unbind
+  For malformed binding data, unbind offline before binding again. Complete explicit host/Project pairs bypass binding discovery for resource commands.
+
+  Change an address only for the same logical backend:
+  taskman config hosts set-url personal --url https://taskman.example.com
+  All repositories bound to this host use the updated URL. API key retained. Different backends need different host names and explicit rebinding.
+
+  Update the binary before the first configuration mutation. Legacy URL/key settings are read as virtual host default without writes; a successful user-config mutation upgrades to version 2. Old binaries cannot read that format. Key-only legacy settings retain their historical localhost endpoint; empty settings select no host. Replace old config set-url/set-key commands with config hosts commands; replace raw --api-url or TASKMAN_API_URL targeting with registered hosts. There is no automatic downgrade.
 
   Representative workflows
 

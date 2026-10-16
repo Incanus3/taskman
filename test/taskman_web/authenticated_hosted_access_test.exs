@@ -68,7 +68,7 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     read_shared_project =
       cli_run(["projects", "show", Integer.to_string(shared_project.id), "--json"], config_root)
 
-    assert read_shared_project.status == 0
+    assert read_shared_project.status == 0, read_shared_project.stderr
 
     assert %{"data" => %{"id" => shared_project_id, "name" => "Shared acceptance Project"}} =
              Jason.decode!(read_shared_project.stdout)
@@ -184,7 +184,9 @@ defmodule TaskmanWeb.AuthenticatedHostedAccessTest do
     plaintext
   end
 
-  defp cli_run(args, config_root), do: Taskman.CLI.run(args, config_root: config_root, env: %{})
+  defp cli_run(args, config_root) do
+    Taskman.CLI.run(["--host", "default" | args], config_root: config_root, env: %{})
+  end
 
   defp write_config(config_root, api_url, api_key) do
     path = Path.join([config_root, "taskman", "config.json"])

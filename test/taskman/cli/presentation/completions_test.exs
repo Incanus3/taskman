@@ -166,7 +166,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
       %Command{path: ~w(agent onboarding)},
       %Command{
         path: ~w(agent skill install),
-        constraints: [{:forbidden_global, :json}]
+        constraints: [{:forbid_global, [:json]}]
       }
     ]
 
@@ -242,7 +242,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
     fish_path = Path.join(tmp_dir, "taskman.fish")
     File.write!(fish_path, Completions.fish())
 
-    suggestions = fish_query(fish_path, "taskman --api-url projects ")
+    suggestions = fish_query(fish_path, "taskman --host projects ")
 
     assert "projects" in suggestions
     assert "lists" in suggestions
@@ -310,7 +310,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
     File.write!(bash_path, Completions.bash())
 
     assert bash_query(bash_path, ["taskman", "projects", "create", "--name", ""]) == []
-    assert bash_query(bash_path, ["taskman", "--api-url", ""]) == []
+    assert bash_query(bash_path, ["taskman", "--host", ""]) == []
   end
 
   @tag :tmp_dir
@@ -371,6 +371,57 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
            ])
 
     assert "rocket-launch" in fish_query(fish_path, "taskman projects create --icon ")
+  end
+
+  @tag :tmp_dir
+  test "shells discover nested host and repository commands with global host placement", %{
+    tmp_dir: tmp_dir
+  } do
+    bash = Path.join(tmp_dir, "taskman.bash")
+    fish = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash, Completions.bash())
+    File.write!(fish, Completions.fish())
+
+    for child <- ~w(add list show set-url set-key remove) do
+      assert child in bash_query(bash, ~w(taskman config hosts) ++ [""])
+      assert child in fish_query(fish, "taskman config hosts ")
+    end
+
+    for child <- ~w(bind show unbind) do
+      assert child in bash_query(bash, ~w(taskman repo) ++ [""])
+      assert child in fish_query(fish, "taskman repo ")
+    end
+
+    assert "default-host" in fish_query(fish, "taskman config ")
+
+    for path <- [~w(config hosts add), ~w(config hosts set-url)] do
+      assert "--url" in bash_query(bash, ["taskman" | path] ++ ["personal", "--"])
+      assert "--url" in fish_query(fish, "taskman #{Enum.join(path, " ")} personal --")
+    end
+
+    for {words, line} <- [
+          {~w(taskman --host personal repo bind) ++ ["--"],
+           "taskman --host personal repo bind --"},
+          {~w(taskman repo bind --host personal) ++ ["--"],
+           "taskman repo bind --host personal --"}
+        ] do
+      assert "--project" in bash_query(bash, words)
+      assert "--project" in fish_query(fish, line)
+    end
+
+    assert "--host" in bash_query(bash, ~w(taskman tasks list) ++ ["--"])
+    refute "--host" in fish_query(fish, "taskman config hosts set-key personal --")
+    refute "--host" in bash_query(bash, ~w(taskman config hosts set-key personal) ++ ["--"])
+
+    for {words, line, excluded} <- [
+          {~w(taskman tasks search publish --all-projects) ++ ["--"],
+           "taskman tasks search publish --all-projects --", "--project"},
+          {~w(taskman tasks search publish --project=7) ++ ["--"],
+           "taskman tasks search publish --project=7 --", "--all-projects"}
+        ] do
+      refute excluded in bash_query(bash, words)
+      refute excluded in fish_query(fish, line)
+    end
   end
 
   defp fish_query(path, command_line) do

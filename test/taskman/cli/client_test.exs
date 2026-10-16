@@ -7,6 +7,76 @@ defmodule Taskman.CLI.ClientTest do
 
   setup {Req.Test, :verify_on_exit!}
 
+  test "every request uses the resolved endpoint and bearer together" do
+    context = Taskman.CLI.Fixtures.resolved_context()
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert conn.host == "personal.example.invalid"
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> context.api_key]
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(:get, "/api/v1/projects", [],
+               resolved_context: context,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+  end
+
+  test "request options cannot substitute endpoint or credential" do
+    context = Taskman.CLI.Fixtures.resolved_context()
+
+    Req.Test.expect(TaskmanCLIClient, fn conn ->
+      assert conn.host == "personal.example.invalid"
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer " <> context.api_key]
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:ok, []} =
+             Client.request(
+               :get,
+               "/api/v1/projects",
+               [api_url: "https://work.example.invalid", api_key: "injected"],
+               api_url: "https://work.example.invalid",
+               api_key: "injected",
+               resolved_context: context,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    for invalid <- [nil, %{}, %{context | api_url: nil}, %{context | api_key: nil}] do
+      assert {:error, 2, %{"error" => %{"code" => "invalid_configuration"}}} =
+               Client.request(:get, "/api/v1/projects", [], resolved_context: invalid)
+    end
+  end
+
+  test "absolute request paths cannot select another endpoint" do
+    assert_endpoint_path_rejected("https://work.example.invalid/api/v1/projects")
+  end
+
+  test "authority-bearing request paths are rejected before HTTP" do
+    assert_endpoint_path_rejected("//work.example.invalid/api/v1/projects")
+  end
+
+  defp assert_endpoint_path_rejected(path) do
+    context = Taskman.CLI.Fixtures.resolved_context()
+    parent = self()
+
+    Req.Test.stub(TaskmanCLIClient, fn conn ->
+      send(parent, {:unexpected_request, conn.host})
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    assert {:error, 2, %{"error" => %{"code" => "invalid_configuration", "message" => message}}} =
+             Client.request(:get, path, [],
+               resolved_context: context,
+               req_options: [plug: {Req.Test, TaskmanCLIClient}]
+             )
+
+    refute_received {:unexpected_request, _}
+    refute message =~ path
+    refute message =~ context.api_key
+  end
+
   test "comment response contract requires exact attribution and UTC timestamp" do
     valid = %{
       id: 123,
@@ -23,7 +93,10 @@ defmodule Taskman.CLI.ClientTest do
                :get,
                "/comments",
                [],
-               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               [
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               ],
                {:collection, :comment}
              )
 
@@ -44,7 +117,10 @@ defmodule Taskman.CLI.ClientTest do
                  :get,
                  "/comments",
                  [],
-                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
                  {:member, :comment}
                )
     end
@@ -69,6 +145,7 @@ defmodule Taskman.CLI.ClientTest do
               }
             ]} =
              Client.request(:get, "/api/v1/projects", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -90,7 +167,10 @@ defmodule Taskman.CLI.ClientTest do
                :get,
                "/api/v1/projects/7",
                [],
-               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               [
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               ],
                {:member, :project}
              )
 
@@ -102,7 +182,10 @@ defmodule Taskman.CLI.ClientTest do
                  :get,
                  "/api/v1/projects/7",
                  [],
-                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
                  {:member, :project}
                )
     end
@@ -121,7 +204,7 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:ok, []} =
              Client.request(:get, "/api/v1/projects", [],
-               resolved_api_key: credential,
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(%{api_key: credential}),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -138,7 +221,7 @@ defmodule Taskman.CLI.ClientTest do
     assert {:ok, []} =
              Client.request(:get, "/api/v1/projects", [],
                api_key: injected,
-               resolved_api_key: resolved,
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(%{api_key: resolved}),
                req_options: [
                  plug: {Req.Test, TaskmanCLIClient},
                  auth: {:bearer, injected},
@@ -156,12 +239,16 @@ defmodule Taskman.CLI.ClientTest do
     credential = "tm_request_option_must_not_authenticate"
 
     Req.Test.expect(TaskmanCLIClient, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      assert Plug.Conn.get_req_header(conn, "authorization") == [
+               "Bearer " <> Taskman.CLI.Fixtures.resolved_context().api_key
+             ]
+
       Req.Test.json(conn, %{data: []})
     end)
 
     assert {:ok, []} =
              Client.request(:get, "/api/v1/projects", [api_key: credential],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -170,7 +257,10 @@ defmodule Taskman.CLI.ClientTest do
     credential = "tm_string_request_option_must_not_authenticate"
 
     Req.Test.expect(TaskmanCLIClient, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "authorization") == []
+      assert Plug.Conn.get_req_header(conn, "authorization") == [
+               "Bearer " <> Taskman.CLI.Fixtures.resolved_context().api_key
+             ]
+
       Req.Test.json(conn, %{data: []})
     end)
 
@@ -179,6 +269,7 @@ defmodule Taskman.CLI.ClientTest do
                :get,
                "/api/v1/projects",
                %{"api_key" => credential},
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -198,6 +289,7 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 3, %{"error" => %{"code" => ^code, "message" => "failure"}}} =
                Client.request(:get, "/api/v1/projects", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -214,6 +306,7 @@ defmodule Taskman.CLI.ClientTest do
       assert {:error, 7, %{"error" => %{"code" => ^code, "message" => "Authentication failed"}}} =
                Client.request(:get, "/api/v1/projects", [],
                  api_key: "tm_client_mapping_credential",
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -240,7 +333,8 @@ defmodule Taskman.CLI.ClientTest do
               }
             }} =
              Client.request(:get, "/api/v1/projects", [],
-               resolved_api_key: "tm_client_mapping_credential",
+               resolved_context:
+                 Taskman.CLI.Fixtures.resolved_context(%{api_key: "tm_client_mapping_credential"}),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -260,7 +354,10 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
                Client.request(:get, "/api/v1/projects", [],
-                 resolved_api_key: "tm_client_mapping_credential",
+                 resolved_context:
+                   Taskman.CLI.Fixtures.resolved_context(%{
+                     api_key: "tm_client_mapping_credential"
+                   }),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -275,28 +372,23 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
              Client.request(:get, "/api/v1/projects", [],
-               resolved_api_key: credential,
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(%{api_key: credential}),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
 
     refute message =~ credential
   end
 
-  test "redacts escaped inspected credential representations" do
+  test "invalid context credentials fail before HTTP without disclosure" do
     credential = "tm_escaped_secret\ncontrol"
 
-    Req.Test.expect(TaskmanCLIClient, fn _conn ->
-      raise inspect(%{authorization: "Bearer " <> credential})
-    end)
-
-    assert {:error, 5, %{"error" => %{"code" => "invalid_response", "message" => message}}} =
+    assert {:error, 2, %{"error" => %{"code" => "invalid_configuration", "message" => message}}} =
              Client.request(:get, "/api/v1/projects", [],
-               resolved_api_key: credential,
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(%{api_key: credential}),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
 
     refute message =~ "tm_escaped_secret"
-    assert message =~ "[REDACTED]"
   end
 
   test "maps concurrent Task updates to exit status 3 and preserves fields" do
@@ -321,6 +413,7 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 3, ^expected} =
              Client.request(:patch, "/api/v1/projects/7/tasks/42", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -344,6 +437,7 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
                Client.request(:patch, "/api/v1/projects/7/tasks/42", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -365,6 +459,7 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
                Client.request(:get, "/api/v1/projects", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -380,6 +475,7 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
                Client.request(:get, "/api/v1/projects", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -395,6 +491,7 @@ defmodule Taskman.CLI.ClientTest do
 
       assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
                Client.request(:get, "/api/v1/projects", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
     end
@@ -412,10 +509,11 @@ defmodule Taskman.CLI.ClientTest do
                 }
               }} =
                Client.request(:get, "/api/v1/projects", [],
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                  req_options: [plug: {Req.Test, TaskmanCLIClient}]
                )
 
-      assert message =~ "http://localhost:4000"
+      assert message =~ "https://personal.example.invalid"
       assert message =~ "taskman agent onboarding"
       assert message =~ "mix phx.server"
     end
@@ -431,6 +529,7 @@ defmodule Taskman.CLI.ClientTest do
     assert {:error, 5,
             %{"error" => %{"code" => "internal_error", "message" => "Internal Server Error"}}} =
              Client.request(:get, "/api/v1/projects", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -440,6 +539,7 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
              Client.request(:get, "/api/v1/projects", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
 
@@ -447,6 +547,7 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
              Client.request(:get, "/api/v1/projects", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -460,6 +561,7 @@ defmodule Taskman.CLI.ClientTest do
 
     assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
              Client.request(:get, "/api/v1/projects", [],
+               resolved_context: Taskman.CLI.Fixtures.resolved_context(),
                req_options: [plug: {Req.Test, TaskmanCLIClient}]
              )
   end
@@ -475,7 +577,10 @@ defmodule Taskman.CLI.ClientTest do
                  :get,
                  "/api/v1/projects/7/tasks/42",
                  [],
-                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
                  {:member, :task}
                )
     end
@@ -494,7 +599,10 @@ defmodule Taskman.CLI.ClientTest do
                  :get,
                  "/api/v1/projects/7/tasks/42",
                  [],
-                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
                  {:member, :task}
                )
     end
@@ -510,7 +618,10 @@ defmodule Taskman.CLI.ClientTest do
                :get,
                "/api/v1/projects/7/tasks/51/hierarchy",
                [],
-               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               [
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               ],
                :hierarchy
              )
 
@@ -524,7 +635,10 @@ defmodule Taskman.CLI.ClientTest do
                :get,
                "/api/v1/projects/7/tasks/51/hierarchy",
                [],
-               [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+               [
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               ],
                :hierarchy
              )
   end
@@ -577,7 +691,10 @@ defmodule Taskman.CLI.ClientTest do
                  :get,
                  "/api/v1/projects/7",
                  [],
-                 [req_options: [plug: {Req.Test, TaskmanCLIClient}]],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
                  {:member, :project}
                )
     end
