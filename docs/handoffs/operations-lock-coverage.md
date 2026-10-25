@@ -9,9 +9,13 @@ This workstream no longer blocks Operations VPS readiness or its consolidation/m
 
 Prevent conflicting cooperating host operations, especially PostgreSQL convergence during backups,
 while retaining controller-driven pyinfra and the existing inner lifecycle lock.
-Workstream task: `tas-bbry`; transferred from `tas-561x.9`, whose design/review evidence remains
+Workstream task: Taskman Task 32 in the registered Project; verify `Source: taskman/br/tas-bbry`
+after resolving the clone binding, and stop on mismatch. Transferred from
+`tas-561x.9`, whose design/review evidence remains
 historical provenance. The [complete written design](../specs/2026-09-18-provisioning-lock-coverage-proposal.md)
 owns contracts, alternatives, file boundaries and verification requirements.
+Use the registered Taskman Project for planning and execution; any legacy Beads-backed planning
+wording below is superseded by the current repository tracking policy.
 [Operations contracts](../specs/2026-09-18-operations-contracts.md),
 [architecture](../specs/2026-09-09-dedicated-host-deployment-design.md) and the
 [runbook](../guides/deployment.md) still own current implemented behavior.

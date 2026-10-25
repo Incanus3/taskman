@@ -6,7 +6,10 @@
 
 > **Superseded in part:** Task creation now exposes the complete editable field set as defined by
 > the [Full Task creation form design](2026-08-03-full-task-creation-form-design.md). The Task
-> editing and lifecycle decisions in this document stay authoritative.
+> editing decisions stay authoritative. For agent execution authority, the current
+> [agent-work contract](../product/domain.md#agent-work) supersedes this design's blanket
+> human-only nonterminal-transition wording. Explicit assignment permits In Progress/In Review;
+> terminal decisions still require human acceptance. UI behavior is unchanged.
 
 ## Goal
 
@@ -94,9 +97,11 @@ The modal exposes every persisted status:
 - Done
 - Will Not Do
 
-Selecting a status is an explicit human action and persists immediately. Agent activity, due dates,
-checklist state, and other application events never change status. The UI does not hard-gate status
-choices. The normal lifecycle remains guidance rather than an enforced transition graph.
+Selecting a status in the modal is an explicit human action and persists immediately. Runtime
+activity, due dates, checklist state and other application events never automatically change status.
+Explicit assigned-agent updates follow the current [agent-work contract](../product/domain.md#agent-work).
+The UI does not hard-gate status choices. The normal lifecycle remains guidance rather than an
+enforced transition graph.
 
 Lifecycle controls live in the modal for this increment. Direct row controls were rejected for now
 because they would add a second editing interaction before its value is demonstrated. The row

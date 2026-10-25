@@ -83,3 +83,7 @@
 ## Prototypes
 
 - [Navigation and MVP visual guidance](prototypes/navigation.html)
+
+## Archive
+
+- [Repository task migration: source mapping, custody and verification](archive/repository-task-migration.md)

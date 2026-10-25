@@ -58,12 +58,13 @@ defmodule Taskman.CLI.Skill.BundleTest do
              "An empty direct-location result does not establish that the Project has no Tasks"
 
     assert skill =~ "explicit authority"
-    assert skill =~ "Agent work is evidence only, not authority"
-
-    assert skill =~
-             ~r/any Task lifecycle change requires a separate,\s+user-authorized Task-status decision/
-
-    assert skill =~ "Agent activity never marks a Task complete automatically."
+    assert skill =~ "When the operator assigns a"
+    assert skill =~ "nonterminal Task, that assignment authorizes bounded updates"
+    assert skill =~ "comments, and transitions to In Progress or In Review"
+    assert skill =~ "Done, Will Not Do, reopening terminal work"
+    assert skill =~ "require explicit operator decisions"
+    assert skill =~ "never mark work complete"
+    assert skill =~ "no computed ready queue or atomic claim"
     assert skill =~ "taskman tasks comments list --project 7 42"
     assert skill =~ "taskman tasks comments add --project 7 42 --text"
     assert skill =~ "taskman tasks show --project 7 42 --include-comments"

@@ -44,6 +44,9 @@ npm-debug.log
 # bv (beads viewer) local config and caches
 .bv/
 
+# Private historical tracker data, configuration and recovery artifacts.
+/.beads/
+
 # Python controller bytecode and local plaintext deployment material.
 __pycache__/
 *.py[cod]

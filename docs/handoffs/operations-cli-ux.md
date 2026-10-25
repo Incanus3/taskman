@@ -8,7 +8,9 @@ Use its own dedicated branch from refreshed main; retain the written-spec review
 ## Objective and authority
 
 Make operations progress, plans, and final outcomes understandable without weakening output
-safety or release authority. Design task: `tas-7ncz`. Reconciliation owns `tas-6dkg`;
+safety or release authority. Design task: Taskman Task 33 in the registered Project; verify
+`Source: taskman/br/tas-7ncz` after resolving the clone binding, and stop on mismatch.
+Historical reconciliation owns `tas-6dkg`;
 UX consumes its retained failure reports.
 The [proposed specification](../specs/2026-09-09-operations-cli-ux-design.md) owns the design;
 the [deployment design](../specs/2026-09-09-dedicated-host-deployment-design.md) and
@@ -34,7 +36,7 @@ host changes are authorized here.
 
 ## Next actions when selected after the operations merge
 
-1. Resolve the scoped architecture/security review recorded on `tas-7ncz`: non-throwing presentation
+1. Resolve the scoped architecture/security review preserved on Task 33 (source `tas-7ncz`): non-throwing presentation
    callbacks without global hook changes, terminal-control sanitization, staging-only identity
    wording, pre-mutation failure outcomes, and bounded inspection responses. Also self-review the
    JSON error-form and interactive `create-admin` exceptions. No final written-spec approval has

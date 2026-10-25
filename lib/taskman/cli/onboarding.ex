@@ -84,7 +84,9 @@ defmodule Taskman.CLI.Onboarding do
   taskman tasks comments list --project 7 42 --json
   taskman tasks comments add --project 7 42 --text "Review notes" --author-name "Research agent" --json
 
-  A comment is appended only when you run the add command; inspect the returned comment and list the thread afterward to verify it. The API key selects the verified posting account. --author-name supplies a truthful display name for the comment; it cannot change the posting account. A comment records discussion and does not authorize a Task lifecycle transition. Ask for a separate human status decision before changing lifecycle state.
+  Read the Task, its thread and blockers before acting. Explicit assignment to a nonterminal Task authorizes bounded updates within its agreed scope, evidence comments, and explicit transitions to In Progress or In Review. Inspect the returned comment and list the thread afterward to verify it. The API key selects the verified posting account. --author-name supplies a truthful display name; it cannot change the posting account. Done, Will Not Do, reopening terminal work, unresolved-blocker overrides, deletion and material scope/priority changes require explicit human decisions by the operator. Runtime activity and passed checks never complete work automatically.
+
+  In registered repositories, use the bound Taskman Project for execution tracking and retain migrated Beads as a read-only archive. An unbound repository keeps its existing tracker. Failed context lookup, malformed/dangling binding, authentication failure or unavailable backend must not trigger fallback to Beads. Discovery alone does not authorize execution. Use tasks list --include-descendants and inspect tasks blocking show for Pending eligibility; Done and Will Not Do blockers are resolved. There is no computed ready queue or atomic claim. Coordinate ownership before parallel work; In Progress is not a lock.
 
   Install shell completions by redirecting the generated source to the standard location:
   mkdir -p ~/.local/share/bash-completion/completions

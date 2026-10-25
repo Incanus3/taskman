@@ -106,8 +106,35 @@ and raw --api-url or TASKMAN_API_URL targeting with registered hosts. No automat
 Use exact ID operands and never guess by name. Task parent IDs must be exact and Project-scoped.
 Inspect Tasks before changing parentage. Inspect before mutating. A consequential future
 deletion requires that you obtain explicit authority from the user immediately before the operation.
-Agent work is evidence only, not authority: any Task lifecycle change requires a separate,
-user-authorized Task-status decision. Agent activity never marks a Task complete automatically.
+Repository registration selects context, not execution authority. When the operator assigns a
+nonterminal Task, that assignment authorizes bounded updates within its agreed scope, evidence
+comments, and transitions to In Progress or In Review after inspecting the Task, thread and blockers.
+Done, Will Not Do, reopening terminal work, unresolved-blocker overrides, deletion and material
+scope/priority changes require explicit operator decisions. Runtime activity and passed checks
+never mark work complete. Broader commitments and unassigned work need their own authorization.
+
+For registered repositories, use Taskman as the execution tracker; retain migrated Beads as a
+read-only archive. An unbound repository keeps its existing tracker. A failed context lookup,
+malformed/dangling binding, authentication failure or unavailable server is not an unbound result:
+report it and stop affected tracker operations without falling back to Beads or changing the binding.
+Use `tasks list --include-descendants` for the whole bound Project, and inspect `tasks blocking show`
+before treating a Pending Task as eligible. Done and Will Not Do blockers are resolved. There is
+no computed ready queue or atomic claim; coordinate ownership before parallel pickup, and never
+treat In Progress as a lock. Discovery alone does not authorize execution.
+
+## Task references in workflow documents
+
+A full Task identity includes the registered host, Project ID, and Task ID. Keep an explicitly
+qualified reference's own context, including when it points outside the current repository's Project.
+A title or arbitrary bare decimal ID is insufficient to identify a Task.
+
+A document may deliberately record a Task ID relative to its owning repository's registered Project,
+plus an exact repository-qualified `Source: ...` marker preserved in the Task description. For this
+form, resolve the host and Project through `taskman repo show`, inspect that exact Task ID in the
+bound Project, and require the recorded marker to match. A missing binding or missing/mismatched
+marker leaves the reference unresolved: report it and stop dependent work. Do not guess by title,
+search another binding, or silently treat a historical source reference as a different writable queue.
+After validation, report the full resolved identity; already-qualified references retain their context.
 
 ## Inventory scope
 
@@ -130,6 +157,13 @@ direct-location results do not expose a Location column. For example:
 taskman tasks list --host personal --project 7 --status pending --status in_progress --sort priority --direction desc
 ```
 
+For workflow discovery, an eligible unstarted Task has status `pending` and no unresolved direct
+blockers. `icebox` is not eligible pending work; `in_progress` and `in_review` represent work underway.
+`done` and `will_not_do` are terminal. Taskman has no Blocked lifecycle status: derive a blocked
+condition from current prerequisite evidence rather than inventing a stored state. Display native
+priority names and order them `urgent`, `high`, `medium`, `low`, `none`; do not translate them into
+another tracker's numeric priority scale.
+
 To locate a Task across Projects by decimal ID or title, use `tasks search --all-projects`.
 For a known Project in a bound clone, supply the complete host/Project pair. Search returns summaries with Task ID, title,
 status, priority, Project ID and name, and owning location. The readable `PROJECT` column shows
@@ -147,8 +181,8 @@ from that row to inspect full details:
 taskman tasks show --host personal --project 9 42
 ```
 
-A search match helps identify a Task; inspect its current detail and obtain explicit authority
-before changing its status or relationships.
+A search match helps identify a Task; inspect its current detail and applicable assignment authority
+before changing its status or relationships. Search is navigation, not permission to select new work.
 
 ## Blocking relationships and Done
 
@@ -166,8 +200,8 @@ taskman tasks blocks remove --project 7 12 --target 42
 
 Inspect both endpoint Projects and verify the named edge after mutation. `blocking show` displays
 **Blocks** and **Blocked by** separately. Link edits never change Task status, and a link edit does not authorize
-marking either Task Done. Obtain a separate human-authorized lifecycle decision before any status
-change.
+marking either Task Done. Assigned agents may explicitly move nonterminal work to In Progress or
+In Review; terminal transitions and unresolved-blocker overrides require operator decisions.
 
 Moving a Task to Done can return `unresolved_blockers` on stderr with current direct blocker IDs,
 statuses, priorities, Projects, and locations. The Task remains unchanged. A person may confirm the
@@ -247,10 +281,11 @@ inspect it with `show` or `list`, then make one explicit, ID-based mutation and 
 Use `tasks update --parent` to set a parent and `tasks update --no-parent` to clear it. Use
 `tasks hierarchy` to inspect the connected hierarchy before or after a parent mutation.
 
-Read the Task or its thread before adding a comment. Append only when the operator requests a
-comment, then inspect the returned comment and list the thread to verify it. The API key selects
+Read the Task and its thread before adding a comment. An explicit Task assignment authorizes
+relevant evidence comments; otherwise obtain an operator request. Inspect the returned comment
+and list the thread to verify it. The API key selects
 the verified posting account. `--author-name` supplies an optional display name; it never changes
 the posting account and should truthfully identify the source. A comment records discussion; a
-human must separately authorize any Task lifecycle status decision.
+human must explicitly authorize terminal lifecycle decisions and blocker overrides.
 
 Project update requires at least one of `--name`, `--description`, `--icon`, or `--color`. Supply only fields you intend to change. Use `--description ''` to clear a description.

@@ -45,8 +45,13 @@ and [CLI setup and recovery](../../README.md#local-cli).
 ## Agent work
 
 Agent Session implementation and provider rules are deferred to a separate accepted design. The
-current Project model does not define a local execution directory. Agent work cannot by itself
-complete a Task; a human explicitly changes Task state.
+current Project model does not define a local execution directory. Explicit assignment to a
+nonterminal Task authorizes an agent to make bounded updates within its agreed scope, append
+evidence comments and explicitly move it to In Progress or In Review after inspecting the Task,
+thread and blockers. Assignment is operator authorization; registration and runtime events are not.
+Done, Will Not Do, reopening terminal work, blocker overrides, deletion and material scope/priority
+changes require explicit operator decisions. These are operating rules, not new API authorization
+enforcement or automatic transitions. In Progress is not an atomic claim; coordinate ownership.
 
 ## Deletion
 
@@ -107,13 +112,14 @@ complete a Task; a human explicitly changes Task state.
 
 ## Task lifecycle
 
-- **Task**: a unit of intended work. It is complete only when a human explicitly marks it **Done**.
+- **Task**: a unit of intended work. It is complete only after explicit human acceptance and a
+  human-authorized transition to **Done**.
 - **Icebox**: intentionally deferred work that is not currently ready to begin.
 - **Pending**: work that is ready to be started.
 - **In Progress**: work actively being performed by a person, an external agent, or both.
 - **In Review**: work awaiting human assessment before it can be completed.
 - **Done**: the terminal state for work a human has reviewed and explicitly accepted as complete.
-- **Will Not Do**: the terminal state for work intentionally abandoned or declined.
+- **Will Not Do**: the terminal state for work explicitly abandoned or declined by the operator.
 
 ## Task creation
 
@@ -138,3 +144,5 @@ complete a Task; a human explicitly changes Task state.
 - The normal forward flow is **Icebox → Pending → In Progress → In Review → Done**.
 - A Task in **In Review** may return to **In Progress** or **Pending** when further work or reprioritization is needed.
 - External agent work never completes a Task by itself.
+- Assignment may authorize explicit In Progress/In Review transitions under the [agent-work
+  contract](#agent-work); terminal decisions remain with the operator.

@@ -8,7 +8,9 @@ Use its own dedicated branch from refreshed main; retain the written-spec review
 ## Objective and authority
 
 Replace the substantial embedded PostgreSQL inspection/configuration shell with focused host-side
-Python while preserving native tools and safety/recovery behavior. Task: `tas-sidn` (deferred).
+Python while preserving native tools and safety/recovery behavior. Task: Taskman Task 34 in the
+registered Project (Icebox); verify `Source: taskman/br/tas-sidn` after resolving the clone binding,
+and stop on mismatch.
 The [proposed specification](../specs/2026-09-09-postgresql-host-python-design.md) owns scope,
 trade-offs, file boundaries, request/error semantics, and verification requirements.
 
@@ -31,7 +33,7 @@ window. No generic executor, daemon, blanket shell conversion or live-host exper
 1. Recheck the current controller baseline and review the refreshed protocol-v3 failure/encoding
    and corrected SQL parent-PID contract before approval. Review privately retained host/artifact evidence against the [native acceptance criteria](../guides/native-acceptance.md).
 2. Obtain operator written-spec approval, then prepare a reviewed implementation plan and bounded
-   repository-local implementation tasks through `br` under `tas-sidn`. `tas-b7kd` is historical
+   implementation tasks through Taskman under Task 34. Source `tas-sidn` and `tas-b7kd` are historical
    correction provenance, not this refactor's delivery owner.
 3. Update this handoff at the approved-plan clean-session boundary before implementation.
    Continue in the design session only if the operator explicitly asks.

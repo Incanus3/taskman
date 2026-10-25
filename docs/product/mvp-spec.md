@@ -37,8 +37,12 @@ deferred to a separate accepted design.
 Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
 and a user may explicitly select another lifecycle state during creation. Its fixed lifecycle is
 **Icebox → Pending → In Progress → In Review → Done**; In Review may return to Pending or In
-Progress. **Will Not Do** is the other terminal state. A human explicitly transitions state and
-reviews work before marking it Done.
+Progress. **Will Not Do** is the other terminal state. Explicit assignment to a nonterminal Task
+authorizes bounded agent updates, evidence comments and explicit In Progress/In Review transitions.
+Done, Will Not Do, reopening terminal work, blocker overrides, deletion and material scope/priority
+changes require explicit operator decisions. A human reviews and accepts work before Done. See
+the [agent-work contract](domain.md#agent-work); these operating rules add no API enforcement or
+automatic lifecycle transitions.
 
 After a successful Task move, the browser stays on the current Project/List backdrop if the Task is
 still in its direct or enabled descendant location scope. Otherwise it follows the Task to its new
