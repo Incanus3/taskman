@@ -25,6 +25,28 @@ navigation. Share copies the current route with both filters as an explicit snap
 [active Project selector specification](../specs/2026-09-22-active-project-selector-design.md) for
 navigation, filter, validation, and API/CLI contracts.
 
+## Task view counts and defaults
+
+Project-task and List navigation rows show the number of Tasks matching the current global
+Statuses and Include child Lists filters, including zero. The selected location's header shows
+matching / eligible Tasks. Eligible Tasks include all unclosed Tasks plus Tasks in whichever
+closed statuses are selected; this is a population comparison, not completion progress.
+
+Both numbers use the same owning-location scope: direct Tasks when Include child Lists is off,
+or that location and all descendant Lists when on. Task parentage and sidebar disclosure do not
+change this scope. Filters apply to unselected sidebar rows too, and the selected row's count
+matches the header's first number. Counts refresh with the existing workspace updates.
+
+Fresh status selection includes Icebox, Pending, In Progress, and In Review; Include child Lists
+defaults to off. Explicit URL filters override saved browser selections, which override defaults.
+Saved Done and empty selections remain valid and are preserved without migration.
+
+Badges remain aligned across List nesting. On hover-capable devices, row hover or keyboard focus
+replaces the sidebar badge with the row's actions; names remain stationary and every action stays
+keyboard reachable. Non-hover devices show badges and actions together. The header count remains
+visible and explains both numbers through discoverable and accessible text. See the
+[counting and presentation contract](../specs/2026-10-26-list-task-counts-design.md) for exact semantics.
+
 ## CLI connection context
 
 A **CLI host** is a locally registered name for a Taskman backend URL and optional credential in

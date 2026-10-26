@@ -62,7 +62,7 @@ defmodule TaskmanWeb.Tasks.Table do
         type="button"
         phx-click="toggle_task_status_filter"
         aria-label="Statuses"
-        title="Statuses"
+        data-tooltip="Filter statuses"
         aria-haspopup="true"
         aria-expanded={to_string(@open?)}
         class={[

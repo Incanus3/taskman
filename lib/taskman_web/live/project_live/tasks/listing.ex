@@ -5,7 +5,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.ProjectLive.TaskTablePreferences
+  alias TaskmanWeb.ProjectLive.{TaskTablePreferences, Workspace}
 
   @events [
     "toggle_task_status_filter",
@@ -27,7 +27,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
     alias Taskman.Tasks.Task
 
-    defstruct visible_statuses: [],
+    defstruct task_counts: %{},
+              visible_statuses: [],
               status_filter_form: nil,
               filter_open?: false,
               sort: nil,
@@ -35,6 +36,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
               tasks_filtered_empty?: false
 
     @type t :: %__MODULE__{
+            task_counts: Taskman.Tasks.Counts.t(),
             visible_statuses: [Task.status()],
             status_filter_form: Phoenix.HTML.Form.t(),
             filter_open?: boolean(),
@@ -161,15 +163,38 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
     socket
     |> update_state(&State.put_results(&1, tasks, filtered_empty?))
     |> stream(:tasks, tasks, reset: true)
+    |> refresh_counts()
   end
 
-  def refresh(socket), do: socket
+  def refresh(socket), do: refresh_counts(socket)
 
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def clear(socket) do
     socket
     |> update_state(&State.clear_results/1)
     |> stream(:tasks, [], reset: true)
+    |> refresh_counts()
+  end
+
+  @doc "Refreshes location counts and re-renders the active navigation rows."
+  @spec refresh_counts(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def refresh_counts(socket) do
+    counts =
+      case socket.assigns.workspace.selected_project do
+        %Project{} = project ->
+          Tasks.count_tasks_by_location(
+            project,
+            socket.assigns.listing.visible_statuses,
+            socket.assigns.workspace.include_children?
+          )
+
+        nil ->
+          %{}
+      end
+
+    socket
+    |> update_state(&%{&1 | task_counts: counts})
+    |> Workspace.refresh()
   end
 
   @spec list_tasks_for_location(Project.t(), term(), boolean(), [Task.status()], term()) :: list()

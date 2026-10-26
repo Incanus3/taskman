@@ -13,6 +13,7 @@ defmodule Taskman.Tasks do
   alias Taskman.Tasks.Comment
   alias Taskman.Tasks.CommentPersistence
   alias Taskman.Tasks.Comments
+  alias Taskman.Tasks.Counts
   alias Taskman.Tasks.Mutations
   alias Taskman.Tasks.Search
   alias Taskman.Tasks.Task
@@ -24,6 +25,11 @@ defmodule Taskman.Tasks do
     |> order_by([task], asc: task.inserted_at, asc: task.id)
     |> Repo.all()
   end
+
+  @doc "Counts matching and eligible Tasks by owning location, optionally including child Lists."
+  @spec count_tasks_by_location(Project.t(), [atom()], boolean()) :: Counts.t()
+  def count_tasks_by_location(project, visible_statuses, include_descendants?),
+    do: Counts.for_project(project, visible_statuses, include_descendants?)
 
   @doc "Returns List IDs owning direct Tasks in the given Project, regardless of Task status."
   @spec list_ids_with_direct_tasks(Project.t()) :: MapSet.t(pos_integer())

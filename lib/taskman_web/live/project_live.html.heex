@@ -97,6 +97,7 @@
             />
 
             <WorkspaceNavigation.tree
+              task_counts={@listing.task_counts}
               navigation_nodes={@streams.navigation_nodes}
               selected_project={@workspace.selected_project}
               selected_list={@workspace.selected_list}
@@ -226,6 +227,18 @@
                 </h1>
               </div>
               <div class="flex min-w-0 flex-wrap items-center gap-2 lg:shrink-0 lg:gap-3">
+                <TaskCountBadge.badge
+                  :if={
+                    counts =
+                      Map.get(
+                        @listing.task_counts,
+                        @workspace.selected_list && @workspace.selected_list.id
+                      )
+                  }
+                  id="location-task-count"
+                  visible={counts.visible}
+                  eligible={counts.eligible}
+                />
                 <ShareTaskView.control
                   id="share-task-view"
                   include_children?={@workspace.include_children?}
@@ -236,6 +249,7 @@
                   id="include-child-lists"
                   type="button"
                   phx-click="toggle_include_children"
+                  data-tooltip="Include tasks from child Lists"
                   aria-pressed={to_string(@workspace.include_children?)}
                   data-state={if(@workspace.include_children?, do: "on", else: "off")}
                   class={[
@@ -282,7 +296,7 @@
                     )
                   }
                   aria-label="Add task"
-                  title="Add task"
+                  data-tooltip=""
                   class="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 md:w-auto md:px-4"
                 >
                   <.icon name="hero-plus" class="size-5 md:hidden" />

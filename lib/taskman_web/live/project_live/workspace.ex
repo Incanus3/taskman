@@ -391,7 +391,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
              socket
              |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
              |> clear_list_edit()
-             |> refresh()}
+             |> Listing.refresh_counts()}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign_list_edit_error(socket, changeset)}

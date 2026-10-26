@@ -346,7 +346,8 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
            )
 
     assert has_element?(view, "#task-status-filter-menu")
-    assert has_element?(view, "#task-status-filter-option-done[checked]")
+    assert has_element?(view, "#task-status-filter-option-in_review[checked]")
+    refute has_element?(view, "#task-status-filter-option-done[checked]")
     refute has_element?(view, "#task-status-filter-option-will_not_do[checked]")
 
     view |> element("#task-status-filter-button") |> render_click()
@@ -384,7 +385,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
     done_low =
       task_fixture(project, %{title: "Done low", status: :done, priority: :low})
 
-    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?statuses=pending,done")
 
     view |> element("#sort-task-status") |> render_click()
 

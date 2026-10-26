@@ -378,6 +378,23 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         "return document.querySelector('[role=tooltip]')?.textContent",
         "Add child List"
       )
+
+      for {selector, label} <- [
+            {"#location-task-count", "Matching / eligible tasks"},
+            {"#include-child-lists", "Include tasks from child Lists"},
+            {"#task-status-filter-button", "Filter statuses"},
+            {"#add-task", "Add task"},
+            {"#share-task-view", "Share current view"}
+          ] do
+        Browser.hover(session, Query.css(selector))
+
+        wait_for_js(
+          session,
+          "Styled tooltip for #{selector}",
+          "return document.querySelector('[role=tooltip]')?.textContent",
+          label
+        )
+      end
     after
       Wallaby.end_session(session)
     end
@@ -571,7 +588,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
   defp check_share(session, base_url, project_id, list_id, task_id) do
     project_url = "#{base_url}/projects/#{project_id}"
     task_route = "#{project_url}/lists/#{list_id}/tasks/#{task_id}"
-    default_statuses = "icebox%2Cpending%2Cin_progress%2Cin_review%2Cdone"
+    default_statuses = "icebox%2Cpending%2Cin_progress%2Cin_review"
 
     for route <- [project_url, "#{project_url}/lists/#{list_id}", task_route] do
       Browser.visit(session, route)

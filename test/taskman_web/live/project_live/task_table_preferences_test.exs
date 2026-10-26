@@ -3,6 +3,21 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferencesTest do
 
   alias TaskmanWeb.ProjectLive.TaskTablePreferences, as: Preferences
 
+  test "defaults select only unclosed tasks" do
+    assert Preferences.defaults() == %{
+             include_children: false,
+             statuses: [:icebox, :pending, :in_progress, :in_review]
+           }
+  end
+
+  test "hydration preserves closed and empty selections and explicit route statuses win" do
+    defaults = Preferences.defaults()
+    saved = Preferences.apply_hydration(defaults, %{"statuses" => ["done"]})
+    assert saved.statuses == [:done]
+    assert Preferences.apply_hydration(defaults, %{"statuses" => []}).statuses == []
+    assert Preferences.apply_route(saved, %{"statuses" => "pending"}).statuses == [:pending]
+  end
+
   test "normalizes statuses in Task order without accepting unknown or duplicate keys" do
     assert Preferences.normalize_statuses(["done", "pending", "done", "bogus"]) ==
              [:pending, :done]
