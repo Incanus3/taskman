@@ -59,12 +59,14 @@ the repository with:
 
 ```sh
 mix do escript.build + escript.install --force
-~/.mix/escripts/taskman agent onboarding
+"${MIX_HOME:-$HOME/.mix}/escripts/taskman" agent onboarding
 ```
 
-Mix installs the executable at `~/.mix/escripts/taskman`. Add `~/.mix/escripts` to `PATH` to use
-the bare `taskman` command; the full path above works without that entry. Create an API key from
-Account settings, then configure the CLI without putting the key in a command or URL:
+Mix installs the executable in `$MIX_HOME/escripts`, or `~/.mix/escripts` when `MIX_HOME` is unset.
+Add that directory to `PATH` to use the bare `taskman` command; the full path above works without
+that entry. Mise may set `MIX_HOME` inside the selected Elixir installation, so rerun the install
+command after changing Elixir versions. Create an API key from Account settings, then configure
+the CLI without putting the key in a command or URL:
 
 ```sh
 taskman config hosts add local --url http://localhost:4000

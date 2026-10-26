@@ -79,9 +79,9 @@ behavior.
 Non-CI development and release builds target Elixir `1.20.4` with Erlang/OTP `29.0.6`.
 Local developers may use mise to manage that pair; the release builder installs checksum-pinned
 HexPM Ubuntu binaries directly and does not use mise or alter workstation settings.
-Alpine CI intentionally remains on Elixir `1.19.5` / OTP `26.2.5.21` until its
-[upstream signal-stack restriction](../specs/2026-08-10-alpine-elixir-ci-design.md) is resolved.
-Keep source compatibility with that CI pair, but verify release-only runtime behavior separately.
+Alpine CI uses Elixir `1.20.4` / OTP `29.1.2`, including the
+[upstream signal-stack correction](../specs/2026-08-10-alpine-elixir-ci-design.md).
+Verify release-only runtime behavior separately against the pinned release pair.
 
 ### Application architecture
 
