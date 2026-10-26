@@ -141,8 +141,6 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   defp reconcile_comment_event(socket, _event), do: socket
 
   defp reconcile_task_event(socket, event) do
-    socket = Workspace.refresh(socket)
-
     if Recovery.State.active?(socket.assigns.recovery) do
       Listing.refresh(socket)
     else
@@ -162,7 +160,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
           end
 
         movement_result ->
-          Movement.apply_reconciliation(movement_result)
+          Movement.apply_reconciliation(movement_result, refresh_listing?: false)
       end
     end
   end
@@ -170,7 +168,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   defp reconcile_movement(socket) do
     socket
     |> Movement.reconcile()
-    |> Movement.apply_reconciliation()
+    |> Movement.apply_reconciliation(refresh_listing?: false)
   end
 
   defp reconcile_missing_location(socket, previous_workspace, task_lists) do
@@ -192,7 +190,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       if Recovery.State.active?(recovered.assigns.recovery) do
         recovered
       else
-        Movement.apply_reconciliation(movement_result)
+        Movement.apply_reconciliation({:missing, recovered}, refresh_listing?: false)
       end
     end
   end

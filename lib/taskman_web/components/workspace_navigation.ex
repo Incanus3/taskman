@@ -6,8 +6,10 @@ defmodule TaskmanWeb.WorkspaceNavigation do
   alias Taskman.Projects.Project
   alias TaskmanWeb.ProjectLive.ListEdit
   alias TaskmanWeb.ProjectLive.Paths
+  alias TaskmanWeb.TaskCountBadge
 
   @doc "Renders the selected Project root and its visible List tree."
+  attr :task_counts, :map, required: true
   attr :navigation_nodes, :any, required: true
   attr :selected_project, Project, default: nil
   attr :selected_list, TaskList, default: nil
@@ -31,26 +33,35 @@ defmodule TaskmanWeb.WorkspaceNavigation do
         ]}>
           <.link
             id="project-tasks-link"
+            aria-describedby="project-tasks-count-description"
             patch={Paths.browse_path(@selected_project, nil, @include_children?)}
             aria-current={is_nil(@selected_list) && !@location_not_found? && "page"}
-            class="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 pr-10 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pl-1 pr-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           >
             <.icon name="hero-clipboard-document-list" class="size-4 shrink-0 text-indigo-300" />
             <span class="truncate">Project tasks</span>
           </.link>
-          <button
-            id={"add-root-list-#{@selected_project.id}"}
-            type="button"
-            phx-click="open_list_form"
-            phx-value-kind="new"
-            phx-value-parent-id=""
-            phx-value-project-id={@selected_project.id}
-            aria-label="Add root List"
-            data-tooltip=""
-            class="grid size-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-          >
-            <.icon name="hero-plus" class="size-4" />
-          </button>
+          <.row_controls>
+            <:badge>
+              <TaskCountBadge.badge
+                id="project-tasks-count"
+                visible={Map.get(@task_counts, nil, %{visible: 0}).visible}
+              />
+            </:badge>
+            <button
+              id={"add-root-list-#{@selected_project.id}"}
+              type="button"
+              phx-click="open_list_form"
+              phx-value-kind="new"
+              phx-value-parent-id=""
+              phx-value-project-id={@selected_project.id}
+              aria-label="Add root List"
+              data-tooltip=""
+              class="grid size-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
+          </.row_controls>
         </div>
         <.list_form :if={root_form_active?(@list_edit, @selected_project)} list_edit={@list_edit} />
       </div>
@@ -113,41 +124,50 @@ defmodule TaskmanWeb.WorkspaceNavigation do
               patch={Paths.browse_path(node.project, node.task_list, @include_children?)}
               aria-current={node.selected? && "page"}
               aria-label={"Select #{node.task_list.name}"}
-              class="flex min-w-0 flex-1 items-center rounded-lg py-1 pl-1 pr-18 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50 pointer-fine:pr-1 pointer-fine:group-hover/row:pr-18 pointer-fine:group-focus-within/row:pr-18"
+              aria-describedby={"list-task-count-#{node.task_list.id}-description"}
+              class="flex min-w-0 flex-1 items-center rounded-lg py-1 pl-1 pr-1 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             >
               <span class="min-w-0 flex-1 truncate">{node.task_list.name}</span>
             </.link>
-            <div
-              id={"list-actions-#{node.task_list.id}"}
-              class="absolute right-0 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 rounded-r-xl bg-transparent py-1 pl-1 pr-2 opacity-100 transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100 pointer-fine:group-focus-within/row:opacity-100"
-            >
-              <button
-                id={"rename-list-#{node.task_list.id}"}
-                type="button"
-                phx-click="open_list_form"
-                phx-value-kind="rename"
-                phx-value-list-id={node.task_list.id}
-                phx-value-project-id={node.project.id}
-                aria-label={"Rename #{node.task_list.name}"}
-                data-tooltip="Rename List"
-                class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            <.row_controls>
+              <:badge>
+                <TaskCountBadge.badge
+                  id={"list-task-count-#{node.task_list.id}"}
+                  visible={Map.get(@task_counts, node.task_list.id, %{visible: 0}).visible}
+                />
+              </:badge>
+              <div
+                id={"list-actions-#{node.task_list.id}"}
+                class="flex items-center gap-1"
               >
-                <.icon name="hero-pencil-square" class="size-4" />
-              </button>
-              <button
-                id={"add-child-list-#{node.task_list.id}"}
-                type="button"
-                phx-click="open_list_form"
-                phx-value-kind="new"
-                phx-value-parent-id={node.task_list.id}
-                phx-value-project-id={node.project.id}
-                aria-label={"Add child List to #{node.task_list.name}"}
-                data-tooltip="Add child List"
-                class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-              >
-                <.icon name="hero-plus" class="size-4" />
-              </button>
-            </div>
+                <button
+                  id={"rename-list-#{node.task_list.id}"}
+                  type="button"
+                  phx-click="open_list_form"
+                  phx-value-kind="rename"
+                  phx-value-list-id={node.task_list.id}
+                  phx-value-project-id={node.project.id}
+                  aria-label={"Rename #{node.task_list.name}"}
+                  data-tooltip="Rename List"
+                  class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  <.icon name="hero-pencil-square" class="size-4" />
+                </button>
+                <button
+                  id={"add-child-list-#{node.task_list.id}"}
+                  type="button"
+                  phx-click="open_list_form"
+                  phx-value-kind="new"
+                  phx-value-parent-id={node.task_list.id}
+                  phx-value-project-id={node.project.id}
+                  aria-label={"Add child List to #{node.task_list.name}"}
+                  data-tooltip="Add child List"
+                  class="grid size-7 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  <.icon name="hero-plus" class="size-4" />
+                </button>
+              </div>
+            </.row_controls>
           </div>
           <.list_form :if={ListEdit.active_for?(@list_edit, node)} list_edit={@list_edit} />
         </div>
@@ -176,6 +196,22 @@ defmodule TaskmanWeb.WorkspaceNavigation do
         }
       </script>
     </nav>
+    """
+  end
+
+  slot :badge, required: true
+  slot :inner_block, required: true
+
+  defp row_controls(assigns) do
+    ~H"""
+    <div class="grid shrink-0 grid-cols-[auto_4rem] items-center gap-1 [@media(hover:hover)]:min-w-16 [@media(hover:hover)]:grid-cols-1 [@media(hover:hover)]:gap-0">
+      <div class="col-start-1 row-start-1 justify-self-end [@media(hover:hover)]:transition-opacity [@media(hover:hover)]:group-hover/row:pointer-events-none [@media(hover:hover)]:group-hover/row:opacity-0 [@media(hover:hover)]:group-focus-within/row:pointer-events-none [@media(hover:hover)]:group-focus-within/row:opacity-0">
+        {render_slot(@badge)}
+      </div>
+      <div class="col-start-2 row-start-1 flex w-16 items-center justify-self-end justify-end [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:col-start-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:transition-opacity [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:pointer-events-auto [@media(hover:hover)]:group-focus-within/row:opacity-100">
+        {render_slot(@inner_block)}
+      </div>
+    </div>
     """
   end
 

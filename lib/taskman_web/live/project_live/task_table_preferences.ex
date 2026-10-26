@@ -8,7 +8,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferences do
   alias TaskmanWeb.ProjectLive.Tasks.Listing
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
 
-  def defaults, do: %{include_children: false, statuses: Task.statuses() -- [:will_not_do]}
+  def defaults, do: %{include_children: false, statuses: Task.statuses() -- [:done, :will_not_do]}
 
   def normalize_statuses(statuses) when is_list(statuses) do
     Task.statuses()

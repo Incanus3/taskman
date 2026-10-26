@@ -37,7 +37,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#project-tasks-row > div > #add-root-list-7[phx-click='open_list_form'][aria-label='Add root List']"
+               "#project-tasks-row > div #add-root-list-7[phx-click='open_list_form'][aria-label='Add root List']"
              )
            )
 
@@ -144,6 +144,7 @@ defmodule TaskmanWeb.WorkspaceNavigationTest do
       selected_list: Keyword.get(opts, :selected_list),
       location_not_found?: Keyword.get(opts, :location_not_found?, false),
       navigation_nodes: Enum.map(nodes, &{&1.dom_id, &1}),
+      task_counts: %{},
       list_edit: Keyword.get(opts, :list_edit, ListEdit.empty())
     })
     |> LazyHTML.from_fragment()

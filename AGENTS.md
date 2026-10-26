@@ -1,39 +1,5 @@
 # Repository Guidance
 
-## Version control
-
-This checkout is not a Jujutsu repository. Use `but` for repository and version-control operations;
-do not run `jj` commands here.
-
-Commit verified work after each bounded task or material checkpoint. This grants standing
-authorization for local commits; pushing, merging, deployment and history rewriting retain their
-separate authorization gates.
-
-Keep review corrections local and batch pushes until the operator requests one or confirms review
-completion.
-
-When stopping, state the next concrete step, the decision it requires, and the consequences of
-each available choice. Distinguish design approval from implementation and external-action approval.
-
-## Work tracking
-
-Use Taskman for implementation planning, delivery tasks, dependencies and evidence in a registered
-clone. Inspect `taskman repo show --json` and use the registered Project through the CLI skill;
-linked worktrees inherit the clone binding. Do not hard-code operator endpoints or Project IDs here.
-An unbound clone requires explicit operator registration before Taskman writes. A broken binding,
-authentication failure or unavailable backend must not reactivate Beads.
-
-Beads is a retained private, read-only archive for migrated clones. Keep the entire `.beads/`
-directory untracked and ignored; preserve its local records, configuration and recovery
-artifacts. Do not create, claim, close, sync or export Beads work during normal delivery. Archive
-maintenance requires explicit operator scope. The historical Wayfinder map is not a delivery tracker.
-
-Assignment to a nonterminal Task authorizes bounded updates, evidence comments and transitions to
-In Progress or In Review after inspection. Done, Will Not Do, reopening terminal work, blocker
-overrides, deletion and material scope/priority changes require explicit operator decisions.
-In Progress is not an atomic claim: coordinate ownership before parallel execution. Discovery or
-registration alone does not authorize work. Retain design/plan and external-action approval gates.
-
 ## Documentation guidance
 
 Before creating, editing, moving or retiring repository documentation, read and follow
@@ -51,10 +17,8 @@ generated artifacts or tracker exports. This includes actual addresses, domains,
 personal accounts, local identity-file paths, recovery locations and machine-specific inventories.
 
 Keep actual deployment settings and credentials in SOPS-encrypted deployment configuration.
-Keep operator identities, operational inventories, raw receipts and the local tracker database outside
-version control. Retain the entire `.beads/` directory only as a private local historical archive;
-do not add its files to Git or refresh its export during normal delivery. Archive retention does not
-establish publication or history privacy; resolve those separately under the remaining privacy-cleanup task.
+Keep operator identities, operational inventories, raw receipts and private tracker data outside
+version control.
 Use clearly synthetic examples and project-defined standard paths in public docs.
 Required SOPS cryptographic metadata may remain readable; private identity locations may not.
 
@@ -62,68 +26,6 @@ Audit the changes being committed for privacy before each commit. Audit the whol
 part of an explicitly scoped privacy review. Historical snapshots are subject to the same privacy
 boundary. A clean current tree does not sanitize earlier commits: do not publish private history;
 prepare a clean public history separately when explicitly authorized.
-
-## Handoffs
-
-Handoffs are short-lived transfer documents for the current workstream. Keep them concise and
-actionable.
-
-Include:
-
-- the current implemented state relevant to the workstream;
-- the exact remaining gap, current blockers, and current Taskman Task IDs qualified by registered
-  context; retain old Beads IDs only as historical provenance;
-- decisions and product constraints that directly shape the next increment;
-- the next concrete action or short execution sequence;
-- recent verification evidence only when it establishes the baseline or explains a blocker.
-
-Public handoffs may reference a Task ID in the registered Project plus its repository-qualified
-source marker, keeping operator-local host/Project settings out of Git. Resolve host and Project
-only through the current valid binding, inspect that exact Task ID, and verify its preserved
-`Source: taskman/br/<old-id>` description marker before accepting the link. Report the resolved
-full identity. Missing/mismatched markers are unresolved references; do not guess by title, query
-another host/Project or resume Beads work. Cross-Project links require explicit qualified identity.
-
-Do not include:
-
-- project-wide development, tooling, model, version-control, work-tracking, or local-setup
-  instructions; place those in `AGENTS.md`, `docs/guides/development.md`, or `README.md` as appropriate;
-- copied product specifications, implementation plans, or broad project history; link to their
-  canonical documents instead;
-- speculative backlog beyond the next increment; operator-agreed remaining work is not speculative
-  backlog;
-- stale completed instructions or generic agent workflow checklists.
-
-Update a handoff when the workstream advances so its state, task IDs, blockers, and next action
-remain current.
-
-Retain all workstream rulings in the active handoff, including superseded decisions, following
-[the documentation guide](docs/guides/documentation.md#workstream-rulings).
-
-Preserve the operator-agreed execution sequence, dependencies, pending decisions, and
-authorization or verification gates across handoff updates. Agreed remaining work is not
-speculative backlog.
-
-Every updated handoff must include the agreed remaining steps in order and the current position,
-or link to a canonical document containing the complete sequence. Keep agreed unfinished steps
-even when they lie beyond the immediate next increment. Preserve each step's dependencies and gates.
-When asked to shorten a handoff, compress each agreed unfinished step rather than omitting it.
-
-Update the current position and retire completed instructions without dropping unfinished
-commitments. Concision must not erase information needed to continue the agreed work.
-
-Before retiring a handoff, present every ruling made autonomously during implementation and obtain
-the operator's explicit acknowledgement, revision, or rejection. Workstream completion does not
-implicitly acknowledge those rulings. After completion, ruling acknowledgement, and durable
-harvesting are all satisfied, retire the handoff before merge rather than leaving post-merge
-cleanup.
-
-Before removing or materially shortening such information, verify that it is completed,
-explicitly superseded, or preserved in a canonical document linked from the handoff. Repository
-history alone is not sufficient preservation.
-
-Review the handoff diff before finishing: account for every removed commitment or gate and verify
-that the remaining sequence is still discoverable.
 
 ## Development guidance
 

@@ -13,6 +13,8 @@
 
 ## Specifications
 
+- [Task counts in List navigation and headers (implemented and operator accepted)](specs/2026-10-26-list-task-counts-design.md)
+
 - [Named CLI hosts and repository Project bindings (implemented and operator accepted)](specs/2026-09-30-repository-backends-design.md)
 
 - [PostgreSQL provisioning with operator-owned cluster configuration (approved; implementation and bounded native acceptance complete; results accepted)](specs/2026-10-07-shared-postgresql-design.md)

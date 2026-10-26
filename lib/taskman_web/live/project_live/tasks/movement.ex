@@ -240,17 +240,21 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
 
   def reconcile(socket), do: {:anchored, socket}
 
-  @doc "Applies a reconciliation outcome without submitting movement."
+  @doc "Applies movement reconciliation; missing Tasks refresh the listing by default."
   @spec apply_reconciliation(
           {:anchored, Phoenix.LiveView.Socket.t()}
           | {:relocate, Phoenix.LiveView.Socket.t(), Task.t()}
-          | {:missing, Phoenix.LiveView.Socket.t()}
+          | {:missing, Phoenix.LiveView.Socket.t()},
+          keyword()
         ) :: Phoenix.LiveView.Socket.t()
-  def apply_reconciliation({:anchored, socket}), do: socket
+  def apply_reconciliation(result, opts \\ [])
+
+  def apply_reconciliation({:anchored, socket}, _opts), do: socket
 
   def apply_reconciliation(
         {:relocate, %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket,
-         %Task{} = task}
+         %Task{} = task},
+        _opts
       ) do
     destination = actual_location(project, task)
 
@@ -268,11 +272,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
     )
   end
 
-  def apply_reconciliation({:missing, socket}) do
+  def apply_reconciliation({:missing, socket}, opts) do
     socket =
-      socket
-      |> Listing.refresh()
-      |> put_flash(:error, Messages.task_unavailable())
+      if Keyword.get(opts, :refresh_listing?, true), do: Listing.refresh(socket), else: socket
+
+    socket = put_flash(socket, :error, Messages.task_unavailable())
 
     if socket.assigns.workspace.location_not_found? do
       project = socket.assigns.workspace.selected_project

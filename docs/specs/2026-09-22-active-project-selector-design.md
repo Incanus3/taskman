@@ -2,7 +2,7 @@
 
 **Status:** Implemented, independently verified, and operator accepted
 **Date:** 2026-09-22
-**Updated:** 2026-09-26
+**Updated:** 2026-10-26
 
 ## Context
 
@@ -153,10 +153,11 @@ unavailable, the toggle still works for the mounted LiveView; a fresh mount uses
 
 The **Statuses** filter already persists its selected statuses in browser `localStorage` under
 `taskman.task-table.visible-statuses`. This design retains that existing global, browser-scoped
-contract and its default of all statuses except `will_not_do`. It must remain selected across the
-same Project, List, root, and Task-route transitions; it is neither reset by Project switching nor
-copied into ordinary navigation URLs. Sorting and the open/closed state of the filter menu remain
-transient.
+contract. Only its former default of all statuses except `will_not_do` is superseded by the
+[unclosed default and saved-selection contract](2026-10-26-list-task-counts-design.md#default-status-selection).
+The selected statuses must remain across the same Project, List, root, and Task-route transitions;
+they are neither reset by Project switching nor copied into ordinary navigation URLs. Sorting and
+the open/closed state of the filter menu remain transient.
 
 All newly generated workspace navigation destinations omit both `include_children` and `statuses`:
 the Project selector, **Project tasks** link, List tree, Task creation/detail links, return/cancel

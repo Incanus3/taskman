@@ -34,6 +34,7 @@ defmodule TaskmanWeb.ProjectLive do
   alias TaskmanWeb.Tasks.{Detail, Form, Recovery, Table}
   alias TaskmanWeb.ProjectSelector
   alias TaskmanWeb.WorkspaceNavigation
+  alias TaskmanWeb.TaskCountBadge
 
   @workspace_events Workspace.events()
   @listing_events Listing.events()

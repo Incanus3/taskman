@@ -171,6 +171,48 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
              refreshed.assigns.editing.related_tasks.blocks
   end
 
+  test "missing location recovery retains refreshed counts before navigation" do
+    project = project_fixture(%{})
+    lost = list_fixture(project)
+    task = task_fixture(project, lost, %{status: :pending})
+
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{__changed__: %{}, flash: %{}},
+      private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}
+    }
+
+    {:ok, socket} = ProjectLive.mount(%{}, %{}, socket)
+    socket = Phoenix.Component.assign(socket, :live_action, :show)
+
+    {:noreply, socket} =
+      ProjectLive.handle_params(
+        %{"project_id" => to_string(project.id), "list_id" => to_string(lost.id)},
+        nil,
+        socket
+      )
+
+    {:noreply, socket} =
+      ProjectLive.handle_event("open_move_task", %{"task-id" => to_string(task.id)}, socket)
+
+    assert socket.assigns.listing.task_counts[lost.id] == %{visible: 1, eligible: 1}
+    Taskman.Repo.delete!(task)
+    Taskman.Repo.delete!(lost)
+
+    event = %Event{
+      entity: :list,
+      operation: :updated,
+      project_id: project.id,
+      entity_id: lost.id,
+      fields: [:name]
+    }
+
+    {:noreply, reconciled} = Reconciliation.handle_info(event, socket)
+
+    assert reconciled.assigns.workspace.location_not_found?
+    assert reconciled.assigns.listing.task_counts == %{nil => %{visible: 0, eligible: 0}}
+    assert reconciled.assigns.listing.tasks_empty?
+  end
+
   defp open_detail(project, task) do
     socket = %Phoenix.LiveView.Socket{
       private: %{live_temp: %{}, lifecycle: Phoenix.LiveView.Lifecycle.build([])}

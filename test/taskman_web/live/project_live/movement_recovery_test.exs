@@ -195,7 +195,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     assert has_element?(view, "#move-task-search-#{task.id}[value='Second']")
   end
 
-  test "missing moving Task clears the row move and shows the standard error flash", %{
+  test "missing moving Task notification refreshes counts once and clears the row move", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -203,13 +203,58 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
 
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    assert has_element?(view, "#project-tasks-count-value", "1")
+    assert has_element?(view, "#location-task-count-value", "1 / 1")
     Taskman.Repo.delete!(task)
+    query_ref = track_location_count_queries(view)
     send(view.pid, task_event(task))
-    render(view)
+    _ = :sys.get_state(view.pid)
 
     refute has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#flash-error", "This Task is no longer available.")
     assert has_element?(view, "#location-heading", project.name)
+    assert has_element?(view, "#project-tasks-count-value", "0")
+    assert has_element?(view, "#location-task-count-value", "0 / 0")
+    assert_receive {:location_count_query, ^query_ref}
+    refute_received {:location_count_query, ^query_ref}
+  end
+
+  test "List notification reconciles a missing moving Task with one count refresh", %{conn: conn} do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+    task = task_fixture(project, %{title: "Move me"})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    Taskman.Repo.delete!(task)
+    query_ref = track_location_count_queries(view)
+
+    send(view.pid, list_event(project.id, task_list.id))
+    _ = :sys.get_state(view.pid)
+
+    refute has_element?(view, "#move-task-#{task.id}")
+    assert has_element?(view, "#flash-error", "This Task is no longer available.")
+    assert has_element?(view, "#project-tasks-count-value", "0")
+    assert has_element?(view, "#location-task-count-value", "0 / 0")
+    assert_receive {:location_count_query, ^query_ref}
+    refute_received {:location_count_query, ^query_ref}
+  end
+
+  test "missing moving Task interaction refreshes counts without a notification", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{title: "Move me"})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
+    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    Taskman.Repo.delete!(task)
+    query_ref = track_location_count_queries(view)
+
+    view |> element("#cancel-move-task-#{task.id}") |> render_click()
+
+    refute has_element?(view, "#move-task-#{task.id}")
+    assert has_element?(view, "#flash-error", "This Task is no longer available.")
+    assert has_element?(view, "#project-tasks-count-value", "0")
+    assert has_element?(view, "#location-task-count-value", "0 / 0")
+    assert_receive {:location_count_query, ^query_ref}
+    refute_received {:location_count_query, ^query_ref}
   end
 
   test "missing moving Task and selected List loss patches to the Project root", %{conn: conn} do
@@ -221,6 +266,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_click()
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
+    query_ref = track_location_count_queries(view)
     send(view.pid, list_event(project.id, lost.id))
     render(view)
 
@@ -228,6 +274,31 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     refute has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#flash-error", "This Task is no longer available.")
     assert has_element?(view, "#location-heading", project.name)
+    assert has_element?(view, "#location-task-count-value", "0 / 0")
+    # Recovery refreshes the missing location, then the Project route refreshes its new backdrop.
+    assert_receive {:location_count_query, ^query_ref}
+    assert_receive {:location_count_query, ^query_ref}
+    refute_received {:location_count_query, ^query_ref}
+  end
+
+  defp track_location_count_queries(view) do
+    query_ref = make_ref()
+    handler_id = {__MODULE__, query_ref}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:taskman, :repo, :query],
+        fn _event, _measurements, metadata, {owner, view_pid, query_ref} ->
+          if self() == view_pid and String.contains?(metadata.query, "IS NOT DISTINCT FROM") do
+            send(owner, {:location_count_query, query_ref})
+          end
+        end,
+        {self(), view.pid, query_ref}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    query_ref
   end
 
   defp list_event(project_id, list_id) do

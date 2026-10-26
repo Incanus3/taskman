@@ -193,7 +193,10 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     source = task_fixture(project, archive, %{title: "Move in", status: :done})
 
     {:ok, view, _html} =
-      live(conn, ~p"/projects/#{project.id}/lists/#{planning.id}?include_children=true")
+      live(
+        conn,
+        ~p"/projects/#{project.id}/lists/#{planning.id}?include_children=true&statuses=pending,done"
+      )
 
     assert has_element?(view, "#task-#{pending.id}")
     assert has_element?(view, "#task-#{done.id}")
