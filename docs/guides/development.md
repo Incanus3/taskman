@@ -241,6 +241,26 @@ device-emulation labels alone do not establish the tested width. Run Wallaby tes
 `mix test.browser` with Chromium and ChromeDriver; keep
 them separate from the normal `mix test` gate.
 
+Browser tests that require headed Chromium need a working display. Use the desktop session's
+`DISPLAY` when available. On a headless Linux machine, install Xvfb and its `xvfb-run`/`xauth`
+prerequisites, then use a virtual desktop:
+
+```sh
+xvfb-run -a -s "-screen 0 1440x900x24" mix test.browser
+```
+
+Append a test file or directory to run a focused subset. Choose the browser mode for the behavior
+being verified and assert any required capabilities, such as `(hover: hover)`. Switching to
+headless mode must not weaken those assertions.
+
+If browser results reflect older JavaScript or styles after switching revisions, check for stale
+compressed assets from an earlier `assets.deploy` run. The test endpoint serves existing `.gz`
+files, while `assets.build` refreshes only the uncompressed bundles. Regenerate both before retrying:
+
+```sh
+MIX_ENV=test mix do assets.build + phx.digest
+```
+
 Test the current supported behavior. An absence assertion is appropriate when it is part of that
 behavior, such as confirming that a successful operation returned no error. Do not add assertions
 that a removed, deprecated, or superseded feature, state, element, field, or column is absent. For

@@ -6,3 +6,4 @@ This is the complete index of current repository handoffs.
 - [PostgreSQL host-side Python](postgresql-host-python.md) — parked — Revised protocol/native identity/failure contract needs scoped review and written-spec approval before planning — `$resume postgresql-host-python`
 
 - [Operations lock coverage](operations-lock-coverage.md) — parked — Independently reviewed admission/recovery design; full design/plan approval pending; dedicated branch after operations merge; no longer blocks current readiness — `$resume operations-lock-coverage`
+- [PR 28 review follow-ups](pr28-review-followups.md) — active — Bounded code and documentation corrections, verification and operator acceptance — `$resume pr28-review-followups`

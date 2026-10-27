@@ -26,8 +26,14 @@ defmodule Taskman.Tasks do
     |> Repo.all()
   end
 
-  @doc "Counts matching and eligible Tasks by owning location, optionally including child Lists."
-  @spec count_tasks_by_location(Project.t(), [atom()], boolean()) :: Counts.t()
+  @doc """
+  Counts matching and eligible Tasks by owning location, optionally including child Lists.
+
+  The visible status list accepts supported Task status atoms. Unsupported values, including
+  strings, are ignored, consistently with `list_tasks_for_location/3`. An empty selection has
+  zero visible Tasks; eligible Tasks include all unclosed statuses plus selected closed statuses.
+  """
+  @spec count_tasks_by_location(Project.t(), [term()], boolean()) :: Counts.t()
   def count_tasks_by_location(project, visible_statuses, include_descendants?),
     do: Counts.for_project(project, visible_statuses, include_descendants?)
 

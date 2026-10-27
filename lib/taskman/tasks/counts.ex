@@ -3,6 +3,7 @@ defmodule Taskman.Tasks.Counts do
 
   alias Taskman.Projects.Project
   alias Taskman.Tasks.CountPersistence
+  alias Taskman.Tasks.Task
 
   @unclosed_statuses [:icebox, :pending, :in_progress, :in_review]
   @closed_statuses [:done, :will_not_do]
@@ -10,8 +11,10 @@ defmodule Taskman.Tasks.Counts do
   @type pair :: %{visible: non_neg_integer(), eligible: non_neg_integer()}
   @type t :: %{(pos_integer() | nil) => pair()}
 
-  @spec for_project(Project.t(), [atom()], boolean()) :: t()
+  @spec for_project(Project.t(), [term()], boolean()) :: t()
   def for_project(%Project{id: project_id}, visible_statuses, include_descendants?) do
+    visible_statuses = Enum.filter(visible_statuses, &(is_atom(&1) and &1 in Task.statuses()))
+
     eligible_statuses =
       @unclosed_statuses ++ Enum.filter(@closed_statuses, &(&1 in visible_statuses))
 

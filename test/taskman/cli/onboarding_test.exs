@@ -13,8 +13,6 @@ defmodule Taskman.CLI.OnboardingTest do
     assert text =~ "mix phx.server"
     assert text =~ "Ordinary commands require a running backend"
     assert text =~ "mix do escript.build + escript.install --force"
-    assert text =~ "~/.mix/escripts/taskman"
-    assert text =~ "export PATH=\"$HOME/.mix/escripts:$PATH\""
     assert text =~ "TASKMAN_HOST"
     assert text =~ "TASKMAN_API_KEY_HOST"
     assert text =~ "TASKMAN_API_KEY"
@@ -37,6 +35,33 @@ defmodule Taskman.CLI.OnboardingTest do
 
     assert text =~
              "mkdir -p ~/.config/fish/completions\ntaskman completions fish > ~/.config/fish/completions/taskman.fish"
+  end
+
+  @tag :tmp_dir
+  test "installation commands resolve default and custom Mix homes with spaces", %{tmp_dir: root} do
+    lines = String.split(Onboarding.text(), "\n")
+    path_command = Enum.find(lines, &String.starts_with?(&1, "export PATH="))
+    direct_command = Enum.find(lines, &String.starts_with?(&1, ~s("${MIX_HOME)))
+    assert is_binary(direct_command)
+
+    home = Path.join(root, "home with spaces")
+
+    for mix_home <- [nil, "", Path.join(root, "custom Mix home")] do
+      effective_home = if mix_home in [nil, ""], do: Path.join(home, ".mix"), else: mix_home
+      executable = Path.join(effective_home, "escripts/taskman")
+      File.mkdir_p!(Path.dirname(executable))
+      File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$0\"\n")
+      File.chmod!(executable, 0o700)
+      env = [{"HOME", home}, {"MIX_HOME", mix_home}, {"PATH", "/usr/bin:/bin"}]
+
+      assert {output, 0} = System.cmd("/bin/sh", ["-c", direct_command], env: env)
+      assert String.trim(output) == executable
+
+      assert {output, 0} =
+               System.cmd("/bin/sh", ["-c", path_command <> "\ntaskman --help"], env: env)
+
+      assert String.trim(output) == executable
+    end
   end
 
   test "guidance covers clone context, explicit recovery and legacy binary ordering" do

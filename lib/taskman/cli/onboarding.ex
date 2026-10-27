@@ -9,10 +9,11 @@ defmodule Taskman.CLI.Onboarding do
   Build and install the version-matched escript from the Taskman repository:
   mix do escript.build + escript.install --force
 
-  Mix installs the executable at ~/.mix/escripts/taskman. Put ~/.mix/escripts on PATH to invoke it as taskman:
-  export PATH="$HOME/.mix/escripts:$PATH"
+  Mix installs the executable in the escripts directory under MIX_HOME (default: ~/.mix). Put that directory on PATH to invoke it as taskman:
+  export PATH="${MIX_HOME:-$HOME/.mix}/escripts:$PATH"
 
-  The file ~/.mix/escripts/taskman can also be invoked directly when that directory is not on PATH.
+  Invoke the installed executable directly when that directory is not on PATH:
+  "${MIX_HOME:-$HOME/.mix}/escripts/taskman" --help
 
   Backend
 

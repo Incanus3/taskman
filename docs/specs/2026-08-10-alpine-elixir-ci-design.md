@@ -121,10 +121,7 @@ prevent a later upgrade when compatibility is established.
 
 ## Acceptance boundary
 
-The fixed runtime and HTTP client refresh passed the exact local Alpine/PostgreSQL topology and
-[GitHub-hosted x64 CI](https://github.com/Incanus3/taskman/actions/runs/40313972164/job/121541801875)
-on PR head `6f7080cfb477ae790b77e1139a4379dcab92ee40`. This establishes hosted acceptance of the
-historical startup path. The runner, checkout action, cache, runtime packages, and PostgreSQL
-service remain unchanged. The upgrades are prerequisites in
-[draft feature PR 28](https://github.com/Incanus3/taskman/pull/28); accepting the OTP fix does not
-establish completion of that feature or authorize merging it.
+Hosted acceptance must exercise the pinned runtime and dependency set in the actual x64 job and
+PostgreSQL service topology. A local container run alone does not establish hosted-runner startup
+compatibility. This gate covers CI behavior; browser interaction acceptance and the separately
+pinned release runtime require their own verification.

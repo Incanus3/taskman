@@ -79,6 +79,44 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_header(view, 0, 3)
   end
 
+  test "sorting refreshes task order without recounting or querying navigation", %{conn: conn} do
+    project = project_fixture(%{})
+    list = list_fixture(project)
+    zebra = task_fixture(project, %{title: "Zebra", status: :pending})
+    apple = task_fixture(project, %{title: "Apple", status: :pending})
+    task_fixture(project, list, %{status: :pending})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}?statuses=pending")
+    owner = self()
+    handler_id = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:taskman, :repo, :query],
+        fn _, _, metadata, {owner, pid} ->
+          if self() == pid do
+            send(owner, {:sort_query, metadata.query})
+          end
+        end,
+        {owner, view.pid}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    for {first, second} <- [{apple, zebra}, {zebra, apple}] do
+      view |> element("#sort-task-title") |> render_click()
+      assert has_element?(view, "#tasks > #tasks-#{first.id} ~ #tasks-#{second.id}")
+      assert_header(view, 2, 2)
+      assert_count(view, list, 1)
+      assert_project_count(view, 2)
+      queries = drain_sort_queries()
+      assert Enum.any?(queries, &String.contains?(&1, ~s(FROM "tasks")))
+      refute Enum.any?(queries, &String.contains?(&1, "IS NOT DISTINCT FROM"))
+      refute Enum.any?(queries, &String.contains?(&1, ~s(SELECT DISTINCT t0."list_id")))
+      refute Enum.any?(queries, &String.contains?(&1, ~s(FROM "lists")))
+    end
+  end
+
   test "Project switches, missing locations and empty populations cannot retain old totals", %{
     conn: conn
   } do
@@ -302,6 +340,14 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_count(view, sibling, 1)
     refute has_element?(view, "#location-task-count")
     assert has_element?(view, "#task-title[value='Recoverable count draft']")
+  end
+
+  defp drain_sort_queries do
+    receive do
+      {:sort_query, query} -> [query | drain_sort_queries()]
+    after
+      0 -> []
+    end
   end
 
   defp notify_task(view, project, task) do

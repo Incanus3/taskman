@@ -17,7 +17,10 @@ defmodule Taskman.Tasks.CountsTest do
         {"will not do", [:will_not_do], %{visible: 6, eligible: 16}},
         {"closed", [:done, :will_not_do], %{visible: 11, eligible: 21}},
         {"all", @unclosed ++ [:done, :will_not_do], %{visible: 21, eligible: 21}},
-        {"none", [], %{visible: 0, eligible: 10}}
+        {"none", [], %{visible: 0, eligible: 10}},
+        {"unsupported only", [:unknown, "pending", "done", nil, 7], %{visible: 0, eligible: 10}},
+        {"mixed with closed", [:unknown, "pending", :in_review, :done, "will_not_do"],
+         %{visible: 6, eligible: 15}}
       ] do
     test "direct Project and List counts apply #{label} status selection" do
       project = project_fixture(%{})
@@ -46,6 +49,14 @@ defmodule Taskman.Tasks.CountsTest do
       assert counts[nil] == unquote(Macro.escape(expected))
       assert counts[list.id] == unquote(Macro.escape(expected))
       assert map_size(counts) == 3
+
+      for location <- [nil, list] do
+        assert {:ok, tasks} =
+                 Tasks.list_tasks_for_location(project, location, statuses: unquote(statuses))
+
+        location_id = if location, do: location.id
+        assert counts[location_id].visible == length(tasks)
+      end
     end
   end
 
