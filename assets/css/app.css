@@ -311,6 +311,145 @@
   }
 }
 
+/* Keep desktop tree rails continuous across row padding. */
+.task-listing-row {
+  --tree-elbow-y: 0.625rem;
+  --tree-depth-step: 0.875rem;
+  --tree-stroke: 1px;
+  --tree-rail-offset: 0px;
+  --tree-arm: 0.625rem;
+  --tree-trunk-gap: 0.625rem;
+  --tree-guide-color: rgb(129 140 248 / 0.36);
+  border-bottom: 1px solid rgb(51 65 85 / 0.3);
+}
+
+.task-listing-number {
+  width: calc((var(--task-number-digits, 1) + 1) * 1ch);
+}
+
+.task-listing-row:last-of-type {
+  border-bottom-color: rgb(71 85 105 / 0.65);
+}
+
+.task-listing-row ~ .task-listing-row[data-task-depth="0"]::after {
+  position: absolute;
+  inset: -1px 0 auto;
+  height: 1px;
+  background: rgb(71 85 105 / 0.65);
+  content: "";
+  pointer-events: none;
+}
+
+.task-listing-row[data-task-family-active] {
+  --tree-guide-color: rgb(165 180 252 / 0.72);
+}
+
+.task-listing-title {
+  padding-left: calc(var(--task-depth) * var(--tree-depth-step));
+}
+
+.task-tree-guides {
+  position: absolute;
+  inset: 0;
+  color: var(--tree-guide-color);
+  pointer-events: none;
+  transition: color 140ms ease;
+}
+
+.task-tree-rail,
+.task-tree-branch,
+.task-tree-trunk {
+  position: absolute;
+  left: calc(var(--tree-rail-offset) + (var(--tree-lane) - 1) * var(--tree-depth-step));
+  width: 0;
+  border-left: var(--tree-stroke) solid currentColor;
+}
+
+.task-tree-rail {
+  top: -0.75rem;
+  bottom: calc(-0.75rem - 1px);
+}
+
+.task-tree-branch {
+  top: 0;
+  bottom: 0;
+  border: 0;
+}
+
+.task-tree-branch::before {
+  position: absolute;
+  top: -0.75rem;
+  bottom: calc(-0.75rem - 1px);
+  border-left: var(--tree-stroke) solid currentColor;
+  content: "";
+}
+
+.task-tree-branch::after {
+  position: absolute;
+  top: var(--tree-elbow-y);
+  left: 0;
+  width: var(--tree-arm);
+  border-top: var(--tree-stroke) solid currentColor;
+  content: "";
+}
+
+.task-tree-branch-last::before {
+  bottom: calc(100% - var(--tree-elbow-y));
+}
+
+.task-tree-branch-shared::before {
+  display: none;
+}
+
+.task-tree-trunk {
+  top: calc(var(--tree-elbow-y) + var(--tree-trunk-gap));
+  bottom: calc(-0.75rem - 1px);
+}
+
+/* Stacked rows keep their connectors beside the title, clear of metadata. */
+@media (width < 80rem) {
+  .task-tree-rail,
+  .task-tree-trunk {
+    display: none;
+  }
+
+  .task-tree-branch::before {
+    top: calc(var(--tree-elbow-y) - 0.5rem);
+    bottom: calc(100% - var(--tree-elbow-y));
+  }
+
+  .task-tree-branch-shared::before {
+    display: block;
+  }
+}
+
+@media (min-width: 40rem) {
+  .task-listing-row {
+    --tree-elbow-y: 0.75rem;
+  }
+}
+
+@media (min-width: 80rem) {
+  .task-listing-row {
+    --tree-elbow-y: 50%;
+    --tree-depth-step: 1.25rem;
+    --tree-stroke: 2px;
+    --tree-rail-offset: 0.25rem;
+    --tree-arm: 0.5rem;
+    --tree-trunk-gap: 1.125rem;
+  }
+
+  .task-listing-number {
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-tree-guides {
+    transition: none;
+  }
+}
+
 /* This file is for your main application CSS */
 
 .task-detail-discussion {

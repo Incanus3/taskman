@@ -121,7 +121,7 @@ defmodule Taskman.Tasks.ListingProjection do
         expanded_ids
 
       MapSet.member?(expanded_ids, id) ->
-        pending = Enum.map(Map.fetch!(children, id), &{&1, 1})
+        pending = pending_children(Map.fetch!(children, id), 1, [], [])
         descendants = descendant_rows(pending, children, [])
         forgotten_ids = MapSet.new(descendants, & &1.task_with_location.task.id)
         MapSet.difference(expanded_ids, MapSet.put(forgotten_ids, id))
@@ -158,11 +158,12 @@ defmodule Taskman.Tasks.ListingProjection do
     row = %ListingRow{
       task_with_location: listed_task,
       expandable?: MapSet.member?(expandable_ids, id),
-      expanded?: expanded?
+      expanded?: expanded?,
+      children_visible?: expanded?
     }
 
     if expanded? do
-      pending = Enum.map(Map.fetch!(children, id), &{&1, 1})
+      pending = pending_children(Map.fetch!(children, id), 1, [], [])
       [row | descendant_rows(pending, children, [])]
     else
       [row]
@@ -190,17 +191,36 @@ defmodule Taskman.Tasks.ListingProjection do
 
   defp descendant_rows([], _children, rows), do: Enum.reverse(rows)
 
-  defp descendant_rows([{listed_task, depth} | rest], children, rows) do
-    row = %ListingRow{task_with_location: listed_task, depth: depth}
+  defp descendant_rows(
+         [{listed_task, depth, last_sibling?, continuations} | rest],
+         children,
+         rows
+       ) do
+    descendants = Map.get(children, listed_task.task.id, [])
 
-    pending =
+    row = %ListingRow{
+      task_with_location: listed_task,
+      depth: depth,
+      last_sibling?: last_sibling?,
+      ancestor_continuations: continuations,
+      children_visible?: descendants != []
+    }
+
+    child_continuations =
+      if last_sibling?, do: continuations, else: continuations ++ [depth]
+
+    pending = pending_children(descendants, depth + 1, child_continuations, rest)
+    descendant_rows(pending, children, [row | rows])
+  end
+
+  defp pending_children(children, depth, continuations, rest) do
+    {pending, _last?} =
       children
-      |> Map.get(listed_task.task.id, [])
       |> Enum.reverse()
-      |> Enum.reduce(rest, fn child, pending ->
-        [{child, depth + 1} | pending]
+      |> Enum.reduce({rest, true}, fn child, {pending, last?} ->
+        {[{child, depth, last?, continuations} | pending], false}
       end)
 
-    descendant_rows(pending, children, [row | rows])
+    pending
   end
 end

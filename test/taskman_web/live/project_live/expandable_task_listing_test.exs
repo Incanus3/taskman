@@ -40,6 +40,23 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     assert row_ids(view) == [a.id]
   end
 
+  test "expanded tree decorations preserve accessible hierarchy and Task actions", %{conn: conn} do
+    %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
+    {:ok, view, _} = live(conn, listing_path(project, selected))
+    toggle(view, a)
+
+    for task <- [a, b, c] do
+      assert has_element?(view, "#task-tree-guides-#{task.id}[aria-hidden='true']")
+    end
+
+    assert has_element?(view, "#task-#{c.id} .sr-only", "Subtask depth: 2.")
+    view |> element("#move-task-row-button-#{b.id}") |> render_click()
+    assert has_element?(view, "#tasks-#{b.id} [data-move-task-popover]")
+    render_click(view, "cancel_move_task")
+    view |> element("#open-task-#{c.id}") |> render_click()
+    assert assigns(view).editing.selected_task.id == c.id
+  end
+
   test "location identity resets expansion but detail navigation does not", %{conn: conn} do
     %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
     {:ok, view, _} = live(conn, listing_path(project, selected))

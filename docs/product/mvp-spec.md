@@ -64,7 +64,13 @@ nor external agent work automatically changes Task state.
   **Include child Lists** optionally adds descendant Tasks while preserving their source List.
 - The Task table initially shows matching Tasks whose entire ancestor chain contains no other
   matching Task. An always-visible disclosure beside the readable ID expands a root's complete
-  subtree across locations and statuses; nested rows are indented and keep their ordinary actions.
+  subtree across locations and statuses; nested rows keep their ordinary actions. Tree connectors
+  inside the Task column show parentage, with softer separators within families and stronger
+  separators between roots; IDs and other columns stay aligned. Desktop rows use continuous
+  guides; stacked rows below 1280 CSS pixels use short title-only connectors to keep metadata clear.
+  Guides cap indentation at six levels, sharing the final lane for deeper nesting. Hovering or
+  focusing a row highlights the connectors throughout its displayed root family. See the
+  [Task tree guide design](../specs/2026-10-27-task-tree-guides-design.md).
   The selected column sort applies to roots and independently to each sibling group. Counts remain
   the number of filter matches, including matching Tasks hidden by collapse, and do not change
   merely because a group expands. Revealed branches stay expanded through status and Include child
