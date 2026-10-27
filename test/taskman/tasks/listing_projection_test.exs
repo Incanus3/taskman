@@ -582,6 +582,87 @@ defmodule Taskman.Tasks.ListingProjectionTest do
     assert empty.expanded_task_ids == MapSet.new([1, 99])
   end
 
+  test "tree guides follow sibling endings and only continuing ancestors" do
+    alias Taskman.Tasks.{ListingProjection, Task, TaskWithLocation}
+
+    make_task = fn id, parent ->
+      %TaskWithLocation{task: %Task{id: id, parent_task_id: parent}, location_path: []}
+    end
+
+    a = make_task.(1, nil)
+    b = make_task.(2, 1)
+    c = make_task.(3, 2)
+    d = make_task.(4, 1)
+    e = make_task.(5, nil)
+    f = make_task.(6, 4)
+    tasks = [a, b, c, d, e, f]
+
+    projection = ListingProjection.from_tasks(tasks, tasks, MapSet.new([1]))
+
+    assert guide_branches(projection) == [
+             {1, 0, true, [], true},
+             {2, 1, false, [], true},
+             {3, 2, true, [1], false},
+             {4, 1, true, [], true},
+             {6, 2, true, [], false},
+             {5, 0, true, [], false}
+           ]
+
+    reordered = ListingProjection.from_tasks(tasks, [a, d, f, b, c, e], MapSet.new([1]))
+
+    assert guide_branches(reordered) == [
+             {1, 0, true, [], true},
+             {4, 1, false, [], true},
+             {6, 2, true, [1], false},
+             {2, 1, true, [], true},
+             {3, 2, true, [], false},
+             {5, 0, true, [], false}
+           ]
+
+    promoted = ListingProjection.from_tasks([b, d], tasks, projection.expanded_task_ids)
+
+    assert guide_branches(promoted) == [
+             {2, 0, true, [], true},
+             {3, 1, true, [], false},
+             {4, 0, true, [], true},
+             {6, 1, true, [], false}
+           ]
+
+    collapsed = ListingProjection.from_tasks(tasks, tasks, MapSet.new())
+    assert guide_branches(collapsed) == [{1, 0, true, [], false}, {5, 0, true, [], false}]
+  end
+
+  test "tree guide ancestry retains actual depths beyond the visible indentation budget" do
+    alias Taskman.Tasks.{ListingProjection, Task, TaskWithLocation}
+
+    chain =
+      for id <- 1..9 do
+        %TaskWithLocation{
+          task: %Task{id: id, parent_task_id: if(id == 1, do: nil, else: id - 1)},
+          location_path: []
+        }
+      end
+
+    siblings =
+      for id <- 2..8 do
+        %TaskWithLocation{task: %Task{id: id + 10, parent_task_id: id - 1}, location_path: []}
+      end
+
+    tasks = chain ++ siblings
+    projection = ListingProjection.from_tasks(tasks, tasks, MapSet.new([1]))
+    deepest = Enum.find(projection.rows, &(&1.task_with_location.task.id == 9))
+    assert deepest.depth == 8
+    assert Map.get(deepest, :ancestor_continuations) == [1, 2, 3, 4, 5, 6, 7]
+    assert Map.get(deepest, :last_sibling?) == true
+  end
+
+  defp guide_branches(projection) do
+    Enum.map(projection.rows, fn row ->
+      {row.task_with_location.task.id, row.depth, Map.get(row, :last_sibling?),
+       Map.get(row, :ancestor_continuations), Map.get(row, :children_visible?)}
+    end)
+  end
+
   defp row_depths(projection) do
     Enum.map(projection.rows, &{&1.task_with_location.task.id, &1.depth})
   end

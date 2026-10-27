@@ -13,6 +13,8 @@
 
 ## Specifications
 
+- [Task tree guides in the main listing (implemented and operator accepted)](specs/2026-10-27-task-tree-guides-design.md)
+
 - [Expandable Task listing (implemented and operator accepted)](specs/2026-10-27-expandable-task-listing-design.md)
 
 - [Task counts in List navigation and headers (implemented and operator accepted)](specs/2026-10-26-list-task-counts-design.md)

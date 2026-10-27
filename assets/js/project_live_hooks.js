@@ -184,6 +184,52 @@ const TaskTablePreferences = {
   }
 }
 
+const TaskTreeFamilies = {
+  mounted() {
+    this.table = document.getElementById("task-list-scroll")
+    this.scheduleSync = () => {
+      if (this.frame) return
+      this.frame = requestAnimationFrame(() => {
+        this.frame = null
+        this.syncFamilies()
+      })
+    }
+    this.events = ["pointerover", "pointerout", "focusin", "focusout"]
+    this.events.forEach(event => this.table.addEventListener(event, this.scheduleSync))
+    this.observer = new MutationObserver(this.scheduleSync)
+    this.observer.observe(this.table, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-task-depth"]
+    })
+    this.scheduleSync()
+  },
+
+  destroyed() {
+    cancelAnimationFrame(this.frame)
+    this.observer.disconnect()
+    this.events.forEach(event => this.table.removeEventListener(event, this.scheduleSync))
+    this.table.querySelectorAll("[data-task-family-active]").forEach(row => {
+      row.removeAttribute("data-task-family-active")
+    })
+  },
+
+  syncFamilies() {
+    const rows = Array.from(this.table.querySelectorAll("#tasks > article"))
+    const activeFamilies = new Set()
+    let root
+    const families = rows.map(row => {
+      if (!root || row.dataset.taskDepth === "0") root = row
+      if (row.matches(":hover") || row.contains(document.activeElement)) activeFamilies.add(root)
+      return root
+    })
+    rows.forEach((row, index) => {
+      row.toggleAttribute("data-task-family-active", activeFamilies.has(families[index]))
+    })
+  }
+}
+
 const ShareTaskView = {
   mounted() {
     this.onClick = async () => {
@@ -425,6 +471,7 @@ export const projectLiveHooks = {
   "TaskmanWeb.ProjectLive.MobileProjectDrawer": MobileProjectDrawer,
   "TaskmanWeb.ProjectLive.ProjectMemory": ProjectMemory,
   "TaskmanWeb.ProjectLive.TaskTablePreferences": TaskTablePreferences,
+  "TaskmanWeb.ProjectLive.TaskTreeFamilies": TaskTreeFamilies,
   "TaskmanWeb.ProjectLive.ShareTaskView": ShareTaskView,
   "TaskmanWeb.ProjectLive.CommentThreadScroll": CommentThreadScroll,
   "TaskmanWeb.ProjectLive.CommentDeparture": CommentDeparture,

@@ -305,10 +305,16 @@
               </div>
             </header>
 
+            <span
+              id="task-tree-family-controller"
+              phx-hook="TaskmanWeb.ProjectLive.TaskTreeFamilies"
+              phx-update="ignore"
+              hidden
+            />
             <div
               id="task-list-scroll"
               class={[
-                "min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 [scrollbar-gutter:stable] xl:grid xl:content-start xl:gap-x-0.5",
+                "min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 xl:grid xl:content-start xl:gap-x-0.5",
                 @workspace.include_children? &&
                   "xl:grid-cols-[2rem_4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
                 !@workspace.include_children? &&
@@ -377,7 +383,14 @@
                   Actions
                 </span>
               </div>
-              <div id="tasks" phx-update="stream" class="xl:contents">
+              <div
+                id="tasks"
+                phx-update="stream"
+                class="xl:contents"
+                style={
+                  "--task-number-digits: #{@listing.rendered_task_ids |> Enum.max(fn -> 0 end) |> Integer.to_string() |> String.length()}"
+                }
+              >
                 <div
                   id="tasks-empty"
                   class="hidden px-6 py-16 text-center only:block xl:col-span-full"
@@ -408,6 +421,9 @@
                   depth={row.depth}
                   expandable?={row.expandable?}
                   expanded?={row.expanded?}
+                  last_sibling?={row.last_sibling?}
+                  ancestor_continuations={row.ancestor_continuations}
+                  children_visible?={row.children_visible?}
                   task_path={
                     Paths.task_detail_path(
                       @workspace.selected_project,

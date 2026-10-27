@@ -4,12 +4,23 @@ defmodule Taskman.Tasks.ListingRow do
   alias Taskman.Tasks.TaskWithLocation
 
   @enforce_keys [:task_with_location]
-  defstruct [:task_with_location, depth: 0, expandable?: false, expanded?: false]
+  defstruct [
+    :task_with_location,
+    depth: 0,
+    expandable?: false,
+    expanded?: false,
+    last_sibling?: true,
+    ancestor_continuations: [],
+    children_visible?: false
+  ]
 
   @type t :: %__MODULE__{
           task_with_location: TaskWithLocation.t(),
           depth: non_neg_integer(),
           expandable?: boolean(),
-          expanded?: boolean()
+          expanded?: boolean(),
+          last_sibling?: boolean(),
+          ancestor_continuations: [pos_integer()],
+          children_visible?: boolean()
         }
 end

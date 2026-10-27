@@ -172,14 +172,33 @@ defmodule TaskmanWeb.Tasks.Table do
   attr :depth, :integer, default: 0
   attr :expandable?, :boolean, default: false
   attr :expanded?, :boolean, default: false
+  attr :last_sibling?, :boolean, default: true
+  attr :ancestor_continuations, :list, default: []
+  attr :children_visible?, :boolean, default: false
 
   def row(assigns) do
+    continuation_lanes = Enum.map(assigns.ancestor_continuations, &min(&1, 6))
+
+    continuation_lanes =
+      if assigns.depth >= 6 and assigns.children_visible?,
+        do: [6 | continuation_lanes],
+        else: continuation_lanes
+
+    assigns =
+      assigns
+      |> assign(:continuation_lanes, Enum.uniq(continuation_lanes))
+      |> assign(:branch_shares_rail?, min(assigns.depth, 6) in continuation_lanes)
+      |> assign(
+        :show_child_trunk?,
+        assigns.children_visible? and min(assigns.depth + 1, 6) not in continuation_lanes
+      )
+
     ~H"""
     <% task = @task_with_location.task %>
     <article
       id={@id}
       data-task-depth={@depth}
-      class="relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-800 px-3 py-3 last:border-b-0 xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
+      class="task-listing-row relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-3 xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
     >
       <.link
         id={"open-task-#{task.id}"}
@@ -213,19 +232,51 @@ defmodule TaskmanWeb.Tasks.Table do
       </div>
       <div
         id={"task-identity-#{task.id}"}
-        class="pointer-events-none relative z-10 col-span-2 flex min-w-0 items-baseline gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 xl:contents"
+        class={[
+          "task-listing-identity pointer-events-none relative z-10 self-stretch col-span-2 col-start-2 row-start-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-subgrid gap-x-2 sm:col-span-1 sm:col-start-2 sm:row-span-2 sm:row-start-1 xl:contents",
+          if(@include_children?, do: "row-span-3", else: "row-span-2")
+        ]}
       >
         <span
           id={"task-number-#{task.id}"}
           aria-label={"Task number: #{task.id}"}
-          class="shrink-0 text-xs font-medium tabular-nums text-slate-500 xl:justify-self-start xl:pl-2 xl:text-sm"
+          class="task-listing-number row-start-1 self-center xl:row-auto text-xs font-medium tabular-nums text-slate-500 xl:justify-self-start xl:pl-2 xl:text-sm"
         >
           <span class="xl:hidden">#</span>{task.id}
         </span>
-        <div class="min-w-0" style={"padding-left: #{min(@depth, 6) * 0.875}rem"}>
+        <div
+          class="task-listing-title relative col-start-2 row-span-full row-start-1 grid min-w-0 grid-rows-subgrid self-stretch xl:col-auto xl:row-auto xl:items-center"
+          style={"--task-depth: #{min(@depth, 6)}"}
+        >
+          <span
+            :if={@depth > 0 || @children_visible?}
+            id={"task-tree-guides-#{task.id}"}
+            aria-hidden="true"
+            class="task-tree-guides"
+          >
+            <span
+              :for={lane <- @continuation_lanes}
+              class="task-tree-rail"
+              style={"--tree-lane: #{lane}"}
+            />
+            <span
+              :if={@depth > 0}
+              class={[
+                "task-tree-branch",
+                @last_sibling? && "task-tree-branch-last",
+                @branch_shares_rail? && "task-tree-branch-shared"
+              ]}
+              style={"--tree-lane: #{min(@depth, 6)}"}
+            />
+            <span
+              :if={@show_child_trunk?}
+              class="task-tree-trunk"
+              style={"--tree-lane: #{min(@depth + 1, 6)}"}
+            />
+          </span>
           <p
             id={"task-#{task.id}"}
-            class="pointer-events-none truncate text-sm font-medium text-slate-100"
+            class="pointer-events-none row-start-1 self-center truncate text-sm font-medium text-slate-100"
           >
             <span :if={@depth > 0} class="sr-only">Subtask depth: {@depth}. </span>{task.title}
           </p>
@@ -236,13 +287,16 @@ defmodule TaskmanWeb.Tasks.Table do
         id={"task-location-cell-#{task.id}"}
         aria-label={"Location: #{location_label(@task_with_location.location_path)}"}
         title={location_label(@task_with_location.location_path)}
-        class="pointer-events-none relative z-10 col-span-2 col-start-2 max-w-full min-w-0 justify-self-start truncate text-left text-xs font-medium text-slate-400 sm:col-span-1 sm:col-start-2 sm:row-start-2 xl:col-auto xl:row-auto xl:max-w-none xl:justify-self-stretch xl:text-center xl:text-sm"
+        class="pointer-events-none relative z-10 col-span-2 col-start-2 row-start-2 max-w-full min-w-0 justify-self-start truncate text-left text-xs font-medium text-slate-400 sm:col-span-1 sm:col-start-2 sm:row-start-2 xl:col-auto xl:row-auto xl:max-w-none xl:justify-self-stretch xl:text-center xl:text-sm"
       >
         {location_label(@task_with_location.location_path)}
       </p>
       <div
         id={"task-badges-#{task.id}"}
-        class="pointer-events-none relative z-10 col-start-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-start-3 sm:row-start-1 sm:flex-nowrap sm:justify-end xl:contents"
+        class={[
+          "pointer-events-none relative z-10 col-start-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-start-3 sm:row-start-1 sm:flex-nowrap sm:justify-end xl:contents",
+          if(@include_children?, do: "row-start-3", else: "row-start-2")
+        ]}
       >
         <span
           id={"task-status-#{task.id}"}
@@ -267,7 +321,8 @@ defmodule TaskmanWeb.Tasks.Table do
         :if={@actions_enabled?}
         id={"task-actions-#{task.id}"}
         class={[
-          "pointer-events-auto relative flex justify-end gap-2 sm:col-start-3 sm:row-start-2 xl:col-auto xl:row-auto xl:justify-self-center",
+          "pointer-events-auto relative col-start-3 flex justify-end gap-2 sm:row-start-2 xl:col-auto xl:row-auto xl:justify-self-center",
+          if(@include_children?, do: "row-start-3", else: "row-start-2"),
           Move.active_for?(@task_move, task.id, :row) && "z-40",
           !Move.active_for?(@task_move, task.id, :row) && "z-10"
         ]}
