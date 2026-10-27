@@ -13,6 +13,167 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     {:ok, conn: log_in_user(conn, user_fixture())}
   end
 
+  test "nested Move refreshes preserve projected rows", %{conn: conn} do
+    %{project: project, source: source, root: root, nested: nested, sibling: sibling} =
+      nested_move_fixture()
+
+    destination = list_fixture(project, %{name: "Destination"})
+    {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
+    assert_projected_move_rows(view, root, nested, sibling)
+    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    assert_projected_move_rows(view, root, nested, sibling)
+    view |> element("#move-task-search-#{nested.id}") |> render_keyup(%{"value" => "Dest"})
+    assert_projected_move_rows(view, root, nested, sibling)
+    render_click(view, "close_move_destinations")
+    assert_projected_move_rows(view, root, nested, sibling)
+    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    Repo.delete!(destination)
+    view |> element("#move-task-submit-#{nested.id}") |> render_click()
+
+    assert has_element?(
+             view,
+             "#move-task-error-#{nested.id}",
+             "That destination is no longer available. Choose another destination."
+           )
+
+    assert has_element?(view, "#move-task-search-#{nested.id}[value='Destination']")
+    assert_projected_move_rows(view, root, nested, sibling)
+    assert Tasks.get_task_for_project(project, nested.id).list_id == nil
+  end
+
+  test "nested Move keeps its draft and anchor through ancestor promotion", %{conn: conn} do
+    project = project_fixture(%{})
+    source = list_fixture(project)
+    destination = list_fixture(project, %{name: "Destination"})
+    a = task_fixture(project, source, %{status: :in_review})
+    b = task_fixture(project, source, %{status: :pending}, parent: a)
+    c = task_fixture(project, %{status: :done}, parent: b)
+
+    {:ok, view, _} =
+      live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending,in_review")
+
+    view |> element("#toggle-task-subtasks-#{a.id}") |> render_click()
+    view |> element("#move-task-row-button-#{c.id}") |> render_click()
+    view |> element("#move-task-search-#{c.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    draft = :sys.get_state(view.pid).socket.assigns.task_move
+
+    for {statuses, expected, depth} <- [
+          {["pending"], [b.id, c.id], 1},
+          {["pending", "in_review"], [a.id, b.id, c.id], 2}
+        ] do
+      render_click(view, "filter_task_statuses", %{"status_filter" => %{"statuses" => statuses}})
+
+      ids =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#tasks > article")
+        |> LazyHTML.attribute("id")
+
+      assert ids == Enum.map(expected, &"tasks-#{&1}")
+      assert has_element?(view, "#tasks-#{c.id}[data-task-depth='#{depth}'] #move-task-#{c.id}")
+      assert has_element?(view, "#move-task-search-#{c.id}[value='Destination']")
+      assert :sys.get_state(view.pid).socket.assigns.task_move == draft
+      refute has_element?(view, "#task-modal-content")
+      refute_patched(view)
+    end
+  end
+
+  test "deliberate hiding closes nested Move", %{conn: conn} do
+    for action <- [:collapse, :filter, :include] do
+      %{project: project, source: source, root: root, nested: nested} = nested_move_fixture()
+      child = list_fixture(project, source)
+      included = task_fixture(project, child, %{title: "Included"})
+
+      {:ok, view, _} =
+        live(
+          conn,
+          "/projects/#{project.id}/lists/#{source.id}?statuses=pending&include_children=true"
+        )
+
+      view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+      moving = if action == :include, do: included, else: nested
+      view |> element("#move-task-row-button-#{moving.id}") |> render_click()
+
+      case action do
+        :collapse ->
+          view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+
+        :filter ->
+          render_click(view, "filter_task_statuses", %{"status_filter" => %{"statuses" => []}})
+
+        :include ->
+          view |> element("#include-child-lists") |> render_click()
+      end
+
+      refute has_element?(view, "#move-task-#{moving.id}")
+      assert :sys.get_state(view.pid).socket.assigns.task_move.active_task == nil
+      refute has_element?(view, "#task-modal-content")
+      refute_patched(view)
+    end
+  end
+
+  test "external row loss retains Move recovery", %{conn: conn} do
+    %{project: project, source: source, root: root, nested: nested, sibling: sibling} =
+      nested_move_fixture()
+
+    actual = list_fixture(project, %{name: "Actual"})
+    destination = list_fixture(project, %{name: "Destination"})
+    {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    assert {:ok, nested} = Tasks.move_task(project, nested, actual)
+    notify_nested_move(view, nested)
+    assert_projected_move_rows(view, root, nested, sibling)
+    assert has_element?(view, "#tasks-#{nested.id} #move-task-#{nested.id}")
+    refute_patched(view)
+    assert {:ok, nested} = Tasks.update_task(project, nested, %{status: :will_not_do})
+    notify_nested_move(view, nested)
+    assert has_element?(view, "#tasks-#{nested.id} #move-task-#{nested.id}")
+    refute_patched(view)
+    assert {:ok, nested} = Tasks.update_task(project, nested, %{}, parent: nil)
+    notify_nested_move(view, nested)
+    assert_patch(view, "/projects/#{project.id}/lists/#{actual.id}/tasks/#{nested.id}")
+    assert has_element?(view, "#task-modal #move-task-#{nested.id}")
+    assert has_element?(view, "#move-task-search-#{nested.id}[value='Destination']")
+    assert Tasks.get_task_for_project(project, nested.id).list_id == actual.id
+  end
+
+  test "Move interaction recovers a lost projected anchor without a notification", %{conn: conn} do
+    %{project: project, source: source, root: root, nested: nested} = nested_move_fixture()
+    destination = list_fixture(project, %{name: "Destination"})
+    {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    nested |> Ecto.Changeset.change(parent_task_id: nil) |> Repo.update!()
+    render_click(view, "close_move_destinations")
+    assert_patch(view, "/projects/#{project.id}/tasks/#{nested.id}")
+    assert has_element?(view, "#task-modal #move-task-#{nested.id}")
+    assert has_element?(view, "#move-task-search-#{nested.id}[value='Destination']")
+  end
+
+  test "nested successful Move retains backdrop navigation", %{conn: conn} do
+    %{project: project, source: source, root: root, nested: nested} = nested_move_fixture()
+    destination = list_fixture(project, %{name: "Destination"})
+    {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-submit-#{nested.id}") |> render_click()
+    assert_patch(view, "/projects/#{project.id}/lists/#{destination.id}")
+    assert Tasks.get_task_for_project(project, nested.id).list_id == destination.id
+    refute has_element?(view, "#move-task-#{nested.id}")
+  end
+
   test "filters destinations case-insensitively by their complete path", %{conn: conn} do
     project = project_fixture(%{})
     planning = list_fixture(project, nil, %{name: "Planning"})
@@ -676,5 +837,41 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     assert_patch(view, ~p"/projects/#{destination_project.id}")
     assert has_element?(view, "#project-selector-name", destination_project.name)
     refute has_element?(view, "#move-task-#{task.id}")
+  end
+
+  defp nested_move_fixture do
+    project = project_fixture(%{})
+    source = list_fixture(project, %{name: "Source"})
+    root = task_fixture(project, source, %{title: "Root"})
+    nested = task_fixture(project, %{title: "Nested", status: :done}, parent: root)
+    sibling = task_fixture(project, %{title: "Sibling"}, parent: root)
+    %{project: project, source: source, root: root, nested: nested, sibling: sibling}
+  end
+
+  defp assert_projected_move_rows(view, root, nested, sibling) do
+    ids =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#tasks > article")
+      |> LazyHTML.attribute("id")
+
+    assert ids == ["tasks-#{root.id}", "tasks-#{nested.id}", "tasks-#{sibling.id}"]
+    assert has_element?(view, "#tasks-#{nested.id}[data-task-depth='1']")
+    assert has_element?(view, "#tasks-#{sibling.id}[data-task-depth='1']")
+    assert has_element?(view, "#toggle-task-subtasks-#{root.id}[aria-expanded='true']")
+  end
+
+  defp notify_nested_move(view, task) do
+    send(view.pid, %Taskman.ChangeNotifications.Event{
+      entity: :task,
+      operation: :updated,
+      project_id: task.project_id,
+      entity_id: task.id,
+      lock_version: task.lock_version,
+      fields: [:parent_task_id, :list_id, :status]
+    })
+
+    _ = :sys.get_state(view.pid)
   end
 end

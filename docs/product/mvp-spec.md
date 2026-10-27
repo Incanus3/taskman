@@ -62,6 +62,17 @@ nor external agent work automatically changes Task state.
   valid Project, otherwise it shows a neutral Project selector.
 - Selecting a Project shows its direct Project Tasks. Selecting a List shows its direct Tasks;
   **Include child Lists** optionally adds descendant Tasks while preserving their source List.
+- The Task table initially shows matching Tasks whose entire ancestor chain contains no other
+  matching Task. An always-visible disclosure beside the readable ID expands a root's complete
+  subtree across locations and statuses; nested rows are indented and keep their ordinary actions.
+  The selected column sort applies to roots and independently to each sibling group. Counts remain
+  the number of filter matches, including matching Tasks hidden by collapse, and do not change
+  merely because a group expands. Revealed branches stay expanded through status and Include child
+  Lists changes, including promoted descendants and returning ancestors, and through sorting,
+  updates and detail navigation. Collapsing a root forgets its entire branch; a remembered ancestor
+  can reveal that branch again. Changing Project/List, missing-location recovery or reloading resets
+  expansion. See the
+  [expandable Task listing design](../specs/2026-10-27-expandable-task-listing-design.md).
 - Include child Lists and Statuses persist as browser preferences across navigation. A Share
   control copies the current route with both filters encoded when a reproducible view is needed.
 - Opening a Task shows a modal over the preserved list state. The selected Task is shareable in
@@ -88,9 +99,10 @@ nor external agent work automatically changes Task state.
   resumes normal saving under fresh authority and reports its own Saving, Saved, Not saved, or
   failure state beside that field; conflicts retain their field-specific resolution notice.
 - An open Move Task popover remains usable when its source row or destination changes: an unavailable
-  destination must be replaced, while a surviving Task whose row is no longer visible reopens in
-  detail at its fresh location without being moved. If the Task no longer exists, the move closes
-  with an error.
+  destination must be replaced. Deliberately collapsing or filtering away its row closes Move without
+  navigation. When an external update hides a surviving Task's row, Move reopens in detail at its
+  fresh location without moving the Task. A descendant still rendered in an expanded group keeps its
+  row anchor. If the Task no longer exists, the move closes with an error.
 - Dirty detail input retained across location changes is temporary to the current live page process.
   When the Project, Task, or Task location cannot be resolved again, recovery provides copy and
   explicit discard controls. Try again is available when fresh authority may be restored; a

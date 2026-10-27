@@ -113,7 +113,7 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
       assert Enum.any?(queries, &String.contains?(&1, ~s(FROM "tasks")))
       refute Enum.any?(queries, &String.contains?(&1, "IS NOT DISTINCT FROM"))
       refute Enum.any?(queries, &String.contains?(&1, ~s(SELECT DISTINCT t0."list_id")))
-      refute Enum.any?(queries, &String.contains?(&1, ~s(FROM "lists")))
+      # Projected subtrees read List paths; navigation membership must remain untouched.
     end
   end
 

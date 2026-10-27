@@ -1,12 +1,12 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [push_patch: 2, put_flash: 3, stream_insert: 3]
+  import Phoenix.LiveView, only: [push_patch: 2, put_flash: 3]
 
   alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.{Task, TaskWithLocation}
+  alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Paths
   alias TaskmanWeb.ProjectLive.Workspace
 
@@ -340,19 +340,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
          %Move{active_task: %{origin: :row}},
          %Task{id: task_id}
        ) do
-    workspace = socket.assigns.workspace
-
-    workspace.location_not_found? or
-      not Enum.any?(
-        Listing.list_tasks_for_location(
-          workspace.selected_project,
-          workspace.selected_list,
-          workspace.include_children?,
-          socket.assigns.listing.visible_statuses,
-          socket.assigns.listing.sort
-        ),
-        &(&1.task.id == task_id)
-      )
+    not Listing.row_visible?(socket, task_id)
   end
 
   defp row_anchor_lost?(_socket, %Move{}, %Task{}), do: false
@@ -411,16 +399,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   defp flush_move_task_fields(_origin, socket), do: {:ok, socket}
 
   defp reinsert_active_move_row(
-         %{
-           assigns: %{
-             task_move: %Move{
-               active_task: %{origin: :row, task_with_location: %TaskWithLocation{} = task}
-             }
-           }
-         } = socket
-       ) do
-    stream_insert(socket, :tasks, task)
-  end
+         %{assigns: %{task_move: %Move{active_task: %{origin: :row}}}} = socket
+       ),
+       do: Listing.refresh_table(socket)
 
   defp reinsert_active_move_row(socket), do: socket
 end
