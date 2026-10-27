@@ -65,7 +65,9 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferences do
         |> assign(:workspace, workspace)
         |> assign(:listing, listing)
 
-      if Keyword.get(opts, :refresh?, true), do: Listing.refresh(socket), else: socket
+      if Keyword.get(opts, :refresh?, true),
+        do: Listing.refresh(socket, close_hidden_move?: true),
+        else: socket
     end
   end
 

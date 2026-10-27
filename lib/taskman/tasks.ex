@@ -14,6 +14,7 @@ defmodule Taskman.Tasks do
   alias Taskman.Tasks.CommentPersistence
   alias Taskman.Tasks.Comments
   alias Taskman.Tasks.Counts
+  alias Taskman.Tasks.ListingProjection
   alias Taskman.Tasks.Mutations
   alias Taskman.Tasks.Search
   alias Taskman.Tasks.Task
@@ -164,6 +165,12 @@ defmodule Taskman.Tasks do
 
   def create_task(%Project{}, %TaskList{}, _attrs, _opts), do: {:error, :not_found}
   def create_task(%Project{}, _location, _attrs, _opts), do: {:error, :not_found}
+
+  @doc "Returns contextual Task roots and their complete expanded subtrees for browser listings."
+  @spec list_task_rows_for_location(Project.t(), TaskList.t() | nil, keyword()) ::
+          {:ok, ListingProjection.t()} | {:error, :not_found}
+  def list_task_rows_for_location(project, location, opts \\ []),
+    do: ListingProjection.for_location(project, location, opts)
 
   def list_tasks_for_location(project, location, opts \\ [])
 

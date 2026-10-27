@@ -169,12 +169,17 @@ defmodule TaskmanWeb.Tasks.Table do
   attr :add_subtask_path, :string, default: nil
   attr :actions_enabled?, :boolean, default: true
 
+  attr :depth, :integer, default: 0
+  attr :expandable?, :boolean, default: false
+  attr :expanded?, :boolean, default: false
+
   def row(assigns) do
     ~H"""
     <% task = @task_with_location.task %>
     <article
       id={@id}
-      class="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-800 px-3 py-3 last:border-b-0 sm:col-span-full sm:grid-cols-subgrid sm:gap-x-0.5 sm:gap-y-0"
+      data-task-depth={@depth}
+      class="relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-800 px-3 py-3 last:border-b-0 xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
     >
       <.link
         id={"open-task-#{task.id}"}
@@ -184,26 +189,42 @@ defmodule TaskmanWeb.Tasks.Table do
         <span class="sr-only">Open {task.title}</span>
       </.link>
       <div
+        id={"task-expansion-cell-#{task.id}"}
+        class="relative z-10 row-span-2 self-start xl:row-span-1 xl:self-center"
+      >
+        <button
+          :if={@expandable?}
+          id={"toggle-task-subtasks-#{task.id}"}
+          type="button"
+          phx-click="toggle_task_subtasks"
+          phx-value-task-id={task.id}
+          aria-label={"#{if @expanded?, do: "Collapse", else: "Expand"} subtasks for #{task.title}"}
+          aria-expanded={to_string(@expanded?)}
+          class="grid size-8 cursor-pointer place-items-center rounded-lg text-slate-400 transition hover:bg-indigo-400/10 hover:text-indigo-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+        >
+          <.icon
+            name={if(@expanded?, do: "hero-chevron-down", else: "hero-chevron-right")}
+            class="size-4"
+          />
+        </button>
+      </div>
+      <div
         id={"task-identity-#{task.id}"}
-        class={[
-          "pointer-events-none relative z-10 flex min-w-0 items-baseline gap-2",
-          !@include_children? && "col-span-2",
-          "sm:contents"
-        ]}
+        class="pointer-events-none relative z-10 col-span-2 flex min-w-0 items-baseline gap-2 xl:contents"
       >
         <span
           id={"task-number-#{task.id}"}
           aria-label={"Task number: #{task.id}"}
-          class="shrink-0 text-xs font-medium tabular-nums text-slate-500 sm:justify-self-start sm:pl-2 sm:text-sm"
+          class="shrink-0 text-xs font-medium tabular-nums text-slate-500 xl:justify-self-start xl:pl-2 xl:text-sm"
         >
-          <span class="sm:hidden">#</span>{task.id}
+          <span class="xl:hidden">#</span>{task.id}
         </span>
-        <div class="min-w-0">
+        <div class="min-w-0" style={"padding-left: #{min(@depth, 6) * 0.875}rem"}>
           <p
             id={"task-#{task.id}"}
             class="pointer-events-none truncate text-sm font-medium text-slate-100"
           >
-            {task.title}
+            <span :if={@depth > 0} class="sr-only">Subtask depth: {@depth}. </span>{task.title}
           </p>
         </div>
       </div>
@@ -212,18 +233,18 @@ defmodule TaskmanWeb.Tasks.Table do
         id={"task-location-cell-#{task.id}"}
         aria-label={"Location: #{location_label(@task_with_location.location_path)}"}
         title={location_label(@task_with_location.location_path)}
-        class="pointer-events-none relative z-10 max-w-[45vw] min-w-0 justify-self-end truncate text-right text-xs font-medium text-slate-400 sm:max-w-none sm:justify-self-stretch sm:text-center sm:text-sm"
+        class="pointer-events-none relative z-10 col-span-2 col-start-2 max-w-full min-w-0 justify-self-start truncate text-left text-xs font-medium text-slate-400 xl:col-auto xl:max-w-none xl:justify-self-stretch xl:text-center xl:text-sm"
       >
         {location_label(@task_with_location.location_path)}
       </p>
       <div
         id={"task-badges-#{task.id}"}
-        class="pointer-events-none relative z-10 flex min-w-0 items-center gap-2 sm:contents"
+        class="pointer-events-none relative z-10 col-start-2 flex min-w-0 flex-wrap items-center gap-2 xl:contents"
       >
         <span
           id={"task-status-#{task.id}"}
           class={[
-            "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold sm:justify-self-center",
+            "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold xl:justify-self-center",
             status_classes(task.status)
           ]}
         >
@@ -232,7 +253,7 @@ defmodule TaskmanWeb.Tasks.Table do
         <span
           id={"task-priority-#{task.id}"}
           class={[
-            "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold sm:justify-self-center",
+            "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold xl:justify-self-center",
             priority_classes(task.priority)
           ]}
         >
@@ -243,7 +264,7 @@ defmodule TaskmanWeb.Tasks.Table do
         :if={@actions_enabled?}
         id={"task-actions-#{task.id}"}
         class={[
-          "pointer-events-auto relative flex justify-end gap-2 sm:justify-self-center",
+          "pointer-events-auto relative flex justify-end gap-2 xl:justify-self-center",
           Move.active_for?(@task_move, task.id, :row) && "z-40",
           !Move.active_for?(@task_move, task.id, :row) && "z-10"
         ]}

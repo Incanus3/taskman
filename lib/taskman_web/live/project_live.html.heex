@@ -308,24 +308,27 @@
             <div
               id="task-list-scroll"
               class={[
-                "min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 sm:grid sm:content-start sm:gap-x-0.5",
+                "min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-sm shadow-black/20 [scrollbar-gutter:stable] xl:grid xl:content-start xl:gap-x-0.5",
                 @workspace.include_children? &&
-                  "sm:grid-cols-[4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
+                  "xl:grid-cols-[2rem_4rem_minmax(0,1fr)_fit-content(35%)_5.5rem_5.5rem_5.75rem]",
                 !@workspace.include_children? &&
-                  "sm:grid-cols-[4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
+                  "xl:grid-cols-[2rem_4rem_minmax(0,1fr)_5.5rem_5.5rem_5.75rem]"
               ]}
             >
               <div
                 :if={!@listing.tasks_empty?}
                 id="task-table-header"
-                class="sticky top-0 z-20 hidden gap-3 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:col-span-full sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-x-0.5"
+                class="sticky top-0 z-20 hidden gap-3 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid sm:grid-cols-3 xl:col-span-full xl:grid-cols-subgrid xl:items-center xl:gap-x-0.5"
               >
+                <span id="task-expansion-header" role="columnheader" class="hidden xl:block">
+                  <span class="sr-only">Expand subtasks</span>
+                </span>
                 <Table.sort_header
                   id="task-number-header"
                   label="#"
                   field={:id}
                   task_sort={@listing.sort}
-                  class="sm:pl-1"
+                  class="xl:pl-1"
                 />
                 <Table.sort_header
                   id="task-title-header"
@@ -355,12 +358,12 @@
                   task_sort={@listing.sort}
                   class="justify-center"
                 />
-                <span id="task-actions-header" class="sm:justify-self-center">Actions</span>
+                <span id="task-actions-header" class="hidden xl:block xl:justify-self-center">Actions</span>
               </div>
-              <div id="tasks" phx-update="stream" class="sm:contents">
+              <div id="tasks" phx-update="stream" class="xl:contents">
                 <div
                   id="tasks-empty"
-                  class="hidden px-6 py-16 text-center only:block sm:col-span-full"
+                  class="hidden px-6 py-16 text-center only:block xl:col-span-full"
                 >
                   <.icon
                     name="hero-clipboard-document-list"
@@ -382,14 +385,17 @@
                   </p>
                 </div>
                 <Table.row
-                  :for={{dom_id, task_with_location} <- @streams.tasks}
+                  :for={{dom_id, row} <- @streams.tasks}
                   id={dom_id}
-                  task_with_location={task_with_location}
+                  task_with_location={row.task_with_location}
+                  depth={row.depth}
+                  expandable?={row.expandable?}
+                  expanded?={row.expanded?}
                   task_path={
                     Paths.task_detail_path(
                       @workspace.selected_project,
                       @workspace.selected_list,
-                      task_with_location.task,
+                      row.task_with_location.task,
                       @workspace.include_children?
                     )
                   }
@@ -401,7 +407,7 @@
                       @workspace.selected_project,
                       @workspace.selected_list,
                       @workspace.include_children?,
-                      task_with_location.task.id
+                      row.task_with_location.task.id
                     )
                   }
                 />

@@ -354,6 +354,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert created.list_id == nil
     assert created.parent_task_id == source.id
+    view |> element("#toggle-task-subtasks-#{source.id}") |> render_click()
     assert has_element?(view, "#task-#{created.id}")
   end
 
@@ -378,6 +379,7 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
 
     assert created.list_id == planning.id
     assert created.parent_task_id == source.id
+    view |> element("#toggle-task-subtasks-#{source.id}") |> render_click()
     assert has_element?(view, "#task-#{created.id}")
   end
 

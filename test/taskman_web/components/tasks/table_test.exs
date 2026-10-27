@@ -76,6 +76,55 @@ defmodule TaskmanWeb.Tasks.TableTest do
     refute Enum.empty?(LazyHTML.query(document, "#task-identity-41 #task-41"))
   end
 
+  test "disclosure is an independently labelled button beside the readable Task ID" do
+    task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
+
+    document =
+      render_component(&Table.row/1, %{
+        id: "tasks-41",
+        task_with_location: %TaskWithLocation{task: task, location_path: []},
+        task_path: "/projects/7/tasks/41",
+        task_move: Move.empty(),
+        expandable?: true,
+        expanded?: false
+      })
+      |> LazyHTML.from_fragment()
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#tasks-41[data-task-depth='0'] > #task-expansion-cell-41 > button#toggle-task-subtasks-41[type='button'][aria-expanded='false'][aria-label='Expand subtasks for Launch'][phx-click='toggle_task_subtasks'][phx-value-task-id='41']"
+             )
+           )
+
+    assert LazyHTML.text(LazyHTML.query(document, "#task-number-41")) =~ "41"
+    assert Enum.empty?(LazyHTML.query(document, "#open-task-41 button"))
+  end
+
+  test "nested rows reserve an expansion cell and expose their full depth accessibly" do
+    task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
+
+    document =
+      render_component(&Table.row/1, %{
+        id: "tasks-41",
+        task_with_location: %TaskWithLocation{task: task, location_path: []},
+        task_path: "/projects/7/tasks/41",
+        task_move: Move.empty(),
+        depth: 12
+      })
+      |> LazyHTML.from_fragment()
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#tasks-41[data-task-depth='12'] > #task-expansion-cell-41"
+             )
+           )
+
+    assert Enum.empty?(LazyHTML.query(document, "#task-expansion-cell-41 > *"))
+    assert LazyHTML.text(LazyHTML.query(document, "#task-41")) =~ "Subtask depth: 12."
+  end
+
   test "renders the descendant Task location as its own labelled column cell" do
     task = %Task{id: 41, title: "Launch", status: :pending, priority: :none}
 

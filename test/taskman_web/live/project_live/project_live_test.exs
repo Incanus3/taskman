@@ -231,6 +231,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
     assert has_element?(view, "#task-parent-trigger", "Roadmap")
     refute has_element?(view, "#task-parent-search")
+    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_click()
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
     assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
     assert has_element?(view, "#task-hierarchy-node-#{parent.id}")
@@ -352,6 +353,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == second_parent.id
     assert has_element?(view, "#task-parent-trigger", "Second parent")
+    view |> element("#toggle-task-subtasks-#{second_parent.id}") |> render_click()
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
@@ -380,6 +382,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
     assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_click()
     assert has_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
@@ -460,6 +463,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#task-modal-close") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
+    view |> element("#toggle-task-subtasks-#{original_parent.id}") |> render_click()
     view |> element("#open-task-#{task.id}") |> render_click()
     assert_patch(view, task_path)
 
@@ -593,6 +597,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#task-modal-close") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
     view |> element("#open-task-#{selected.id}") |> render_click()
     assert_patch(view, task_path)
     assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
@@ -613,9 +618,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
     view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
     assert has_element?(view, "#task-hierarchy-node-#{child.id}")
 
+    view |> element("#toggle-task-subtasks-#{other_root.id}") |> render_click()
     view |> element("#open-task-#{other_selected.id}") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{other_selected.id}")
 
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
     view |> element("#open-task-#{selected.id}") |> render_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{selected.id}")
     assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")

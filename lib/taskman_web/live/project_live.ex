@@ -6,7 +6,7 @@ defmodule TaskmanWeb.ProjectLive do
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Tasks.ListingRow
 
   alias TaskmanWeb.ProjectLive.Paths
   alias TaskmanWeb.ProjectLive.ShareTaskView
@@ -60,7 +60,7 @@ defmodule TaskmanWeb.ProjectLive do
 
     socket =
       stream_configure(socket, :tasks,
-        dom_id: fn %TaskWithLocation{task: task} -> "tasks-#{task.id}" end
+        dom_id: fn %ListingRow{task_with_location: %{task: task}} -> "tasks-#{task.id}" end
       )
 
     socket =
@@ -333,7 +333,7 @@ defmodule TaskmanWeb.ProjectLive do
      socket
      |> assign(:workspace, workspace)
      |> assign(:listing, listing)
-     |> Listing.refresh()
+     |> Listing.refresh(close_hidden_move?: true)
      |> TaskTablePreferences.changed()}
   end
 
@@ -487,7 +487,7 @@ defmodule TaskmanWeb.ProjectLive do
     if non_creation_workflow_blocked?(socket) do
       {:noreply, socket}
     else
-      case Movement.reconcile(socket) do
+      case socket |> Listing.refresh_table() |> Movement.reconcile() do
         {:anchored, socket}
         when event == "submit_move_task" and
                socket.assigns.task_move.error == @destination_unavailable_with_guidance ->

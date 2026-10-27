@@ -39,7 +39,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
             socket
 
           {socket, {:location_missing, task_lists}} ->
-            socket = Recovery.capture(socket, previous_workspace)
+            socket = socket |> Recovery.capture(previous_workspace) |> Listing.refresh_table()
 
             case Movement.reconcile(socket) do
               {:anchored, socket} ->

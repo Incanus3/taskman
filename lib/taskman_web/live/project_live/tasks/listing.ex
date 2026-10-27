@@ -1,17 +1,19 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
-  import Phoenix.Component, only: [assign: 3, to_form: 2]
+  import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [stream: 4]
 
   alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{ListingProjection, Task}
   alias TaskmanWeb.ProjectLive.{TaskTablePreferences, Workspace}
+  alias TaskmanWeb.ProjectLive.Tasks.Move
 
   @events [
     "toggle_task_status_filter",
     "close_task_status_filter",
     "filter_task_statuses",
-    "sort_tasks"
+    "sort_tasks",
+    "toggle_task_subtasks"
   ]
 
   @sort_fields %{
@@ -27,7 +29,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
     alias Taskman.Tasks.Task
 
-    defstruct task_counts: %{},
+    defstruct location_key: nil,
+              expanded_task_ids: MapSet.new(),
+              expandable_root_ids: MapSet.new(),
+              rendered_task_ids: MapSet.new(),
+              task_counts: %{},
               visible_statuses: [],
               status_filter_form: nil,
               filter_open?: false,
@@ -36,6 +42,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
               tasks_filtered_empty?: false
 
     @type t :: %__MODULE__{
+            location_key: {pos_integer(), pos_integer() | nil} | nil,
+            expanded_task_ids: MapSet.t(pos_integer()),
+            expandable_root_ids: MapSet.t(pos_integer()),
+            rendered_task_ids: MapSet.t(pos_integer()),
             task_counts: Taskman.Tasks.Counts.t(),
             visible_statuses: [Task.status()],
             status_filter_form: Phoenix.HTML.Form.t(),
@@ -85,17 +95,28 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
     def available_sort(%__MODULE__{} = state, _include_children?), do: state
 
-    @spec put_results(t(), list(), boolean()) :: t()
-    def put_results(%__MODULE__{} = state, tasks, tasks_filtered_empty?) do
+    @spec for_location(t(), {pos_integer(), pos_integer() | nil}) :: t()
+    def for_location(%__MODULE__{location_key: key} = state, key), do: state
+
+    def for_location(%__MODULE__{} = state, key),
+      do: %{clear_results(state) | location_key: key}
+
+    @spec put_projection(t(), ListingProjection.t()) :: t()
+    def put_projection(%__MODULE__{} = state, %ListingProjection{} = projection) do
       %{
         state
-        | tasks_empty?: tasks == [],
-          tasks_filtered_empty?: tasks_filtered_empty?
+        | expanded_task_ids: projection.expanded_task_ids,
+          expandable_root_ids: projection.expandable_root_ids,
+          rendered_task_ids: MapSet.new(projection.rows, & &1.task_with_location.task.id),
+          tasks_empty?: projection.matching_empty?,
+          tasks_filtered_empty?: projection.filtered_empty?
       }
     end
 
     @spec clear_results(t()) :: t()
-    def clear_results(%__MODULE__{} = state), do: put_results(state, [], false)
+    def clear_results(%__MODULE__{} = state) do
+      %{put_projection(state, %ListingProjection{}) | location_key: nil}
+    end
 
     defp status_filter_form(statuses) do
       to_form(%{"statuses" => Enum.map(statuses, &Atom.to_string/1)}, as: :status_filter)
@@ -121,7 +142,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   def handle_event("filter_task_statuses", %{"status_filter" => params}, socket)
       when is_map(params) do
     state = State.apply_statuses(socket.assigns.listing, Map.get(params, "statuses", []))
-    {:noreply, socket |> assign(:listing, state) |> refresh() |> TaskTablePreferences.changed()}
+
+    {:noreply,
+     socket
+     |> assign(:listing, state)
+     |> refresh(close_hidden_move?: true)
+     |> TaskTablePreferences.changed()}
   end
 
   def handle_event("filter_task_statuses", _params, socket), do: {:noreply, socket}
@@ -138,36 +164,77 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
   def handle_event("sort_tasks", _params, socket), do: {:noreply, socket}
 
-  @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def refresh(socket), do: socket |> refresh_table() |> refresh_counts()
-
-  defp refresh_table(
-         %{assigns: %{workspace: %{selected_project: %Project{} = project} = workspace}} = socket
-       ) do
-    tasks =
-      list_tasks_for_location(
-        project,
-        workspace.selected_list,
-        workspace.include_children?,
-        socket.assigns.listing.visible_statuses,
-        socket.assigns.listing.sort
-      )
-
-    filtered_empty? =
-      tasks_filtered_empty?(
-        tasks,
-        project,
-        workspace.selected_list,
-        workspace.include_children?,
-        socket.assigns.listing.visible_statuses
-      )
-
-    socket
-    |> update_state(&State.put_results(&1, tasks, filtered_empty?))
-    |> stream(:tasks, tasks, reset: true)
+  def handle_event("toggle_task_subtasks", %{"task-id" => value}, socket)
+      when is_binary(value) do
+    with true <- value =~ ~r/\A[0-9]+\z/,
+         {id, ""} when id > 0 <- Integer.parse(value),
+         true <- MapSet.member?(socket.assigns.listing.expandable_root_ids, id) do
+      {:noreply, refresh_table(socket, close_hidden_move?: true, toggle_task_id: id)}
+    else
+      _invalid -> {:noreply, socket}
+    end
   end
 
-  defp refresh_table(socket), do: socket
+  def handle_event("toggle_task_subtasks", _params, socket), do: {:noreply, socket}
+
+  @spec refresh(Phoenix.LiveView.Socket.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def refresh(socket, opts \\ []), do: socket |> refresh_table(opts) |> refresh_counts()
+
+  @doc "Refreshes projected rows without recomputing counts or navigation."
+  @spec refresh_table(Phoenix.LiveView.Socket.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def refresh_table(socket, opts \\ [])
+
+  def refresh_table(%{assigns: %{workspace: %{location_not_found?: true}}} = socket, opts) do
+    socket
+    |> update_state(&State.clear_results/1)
+    |> stream(:tasks, [], reset: true)
+    |> close_hidden_move(opts)
+  end
+
+  def refresh_table(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project} = workspace}} = socket,
+        opts
+      ) do
+    key = {project.id, workspace.selected_list && workspace.selected_list.id}
+    state = State.for_location(socket.assigns.listing, key)
+
+    projection =
+      case Tasks.list_task_rows_for_location(project, workspace.selected_list,
+             include_descendants: workspace.include_children?,
+             statuses: state.visible_statuses,
+             sort: state.sort,
+             expanded_task_ids: state.expanded_task_ids,
+             toggle_task_id: Keyword.get(opts, :toggle_task_id)
+           ) do
+        {:ok, projection} -> projection
+        {:error, :not_found} -> %ListingProjection{}
+      end
+
+    socket
+    |> assign(:listing, State.put_projection(state, projection))
+    |> stream(:tasks, projection.rows, reset: true)
+    |> close_hidden_move(opts)
+  end
+
+  def refresh_table(socket, _opts), do: socket
+
+  @spec row_visible?(Phoenix.LiveView.Socket.t(), pos_integer()) :: boolean()
+  def row_visible?(socket, task_id) do
+    not socket.assigns.workspace.location_not_found? and
+      MapSet.member?(socket.assigns.listing.rendered_task_ids, task_id)
+  end
+
+  defp close_hidden_move(socket, opts) do
+    case {Keyword.get(opts, :close_hidden_move?, false), socket.assigns.task_move} do
+      {true, %Move{active_task: %{origin: :row, task_id: id}}} ->
+        if row_visible?(socket, id),
+          do: socket,
+          else: assign(socket, :task_move, Move.clear(socket.assigns.task_move))
+
+      _other ->
+        socket
+    end
+  end
 
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def clear(socket) do
@@ -197,28 +264,6 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
     |> update_state(&%{&1 | task_counts: counts})
     |> Workspace.refresh()
   end
-
-  @spec list_tasks_for_location(Project.t(), term(), boolean(), [Task.status()], term()) :: list()
-  def list_tasks_for_location(project, task_list, include_children?, visible_statuses, sort) do
-    case Tasks.list_tasks_for_location(
-           project,
-           task_list,
-           include_descendants: include_children?,
-           statuses: visible_statuses,
-           sort: sort
-         ) do
-      {:ok, tasks} -> tasks
-      {:error, :not_found} -> []
-    end
-  end
-
-  defp tasks_filtered_empty?([], %Project{} = project, task_list, include_children?, statuses) do
-    statuses != Task.statuses() and
-      list_tasks_for_location(project, task_list, include_children?, Task.statuses(), nil) != []
-  end
-
-  defp tasks_filtered_empty?(_tasks, _project, _task_list, _include_children?, _statuses),
-    do: false
 
   defp update_state(socket, transition),
     do: assign(socket, :listing, transition.(socket.assigns.listing))
