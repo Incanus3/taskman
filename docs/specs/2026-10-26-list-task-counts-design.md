@@ -118,6 +118,10 @@ IDs. With inclusion off, use the direct counts. Keep aggregation proportional to
 Lists, including empty ancestors with nonempty descendants. No separate hierarchy query, Task
 hierarchy traversal, persisted counters, or cache are needed for this accounting. Navigation may
 still load its own List data. Filter changes recompute the query; do not retain per-status buckets.
+The internal count operation accepts a list of status values and retains only supported status
+atoms, matching existing location-query normalization. Unsupported atoms and non-atom values are
+ignored before deriving either status set; an entirely unsupported selection behaves like an empty
+selection. The operation continues to return a location-to-count-pair map.
 Elixir owns the status sets and constructs the query; PostgreSQL executes its filtering and
 aggregation. No stored procedure or persisted database business logic is introduced.
 
@@ -160,8 +164,9 @@ Expected ownership:
 Refresh on route and Project changes, browser preference hydration, either filter change, local
 task creation/status changes/moves/deletions, List membership changes, and the corresponding
 validated external notifications. A Task change in an unselected List must still refresh its
-sidebar count and affected ancestors. Expanding a branch renders current counts. Sorting does
-not affect values. Failed mutations reflect persisted state rather than optimistic count edits.
+sidebar count and affected ancestors. Expanding a branch renders current counts. Sorting refreshes
+only task results; it must not recalculate counts or refresh navigation because it does not change
+count inputs. Failed mutations reflect persisted state rather than optimistic count edits.
 Reuse existing reconciliation and reconnect behavior; do not add polling or a second event bus.
 
 The accounting query reads parent links and direct counts in one statement snapshot. Navigation
@@ -187,21 +192,9 @@ No progress bar, Project selector totals, task-detail relationship counts, pagin
 or unrelated refactoring is included. Implementation details such as
 internal function names and the precise count-state representation remain the implementer's choice.
 
-## Evidence and verification
+## Verification criteria
 
-Repository inspection on 2026-10-26 established:
-
-- At the design baseline, `TaskTablePreferences.defaults/0` and JavaScript hydration fallback
-  selected every status except Will Not Do. The implemented fallback now uses D5 in both places.
-- `Tasks.list_tasks_for_location/3` filters direct or recursive List ownership; empty statuses
-  match nothing. Its current recursive queries provide the scope to reproduce.
-- `WorkspaceNavigation.tree/1` streams List rows; the Project row is outside that stream.
-- `Listing.refresh/1` refreshes the table, while `Workspace.refresh/1` refreshes navigation.
-  `Reconciliation` invokes both for validated task notifications; filter changes currently
-  refresh the listing. Count integration must cover both paths.
-
-The implementation now covers the following verification responsibilities through focused context,
-LiveView, preference, and browser tests:
+Use focused context, LiveView, preference, and browser tests:
 
 - Context tests cover the status examples above, empty Lists, direct Project tasks, nested Lists,
   sibling exclusion, Project isolation, and Task hierarchy ownership. Assert agreement with
@@ -210,11 +203,12 @@ LiveView, preference, and browser tests:
   row, including empty Projects and Lists containing only ineligible closed tasks. Cover multiple
   empty intermediate ancestors whose descendant contributes eligible tasks. Verify direct
   visible/eligible pairs and final rollups separately, and that counting needs no extra hierarchy
-  query.
+  query. Verify unsupported-only and mixed status inputs follow the normalization contract.
 - LiveView tests use stable count IDs to prove sidebar/header agreement, global filters affecting
   unselected Lists, zero display, preference application, navigation expansion, mutation refresh,
   and external changes affecting another List. Include a move updating source/destination and
-  ancestor counts, and deletion clearing stale location counts.
+  ancestor counts, and deletion clearing stale location counts. Sorting must reorder tasks without
+  issuing the count aggregate or refreshing navigation, while preserving displayed count values.
 - Verify server and browser defaults exclude both closed statuses, fresh browsers apply that
   default, and stored selections and explicit shared-link snapshots retain D6's existing precedence.
 - Inspect desktop and narrow layouts, including long names, aligned badges, the hover/focus swap
@@ -225,16 +219,16 @@ LiveView, preference, and browser tests:
 - Run focused context and LiveView tests, then `mix precommit`. Check implementation-facing files
   for planning terminology and audit changed files for privacy before committing.
 
-Browser interaction coverage checks computed visibility, real focus and Tab reachability on
-hover-capable Chromium. Responsive and non-hover acceptance uses measured browser capabilities,
-geometry, screenshots, and touch input. Touch acceptance uses Chromium emulation rather than a
-physical device; hover tests require headed Chromium with a display in the verification environment.
-Task and List deletion recovery is tested through persisted fixture removal and existing validated
-notifications because there is no supported deletion UI; no deletion operation is added.
-The unavailable-preference-storage check denies
-localStorage reads/writes while keeping sessionStorage available for Phoenix history and verifies
-connection plus hydration. Blanket sessionStorage denial prevents the framework from starting and
-is outside this preference fallback contract.
+Browser verification must check computed visibility, real focus and Tab reachability on
+hover-capable Chromium. Responsive and non-hover acceptance requires measured browser capabilities,
+geometry, screenshots, and touch input. Chromium touch emulation does not establish physical-device
+acceptance. Hover tests require headed Chromium with a display; the
+[development guide](../guides/development.md#verification-expectations) owns desktop and virtual-display
+commands. Exercise Task and List deletion recovery through persisted fixture removal and existing
+validated notifications because there is no supported deletion UI; no deletion operation is added.
+For unavailable preference storage, deny localStorage reads/writes while keeping sessionStorage
+available for Phoenix history, and verify connection plus hydration. Blanket sessionStorage denial
+prevents the framework from starting and is outside this preference fallback contract.
 
 ## Approval scope
 

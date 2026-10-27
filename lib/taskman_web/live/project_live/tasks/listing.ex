@@ -129,7 +129,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   def handle_event("sort_tasks", %{"field" => field}, socket) do
     case Map.fetch(@sort_fields, field) do
       {:ok, sort_field} ->
-        {:noreply, socket |> update_state(&State.sort_by(&1, sort_field)) |> refresh()}
+        {:noreply, socket |> update_state(&State.sort_by(&1, sort_field)) |> refresh_table()}
 
       :error ->
         {:noreply, socket}
@@ -139,9 +139,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   def handle_event("sort_tasks", _params, socket), do: {:noreply, socket}
 
   @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def refresh(
-        %{assigns: %{workspace: %{selected_project: %Project{} = project} = workspace}} = socket
-      ) do
+  def refresh(socket), do: socket |> refresh_table() |> refresh_counts()
+
+  defp refresh_table(
+         %{assigns: %{workspace: %{selected_project: %Project{} = project} = workspace}} = socket
+       ) do
     tasks =
       list_tasks_for_location(
         project,
@@ -163,10 +165,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
     socket
     |> update_state(&State.put_results(&1, tasks, filtered_empty?))
     |> stream(:tasks, tasks, reset: true)
-    |> refresh_counts()
   end
 
-  def refresh(socket), do: refresh_counts(socket)
+  defp refresh_table(socket), do: socket
 
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def clear(socket) do

@@ -361,9 +361,11 @@ explains:
 - that ordinary commands require a running backend;
 - how to install or update the escript with
   `mix do escript.build + escript.install --force`;
-- that Mix installs it at `~/.mix/escripts/taskman`;
-- that `~/.mix/escripts` must be on `PATH` to invoke it as `taskman`, while
-  `~/.mix/escripts/taskman` remains directly invokable without that `PATH` entry;
+- that Mix installs it under `$MIX_HOME/escripts`, defaulting to `~/.mix/escripts`;
+- how to add that directory to `PATH` with
+  `export PATH="${MIX_HOME:-$HOME/.mix}/escripts:$PATH"` and invoke the installed executable directly
+  with `"${MIX_HOME:-$HOME/.mix}/escripts/taskman"`; keep the shell expressions literal in onboarding
+  so they resolve in the reader's environment, including installation paths containing spaces;
 - how to start the backend with the current repository workflow;
 - how API URL configuration works;
 - representative Project, List, and Task commands;
