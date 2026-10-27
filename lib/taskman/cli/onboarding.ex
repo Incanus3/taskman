@@ -9,11 +9,12 @@ defmodule Taskman.CLI.Onboarding do
   Build and install the version-matched escript from the Taskman repository:
   mix do escript.build + escript.install --force
 
-  Mix installs the executable in the escripts directory under MIX_HOME (default: ~/.mix). Put that directory on PATH to invoke it as taskman:
-  export PATH="${MIX_HOME:-$HOME/.mix}/escripts:$PATH"
+  Ask Mix for its escripts directory using the same environment and working directory used for installation. Mix determines the directory from MIX_HOME and MIX_XDG; an empty MIX_HOME puts escripts relative to the installation working directory. Resolve an absolute path and put it on PATH to invoke the executable as taskman:
+  taskman_escripts="$(elixir -e 'IO.write(Path.expand(Mix.path_for(:escripts)))')"
+  export PATH="$taskman_escripts:$PATH"
 
   Invoke the installed executable directly when that directory is not on PATH:
-  "${MIX_HOME:-$HOME/.mix}/escripts/taskman" --help
+  "$taskman_escripts/taskman" --help
 
   Backend
 

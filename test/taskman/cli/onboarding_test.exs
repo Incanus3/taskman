@@ -37,30 +37,121 @@ defmodule Taskman.CLI.OnboardingTest do
              "mkdir -p ~/.config/fish/completions\ntaskman completions fish > ~/.config/fish/completions/taskman.fish"
   end
 
-  @tag :tmp_dir
-  test "installation commands resolve default and custom Mix homes with spaces", %{tmp_dir: root} do
-    lines = String.split(Onboarding.text(), "\n")
-    path_command = Enum.find(lines, &String.starts_with?(&1, "export PATH="))
-    direct_command = Enum.find(lines, &String.starts_with?(&1, ~s("${MIX_HOME)))
-    assert is_binary(direct_command)
+  for {name, mix_home, mix_xdg} <- [
+        {"unset MIX_HOME", nil, nil},
+        {"empty MIX_HOME", "", nil},
+        {"absolute MIX_HOME with spaces", :absolute, nil},
+        {"relative MIX_HOME with spaces", "relative Mix home", nil},
+        {"XDG Mix home", nil, "true"}
+      ] do
+    @mix_home mix_home
+    @mix_xdg mix_xdg
 
-    home = Path.join(root, "home with spaces")
+    test "installation commands reach the Mix-installed executable with #{name}" do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "taskman-install-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+        )
 
-    for mix_home <- [nil, "", Path.join(root, "custom Mix home")] do
-      effective_home = if mix_home in [nil, ""], do: Path.join(home, ".mix"), else: mix_home
-      executable = Path.join(effective_home, "escripts/taskman")
-      File.mkdir_p!(Path.dirname(executable))
-      File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$0\"\n")
-      File.chmod!(executable, 0o700)
-      env = [{"HOME", home}, {"MIX_HOME", mix_home}, {"PATH", "/usr/bin:/bin"}]
+      File.mkdir!(root)
+      File.chmod!(root, 0o700)
+      on_exit(fn -> File.rm_rf!(root) end)
+      cwd = Path.join(root, "installation directory")
+      home = Path.join(root, "home with spaces")
+      File.mkdir_p!(cwd)
+      File.mkdir_p!(home)
 
-      assert {output, 0} = System.cmd("/bin/sh", ["-c", direct_command], env: env)
-      assert String.trim(output) == executable
+      # Use the running runtime's real bins; isolated HOME must not redirect mise shims.
+      elixir_bin =
+        :elixir |> :code.lib_dir() |> to_string() |> Path.join("../../bin") |> Path.expand()
 
-      assert {output, 0} =
-               System.cmd("/bin/sh", ["-c", path_command <> "\ntaskman --help"], env: env)
+      erlang_bin = Path.join(to_string(:code.root_dir()), "bin")
+      runtime_path = Enum.join([elixir_bin, erlang_bin, "/usr/bin", "/bin"], ":")
 
-      assert String.trim(output) == executable
+      mix_home =
+        if @mix_home == :absolute, do: Path.join(root, "custom Mix home"), else: @mix_home
+
+      env = [
+        {"HOME", home},
+        {"MIX_HOME", if(mix_home == "", do: nil, else: mix_home)},
+        {"MIX_XDG", @mix_xdg},
+        {"XDG_CONFIG_HOME", Path.join(root, "xdg config")},
+        {"XDG_CACHE_HOME", Path.join(root, "xdg cache")},
+        {"XDG_DATA_HOME", Path.join(root, "xdg data")},
+        {"PATH", runtime_path},
+        {"ERL_FLAGS", "+S 2:2 +SDcpu 1 +SDio 1"}
+      ]
+
+      probe = Path.join(root, "taskman")
+
+      source = Path.join(root, "taskman_probe.erl")
+
+      File.write!(source, """
+      -module(taskman_probe).
+      -export([main/1]).
+      main(_) -> io:format("~s~n", [filename:absname(escript:script_name())]).
+      """)
+
+      assert {:ok, :taskman_probe, beam} = :compile.file(String.to_charlist(source), [:binary])
+
+      assert {:ok, {_, archive}} =
+               :zip.create(~c"probe.zip", [{~c"taskman_probe.beam", beam}], [:memory])
+
+      assert :ok =
+               :escript.create(String.to_charlist(probe), [
+                 {:shebang, :default},
+                 {:comment, ~c""},
+                 {:emu_args, ~c"-escript main taskman_probe"},
+                 {:archive, archive}
+               ])
+
+      options = [env: env, cd: cwd, stderr_to_stdout: true]
+
+      # Erlang ports normalize an empty env value to unset. Set it inside the child
+      # so this case exercises an explicitly empty MIX_HOME in Mix and the shell.
+      run = fn command, args ->
+        prefix = if mix_home == "", do: ["MIX_HOME="], else: []
+        System.cmd("/usr/bin/env", prefix ++ [command | args], options)
+      end
+
+      if mix_home == "" do
+        assert {~s(""\n), 0} =
+                 run.(Path.join(elixir_bin, "elixir"), [
+                   "-e",
+                   ~s|IO.inspect(System.get_env("MIX_HOME"))|
+                 ])
+      end
+
+      assert {install_output, 0} =
+               run.(Path.join(elixir_bin, "mix"), ["escript.install", "--force", probe])
+
+      assert install_output =~ "creating"
+
+      assert {escripts, 0} =
+               run.(
+                 Path.join(elixir_bin, "elixir"),
+                 ["-e", "IO.write(Path.expand(Mix.path_for(:escripts)))"]
+               )
+
+      executable = Path.join(escripts, "taskman")
+      assert File.regular?(executable)
+      lines = String.split(Onboarding.text(), "\n")
+      assignment = Enum.find(lines, &String.starts_with?(&1, "taskman_escripts="))
+      path_command = Enum.find(lines, &String.starts_with?(&1, "export PATH="))
+
+      direct_command =
+        Enum.find(lines, &(String.starts_with?(&1, "\"") and String.ends_with?(&1, " --help")))
+
+      assert is_binary(path_command)
+      assert is_binary(direct_command)
+
+      for invocation <- [direct_command, path_command <> "\ntaskman --help"] do
+        command = [assignment, invocation] |> Enum.reject(&is_nil/1) |> Enum.join("\n")
+        {output, status} = run.("/bin/sh", ["-c", command])
+        assert status == 0, output
+        assert String.trim(output) == executable
+      end
     end
   end
 

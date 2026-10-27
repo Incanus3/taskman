@@ -361,11 +361,14 @@ explains:
 - that ordinary commands require a running backend;
 - how to install or update the escript with
   `mix do escript.build + escript.install --force`;
-- that Mix installs it under `$MIX_HOME/escripts`, defaulting to `~/.mix/escripts`;
-- how to add that directory to `PATH` with
-  `export PATH="${MIX_HOME:-$HOME/.mix}/escripts:$PATH"` and invoke the installed executable directly
-  with `"${MIX_HOME:-$HOME/.mix}/escripts/taskman"`; keep the shell expressions literal in onboarding
-  so they resolve in the reader's environment, including installation paths containing spaces;
+- how to ask Mix for its escript directory with
+  `taskman_escripts="$(elixir -e 'IO.write(Path.expand(Mix.path_for(:escripts)))')"`, then add it to
+  `PATH` with `export PATH="$taskman_escripts:$PATH"` or invoke `"$taskman_escripts/taskman"` directly;
+  keep these commands literal so they resolve in the reader's environment, including paths with
+  spaces, rather than embedding a machine-specific path;
+- to resolve that absolute directory using the same environment and working directory as
+  installation. Native Mix resolution honors `MIX_HOME` and XDG settings, including empty and
+  relative `MIX_HOME` values whose install location depends on the working directory;
 - how to start the backend with the current repository workflow;
 - how API URL configuration works;
 - representative Project, List, and Task commands;
