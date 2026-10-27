@@ -129,6 +129,24 @@ root had children until interaction. A small separate child indicator beside the
 but combining indication and disclosure in one always-visible button is clearer and keeps IDs
 readable. The accepted dedicated column costs horizontal space in exchange for discoverability.
 
+Use three responsive layouts, with the header following the same grouping as item rows:
+
+| Viewport width | Item rows and visible header |
+|---|---|
+| Below 640 pixels | Stacked: number/Task, optional Location, then Status/Priority with Actions at the right; header hidden |
+| 640–1,279 pixels | Two lines: number/Task left and Status/Priority right; optional Location left and Actions right below |
+| From 1,280 pixels | Full shared-column alignment: disclosure, number, Task, optional Location, Status, Priority, Actions |
+
+Keep the disclosure gutter in every layout and center its chevron vertically across the complete
+Task row, including all stacked lines. At intermediate widths, Status and Priority share
+one right-aligned cell, with natural-width badges separated by the same 8-pixel gap as the narrow
+layout. Header sort controls share the corresponding right-aligned group. Do not reserve separate
+centered metadata columns until the full-column layout, where the existing centering remains.
+Without Location, Actions stays on the second line. Compact sort controls are 32 pixels high;
+full-column controls retain 44-pixel height. Explicit grid placement changes visual arrangement
+without duplicating rows or changing desktop source order. The two-line arrangement trades some
+title width for denser rows; the very narrow stacked layout preserves room for deep titles.
+
 Use the existing `<.icon>` component for chevrons. Preserve `tasks-<id>`, `open-task-<id>`, and existing action IDs;
 add `toggle-task-subtasks-<id>` for root disclosure buttons. Provide depth metadata on rows for
 structural verification. Keep the table/list semantics; a new ARIA treegrid and arrow-key navigation

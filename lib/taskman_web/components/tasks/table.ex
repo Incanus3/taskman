@@ -146,7 +146,7 @@ defmodule TaskmanWeb.Tasks.Table do
         phx-click="sort_tasks"
         phx-value-field={@field}
         class={[
-          "group flex h-full w-full cursor-pointer items-center gap-1 rounded-md px-1 py-3.5 text-left outline-none transition hover:text-slate-200 focus-visible:ring-2 focus-visible:ring-indigo-400/50",
+          "group flex h-full w-full cursor-pointer items-center gap-1 rounded-md px-1 py-3.5 text-left outline-none transition hover:text-slate-200 focus-visible:ring-2 focus-visible:ring-indigo-400/50 max-xl:py-2",
           @class
         ]}
       >
@@ -190,7 +190,10 @@ defmodule TaskmanWeb.Tasks.Table do
       </.link>
       <div
         id={"task-expansion-cell-#{task.id}"}
-        class="relative z-10 row-span-2 self-start xl:row-span-1 xl:self-center"
+        class={[
+          "relative z-10 self-center sm:row-span-2 xl:row-span-1",
+          if(@include_children?, do: "row-span-3", else: "row-span-2")
+        ]}
       >
         <button
           :if={@expandable?}
@@ -210,7 +213,7 @@ defmodule TaskmanWeb.Tasks.Table do
       </div>
       <div
         id={"task-identity-#{task.id}"}
-        class="pointer-events-none relative z-10 col-span-2 flex min-w-0 items-baseline gap-2 xl:contents"
+        class="pointer-events-none relative z-10 col-span-2 flex min-w-0 items-baseline gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 xl:contents"
       >
         <span
           id={"task-number-#{task.id}"}
@@ -233,13 +236,13 @@ defmodule TaskmanWeb.Tasks.Table do
         id={"task-location-cell-#{task.id}"}
         aria-label={"Location: #{location_label(@task_with_location.location_path)}"}
         title={location_label(@task_with_location.location_path)}
-        class="pointer-events-none relative z-10 col-span-2 col-start-2 max-w-full min-w-0 justify-self-start truncate text-left text-xs font-medium text-slate-400 xl:col-auto xl:max-w-none xl:justify-self-stretch xl:text-center xl:text-sm"
+        class="pointer-events-none relative z-10 col-span-2 col-start-2 max-w-full min-w-0 justify-self-start truncate text-left text-xs font-medium text-slate-400 sm:col-span-1 sm:col-start-2 sm:row-start-2 xl:col-auto xl:row-auto xl:max-w-none xl:justify-self-stretch xl:text-center xl:text-sm"
       >
         {location_label(@task_with_location.location_path)}
       </p>
       <div
         id={"task-badges-#{task.id}"}
-        class="pointer-events-none relative z-10 col-start-2 flex min-w-0 flex-wrap items-center gap-2 xl:contents"
+        class="pointer-events-none relative z-10 col-start-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-start-3 sm:row-start-1 sm:flex-nowrap sm:justify-end xl:contents"
       >
         <span
           id={"task-status-#{task.id}"}
@@ -264,7 +267,7 @@ defmodule TaskmanWeb.Tasks.Table do
         :if={@actions_enabled?}
         id={"task-actions-#{task.id}"}
         class={[
-          "pointer-events-auto relative flex justify-end gap-2 xl:justify-self-center",
+          "pointer-events-auto relative flex justify-end gap-2 sm:col-start-3 sm:row-start-2 xl:col-auto xl:row-auto xl:justify-self-center",
           Move.active_for?(@task_move, task.id, :row) && "z-40",
           !Move.active_for?(@task_move, task.id, :row) && "z-10"
         ]}

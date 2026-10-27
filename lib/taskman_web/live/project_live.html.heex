@@ -318,47 +318,64 @@
               <div
                 :if={!@listing.tasks_empty?}
                 id="task-table-header"
-                class="sticky top-0 z-20 hidden gap-3 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid sm:grid-cols-3 xl:col-span-full xl:grid-cols-subgrid xl:items-center xl:gap-x-0.5"
+                class="sticky top-0 z-20 hidden grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
               >
-                <span id="task-expansion-header" role="columnheader" class="hidden xl:block">
+                <span
+                  id="task-expansion-header"
+                  role="columnheader"
+                  class="row-span-2 self-start xl:row-span-1 xl:self-center"
+                >
                   <span class="sr-only">Expand subtasks</span>
                 </span>
-                <Table.sort_header
-                  id="task-number-header"
-                  label="#"
-                  field={:id}
-                  task_sort={@listing.sort}
-                  class="xl:pl-1"
-                />
-                <Table.sort_header
-                  id="task-title-header"
-                  label="Task"
-                  field={:title}
-                  task_sort={@listing.sort}
-                />
-                <Table.sort_header
+                <div class="col-span-2 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 xl:contents">
+                  <Table.sort_header
+                    id="task-number-header"
+                    label="#"
+                    field={:id}
+                    task_sort={@listing.sort}
+                    class="xl:pl-1"
+                  />
+                  <Table.sort_header
+                    id="task-title-header"
+                    label="Task"
+                    field={:title}
+                    task_sort={@listing.sort}
+                  />
+                </div>
+                <div
                   :if={@workspace.include_children?}
-                  id="task-location-header"
-                  label="Location"
-                  field={:location}
-                  task_sort={@listing.sort}
-                  class="justify-center"
-                />
-                <Table.sort_header
-                  id="task-status-header"
-                  label="Status"
-                  field={:status}
-                  task_sort={@listing.sort}
-                  class="justify-center"
-                />
-                <Table.sort_header
-                  id="task-priority-header"
-                  label="Priority"
-                  field={:priority}
-                  task_sort={@listing.sort}
-                  class="justify-center"
-                />
-                <span id="task-actions-header" class="hidden xl:block xl:justify-self-center">Actions</span>
+                  class="col-span-2 col-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-2 xl:contents"
+                >
+                  <Table.sort_header
+                    id="task-location-header"
+                    label="Location"
+                    field={:location}
+                    task_sort={@listing.sort}
+                    class="xl:justify-center"
+                  />
+                </div>
+                <div class="col-start-2 grid min-w-0 grid-cols-[auto_auto] justify-start gap-2 sm:col-start-3 sm:row-start-1 sm:justify-end xl:contents">
+                  <Table.sort_header
+                    id="task-status-header"
+                    label="Status"
+                    field={:status}
+                    task_sort={@listing.sort}
+                    class="xl:justify-center"
+                  />
+                  <Table.sort_header
+                    id="task-priority-header"
+                    label="Priority"
+                    field={:priority}
+                    task_sort={@listing.sort}
+                    class="xl:justify-center"
+                  />
+                </div>
+                <span
+                  id="task-actions-header"
+                  class="justify-self-end sm:col-start-3 sm:row-start-2 xl:col-auto xl:row-auto xl:justify-self-center"
+                >
+                  Actions
+                </span>
               </div>
               <div id="tasks" phx-update="stream" class="xl:contents">
                 <div
