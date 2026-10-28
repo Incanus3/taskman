@@ -1,17 +1,21 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
-  alias Taskman.Tasks.{Hierarchy, HierarchyNode}
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
 
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]
   defstruct hierarchy: nil,
             root_id: nil,
             expanded_node_ids: MapSet.new(),
-            required_node_ids: MapSet.new()
+            required_node_ids: MapSet.new(),
+            visible_statuses: Task.statuses(),
+            filter_open?: false
 
   @type t :: %__MODULE__{
           hierarchy: Hierarchy.t() | nil,
           root_id: pos_integer() | nil,
           expanded_node_ids: MapSet.t(pos_integer()),
-          required_node_ids: MapSet.t(pos_integer())
+          required_node_ids: MapSet.t(pos_integer()),
+          visible_statuses: [Task.status()],
+          filter_open?: boolean()
         }
 
   @spec empty() :: t()
@@ -35,12 +39,43 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
         required_node_ids
       end
 
-    %__MODULE__{
-      hierarchy: hierarchy,
-      root_id: root_id,
-      expanded_node_ids: expanded_node_ids,
-      required_node_ids: required_node_ids
+    %{
+      state
+      | hierarchy: hierarchy,
+        root_id: root_id,
+        expanded_node_ids: expanded_node_ids,
+        required_node_ids: required_node_ids
     }
+  end
+
+  @spec filter_statuses(t(), [term()]) :: t()
+  def filter_statuses(%__MODULE__{} = state, statuses) when is_list(statuses) do
+    visible_statuses =
+      Enum.filter(Task.statuses(), &(&1 in statuses || Atom.to_string(&1) in statuses))
+
+    %{state | visible_statuses: visible_statuses}
+  end
+
+  @spec visible_root(t()) :: HierarchyNode.t() | nil
+  def visible_root(%__MODULE__{hierarchy: nil}), do: nil
+
+  def visible_root(%__MODULE__{} = state) do
+    project_node(state.hierarchy.root, state)
+  end
+
+  defp project_node(%HierarchyNode{} = node, state) do
+    children =
+      Enum.flat_map(node.children, fn child ->
+        case project_node(child, state) do
+          nil -> []
+          visible -> [visible]
+        end
+      end)
+
+    if node.task.status in state.visible_statuses || children != [] ||
+         MapSet.member?(state.required_node_ids, node.task.id) do
+      %{node | children: children}
+    end
   end
 
   @spec toggle(t(), pos_integer()) :: t()

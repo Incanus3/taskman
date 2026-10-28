@@ -13,6 +13,8 @@
 
 ## Specifications
 
+- [Modal-local hierarchy status filter (implemented and operator accepted)](specs/2026-10-28-hierarchy-status-filter-design.md)
+
 - [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)
 
 - [Task detail layout, hierarchy and responsive sizing (implemented and accepted)](specs/2026-10-28-task-detail-layout-design.md)

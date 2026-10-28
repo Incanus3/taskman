@@ -30,34 +30,45 @@ defmodule TaskmanWeb.Tasks.Table do
   attr :visible_statuses, :list, required: true
   attr :open?, :boolean, required: true
 
+  attr :id, :string, default: "task-status-filter"
+  attr :toggle_event, :string, default: "toggle_task_status_filter"
+  attr :close_event, :string, default: "close_task_status_filter"
+  attr :change_event, :string, default: "filter_task_statuses"
+  attr :compact?, :boolean, default: false
+  attr :top_layer?, :boolean, default: false
+  attr :label, :string, default: "Statuses"
+
   def status_filter(assigns) do
     ~H"""
     <div
-      id="task-status-filter"
-      phx-click-away={@open? && "close_task_status_filter"}
-      phx-window-keydown={@open? && "close_task_status_filter"}
+      id={@id}
+      phx-click-away={@open? && @close_event}
+      phx-window-keydown={@open? && !@top_layer? && @close_event}
       phx-key={@open? && "escape"}
-      class="relative"
+      class={["relative", @compact? && "task-hierarchy-content ml-auto shrink-0"]}
     >
       <button
-        id="task-status-filter-button"
+        id={@id <> "-button"}
         type="button"
-        phx-click="toggle_task_status_filter"
-        aria-label="Statuses"
+        phx-click={@toggle_event}
+        aria-label={@label}
+        aria-controls={@id <> "-menu"}
         data-tooltip="Filter statuses"
         aria-haspopup="true"
         aria-expanded={to_string(@open?)}
         class={[
-          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition md:w-auto md:px-3",
+          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition",
+          !@compact? && "md:w-auto md:px-3",
           @open? &&
             "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
           !@open? &&
             "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
         ]}
       >
-        <.icon name="hero-funnel" class="size-5 md:size-4" />
-        <span class="hidden md:inline">Statuses</span>
+        <.icon name="hero-funnel" class={["size-5", !@compact? && "md:size-4"]} />
+        <span :if={!@compact?} class="hidden md:inline">Statuses</span>
         <.icon
+          :if={!@compact?}
           name="hero-chevron-down"
           class={[
             "hidden size-3.5 transition-transform md:inline-block",
@@ -68,23 +79,30 @@ defmodule TaskmanWeb.Tasks.Table do
 
       <div
         :if={@open?}
-        id="task-status-filter-menu"
-        class="absolute right-0 top-full z-30 mt-2 w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-black/30"
+        id={@id <> "-menu"}
+        popover={if(@top_layer?, do: "manual")}
+        class={[
+          "w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-black/30",
+          if(@top_layer?,
+            do: "hierarchy-status-filter-menu",
+            else: "absolute right-0 top-full z-30 mt-2"
+          )
+        ]}
       >
         <.form
           for={@form}
-          id="task-status-filter-form"
-          phx-change="filter_task_statuses"
+          id={@id <> "-form"}
+          phx-change={@change_event}
           class="space-y-1"
         >
           <input type="hidden" name={@form[:statuses].name <> "[]"} value="" />
           <label
             :for={{label, status} <- status_options()}
-            for={"task-status-filter-option-#{status}"}
+            for={"#{@id}-option-#{status}"}
             class="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/[0.06]"
           >
             <input
-              id={"task-status-filter-option-#{status}"}
+              id={"#{@id}-option-#{status}"}
               type="checkbox"
               name={@form[:statuses].name <> "[]"}
               value={status}
