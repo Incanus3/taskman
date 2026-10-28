@@ -392,6 +392,26 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     sync_view(view)
     assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
     assert has_element?(view, "#task-hierarchy-node-#{created.id}")
+
+    assert {:ok, _updated} =
+             externally(fn ->
+               Tasks.update_task(project, selected, %{
+                 title: "Revised selected Task",
+                 status: :in_review
+               })
+             end)
+
+    sync_view(view)
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-link-#{selected.id}[aria-current='true']",
+             "Revised selected Task"
+           )
+
+    assert has_element?(view, "#task-hierarchy-status-#{selected.id}", "In Review")
+    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
+    assert has_element?(view, "#task-hierarchy-node-#{created.id}")
   end
 
   test "duplicate and out-of-order Task events converge on the current persisted Task", %{

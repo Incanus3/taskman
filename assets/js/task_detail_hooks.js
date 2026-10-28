@@ -1,3 +1,5 @@
+import TaskDetailLayout from "./task_detail_layout"
+
 const TaskLocationBreadcrumbs = {
   mounted() {
     this.wide = window.matchMedia("(min-width: 80rem)")
@@ -170,6 +172,7 @@ const RelatedTaskPicker = {
 }
 
 export const taskDetailHooks = {
+  "TaskmanWeb.ProjectLive.TaskDetailLayout": TaskDetailLayout,
   RelatedTaskPicker,
   "TaskmanWeb.Tasks.Detail.TaskLocationBreadcrumbs": TaskLocationBreadcrumbs,
 }

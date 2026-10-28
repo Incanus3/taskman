@@ -15,12 +15,21 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
 
     try do
       Browser.visit(session, base_url <> path)
+
+      Browser.find(
+        session,
+        Query.css("#task-dialog-header #task-modal-share-task-view:not([disabled])")
+      )
+
+      assert_tab_wrap(session, "#task-modal-content")
       Browser.fill_in(session, Query.css("#task-comment-text"), with: "Unposted draft")
-      Browser.click(session, Query.css("#task-modal-close"))
+      Browser.click(session, Query.css("#task-dialog-header #task-modal-close"))
       Browser.find(session, Query.css("#task-comment-departure"))
 
       assert script(session, "return document.activeElement.id") ==
                "task-comment-departure-go-back"
+
+      assert_tab_wrap(session, "#task-comment-departure")
 
       assert script(session, "return location.pathname + location.search") == path
 
@@ -32,6 +41,8 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
 
       Browser.find(session, Query.css("#task-modal-content:focus"))
       assert script(session, "return document.activeElement.id") == "task-modal-content"
+      Browser.send_keys(session, [:tab])
+      assert script(session, "return !!document.activeElement.closest('#task-modal-content')")
 
       script(session, "document.elementFromPoint(8, 8).click()")
       Browser.find(session, Query.css("#task-comment-departure"))
@@ -94,14 +105,14 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
       assert warning_active?(session)
 
       Browser.fill_in(session, Query.css("#task-title"), with: "")
-      Browser.click(session, Query.css("#task-modal-close"))
+      Browser.click(session, Query.css("#task-dialog-header #task-modal-close"))
       Browser.find(session, Query.css("#task-comment-departure"))
       Browser.click(session, Query.css("#task-comment-departure-discard"))
       Browser.find(session, Query.css("#task-comment-departure-error"))
       assert warning_active?(session)
       Browser.click(session, Query.css("#task-comment-departure-go-back"))
       Browser.fill_in(session, Query.css("#task-title"), with: "Valid title")
-      Browser.click(session, Query.css("#task-modal-close"))
+      Browser.click(session, Query.css("#task-dialog-header #task-modal-close"))
       Browser.find(session, Query.css("#task-comment-departure"))
       Browser.click(session, Query.css("#task-comment-departure-discard"))
       Browser.find(session, Query.css("#task-comment-form", count: 0))
@@ -119,7 +130,9 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
       Browser.resize_window(session, 390, 800)
       Browser.visit(session, base_url <> "/projects/#{project.id}/tasks/#{task.id}")
       Browser.find(session, Query.css("#task-comment-text"))
+      Browser.click(session, Query.css("#task-hierarchy-toggle"))
       Browser.fill_in(session, Query.css("#task-comment-text"), with: "Layered draft")
+      Browser.click(session, Query.css("#task-hierarchy-toggle"))
 
       assert script(
                session,
@@ -159,7 +172,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
       Browser.visit(session, base_url <> path)
       Browser.fill_in(session, Query.css("#task-comment-text"), with: "Keep failed post")
       Browser.click(session, Query.css("#task-sessions-tab"))
-      Browser.click(session, Query.css("#task-modal-close"))
+      Browser.click(session, Query.css("#task-dialog-header #task-modal-close"))
       Browser.find(session, Query.css("#task-comment-departure"))
       Taskman.Repo.delete!(task)
       Browser.click(session, Query.css("#task-comment-departure-submit"))
@@ -178,7 +191,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
 
       assert script(session, "return location.pathname + location.search") == path
 
-      Browser.click(session, Query.css("#task-modal-close"))
+      Browser.click(session, Query.css("#task-dialog-header #task-modal-close"))
       Browser.find(session, Query.css("#task-comment-departure"))
     after
       Wallaby.end_session(session)
@@ -265,6 +278,34 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureBrowserTest do
     after
       Wallaby.end_session(session)
     end
+  end
+
+  # Proves the browser cannot Tab into the underlying workspace in either direction.
+  defp assert_tab_wrap(session, selector) do
+    [first_id, last_id] =
+      script(
+        session,
+        """
+        const controls = [...document.querySelector(arguments[0]).querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
+          .filter(el => el.tabIndex >= 0 && !el.disabled && !el.closest('[inert], [hidden], [aria-hidden="true"]') && el.getClientRects().length);
+        controls[0].focus();
+        return [controls[0].id, controls.at(-1).id];
+        """,
+        [selector]
+      )
+
+    Browser.send_keys(session, [:shift, :tab, :null])
+    Browser.find(session, Query.css("#{selector} :focus:not([aria-hidden='true'])"))
+    refute script(session, "return document.activeElement.id") == first_id
+
+    # FocusWrap can return to the focusable Activity panel before its child controls.
+    # Continue Tab from there to prove the wrapped focus remains usable.
+    Browser.send_keys(session, [:tab])
+    Browser.find(session, Query.css("#{selector} :focus:not([aria-hidden='true'])"))
+
+    script(session, "document.getElementById(arguments[0]).focus()", [last_id])
+    Browser.send_keys(session, [:tab])
+    Browser.find(session, Query.css("##{first_id}:focus"))
   end
 
   defp browser_task do

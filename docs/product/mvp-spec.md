@@ -114,10 +114,28 @@ nor external agent work automatically changes Task state.
   explicit discard controls. Try again is available when fresh authority may be restored; a
   confirmed missing Task offers only Copy and Discard. Reloading, leaving the page, or a replacement
   connection loses the retained input.
-- The modal has a collapsible left parent-child hierarchy with nesting guides, central Task detail,
-  and one side panel with Activity and Sessions tabs. Activity shows the Task's comments and a
-  composer; Sessions shows a truthful empty state. Agent Session behavior awaits a separate accepted
-  design. This tabbed presentation supersedes the earlier stacked Activity and Sessions sections.
+- The Task detail dialog has a dedicated header with Task identity, Share and Close, above the
+  hierarchy, editor and discussion. Close remains reachable while content scrolls and retains the
+  existing autosave and comment-draft departure safeguards.
+- The collapsible parent-child hierarchy shows the connected tree with wrapping titles, Task IDs,
+  visible status labels and dots, connected nesting guides and a current-Task highlight. Native
+  nested lists, Task links and named disclosure buttons provide ordinary Tab/Enter/Space navigation.
+  The selected Task and its ancestors remain expanded with decorative markers; optional branches
+  retain manual expansion while navigating within the same tree.
+- At 1280 CSS px and wider, hierarchy, editor and discussion appear beside one another. From 1024
+  through 1279 px, discussion follows the editor beside the hierarchy. Below 1024 px, the open
+  hierarchy overlays the editor below the header. Opening the overlay focuses its hide control and
+  excludes covered editor controls from Tab traversal. Escape hides the overlay before dialog
+  departure; hiding it while focus is inside returns focus to the labeled hierarchy trigger.
+  Selecting a Task retains panel openness. The panel preference lasts for the workspace session.
+- The hierarchy heading stays outside its independently scrolling body. Four levels remain readable
+  at 320 CSS px with wrapping and unbroken titles; deeper branches keep their indentation and use
+  contained horizontal scrolling when needed to preserve approximately 180 px of title space.
+  Navigation reveals an offscreen selected row without resetting a useful reading position on
+  routine updates. Project/List backdrop and active filters survive hierarchy navigation.
+- Discussion has Activity and Sessions tabs. Activity shows the Task's comments and a composer;
+  Sessions shows a truthful empty state. Agent Session behavior awaits a separate accepted design.
+  This tabbed presentation supersedes the earlier stacked Activity and Sessions sections.
 - The hierarchy contains only parent-child work breakdown. A Related Tasks table contains Blocks /
   Blocked by links with add/remove controls in both groups. Cross-Project relationship entries
   identify their other Project. Each linked Task shows status and priority. On narrow displays, the

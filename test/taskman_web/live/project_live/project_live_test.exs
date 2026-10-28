@@ -493,11 +493,16 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_element?(
              view,
-             "#task-hierarchy [role='tree'] [role='treeitem'][aria-current='true']",
+             "#task-hierarchy-navigation > ul > li #task-hierarchy-link-#{task.id}[aria-current='true']",
              "Write launch checklist"
            )
 
     assert has_element?(view, "#task-hierarchy-empty", "No parent or child Tasks")
+
+    refute has_element?(
+             view,
+             "#task-hierarchy-disclosure-#{task.id}, #task-hierarchy-expanded-marker-#{task.id}"
+           )
 
     assert has_element?(
              view,
@@ -528,11 +533,20 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
     assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{root.id}[role='treeitem'][aria-level='1']")
 
     assert has_element?(
              view,
-             "#task-hierarchy-node-#{selected.id}[role='treeitem'][aria-level='2']"
+             "nav#task-hierarchy-navigation[aria-labelledby='task-hierarchy-title']"
+           )
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-scroll #task-hierarchy-navigation > ul > li#task-hierarchy-node-#{root.id}"
+           )
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-node-#{root.id} > ul > li#task-hierarchy-node-#{selected.id}"
            )
 
     assert has_element?(view, "#task-hierarchy-link-#{selected.id}[aria-current='true']")
@@ -541,7 +555,72 @@ defmodule TaskmanWeb.ProjectLiveTest do
     refute has_element?(view, "#task-hierarchy-node-#{collapsed_child.id}")
     refute has_element?(view, "#task-hierarchy-disclosure-#{root.id}")
     refute has_element?(view, "#task-hierarchy-disclosure-#{selected.id}")
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
+    assert has_element?(view, "#task-hierarchy-expanded-marker-#{root.id}[aria-hidden='true']")
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-expanded-marker-#{selected.id}[aria-hidden='true']"
+           )
+
+    refute has_element?(
+             view,
+             "#task-hierarchy-expanded-marker-#{root.id}[tabindex], #task-hierarchy-expanded-marker-#{root.id}[phx-click], #task-hierarchy-expanded-marker-#{root.id}[role]"
+           )
+
+    refute has_element?(
+             view,
+             "#task-hierarchy-disclosure-#{direct_child.id}, #task-hierarchy-expanded-marker-#{direct_child.id}"
+           )
+
+    assert has_element?(
+             view,
+             "button#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false'][aria-controls='task-hierarchy-group-#{sibling.id}'][aria-label='Toggle Sibling']"
+           )
+
+    assert has_element?(view, "ul#task-hierarchy-group-#{sibling.id}[hidden]")
+
+    refute has_element?(
+             view,
+             "#task-hierarchy [role='tree'], #task-hierarchy [role='treeitem'], #task-hierarchy [role='group'], #task-hierarchy [aria-level]"
+           )
+  end
+
+  test "hierarchy links expose Task ID then visible status for every status", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{title: "All statuses"})
+
+    tasks =
+      for {status, label} <- [
+            icebox: "Icebox",
+            pending: "Pending",
+            in_progress: "In Progress",
+            in_review: "In Review",
+            done: "Done",
+            will_not_do: "Will Not Do"
+          ] do
+        {task_fixture(project, %{title: "Status #{label}", status: status}, parent: root), label}
+      end
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
+
+    for {task, label} <- tasks do
+      assert has_element?(view, "#task-hierarchy-link-#{task.id}", task.title)
+
+      assert has_element?(
+               view,
+               "#task-hierarchy-metadata-#{task.id} > span:first-child",
+               "##{task.id}"
+             )
+
+      assert has_element?(
+               view,
+               "#task-hierarchy-metadata-#{task.id} > span:first-child + #task-hierarchy-status-#{task.id}",
+               label
+             )
+
+      assert has_element?(view, "#task-hierarchy-status-#{task.id} > [aria-hidden='true']")
+      refute has_element?(view, "#task-hierarchy-status-#{task.id}[aria-hidden]")
+    end
   end
 
   test "a hierarchy disclosure progressively shows and hides its branch", %{conn: conn} do

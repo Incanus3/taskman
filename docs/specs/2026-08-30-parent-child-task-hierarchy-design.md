@@ -18,6 +18,12 @@ rules remain in force.
 the Project row lock and rejects parent changes that would create a parent-to-child Blocks edge.
 Its Done warning extends lifecycle updates; unchanged hierarchy behavior below remains in force.
 
+**Hierarchy presentation update:** The approved
+[readable Task detail hierarchy design](2026-10-28-task-detail-hierarchy-design.md) replaces the
+hierarchy row presentation, responsive layout, dialog header and hierarchy accessibility markup
+described below. Implementation is pending. Domain relationships, navigation state and editing
+safeguards remain governed by their existing contracts.
+
 ## Design-time context
 
 Taskman is a locally started, single-user Phoenix LiveView application. The delivered product

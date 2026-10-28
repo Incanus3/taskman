@@ -140,6 +140,7 @@ defmodule TaskmanWeb.CoreComponents do
   attr :size, :atom, values: [:default, :wide], default: :default
   attr :initial_focus, :string, default: nil
   attr :focus_on_mount, :boolean, default: true
+  slot :header, doc: "optional header receiving the Close ID and cancellation action"
   slot :inner_block, required: true
 
   def modal(assigns) do
@@ -159,11 +160,12 @@ defmodule TaskmanWeb.CoreComponents do
       />
       <div class="fixed inset-0 overflow-y-auto" role="presentation">
         <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-6">
-          <div
+          <.focus_wrap
             id={"#{@id}-content"}
             data-size={@size}
             class={[
               "relative w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-left align-middle shadow-2xl shadow-black/50",
+              @header != [] && "flex flex-col",
               @size == :default && "max-w-lg p-6 sm:p-7",
               @size == :wide &&
                 "max-h-[calc(100dvh-2rem)] max-w-7xl sm:max-h-[calc(100dvh-3rem)]"
@@ -176,7 +178,12 @@ defmodule TaskmanWeb.CoreComponents do
             phx-key="escape"
             tabindex="-1"
           >
+            {render_slot(@header, %{
+              close_id: "#{@id}-close",
+              on_close: cancel_modal(@on_cancel, @id, @defer_cancel?)
+            })}
             <button
+              :if={@header == []}
               id={"#{@id}-close"}
               type="button"
               class="absolute right-4 top-4 z-30 grid size-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
@@ -187,7 +194,7 @@ defmodule TaskmanWeb.CoreComponents do
               <.icon name="hero-x-mark" class="size-5" />
             </button>
             {render_slot(@inner_block)}
-          </div>
+          </.focus_wrap>
         </div>
       </div>
     </div>

@@ -34,7 +34,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
   const input = button && document.getElementById(button.id + '-url');
   const feedback = button && document.getElementById(button.id + '-feedback');
   const toast = button && document.getElementById(button.id + '-toast');
-  const move = document.querySelector('#move-task-detail-button-' + arguments[0]);
   const modal = document.querySelector('#task-modal-content');
   const feedbackBounds = feedback?.getBoundingClientRect();
   const inputBounds = input?.getBoundingClientRect();
@@ -46,11 +45,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
     ready: button && !button.disabled,
     viewportWidth: window.innerWidth,
     modalShare: !!modalButton,
-    leftOfMove: !!(modalButton && move &&
-      modalButton.getBoundingClientRect().right <= move.getBoundingClientRect().left),
-    matchesMoveHeight: !!(modalButton && move &&
-      Math.abs(modalButton.getBoundingClientRect().height - move.getBoundingClientRect().height) < 1 &&
-      Math.abs(modalButton.getBoundingClientRect().width - modalButton.getBoundingClientRect().height) < 1),
+    inDialogHeader: !!modalButton?.closest('#task-dialog-header'),
     toastVisible: !!(toast && !toast.hidden),
     feedbackVisible: !!(feedback && !feedback.hidden),
     include: button?.dataset.includeChildren,
@@ -605,12 +600,11 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
       if route == task_route do
         share_wait(
           session,
-          "Task Share beside Move",
+          "Task Share in the dialog header",
           %{
             "modalShare" => true,
             "pointerReachable" => true,
-            "leftOfMove" => true,
-            "matchesMoveHeight" => true
+            "inDialogHeader" => true
           },
           task_id
         )
@@ -679,7 +673,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
     wait_for(session, "Share reconnects", %{"connected" => true, "hydrated" => "true"}, task_id)
     share_wait(session, "Share ready after reconnect", %{"ready" => true}, task_id)
 
-    Browser.resize_window(session, 768, 800)
+    Browser.resize_window(session, 1024, 800)
     click(session, "#task-hierarchy-toggle")
 
     assert js(
@@ -687,7 +681,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
              "return getComputedStyle(document.querySelector('#task-hierarchy-overlay')).display === 'none'"
            )
 
-    Browser.resize_window(session, 767, 800)
+    Browser.resize_window(session, 1023, 800)
 
     assert js(
              session,

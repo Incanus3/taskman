@@ -6,7 +6,39 @@ defmodule TaskmanWeb.Tasks.Detail do
   alias TaskmanWeb.ProjectLive.Tasks.Comments
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
-  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks}
+  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks, Status}
+
+  attr :task, Task, required: true
+  attr :close_id, :string, required: true
+  attr :on_close, JS, required: true
+  slot :actions
+
+  def header(assigns) do
+    ~H"""
+    <header
+      id="task-dialog-header"
+      class="flex min-h-15 shrink-0 items-center gap-3 border-b border-slate-700 bg-slate-900 px-4 py-3 sm:px-5"
+    >
+      <.icon name="hero-check-circle" class="size-4 shrink-0 text-indigo-400" />
+      <h2 id="task-modal-title" class="min-w-0 flex-1 text-sm font-semibold text-slate-100">
+        Task #{@task.id}
+      </h2>
+      <div :if={@actions != []} id="task-dialog-actions" class="flex shrink-0 items-center gap-2">
+        {render_slot(@actions)}
+      </div>
+      <button
+        id={@close_id}
+        type="button"
+        phx-click={@on_close}
+        aria-label={gettext("Close dialog")}
+        data-tooltip=""
+        class="grid size-9 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-4 focus:ring-indigo-400/20"
+      >
+        <.icon name="hero-x-mark" class="size-5" />
+      </button>
+    </header>
+    """
+  end
 
   attr :task, Task, required: true
   attr :project, Project, default: nil
@@ -23,7 +55,6 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :related_tasks, :map, default: %{blocks: [], blocked_by: []}
   attr :related_picker, RelatedTasksPicker, default: nil
   attr :related_task_path, :any, default: nil
-  slot :header_actions
 
   def detail(assigns) do
     comments = assigns.comments || Comments.State.empty()
@@ -78,15 +109,17 @@ defmodule TaskmanWeb.Tasks.Detail do
           </h3>
         </div>
 
-        <div class="task-hierarchy-content ms-3 px-3 pb-5">
-          <ul role="tree" aria-label="Task hierarchy" class="border-l border-indigo-400/50 pl-3">
-            <.hierarchy_node
-              node={@task_hierarchy.hierarchy.root}
-              task_hierarchy={@task_hierarchy}
-              task_path={@task_path}
-              level={1}
-            />
-          </ul>
+        <div id="task-hierarchy-scroll" class="task-hierarchy-content">
+          <nav id="task-hierarchy-navigation" aria-labelledby="task-hierarchy-title">
+            <ul class="task-hierarchy-root">
+              <.hierarchy_node
+                node={@task_hierarchy.hierarchy.root}
+                task_hierarchy={@task_hierarchy}
+                task_path={@task_path}
+                level={1}
+              />
+            </ul>
+          </nav>
           <p
             :if={!hierarchy_content?(@task_hierarchy)}
             id="task-hierarchy-empty"
@@ -105,7 +138,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             aria-labelledby={if(@recovery?, do: nil, else: "task-modal-title")}
           >
             <div :if={!@recovery?} class="relative mb-3">
-              <div class="flex min-w-0 items-start justify-between gap-4 pr-10 xl:pr-0">
+              <div class="flex min-w-0 items-start justify-between gap-4">
                 <nav
                   id="task-location-breadcrumbs"
                   aria-label="Task location"
@@ -174,7 +207,7 @@ defmodule TaskmanWeb.Tasks.Detail do
                     </li>
                     <li id="task-location-current" aria-current="page" class="shrink-0">
                       <h2
-                        id="task-modal-title"
+                        id="task-location-task-label"
                         class="whitespace-nowrap text-base font-semibold text-slate-100"
                       >
                         Task #{@task.id}
@@ -183,7 +216,6 @@ defmodule TaskmanWeb.Tasks.Detail do
                   </ol>
                 </nav>
                 <div id="task-detail-actions" class="flex shrink-0 items-center gap-2">
-                  {render_slot(@header_actions)}
                   <button
                     id={"move-task-detail-button-#{@task.id}"}
                     type="button"
@@ -497,59 +529,78 @@ defmodule TaskmanWeb.Tasks.Detail do
     ~H"""
     <li
       id={"task-hierarchy-node-#{@node.task.id}"}
-      role="treeitem"
-      aria-current={if(@node.task.id == @task_hierarchy.hierarchy.selected_task_id, do: "true")}
-      aria-expanded={
-        if(has_children?(@node),
-          do: to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))
-        )
-      }
-      aria-level={@level}
       class={[
         "task-hierarchy-node",
         @node.task.id == @task_hierarchy.hierarchy.selected_task_id && "task-hierarchy-node-current"
       ]}
     >
-      <div class="task-hierarchy-node-row">
-        <button
-          :if={@collapsible?}
-          id={"task-hierarchy-disclosure-#{@node.task.id}"}
-          type="button"
-          phx-click="toggle_task_hierarchy_node"
-          phx-value-task-id={@node.task.id}
-          aria-expanded={to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))}
-          aria-label={"Toggle #{String.trim(@node.task.title || "")}"}
-          data-tooltip=""
-          class="task-hierarchy-disclosure"
-        >
-          <.icon
-            name={
-              if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
-                do: "hero-chevron-down",
-                else: "hero-chevron-right"
-              )
-            }
-            class="size-3.5"
-          />
-        </button>
-        <.link
-          id={"task-hierarchy-link-#{@node.task.id}"}
-          patch={@task_path.(@node.task)}
-          aria-current={if(@node.task.id == @task_hierarchy.hierarchy.selected_task_id, do: "true")}
-          class="task-hierarchy-link"
-        >
-          {@node.task.title}
-        </.link>
+      <div class="task-hierarchy-node-heading">
+        <div class="task-hierarchy-node-row">
+          <span
+            :if={!@collapsible?}
+            id={if(has_children?(@node), do: "task-hierarchy-expanded-marker-#{@node.task.id}")}
+            class="task-hierarchy-indicator"
+            aria-hidden="true"
+          >
+            <.icon :if={has_children?(@node)} name="hero-chevron-down" class="size-3.5" />
+          </span>
+          <button
+            :if={@collapsible?}
+            id={"task-hierarchy-disclosure-#{@node.task.id}"}
+            type="button"
+            phx-click="toggle_task_hierarchy_node"
+            phx-value-task-id={@node.task.id}
+            aria-expanded={to_string(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id))}
+            aria-controls={"task-hierarchy-group-#{@node.task.id}"}
+            aria-label={"Toggle #{String.trim(@node.task.title || "")}"}
+            data-tooltip=""
+            class="task-hierarchy-disclosure"
+          >
+            <.icon
+              name={
+                if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
+                  do: "hero-chevron-down",
+                  else: "hero-chevron-right"
+                )
+              }
+              class="size-3.5"
+            />
+          </button>
+          <.link
+            id={"task-hierarchy-link-#{@node.task.id}"}
+            patch={@task_path.(@node.task)}
+            aria-current={if(@node.task.id == @task_hierarchy.hierarchy.selected_task_id, do: "true")}
+            class="task-hierarchy-link"
+          >
+            <span class="task-hierarchy-title">{@node.task.title}</span>
+            <span id={"task-hierarchy-metadata-#{@node.task.id}"} class="task-hierarchy-metadata">
+              <span>#{@node.task.id}</span>
+              <span
+                id={"task-hierarchy-status-#{@node.task.id}"}
+                class={["task-hierarchy-status", Status.text_class(@node.task.status)]}
+              >
+                <span class="task-hierarchy-status-dot" aria-hidden="true"></span>
+                {Status.label(@node.task.status)}
+              </span>
+            </span>
+          </.link>
+        </div>
       </div>
 
       <ul
-        :if={has_children?(@node) && TaskHierarchy.expanded?(@task_hierarchy, @node.task.id)}
+        :if={has_children?(@node)}
         id={"task-hierarchy-group-#{@node.task.id}"}
-        role="group"
+        hidden={!TaskHierarchy.expanded?(@task_hierarchy, @node.task.id)}
         class="task-hierarchy-group"
       >
         <.hierarchy_node
-          :for={child <- @node.children}
+          :for={
+            child <-
+              if(TaskHierarchy.expanded?(@task_hierarchy, @node.task.id),
+                do: @node.children,
+                else: []
+              )
+          }
           node={child}
           task_hierarchy={@task_hierarchy}
           task_path={@task_path}

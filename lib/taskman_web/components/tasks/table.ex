@@ -3,16 +3,7 @@ defmodule TaskmanWeb.Tasks.Table do
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Tasks.Move
-  alias TaskmanWeb.Tasks.MovePopover
-
-  @status_labels %{
-    icebox: "Icebox",
-    pending: "Pending",
-    in_progress: "In Progress",
-    in_review: "In Review",
-    done: "Done",
-    will_not_do: "Will Not Do"
-  }
+  alias TaskmanWeb.Tasks.{MovePopover, Status}
 
   @priority_labels %{
     none: "None",
@@ -20,15 +11,6 @@ defmodule TaskmanWeb.Tasks.Table do
     medium: "Medium",
     high: "High",
     urgent: "Urgent"
-  }
-
-  @status_classes %{
-    icebox: "bg-sky-400/10 text-sky-300",
-    pending: "bg-amber-400/10 text-amber-300",
-    in_progress: "bg-red-400/10 text-red-300",
-    in_review: "bg-orange-400/10 text-orange-300",
-    done: "bg-emerald-400/10 text-emerald-300",
-    will_not_do: "bg-slate-700/60 text-slate-400"
   }
 
   @priority_classes %{
@@ -41,7 +23,7 @@ defmodule TaskmanWeb.Tasks.Table do
 
   def status_options, do: Enum.map(Task.statuses(), &{status_label(&1), &1})
   def priority_options, do: Enum.map(Task.priorities(), &{priority_label(&1), &1})
-  def status_label(status), do: Map.fetch!(@status_labels, status)
+  def status_label(status), do: Status.label(status)
   def priority_label(priority), do: Map.fetch!(@priority_labels, priority)
 
   attr :form, Phoenix.HTML.Form, required: true
@@ -302,7 +284,7 @@ defmodule TaskmanWeb.Tasks.Table do
           id={"task-status-#{task.id}"}
           class={[
             "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold xl:justify-self-center",
-            status_classes(task.status)
+            Status.badge_classes(task.status)
           ]}
         >
           {status_label(task.status)}
@@ -365,7 +347,6 @@ defmodule TaskmanWeb.Tasks.Table do
     """
   end
 
-  defp status_classes(status), do: Map.fetch!(@status_classes, status)
   defp priority_classes(priority), do: Map.fetch!(@priority_classes, priority)
   defp aria_sort(nil), do: "none"
   defp aria_sort(:asc), do: "ascending"
