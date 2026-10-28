@@ -25,6 +25,8 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/taskman"
 import {projectLiveHooks} from "./project_live_hooks"
 import {taskDetailHooks} from "./task_detail_hooks"
+import DateTimePicker from "./date_time_picker"
+import SelectPicker from "./select_picker"
 import topbar from "../vendor/topbar"
 import "./tooltips"
 
@@ -32,7 +34,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, ...projectLiveHooks, ...taskDetailHooks},
+  hooks: {...colocatedHooks, ...projectLiveHooks, ...taskDetailHooks, DateTimePicker, SelectPicker},
 })
 
 // Show progress bar on live navigation and form submits

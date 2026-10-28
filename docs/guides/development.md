@@ -103,6 +103,21 @@ These are high-level technology decisions, not a complete architecture. Decide p
 filesystem boundaries, URL and LiveView state mechanics, ACP process behavior, and testing seams in
 context immediately before the relevant feature.
 
+### JavaScript asset dependencies
+
+Use `mix setup` for initial assets or `mix assets.build` after changes. These commands install the
+locked npm packages under `assets/` through `npm ci`; asset builds need Node and npm. Commit both
+`assets/package.json` and `assets/package-lock.json`; keep `assets/node_modules` ignored.
+`mix assets.deploy` installs the same lockfile before minification and digest generation. CI installs
+Node/npm, and the existing release builder already contains them. The OTP release serves the
+compiled assets.
+
+Vanilla Calendar Pro uses its exact published npm package. Heroicons and daisyUI remain
+Mix-managed Git dependencies because their repositories contain directly consumable SVG/plugin
+assets. Keep the Calendar MIT notice in the small project-owned re-export wrapper and check it
+against the installed license when changing the package pin; do not restore copied library code
+or a manual download/update recipe.
+
 ## Scope discipline
 
 - Keep Project, List, and Task data in one shared workspace without per-user ownership or

@@ -463,6 +463,23 @@
   .task-detail-columns {
     grid-template-columns: minmax(0, 1fr) 18rem;
   }
+
+  #task-modal-content:has(> #task-dialog-header) .task-detail-columns {
+    /* Keep the editor's existing padding; discussion receives space beyond its cap. */
+    grid-template-columns: minmax(0, 50rem) minmax(var(--task-detail-discussion-min-width, calc(23rem + 1px)), 1fr);
+  }
+}
+
+@media (width > 90rem) {
+  #task-modal-content:has(> #task-dialog-header) {
+    --task-detail-hierarchy-width: min(calc(21rem + (100vw - 90rem) * 0.1), 28rem);
+    --task-detail-discussion-min-width: clamp(calc(23rem + 1px), calc(18rem + (100vw - 90rem) * 0.32), 40rem);
+    max-width: min(calc(100vw - 3rem), calc(80rem + (100vw - 90rem) * 0.9), 131.25rem);
+  }
+
+  #task-modal-content:has(> #task-dialog-header) > #task-detail-layout[data-hierarchy-expanded="true"] {
+    grid-template-columns: var(--task-detail-hierarchy-width) minmax(0, 1fr);
+  }
 }
 
 @media (min-width: 40rem) {
@@ -679,4 +696,69 @@
   .task-comment-composer {
     margin-top: auto;
   }
+}
+
+/* Keep errors server-rendered while replacing only the native select and its label. */
+.select-picker:has(> [phx-hook="SelectPicker"]:not([hidden])) .select-picker-native label {
+  display: none;
+}
+
+.select-picker:has(> [phx-hook="SelectPicker"]:not([hidden])) .select-picker-native > .fieldset {
+  display: contents;
+}
+
+.select-picker:has(> [phx-hook="SelectPicker"]:not([hidden])) .select-picker-native {
+  display: contents;
+}
+
+.select-picker [role="option"] .hero-check[hidden] {
+  display: none;
+}
+
+.date-time-picker-popup:popover-open { display: flex; flex-direction: column; overflow: hidden; }
+.date-time-picker-popup [data-calendar-scroll] { overflow: auto; min-height: 0; }
+.date-time-picker-actions { flex-shrink: 0; }
+.date-time-picker-popup .vc {
+  --color-base-100: var(--color-slate-950);
+  --color-base-200: var(--color-slate-900);
+  --color-base-300: var(--color-slate-700);
+  --color-base-content: var(--color-slate-100);
+  --color-primary: var(--color-indigo-500);
+  --color-primary-content: white;
+  background: var(--color-slate-950);
+  width: 100%;
+}
+/* Separate engine pseudo selectors: a mixed WebKit/Gecko selector list is discarded by
+   Chromium, so daisyUI's combined declarations need this scoped compatibility refinement. */
+.date-time-picker-popup [data-vc-time-range] input::-webkit-slider-runnable-track {
+  background: var(--color-slate-600);
+  height: 2px;
+}
+.date-time-picker-popup [data-vc-time-range] input::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 16px;
+  margin-top: -7px;
+  border: 1px solid var(--color-indigo-400);
+  border-radius: 4px;
+  background: var(--color-slate-800);
+}
+.date-time-picker-popup [data-vc-time-range] input::-moz-range-track {
+  background: var(--color-slate-600);
+  height: 2px;
+}
+.date-time-picker-popup [data-vc-time-range] input::-moz-range-thumb {
+  width: 12px;
+  height: 16px;
+  border: 1px solid var(--color-indigo-400);
+  border-radius: 4px;
+  background: var(--color-slate-800);
+}
+.date-time-picker-popup [data-vc-time-range] input:focus-visible {
+  outline: 2px solid var(--color-indigo-400);
+  outline-offset: 2px;
+}
+.date-time-picker-popup [data-vc-date-selected] [data-vc-date-btn] {
+  background: var(--color-indigo-500);
+  color: white;
 }

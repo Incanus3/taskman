@@ -13,7 +13,9 @@
 
 ## Specifications
 
-- [Readable Task detail hierarchy and dedicated dialog header (implemented and operator accepted)](specs/2026-10-28-task-detail-hierarchy-design.md)
+- [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)
+
+- [Task detail layout, hierarchy and responsive sizing (implemented and accepted)](specs/2026-10-28-task-detail-layout-design.md)
 
 - [Task tree guides in the main listing (implemented and operator accepted)](specs/2026-10-27-task-tree-guides-design.md)
 
@@ -52,6 +54,10 @@
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 - [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
+## Implementation plans
+
+No active implementation plans. Completed implementation contracts and verification remain in the specifications above.
+
 ## Handoffs
 
 - [Current workstreams and continuation gates](handoffs/INDEX.md)
@@ -77,9 +83,7 @@
 
 ## Research
 
-
 - [Verification timeout assessment and approved bounded-phase correction (implemented and locally verified)](research/2026-10-07-verification-timeout-review.md)
-
 
 - [UFW Python API and host-helper integration evaluation](research/2026-10-01-ufw-python-api-evaluation.md)
 
@@ -91,7 +95,7 @@
 ## Prototypes
 
 - [Navigation and MVP visual guidance](prototypes/navigation.html)
-- [Task detail hierarchy visual source and snapshot authority](specs/2026-10-28-task-detail-hierarchy-design.md#visual-references-and-their-authority)
+- [Task detail hierarchy visual source and snapshot authority](specs/2026-10-28-task-detail-layout-design.md#visual-references-and-their-authority)
 
 ## Archive
 

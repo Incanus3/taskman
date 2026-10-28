@@ -102,8 +102,9 @@ defmodule Taskman.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind taskman", "esbuild taskman"],
+      "assets.build": ["cmd --cd assets npm ci", "compile", "tailwind taskman", "esbuild taskman"],
       "assets.deploy": [
+        "cmd --cd assets npm ci",
         "tailwind taskman --minify",
         "esbuild taskman --minify",
         "phx.digest"
