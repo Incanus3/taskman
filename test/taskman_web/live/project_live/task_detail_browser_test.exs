@@ -90,6 +90,489 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     }
   end
 
+  # A real text field must retain partial edits through patches and send day-first values to the UI boundary.
+  test "due text typing uses the chosen format and preserves invalid drafts", c do
+    visit(c, c.selected)
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "28.10.2026 17:45")
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2026-10-28 17:45:00]
+
+    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
+             "28.10.2026 17:45"
+
+    Browser.find(c.session, Query.css("#task-due-at-trigger:not([hidden])"))
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "31.02.2026 17:45")
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='not_saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2026-10-28 17:45:00]
+
+    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
+             "31.02.2026 17:45"
+
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "28.10.")
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='28.10.']"))
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        title: "Patched title"
+      })
+
+    Browser.find(c.session, Query.css("#task-title[value='Patched title']"))
+    assert js(c.session, "return document.querySelector('#task-due-at').value") == "28.10."
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "29.02.2028 09:30")
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.find(c.session, Query.css("#task-due-at-popup:popover-open"))
+    Browser.click(c.session, Query.css("#task-due-at-cancel"))
+
+    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
+             "29.02.2028 09:30"
+
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+
+    js(
+      c.session,
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='31';m.dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    Browser.click(c.session, Query.css("#task-due-at-apply"))
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2028-02-29T09:31']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2028-02-29 09:31:00]
+  end
+
+  # Draft inputs must never reach the enclosing LiveView form before Apply.
+  test "due popup isolates draft events and applies one local datetime", c do
+    visit(c, c.selected)
+    Browser.find(c.session, Query.css("#task-due-at-trigger"))
+
+    js(
+      c.session,
+      "window.__dueInputs=0; window.__draftLeaks=0; document.querySelector('#task-due-at').addEventListener('input',()=>window.__dueInputs++); document.querySelector('#task-form').addEventListener('input',e=>{if(e.target.closest('#task-due-at-popup'))window.__draftLeaks++}); document.querySelector('#task-form').addEventListener('change',e=>{if(e.target.closest('#task-due-at-popup'))window.__draftLeaks++})"
+    )
+
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.find(c.session, Query.css("#task-due-at-apply[disabled]"))
+
+    assert js(
+             c.session,
+             "return document.querySelector('[data-vc-time-input=hour] input').value + ':' + document.querySelector('[data-vc-time-input=minute] input').value"
+           ) == "00:00"
+
+    Browser.click(
+      c.session,
+      Query.css("#task-due-at-popup [data-vc-date-btn]:not([disabled])", at: 10)
+    )
+
+    js(
+      c.session,
+      "const e=document.querySelector('[data-vc-time-input=hour] input');e.value='09';e.dispatchEvent(new Event('change',{bubbles:true}));const m=document.querySelector('[data-vc-time-input=minute] input');m.value='30';m.dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    assert js(
+             c.session,
+             "return [window.__dueInputs,window.__draftLeaks,document.querySelector('#task-due-at').value]"
+           ) == [0, 0, ""]
+
+    Browser.click(c.session, Query.css("#task-due-at-cancel"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == nil
+    assert js(c.session, "return document.activeElement.id") == "task-due-at-trigger"
+
+    # Pre-1970 dates and retained seconds must not be normalized by an unchanged Apply.
+    {:ok, _} = Tasks.update_task(c.project, c.selected, %{due_at: ~N[1960-05-06 09:30:42]})
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='1960-05-06T09:30:42']"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-due-at-apply:not([disabled])"))
+    assert js(c.session, "return window.__dueInputs") == 0
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[1960-05-06 09:30:42]
+
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+
+    js(
+      c.session,
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='31';m.dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    js(
+      c.session,
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='99';m.dispatchEvent(new Event('input',{bubbles:true}))"
+    )
+
+    Browser.find(c.session, Query.css("#task-due-at-apply[disabled]"))
+
+    js(
+      c.session,
+      "document.querySelector('[data-vc-time-input=minute] input').dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    Browser.find(c.session, Query.css("#task-due-at-apply[disabled]"))
+
+    js(
+      c.session,
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='31';m.dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    Browser.click(c.session, Query.css("#task-due-at-apply:not([disabled])"))
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[1960-05-06 09:31:00]
+    assert js(c.session, "return window.__dueInputs") == 1
+
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-due-at-clear"))
+
+    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
+             "06.05.1960 09:31"
+
+    Browser.send_keys(c.session, [:escape])
+    Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-due-at-clear"))
+    Browser.click(c.session, Query.css("#task-due-at-apply"))
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == nil
+    assert js(c.session, "return [window.__dueInputs,window.__draftLeaks]") == [2, 0]
+  end
+
+  # Browser patches must preserve both private popup drafts and focused manual edits.
+  test "due picker follows authoritative updates and stays reachable in the top layer", c do
+    visit(c, c.selected)
+    {:ok, _} = Tasks.update_task(c.project, c.selected, %{due_at: ~N[2030-05-06 09:30:00]})
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2030-05-06T09:30']"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+
+    js(
+      c.session,
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='45';m.dispatchEvent(new Event('change',{bubbles:true}))"
+    )
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        title: "Unrelated patch"
+      })
+
+    Browser.find(c.session, Query.css("#task-title[value='Unrelated patch']"))
+
+    assert js(
+             c.session,
+             "return document.querySelector('#task-due-at-popup').matches(':popover-open') && document.querySelector('[data-vc-time-input=minute] input').value==='45'"
+           )
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        due_at: ~N[2031-06-07 10:20:00]
+      })
+
+    Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+    Browser.find(c.session, Query.css("#task-due-at-picker-notice", text: "Reopen"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2031-06-07 10:20:00]
+
+    # Real text typing retains the chosen display and its normal form event.
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "08.07.2032 11:21")
+    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
+    # An uncommitted text edit also survives an unrelated patch while focused.
+    js(
+      c.session,
+      "const e=document.querySelector('#task-due-at');e.focus();e.value='08.07.2032 11:22'"
+    )
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        title: "Native typing patch"
+      })
+
+    Browser.find(c.session, Query.css("#task-title[value='Native typing patch']"))
+
+    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
+             "08.07.2032 11:22"
+
+    js(
+      c.session,
+      "document.querySelector('#task-due-at').dispatchEvent(new Event('input',{bubbles:true}))"
+    )
+
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2032-07-08T11:22']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2032-07-08 11:22:00]
+
+    for {width, height} <- [{1440, 900}, {320, 720}, {320, 400}] do
+      resize(c.session, width, height)
+
+      if width == 320 &&
+           js(
+             c.session,
+             "return document.querySelector('#task-detail-layout').dataset.hierarchyExpanded==='true'"
+           ),
+         do: Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+
+      js(
+        c.session,
+        "document.querySelector('#task-due-at-trigger').scrollIntoView({block:'end'})"
+      )
+
+      Browser.click(c.session, Query.css("#task-due-at-trigger"))
+
+      bounds =
+        js(
+          c.session,
+          "const p=document.querySelector('#task-due-at-popup'),r=p.getBoundingClientRect(),b=document.querySelector('#task-due-at-apply').getBoundingClientRect();return {width:innerWidth,height:innerHeight,page:document.documentElement.scrollWidth,left:r.left,right:r.right,top:r.top,bottom:r.bottom,open:p.matches(':popover-open'),footer:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2).id}"
+        )
+
+      assert bounds["width"] == width && bounds["height"] == height
+      assert bounds["page"] <= width + 1
+      assert bounds["open"] && bounds["footer"] == "task-due-at-apply"
+      assert bounds["left"] >= 0 && bounds["right"] <= width
+      assert bounds["top"] >= 0 && bounds["bottom"] <= height
+
+      if directory = System.get_env("TASKMAN_DUE_SCREENSHOTS") do
+        File.mkdir_p!(directory)
+
+        File.write!(
+          Path.join(directory, "due-#{width}-#{height}.png"),
+          c.session.driver.take_screenshot(c.session)
+        )
+
+        File.write!(Path.join(directory, "due-#{width}-#{height}.json"), Jason.encode!(bounds))
+        css = "file://" <> Path.expand("priv/static/assets/css/app.css")
+
+        html =
+          js(
+            c.session,
+            "const html=document.documentElement.cloneNode(true);html.querySelectorAll('script').forEach(e=>e.remove());html.querySelectorAll('link[rel=stylesheet]').forEach(e=>e.href=arguments[0]);return '<!doctype html>'+html.outerHTML",
+            [css]
+          )
+
+        File.write!(Path.join(directory, "due-#{width}-#{height}.html"), html)
+      end
+
+      # Time Enter cannot submit; footer Tab/focus and Escape stay inside this dialog.
+      js(c.session, "document.querySelector('[data-vc-time-input=minute] input').focus()")
+      Browser.send_keys(c.session, [:enter])
+      Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='true']"))
+      js(c.session, "document.querySelector('#task-due-at-clear').focus()")
+      Browser.send_keys(c.session, [:tab])
+      assert js(c.session, "return document.activeElement.id") == "task-due-at-cancel"
+      Browser.send_keys(c.session, [:escape])
+      Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+    end
+
+    resize(c.session, 1440, 900)
+    Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-title"))
+    assert js(c.session, "return document.activeElement.id") == "task-title"
+    Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    js(c.session, "document.querySelector('#task-status-trigger').focus()")
+    Browser.send_keys(c.session, [:enter])
+    Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+    Browser.send_keys(c.session, [:escape])
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{c.third.id}"))
+    Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
+
+    assert js(
+             c.session,
+             "return document.querySelectorAll('#task-due-at-popup [data-vc=calendar]').length"
+           ) == 0
+
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{c.selected.id}"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    js(c.session, "window.liveSocket.disconnect()")
+
+    Browser.find(
+      c.session,
+      Query.css("#task-due-at-trigger[disabled][aria-expanded='false']", visible: :any)
+    )
+
+    js(c.session, "window.liveSocket.connect()")
+    Browser.find(c.session, Query.css("#task-due-at-trigger:not([disabled])"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-due-at-cancel"))
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        due_at: ~N[0999-05-06 09:30:00]
+      })
+
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='0999-05-06T09:30']"))
+    Browser.find(c.session, Query.css("#task-due-at-trigger[hidden]", visible: :any))
+
+    assert js(
+             c.session,
+             "const e=document.querySelector('#task-due-at');return {value:e.value,visible:e.getClientRects().length>0,enhanced:!document.querySelector('#task-due-at-trigger').hidden}"
+           ) == %{"value" => "06.05.0999 09:30", "visible" => true, "enhanced" => false}
+
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[0999-05-06 09:30:00]
+
+    # A rejected server form value stays editable without opening the calendar.
+    js(
+      c.session,
+      "const e=document.querySelector('#task-due-at');document.querySelector('#task-due-at-picker').dataset.value='2030-02-31T09:30';e.value='2030-02-31T09:30';e.dispatchEvent(new Event('input'))"
+    )
+
+    Browser.find(c.session, Query.css("#task-due-at-trigger[hidden]", visible: :any))
+
+    refute js(
+             c.session,
+             "return !document.querySelector('#task-due-at-trigger').hidden"
+           )
+
+    # Creation shares the same bridge and still waits for explicit Create task.
+    Browser.visit(c.session, c.base <> "/projects/#{c.project.id}/tasks/new")
+    Browser.find(c.session, Query.css("#task-due-at-trigger"))
+    Browser.click(c.session, Query.css("#task-due-at-trigger"))
+
+    Browser.click(
+      c.session,
+      Query.css("#task-due-at-popup [data-vc-date-btn]:not([disabled])", at: 10)
+    )
+
+    Browser.click(c.session, Query.css("#task-due-at-apply:not([disabled])"))
+    assert js(c.session, "return document.querySelector('#task-due-at').value.endsWith(' 00:00')")
+    Browser.find(c.session, Query.css("#task-form"))
+  end
+
+  # Native options cannot prove browser keyboard handling, top-layer placement or patch sync.
+  test "field picker keyboard saves only a choice and follows server updates", c do
+    visit(c, c.selected)
+    Browser.find(c.session, Query.css("#task-status-trigger"))
+
+    # Opening a server-selected last option must reveal the whole active row immediately.
+    {:ok, _} = Tasks.update_task(c.project, c.selected, %{status: :will_not_do})
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "Will Not Do"))
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+
+    active =
+      js(
+        c.session,
+        "const p=document.querySelector('#task-status-options'),a=document.getElementById(p.getAttribute('aria-activedescendant')),r=a.getBoundingClientRect(),b=p.getBoundingClientRect();return {id:a.id,top:r.top,bottom:r.bottom,panelTop:b.top,panelBottom:b.bottom}"
+      )
+
+    assert active["id"] == "task-status-option-will_not_do"
+    assert active["top"] >= active["panelTop"]
+    assert active["bottom"] <= active["panelBottom"]
+    Browser.send_keys(c.session, [:escape])
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        status: :pending
+      })
+
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "Pending"))
+
+    js(
+      c.session,
+      "window.__pickerChanges=0; document.querySelector('#task-status').addEventListener('change',()=>window.__pickerChanges++); document.querySelector('#task-status-trigger').focus()"
+    )
+
+    Browser.send_keys(c.session, [:down_arrow])
+    Browser.find(c.session, Query.css("#task-status-trigger[aria-expanded='true']"))
+    Browser.send_keys(c.session, [:down_arrow])
+    assert js(c.session, "return window.__pickerChanges") == 0
+    Browser.send_keys(c.session, [:escape])
+    Browser.find(c.session, Query.css("#task-status-trigger[aria-expanded='false']"))
+    assert js(c.session, "return document.activeElement.id") == "task-status-trigger"
+    Browser.find(c.session, Query.css("#task-detail-layout"))
+
+    Browser.send_keys(c.session, [:space])
+    Browser.send_keys(c.session, ["i"])
+    Browser.send_keys(c.session, [:enter])
+    Browser.find(c.session, Query.css("#task-status-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).status == :icebox
+    assert js(c.session, "return window.__pickerChanges") == 1
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
+        status: :in_review
+      })
+
+    Browser.find(c.session, Query.css("#task-status-picker[data-value='in_review']"))
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    Browser.find(c.session, Query.css("#task-status-option-in_review[aria-selected='true']"))
+    Browser.click(c.session, Query.css("#task-priority-trigger"))
+    Browser.find(c.session, Query.css("#task-status-trigger[aria-expanded='false']"))
+    Browser.send_keys(c.session, [:end, :enter])
+    Browser.find(c.session, Query.css("#task-priority-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).priority == :urgent
+
+    Browser.click(c.session, Query.css("#task-priority-trigger"))
+    Browser.click(c.session, Query.css("#task-priority-option-high"))
+    Browser.find(c.session, Query.css("#task-priority-save-status[data-state='saved']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).priority == :high
+    assert js(c.session, "return document.activeElement.id") == "task-priority-trigger"
+
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{c.third.id}"))
+
+    Browser.find(
+      c.session,
+      Query.css("#task-status-trigger[aria-expanded='false']", text: "Pending")
+    )
+
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{c.selected.id}"))
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
+
+    # Rechoosing the current value is idempotent, and outside clicks keep their target focus.
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    Browser.send_keys(c.session, [:enter])
+    assert js(c.session, "return window.__pickerChanges") == 1
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    Browser.click(c.session, Query.css("#task-title"))
+    Browser.find(c.session, Query.css("#task-status-trigger[aria-expanded='false']"))
+    assert js(c.session, "return document.activeElement.id") == "task-title"
+
+    assert js(
+             c.session,
+             "return getComputedStyle(document.querySelector('#task-status')).display === 'none' || document.querySelector('#task-status').getClientRects().length === 0"
+           )
+
+    {:ok, _} = Tasks.add_block(c.project, c.root, c.selected)
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    Browser.send_keys(c.session, ["d", :enter])
+    Browser.find(c.session, Query.css("#task-done-warning"))
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "Done"))
+    Browser.click(c.session, Query.css("#keep-current-task-status"))
+    Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).status == :in_review
+
+    for width <- [1440, 320] do
+      resize(c.session, width, 720)
+
+      if width == 320 do
+        Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+        wait(c.session, &(!&1["expanded"]))
+      end
+
+      js(
+        c.session,
+        "document.querySelector('#task-priority-trigger').scrollIntoView({block:'end'})"
+      )
+
+      Browser.click(c.session, Query.css("#task-priority-trigger"))
+
+      bounds =
+        js(
+          c.session,
+          "const p=document.querySelector('#task-priority-options'), r=p.getBoundingClientRect(); return {open:p.matches(':popover-open'),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,page:document.documentElement.scrollWidth,hit:p.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}"
+        )
+
+      assert bounds["open"] && bounds["hit"]
+      assert bounds["width"] == width
+      assert bounds["page"] <= width + 1
+      assert bounds["left"] >= 0 && bounds["right"] <= width
+      assert bounds["top"] >= 0 && bounds["bottom"] <= bounds["height"]
+      Browser.send_keys(c.session, [:tab])
+      Browser.find(c.session, Query.css("#task-priority-trigger[aria-expanded='false']"))
+    end
+
+    Browser.click(c.session, Query.css("#task-status-trigger"))
+    js(c.session, "window.liveSocket.disconnect()")
+    Browser.find(c.session, Query.css("#task-status-trigger[disabled][aria-expanded='false']"))
+
+    assert js(
+             c.session,
+             "return document.querySelector('#task-status-options').matches(':popover-open')"
+           ) == false
+  end
+
   # Catches squeezed text, page overflow, obscured controls and incorrect responsive composition.
   test "hierarchy and discussion remain reachable across viewport boundaries", c do
     visit(c, c.selected)
@@ -139,8 +622,8 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
           "move-task-detail-button-#{c.selected.id}",
           "task-title",
           "task-parent-trigger",
-          "task-status",
-          "task-priority",
+          "task-status-trigger",
+          "task-priority-trigger",
           "task-due-at",
           "task-comment-text"
         ] do
@@ -323,6 +806,15 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     :ok = Taskman.ChangeNotifications.publish_list(lost, :updated, [:name])
     Browser.find(c.session, Query.css("#task-recovery #task-title[readonly]"))
     Browser.find(c.session, Query.css("#task-recovery #task-description[readonly]"))
+    Browser.find(c.session, Query.css("#task-recovery #task-status[disabled]"))
+    Browser.find(c.session, Query.css("#task-recovery #task-priority[disabled]"))
+    Browser.find(c.session, Query.css("#task-recovery #task-due-at[readonly]"))
+
+    assert js(
+             c.session,
+             "return document.querySelectorAll('[id^=task-status-options]:popover-open, [id^=task-priority-options]:popover-open, #task-due-at-popup:popover-open').length"
+           ) == 0
+
     Browser.find(c.session, Query.css("#task-recovery #task-hierarchy", count: 0))
 
     refute js(c.session, "return document.querySelector('#task-detail-content').inert")

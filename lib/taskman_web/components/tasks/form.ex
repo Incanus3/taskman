@@ -5,6 +5,9 @@ defmodule TaskmanWeb.Tasks.Form do
 
   alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
   alias TaskmanWeb.Tasks.ParentPicker, as: ParentPickerComponent
+  alias TaskmanWeb.DateTimeInput
+  alias TaskmanWeb.DateTimePicker
+  alias TaskmanWeb.SelectPicker
   alias TaskmanWeb.Tasks.Table
 
   attr :form, Phoenix.HTML.Form, required: true
@@ -182,15 +185,13 @@ defmodule TaskmanWeb.Tasks.Form do
         conflicts={@conflicts}
         recovery?={@recovery?}
       >
-        <.input
+        <SelectPicker.select_picker
           field={@form[:status]}
           id="task-status"
-          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
-          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
-          type="select"
           label="Status"
           options={select_options(Table.status_options(), @form[:status].value, @recovery?)}
           disabled={@recovery?}
+          context_id={Map.get(@form.data, :id)}
         />
       </.lifecycle_field>
       <.conflict_notice
@@ -205,15 +206,13 @@ defmodule TaskmanWeb.Tasks.Form do
         conflicts={@conflicts}
         recovery?={@recovery?}
       >
-        <.input
+        <SelectPicker.select_picker
           field={@form[:priority]}
           id="task-priority"
-          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
-          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
-          type="select"
           label="Priority"
           options={select_options(Table.priority_options(), @form[:priority].value, @recovery?)}
           disabled={@recovery?}
+          context_id={Map.get(@form.data, :id)}
         />
       </.lifecycle_field>
       <.conflict_notice
@@ -228,15 +227,13 @@ defmodule TaskmanWeb.Tasks.Form do
         conflicts={@conflicts}
         recovery?={@recovery?}
       >
-        <.input
+        <DateTimePicker.date_time_picker
           field={@form[:due_at]}
           id="task-due-at"
-          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
-          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
-          type="datetime-local"
           label="Due date and time"
-          step="60"
-          value={@form[:due_at].value || ""}
+          trigger_label="Choose due date and time"
+          changed_message="Due date and time changed. Reopen the picker to edit the latest value."
+          context_id={Map.get(@form.data, :id)}
           readonly={@recovery?}
         />
       </.lifecycle_field>
@@ -373,7 +370,7 @@ defmodule TaskmanWeb.Tasks.Form do
   defp format_conflict_value("due_at", nil), do: "No due date"
 
   defp format_conflict_value("due_at", %NaiveDateTime{} = value),
-    do: Calendar.strftime(value, "%Y-%m-%dT%H:%M")
+    do: DateTimeInput.format(value)
 
   defp format_conflict_value(_field, nil), do: "(empty)"
   defp format_conflict_value(_field, ""), do: "(empty)"

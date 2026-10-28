@@ -1,16 +1,21 @@
-# Readable Task detail hierarchy and dedicated dialog header
+# Task detail layout, hierarchy and responsive sizing
 
 **Status:** Implemented and operator accepted within the recorded verification limits.
 
 **Date:** 2026-10-28
 
-Make the Task detail hierarchy readable without losing the surrounding work breakdown or
-interrupting editing and discussion. Adopt the visual direction from
+Keep Task detail readable and usable across narrow and wide viewports: connected hierarchy,
+dedicated header, bounded editor and readable discussion. Preserve editing and discussion behavior. Adopt the visual direction from
 [issue 25](https://github.com/Incanus3/taskman/issues/25), with the operator's revised depth
 target and the review refinements below. This specification governs repository adoption;
 the current accepted decisions below were approved by the operator.
 
 ## Accepted decisions
+
+Decision IDs retain their meaning within the hierarchy and sizing groups. This specification
+consolidates the hierarchy/header and wide-layout contracts.
+
+### Hierarchy and header decisions
 
 | ID | Status | Choice | Downside or constraint | Rationale |
 |---|---|---|---|---|
@@ -25,21 +30,35 @@ the current accepted decisions below were approved by the operator.
 
 D1–D6 and D8 record the operator's accepted choices and trade-offs; D8 replaces D7's export prerequisite.
 
-## Current behavior and inherited constraints
+### Wide sizing decisions
+
+| ID | Status | Choice | Cost or constraint | Contract |
+|---|---|---|---|---|
+| D1 | Accepted | Grow above 1440 CSS px to a 2100 px dialog and 448 px hierarchy | A 4K viewport still has outer space once the cap is reached | [Sizing](#wide-sizing-grows-from-the-existing-layout) |
+| D2 | Accepted | Keep existing form padding, cap the editor panel at 800 px, and give surplus width to discussion | Discussion becomes wider when hierarchy collapses | [Allocation](#discussion-receives-the-space-outside-the-form) |
+| D3 | Accepted | Comment text fills its available content width with symmetric insets | Longer lines on wide discussion panels | [Comment width](#comment-text-uses-the-available-width) |
+| D4 | Accepted | Discussion has at least 320 px inner width when beside the editor (369 px total) | Reduces editor width by up to 81 px near the three-column boundary | [Allocation](#discussion-receives-the-space-outside-the-form) |
+
+The sizing choices replace the former 2240 px dialog and 1016 px editor proposal with a
+2100 px dialog, 800 px editor panel and 320 px inner discussion minimum. Equal comment insets
+remain required. The hierarchy and sizing choices are implemented, independently reviewed and
+operator accepted within the recorded verification limits.
+
+## Baseline findings and inherited constraints
 
 Source inspection at repository baseline `8b35b184e0a4a1443de4fd0ad3b241c50a05001f`
 established the following. These are code findings, not rendered-layout measurements:
 
 - `lib/taskman_web/components/tasks/detail.ex` renders single-line truncated titles, nested
   lists with ARIA tree roles, separate disclosure buttons, and current-task links. Required-open
-  branches currently have no disclosure button. The hierarchy omits ID/status metadata.
+  branches then had no disclosure button. The hierarchy omits ID/status metadata.
 - `assets/css/app.css` allocates 240 px to the expanded hierarchy from 768 px, overlays it
   below that width, and places discussion beside the editor from 1280 px. Continuous left
   borders do not terminate at the final child's elbow.
 - `core_components.ex` positions modal Close absolutely at top right. The wide modal is
   capped at 1280 px and has outer margins, so viewport width is not content width.
 - `ProjectLive.Tasks.Hierarchy` already preserves manual expansion inside a connected tree
-  and forces open the selected Task and its ancestors. The workspace's colocated
+  and forces open the selected Task and its ancestors. The workspace's then-colocated
   `TaskDetailLayout` hook owns the panel preference, overlay handling and narrow Escape behavior.
 - `assets/js/project_live_hooks.js` intercepts hierarchy-link departures when a comment draft
   is dirty. Close uses `request_task_departure` through the modal's deferred cancellation path.
@@ -107,7 +126,7 @@ matching; readability, contrast and reachable controls take precedence over exac
 
 | Element | Reference treatment |
 |---|---|
-| Expanded desktop panel | 336 px |
+| Expanded desktop panel | 336 px through 1440 CSS px; wider allocation follows the [wide sizing contract](#wide-sizing-grows-from-the-existing-layout) |
 | Title | 14 px, approximately 1.35 line height; selected title semibold |
 | Metadata | 11 px reference; increase if rendered readability requires it |
 | Metadata ordering | Task ID, 10 px gap, then a 5 px status dot and 4 px gap before status text |
@@ -172,15 +191,12 @@ by actual dialog space rather than viewport labels:
 | 1024–1279 CSS px | Hierarchy beside editor; discussion below editor |
 | Below 1024 CSS px | Hierarchy overlays editor content; discussion follows editor when panel is hidden |
 
-With the existing modal cap, a 1280 px viewport leaves approximately 1232 px before the modal
-border; subtracting 336 px hierarchy and 288 px discussion leaves approximately 608 px for the
-editor including its padding. This arithmetic supports trying the thresholds, but does not
-establish browser acceptance. The main Task table changes its row arrangements at 640 and 1280
-px. Share its upper breakpoint, but use 1024 px for the dialog's lower boundary: the table can
-stack metadata, whereas the dialog must fit an editable form beside the hierarchy. Keeping them
-side by side down to 640 px would substantially squeeze the editor; synchronized transitions do
-not justify that cost when the modal covers the table. Keeping today's 768 px side-by-side
-threshold would also reduce editor space once the panel is widened.
+At a 1280 px viewport, the dialog is 1232 px before subtracting its two borders.
+With 336 px hierarchy and the final 369 px discussion minimum, the editor receives 525 px
+including padding. The main Task table changes arrangements at 640 and 1280 px. Share its upper
+breakpoint but use 1024 px for the dialog's lower boundary: the dialog must fit an editable form
+beside the hierarchy. A 640 or 768 px side-by-side threshold would squeeze the widened editor.
+Actual dialog space and rendered controls determine usability, not viewport labels alone.
 
 Measure at 1280/1279 and 1024/1023 as well as the acceptance viewports. The title, Parent Task,
 status/priority, breadcrumbs and Move must remain usable. The implementer may adjust CSS
@@ -199,6 +215,69 @@ or navigation, reveal the selected row with minimal scrolling only if it is outs
 region; do not reset an already useful viewport or steal editing focus. Contain scrolling within
 the dialog/panel, including at 200% zoom. Discussion scroll behavior and composer access remain
 intact at the revised layout boundaries.
+
+## Wide sizing grows from the existing layout
+
+All measurements below are browser CSS pixels at the normal 16 px root font size.
+Physical display resolution alone does not establish the available viewport.
+
+For viewport width V above 1440, define excess X = V − 1440:
+
+- Dialog outer width M = min(V − 48, 1280 + 0.9X, 2100).
+- Expanded hierarchy column H = min(336 + 0.1X, 448).
+- Minimum discussion column D = max(369, min(288 + 0.32X, 640)).
+
+Retain the 48 px desktop outer clearance and the dialog's existing two 1 px borders.
+Use CSS sizing, preferably shared custom properties scoped to the normal Task detail dialog.
+Express equivalent dimensions in rem where appropriate to preserve the existing sizing convention.
+There is no widening jump at 1440 px.
+
+Alternatives considered: keeping the current cap wastes available width; original B leaves
+surplus space around a centered form; C grows to 3200 px but was not selected.
+Revised B bounds overall width while prioritizing useful sidebar space.
+
+## Discussion receives the space outside the form
+
+At widths from 1280 px, cap the editor panel at 800 px total, including its existing 28 px
+padding on each side: 744 px maximum form content with current production border ownership.
+Do not add a centered, maximum-width inner form surrounded by surplus gutters.
+Discussion receives all remaining available width after its minimum and the editor cap.
+Discussion reserves at least 320 px of inner content width, excluding 24 px padding on each
+side and its existing 1 px left divider: 369 px total. This outer width is a floor on the
+existing fluid formula; wider-screen growth remains unchanged once that formula exceeds 369 px.
+The inner width is inside the discussion panel, before comment-card padding. Stacked discussion
+below 1280 px has no new minimum.
+
+For the expanded hierarchy, editor width E = min(800, M − 2 − H − D);
+discussion width R = M − 2 − H − E. Fractional widths may round within 1 px.
+When hierarchy is collapsed, substitute its existing 48 px rail for H and apply the same
+allocation. Its released width therefore goes to discussion after the editor reaches its cap.
+Through 1440 px, use the existing dialog width M = min(V − 48, 1280), H = 336 and D = 369.
+Applying the cap from 1280 px avoids a collapsed-editor width jump at 1440 px. Preserve the
+full editor width when discussion is stacked below 1280 px.
+
+| Viewport | Dialog | Expanded hierarchy | Editor | Discussion |
+|---|---:|---:|---:|---:|
+| 1440 | 1280 | 336 | 573 | 369 |
+| 1920 | 1712 | 384 | 800 | 526 |
+| 2560 | 2100 | 448 | 800 | 850 |
+| 3840 | 2100 | 448 | 800 | 850 |
+
+The comparison mockup placed a 1 px divider inside the editor; production places it on
+discussion. Keep that border ownership and the existing padding when applying the panel cap.
+
+## Comment text uses the available width
+
+Keep discussion's existing 24 px panel padding and comment-card decoration/padding.
+Text fills its card's available width; left/right insets remain symmetric.
+Do not add a paragraph-specific character-width cap or an extra right gutter.
+Keep wrapping and overflow protection for long unbroken text, timestamps and author names.
+Tabs, comments, composer and Post remain within the panel with their current scroll behavior.
+
+The visual comparison's plain paragraphs illustrate allocation, not permission to remove
+production comment cards or alter comment semantics. It was checked at 1440, 1920, 2560 and
+3840 px, including symmetric 24 px paragraph insets in the simplified mockup.
+These observations do not establish production acceptance.
 
 ## Four levels are the primary depth target
 
@@ -309,6 +388,13 @@ retained recovery inputs must remain focusable and selectable without losing the
 | `lib/taskman_web/components/tasks/status.ex` | Shared canonical status labels and colors; table and hierarchy delegate here |
 | `lib/taskman/tasks/hierarchy.ex` | Existing connected-tree projection; no per-row fetches or domain changes expected |
 
+Wide sizing uses the existing normal-dialog selector
+`#task-modal-content:has(> #task-dialog-header)`. Recovery retains its 1280 px cap; creation,
+not-found and other dialogs keep their existing sizes (creation/not-found are 512 px).
+Scope width allocation to `assets/css/app.css`; the normal header attachment and panel/card
+structure remain in the owners above. Do not change the shared modal API, hook preference,
+height, dialog naming, Share/Move, comments, recovery input or departure guards to widen it.
+
 Prefer project-owned components and existing LiveView/CSS composition. No new dependencies,
 database migrations or persistence access from the web layer are expected. Inspect focused
 hierarchy, modal, comment departure and browser tests before planning edits. Do not convert
@@ -316,7 +402,10 @@ existing functional tests into CSS-string snapshots or expand verification to a 
 
 ## Verification and acceptance evidence
 
-The implementation retains D3's 1280/1024 CSS px boundaries and 336 px desktop panel. Chromium
+The implementation retains D3's 1280/1024 CSS px boundaries and a 336 px panel through 1440 px.
+The [wide sizing contract](#wide-sizing-grows-from-the-existing-layout) owns final allocation.
+The hierarchy measurements below establish panel/title space and responsive composition;
+the final editor/discussion allocations are recorded in [rendered sizing evidence](#rendered-sizing-evidence). Chromium
 rendered measurements established the available space below the dedicated header:
 
 | CSS viewport | Dialog width | Panel width | Level-four title width | Discussion |
@@ -348,11 +437,14 @@ the available desktop window manager. No CSS scaling is counted as zoom acceptan
 engines, physical devices and assistive-technology interpretation remain untested. Independent
 scoped review is complete. The operator accepted completion with these limits recorded.
 
-Status, Priority and Due date controls use the same explicit dark background, light text, border
-and focus treatment as the other Task editor fields. Their native menu/calendar color scheme is
-dark. This avoids inherited light-theme defaults rendering pale text on white controls. Chromium
-inspection at 1440 px and 320 px confirms matching background/text colors; this is not a full
-application contrast audit.
+The native Status/Priority popup presentation is superseded by the
+[field picker contract](2026-10-28-form-controls-design.md#select-picker): matching Parent Task menus
+preserve the existing form/lifecycle behavior. The Due popup follows the separate
+[staged date/time contract](2026-10-28-form-controls-design.md#date-time-picker), including its explicit day-first
+text format. Due text and the remaining native fallback controls retain
+explicit dark backgrounds, light text, borders and focus treatment to avoid
+pale text on inherited white controls. The original Chromium inspection at 1440 and 320 px
+verified background/text matching; it was not a full application contrast audit.
 
 Acceptance requires the following evidence and remaining checks:
 
@@ -376,12 +468,53 @@ Acceptance requires the following evidence and remaining checks:
    1,352 tests with 3 existing skips and 42 browser tests excluded. Browser checks ran separately:
    19 affected tests, followed by 5 focused browser and 37 recovery tests after the recovery correction.
 
+## Rendered sizing evidence
+
+Chromium inspection used the real application with a normal 16 px root font and actual CSS
+viewport widths. The baseline at 2560 px measured a 1280 px dialog with 336/654/288 px
+hierarchy/editor/discussion columns. With the 800 px editor cap, 2100 px dialog cap and
+320 px inner discussion floor, the layout measured:
+
+| CSS viewport width | Dialog | Expanded hierarchy | Editor | Discussion |
+|---|---:|---:|---:|---:|
+| 1440 | 1280 | 336 | 573 | 369 |
+| 1441 | 1280.89 | 336.09 | 573.80 | 369 |
+| 1920 | 1712 | 384 | 800 | 526 |
+| 2560 | 2100 | 448 | 800 | 850 |
+| 3840 | 2100 | 448 | 800 | 850 |
+
+With hierarchy collapsed at 2560 and 3840 px, the rail is 48 px, editor 800 px and discussion
+1250 px. At 1280, 1440 and 1441 px, the collapsed editor is also capped at 800 px, with
+discussion measuring 382, 430 and 430.89 px respectively. Maximum form content is 744 px.
+Editor padding remains 28 px; discussion padding remains 24 px. Comment-card insets
+are equal at 17 px including the existing 1 px border, and paragraphs fill card content width.
+At 2560 px, recovery retains its 1280 px cap and accessible retained input; creation and
+not-found retain their 512 px caps.
+
+These measurements establish CSS allocation, not actual browser zoom, other browser engines,
+physical-device or assistive-technology acceptance.
+
+## Sizing verification
+
+The final 800 px editor cap, 2100 px dialog cap and 320 px inner discussion floor pass the
+temporary rendered matrix (4 checks) and all 5 existing Task detail browser tests after
+rebuilding assets/digests. A direct screenshot inspection also checked long unbroken comments and reachable controls. The temporary styling harness is
+outside the durable test suite. The final `mix precommit` gate reports 1,352 passed,
+3 skipped and 42 browser exclusions. The first run failed the recovery assertion in
+`test/taskman_web/live/global_task_search_test.exs:364`; that server-only test passed unchanged
+with the original seed, and the full gate passed on retry. The intermittent cause remains
+unconfirmed; no recovery code or test was changed.
+
+The original layout passed 51 focused Project LiveView tests and an independent browser matrix
+reproduction. Those checks preceded the sizing corrections; final independent source/log/screenshot
+re-review approves the sizing corrections with no findings. The operator accepted the delivered result.
+
 ## Completion and acceptance limits
 
 Implementation is complete. This specification preserves its lasting decisions and verification
 limits; the temporary implementation plan has been retired.
 The operator acknowledged the focus, test-ownership and narrow-wrapping decisions, and replaced
 the native-control deferral with the matching-background correction described above. The completed
-handoff is retired. Independent acceptance was scoped to the implementation; no full-branch review
+handoffs and implementation plans are retired. Independent acceptance was scoped to the implementation; no full-branch review
 is implied. Browser semantic evidence does not establish assistive-technology or actual zoom
 acceptance. Merge and deployment remain separate operator decisions.

@@ -6,6 +6,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
+  alias TaskmanWeb.DateTimeInput
   alias TaskmanWeb.ProjectLive.Paths
 
   alias TaskmanWeb.ProjectLive.Tasks.{
@@ -22,6 +23,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   defmodule State do
     alias Taskman.Tasks.Task
+    alias TaskmanWeb.DateTimeInput
     alias Taskman.Tasks.Hierarchy, as: TaskHierarchy
     alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Hierarchy, RelatedTasksPicker}
 
@@ -305,6 +307,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         %{"_target" => ["task", field], "task" => task_params},
         socket
       ) do
+    task_params = DateTimeInput.normalize_params(task_params, "due_at")
+
     result =
       Autosave.change(
         socket.assigns.editing.autosave,

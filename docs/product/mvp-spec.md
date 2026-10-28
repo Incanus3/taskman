@@ -96,6 +96,18 @@ nor external agent work automatically changes Task state.
   location is chosen; submission resolves that location fresh. Creation stays on its current browse
   backdrop only when the new Task is visible by direct or Include child Lists scope, otherwise it
   browses the chosen location without changing the current scope preference.
+- In Task creation and editing, Status and Priority share the Parent Task picker's chevron and
+  dark option-list presentation, with selected-option checkmarks and keyboard navigation.
+  The custom menus retain the existing form values, autosave, Done warning and conflict behavior;
+  native controls remain the fallback and recovery controls stay disabled. See the
+  [field picker contract](../specs/2026-10-28-form-controls-design.md#select-picker).
+- The Due date/time popup stages calendar and time choices until Apply. Cancel, Escape or
+  dismissal discards the popup draft; Clear is also staged until Apply. The editable field uses
+  `DD.MM.YYYY HH:mm` with 24-hour time, for example `28.10.2026 17:45`, consistently across browsers.
+  Valid text is normalized at the web-form boundary; invalid nonblank text remains visible for correction
+  without changing the saved value. Blank/whitespace-only text clears the due date. Values remain
+  local date/time values without timezone conversion.
+  See the [Due picker contract](../specs/2026-10-28-form-controls-design.md#date-time-picker).
 - If a selected List becomes unavailable while a dirty Task detail form is active, Taskman resolves
   the Task and its current location again, reconciles the unsaved input, and continues ordinary
   detail automatically without creating, updating, or moving the Task. The previous backdrop stays
@@ -128,6 +140,13 @@ nor external agent work automatically changes Task state.
   excludes covered editor controls from Tab traversal. Escape hides the overlay before dialog
   departure; hiding it while focus is inside returns focus to the labeled hierarchy trigger.
   Selecting a Task retains panel openness. The panel preference lasts for the workspace session.
+- Above 1440 CSS px, normal Task detail grows smoothly to a 2100 px dialog with a hierarchy
+  up to 448 px wide. The editor panel retains its existing padding and is capped at 800 px
+  whenever discussion is beside it. Discussion has at least 320 px of inner content width,
+  excluding panel padding and divider, in that composition. It receives the remaining space,
+  including space released by collapsing the hierarchy.
+  Comments fill their cards with symmetric insets. Recovery and other dialogs keep their existing
+  sizes. Exact allocation follows the [wide-layout specification](../specs/2026-10-28-task-detail-layout-design.md).
 - The hierarchy heading stays outside its independently scrolling body. Four levels remain readable
   at 320 CSS px with wrapping and unbroken titles; deeper branches keep their indentation and use
   contained horizontal scrolling when needed to preserve approximately 180 px of title space.

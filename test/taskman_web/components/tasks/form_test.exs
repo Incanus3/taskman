@@ -10,6 +10,113 @@ defmodule TaskmanWeb.Tasks.FormTest do
   alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
   alias TaskmanWeb.Tasks.Form
 
+  test "due enhancement keeps the text field outside its isolated staged popup" do
+    for mode <- [:new, :edit], value <- [nil, ~N[1960-05-06 09:30:42], ~N[0999-05-06 09:30:00]] do
+      document =
+        render_component(&Form.form/1, %{
+          form: %Task{id: 41, due_at: value} |> Tasks.change_task() |> to_form(),
+          mode: mode,
+          change: "autosave_task",
+          cancel: "/projects/7",
+          parent_picker: ParentPicker.empty()
+        })
+        |> LazyHTML.from_fragment()
+
+      refute Enum.empty?(
+               LazyHTML.query(
+                 document,
+                 "#task-due-at[type='text'][name='task[due_at]'][placeholder='DD.MM.YYYY HH:mm'][aria-describedby='task-due-at-format']:not([readonly])"
+               )
+             )
+
+      picker =
+        LazyHTML.query(
+          document,
+          "#task-due-at-picker[phx-hook='DateTimePicker'][phx-update='ignore'][data-context-id='41']"
+        )
+
+      refute Enum.empty?(picker)
+      assert Enum.empty?(LazyHTML.query(picker, "#task-due-at"))
+
+      refute Enum.empty?(
+               LazyHTML.query(
+                 picker,
+                 "#task-due-at-trigger[type='button'][hidden][aria-expanded='false']"
+               )
+             )
+
+      refute Enum.empty?(
+               LazyHTML.query(picker, "#task-due-at-popup[popover='manual'][role='dialog']")
+             )
+
+      for action <- ~w(apply cancel clear) do
+        refute Enum.empty?(LazyHTML.query(picker, "#task-due-at-#{action}[type='button']"))
+      end
+    end
+  end
+
+  test "recovery retains the readable day-first due field" do
+    document =
+      render_component(&Form.form/1, %{
+        form: %Task{id: 41, due_at: ~N[2030-05-06 09:30:00]} |> Tasks.change_task() |> to_form(),
+        mode: :edit,
+        change: "autosave_task",
+        cancel: "/projects/7",
+        recovery?: true,
+        parent_picker: ParentPicker.empty()
+      })
+      |> LazyHTML.from_fragment()
+
+    refute Enum.empty?(
+             LazyHTML.query(document, "#task-due-at[readonly][value='06.05.2030 09:30']")
+           )
+  end
+
+  test "ordinary pickers retain native submission and expose server values for enhancement" do
+    for mode <- [:new, :edit] do
+      document =
+        render_component(&Form.form/1, %{
+          form: %Task{status: :in_review, priority: :high} |> Tasks.change_task() |> to_form(),
+          mode: mode,
+          change: "autosave_task",
+          cancel: "/projects/7",
+          parent_picker: ParentPicker.empty()
+        })
+        |> LazyHTML.from_fragment()
+
+      for {field, value, label} <- [
+            {"status", "in_review", "Status"},
+            {"priority", "high", "Priority"}
+          ] do
+        refute Enum.empty?(
+                 LazyHTML.query(
+                   document,
+                   "select#task-#{field}[name='task[#{field}]']:not([disabled]) option[value='#{value}'][selected]"
+                 )
+               )
+
+        picker =
+          LazyHTML.query(
+            document,
+            "#task-#{field}-picker[phx-update='ignore'][data-value='#{value}'][hidden]"
+          )
+
+        refute Enum.empty?(picker)
+
+        refute Enum.empty?(
+                 LazyHTML.query(
+                   picker,
+                   "#task-#{field}-trigger[aria-haspopup='listbox'][aria-expanded='false'][aria-labelledby='task-#{field}-label']"
+                 )
+               )
+
+        assert LazyHTML.text(LazyHTML.query(picker, "#task-#{field}-label")) == label
+        refute Enum.empty?(LazyHTML.query(picker, "#task-#{field}-options[role='listbox']"))
+        assert Enum.empty?(LazyHTML.query(picker, "select"))
+      end
+    end
+  end
+
   test "renders accessible ordinary-field conflict notices with stable resolution actions" do
     task = %Task{
       id: 41,

@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
+  alias TaskmanWeb.DateTimeInput
   alias TaskmanWeb.ProjectLive.Paths
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, LocationScope, Messages, ParentPicker}
 
@@ -140,6 +141,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
   def handle_event("validate_task", %{"task" => task_params} = params, socket) do
+    task_params = DateTimeInput.normalize_params(task_params, "due_at")
+
     changeset =
       socket.assigns.workspace.selected_project
       |> Tasks.change_task(task_params)
@@ -159,6 +162,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   end
 
   def handle_event("save_task", %{"task" => task_params} = params, socket) do
+    task_params = DateTimeInput.normalize_params(task_params, "due_at")
     project = socket.assigns.workspace.selected_project
     location = Map.get(params, "location") || socket.assigns.creation.location || "project"
 

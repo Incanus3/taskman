@@ -840,7 +840,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     |> render_change(%{"_target" => ["task", "due_at"]})
 
     assert Tasks.get_task_for_project(project, task.id).due_at == ~N[2026-08-03 16:00:00]
-    assert has_element?(view, "#task-due-at[value='2026-08-03T16:00']")
+    assert has_element?(view, "#task-due-at[value='03.08.2026 16:00']")
 
     view
     |> form("#task-form", task: %{due_at: ""})
@@ -1156,7 +1156,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_element?(view, "#task-description", "Keep this draft")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
     assert has_element?(view, "#task-priority option[selected][value='high']")
-    assert has_element?(view, "#task-due-at[value='2026-08-04T09:30']")
+    assert has_element?(view, "#task-due-at[value='04.08.2026 09:30']")
     assert Tasks.list_tasks_for_project(project) == []
   end
 

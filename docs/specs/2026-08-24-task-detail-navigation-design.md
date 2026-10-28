@@ -11,9 +11,9 @@ Related Tasks controls and narrow-screen order: main fields, Related Tasks, Acti
 The original increment's relationship exclusions below are historical scope, not current limits.
 
 **Hierarchy presentation update:** The approved
-[readable Task detail hierarchy design](2026-10-28-task-detail-hierarchy-design.md) replaces the
+[readable Task detail hierarchy design](2026-10-28-task-detail-layout-design.md) replaces the
 hierarchy row presentation, responsive layout, dialog header and hierarchy accessibility markup
-described below. Implementation is pending. Domain relationships, navigation state and editing
+described below. The replacement is implemented and accepted. Domain relationships, navigation state and editing
 safeguards remain governed by their existing contracts.
 
 ## Goal
