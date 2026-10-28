@@ -19,7 +19,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     RelatedTasksPicker
   }
 
-  @events ~w(toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
+  @events ~w(toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
 
   defmodule State do
     alias Taskman.Tasks.Task
@@ -195,6 +195,36 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("toggle_hierarchy_status_filter", _params, socket) do
+    {:noreply,
+     update_state(socket, fn state ->
+       State.put_hierarchy(state, %{state.hierarchy | filter_open?: !state.hierarchy.filter_open?})
+     end)}
+  end
+
+  def handle_event("close_hierarchy_status_filter", _params, socket) do
+    {:noreply,
+     update_state(socket, fn state ->
+       State.put_hierarchy(state, %{state.hierarchy | filter_open?: false})
+     end)}
+  end
+
+  def handle_event("filter_hierarchy_statuses", %{"hierarchy_status_filter" => params}, socket)
+      when is_map(params) do
+    statuses = Map.get(params, "statuses", [])
+
+    if is_list(statuses) do
+      {:noreply,
+       update_state(socket, fn state ->
+         State.put_hierarchy(state, Hierarchy.filter_statuses(state.hierarchy, statuses))
+       end)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("filter_hierarchy_statuses", _params, socket), do: {:noreply, socket}
+
   def handle_event("toggle_task_hierarchy_node", %{"task-id" => task_id}, socket) do
     case parse_navigation_identity(task_id) do
       {:ok, task_id} ->

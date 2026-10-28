@@ -134,10 +134,17 @@ nor external agent work automatically changes Task state.
   nested lists, Task links and named disclosure buttons provide ordinary Tab/Enter/Space navigation.
   The selected Task and its ancestors remain expanded with decorative markers; optional branches
   retain manual expansion while navigating within the same tree.
+- A status filter beside the hierarchy heading is independent of the main listing. It retains
+  Tasks with checked statuses, ancestors of matching Tasks, and the inclusive root-to-selected
+  path. Filtering preserves parentage and manual expansion, including when matching descendants
+  are in collapsed branches. All statuses start checked; choices survive navigation within the
+  open dialog and reset when it closes. See the
+  [hierarchy status filter contract](../specs/2026-10-28-hierarchy-status-filter-design.md).
 - At 1280 CSS px and wider, hierarchy, editor and discussion appear beside one another. From 1024
   through 1279 px, discussion follows the editor beside the hierarchy. Below 1024 px, the open
   hierarchy overlays the editor below the header. Opening the overlay focuses its hide control and
-  excludes covered editor controls from Tab traversal. Escape hides the overlay before dialog
+  excludes covered editor controls from Tab traversal. Escape closes an open hierarchy status
+  popup first, then hides the overlay before dialog
   departure; hiding it while focus is inside returns focus to the labeled hierarchy trigger.
   Selecting a Task retains panel openness. The panel preference lasts for the workspace session.
 - Above 1440 CSS px, normal Task detail grows smoothly to a 2100 px dialog with a hierarchy

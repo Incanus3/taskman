@@ -6,7 +6,7 @@ defmodule TaskmanWeb.Tasks.Detail do
   alias TaskmanWeb.ProjectLive.Tasks.Comments
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
-  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks, Status}
+  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks, Status, Table}
 
   attr :task, Task, required: true
   attr :close_id, :string, required: true
@@ -66,6 +66,14 @@ defmodule TaskmanWeb.Tasks.Detail do
       assigns
       |> assign(:comments, %{comments | form: form})
       |> assign(:related_picker, assigns.related_picker || RelatedTasksPicker.empty())
+      |> assign(:hierarchy_root, TaskHierarchy.visible_root(assigns.task_hierarchy))
+      |> assign(
+        :hierarchy_status_form,
+        to_form(
+          %{"statuses" => Enum.map(assigns.task_hierarchy.visible_statuses, &Atom.to_string/1)},
+          as: :hierarchy_status_filter
+        )
+      )
       |> assign(:location_path, TaskHierarchy.selected_location_path(assigns.task_hierarchy))
 
     ~H"""
@@ -107,13 +115,25 @@ defmodule TaskmanWeb.Tasks.Detail do
           >
             Task hierarchy
           </h3>
+          <Table.status_filter
+            id="task-hierarchy-status-filter"
+            form={@hierarchy_status_form}
+            visible_statuses={@task_hierarchy.visible_statuses}
+            open?={@task_hierarchy.filter_open?}
+            toggle_event="toggle_hierarchy_status_filter"
+            close_event="close_hierarchy_status_filter"
+            change_event="filter_hierarchy_statuses"
+            label="Hierarchy statuses"
+            compact?={true}
+            top_layer?={true}
+          />
         </div>
 
         <div id="task-hierarchy-scroll" class="task-hierarchy-content">
           <nav id="task-hierarchy-navigation" aria-labelledby="task-hierarchy-title">
             <ul class="task-hierarchy-root">
               <.hierarchy_node
-                node={@task_hierarchy.hierarchy.root}
+                node={@hierarchy_root}
                 task_hierarchy={@task_hierarchy}
                 task_path={@task_path}
                 level={1}

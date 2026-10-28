@@ -229,6 +229,15 @@
   flex: none;
 }
 
+.hierarchy-status-filter-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  max-width: calc(100vw - 1rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 #task-hierarchy-scroll {
   min-height: 0;
   overflow: auto;
@@ -444,6 +453,11 @@
     position: relative;
     inset: auto;
     width: auto;
+  }
+
+  /* Reveal the tree at its settled width instead of rewrapping it during expansion. */
+  #task-hierarchy-scroll {
+    min-width: calc(var(--task-detail-hierarchy-width, 21rem) - 1px);
   }
 
   #task-detail-layout[data-hierarchy-expanded="true"] {

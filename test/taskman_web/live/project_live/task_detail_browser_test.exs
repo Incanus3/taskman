@@ -573,6 +573,53 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
            ) == false
   end
 
+  # Only a browser can expose intrinsic-height changes during the sidebar transition.
+  test "hierarchy expansion does not overshoot the dialog's settled height", c do
+    root = task_fixture(c.project, c.list, %{title: "Work with a nearly full hierarchy"})
+
+    for n <- 1..8 do
+      task_fixture(c.project, %{title: "Child #{n}: " <> String.duplicate("readable work ", 5)},
+        parent: root
+      )
+    end
+
+    visit(c, root)
+
+    for width <- [1440, 2048] do
+      resize(c.session, width, 1200)
+
+      # Finish initial sizing before sampling both directions frame by frame.
+      js(c.session, "document.getAnimations().forEach(a => a.finish())")
+      assert js(c.session, "return [innerWidth, innerHeight]") == [width, 1200]
+
+      for _ <- 1..2 do
+        js(c.session, ~S"""
+        const dialog = document.querySelector('#task-modal-content');
+        const layout = document.querySelector('#task-detail-layout');
+        const height = () => dialog.getBoundingClientRect().height;
+        window.__hierarchyHeights = [height()];
+        delete layout.dataset.sampled;
+        document.querySelector('#task-hierarchy-toggle').click();
+        const sample = () => {
+          window.__hierarchyHeights.push(height());
+          if (layout.getAnimations({subtree: true}).some(a => a.playState === 'running')) {
+            requestAnimationFrame(sample);
+          } else {
+            layout.dataset.sampled = 'true';
+          }
+        };
+        requestAnimationFrame(sample);
+        """)
+
+        Browser.find(c.session, Query.css("#task-detail-layout[data-sampled='true']"))
+        heights = js(c.session, "return window.__hierarchyHeights")
+        ceiling = max(hd(heights), List.last(heights))
+        assert Enum.max(heights) <= ceiling + 1, "dialog heights: #{inspect(heights)}"
+        assert js(c.session, "return document.documentElement.scrollWidth") <= width + 1
+      end
+    end
+  end
+
   # Catches squeezed text, page overflow, obscured controls and incorrect responsive composition.
   test "hierarchy and discussion remain reachable across viewport boundaries", c do
     visit(c, c.selected)
@@ -609,6 +656,115 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
       assert after_scroll["headingTop"] == s["headingTop"]
       assert after_scroll["toggleHit"]
     end
+  end
+
+  # Browser-owned top-layer clipping, focus, and Escape precedence cannot be proved by LiveView tests.
+  test "hierarchy status popup stays reachable and dismisses before the overlay at every size",
+       c do
+    visit(c, c.selected)
+
+    for {width, height} <- [{1440, 900}, {390, 844}, {320, 400}] do
+      resize(c.session, width, height)
+      wait(c.session, &(&1["viewport"] == width && &1["height"] == height && &1["expanded"]))
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-button"))
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu:popover-open"))
+
+      Browser.find(
+        c.session,
+        Query.css("#task-hierarchy-status-filter-button[aria-expanded='true']")
+      )
+
+      bounds =
+        js(c.session, ~S"""
+        const menu = document.querySelector('#task-hierarchy-status-filter-menu');
+        const option = document.querySelector('#task-hierarchy-status-filter-option-will_not_do');
+        option.scrollIntoView({block: 'nearest'});
+        const r = menu.getBoundingClientRect(), o = option.getBoundingClientRect();
+        return {top:r.top, bottom:r.bottom, left:r.left, right:r.right,
+          hit:option.contains(document.elementFromPoint(o.x+o.width/2,o.y+o.height/2))};
+        """)
+
+      assert bounds["top"] >= 0
+      assert bounds["bottom"] <= height
+      assert bounds["left"] >= 0
+      assert bounds["right"] <= width
+      assert bounds["hit"]
+
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-option-will_not_do"))
+
+      Browser.find(
+        c.session,
+        Query.css("#task-hierarchy-status-filter-option-will_not_do:not(:checked)")
+      )
+
+      assert js(c.session, "return document.activeElement.id") ==
+               "task-hierarchy-status-filter-option-will_not_do"
+
+      {:ok, _} =
+        Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.third.id), %{
+          title: "Fresh title #{width}"
+        })
+
+      Browser.find(
+        c.session,
+        Query.css("#task-hierarchy-link-#{c.third.id}", text: "Fresh title #{width}")
+      )
+
+      assert js(c.session, "return document.activeElement.id") ==
+               "task-hierarchy-status-filter-option-will_not_do"
+
+      Browser.send_keys(c.session, [:escape])
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu", count: 0))
+      assert state(c.session)["expanded"]
+      assert state(c.session)["focus"] == "task-hierarchy-status-filter-button"
+
+      Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+      wait(c.session, &(!&1["expanded"]))
+      Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+      wait(c.session, & &1["expanded"])
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-button"))
+
+      Browser.find(
+        c.session,
+        Query.css("#task-hierarchy-status-filter-option-will_not_do:not(:checked)")
+      )
+
+      Browser.click(c.session, Query.css("#task-hierarchy-title"))
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu", count: 0))
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-button"))
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-option-will_not_do"))
+      Browser.send_keys(c.session, [:escape])
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu", count: 0))
+    end
+  end
+
+  test "comment departure keeps its confirmation above the hierarchy status popup", c do
+    resize(c.session, 390, 844)
+    visit(c, c.selected)
+    Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+    wait(c.session, &(!&1["expanded"]))
+    Browser.fill_in(c.session, Query.css("#task-comment-text"), with: "Retain this draft")
+    Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+    wait(c.session, & &1["expanded"])
+    Browser.click(c.session, Query.css("#task-hierarchy-status-filter-button"))
+    Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu:popover-open"))
+    js(c.session, "document.querySelector('#task-hierarchy-link-#{c.third.id}').focus()")
+    Browser.send_keys(c.session, [:enter])
+    Browser.find(c.session, Query.css("#task-comment-departure"))
+
+    assert js(c.session, ~S"""
+           const back = document.querySelector('#task-comment-departure-go-back');
+           const r = back.getBoundingClientRect();
+           return back.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)) &&
+             document.activeElement === back &&
+             !document.querySelector('#task-hierarchy-status-filter-menu')?.matches(':popover-open');
+           """)
+
+    Browser.click(c.session, Query.css("#task-comment-departure-go-back"))
+    Browser.find(c.session, Query.css("#task-comment-departure", count: 0))
+
+    assert js(c.session, "return document.querySelector('#task-comment-text').value") ==
+             "Retain this draft"
   end
 
   test "closed narrow editor contains its long parent control and keeps fields reachable", c do

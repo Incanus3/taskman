@@ -97,6 +97,63 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     assert TaskHierarchy.clear(state) == TaskHierarchy.empty()
   end
 
+  test "status projection searches collapsed descendants and preserves ancestry and sibling order" do
+    source = %Hierarchy{
+      selected_task_id: 3,
+      root:
+        status_node(1, :done, [
+          status_node(2, :done, [status_node(3, :done)]),
+          status_node(4, :done, [status_node(5, :done, [status_node(6, :pending)])]),
+          status_node(7, :done),
+          status_node(8, :pending)
+        ])
+    }
+
+    state = TaskHierarchy.load(TaskHierarchy.empty(), source)
+    filtered = TaskHierarchy.filter_statuses(state, ["pending", "invalid", "pending"])
+    projected = TaskHierarchy.visible_root(filtered)
+
+    assert Enum.map(projected.children, & &1.task.id) == [2, 4, 8]
+
+    assert [%{task: %{id: 5}, children: [%{task: %{id: 6}}]}] =
+             Enum.at(projected.children, 1).children
+
+    refute TaskHierarchy.expanded?(filtered, 4)
+    assert filtered.hierarchy == source
+    assert state.hierarchy == source
+    assert filtered.visible_statuses == [:pending]
+  end
+
+  test "no checked statuses retains only the current path and navigation recomputes it" do
+    state = TaskHierarchy.load(TaskHierarchy.empty(), hierarchy(3))
+    assert TaskHierarchy.visible_root(state) == state.hierarchy.root
+
+    filtered = state |> TaskHierarchy.toggle(4) |> TaskHierarchy.filter_statuses([])
+    assert tree_ids(TaskHierarchy.visible_root(filtered)) == [1, 2, 3]
+
+    navigated = TaskHierarchy.load(filtered, hierarchy(5))
+    assert tree_ids(TaskHierarchy.visible_root(navigated)) == [1, 4, 5]
+    assert TaskHierarchy.expanded?(navigated, 4)
+    assert navigated.visible_statuses == []
+    assert TaskHierarchy.load(navigated, other_hierarchy()).visible_statuses == []
+    assert TaskHierarchy.clear(navigated).visible_statuses == Task.statuses()
+  end
+
+  test "restoring checked statuses restores branches and their manual expansion" do
+    state = TaskHierarchy.empty() |> TaskHierarchy.load(hierarchy(3)) |> TaskHierarchy.toggle(4)
+    filtered = TaskHierarchy.filter_statuses(state, [])
+    restored = TaskHierarchy.filter_statuses(filtered, Task.statuses())
+    assert TaskHierarchy.visible_root(restored) == state.hierarchy.root
+    assert TaskHierarchy.expanded?(restored, 4)
+  end
+
+  defp status_node(id, status, children \\ []) do
+    node = hierarchy_node(id, children)
+    %{node | task: %{node.task | status: status}}
+  end
+
+  defp tree_ids(node), do: [node.task.id | Enum.flat_map(node.children, &tree_ids/1)]
+
   defp hierarchy(selected_task_id) do
     %Hierarchy{
       selected_task_id: selected_task_id,

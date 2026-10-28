@@ -302,6 +302,14 @@ usage shows deeper trees are common; do not add limits, pagination or virtualiza
 
 ## Expansion and navigation preserve current state
 
+The [modal-local status filter](2026-10-28-hierarchy-status-filter-design.md) governs which
+branches remain visible. The rules below continue to govern navigation and expansion of those
+branches; filter changes do not reset manual expansion choices.
+
+During desktop sidebar expansion, the tree retains its settled width inside the animated, clipped
+panel. Titles therefore do not temporarily rewrap and increase the dialog height. Browser animation
+checks at 1440 and 2048 CSS px verify that height never overshoots the settled endpoint heights.
+
 - Show the connected tree from the selected Task's topmost ancestor in existing sibling order.
   A disconnected Task is the selected root with no disclosure; retain the truthful empty-state copy.
 - The selected Task and all ancestors stay expanded. D6 uses a decorative downward marker
