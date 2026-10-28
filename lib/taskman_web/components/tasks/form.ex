@@ -185,6 +185,8 @@ defmodule TaskmanWeb.Tasks.Form do
         <.input
           field={@form[:status]}
           id="task-status"
+          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
+          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
           type="select"
           label="Status"
           options={select_options(Table.status_options(), @form[:status].value, @recovery?)}
@@ -206,6 +208,8 @@ defmodule TaskmanWeb.Tasks.Form do
         <.input
           field={@form[:priority]}
           id="task-priority"
+          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
+          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
           type="select"
           label="Priority"
           options={select_options(Table.priority_options(), @form[:priority].value, @recovery?)}
@@ -227,6 +231,8 @@ defmodule TaskmanWeb.Tasks.Form do
         <.input
           field={@form[:due_at]}
           id="task-due-at"
+          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15 [color-scheme:dark]"
+          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
           type="datetime-local"
           label="Due date and time"
           step="60"

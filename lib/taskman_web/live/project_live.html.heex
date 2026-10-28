@@ -12,7 +12,7 @@
 >
   <div
     id="taskman-workspace"
-    phx-hook=".TaskDetailLayout"
+    phx-hook="TaskmanWeb.ProjectLive.TaskDetailLayout"
     class="h-full bg-slate-950 text-slate-100"
   >
     <div
@@ -555,6 +555,27 @@
         )
       }
     >
+      <:header :let={%{close_id: close_id, on_close: on_close}}>
+        <Detail.header task={@editing.selected_task} close_id={close_id} on_close={on_close}>
+          <:actions>
+            <ShareTaskView.control
+              id="task-modal-share-task-view"
+              label="Share Task"
+              share_path={
+                Paths.task_detail_path(
+                  @workspace.selected_project,
+                  @workspace.selected_list,
+                  @editing.selected_task,
+                  @workspace.include_children?
+                )
+              }
+              include_children?={@workspace.include_children?}
+              visible_statuses={@listing.visible_statuses}
+              hydrated?={@preferences_hydrated?}
+            />
+          </:actions>
+        </Detail.header>
+      </:header>
       <Detail.detail
         task={@editing.selected_task}
         comments={@comments}
@@ -593,28 +614,10 @@
           end
         }
         task_move={@task_move}
-      >
-        <:header_actions>
-          <ShareTaskView.control
-            id="task-modal-share-task-view"
-            label="Share Task"
-            share_path={
-              Paths.task_detail_path(
-                @workspace.selected_project,
-                @workspace.selected_list,
-                @editing.selected_task,
-                @workspace.include_children?
-              )
-            }
-            include_children?={@workspace.include_children?}
-            visible_statuses={@listing.visible_statuses}
-            hydrated?={@preferences_hydrated?}
-          />
-        </:header_actions>
-      </Detail.detail>
+      />
     </.modal>
 
-    <div
+    <.focus_wrap
       :if={@comment_departure.confirming?}
       id="task-comment-departure"
       role="dialog"
@@ -675,7 +678,7 @@
           </button>
         </div>
       </div>
-    </div>
+    </.focus_wrap>
 
     <.modal
       :if={
@@ -722,98 +725,5 @@
         </div>
       </div>
     </.modal>
-
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".TaskDetailLayout">
-      export default {
-        mounted() {
-          this.hierarchyPreference = null
-
-          this.onWorkspaceClick = event => {
-            const toggle = event.target.closest("#task-hierarchy-toggle")
-
-            if (toggle && this.el.contains(toggle)) {
-              const expanded = this.currentExpanded()
-              this.rememberAndApply(!expanded)
-              return
-            }
-
-            const overlay = event.target.closest("#task-hierarchy-overlay")
-
-            if (overlay && this.el.contains(overlay) && this.narrowOverlayExpanded()) {
-              this.rememberAndApply(false)
-            }
-          }
-
-          this.onWorkspaceKeydown = event => {
-            if (event.key === "Escape" && this.narrowOverlayExpanded()) {
-              event.preventDefault()
-              event.stopPropagation()
-              this.rememberAndApply(false)
-            }
-          }
-
-          this.el.addEventListener("click", this.onWorkspaceClick)
-          this.el.addEventListener("keydown", this.onWorkspaceKeydown)
-          this.syncHierarchy()
-        },
-
-        updated() {
-          this.syncHierarchy()
-        },
-
-        destroyed() {
-          this.el.removeEventListener("click", this.onWorkspaceClick)
-          this.el.removeEventListener("keydown", this.onWorkspaceKeydown)
-        },
-
-        layout() {
-          return this.el.querySelector("#task-detail-layout")
-        },
-
-        currentExpanded() {
-          return this.layout()?.dataset.hierarchyExpanded === "true"
-        },
-
-        narrowOverlayExpanded() {
-          return !window.matchMedia("(min-width: 48rem)").matches && this.currentExpanded()
-        },
-
-        rememberAndApply(expanded) {
-          this.hierarchyPreference = expanded
-          this.applyExpanded(expanded)
-        },
-
-        syncHierarchy() {
-          const layout = this.layout()
-          if (!layout) return
-
-          const contextualDefault = layout.dataset.hasHierarchy === "true"
-          this.applyExpanded(this.hierarchyPreference ?? contextualDefault)
-        },
-
-        applyExpanded(expanded) {
-          const layout = this.layout()
-          if (!layout) return
-
-          layout.dataset.hierarchyExpanded = String(expanded)
-
-          const toggle = layout.querySelector("#task-hierarchy-toggle")
-          if (!toggle) return
-
-          toggle.setAttribute("aria-expanded", String(expanded))
-          toggle.setAttribute(
-            "aria-label",
-            expanded ? "Collapse task hierarchy" : "Expand task hierarchy"
-          )
-
-          layout
-            .querySelector("[data-hierarchy-icon='expand']")
-            ?.classList.toggle("hidden", expanded)
-          layout
-            .querySelector("[data-hierarchy-icon='collapse']")
-            ?.classList.toggle("hidden", !expanded)
-        }
-      }
-    </script>
   </div>
 </Layouts.app>

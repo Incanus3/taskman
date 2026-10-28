@@ -13,6 +13,8 @@
 
 ## Specifications
 
+- [Readable Task detail hierarchy and dedicated dialog header (implemented and operator accepted)](specs/2026-10-28-task-detail-hierarchy-design.md)
+
 - [Task tree guides in the main listing (implemented and operator accepted)](specs/2026-10-27-task-tree-guides-design.md)
 
 - [Expandable Task listing (implemented and operator accepted)](specs/2026-10-27-expandable-task-listing-design.md)
@@ -30,11 +32,11 @@
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
 - [Full Task creation form](specs/2026-08-03-full-task-creation-form-design.md)
 - [Alpine Elixir CI](specs/2026-08-10-alpine-elixir-ci-design.md)
-- [Task detail and navigation (Activity/Sessions and relationship presentation superseded)](specs/2026-08-24-task-detail-navigation-design.md)
+- [Task detail and navigation (Activity/Sessions, relationship presentation and hierarchy layout superseded)](specs/2026-08-24-task-detail-navigation-design.md)
 - [Task comments (implemented)](specs/2026-09-26-task-comments-design.md)
 - [Lists and nested organization (navigation/filter presentation superseded)](specs/2026-08-26-lists-nested-organization-design.md)
 - [API, CLI, and agent skill (Project representation superseded; operation surface extended)](specs/2026-08-29-api-cli-agent-skill-design.md)
-- [Parent-child Task hierarchy (parent search matching superseded)](specs/2026-08-30-parent-child-task-hierarchy-design.md)
+- [Parent-child Task hierarchy (parent search matching and hierarchy presentation superseded)](specs/2026-08-30-parent-child-task-hierarchy-design.md)
 - [Task blocking relationships and Done warning (implemented)](specs/2026-09-27-task-blocking-relationships-design.md)
 - [Global Task jump search (implemented)](specs/2026-09-29-global-task-search-design.md)
 - [Immediate cooperative workspace updates](specs/2026-09-01-live-task-updates-design.md)
@@ -89,6 +91,7 @@
 ## Prototypes
 
 - [Navigation and MVP visual guidance](prototypes/navigation.html)
+- [Task detail hierarchy visual source and snapshot authority](specs/2026-10-28-task-detail-hierarchy-design.md#visual-references-and-their-authority)
 
 ## Archive
 

@@ -113,6 +113,56 @@ defmodule TaskmanWeb.CoreComponentsTest do
     refute deferred_actions =~ "pop_focus"
   end
 
+  test "a header slot owns the only Close control and receives the dismissal action" do
+    for deferred? <- [false, true] do
+      document =
+        render_component(&header_modal/1, %{deferred?: deferred?})
+        |> LazyHTML.from_fragment()
+
+      assert Enum.count(LazyHTML.query(document, "#header-modal-close")) == 1
+      assert Enum.count(LazyHTML.query(document, "#custom-header #header-modal-close")) == 1
+
+      assert Enum.count(
+               LazyHTML.query(
+                 document,
+                 "#header-modal-content[aria-labelledby='header-modal-title']"
+               )
+             ) == 1
+
+      [actions] =
+        document |> LazyHTML.query("#custom-header button") |> LazyHTML.attribute("phx-click")
+
+      assert actions =~ "cancel-header"
+      assert actions =~ ~s("hide") == !deferred?
+      assert actions =~ "pop_focus" == !deferred?
+    end
+  end
+
+  test "a caller without a header retains exactly one Close control" do
+    document = render_component(&shown_modal/1, %{}) |> LazyHTML.from_fragment()
+
+    assert Enum.count(LazyHTML.query(document, "#task-modal-close[aria-label='Close dialog']")) ==
+             1
+  end
+
+  defp header_modal(assigns) do
+    ~H"""
+    <CoreComponents.modal
+      id="header-modal"
+      defer_cancel?={@deferred?}
+      on_cancel={JS.push("cancel-header")}
+    >
+      <:header :let={%{close_id: close_id, on_close: on_close}}>
+        <header id="custom-header">
+          <h2 id="header-modal-title">Task</h2>
+          <button id={close_id} phx-click={on_close}>Close</button>
+        </header>
+      </:header>
+      <p>Dialog content</p>
+    </CoreComponents.modal>
+    """
+  end
+
   defp shown_modal(assigns) do
     ~H"""
     <CoreComponents.modal id="task-modal" show on_cancel={JS.push("cancel-task")}>

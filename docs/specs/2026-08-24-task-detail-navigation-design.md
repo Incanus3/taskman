@@ -10,6 +10,12 @@ The [blocking relationships design](2026-09-27-task-blocking-relationships-desig
 Related Tasks controls and narrow-screen order: main fields, Related Tasks, Activity/Sessions.
 The original increment's relationship exclusions below are historical scope, not current limits.
 
+**Hierarchy presentation update:** The approved
+[readable Task detail hierarchy design](2026-10-28-task-detail-hierarchy-design.md) replaces the
+hierarchy row presentation, responsive layout, dialog header and hierarchy accessibility markup
+described below. Implementation is pending. Domain relationships, navigation state and editing
+safeguards remain governed by their existing contracts.
+
 ## Goal
 
 Extend Taskman's existing URL-backed Task editing modal into the MVP Task-detail surface without

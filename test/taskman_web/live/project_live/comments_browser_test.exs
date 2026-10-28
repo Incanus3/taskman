@@ -198,6 +198,15 @@ defmodule TaskmanWeb.ProjectLive.CommentsBrowserTest do
       Browser.find(session, Query.css("#task-sessions-tab[aria-selected='true']"))
       assert state(session)["tab"] == "sessions"
       assert state(session)["sessionsUnderTabs"]
+      Browser.resize_window(session, 320, 720)
+      Browser.click(session, Query.css("#task-activity-tab"))
+      Browser.find(session, Query.css("#task-comment-text"))
+      Browser.fill_in(session, Query.css("#task-comment-text"), with: "Narrow retained draft")
+      Browser.click(session, Query.css("#task-sessions-tab"))
+      Browser.click(session, Query.css("#task-activity-tab"))
+      Browser.find(session, Query.css("#task-activity-tab[aria-selected='true']"))
+      assert state(session)["draft"] == "Narrow retained draft"
+      assert js(session, "return document.documentElement.scrollWidth <= innerWidth + 1")
     after
       Wallaby.end_session(session)
     end

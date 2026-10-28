@@ -60,12 +60,12 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
 
         assert has_element?(
                  view,
-                 "#task-detail-actions #task-modal-share-task-view[data-share-path='#{path}']"
+                 "#task-dialog-header #task-modal-share-task-view[data-share-path='#{path}']"
                )
 
         assert has_element?(
                  view,
-                 "#task-detail-actions > div:first-child #task-modal-share-task-view"
+                 "#task-dialog-actions #task-modal-share-task-view"
                )
 
         assert has_element?(

@@ -23,7 +23,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     {:ok, view, _} = live(conn, path)
 
     view |> form("#task-comment-form", comment: %{text: "  "}) |> render_change()
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-dialog-header #task-modal-close") |> render_click()
     refute has_element?(view, "#task-comment-departure")
     assert_patch(view, "/projects/#{project.id}")
 
@@ -118,22 +118,22 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     project = project_fixture(%{})
     task = task_fixture(project)
     path = "/projects/#{project.id}/tasks/#{task.id}"
-    destination = "/projects/#{project.id}?include_children=false"
+    destination = "/projects/#{project.id}"
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: "Hold"}) |> render_change()
-    view |> render_hook("request_task_departure", %{"destination" => destination})
+    view |> element("#task-dialog-header #task-modal-close") |> render_click()
     view |> element("#task-comment-departure-go-back") |> render_click()
     refute has_element?(view, "#task-comment-departure")
     assert has_element?(view, "#task-comment-text", "Hold")
 
-    view |> render_hook("request_task_departure", %{"destination" => destination})
+    view |> element("#task-dialog-header #task-modal-close") |> render_click()
     view |> element("#task-comment-departure-discard") |> render_click()
     assert_patch(view, destination)
     assert {:ok, []} = Tasks.list_comments(project, task)
 
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: "Post once"}) |> render_change()
-    view |> render_hook("request_task_departure", %{"destination" => destination})
+    view |> element("#task-dialog-header #task-modal-close") |> render_click()
     view |> element("#task-comment-departure-submit") |> render_click()
     assert_patch(view, destination)
     assert {:ok, [comment]} = Tasks.list_comments(project, task)
