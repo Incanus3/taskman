@@ -30,4 +30,17 @@ defmodule TaskmanWeb.FaviconTest do
     assert <<0, 0, 1, 0, _rest::binary>> = response(conn, 200)
     assert get_resp_header(conn, "content-type") == ["image/vnd.microsoft.icon"]
   end
+
+  test "digested ICO filenames are publicly served", %{conn: conn} do
+    digest = :crypto.hash(:md5, Integer.to_string(System.unique_integer([:positive])))
+    filename = "favicon-#{Base.encode16(digest, case: :lower)}.ico"
+    static = Path.join(:code.priv_dir(:taskman), "static")
+    path = Path.join(static, filename)
+    original = File.read!(Path.join(static, "favicon.ico"))
+    File.write!(path, original, [:exclusive])
+    on_exit(fn -> File.rm!(path) end)
+
+    conn = get(conn, "/#{filename}?vsn=d")
+    assert response(conn, 200) == original
+  end
 end

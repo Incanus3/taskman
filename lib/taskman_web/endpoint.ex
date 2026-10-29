@@ -27,6 +27,7 @@ defmodule TaskmanWeb.Endpoint do
     from: :taskman,
     gzip: not code_reloading?,
     only: TaskmanWeb.static_paths(),
+    only_matching: ["favicon-"],
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the
