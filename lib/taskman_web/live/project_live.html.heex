@@ -285,6 +285,11 @@
                   visible_statuses={@listing.visible_statuses}
                   open?={@listing.filter_open?}
                 />
+                <Table.sort_menu
+                  task_sort={@listing.sort}
+                  open?={@listing.sort_open?}
+                  include_children?={@workspace.include_children?}
+                />
                 <.link
                   :if={is_nil(@recovery.snapshot)}
                   id="add-task"
@@ -324,7 +329,7 @@
               <div
                 :if={!@listing.tasks_empty?}
                 id="task-table-header"
-                class="sticky top-0 z-20 hidden grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 sm:grid xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
+                class="sticky top-0 z-20 hidden grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-slate-700 bg-slate-900 px-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 xl:grid xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
               >
                 <span
                   id="task-expansion-header"

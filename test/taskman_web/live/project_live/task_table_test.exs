@@ -358,6 +358,42 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
     refute has_element?(view, "#task-status-filter-menu")
   end
 
+  test "sorting menu shares table sorting and supports dismissal", %{conn: conn} do
+    project = project_fixture(%{})
+    beta = task_fixture(project, %{title: "Beta"})
+    alpha = task_fixture(project, %{title: "Alpha"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+
+    view |> element("#task-sort-button") |> render_click()
+    assert has_element?(view, "#task-sort-button[aria-expanded='true']")
+
+    for field <- ~w(id title status priority) do
+      assert has_element?(view, "#task-sort-option-#{field}")
+    end
+
+    view |> element("#task-sort-option-title") |> render_click()
+    assert has_element?(view, "#task-sort-button[aria-expanded='false']")
+    assert has_element?(view, "#task-title-header[aria-sort='ascending']")
+    assert has_element?(view, "#tasks > #tasks-#{alpha.id} + #tasks-#{beta.id}")
+
+    view |> element("#task-sort-button") |> render_click()
+    assert has_element?(view, "#task-sort-option-title[aria-pressed='true']", "Ascending")
+    view |> element("#task-sort-option-title") |> render_click()
+    assert has_element?(view, "#tasks > #tasks-#{beta.id} + #tasks-#{alpha.id}")
+
+    view |> element("#sort-task-id") |> render_click()
+    view |> element("#task-sort-button") |> render_click()
+    assert has_element?(view, "#task-sort-option-id[aria-pressed='true']", "Ascending")
+    view |> element("#task-sort") |> render_keydown(%{"key" => "Escape"})
+    assert has_element?(view, "#task-sort-button[aria-expanded='false']")
+
+    view |> element("#include-child-lists") |> render_click()
+    view |> element("#task-sort-button") |> render_click()
+    assert has_element?(view, "#task-sort-option-location")
+    view |> element("#task-sort-option-location") |> render_click()
+    assert has_element?(view, "#task-location-header[aria-sort='ascending']")
+  end
+
   test "sorts titles ascending on first click and descending on the second", %{conn: conn} do
     project = project_fixture(%{})
     beta = task_fixture(project, %{title: "Beta"})

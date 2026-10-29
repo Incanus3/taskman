@@ -65,6 +65,106 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
   };
   """
 
+  test "stacked task rows expose sorting at responsive breakpoints" do
+    password = "browser-test-password"
+    email = "browser-sort-#{Ecto.UUID.generate()}@example.com"
+    assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
+    project = project_fixture(%{})
+    beta = task_fixture(project, %{title: "Beta"})
+    alpha = task_fixture(project, %{title: "Alpha"})
+
+    server =
+      start_supervised!(
+        {Bandit, plug: TaskmanWeb.Endpoint, port: 0, ip: {127, 0, 0, 1}, startup_log: false}
+      )
+
+    assert {:ok, {_address, port}} = ThousandIsland.listener_info(server)
+    base_url = "http://127.0.0.1:#{port}"
+    {:ok, _started} = Application.ensure_all_started(:wallaby)
+
+    {:ok, session} =
+      Wallaby.start_session(
+        binary: System.find_executable("chromium"),
+        window_size: [width: 1280, height: 800]
+      )
+
+    try do
+      sign_in(session, base_url, email, password, beta.id)
+      Browser.visit(session, "#{base_url}/projects/#{project.id}")
+
+      wait_for_js(
+        session,
+        "task table ready",
+        "return !!document.querySelector('#task-table-header')",
+        true
+      )
+
+      for width <- [1280, 1279, 768, 767, 640, 639, 390, 320] do
+        Browser.resize_window(session, width, 800)
+
+        state =
+          js(session, ~S"""
+          const visible = el => !!el && el.getClientRects().length > 0;
+          const sort = document.querySelector('#task-sort-button');
+          const statuses = document.querySelector('#task-status-filter-button');
+          return {
+            width: innerWidth,
+            fits: document.documentElement.scrollWidth <= innerWidth &&
+              document.querySelector('#main-panel').scrollWidth <= document.querySelector('#main-panel').clientWidth,
+            header: visible(document.querySelector('#task-table-header')),
+            sort: visible(sort),
+            sortLabel: visible(sort.querySelector('span.hidden')),
+            filterLabel: visible(statuses.querySelector('span.hidden'))
+          };
+          """)
+
+        assert state["width"] == width
+        assert state["fits"]
+        assert state["header"] == width >= 1280
+        assert state["sort"] == width < 1280
+        assert state["sortLabel"] == (width >= 768 && width < 1280)
+        assert state["filterLabel"] == width >= 768
+      end
+
+      click(session, "#task-sort-button")
+      click(session, "#task-sort-option-title")
+
+      wait_for_js(
+        session,
+        "menu sorts task rows",
+        "return !!document.querySelector('#tasks > #tasks-#{alpha.id} + #tasks-#{beta.id}')",
+        true
+      )
+
+      wait_for_js(
+        session,
+        "selection restores focus",
+        "return document.activeElement?.id",
+        "task-sort-button"
+      )
+
+      click(session, "#task-sort-button")
+      js(session, "document.getElementById('task-sort-option-title').focus()")
+      Browser.send_keys(session, [:escape])
+
+      wait_for_js(
+        session,
+        "Escape dismisses sorting",
+        "return document.querySelector('#task-sort-button').getAttribute('aria-expanded')",
+        "false"
+      )
+
+      wait_for_js(
+        session,
+        "Escape restores focus",
+        "return document.activeElement?.id",
+        "task-sort-button"
+      )
+    after
+      Wallaby.end_session(session)
+    end
+  end
+
   test "browser-held filters, sharing, and Project memory survive navigation" do
     password = "browser-test-password"
     email = "browser-#{Ecto.UUID.generate()}@example.com"
@@ -405,7 +505,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
     const footer = document.querySelector('#new-project-button');
     const controls = document.querySelector('#main-panel header');
     const mainBounds = main.getBoundingClientRect();
-    const actions = [...controls.querySelectorAll('#share-task-view, #include-child-lists, #task-status-filter-button, #add-task')];
+    const actions = [...controls.querySelectorAll('#share-task-view, #include-child-lists, #task-status-filter-button, #task-sort-button, #add-task')];
     return {
       sidebarHidden: getComputedStyle(sidebar).display === 'none',
       mainFillsWidth: Math.abs(main.getBoundingClientRect().width - content.getBoundingClientRect().width) < 1,

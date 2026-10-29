@@ -105,6 +105,96 @@ defmodule TaskmanWeb.Tasks.Table do
     """
   end
 
+  attr :task_sort, :any, required: true
+  attr :open?, :boolean, required: true
+  attr :include_children?, :boolean, required: true
+
+  def sort_menu(assigns) do
+    options =
+      [{"ID", :id}, {"Name", :title}] ++
+        if(assigns.include_children?, do: [{"Location", :location}], else: []) ++
+        [{"Status", :status}, {"Priority", :priority}]
+
+    {field, direction} = assigns.task_sort || {nil, nil}
+
+    label =
+      case Enum.find(options, fn {_, value} -> value == field end) do
+        {label, _} ->
+          "Sort tasks: #{label}, #{if direction == :asc, do: "ascending", else: "descending"}"
+
+        nil ->
+          "Sort tasks"
+      end
+
+    assigns =
+      assigns
+      |> assign(:options, options)
+      |> assign(:field, field)
+      |> assign(:direction, direction)
+      |> assign(:label, label)
+
+    ~H"""
+    <div
+      id="task-sort"
+      class="relative shrink-0 xl:hidden"
+      phx-click-away={@open? && "close_task_sort"}
+      phx-window-keydown={@open? && JS.push("close_task_sort") |> JS.focus(to: "#task-sort-button")}
+      phx-key={@open? && "escape"}
+    >
+      <button
+        id="task-sort-button"
+        type="button"
+        phx-click="toggle_task_sort"
+        aria-label={@label}
+        data-tooltip={@label}
+        aria-controls="task-sort-menu"
+        aria-expanded={to_string(@open?)}
+        aria-haspopup="true"
+        class={[
+          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition md:w-auto md:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+          if(@open?,
+            do: "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
+            else:
+              "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+          )
+        ]}
+      >
+        <.icon name="hero-arrows-up-down" class="size-5 md:size-4" />
+        <span class="hidden md:inline">Sort</span>
+        <.icon
+          name="hero-chevron-down"
+          class={["hidden size-3.5 transition-transform md:inline-block", @open? && "rotate-180"]}
+        />
+      </button>
+      <div
+        :if={@open?}
+        id="task-sort-menu"
+        class="absolute right-0 top-full z-30 mt-2 w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-black/30"
+      >
+        <button
+          :for={{label, field} <- @options}
+          id={"task-sort-option-#{field}"}
+          type="button"
+          phx-click={
+            JS.push("sort_tasks", value: %{field: field}) |> JS.focus(to: "#task-sort-button")
+          }
+          aria-pressed={to_string(field == @field)}
+          class="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-slate-200 transition hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+        >
+          {label}
+          <span :if={field == @field}>
+            <.icon
+              name={if(@direction == :asc, do: "hero-arrow-up", else: "hero-arrow-down")}
+              class="size-4"
+            />
+            <span class="sr-only">{if(@direction == :asc, do: "Ascending", else: "Descending")}</span>
+          </span>
+        </button>
+      </div>
+    </div>
+    """
+  end
+
   attr :id, :string, required: true
   attr :label, :string, required: true
   attr :field, :atom, required: true

@@ -13,6 +13,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
     "close_task_status_filter",
     "filter_task_statuses",
     "sort_tasks",
+    "toggle_task_sort",
+    "close_task_sort",
     "toggle_task_subtasks"
   ]
 
@@ -38,6 +40,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
               status_filter_form: nil,
               filter_open?: false,
               sort: nil,
+              sort_open?: false,
               tasks_empty?: true,
               tasks_filtered_empty?: false
 
@@ -51,6 +54,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
             status_filter_form: Phoenix.HTML.Form.t(),
             filter_open?: boolean(),
             sort: {atom(), :asc | :desc} | nil,
+            sort_open?: boolean(),
             tasks_empty?: boolean(),
             tasks_filtered_empty?: boolean()
           }
@@ -82,12 +86,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
     @spec sort_by(t(), atom()) :: t()
     def sort_by(%__MODULE__{sort: {field, direction}} = state, field),
-      do: %{state | sort: {field, reverse_sort_direction(direction)}}
+      do: %{state | sort: {field, reverse_sort_direction(direction)}, sort_open?: false}
 
     def sort_by(%__MODULE__{} = state, field) when field in [:status, :priority],
-      do: %{state | sort: {field, :desc}}
+      do: %{state | sort: {field, :desc}, sort_open?: false}
 
-    def sort_by(%__MODULE__{} = state, field), do: %{state | sort: {field, :asc}}
+    def sort_by(%__MODULE__{} = state, field),
+      do: %{state | sort: {field, :asc}, sort_open?: false}
 
     @spec available_sort(t(), boolean()) :: t()
     def available_sort(%__MODULE__{sort: {:location, _direction}} = state, false),
@@ -151,6 +156,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   end
 
   def handle_event("filter_task_statuses", _params, socket), do: {:noreply, socket}
+
+  def handle_event("toggle_task_sort", _params, socket) do
+    {:noreply, update_state(socket, &%{&1 | sort_open?: !&1.sort_open?})}
+  end
+
+  def handle_event("close_task_sort", _params, socket) do
+    {:noreply, update_state(socket, &%{&1 | sort_open?: false})}
+  end
 
   def handle_event("sort_tasks", %{"field" => field}, socket) do
     case Map.fetch(@sort_fields, field) do
