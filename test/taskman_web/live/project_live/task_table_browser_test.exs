@@ -122,8 +122,8 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         assert state["fits"]
         assert state["header"] == width >= 1280
         assert state["sort"] == width < 1280
-        assert state["sortLabel"] == (width >= 768 && width < 1280)
-        assert state["filterLabel"] == width >= 768
+        assert state["sortLabel"] == false
+        assert state["filterLabel"] == width >= 1280
       end
 
       click(session, "#task-sort-button")

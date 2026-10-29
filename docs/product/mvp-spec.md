@@ -77,7 +77,7 @@ nor external agent work automatically changes Task state.
   [Task tree guide design](../specs/2026-10-27-task-tree-guides-design.md).
   Column headers are shown at viewport widths of 1280 CSS pixels and above. Below that,
   a Sort button beside Statuses offers ID, Name, Status, Priority and, when child Lists are
-  included, Location. Both controls use icons only below 768 CSS pixels. The menu shares the
+  included, Location. Both controls use icons only below 1280 CSS pixels. The menu shares the
   column-header sort: choosing the current field reverses direction; a new field starts ascending,
   except Status and Priority which start descending. The selected field shows its direction.
   The selected column sort applies to roots and independently to each sibling group. Equal values

@@ -42,20 +42,20 @@ defmodule TaskmanWeb.Tasks.Table do
         aria-expanded={to_string(@open?)}
         class={[
           "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition",
-          !@compact? && "md:w-auto md:px-3",
+          !@compact? && "xl:w-auto xl:px-3",
           @open? &&
             "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
           !@open? &&
             "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
         ]}
       >
-        <.icon name="hero-funnel" class={["size-5", !@compact? && "md:size-4"]} />
-        <span :if={!@compact?} class="hidden md:inline">Statuses</span>
+        <.icon name="hero-funnel" class={["size-5", !@compact? && "xl:size-4"]} />
+        <span :if={!@compact?} class="hidden xl:inline">Statuses</span>
         <.icon
           :if={!@compact?}
           name="hero-chevron-down"
           class={[
-            "hidden size-3.5 transition-transform md:inline-block",
+            "hidden size-3.5 transition-transform xl:inline-block",
             @open? && "rotate-180"
           ]}
         />
@@ -151,7 +151,7 @@ defmodule TaskmanWeb.Tasks.Table do
         aria-expanded={to_string(@open?)}
         aria-haspopup="true"
         class={[
-          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition md:w-auto md:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+          "inline-flex size-10 cursor-pointer items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition xl:w-auto xl:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
           if(@open?,
             do: "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
             else:
@@ -159,11 +159,11 @@ defmodule TaskmanWeb.Tasks.Table do
           )
         ]}
       >
-        <.icon name="hero-arrows-up-down" class="size-5 md:size-4" />
-        <span class="hidden md:inline">Sort</span>
+        <.icon name="hero-arrows-up-down" class="size-5 xl:size-4" />
+        <span class="hidden xl:inline">Sort</span>
         <.icon
           name="hero-chevron-down"
-          class={["hidden size-3.5 transition-transform md:inline-block", @open? && "rotate-180"]}
+          class={["hidden size-3.5 transition-transform xl:inline-block", @open? && "rotate-180"]}
         />
       </button>
       <div
