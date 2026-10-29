@@ -7,7 +7,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
             expanded_node_ids: MapSet.new(),
             required_node_ids: MapSet.new(),
             visible_statuses: Task.statuses(),
-            filter_open?: false
+            filter_open?: false,
+            sort: {:status, :desc},
+            sort_open?: false
 
   @type t :: %__MODULE__{
           hierarchy: Hierarchy.t() | nil,
@@ -15,7 +17,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
           expanded_node_ids: MapSet.t(pos_integer()),
           required_node_ids: MapSet.t(pos_integer()),
           visible_statuses: [Task.status()],
-          filter_open?: boolean()
+          filter_open?: boolean(),
+          sort: {atom(), :asc | :desc},
+          sort_open?: boolean()
         }
 
   @spec empty() :: t()
@@ -56,6 +60,21 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
     %{state | visible_statuses: visible_statuses}
   end
 
+  @spec sort_by(t(), atom()) :: t()
+  def sort_by(%__MODULE__{} = state, field) when field in [:id, :title, :status, :priority] do
+    direction =
+      case state.sort do
+        {^field, :asc} -> :desc
+        {^field, :desc} -> :asc
+        _ when field in [:status, :priority] -> :desc
+        _ -> :asc
+      end
+
+    %{state | sort: {field, direction}, sort_open?: false}
+  end
+
+  def sort_by(%__MODULE__{} = state, _field), do: state
+
   @spec visible_root(t()) :: HierarchyNode.t() | nil
   def visible_root(%__MODULE__{hierarchy: nil}), do: nil
 
@@ -74,8 +93,24 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
 
     if node.task.status in state.visible_statuses || children != [] ||
          MapSet.member?(state.required_node_ids, node.task.id) do
+      {field, direction} = state.sort
+      children = Enum.sort_by(children, &{sort_value(&1.task, field), &1.task.id}, direction)
       %{node | children: children}
     end
+  end
+
+  defp sort_value(task, :id), do: task.id
+  defp sort_value(task, :title), do: String.downcase(task.title)
+
+  defp sort_value(task, :status) do
+    Map.fetch!(
+      %{will_not_do: 0, icebox: 1, pending: 2, in_progress: 3, in_review: 4, done: 5},
+      task.status
+    )
+  end
+
+  defp sort_value(task, :priority) do
+    Map.fetch!(%{none: 0, low: 1, medium: 2, high: 3, urgent: 4}, task.priority)
   end
 
   @spec toggle(t(), pos_integer()) :: t()

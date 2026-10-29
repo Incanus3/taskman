@@ -146,10 +146,25 @@ nor external agent work automatically changes Task state.
   are in collapsed branches. All statuses start checked; choices survive navigation within the
   open dialog and reset when it closes. See the
   [hierarchy status filter contract](../specs/2026-10-28-hierarchy-status-filter-design.md).
+- A sorting button beside the hierarchy status filter offers ID, Name, Status and Priority.
+  Sorting applies independently to siblings at every depth with ID as the tie-breaker in the
+  same direction. On opening, copy the main listing's supported field and direction; fall back
+  to Status descending when none is selected or the listing uses Location. New field selections
+  start ascending for ID/Name and descending for Status/Priority; selecting the current field
+  reverses direction. Name compares case-insensitively. Status and Priority use the main listing's
+  semantic ranks. Choices remain independent of the listing during navigation, live refresh and
+  panel hiding, and are reinitialized on the next dialog opening. Sorting preserves ancestry,
+  filtering and manual expansion. The popup shows the selected field and direction and dismisses
+  on selection, outside click or Escape, restoring trigger focus on selection or Escape.
+  Verified by focused hierarchy unit/LiveView tests and Chromium checks for popup reachability,
+  focus, dismissal precedence, responsive layout and reading-position preservation. Acceptance
+  evidence: 21 focused tests, six browser tests, and `mix precommit` with 1,388 passed and three
+  existing skips; independent scoped review found no issues. Other browser engines and
+  assistive-technology sessions remain unverified.
 - At 1280 CSS px and wider, hierarchy, editor and discussion appear beside one another. From 1024
   through 1279 px, discussion follows the editor beside the hierarchy. Below 1024 px, the open
   hierarchy overlays the editor below the header. Opening the overlay focuses its hide control and
-  excludes covered editor controls from Tab traversal. Escape closes an open hierarchy status
+  excludes covered editor controls from Tab traversal. Escape closes an open hierarchy status or sort
   popup first, then hides the overlay before dialog
   departure; hiding it while focus is inside returns focus to the labeled hierarchy trigger.
   Selecting a Task retains panel openness. The panel preference lasts for the workspace session.

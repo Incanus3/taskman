@@ -111,7 +111,7 @@ defmodule TaskmanWeb.Tasks.Detail do
           </button>
           <h3
             id="task-hierarchy-title"
-            class="task-hierarchy-content whitespace-nowrap text-sm font-semibold text-slate-100"
+            class="task-hierarchy-content min-w-0 flex-1 text-sm font-semibold text-slate-100"
           >
             Task hierarchy
           </h3>
@@ -127,6 +127,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             compact?={true}
             top_layer?={true}
           />
+          <.hierarchy_sort task_hierarchy={@task_hierarchy} />
         </div>
 
         <div id="task-hierarchy-scroll" class="task-hierarchy-content">
@@ -531,6 +532,83 @@ defmodule TaskmanWeb.Tasks.Detail do
         }
       }
     </script>
+    """
+  end
+
+  attr :task_hierarchy, TaskHierarchy, required: true
+
+  def hierarchy_sort(assigns) do
+    {field, direction} = assigns.task_hierarchy.sort
+    options = [{"ID", :id}, {"Name", :title}, {"Status", :status}, {"Priority", :priority}]
+    {label, _} = Enum.find(options, fn {_, value} -> value == field end)
+
+    assigns =
+      assigns
+      |> assign(:options, options)
+      |> assign(:field, field)
+      |> assign(:direction, direction)
+      |> assign(
+        :label,
+        "Sort hierarchy: #{label}, #{if direction == :asc, do: "ascending", else: "descending"}"
+      )
+
+    ~H"""
+    <div
+      id="task-hierarchy-sort"
+      class="task-hierarchy-content shrink-0"
+      phx-click-away={@task_hierarchy.sort_open? && "close_hierarchy_sort"}
+    >
+      <button
+        id="task-hierarchy-sort-button"
+        type="button"
+        phx-click="toggle_hierarchy_sort"
+        aria-label={@label}
+        data-tooltip={@label}
+        aria-controls="task-hierarchy-sort-menu"
+        aria-expanded={to_string(@task_hierarchy.sort_open?)}
+        aria-haspopup="true"
+        class={[
+          "inline-flex size-10 cursor-pointer items-center justify-center rounded-xl border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+          if(@task_hierarchy.sort_open?,
+            do: "border-indigo-400/40 bg-indigo-400/15 text-indigo-100",
+            else:
+              "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+          )
+        ]}
+      >
+        <.icon name="hero-arrows-up-down" class="size-5" />
+      </button>
+      <div
+        :if={@task_hierarchy.sort_open?}
+        id="task-hierarchy-sort-menu"
+        popover="manual"
+        data-hierarchy-popup
+        data-popup-trigger="task-hierarchy-sort-button"
+        data-popup-close="close_hierarchy_sort"
+        class="hierarchy-popup-menu w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-black/30"
+      >
+        <button
+          :for={{label, field} <- @options}
+          id={"task-hierarchy-sort-option-#{field}"}
+          type="button"
+          phx-click={
+            JS.push("sort_hierarchy", value: %{field: field})
+            |> JS.focus(to: "#task-hierarchy-sort-button")
+          }
+          aria-pressed={to_string(field == @field)}
+          class="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-slate-200 transition hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+        >
+          {label}
+          <span :if={field == @field}>
+            <.icon
+              name={if(@direction == :asc, do: "hero-arrow-up", else: "hero-arrow-down")}
+              class="size-4"
+            />
+            <span class="sr-only">{if(@direction == :asc, do: "Ascending", else: "Descending")}</span>
+          </span>
+        </button>
+      </div>
+    </div>
     """
   end
 

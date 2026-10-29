@@ -738,6 +738,50 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     end
   end
 
+  # The native popup must escape sidebar clipping and consume Escape before the narrow overlay.
+  test "hierarchy sort popup fits the viewport and restores focus on selection and dismissal",
+       c do
+    visit(c, c.selected)
+
+    for {width, height} <- [{1440, 900}, {390, 844}, {320, 400}] do
+      resize(c.session, width, height)
+      wait(c.session, &(&1["viewport"] == width && &1["height"] == height && &1["expanded"]))
+      Browser.click(c.session, Query.css("#task-hierarchy-sort-button"))
+      Browser.find(c.session, Query.css("#task-hierarchy-sort-menu:popover-open"))
+
+      bounds =
+        js(c.session, ~S"""
+        const menu = document.querySelector('#task-hierarchy-sort-menu');
+        const option = document.querySelector('#task-hierarchy-sort-option-priority');
+        const r = menu.getBoundingClientRect(), o = option.getBoundingClientRect();
+        return {top:r.top, bottom:r.bottom, left:r.left, right:r.right,
+          hit:option.contains(document.elementFromPoint(o.x+o.width/2,o.y+o.height/2))};
+        """)
+
+      assert bounds["top"] >= 0
+      assert bounds["bottom"] <= height
+      assert bounds["left"] >= 0
+      assert bounds["right"] <= width
+      assert bounds["hit"]
+      assert js(c.session, "return document.documentElement.scrollWidth") <= width + 1
+      Browser.send_keys(c.session, [:escape])
+      Browser.find(c.session, Query.css("#task-hierarchy-sort-menu", count: 0))
+      assert state(c.session)["expanded"]
+      assert state(c.session)["focus"] == "task-hierarchy-sort-button"
+
+      Browser.click(c.session, Query.css("#task-hierarchy-sort-button"))
+      Browser.click(c.session, Query.css("#task-hierarchy-sort-option-title"))
+      Browser.find(c.session, Query.css("#task-hierarchy-sort-menu", count: 0))
+      assert state(c.session)["focus"] == "task-hierarchy-sort-button"
+      Browser.click(c.session, Query.css("#task-hierarchy-sort-button"))
+      Browser.click(c.session, Query.css("#task-hierarchy-status-filter-button"))
+      Browser.find(c.session, Query.css("#task-hierarchy-sort-menu", count: 0))
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu:popover-open"))
+      Browser.send_keys(c.session, [:escape])
+      Browser.find(c.session, Query.css("#task-hierarchy-status-filter-menu", count: 0))
+    end
+  end
+
   test "comment departure keeps its confirmation above the hierarchy status popup", c do
     resize(c.session, 390, 844)
     visit(c, c.selected)
