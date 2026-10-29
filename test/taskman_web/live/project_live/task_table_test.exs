@@ -453,7 +453,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
 
     assert has_element?(
              view,
-             "#tasks > #tasks-#{second_direct.id} + #tasks-#{first_direct.id}"
+             "#tasks > #tasks-#{first_direct.id} + #tasks-#{second_direct.id}"
            )
 
     view |> element("#include-child-lists") |> render_click()
@@ -465,6 +465,9 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
              view,
              "#tasks > #tasks-#{first_direct.id} + #tasks-#{second_direct.id}"
            )
+
+    view |> element("#include-child-lists") |> render_click()
+    assert has_element?(view, "#task-location-header[aria-sort='none']")
   end
 
   defp view_assigns(view) do

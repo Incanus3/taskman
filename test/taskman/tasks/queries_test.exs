@@ -225,11 +225,11 @@ defmodule Taskman.Tasks.QueriesTest do
 
       assert_receive {:task_query, query}
       assert query =~ ~s(t0."status" = ANY)
-      assert query =~ ~s|ORDER BY lower(t0."title") DESC, t0."id" DESC|
+      assert String.ends_with?(query, ~s|ORDER BY lower(t0."title") DESC, t0."id"|)
     end
   end
 
-  test "list_tasks_for_location/3 uses direction-aware Task ID tie-breaks for stored fields" do
+  test "list_tasks_for_location/3 uses ascending Task ID tie-breaks for either stored-field direction" do
     project = project_fixture(%{})
 
     first =
@@ -255,7 +255,7 @@ defmodule Taskman.Tasks.QueriesTest do
       assert {:ok, descending} =
                Tasks.list_tasks_for_location(project, nil, sort: {field, :desc})
 
-      assert Enum.map(descending, & &1.task.id) == [second.id, first.id]
+      assert Enum.map(descending, & &1.task.id) == [first.id, second.id]
     end
   end
 
@@ -311,6 +311,28 @@ defmodule Taskman.Tasks.QueriesTest do
              )
 
     assert Enum.map(tasks, & &1.task.id) == [delivery_task.id, planning_task.id]
+  end
+
+  test "location ordering keeps ID ties ascending when reversing the location direction" do
+    project = project_fixture(%{})
+    alpha = list_fixture(project, %{name: "Alpha"})
+    zulu = list_fixture(project, %{name: "Zulu"})
+    first = task_fixture(project, alpha, %{title: "First"})
+    second = task_fixture(project, alpha, %{title: "Second"})
+    third = task_fixture(project, zulu, %{title: "Third"})
+
+    for {direction, ids} <- [
+          {:asc, [first.id, second.id, third.id]},
+          {:desc, [third.id, first.id, second.id]}
+        ] do
+      assert {:ok, tasks} =
+               Tasks.list_tasks_for_location(project, nil,
+                 include_descendants: true,
+                 sort: {:location, direction}
+               )
+
+      assert Enum.map(tasks, & &1.task.id) == ids
+    end
   end
 
   test "list_tasks_for_location/3 rejects a foreign List before listing" do

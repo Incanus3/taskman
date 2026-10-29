@@ -348,7 +348,7 @@ defmodule Taskman.Tasks do
       :title ->
         order_by(query, [task], [
           {^direction, fragment("lower(?)", task.title)},
-          {^direction, task.id}
+          {:asc, task.id}
         ])
 
       :status ->
@@ -358,7 +358,7 @@ defmodule Taskman.Tasks do
              "CASE ? WHEN 'will_not_do' THEN 0 WHEN 'icebox' THEN 1 WHEN 'pending' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'in_review' THEN 4 WHEN 'done' THEN 5 END",
              task.status
            )},
-          {^direction, task.id}
+          {:asc, task.id}
         ])
 
       :priority ->
@@ -368,7 +368,7 @@ defmodule Taskman.Tasks do
              "CASE ? WHEN 'none' THEN 0 WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'urgent' THEN 4 END",
              task.priority
            )},
-          {^direction, task.id}
+          {:asc, task.id}
         ])
     end
   end
@@ -384,7 +384,9 @@ defmodule Taskman.Tasks do
   defp sort_listed_tasks(tasks, nil), do: tasks
 
   defp sort_listed_tasks(tasks, {:location, direction}) when direction in [:asc, :desc] do
-    Enum.sort_by(tasks, &{task_sort_value(&1, :location), &1.task.id}, direction)
+    tasks
+    |> Enum.sort_by(& &1.task.id)
+    |> Enum.sort_by(&task_sort_value(&1, :location), direction)
   end
 
   defp sort_listed_tasks(tasks, {field, direction})
