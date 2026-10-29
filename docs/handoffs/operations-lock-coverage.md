@@ -1,9 +1,9 @@
 # Operations lock coverage
 
-Status: active. Updated: 2026-10-25. Resume: `$resume operations-lock-coverage`.
+Status: active. Updated: 2026-10-29. Resume: `$resume operations-lock-coverage`.
 
 The prior operations branch is merged. Work continues on the dedicated
-`operations-lock-coverage` branch, now rebased onto main at `f882deb7`.
+`operations-lock-coverage` branch, applied and rebased onto main at `b2dbe5cd`.
 
 ## Objective and authority
 
@@ -46,7 +46,8 @@ protocol/ownership decisions before their later execution without absorbing thei
 ## Remaining order and gates
 
 1. Obtain explicit operator approval of the complete written design. Revalidate affected review
-   conclusions if the baseline changes materially; then create/review a Beads-backed implementation plan.
+   conclusions against the current baseline; then create/review an implementation plan. Create
+   execution tasks in the registered Taskman Project only after plan approval.
 2. Obtain plan approval and preserve the clean-session implementation boundary before implementation.
 3. Implement, perform scoped independent correctness review and local operations/package/runtime/TTY
    verification, and update canonical contracts/runbook/indexes to reflect implemented behavior.
@@ -75,3 +76,14 @@ and 465 comments. Sync reports healthy state and no coverage drift. Local Markdo
 and whitespace passed. `mix precommit` compiled the application but stopped before tests because
 PostgreSQL at localhost:5432 refused connection. Revalidate affected design conclusions against
 the new operations baseline before implementing; no implementation or native acceptance was run.
+
+Current source inspection confirms helper protocol v3, lifecycle-only scheduled-backup locking,
+and no fixed admission lock, provisioning reservation, or inspection/recovery/resume commands.
+The local branch contained only the resume-handoff commit; no implementation plan exists.
+The prior operations merge prerequisite is satisfied. Full written-design approval remains the
+next decision; the earlier independent review is historical evidence, not a fresh review of this
+baseline. Applying and rebasing the branch succeeded without conflicts.
+
+Current verification: `mix precommit` passed (1381 passed, 3 skipped, 51 excluded); the six
+local handoff file links resolve and whitespace checks passed. This verifies the documentation
+checkpoint and existing application baseline, not admission implementation or native behavior.
