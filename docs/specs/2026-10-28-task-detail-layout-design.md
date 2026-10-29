@@ -151,6 +151,8 @@ branch expansion. LiveView coverage checks all five labels and isolated priority
 Chromium inspection at actual 1440 × 900 and 320 × 720 CSS viewports found readable flags/labels
 and no hierarchy or page horizontal overflow through four levels. This bounded check does not
 extend the browser, zoom or assistive-technology acceptance limits recorded below.
+The priority addition passed `mix precommit --max-cases 8` (1,381 tests, 3 existing skips,
+51 browser exclusions), the separate Chromium check, asset build and scoped independent review.
 
 Draw vertical rails and short elbows from the nested branch structure. Each sibling rail ends
 at its last child's elbow, aligned near the first title line; ancestor continuations must remain
