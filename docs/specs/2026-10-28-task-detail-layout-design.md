@@ -19,7 +19,7 @@ consolidates the hierarchy/header and wide-layout contracts.
 
 | ID | Status | Choice | Downside or constraint | Rationale |
 |---|---|---|---|---|
-| D1 | Accepted | Wrapping titles, connected branches, ID/status metadata, current-task highlight and dedicated Close header | Taller rows show fewer Tasks at once | [Presentation](#titles-and-metadata-stay-readable) |
+| D1 | Accepted | Wrapping titles, connected branches, ID/status/priority metadata, current-task highlight and dedicated Close header | Taller rows show fewer Tasks at once | [Presentation](#titles-and-metadata-stay-readable) |
 | D2 | Accepted | Clean presentation through four levels at all supported widths; five where straightforward | Deeper hierarchies receive an access guarantee rather than polished layout | [Depth](#four-levels-are-the-primary-depth-target) |
 | D3 | Accepted | Start with three columns at 1280 CSS px, two at 1024 px, overlay below; validate actual available width | Thresholds may need adjustment during browser acceptance | [Responsive layout](#responsive-layout-keeps-the-editor-usable) |
 | D4 | Accepted | Use contained horizontal overflow only when indentation would leave less than 180 px for title and metadata | Exceptional deep branches require horizontal scrolling | [Depth](#four-levels-are-the-primary-depth-target) |
@@ -129,7 +129,7 @@ matching; readability, contrast and reachable controls take precedence over exac
 | Expanded desktop panel | 336 px through 1440 CSS px; wider allocation follows the [wide sizing contract](#wide-sizing-grows-from-the-existing-layout) |
 | Title | 14 px, approximately 1.35 line height; selected title semibold |
 | Metadata | 11 px reference; increase if rendered readability requires it |
-| Metadata ordering | Task ID, 10 px gap, then a 5 px status dot and 4 px gap before status text |
+| Metadata ordering | Task ID, status dot and label, then priority flag and label; 10 px between groups, 4 px within markers |
 | Row | Approximately 9 px vertical and 8 px horizontal padding; 5 px title/metadata gap |
 | Indentation | Approximately 15 px first nested offset, 20 px thereafter |
 | Connectors | 2 px, matching the main listing's normal desktop connectors; muted slate `#33445F` |
@@ -140,6 +140,17 @@ clamp their line count. Metadata stays beneath the title and may wrap when neces
 The dot indicates status, never priority; retain visible status text. Reuse the canonical table
 mapping: Icebox sky, Pending amber, In Progress red, In Review orange, Done emerald, Will Not Do
 slate. The mock's yellow Pending tint does not replace canonical amber.
+
+Priority appears on every row, including None, to keep the metadata structure consistent.
+Use a flag to distinguish priority from the status dot, retain visible priority text, and hide
+the decorative flag from assistive technology. Priority labels and colors share the main listing's
+canonical mapping: None slate, Low blue, Medium emerald, High amber, Urgent red. The shared
+presentation owner is `lib/taskman_web/components/tasks/priority.ex`; no new data access is needed.
+Priority-only notifications refresh both selected and other visible Tasks without resetting
+branch expansion. LiveView coverage checks all five labels and isolated priority updates.
+Chromium inspection at actual 1440 × 900 and 320 × 720 CSS viewports found readable flags/labels
+and no hierarchy or page horizontal overflow through four levels. This bounded check does not
+extend the browser, zoom or assistive-technology acceptance limits recorded below.
 
 Draw vertical rails and short elbows from the nested branch structure. Each sibling rail ends
 at its last child's elbow, aligned near the first title line; ancestor continuations must remain
@@ -378,7 +389,7 @@ retained recovery inputs must remain focusable and selectable without losing the
 | Open a much deeper branch | All Tasks remain reachable through contained overflow; no new depth cap |
 | Close or select another Task with an unsent comment | Existing departure confirmation runs; Go back preserves draft and current Task |
 | Submit comment and close fails | Draft and error remain available; no silent dismissal |
-| Reparent succeeds or another user updates title/status | Branches, labels, selected path and connectors reflect the refreshed hierarchy |
+| Reparent succeeds or another user updates title/status/priority | Branches, labels, selected path and connectors reflect the refreshed hierarchy |
 | Target Task disappears before navigation completes | Existing recoverable not-found handling; no stale editable Task under new identity |
 
 ## File ownership and implementation boundaries
@@ -394,6 +405,7 @@ retained recovery inputs must remain focusable and selectable without losing the
 | `assets/js/project_live_hooks.js` | Existing draft interception and discussion scrolling; inspect breakpoint coupling before changing |
 | `lib/taskman_web/live/project_live/tasks/hierarchy.ex` | Preserve expansion state rules; no presentation geometry |
 | `lib/taskman_web/components/tasks/status.ex` | Shared canonical status labels and colors; table and hierarchy delegate here |
+| `lib/taskman_web/components/tasks/priority.ex` | Shared canonical priority labels and colors; table and hierarchy delegate here |
 | `lib/taskman/tasks/hierarchy.ex` | Existing connected-tree projection; no per-row fetches or domain changes expected |
 
 Wide sizing uses the existing normal-dialog selector

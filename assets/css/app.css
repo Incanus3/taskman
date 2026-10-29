@@ -399,7 +399,8 @@
   line-height: 1.4;
 }
 
-#task-hierarchy .task-hierarchy-status {
+#task-hierarchy .task-hierarchy-status,
+#task-hierarchy .task-hierarchy-priority {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
