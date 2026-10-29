@@ -711,6 +711,20 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     {refresh(socket), outcome}
   end
 
+  @doc "Refreshes selected-location authority without requiring a matching notification."
+  @spec refresh_selected_location(Phoenix.LiveView.Socket.t()) ::
+          {Phoenix.LiveView.Socket.t(),
+           :unchanged | {:location_changed, [TaskList.t()]} | {:location_missing, [TaskList.t()]}}
+  def refresh_selected_location(socket) do
+    {projects, lists_by_project} = workspace_snapshot(socket)
+    selected_project_id = project_id(socket.assigns.workspace.selected_project)
+
+    {socket, outcome} =
+      reconcile_selected_location(socket, selected_project_id, projects, lists_by_project)
+
+    {refresh(socket), outcome}
+  end
+
   defp reconcile_selected_location(
          socket,
          event_project_id,
