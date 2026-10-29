@@ -13,7 +13,9 @@ Workstream task: Taskman Task 32 in the registered Project; verify `Source: task
 after resolving the clone binding, and stop on mismatch. Transferred from
 `tas-561x.9`, whose design/review evidence remains
 historical provenance. The [complete written design](../specs/2026-09-18-provisioning-lock-coverage-proposal.md)
-owns contracts, alternatives, file boundaries and verification requirements.
+owns contracts, alternatives, file boundaries and verification requirements. The
+[HTML review companion](../specs/operations-admission-review/index.html) exposes the provisioning
+sequence, recovery paths, command conflicts and trade-offs; its source snapshot preserves exact contracts.
 Use the registered Taskman Project for planning and execution; any legacy Beads-backed planning
 wording below is superseded by the current repository tracking policy.
 [Operations contracts](../specs/2026-09-18-operations-contracts.md),
@@ -85,5 +87,7 @@ next decision; the earlier independent review is historical evidence, not a fres
 baseline. Applying and rebasing the branch succeeded without conflicts.
 
 Current verification: `mix precommit` passed (1381 passed, 3 skipped, 51 excluded); the six
-local handoff file links resolve and whitespace checks passed. This verifies the documentation
-checkpoint and existing application baseline, not admission implementation or native behavior.
+local handoff file links resolve and whitespace checks passed. The review companion and source
+snapshot were checked at a 1440-pixel desktop width in isolated Chromium; SVG accessibility,
+source-text/hash fidelity and all 48 local HTML links/assets/anchors passed. This verifies the
+documentation checkpoint and existing application baseline, not admission implementation or native behavior.

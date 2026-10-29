@@ -45,6 +45,7 @@
 - [Additive ordinary-UFW convergence (implemented; bounded native scope accepted)](specs/2026-09-30-additive-ufw-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
 - [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
+  - [HTML review companion: admission, provisioning and recovery](specs/operations-admission-review/index.html)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 
 ## Handoffs
