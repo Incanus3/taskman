@@ -154,7 +154,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     assert TaskHierarchy.expanded?(restored, 4)
   end
 
-  test "default status sorting orders each sibling group with descending ID ties" do
+  test "default status sorting orders each sibling group with ascending ID ties" do
     source = %Hierarchy{
       selected_task_id: 1,
       root:
@@ -168,12 +168,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
 
     state = TaskHierarchy.load(TaskHierarchy.empty(), source)
     projected = TaskHierarchy.visible_root(state)
-    assert Enum.map(projected.children, & &1.task.id) == [4, 3, 2, 5]
-    assert Enum.map(Enum.at(projected.children, 1).children, & &1.task.id) == [7, 6]
+    assert Enum.map(projected.children, & &1.task.id) == [3, 4, 2, 5]
+    assert Enum.map(Enum.at(projected.children, 0).children, & &1.task.id) == [7, 6]
     assert state.hierarchy == source
   end
 
-  test "sort fields use listing defaults and reverse both field and ID tie direction" do
+  test "sort fields reverse their primary direction while ID ties remain ascending" do
     children = [
       sort_node(2, "Zulu", :icebox, :urgent),
       sort_node(3, "alpha", :in_progress, :none),
@@ -191,8 +191,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
 
     for {field, first, reversed} <- [
           {:id, [2, 3, 4, 5, 6, 7], [7, 6, 5, 4, 3, 2]},
-          {:title, [3, 4, 5, 6, 7, 2], [2, 7, 6, 5, 4, 3]},
-          {:priority, [2, 5, 4, 6, 7, 3], [3, 7, 6, 4, 5, 2]}
+          {:title, [3, 4, 5, 6, 7, 2], [2, 5, 6, 7, 3, 4]},
+          {:priority, [2, 4, 5, 6, 7, 3], [3, 7, 6, 4, 5, 2]}
         ] do
       sorted = TaskHierarchy.sort_by(state, field)
       assert Enum.map(TaskHierarchy.visible_root(sorted).children, & &1.task.id) == first

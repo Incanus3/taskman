@@ -94,7 +94,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
     if node.task.status in state.visible_statuses || children != [] ||
          MapSet.member?(state.required_node_ids, node.task.id) do
       {field, direction} = state.sort
-      children = Enum.sort_by(children, &{sort_value(&1.task, field), &1.task.id}, direction)
+
+      children =
+        children
+        |> Enum.sort_by(& &1.task.id)
+        |> Enum.sort_by(&sort_value(&1.task, field), direction)
+
       %{node | children: children}
     end
   end

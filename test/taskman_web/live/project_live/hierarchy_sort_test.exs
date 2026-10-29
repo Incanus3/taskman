@@ -147,18 +147,18 @@ defmodule TaskmanWeb.ProjectLive.HierarchySortTest do
   end
 
   test "saving priority refreshes sidebar metadata and priority ordering", c do
-    render_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{c.first.id}")
+    render_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{c.second.id}")
     c.view |> element("#task-hierarchy-sort-button") |> render_click()
     choose(c.view, :priority)
-    assert_before(c.view, c.root, c.second, c.first)
+    assert_before(c.view, c.root, c.first, c.second)
 
     c.view
     |> form("#task-form", task: %{priority: "urgent"})
     |> render_change(%{"_target" => ["task", "priority"]})
 
-    assert Tasks.get_task_for_project(c.project, c.first.id).priority == :urgent
-    assert has_element?(c.view, "#task-hierarchy-priority-#{c.first.id}", "Urgent")
-    assert_before(c.view, c.root, c.first, c.second)
+    assert Tasks.get_task_for_project(c.project, c.second.id).priority == :urgent
+    assert has_element?(c.view, "#task-hierarchy-priority-#{c.second.id}", "Urgent")
+    assert_before(c.view, c.root, c.second, c.first)
 
     assert has_element?(
              c.view,

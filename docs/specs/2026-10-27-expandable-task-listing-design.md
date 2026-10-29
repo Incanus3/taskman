@@ -80,7 +80,10 @@ subtree. Leaf roots retain their ID and have no disclosure.
 
 Apply the selected column sort to contextual roots and independently to every sibling group in
 expanded subtrees, using the existing field semantics and direction. Break equal column values by
-Task ID in the selected direction, matching existing column sorts. With no explicit column sort,
+Task ID ascending regardless of the selected direction, matching the main listing's column
+sorts and the detail hierarchy. Selecting ID itself as the primary sort still honors the selected
+direction. The ascending tie-break supersedes the former direction-dependent tie-break so equal
+values retain a consistent ID order when the primary direction changes. With no explicit column sort,
 use the existing default Task order (`inserted_at` ascending, then `id` ascending) at every level.
 
 Render depth-first preorder after sorting each sibling group: a child is followed immediately by

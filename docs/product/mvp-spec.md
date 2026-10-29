@@ -75,7 +75,9 @@ nor external agent work automatically changes Task state.
   Guides cap indentation at six levels, sharing the final lane for deeper nesting. Hovering or
   focusing a row highlights the connectors throughout its displayed root family. See the
   [Task tree guide design](../specs/2026-10-27-task-tree-guides-design.md).
-  The selected column sort applies to roots and independently to each sibling group. Counts remain
+  The selected column sort applies to roots and independently to each sibling group. Equal values
+  use ascending Task IDs even when the primary sort is descending. Sorting directly by ID still
+  follows the selected direction. Counts remain
   the number of filter matches, including matching Tasks hidden by collapse, and do not change
   merely because a group expands. Revealed branches stay expanded through status and Include child
   Lists changes, including promoted descendants and returning ancestors, and through sorting,
@@ -147,8 +149,8 @@ nor external agent work automatically changes Task state.
   open dialog and reset when it closes. See the
   [hierarchy status filter contract](../specs/2026-10-28-hierarchy-status-filter-design.md).
 - A sorting button beside the hierarchy status filter offers ID, Name, Status and Priority.
-  Sorting applies independently to siblings at every depth with ID as the tie-breaker in the
-  same direction. On opening, copy the main listing's supported field and direction; fall back
+  Sorting applies independently to siblings at every depth with ascending ID tie-breaks, matching
+  the main listing. On opening, copy the main listing's supported field and direction; fall back
   to Status descending when none is selected or the listing uses Location. New field selections
   start ascending for ID/Name and descending for Status/Priority; selecting the current field
   reverses direction. Name compares case-insensitively. Status and Priority use the main listing's
@@ -158,8 +160,8 @@ nor external agent work automatically changes Task state.
   on selection, outside click or Escape, restoring trigger focus on selection or Escape.
   Verified by focused hierarchy unit/LiveView tests and Chromium checks for popup reachability,
   focus, dismissal precedence, responsive layout and reading-position preservation. Acceptance
-  evidence: 21 focused tests, six browser tests, and `mix precommit` with 1,388 passed and three
-  existing skips; independent scoped review found no issues. Other browser engines and
+  evidence: 114 focused server tests, six browser tests, and `mix precommit --max-cases 8` with
+  1,392 passed and three existing skips; independent scoped review found no issues. Other browser engines and
   assistive-technology sessions remain unverified.
 - At 1280 CSS px and wider, hierarchy, editor and discussion appear beside one another. From 1024
   through 1279 px, discussion follows the editor beside the hierarchy. Below 1024 px, the open
