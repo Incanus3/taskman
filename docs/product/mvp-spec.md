@@ -58,6 +58,8 @@ nor external agent work automatically changes Task state.
 
 - The browser tab title is `Taskman · <Project name>` for the selected Project and `Taskman`
   when none is selected. It follows Project selection and renaming.
+- The browser favicon is a white rocket on an indigo rounded square, matching the Project badge
+  style. It identifies Taskman consistently across Projects, with SVG and ICO formats.
 - The default view is list-first: an active Project selector and that Project's nested List tree
   beside a main Task table. A separate **Project tasks** row returns to its root Task view.
 - An explicit Project or List URL selects its Project. Opening `/` restores this browser's last
