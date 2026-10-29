@@ -39,18 +39,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
             socket
 
           {socket, {:location_missing, task_lists}} ->
-            socket = socket |> Recovery.capture(previous_workspace) |> Listing.refresh_table()
-
-            case Movement.reconcile(socket) do
-              {:anchored, socket} ->
-                reconcile_missing_location(socket, previous_workspace, task_lists)
-
-              {:missing, socket} = movement_result ->
-                recover_detail_or_apply_movement(socket, previous_workspace, movement_result)
-
-              movement_result ->
-                Movement.apply_reconciliation(movement_result)
-            end
+            reconcile_location_loss(socket, previous_workspace, task_lists)
 
           {socket, {:location_changed, task_lists}} ->
             if Recovery.State.active?(socket.assigns.recovery) do
@@ -70,7 +59,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
     socket =
       if valid? and event.operation == :updated and :name in event.fields do
-        Editing.reload_related_tasks(socket)
+        refresh_related_tasks(socket)
       else
         socket
       end
@@ -82,7 +71,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     socket =
       if well_formed_relationship_event?(event) and
            relationship_targets_open_detail?(event, socket),
-         do: Editing.reload_related_tasks(socket),
+         do: refresh_related_tasks(socket),
          else: socket
 
     {:noreply, socket}
@@ -169,6 +158,41 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     socket
     |> Movement.reconcile()
     |> Movement.apply_reconciliation(refresh_listing?: false)
+  end
+
+  defp refresh_related_tasks(socket) do
+    refreshed = Editing.reload_related_tasks(socket)
+
+    case {socket.assigns.editing.selected_task, refreshed.assigns.editing} do
+      {%Task{}, %{selected_task: nil, not_found?: true}} ->
+        previous_workspace = socket.assigns.workspace
+
+        case Workspace.refresh_selected_location(socket) do
+          {socket, {:location_missing, task_lists}} ->
+            reconcile_location_loss(socket, previous_workspace, task_lists)
+
+          _location_survives ->
+            refreshed
+        end
+
+      _detail_remains ->
+        refreshed
+    end
+  end
+
+  defp reconcile_location_loss(socket, previous_workspace, task_lists) do
+    socket = socket |> Recovery.capture(previous_workspace) |> Listing.refresh_table()
+
+    case Movement.reconcile(socket) do
+      {:anchored, socket} ->
+        reconcile_missing_location(socket, previous_workspace, task_lists)
+
+      {:missing, socket} = movement_result ->
+        recover_detail_or_apply_movement(socket, previous_workspace, movement_result)
+
+      movement_result ->
+        Movement.apply_reconciliation(movement_result)
+    end
   end
 
   defp reconcile_missing_location(socket, previous_workspace, task_lists) do

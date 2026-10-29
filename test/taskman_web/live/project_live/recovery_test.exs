@@ -59,6 +59,98 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
     refute has_element?(view, "#task-recovery-form")
   end
 
+  test "a name refresh observes List loss before a queued save can discard retained input", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    foreign_project = project_fixture(%{})
+    lost = list_fixture(project)
+    task = task_fixture(project, lost, %{title: "Persisted"})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "Retained release draft 73911"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    revision = Map.fetch!(view_assigns(view).editing.autosave.revisions, "title")
+    Taskman.Repo.delete!(task)
+    Taskman.Repo.delete!(lost)
+
+    send(view.pid, %Event{
+      entity: :project,
+      operation: :updated,
+      project_id: foreign_project.id,
+      entity_id: foreign_project.id,
+      fields: [:name]
+    })
+
+    captured = view_assigns(view).recovery
+
+    assert has_element?(
+             view,
+             "#task-recovery #task-title[readonly][value='Retained release draft 73911']"
+           )
+
+    assert has_element?(
+             view,
+             "#task-recovery[data-copy-value*='Task title: Retained release draft 73911']"
+           )
+
+    assert has_element?(view, "#global-task-search[inert] #global-task-search-input")
+    assert has_element?(view, "#global-task-search[inert] #global-task-search-mobile-trigger")
+
+    send(view.pid, {:autosave_task_field, task.id, "title", revision})
+    assert view_assigns(view).recovery == captured
+    send(view.pid, list_event(project.id, lost.id))
+    assert view_assigns(view).recovery == captured
+
+    assert has_element?(
+             view,
+             "#task-recovery #task-title[readonly][value='Retained release draft 73911']"
+           )
+
+    assert has_element?(
+             view,
+             "#task-recovery[data-copy-value*='Task title: Retained release draft 73911']"
+           )
+
+    view |> element("#task-recovery-discard") |> render_click()
+    assert_patch(view, ~p"/projects/#{project.id}")
+    refute has_element?(view, "#task-recovery")
+    assert has_element?(view, "#global-task-search:not([inert]) #global-task-search-input")
+  end
+
+  test "a name refresh retains ordinary missing-Task handling while its List survives", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    foreign_project = project_fixture(%{})
+    task_list = list_fixture(project)
+    task = task_fixture(project, task_list, %{title: "Persisted"})
+
+    {:ok, view, _} =
+      live(conn, ~p"/projects/#{project.id}/lists/#{task_list.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: "Retained release draft 73911"})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    Taskman.Repo.delete!(task)
+
+    send(view.pid, %Event{
+      entity: :project,
+      operation: :updated,
+      project_id: foreign_project.id,
+      entity_id: foreign_project.id,
+      fields: [:name]
+    })
+
+    _ = view_assigns(view)
+    assert has_element?(view, "#task-not-found")
+    refute has_element?(view, "#task-recovery")
+    assert Taskman.Lists.get_list_for_project(project, task_list.id).id == task_list.id
+  end
+
   test "detail recovery makes only the workspace background natively inert", %{conn: conn} do
     project = project_fixture(%{})
     lost = list_fixture(project)

@@ -684,8 +684,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         update_state(socket, &%{&1 | related_tasks: related_tasks})
 
       {:error, :not_found} ->
-        # Keep recoverable input until location reconciliation can capture it.
-        socket
+        task_not_found_modal_state(socket)
     end
   end
 
