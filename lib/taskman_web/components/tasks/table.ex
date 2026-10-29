@@ -65,10 +65,13 @@ defmodule TaskmanWeb.Tasks.Table do
         :if={@open?}
         id={@id <> "-menu"}
         popover={if(@top_layer?, do: "manual")}
+        data-hierarchy-popup={if(@top_layer?, do: "", else: nil)}
+        data-popup-trigger={@top_layer? && @id <> "-button"}
+        data-popup-close={@top_layer? && @close_event}
         class={[
           "w-52 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-black/30",
           if(@top_layer?,
-            do: "hierarchy-status-filter-menu",
+            do: "hierarchy-popup-menu",
             else: "absolute right-0 top-full z-30 mt-2"
           )
         ]}

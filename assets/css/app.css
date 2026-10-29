@@ -229,7 +229,7 @@
   flex: none;
 }
 
-.hierarchy-status-filter-menu {
+.hierarchy-popup-menu {
   position: fixed;
   inset: auto;
   margin: 0;

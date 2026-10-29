@@ -1,6 +1,7 @@
 export default {
   mounted() {
     this.hierarchyPreference = null
+    this.closingPopups = new WeakSet()
     this.media = window.matchMedia("(min-width: 64rem)")
     this.scheduleSync = () => {
       cancelAnimationFrame(this.frame)
@@ -35,15 +36,20 @@ export default {
       }
     }
 
-    this.onStatusFilterKeydown = event => {
-      if (event.key === "Escape" && this.statusFilterMenu()?.matches(":popover-open")) {
+    this.onHierarchyPopupKeydown = event => {
+      const menu = this.el.querySelector("[data-hierarchy-popup]:popover-open")
+      if (event.key === "Escape" && menu) {
         event.preventDefault()
         event.stopImmediatePropagation()
-        this.closeStatusFilter(true)
+        this.closeHierarchyPopup(menu, true)
       }
     }
-    document.addEventListener("keydown", this.onStatusFilterKeydown, true)
-    window.addEventListener("resize", this.scheduleSync)
+    document.addEventListener("keydown", this.onHierarchyPopupKeydown, true)
+    this.onResize = () => {
+      this.revealSelected = true
+      this.scheduleSync()
+    }
+    window.addEventListener("resize", this.onResize)
     document.addEventListener("scroll", this.scheduleSync, true)
 
     this.onWorkspaceKeydown = event => {
@@ -64,8 +70,8 @@ export default {
   },
 
   destroyed() {
-    document.removeEventListener("keydown", this.onStatusFilterKeydown, true)
-    window.removeEventListener("resize", this.scheduleSync)
+    document.removeEventListener("keydown", this.onHierarchyPopupKeydown, true)
+    window.removeEventListener("resize", this.onResize)
     document.removeEventListener("scroll", this.scheduleSync, true)
     this.el.removeEventListener("click", this.onWorkspaceClick)
     this.el.removeEventListener("keydown", this.onWorkspaceKeydown)
@@ -188,44 +194,36 @@ export default {
     }
     if (!expanded) this.focusOverlay = false
     this.revealSelected = false
-    this.syncStatusFilter(expanded)
+    this.syncHierarchyPopups(expanded)
   },
 
-  statusFilterMenu() {
-    return this.el.querySelector("#task-hierarchy-status-filter-menu")
-  },
-
-  closeStatusFilter(restoreFocus) {
-    const menu = this.statusFilterMenu()
-    if (!menu || this.closingFilter === menu) return
-    this.closingFilter = menu
+  closeHierarchyPopup(menu, restoreFocus) {
+    if (this.closingPopups.has(menu)) return
+    this.closingPopups.add(menu)
     menu.hidePopover()
-    const trigger = this.el.querySelector("#task-hierarchy-status-filter-button")
+    const trigger = document.getElementById(menu.dataset.popupTrigger)
     if (restoreFocus) trigger?.focus({preventScroll: true})
-    this.pushEvent("close_hierarchy_status_filter", {})
+    this.pushEvent(menu.dataset.popupClose, {})
   },
 
-  syncStatusFilter(expanded) {
-    const menu = this.statusFilterMenu()
-    if (!menu) {
-      this.closingFilter = null
-      return
-    }
-    if (!expanded || menu.closest("[inert]")) {
-      this.closeStatusFilter(false)
-      return
-    }
-    if (menu === this.closingFilter) return
-    const trigger = this.el.querySelector("#task-hierarchy-status-filter-button")
-    if (!menu.matches(":popover-open")) menu.showPopover()
-    const anchor = trigger.getBoundingClientRect()
-    const gap = 8
-    const below = Math.max(0, innerHeight - anchor.bottom - gap * 2)
-    const above = Math.max(0, anchor.top - gap * 2)
-    const placeBelow = below >= Math.min(menu.scrollHeight, 304) || below >= above
-    menu.style.maxHeight = `${placeBelow ? below : above}px`
-    const bounds = menu.getBoundingClientRect()
-    menu.style.left = `${Math.max(gap, Math.min(anchor.right - bounds.width, innerWidth - bounds.width - gap))}px`
-    menu.style.top = `${placeBelow ? anchor.bottom + gap : anchor.top - bounds.height - gap}px`
+  syncHierarchyPopups(expanded) {
+    this.el.querySelectorAll("[data-hierarchy-popup]").forEach(menu => {
+      if (!expanded || menu.closest("[inert]")) {
+        this.closeHierarchyPopup(menu, false)
+        return
+      }
+      if (this.closingPopups.has(menu)) return
+      const trigger = document.getElementById(menu.dataset.popupTrigger)
+      if (!menu.matches(":popover-open")) menu.showPopover()
+      const anchor = trigger.getBoundingClientRect()
+      const gap = 8
+      const below = Math.max(0, innerHeight - anchor.bottom - gap * 2)
+      const above = Math.max(0, anchor.top - gap * 2)
+      const placeBelow = below >= Math.min(menu.scrollHeight, 304) || below >= above
+      menu.style.maxHeight = `${placeBelow ? below : above}px`
+      const bounds = menu.getBoundingClientRect()
+      menu.style.left = `${Math.max(gap, Math.min(anchor.right - bounds.width, innerWidth - bounds.width - gap))}px`
+      menu.style.top = `${placeBelow ? anchor.bottom + gap : anchor.top - bounds.height - gap}px`
+    })
   }
 }

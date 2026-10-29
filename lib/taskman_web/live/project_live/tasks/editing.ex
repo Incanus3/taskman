@@ -19,7 +19,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     RelatedTasksPicker
   }
 
-  @events ~w(toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
+  @events ~w(toggle_hierarchy_sort close_hierarchy_sort sort_hierarchy toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
 
   defmodule State do
     alias Taskman.Tasks.Task
@@ -111,12 +111,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def apply_route(socket, project, %Task{} = task) do
     case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
       {{:ok, hierarchy}, {:ok, related_tasks}} ->
-        autosave = route_autosave(socket.assigns.editing, task)
+        editing = initialize_hierarchy_sort(socket.assigns.editing, socket.assigns.listing.sort)
+        autosave = route_autosave(editing, task)
 
         assign(
           socket,
           :editing,
-          State.open(socket.assigns.editing, task, autosave, hierarchy, related_tasks)
+          State.open(editing, task, autosave, hierarchy, related_tasks)
         )
 
       _not_found ->
@@ -125,6 +126,22 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   def apply_route(socket, _project, nil), do: task_not_found_modal_state(socket)
+
+  defp initialize_hierarchy_sort(%State{detail_open?: true} = state, _sort), do: state
+
+  defp initialize_hierarchy_sort(%State{} = state, sort) do
+    sort =
+      case sort do
+        {field, direction}
+        when field in [:id, :title, :status, :priority] and direction in [:asc, :desc] ->
+          {field, direction}
+
+        _ ->
+          {:status, :desc}
+      end
+
+    State.put_hierarchy(state, %{state.hierarchy | sort: sort})
+  end
 
   defp route_autosave(
          %State{selected_task: %Task{id: task_id}, autosave: current},
@@ -195,10 +212,48 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("toggle_hierarchy_sort", _params, socket) do
+    {:noreply,
+     update_state(socket, fn state ->
+       State.put_hierarchy(state, %{
+         state.hierarchy
+         | sort_open?: !state.hierarchy.sort_open?,
+           filter_open?: false
+       })
+     end)}
+  end
+
+  def handle_event("close_hierarchy_sort", _params, socket) do
+    {:noreply,
+     update_state(socket, fn state ->
+       State.put_hierarchy(state, %{state.hierarchy | sort_open?: false})
+     end)}
+  end
+
+  def handle_event("sort_hierarchy", %{"field" => field}, socket) do
+    case Map.fetch(
+           %{"id" => :id, "title" => :title, "status" => :status, "priority" => :priority},
+           field
+         ) do
+      {:ok, field} ->
+        {:noreply,
+         update_state(socket, &State.put_hierarchy(&1, Hierarchy.sort_by(&1.hierarchy, field)))}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("sort_hierarchy", _params, socket), do: {:noreply, socket}
+
   def handle_event("toggle_hierarchy_status_filter", _params, socket) do
     {:noreply,
      update_state(socket, fn state ->
-       State.put_hierarchy(state, %{state.hierarchy | filter_open?: !state.hierarchy.filter_open?})
+       State.put_hierarchy(state, %{
+         state.hierarchy
+         | filter_open?: !state.hierarchy.filter_open?,
+           sort_open?: false
+       })
      end)}
   end
 
@@ -471,10 +526,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   defp sync_autosave(socket, autosave, task) do
-    title_changed? =
+    hierarchy_changed? =
       case socket.assigns.editing.selected_task do
-        %Task{title: title} -> title != task.title
-        _ -> false
+        %Task{title: title, status: status, priority: priority} ->
+          {title, status, priority} != {task.title, task.status, task.priority}
+
+        _ ->
+          false
       end
 
     socket = update_state(socket, &State.put_autosave(&1, autosave))
@@ -501,7 +559,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
           socket
       end
 
-    if title_changed? do
+    if hierarchy_changed? do
       reload_task_hierarchy(socket, socket.assigns.workspace.selected_project, task)
     else
       socket

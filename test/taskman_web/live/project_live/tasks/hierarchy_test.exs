@@ -97,7 +97,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     assert TaskHierarchy.clear(state) == TaskHierarchy.empty()
   end
 
-  test "status projection searches collapsed descendants and preserves ancestry and sibling order" do
+  test "status projection searches collapsed descendants and preserves ancestry with the chosen order" do
     source = %Hierarchy{
       selected_task_id: 3,
       root:
@@ -109,7 +109,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
         ])
     }
 
-    state = TaskHierarchy.load(TaskHierarchy.empty(), source)
+    state = TaskHierarchy.empty() |> TaskHierarchy.load(source) |> TaskHierarchy.sort_by(:id)
     filtered = TaskHierarchy.filter_statuses(state, ["pending", "invalid", "pending"])
     projected = TaskHierarchy.visible_root(filtered)
 
@@ -125,7 +125,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
   end
 
   test "no checked statuses retains only the current path and navigation recomputes it" do
-    state = TaskHierarchy.load(TaskHierarchy.empty(), hierarchy(3))
+    state =
+      TaskHierarchy.empty() |> TaskHierarchy.load(hierarchy(3)) |> TaskHierarchy.sort_by(:id)
+
     assert TaskHierarchy.visible_root(state) == state.hierarchy.root
 
     filtered = state |> TaskHierarchy.toggle(4) |> TaskHierarchy.filter_statuses([])
@@ -140,11 +142,96 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
   end
 
   test "restoring checked statuses restores branches and their manual expansion" do
-    state = TaskHierarchy.empty() |> TaskHierarchy.load(hierarchy(3)) |> TaskHierarchy.toggle(4)
+    state =
+      TaskHierarchy.empty()
+      |> TaskHierarchy.load(hierarchy(3))
+      |> TaskHierarchy.toggle(4)
+      |> TaskHierarchy.sort_by(:id)
+
     filtered = TaskHierarchy.filter_statuses(state, [])
     restored = TaskHierarchy.filter_statuses(filtered, Task.statuses())
     assert TaskHierarchy.visible_root(restored) == state.hierarchy.root
     assert TaskHierarchy.expanded?(restored, 4)
+  end
+
+  test "default status sorting orders each sibling group with descending ID ties" do
+    source = %Hierarchy{
+      selected_task_id: 1,
+      root:
+        status_node(1, :pending, [
+          status_node(2, :pending),
+          status_node(3, :done, [status_node(6, :pending), status_node(7, :done)]),
+          status_node(4, :done),
+          status_node(5, :will_not_do)
+        ])
+    }
+
+    state = TaskHierarchy.load(TaskHierarchy.empty(), source)
+    projected = TaskHierarchy.visible_root(state)
+    assert Enum.map(projected.children, & &1.task.id) == [4, 3, 2, 5]
+    assert Enum.map(Enum.at(projected.children, 1).children, & &1.task.id) == [7, 6]
+    assert state.hierarchy == source
+  end
+
+  test "sort fields use listing defaults and reverse both field and ID tie direction" do
+    children = [
+      sort_node(2, "Zulu", :icebox, :urgent),
+      sort_node(3, "alpha", :in_progress, :none),
+      sort_node(4, "ALPHA", :in_review, :high),
+      sort_node(5, "Beta", :done, :high),
+      sort_node(6, "Beta", :pending, :medium),
+      sort_node(7, "Beta", :will_not_do, :low)
+    ]
+
+    state =
+      TaskHierarchy.load(TaskHierarchy.empty(), %Hierarchy{
+        selected_task_id: 1,
+        root: hierarchy_node(1, children)
+      })
+
+    for {field, first, reversed} <- [
+          {:id, [2, 3, 4, 5, 6, 7], [7, 6, 5, 4, 3, 2]},
+          {:title, [3, 4, 5, 6, 7, 2], [2, 7, 6, 5, 4, 3]},
+          {:priority, [2, 5, 4, 6, 7, 3], [3, 7, 6, 4, 5, 2]}
+        ] do
+      sorted = TaskHierarchy.sort_by(state, field)
+      assert Enum.map(TaskHierarchy.visible_root(sorted).children, & &1.task.id) == first
+      reversed_state = TaskHierarchy.sort_by(sorted, field)
+
+      assert Enum.map(TaskHierarchy.visible_root(reversed_state).children, & &1.task.id) ==
+               reversed
+    end
+
+    assert Enum.map(TaskHierarchy.visible_root(state).children, & &1.task.id) == [
+             5,
+             4,
+             3,
+             6,
+             2,
+             7
+           ]
+
+    assert Enum.map(
+             TaskHierarchy.visible_root(TaskHierarchy.sort_by(state, :status)).children,
+             & &1.task.id
+           ) == [7, 2, 6, 3, 4, 5]
+  end
+
+  test "sort survives tree changes and filtering, preserves expansion, and resets on clear" do
+    state = TaskHierarchy.empty() |> TaskHierarchy.load(hierarchy(3))
+    sorted = state |> TaskHierarchy.toggle(4) |> TaskHierarchy.sort_by(:id)
+    assert TaskHierarchy.expanded?(sorted, 4)
+    filtered = TaskHierarchy.filter_statuses(sorted, [])
+    assert tree_ids(TaskHierarchy.visible_root(filtered)) == [1, 2, 3]
+    assert TaskHierarchy.load(filtered, other_hierarchy()).sort == {:id, :asc}
+    assert TaskHierarchy.load(sorted, hierarchy(5)).sort == {:id, :asc}
+    assert TaskHierarchy.clear(sorted).sort == {:status, :desc}
+    assert TaskHierarchy.sort_by(sorted, :invalid) == sorted
+  end
+
+  defp sort_node(id, title, status, priority) do
+    node = hierarchy_node(id)
+    %{node | task: %{node.task | title: title, status: status, priority: priority}}
   end
 
   defp status_node(id, status, children \\ []) do
