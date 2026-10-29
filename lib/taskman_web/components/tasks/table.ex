@@ -3,28 +3,12 @@ defmodule TaskmanWeb.Tasks.Table do
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Tasks.Move
-  alias TaskmanWeb.Tasks.{MovePopover, Status}
-
-  @priority_labels %{
-    none: "None",
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    urgent: "Urgent"
-  }
-
-  @priority_classes %{
-    none: "bg-slate-800 text-slate-300",
-    low: "bg-blue-400/10 text-blue-300",
-    medium: "bg-emerald-400/10 text-emerald-300",
-    high: "bg-amber-400/10 text-amber-300",
-    urgent: "bg-red-400/10 text-red-300"
-  }
+  alias TaskmanWeb.Tasks.{MovePopover, Priority, Status}
 
   def status_options, do: Enum.map(Task.statuses(), &{status_label(&1), &1})
   def priority_options, do: Enum.map(Task.priorities(), &{priority_label(&1), &1})
   def status_label(status), do: Status.label(status)
-  def priority_label(priority), do: Map.fetch!(@priority_labels, priority)
+  def priority_label(priority), do: Priority.label(priority)
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :visible_statuses, :list, required: true
@@ -311,7 +295,7 @@ defmodule TaskmanWeb.Tasks.Table do
           id={"task-priority-#{task.id}"}
           class={[
             "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold xl:justify-self-center",
-            priority_classes(task.priority)
+            Priority.badge_classes(task.priority)
           ]}
         >
           {priority_label(task.priority)}
@@ -365,7 +349,6 @@ defmodule TaskmanWeb.Tasks.Table do
     """
   end
 
-  defp priority_classes(priority), do: Map.fetch!(@priority_classes, priority)
   defp aria_sort(nil), do: "none"
   defp aria_sort(:asc), do: "ascending"
   defp aria_sort(:desc), do: "descending"

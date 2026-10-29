@@ -134,7 +134,9 @@ nor external agent work automatically changes Task state.
   hierarchy, editor and discussion. Close remains reachable while content scrolls and retains the
   existing autosave and comment-draft departure safeguards.
 - The collapsible parent-child hierarchy shows the connected tree with wrapping titles, Task IDs,
-  visible status labels and dots, connected nesting guides and a current-Task highlight. Native
+  visible status labels and dots, priority flags and labels (including muted None), connected
+  nesting guides and a current-Task highlight. Metadata orders ID, status, then priority and may
+  wrap on narrow rows. Priority colors match the main listing. Native
   nested lists, Task links and named disclosure buttons provide ordinary Tab/Enter/Space navigation.
   The selected Task and its ancestors remain expanded with decorative markers; optional branches
   retain manual expansion while navigating within the same tree.

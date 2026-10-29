@@ -6,7 +6,7 @@ defmodule TaskmanWeb.Tasks.Detail do
   alias TaskmanWeb.ProjectLive.Tasks.Comments
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
-  alias TaskmanWeb.Tasks.{Form, MovePopover, RelatedTasks, Status, Table}
+  alias TaskmanWeb.Tasks.{Form, MovePopover, Priority, RelatedTasks, Status, Table}
 
   attr :task, Task, required: true
   attr :close_id, :string, required: true
@@ -601,6 +601,16 @@ defmodule TaskmanWeb.Tasks.Detail do
               >
                 <span class="task-hierarchy-status-dot" aria-hidden="true"></span>
                 {Status.label(@node.task.status)}
+              </span>
+              <span
+                id={"task-hierarchy-priority-#{@node.task.id}"}
+                class={["task-hierarchy-priority", Priority.text_class(@node.task.priority)]}
+              >
+                <span aria-hidden="true" class="inline-flex">
+                  <.icon name="hero-flag" class="size-3" />
+                </span>
+                <span class="sr-only">Priority:</span>
+                {Priority.label(@node.task.priority)}
               </span>
             </span>
           </.link>

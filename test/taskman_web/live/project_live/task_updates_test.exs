@@ -393,7 +393,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
     assert has_element?(view, "#task-hierarchy-node-#{created.id}")
 
-    assert {:ok, _updated} =
+    assert {:ok, updated} =
              externally(fn ->
                Tasks.update_task(project, selected, %{
                  title: "Revised selected Task",
@@ -410,6 +410,17 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
            )
 
     assert has_element?(view, "#task-hierarchy-status-#{selected.id}", "In Review")
+
+    for {task, priority, label} <- [{updated, :urgent, "Urgent"}, {sibling, :high, "High"}] do
+      assert has_element?(view, "#task-hierarchy-priority-#{task.id}", "None")
+
+      assert {:ok, _} =
+               externally(fn -> Tasks.update_task(project, task, %{priority: priority}) end)
+
+      sync_view(view)
+      assert has_element?(view, "#task-hierarchy-priority-#{task.id}", label)
+    end
+
     assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
     assert has_element?(view, "#task-hierarchy-node-#{created.id}")
   end

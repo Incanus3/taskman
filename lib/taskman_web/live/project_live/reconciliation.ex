@@ -289,6 +289,6 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
   defp task_hierarchy_affected?(%Event{operation: operation, fields: fields}) do
     operation in [:created, :moved] or
-      Enum.any?(fields, &(&1 in [:title, :status, :parent_task_id, :list_id]))
+      Enum.any?(fields, &(&1 in [:title, :status, :priority, :parent_task_id, :list_id]))
   end
 end

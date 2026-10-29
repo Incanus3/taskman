@@ -623,6 +623,33 @@ defmodule TaskmanWeb.ProjectLiveTest do
     end
   end
 
+  test "hierarchy links expose priority after status including None", %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project, %{title: "All priorities"})
+
+    tasks =
+      for {priority, label} <- [
+            none: "None",
+            low: "Low",
+            medium: "Medium",
+            high: "High",
+            urgent: "Urgent"
+          ] do
+        {task_fixture(project, %{title: "Priority #{label}", priority: priority}, parent: root),
+         label}
+      end
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
+
+    for {task, label} <- [{root, "None"} | tasks] do
+      assert has_element?(
+               view,
+               "#task-hierarchy-metadata-#{task.id} > #task-hierarchy-status-#{task.id} + #task-hierarchy-priority-#{task.id}",
+               label
+             )
+    end
+  end
+
   test "a hierarchy disclosure progressively shows and hides its branch", %{conn: conn} do
     project = project_fixture(%{})
     root = task_fixture(project, %{})
