@@ -683,7 +683,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
     socket =
       socket
-      |> assign(:workspace, workspace)
+      |> assign_workspace(workspace)
       |> assign(:projects_empty?, projects == [])
       |> stream(:projects, projects, reset: true)
       |> refresh()
@@ -744,7 +744,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
               do: {:location_missing, task_lists},
               else: {:location_changed, task_lists}
 
-          {assign(socket, :workspace, workspace), outcome}
+          {assign_workspace(socket, workspace), outcome}
 
         nil ->
           {socket, :unchanged}
@@ -796,7 +796,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     projects = Projects.list_projects()
 
     socket
-    |> assign(:workspace, workspace)
+    |> assign_workspace(workspace)
     |> sync_project_task_subscription(selected_project)
     |> update(:listing, &ListingState.close_filter/1)
     |> assign(:projects_empty?, projects == [])
@@ -887,7 +887,19 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   defp project_id(_project), do: nil
 
+  defp assign_workspace(socket, workspace) do
+    title =
+      case workspace.selected_project do
+        %Project{name: name} -> "Taskman · " <> name
+        nil -> "Taskman"
+      end
+
+    socket
+    |> assign(:workspace, workspace)
+    |> assign(:page_title, title)
+  end
+
   defp update_workspace(socket, transition) do
-    assign(socket, :workspace, transition.(socket.assigns.workspace))
+    assign_workspace(socket, transition.(socket.assigns.workspace))
   end
 end
