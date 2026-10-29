@@ -338,8 +338,11 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     assert has_element?(view, "#global-task-search-no-match")
   end
 
-  test "Task recovery retains an inert navbar search until input is discarded", %{conn: conn} do
+  test "Task recovery retains input and inert navbar search across unrelated name refresh", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
+    foreign_project = project_fixture(%{})
     lost = list_fixture(project)
     task = task_fixture(project, lost, %{title: "Persisted"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
@@ -349,6 +352,16 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     |> render_change(%{"_target" => ["task", "title"]})
 
     Repo.delete!(task)
+
+    send(view.pid, %Taskman.ChangeNotifications.Event{
+      entity: :project,
+      operation: :updated,
+      project_id: foreign_project.id,
+      entity_id: foreign_project.id,
+      fields: [:name]
+    })
+
+    _ = :sys.get_state(view.pid)
     Repo.delete!(lost)
 
     send(view.pid, %Taskman.ChangeNotifications.Event{
@@ -361,7 +374,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     })
 
     render(view)
-    assert has_element?(view, "#task-recovery")
+    assert has_element?(view, "#task-recovery #task-title[value='']")
     assert has_element?(view, "#global-task-search[inert] #global-task-search-input")
     assert has_element?(view, "#global-task-search[inert] #global-task-search-mobile-trigger")
 
