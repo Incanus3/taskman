@@ -9,6 +9,10 @@ from threading import Event, Thread
 
 import pytest
 
+from tests.support.uploads import upload_authority
+
+pytestmark = pytest.mark.usefixtures("upload_authority")
+
 from taskman_ops.host_helper import backup_helper
 from taskman_ops.host_helper.lock import acquire_lifecycle_lock
 from taskman_ops.host_helper.paths import ManagedPaths
@@ -54,8 +58,8 @@ def test_disabled_active_timer_refuses_before_a_package_write(tmp_path: Path, mo
     """Accepting an active disabled timer could restart an obsolete executable after replacement."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "upload.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "upload.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement executable")
     executable = tmp_path / "taskman-backup.pyz"
     executable.write_bytes(b"old executable")
@@ -137,8 +141,8 @@ def test_refresh_releases_the_lock_for_an_old_backup_before_revalidating_and_rep
     """Holding the lifecycle lock while waiting would deadlock an already-started scheduled backup."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -167,7 +171,7 @@ def test_refresh_releases_the_lock_for_an_old_backup_before_revalidating_and_rep
     monkeypatch.setattr(backup_helper, "observe_backup_timer", lambda **_kwargs: next(states))
     monkeypatch.setattr(backup_helper, "stop_backup_timer", lambda **_kwargs: calls.append("stop-timer"))
     monkeypatch.setattr(backup_helper, "_wait_for_backup_service", lambda _timeout: old_complete.wait(1))
-    monkeypatch.setattr(backup_helper, "_replace_executable", lambda _upload, _digest: calls.append("replace-and-verify"))
+    monkeypatch.setattr(backup_helper, "_replace_executable", lambda _paths, _upload, _digest: calls.append("replace-and-verify"))
     monkeypatch.setattr(backup_helper, "start_backup_timer", lambda **_kwargs: calls.append("start-timer"))
 
     result = backup_helper.converge_backup_helper(
@@ -199,8 +203,8 @@ def test_refresh_uses_one_finite_deadline_for_timer_commands(
     """A fixed sixty-second timer call could exceed the confirmed refresh deadline."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -238,8 +242,8 @@ def test_reacquired_authority_drift_restores_enabled_timer_without_replacing(
     """Writing after lock-release drift would publish a package outside the confirmed plan."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -281,8 +285,8 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
     """A failed replacement plus failed restart needs separate recovery evidence."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -290,10 +294,12 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
     executable.chmod(0o750)
     desired = hashlib.sha256(upload.read_bytes()).hexdigest()
 
-    def interrupted_replace(_upload: Path | None, _digest: str) -> None:
+    replacement_failure = OSError("interrupted replacement")
+
+    def interrupted_replace(_paths: ManagedPaths, _upload: Path | None, _digest: str) -> None:
         executable.write_bytes(b"replacement")
         executable.chmod(0o750)
-        raise OSError("interrupted replacement")
+        raise replacement_failure
 
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", executable)
     states = iter(((True, "active"), (True, "active"), (True, "inactive")))
@@ -315,6 +321,8 @@ def test_interrupted_replacement_reports_a_distinct_timer_restoration_failure(
 
     assert raised.value.mutation == backup_helper.BackupHelperMutation(paused=True, replaced=True, restarted=True)
     assert raised.value.restoration_failed is True
+    assert executable.read_bytes() == b"replacement"
+    assert raised.value.__cause__ is replacement_failure
 
 
 def test_stop_timeout_retains_possible_pause_and_restart_evidence(
@@ -323,8 +331,8 @@ def test_stop_timeout_retains_possible_pause_and_restart_evidence(
     """A timed-out stop may have paused the timer before its result was lost."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -390,8 +398,8 @@ def test_fresh_disabled_enablement_drift_never_restarts_after_pause(
     """A timer disabled while the lock was released must stay inactive on refusal."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -425,8 +433,8 @@ def test_runtime_revalidation_failure_restores_and_releases_an_internally_owned_
     """An ordinary callback exception must not strand the lock or a paused enabled timer."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -463,8 +471,8 @@ def test_revalidation_failure_preserves_primary_and_restoration_causes(
     """A failed restart must retain its cause without hiding the failed authority callback."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     executable = tmp_path / "taskman-backup.pyz"
@@ -519,8 +527,8 @@ def test_upload_path_must_be_normalized_private_pyz(filename: str, tmp_path: Pat
     """A non-canonical or non-pyz upload can redirect package authority outside the validated file."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / filename
-    upload.parent.mkdir(parents=True, exist_ok=True)
+    upload = tmp_path / "install" / "uploads" / filename
+    upload.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     upload.write_bytes(b"replacement")
 
     with pytest.raises(ValueError, match="upload"):
@@ -540,8 +548,8 @@ def test_upload_requires_private_mode_and_destination_rejects_a_linked_directory
     """A group-readable upload or linked destination directory can swap executable bytes after validation."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o644)
     digest = hashlib.sha256(upload.read_bytes()).hexdigest()
@@ -557,15 +565,15 @@ def test_upload_requires_private_mode_and_destination_rejects_a_linked_directory
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", linked_parent / "taskman-backup.pyz")
 
     with pytest.raises(ValueError, match="destination"):
-        backup_helper._replace_executable(upload, digest)
+        backup_helper._replace_executable(paths, upload, digest)
 
 
 def test_destination_rejects_a_linked_intermediate_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """O_NOFOLLOW on only the final directory must not permit an earlier link in the destination chain."""
 
     paths = _paths(tmp_path)
-    upload = tmp_path / "install" / "deployments" / "uploads" / "replacement.pyz"
-    upload.parent.mkdir(parents=True)
+    upload = tmp_path / "install" / "uploads" / "replacement.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
     upload.write_bytes(b"replacement")
     upload.chmod(0o600)
     digest = hashlib.sha256(upload.read_bytes()).hexdigest()
@@ -576,7 +584,7 @@ def test_destination_rejects_a_linked_intermediate_directory(tmp_path: Path, mon
     monkeypatch.setattr(backup_helper, "_BACKUP_COMMAND", linked / "nested" / "taskman-backup.pyz")
 
     with pytest.raises(ValueError, match="destination"):
-        backup_helper._replace_executable(upload, digest)
+        backup_helper._replace_executable(paths, upload, digest)
 
 
 def test_backup_wait_exhausts_a_real_finite_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,3 +599,30 @@ def test_backup_wait_exhausts_a_real_finite_deadline(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(backup_helper.CommandError, match="did not quiesce"):
         backup_helper._wait_for_backup_service(0.001)
+
+
+@pytest.mark.parametrize("invalid", (None, "old", "nested", "root-mode", "checksum"))
+def test_backup_helper_upload_uses_validated_root(tmp_path, invalid):
+    paths = _paths(tmp_path)
+    upload = Path(str(paths.upload_root)) / "helper.pyz"
+    upload.parent.mkdir(mode=0o700, parents=True)
+    upload.write_bytes(b"verified package")
+    upload.chmod(0o600)
+    digest = hashlib.sha256(upload.read_bytes()).hexdigest()
+    if invalid == "old":
+        upload = Path(str(paths.deployment_root)) / "uploads/helper.pyz"
+    elif invalid == "nested":
+        upload = upload.parent / "nested/helper.pyz"
+    elif invalid == "root-mode":
+        upload.parent.chmod(0o750)
+    elif invalid == "checksum":
+        upload.write_bytes(b"altered package")
+    def validate():
+        _, selected = backup_helper._input(paths, {"sha256": digest, "upload_path": str(upload)},
+            None, True, lambda: None, 1)
+        backup_helper._validate_upload(paths, selected, digest)
+    if invalid is None:
+        validate()
+    else:
+        with pytest.raises(ValueError):
+            validate()

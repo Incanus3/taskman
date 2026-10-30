@@ -17,6 +17,9 @@ import subprocess
 import sys
 
 import pytest
+from tests.support.uploads import upload_authority
+
+pytestmark = pytest.mark.usefixtures("upload_authority")
 
 from taskman_ops.cli import Invocation, main
 from taskman_ops.errors import ExitStatus, HelperTransportError, OpsError
@@ -93,6 +96,15 @@ class _ControllerRemote:
 
     def run(self, args: object, **kwargs: object) -> CommandResult:
         stdin = kwargs.get("stdin")
+        if isinstance(args, tuple) and args[:4] == ("/usr/bin/python3", "-I", "-S", "-c"):
+            from taskman_ops.host_helper import paths as upload_paths
+            try:
+                changed = upload_paths.prepare_upload_root(PurePosixPath(args[5]), tuple(args[6:]))
+            except upload_paths.PathAuthorityError:
+                return CommandResult(10)
+            except OSError:
+                return CommandResult(1)
+            return CommandResult(3 if changed else 0)
         if isinstance(args, tuple) and len(args) >= 4 and args[:3] == ("sh", "-ceu", args[2]):
             label = args[3]
             if label == "taskman-credential-authority" and isinstance(stdin, bytes):
@@ -198,7 +210,7 @@ runpy.run_path(archive, run_name="__main__")
 
     def put(self, source: Path, destination: Path | PurePosixPath, **_kwargs: object) -> UploadReceipt:
         destination = Path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
         destination.chmod(0o600)
         return UploadReceipt()
@@ -272,6 +284,7 @@ def test_public_cleanup_executes_controller_plan_through_packaged_helper(
             invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
                 wire_request, selected, runtime_path
             ),
+            prior_mutation_state=_kwargs.get("prior_mutation_state", "unchanged"),
         )
 
     monkeypatch.setattr(cleanup_workflow, "validate_cleanup_preflight", lambda *_args: object())
@@ -364,6 +377,7 @@ def test_public_cleanup_recovery_matrix_uses_real_filesystem_only_preflight(
             invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
                 wire_request, selected, runtime_path
             ),
+            prior_mutation_state=_kwargs.get("prior_mutation_state", "unchanged"),
         )
 
     monkeypatch.setattr(cleanup_workflow, "run_request", dispatch)
@@ -417,6 +431,7 @@ def test_public_cleanup_partial_batch_keeps_proved_completion(
             invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
                 wire_request, selected, runtime_path
             ),
+            prior_mutation_state=_kwargs.get("prior_mutation_state", "unchanged"),
         )
 
     monkeypatch.setattr(cleanup_workflow, "run_request", dispatch)
@@ -459,6 +474,16 @@ from taskman_ops.host_helper.operations import preflight as preflight_module
 from taskman_ops.host_helper.operations import restore as restore_module
 from taskman_ops.host_helper.records import BackupRecord, write_backup_manifest
 from taskman_ops.host_helper.restore_target import replace_restore_target
+from taskman_ops.host_helper import paths as upload_paths
+import stat
+metadata = upload_paths._upload_metadata
+fixture_ancestors = {(p.stat().st_dev, p.stat().st_ino) for p in runtime_path.parent.parents}
+def synthetic_upload_metadata(path):
+    values = list(metadata(path)); values[4:6] = [0, 0]
+    # Disposable harness ancestry is outside the managed fixture roots.
+    if (values[2], values[1]) in fixture_ancestors and stat.S_ISDIR(values[0]): values[0] = stat.S_IFDIR | 0o755
+    return os.stat_result(values)
+upload_paths._upload_metadata = synthetic_upload_metadata
 from taskman_ops.host_helper.commands import CommandError
 from taskman_ops.host_protocol import HostResult, PROTOCOL_VERSION
 
@@ -709,7 +734,7 @@ def wait_backup(*_args, **_kwargs):
     write_state(value)
     if value.get("scheduler_failure"):
         raise CommandError("scheduled backup wait interrupted")
-def replace_helper(_upload, digest):
+def replace_helper(_paths, _upload, digest):
     value = read_state()
     assert not value.get("scheduler_running", False)
     value["scheduler_sha256"] = digest
@@ -1148,6 +1173,7 @@ def _install_public_controller(
             invoker=lambda _transport, selected, wire_request, **_options: _wire_helper(
                 wire_request, selected, runtime_path
             ),
+            prior_mutation_state=_kwargs.get("prior_mutation_state", "unchanged"),
         )
         operation = getattr(request, "operation", None)
         runtime = json.loads(runtime_path.read_text())
@@ -1525,6 +1551,7 @@ def _install_public_restore_controller(
             request,
             package=package,
             invoker=invoke,
+            prior_mutation_state=_kwargs.get("prior_mutation_state", "unchanged"),
         )
 
     monkeypatch.setattr(restore_workflow, "run_request", dispatch)
@@ -1775,7 +1802,8 @@ def test_public_packaged_null_baseline_restore_retries_after_lost_completion_rep
     first_safety_backup_id = "backup-" + f"{17:032x}"
     assert interrupted.exit_status is ExitStatus.SAFETY
     assert interrupted.changed is True
-    assert interrupted.facts["mutation_state"] == "unknown"
+    assert interrupted.facts["mutation_state"] == "changed"
+    assert interrupted.facts["observations"]["selected_release_id"] is None
     assert runtime["preflight_results"] == [
         {
             "mode": "inspection",
@@ -2070,6 +2098,7 @@ def test_public_packaged_restore_lost_reply_reports_unknown_after_real_consequen
     config, runtime_path, _paths, remote, source = _install_public_restore_controller(
         monkeypatch, tmp_path, integration_packages, scheduler_failure=False
     )
+    Path(str(config.upload_root)).mkdir(mode=0o700)
     runtime = json.loads(runtime_path.read_text())
     runtime["lose_restore_reply"] = True
     runtime_path.write_text(json.dumps(runtime, sort_keys=True))
@@ -2082,6 +2111,7 @@ def test_public_packaged_restore_lost_reply_reports_unknown_after_real_consequen
     assert result.facts["mutation_state"] == "unknown"
     assert runtime["restore_databases"]["canonical"]["oid"] == 202
     assert "dump-loaded" in runtime["events"]
+    assert list(Path(str(config.upload_root)).glob("*.pyz"))
 
 
 def _converge_native_provision_writers(runtime_path: Path):
@@ -3209,7 +3239,7 @@ def _install_shared_proxy_ordering_baseline(tmp_path, config, *, version="0.3.0"
     release_id = higher.parameters["target"]["manifest"]["release_id"]
     write_backup_manifest(paths, BackupRecord(backup_id, now, hashlib.sha256(payload).hexdigest(),
         release_id, (), len(payload)))
-    Path(paths.local(paths.backup_protection_root)).mkdir(mode=0o750, exist_ok=True)
+    Path(paths.local(paths.backup_protection_root)).mkdir(mode=0o750, parents=True, exist_ok=True)
     write_backup_protection(paths, BackupProtection(1, backup_id, None, release_id,
         0 if digit == "e" else 1, now))
     return backup_id

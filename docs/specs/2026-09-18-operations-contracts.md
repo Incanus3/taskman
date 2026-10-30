@@ -1482,8 +1482,28 @@ The release manifest/record supplies the candidate ID. Reject mixed or additiona
 host reuse carries no fabricated archive path. `backup_helper.sha256` is the required controller-built
 package hash, while expected state's checksum binds the package observed during planning. Its
 upload path is null only when the installed checksum already matches; otherwise it is an exact
-private regular `.pyz` file below derived uploads, verified before use. Never execute supplied
+private regular `.pyz` direct child of `install_root/uploads`, verified before use. Never execute supplied
 helper bytes until their transferred checksum, root ownership, and fixed destination are validated.
+Release archive inputs also derive beneath `install_root/uploads`. Prepare this private root once
+before each upload-producing deploy, genesis, application preparation or restore request, including
+helper-only installed-release reuse. No-input reuse and inspection perform no upload preparation.
+Root ownership, permissions, ordinary pathname checks and no-follow file opening follow the
+[upload authority contract](2026-10-30-upload-staging-design.md#upload-authority).
+A proved unsafe root before preparation mutation returns status `10`, the dispatch operation's stage,
+and `upload staging path is unsafe`. Other preparation failures return `8`/`release` for deployment
+or provisioning, or `11`/`restore` for restore, with `unable to prepare private upload staging`.
+All destination basenames are checked once during preparation; any already-present destination
+refuses before mutation or transfer. Native final `install` reuses the private SSH staging path;
+concurrent manual replacement of checked path components is unsupported.
+No transfer or helper dispatch follows failed preparation. A failed/interrupted ordinary upload is
+possible mutation unless explicit pre-access evidence proves its destination was untouched; generic
+transport `changed=False` alone is insufficient. Command mutation evidence retains prior
+known or possible changes, including directory creation, separately from validated helper evidence;
+directory creation does not establish a database change or fabricate host observations.
+A finalized result permits exact-file cleanup of that invocation's inputs; uncertain dispatched
+completion retains them. Cleanup trouble preserves the helper outcome and existing warning precedence.
+Retained inputs are never an artifact cache, and no automatic legacy cleanup or fallback is provided.
+
 The protection-set digest is SHA-256 of a canonical JSON array of unresolved protection mappings
 sorted by backup ID, using sorted object keys, ASCII encoding, no whitespace, and no trailing newline.
 An empty set hashes the literal bytes `[]`. Existing database, credential, verification, hash, path,

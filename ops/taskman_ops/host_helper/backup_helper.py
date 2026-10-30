@@ -14,7 +14,7 @@ import time
 
 from .commands import CommandError, run_command
 from .lock import LifecycleLock, LifecycleLockContention, acquire_lifecycle_lock
-from .paths import ManagedPaths, PathAuthorityError
+from .paths import ManagedPaths, PathAuthorityError, validate_upload_path
 
 
 _BACKUP_COMMAND = Path("/usr/local/lib/taskman/taskman-backup.pyz")
@@ -124,7 +124,7 @@ def converge_backup_helper(
         enabled_after_wait, state_after_wait = observe_backup_timer(timeout_seconds=_remaining(deadline))
         _ensure_confirmed_timer(enabled_after_wait, state_after_wait, confirmed_enabled, mutation)
         mutation = _with_mutation(mutation, replaced=True)
-        _replace_executable(upload, desired_sha256)
+        _replace_executable(paths, upload, desired_sha256)
         if enabled_after_wait:
             mutation = _with_mutation(mutation, restarted=True)
             start_backup_timer(timeout_seconds=_remaining(deadline))
@@ -179,7 +179,7 @@ def _input(
     if type(upload) is not str:
         raise ValueError("backup helper upload is invalid")
     path = PurePosixPath(upload)
-    allowed = paths.deployment_root / "uploads"
+    allowed = paths.upload_root
     try:
         relative = path.relative_to(allowed)
     except ValueError as error:
@@ -267,7 +267,7 @@ def _validate_upload(paths: ManagedPaths, upload: Path | None, digest: str) -> N
     if upload is None:
         raise ValueError("backup helper upload is required")
     paths.validate_existing(owner_uid=os.geteuid())
-    _read_private_upload(upload, digest)
+    _read_private_upload(paths, upload, digest)
 
 
 def _verified_executable_checksum() -> str | None:
@@ -292,10 +292,10 @@ def _verified_executable_checksum() -> str | None:
         os.close(directory)
 
 
-def _replace_executable(upload: Path | None, digest: str) -> None:
+def _replace_executable(paths: ManagedPaths, upload: Path | None, digest: str) -> None:
     if upload is None:
         raise ValueError("backup helper upload is required")
-    payload = _read_private_upload(upload, digest)
+    payload = _read_private_upload(paths, upload, digest)
     try:
         directory = _open_safe_directory(_BACKUP_COMMAND.parent, "backup destination")
     except FileNotFoundError as error:
@@ -375,16 +375,13 @@ def _require_directory(details: os.stat_result, label: str) -> None:
         raise ValueError(f"{label} is unsafe")
 
 
-def _read_private_upload(upload: Path, digest: str) -> bytes:
-    directory = _open_safe_directory(upload.parent, "backup helper upload directory")
+def _read_private_upload(paths: ManagedPaths, upload: Path, digest: str) -> bytes:
+    validate_upload_path(paths.install_root, PurePosixPath(upload))
+    descriptor = os.open(upload, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        descriptor = os.open(upload.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
-        try:
-            return _read_and_verify_descriptor(descriptor, digest, mode=0o600, label="backup helper upload")
-        finally:
-            os.close(descriptor)
+        return _read_and_verify_descriptor(descriptor, digest, mode=0o600, label="backup helper upload")
     finally:
-        os.close(directory)
+        os.close(descriptor)
 
 
 def _read_and_verify_descriptor(descriptor: int, digest: str | None, *, mode: int, label: str) -> bytes:

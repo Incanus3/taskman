@@ -9,6 +9,10 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.support.uploads import upload_authority
+
+pytestmark = pytest.mark.usefixtures("upload_authority")
+from taskman_ops.workflows.helper import UploadDispatchResult
 
 from taskman_ops.errors import ExitStatus
 from taskman_ops.host_helper.records import SelectionRecord, selection_filename
@@ -232,7 +236,7 @@ def test_pending_third_target_normalization_requires_a_second_confirmation(
         calls += 1
         if calls == 1:
             request = kwargs["request"]
-            return HostResult(
+            return UploadDispatchResult(HostResult(
                 PROTOCOL_VERSION,
                 "restore",
                 request.correlation_id,
@@ -240,7 +244,7 @@ def test_pending_third_target_normalization_requires_a_second_confirmation(
                 REPLACEMENT_RECONFIRM_MESSAGE,
                 _exact_failure_state("restore", "restore", 11),
                 ("abandoned input dump is unavailable",),
-            )
+            ), kwargs.get("prior_mutation_state", "unchanged"))
         return default_mutate(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -320,7 +324,7 @@ def test_cancellation_after_normalization_retains_prior_mutation_evidence(
 
     def normalized_result(_remote, _config, **kwargs):
         request = kwargs["request"]
-        return HostResult(
+        return UploadDispatchResult(HostResult(
             PROTOCOL_VERSION,
             "restore",
             request.correlation_id,
@@ -328,7 +332,7 @@ def test_cancellation_after_normalization_retains_prior_mutation_evidence(
             REPLACEMENT_RECONFIRM_MESSAGE,
             _exact_failure_state("restore", "restore", 11),
             (),
-        )
+        ), kwargs.get("prior_mutation_state", "unchanged"))
 
     monkeypatch.setattr(restore_workflow, "run_restore_request", normalized_result)
     confirmations = 0

@@ -477,3 +477,11 @@ def test_settings_preserve_report_structure_commands_and_release_evidence(
     error = OpsError(ExitStatus.INVALID, "configuration", "retry provision", next_action=next_action)
     assert next_action in render_error(error)
     assert json.loads(render_error(error, json_output=True))["next_action"] == next_action
+
+
+@pytest.mark.parametrize("root,expected", [("/opt/taskman", "/opt/taskman/uploads"), ("/srv/custom", "/srv/custom/uploads")])
+def test_upload_root_is_derived_from_installation(root, expected):
+    config = EnvironmentConfig.model_validate(two_root_environment(install_root=root))
+    assert config.upload_root == PurePosixPath(expected)
+    assert config.model_dump()["install_root"] == PurePosixPath(root)
+    assert "upload_root" not in config.model_dump()

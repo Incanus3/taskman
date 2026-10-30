@@ -153,7 +153,7 @@ class Runtime:
 
     def converge_helper(self, paths, helper, *, revalidate, lock, **_kwargs):
         self.events.append("scheduler")
-        assert helper == {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/deployments/uploads/backup.pyz"}
+        assert helper == {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/uploads/backup.pyz"}
         revalidate()
         if self.scheduler_failure:
             raise BackupHelperError("interrupted", BackupHelperMutation(paused=True))
@@ -301,7 +301,7 @@ def _request(
             "credentials_path": "/etc/taskman/pgpass",
             "database": database_mapping(),
             "verification": verification_settings(),
-            "backup_helper": {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/deployments/uploads/backup.pyz"},
+            "backup_helper": {"sha256": NEW_HELPER, "upload_path": "/opt/taskman/uploads/backup.pyz"},
             "prune_backup_ids": list(prune_backup_ids),
             "replace_unfinished": replace_unfinished,
             "reapply": False,

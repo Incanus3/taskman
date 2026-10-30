@@ -192,7 +192,7 @@ def _deploy_request() -> HostRequest:
                 "kind": "upload",
                 "manifest": manifest.to_mapping(),
                 "artifact_sha256": "b" * 64,
-                "artifact_path": "/opt/taskman/deployments/uploads/taskman.tar.gz",
+                "artifact_path": "/opt/taskman/uploads/taskman.tar.gz",
             },
         },
     )

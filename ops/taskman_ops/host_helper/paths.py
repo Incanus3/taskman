@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+import os
 import stat
 import re
 
@@ -55,6 +56,10 @@ class ManagedPaths:
     @property
     def release_root(self) -> PurePosixPath:
         return self.install_root / "releases"
+
+    @property
+    def upload_root(self) -> PurePosixPath:
+        return self.install_root / "uploads"
 
     @property
     def deployment_root(self) -> PurePosixPath:
@@ -160,4 +165,106 @@ class ManagedPaths:
                 raise PathAuthorityError(f"{label} is unsafe")
 
 
-__all__ = ["ManagedPaths", "PathAuthorityError"]
+def _upload_metadata(path: Path) -> os.stat_result:
+    return path.lstat()
+
+
+def _upload_directory(path: Path, *, private: bool = False) -> None:
+    details = _upload_metadata(path)
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+            or details.st_mode & 0o7022
+            or (private and (details.st_gid != 0 or stat.S_IMODE(details.st_mode) != 0o700))):
+        raise PathAuthorityError("upload staging path is unsafe")
+
+
+def _upload_install_root(install_root: PurePosixPath) -> Path:
+    if not isinstance(install_root, PurePosixPath):
+        raise PathAuthorityError("invalid install root")
+    root = _absolute(str(install_root), "install root")
+    if root == PurePosixPath('/'):
+        raise PathAuthorityError("invalid install root")
+    return Path(root)
+
+
+def validate_upload_root(install_root: PurePosixPath, *, allow_missing: bool = False) -> None:
+    """Check ordinary pathname authority; only the two derived leaves may be absent."""
+
+    root = _upload_install_root(install_root)
+    for path in (*reversed(root.parents), root, root / 'uploads'):
+        try:
+            _upload_directory(path, private=path == root / 'uploads')
+        except FileNotFoundError:
+            if not allow_missing or path not in (root, root / 'uploads'):
+                raise PathAuthorityError("upload staging directory is missing") from None
+
+
+def validate_upload_path(install_root: PurePosixPath, upload_path: PurePosixPath) -> None:
+    """Validate a contained private input without retaining directory descriptors."""
+
+    root = _upload_install_root(install_root) / 'uploads'
+    if not isinstance(upload_path, PurePosixPath):
+        raise PathAuthorityError("invalid upload path")
+    upload = _absolute(str(upload_path), "upload path")
+    if not upload.is_relative_to(root) or upload == PurePosixPath(root):
+        raise PathAuthorityError("upload path is outside upload staging")
+    validate_upload_root(install_root)
+    relative = upload.relative_to(root)
+    for parent in reversed(relative.parents):
+        if parent != PurePosixPath('.'):
+            _upload_directory(root / parent)
+    try:
+        details = _upload_metadata(Path(upload))
+    except FileNotFoundError:
+        raise PathAuthorityError("upload input is missing") from None
+    if (not stat.S_ISREG(details.st_mode) or details.st_uid != 0
+            or stat.S_IMODE(details.st_mode) != 0o600):
+        raise PathAuthorityError("upload input is unsafe")
+
+
+def prepare_upload_root(install_root: PurePosixPath, destinations: tuple[str, ...] = ()) -> bool:
+    """Refuse existing destinations, then create only permitted missing leaves.
+
+    Authority errors prove no mutation was attempted. After a creation attempt,
+    failures are ordinary OS errors so callers retain possible mutation evidence.
+    """
+
+    root = _upload_install_root(install_root)
+    validate_upload_root(install_root, allow_missing=True)
+    if not isinstance(destinations, tuple):
+        raise PathAuthorityError("invalid upload destinations")
+    for name in destinations:
+        if (type(name) is not str or not name or name in {'.', '..'}
+                or any(character in name for character in '/\\\x00')):
+            raise PathAuthorityError("invalid upload destination")
+        try:
+            _upload_metadata(root / 'uploads' / name)
+        except FileNotFoundError:
+            continue
+        raise PathAuthorityError("upload destination already exists")
+    changed = False
+    attempted = False
+    try:
+        for path, mode in ((root, 0o750), (root / 'uploads', 0o700)):
+            try:
+                _upload_metadata(path)
+            except FileNotFoundError:
+                attempted = True
+                try:
+                    path.mkdir(mode=mode)
+                except FileExistsError:
+                    # Check the colliding directory without repairing it.
+                    pass
+                else:
+                    changed = True
+                    os.chown(path, 0, 0)
+                    path.chmod(mode)
+            _upload_directory(path, private=path == root / 'uploads')
+        validate_upload_root(install_root)
+    except PathAuthorityError as error:
+        if attempted:
+            raise OSError("unable to prepare upload staging") from error
+        raise
+    return changed
+
+
+__all__ = ["ManagedPaths", "PathAuthorityError", "validate_upload_root", "validate_upload_path", "prepare_upload_root"]

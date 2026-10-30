@@ -157,7 +157,7 @@ install_root: /opt/taskman
 backup_root: /var/backups/taskman
 ```
 
-The installation derives `releases`, `deployments`, `deployments/uploads`,
+The installation derives `releases`, `deployments`, `uploads`,
 `deployments/selections`, `current`, and `lifecycle.lock` beneath `install_root`. Neither operator
 configuration nor helper input can replace a derived root. Both configured roots must be normalized
 absolute POSIX paths, disjoint from one another and from reserved configuration, state,
@@ -167,6 +167,23 @@ or legacy root aliases.
 Lexical containment is not sufficient for privileged action. Relevant existing directories, files,
 links, ownership, permissions, and identities are checked at the authority boundary; unexpected
 redirects or contradictory identities are not repaired by guessing.
+
+Transient release archives and replacement scheduled-backup helpers use `install_root/uploads`,
+separate from durable deployment records. Every upload-producing request prepares that root first,
+including helper-only restore or installed-release reuse. Read-only inspection permits its absence.
+Existing components from `/` through the installation must be real root-owned directories with
+`mode & 0o7022 == 0`; the upload root additionally requires group root and exact mode `0700`.
+Preparation creates only the missing installation leaf (`0750`) and upload directory (`0700`),
+without repairing existing metadata. Preparation checks every final destination basename and refuses
+any existing entry before mutation or transfer. The private SSH stage and native final `install`
+produce root-owned regular files (`0600`); final creation is not exclusive. Ordinary `lstat` checks
+validate authority; concurrent manual replacement of validated path components is unsupported.
+Consumers recheck roots, containment and file metadata and open the file itself without following
+symlinks. Release checksum, archive inspection and extraction use the same opened stream, closed
+on every exit. Backup-helper inputs remain direct
+children with a `.pyz` suffix. The [upload staging design](2026-10-30-upload-staging-design.md)
+owns the relocation decision and the [runbook](../guides/deployment.md#remove-an-obsolete-empty-upload-directory)
+owns separately authorized one-time removal of old empty directories. Old-location inputs are refused.
 
 Installation roots exclude whitespace, backslash, `%`, quotes, ASCII controls, and DEL as required
 by the shared path and systemd executable contracts. Backup roots may contain quotes; systemd

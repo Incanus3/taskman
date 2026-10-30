@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import re
 from pathlib import Path
 import tempfile
@@ -35,6 +35,7 @@ from ..host_protocol.identifiers import ProtocolError
 from ..releases.identifiers import validate_release_id
 from ..releases.artifacts import DeploymentTarget
 from ..remote import Remote, UploadReceipt
+from ..uploads import prepare_upload_root
 from ..services.backups import scheduled_backup_helper
 
 
@@ -44,6 +45,14 @@ _BACKUP_ID_RE = re.compile(r"backup-[0-9a-f]{32}\Z")
 _SELECTION_ID_RE = re.compile(r"selection-[0-9a-f]{64}\.json\Z")
 _PGPASS = "/etc/taskman/pgpass"
 _DISCOVERY_MODES = frozenset({"strict", "deploy", "provision", "restore"})
+
+
+@dataclass(frozen=True)
+class UploadDispatchResult:
+    """Validated helper evidence alongside earlier controller mutation evidence."""
+
+    result: HostResult
+    prior_mutation_state: str
 
 
 @contextmanager
@@ -472,7 +481,7 @@ def run_deployment_request(
     operation: str = "deploy",
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
-) -> HostResult:
+) -> UploadDispatchResult:
     """Dispatch one exact confirmed deploy, genesis, or preparation request.
 
     Consent belongs exclusively to the public controller.  The helper receives
@@ -493,27 +502,29 @@ def run_deployment_request(
     ):
         raise ValueError("helper deployment requires a migration policy")
     correlation_id = new_correlation_id()
-    upload_root = config.deployment_root / "uploads"
+    upload_root = config.upload_root
     artifact = target.artifact
     upload: Path | None = None
     scheduler_upload: Path | None = None
     upload_cleanup_warning = False
     helper_value = dict(backup_helper)
+    prior_mutation_state = "unchanged"
     if artifact is not None:
         upload = upload_root / f".upload-{artifact.manifest.release_id}-{correlation_id}.tar.gz"
-        prepared = remote.run(
-            ("install", "-d", "-o", "root", "-g", "root", "-m", "700", "--", upload_root.as_posix()),
-            sudo=True,
-            stdin=None,
-            sensitive=True,
-        )
-        if not prepared.succeeded:
-            raise OpsError(ExitStatus.RELEASE, "release", "unable to prepare private release upload", False)
+    if helper_value["upload_path"] is not None:
+        scheduler_upload = upload_root / f".backup-helper-{correlation_id}.pyz"
+    destinations = tuple(path.name for path in (upload, scheduler_upload) if path is not None)
+    uploading = False
     try:
+        if destinations:
+            prior_mutation_state = prepare_upload_root(remote, config.install_root, operation=operation,
+                                                       destinations=destinations)
         receipt = UploadReceipt()
         if artifact is not None:
             assert upload is not None
+            uploading = True
             receipt = remote.put(artifact.archive, upload, mode=0o600, sensitive=True)
+            uploading = False
             if not isinstance(receipt, UploadReceipt):
                 raise _safety("deploy", "release upload returned an invalid receipt")
             upload_cleanup_warning = receipt.cleanup_warning
@@ -534,10 +545,11 @@ def run_deployment_request(
                 raise ValueError("scheduler upload requires its verified package")
             if helper_value["sha256"] != backup_helper_package.sha256:
                 raise ValueError("scheduler package checksum does not match its payload")
-            scheduler_upload = upload_root / f".backup-helper-{correlation_id}.pyz"
+            uploading = True
             scheduler_receipt = remote.put(
-                backup_helper_package.path, scheduler_upload, mode=0o600, sensitive=True
+                backup_helper_package.path, scheduler_upload, mode=0o600, sensitive=True,
             )
+            uploading = False
             if not isinstance(scheduler_receipt, UploadReceipt):
                 raise _safety("deploy", "scheduler helper upload returned an invalid receipt")
             upload_cleanup_warning = upload_cleanup_warning or scheduler_receipt.cleanup_warning
@@ -558,21 +570,28 @@ def run_deployment_request(
                 "prune_backup_ids": list(prune_backup_ids),
             },
         )
-        result = run_request(remote, request_value, package=package, invoker=invoker)
+        result = run_request(remote, request_value, package=package, invoker=invoker,
+                             prior_mutation_state=prior_mutation_state)
         upload_cleanup_warning = _remove_finalized_uploads(
             remote, (upload, scheduler_upload)
         ) or upload_cleanup_warning
-        return (
-            merge_result_warning(result, "transient upload cleanup was incomplete")
-            if upload_cleanup_warning
-            else result
-        )
+        if upload_cleanup_warning:
+            result = merge_result_warning(result, "transient upload cleanup was incomplete")
+        return UploadDispatchResult(result, prior_mutation_state)
     except HelperTransportError as error:
+        if uploading:
+            _retain_upload_failure(error)
         # The uploaded archive is only removed when the runner proves helper
         # entry never started.  No residue path or recovery command crosses
         # the final result boundary.
         if error.helper_entry_dispatched is False:
             _remove_finalized_uploads(remote, (upload, scheduler_upload))
+        _retain_prior_mutation(error, prior_mutation_state)
+        raise
+    except OpsError as error:
+        if uploading:
+            _retain_upload_failure(error)
+        _retain_prior_mutation(error, prior_mutation_state)
         raise
 
 
@@ -585,7 +604,7 @@ def run_restore_request(
     package: HelperPackage | None = None,
     invoker: Callable[[Remote, HelperPackage, HostRequest], HostResult] = invoke_helper,
     prior_mutation_state: str = "unchanged",
-) -> HostResult:
+) -> UploadDispatchResult:
     """Upload the confirmed scheduled helper and dispatch one exact restore request."""
 
     if (
@@ -614,19 +633,25 @@ def run_restore_request(
         raise ValueError("restore backup helper upload marker is invalid")
     scheduler_upload: Path | None = None
     upload_cleanup_warning = False
+    uploading = False
     try:
         if marker is not None:
             if backup_helper_package is None or helper_value["sha256"] != backup_helper_package.sha256:
                 raise ValueError("scheduler package checksum does not match its payload")
-            scheduler_upload = (
-                config.deployment_root / "uploads" / f".backup-helper-{request.correlation_id}.pyz"
+            scheduler_upload = config.upload_root / f".backup-helper-{request.correlation_id}.pyz"
+            prior_mutation_state = aggregate_mutation_state(
+                prior_mutation_state,
+                prepare_upload_root(remote, config.install_root, operation="restore",
+                                    destinations=(scheduler_upload.name,)),
             )
+            uploading = True
             receipt = remote.put(
                 backup_helper_package.path,
                 scheduler_upload,
                 mode=0o600,
                 sensitive=True,
             )
+            uploading = False
             if not isinstance(receipt, UploadReceipt):
                 raise _safety("restore", "scheduler helper upload returned an invalid receipt")
             upload_cleanup_warning = receipt.cleanup_warning
@@ -643,12 +668,12 @@ def run_restore_request(
             prior_mutation_state=prior_mutation_state,
         )
         upload_cleanup_warning = _remove_finalized_uploads(remote, (scheduler_upload,)) or upload_cleanup_warning
-        return (
-            merge_result_warning(result, "transient upload cleanup was incomplete")
-            if upload_cleanup_warning
-            else result
-        )
+        if upload_cleanup_warning:
+            result = merge_result_warning(result, "transient upload cleanup was incomplete")
+        return UploadDispatchResult(result, prior_mutation_state)
     except HelperTransportError as error:
+        if uploading:
+            _retain_upload_failure(error)
         if error.helper_entry_dispatched is False and scheduler_upload is not None:
             try:
                 remote.run(
@@ -658,7 +683,31 @@ def run_restore_request(
                 )
             except Exception:
                 pass
+        _retain_prior_mutation(error, prior_mutation_state)
         raise
+    except OpsError as error:
+        if uploading:
+            _retain_upload_failure(error)
+        _retain_prior_mutation(error, prior_mutation_state)
+        raise
+
+
+def _retain_upload_failure(error: OpsError) -> None:
+    # Generic transport changed=False does not prove that final install was untouched.
+    mutation = error.state.get('mutation_state', 'changed' if error.changed else 'unknown')
+    error.state = {**error.state, 'mutation_state': mutation}
+    error.changed = mutation != 'unchanged'
+
+
+def _retain_prior_mutation(error: OpsError, prior_mutation_state: str) -> None:
+    """Preserve controller evidence without fabricating helper observations."""
+
+    mutation = aggregate_mutation_state(
+        prior_mutation_state,
+        str(error.state.get("mutation_state", "unknown" if error.changed else "unchanged")),
+    )
+    error.state = {**error.state, "mutation_state": mutation}
+    error.changed = mutation != "unchanged"
 
 
 def _remove_finalized_uploads(remote: Remote, uploads: tuple[Path | None, ...]) -> bool:
