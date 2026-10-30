@@ -694,7 +694,7 @@ def test_postgresql_recovery_controller_reduces_unproven_failure_evidence():
     assert error.state["cluster"] == CLUSTER
 
 
-@pytest.mark.parametrize("alteration", ["port", "track", "branch", "check", "raw-diagnostic"])
+@pytest.mark.parametrize("alteration", ["port", "track", "branch", "check", "raw-diagnostic", "changed"])
 def test_provision_failure_context_rejects_forged_selection_or_diagnostics(alteration):
     from taskman_ops.workflows.helper import request
     from tests.support.environments import environment_config
@@ -712,6 +712,7 @@ def test_provision_failure_context_rejects_forged_selection_or_diagnostics(alter
     elif alteration == "track": cluster["version"] = "16"
     elif alteration == "branch": pg["branch"] = "configure-existing"
     elif alteration == "check": state["failed_check"] = "native-secret-canary"
+    elif alteration == "changed": state["changed"] = True
     else: state["stderr"] = "native-secret-canary"
     result = HostResult.for_request(req, "manual", "safe failure", state)
     with pytest.raises(OpsError) as raised:
@@ -719,3 +720,64 @@ def test_provision_failure_context_rejects_forged_selection_or_diagnostics(alter
     assert raised.value.status is ExitStatus.SAFETY
     assert raised.value.state == {}
     assert "native-secret-canary" not in str(raised.value)
+
+
+def _early_postgresql_request(operation):
+    from taskman_ops.workflows.helper import database_settings, discovery_request, request
+    from tests.support.environments import environment_config
+
+    config = environment_config(postgres_package_track="18")
+    if operation == "discover":
+        return discovery_request(config, mode="provision")
+    return request(operation, config, parameters={
+        "postgres_package_track": "18", "force_postgresql_config": False,
+        "database": database_settings(config)})
+
+
+@pytest.mark.parametrize("operation", ["provision_authority", "discover"])
+def test_early_postgresql_failure_rejects_inconsistent_outcome_code(operation):
+    from taskman_ops.host_protocol import decode_result, encode_result
+    from tests.host_protocol.test_postgresql import authority
+
+    req = _early_postgresql_request(operation)
+    state = {"failed_boundary": "postgresql", "exit_code": 5,
+        "failed_check": "scram-client-prerequisite", "postgresql_observation": authority()}
+    receipt = decode_result(encode_result(HostResult.for_request(
+        req, "refused", "safe failure", state, warnings=("safe inspection warning",))))
+
+    with pytest.raises(OpsError) as raised:
+        run_request(object(), req, package=object(), invoker=lambda *_: receipt)
+
+    error = raised.value
+    assert error.status == 10
+    assert error.stage == operation
+    assert error.message == "host helper returned invalid PostgreSQL failure context"
+    assert error.state == {}
+    assert error.changed is False
+    assert error.warnings == ("safe inspection warning",)
+
+
+@pytest.mark.parametrize("operation", ["provision_authority", "discover"])
+@pytest.mark.parametrize("outcome,code,check", [
+    ("manual", 5, "schema-inspection"),
+    ("refused", 10, "resource-schema-consistency"),
+])
+def test_early_postgresql_failure_preserves_valid_category(operation, outcome, code, check):
+    from taskman_ops.host_protocol import decode_result, encode_result
+    from tests.host_protocol.test_postgresql import authority
+
+    req = _early_postgresql_request(operation)
+    state = {"failed_boundary": "postgresql", "exit_code": code,
+        "failed_check": check, "postgresql_observation": authority()}
+    receipt = decode_result(encode_result(HostResult.for_request(
+        req, outcome, "safe failure", state, warnings=("safe inspection warning",))))
+
+    result = run_request(object(), req, package=object(), invoker=lambda *_: receipt)
+    error = result_error(result)
+
+    assert error.status == code
+    assert error.stage == "postgresql"
+    assert mutable(result.state) == state
+    assert mutable(error.state) == state
+    assert error.changed is False
+    assert result.warnings == error.warnings == ("safe inspection warning",)

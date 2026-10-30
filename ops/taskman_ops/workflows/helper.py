@@ -238,7 +238,7 @@ def run_request(
              request.operation == "discover" and request.parameters.get("mode") == "provision")):
         from ..host_protocol.postgresql import validate_postgresql_failure_context
         try:
-            validate_postgresql_failure_context(result.state,
+            validate_postgresql_failure_context(result.state, outcome=result.outcome,
                 package_track=request.parameters["postgres_package_track"],
                 port=request.parameters["database"]["port"],
                 force_postgresql_config=request.parameters["force_postgresql_config"])

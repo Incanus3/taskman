@@ -111,3 +111,47 @@ def test_recovery_reduction_keeps_only_correlated_capture_evidence(invalid, muta
         "recovery_directory": DIRECTORY if mutation == "changed" and invalid == "classification" else None,
         "cluster": CLUSTER if invalid == "classification" else None,
     }
+
+
+def failure_context(**changes):
+    return {"failed_boundary": "postgresql", "exit_code": 5,
+            "failed_check": "scram-client-prerequisite",
+            "postgresql_observation": authority(), **changes}
+
+
+def validate_failure(state, outcome):
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_failure_context
+    return validate_postgresql_failure_context(state, outcome=outcome, package_track="18",
+                                               port=5432, force_postgresql_config=False)
+
+
+@pytest.mark.parametrize("outcome,code", [("manual", 5), ("refused", 10)])
+@pytest.mark.parametrize("check", ["scram-client-prerequisite", "scram-application-access",
+    "schema-inspection", "resource-schema-consistency", "selected-target-or-resource-safety"])
+def test_postgresql_failure_accepts_consistent_categories_with_independent_checks(outcome, code, check):
+    state = failure_context(exit_code=code, failed_check=check)
+    assert validate_failure(state, outcome) == state
+
+
+@pytest.mark.parametrize("outcome,code", [("manual", 5), ("refused", 10)])
+def test_postgresql_failure_accepts_null_observation(outcome, code):
+    state = failure_context(exit_code=code, postgresql_observation=None)
+    assert validate_failure(state, outcome) == state
+
+
+@pytest.mark.parametrize("outcome,code", [
+    ("refused", 5), ("manual", 10), ("retryable", 5), ("retryable", 10),
+    ("succeeded", 5), ("succeeded", 10), ("manual", 0), ("refused", 8),
+    ("manual", True), ("manual", 5.0), ("refused", 10.0), ("manual", "5"),
+    ("manual", None), ("manual", []), ("manual", {}),
+    (None, 5), (True, 5), (5, 5), ([], 5), ({}, 5), ("unknown", 5),
+])
+def test_postgresql_failure_rejects_invalid_classification(outcome, code):
+    with pytest.raises(ProtocolError, match="^invalid PostgreSQL failure context$"):
+        validate_failure(failure_context(exit_code=code), outcome)
+
+
+@pytest.mark.parametrize("check", ["unknown", None, True, 5, [], {}])
+def test_postgresql_failure_rejects_invalid_check(check):
+    with pytest.raises(ProtocolError, match="^invalid PostgreSQL failure context$"):
+        validate_failure(failure_context(failed_check=check), "manual")
