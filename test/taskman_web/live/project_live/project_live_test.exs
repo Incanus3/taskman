@@ -749,6 +749,9 @@ defmodule TaskmanWeb.ProjectLiveTest do
       )
 
     refute has_element?(view, "#task-#{root.id}")
+    assert has_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
+    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
+    assert has_element?(view, "#task-location-task-label", "Task ##{selected.id}")
 
     view |> element("#task-hierarchy-link-#{root.id}") |> render_click()
 
@@ -758,6 +761,9 @@ defmodule TaskmanWeb.ProjectLiveTest do
     )
 
     assert has_element?(view, "#task-hierarchy-link-#{root.id}[aria-current='true']")
+    assert has_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
+    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
+    assert has_element?(view, "#task-location-task-label", "Task ##{root.id}")
     refute has_element?(view, "#task-#{root.id}")
   end
 
@@ -774,6 +780,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
       assert has_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
       assert has_element?(view, "#task-modal-title")
       assert has_element?(view, "#task-not-found")
+      assert has_element?(view, "#close-task-not-found")
       assert has_element?(view, "#task-#{visible.id}")
       refute has_element?(view, "#task-form")
       refute has_element?(view, "#task-detail-layout")

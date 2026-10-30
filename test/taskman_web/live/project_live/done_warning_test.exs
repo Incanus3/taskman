@@ -29,6 +29,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     view |> element("#keep-current-task-status") |> render_click()
     refute has_element?(view, "#task-done-warning")
     assert has_element?(view, "#task-status option[value='in_progress'][selected]")
+    assert Tasks.get_task_for_project(project, task.id).status == :in_progress
 
     view
     |> form("#task-form", task: %{status: "done"})

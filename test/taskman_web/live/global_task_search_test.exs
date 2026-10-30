@@ -157,6 +157,14 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     refute has_element?(view, "#global-task-search-results[role='listbox']")
     assert has_element?(view, "#account-settings")
 
+    view |> element("#global-task-search-error button", "Retry") |> render_click()
+    assert has_element?(view, "#global-task-search-input[value='Retry jump']")
+    assert has_element?(view, "#global-task-search-error[role='alert']", "Task search failed")
+    refute has_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_element?(view, "#account-settings")
+    refute_patched(view)
+    refute_redirected(view)
+
     Phoenix.LiveView.send_update(view.pid, GlobalTaskSearch,
       id: "global-task-search",
       search_tasks: &Tasks.search_tasks/1
