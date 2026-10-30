@@ -99,7 +99,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         true
       )
 
-      for width <- [1280, 1279, 768, 767, 640, 639, 390, 320] do
+      for width <- [1280, 1279, 768, 767, 640, 639, 475, 474, 450, 390, 320] do
         Browser.resize_window(session, width, 800)
 
         state =
@@ -107,10 +107,17 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
           const visible = el => !!el && el.getClientRects().length > 0;
           const sort = document.querySelector('#task-sort-button');
           const statuses = document.querySelector('#task-status-filter-button');
+          const actions = [...document.querySelectorAll('#share-task-view, #include-child-lists, #task-status-filter-button, #task-sort-button, #add-task')];
+          const actionRows = actions.filter(visible).map(el => {
+            const rect = el.getBoundingClientRect();
+            return Math.round(rect.top + rect.height / 2);
+          });
           return {
             width: innerWidth,
             fits: document.documentElement.scrollWidth <= innerWidth &&
               document.querySelector('#main-panel').scrollWidth <= document.querySelector('#main-panel').clientWidth,
+            counts: visible(document.querySelector('#location-task-count')),
+            actionRows: new Set(actionRows).size,
             header: visible(document.querySelector('#task-table-header')),
             sort: visible(sort),
             sortLabel: visible(sort.querySelector('span.hidden')),
@@ -120,6 +127,8 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
 
         assert state["width"] == width
         assert state["fits"]
+        assert state["counts"] == width >= 475
+        if width in [474, 450], do: assert(state["actionRows"] == 1, inspect(state))
         assert state["header"] == width >= 1280
         assert state["sort"] == width < 1280
         assert state["sortLabel"] == false
