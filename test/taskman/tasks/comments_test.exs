@@ -9,6 +9,7 @@ defmodule Taskman.Tasks.CommentsTest do
   alias Taskman.Accounts.User.Persistence, as: UserPersistence
   alias Taskman.Tasks
   alias Taskman.Tasks.Comment
+  alias Taskman.Tasks.Task
 
   test "an empty Task thread is explicit and Project scoped" do
     project = project_fixture(%{})
@@ -199,7 +200,23 @@ defmodule Taskman.Tasks.CommentsTest do
     persisted = Tasks.get_task_for_project(project, task.id)
     assert persisted.status == :done
     assert persisted.lock_version == task.lock_version
-    assert persisted.updated_at == comment.created_at
+    assert DateTime.compare(persisted.updated_at, task.updated_at) in [:eq, :gt]
+    assert DateTime.compare(persisted.updated_at, comment.created_at) in [:eq, :gt]
+  end
+
+  test "a comment keeps a Task timestamp that is already later than its own" do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    actor = user_fixture()
+    later = ~U[2030-01-01 00:00:00Z]
+
+    Repo.update_all(from(t in Task, where: t.id == ^task.id), set: [updated_at: later])
+
+    assert {:ok, comment} = Tasks.create_comment(project, task, actor, %{text: "Older"})
+
+    persisted = Tasks.get_task_for_project(project, task.id)
+    assert DateTime.compare(comment.created_at, later) == :lt
+    assert persisted.updated_at == later
   end
 
   test "validation rejects trimmed empty and overlong values without touching Task metadata" do
