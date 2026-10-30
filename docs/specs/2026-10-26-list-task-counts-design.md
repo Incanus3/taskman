@@ -78,7 +78,8 @@ shift the name or row. On touch devices, show the badge and action buttons side 
 badges aligned consistently across rows; both must remain available without hover.
 
 Place `a / b` in a single badge in the main location header immediately before Share, on the right
-with the header controls at desktop widths. This badge stays visible during hover and focus.
+with the header controls at desktop widths. Hide this header badge below 475 CSS pixels to
+reserve space for the controls; at 475 pixels and above it stays visible during hover and focus.
 Use 14px header text with 8px padding on every side, giving the badge roughly the Share
 button’s height; keep sidebar badges compact. Permit wrapping on small screens without clipping
 counts or controls.
