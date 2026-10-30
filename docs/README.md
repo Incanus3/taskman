@@ -48,10 +48,6 @@
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 - [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
-## Implementation plans
-
-No active implementation plans. Completed implementation contracts and verification remain in the specifications above.
-
 ## Handoffs
 
 - [Current workstreams and continuation gates](handoffs/INDEX.md)

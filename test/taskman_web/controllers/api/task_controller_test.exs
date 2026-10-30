@@ -1013,6 +1013,40 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              |> json_response(422)
   end
 
+  test "PATCH persists ordinary and parent changes together without moving the Task", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    list = list_fixture(project, nil, %{name: "Delivery"})
+    first_parent = task_fixture(project, %{title: "First parent"})
+    second_parent = task_fixture(project, %{title: "Second parent"})
+    child = task_fixture(project, list, %{title: "Before"}, parent: first_parent)
+
+    conn =
+      patch(conn, "/api/v1/projects/#{project.id}/tasks/#{child.id}", %{
+        "task" => %{"title" => "After", "parent_task_id" => second_parent.id}
+      })
+
+    assert %{
+             "data" => %{
+               "id" => child_id,
+               "title" => "After",
+               "parent_task_id" => parent_id,
+               "list_id" => list_id
+             }
+           } = json_response(conn, 200)
+
+    assert child_id == child.id
+    assert parent_id == second_parent.id
+    assert list_id == list.id
+
+    persisted = Tasks.get_task_for_project(project, child.id)
+    assert persisted.id == child.id
+    assert persisted.title == "After"
+    assert persisted.parent_task_id == second_parent.id
+    assert persisted.list_id == list.id
+  end
+
   test "PATCH applies ordinary and parent changes atomically on validation failure", %{conn: conn} do
     project = project_fixture(%{})
     parent = task_fixture(project, %{title: "Parent"})

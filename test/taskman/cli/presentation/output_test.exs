@@ -51,6 +51,15 @@ defmodule Taskman.CLI.Presentation.OutputTest do
                "51\tImplement parser\t42\tpending\tnone\tDelivery\t—\n"
   end
 
+  test "readable Task members include parent IDs and identify roots" do
+    task = %{"id" => 51, "title" => "Implement parser", "parent_task_id" => 42}
+
+    assert Output.success({:tasks, :show}, task, false) =~ "PARENT TASK ID: 42\n"
+
+    assert Output.success({:tasks, :show}, Map.put(task, "parent_task_id", nil), false) =~
+             "PARENT TASK ID: —\n"
+  end
+
   test "readable hierarchy output keeps API order and marks the selected Task" do
     data = %{
       "selected_task_id" => 51,
@@ -58,15 +67,30 @@ defmodule Taskman.CLI.Presentation.OutputTest do
         "task" => %{"id" => 42, "title" => "Build import"},
         "children" => [
           %{
-            "task" => %{"id" => 51, "title" => "Implement parser"},
-            "children" => []
+            "task" => %{"id" => 60, "title" => "First branch"},
+            "children" => [
+              %{
+                "task" => %{"id" => 51, "title" => "Implement parser"},
+                "children" => []
+              }
+            ]
+          },
+          %{
+            "task" => %{"id" => 50, "title" => "Last branch"},
+            "children" => [
+              %{
+                "task" => %{"id" => 52, "title" => "Review parser"},
+                "children" => []
+              }
+            ]
           }
         ]
       }
     }
 
     assert Output.success({:tasks, :hierarchy}, data, false) ==
-             "42  Build import\n└─ 51  Implement parser  [selected]\n"
+             "42  Build import\n├─ 60  First branch\n│  └─ 51  Implement parser  [selected]\n" <>
+               "└─ 50  Last branch\n   └─ 52  Review parser\n"
   end
 
   test "readable comments include verified login, local time, and full multiline text" do

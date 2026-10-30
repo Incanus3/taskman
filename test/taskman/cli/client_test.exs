@@ -643,6 +643,57 @@ defmodule Taskman.CLI.ClientTest do
              )
   end
 
+  test "rejects malformed grandchildren while accepting a complete grandchild" do
+    grandchild = %{
+      "task" => task_response(%{id: 52, parent_task_id: 51, title: "Review parser"}),
+      "children" => []
+    }
+
+    valid =
+      hierarchy_response()
+      |> put_in(["root", "children", Access.at(0), "children"], [grandchild])
+      |> Jason.encode!()
+      |> Jason.decode!()
+
+    Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: valid}) end)
+
+    assert {:ok, ^valid} =
+             Client.request(
+               :get,
+               "/api/v1/projects/7/tasks/51/hierarchy",
+               [],
+               [
+                 resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                 req_options: [plug: {Req.Test, TaskmanCLIClient}]
+               ],
+               :hierarchy
+             )
+
+    grandchild_path = ["root", "children", Access.at(0), "children", Access.at(0)]
+    valid_grandchild = get_in(valid, grandchild_path)
+
+    for malformed_grandchild <- [
+          Map.delete(valid_grandchild, "children"),
+          Map.put(valid_grandchild, "children", %{}),
+          update_in(valid_grandchild, ["task"], &Map.delete(&1, "parent_task_id"))
+        ] do
+      malformed = put_in(valid, grandchild_path, malformed_grandchild)
+      Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: malformed}) end)
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} =
+               Client.request(
+                 :get,
+                 "/api/v1/projects/7/tasks/51/hierarchy",
+                 [],
+                 [
+                   resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+                   req_options: [plug: {Req.Test, TaskmanCLIClient}]
+                 ],
+                 :hierarchy
+               )
+    end
+  end
+
   defp task_response(overrides) do
     Map.merge(
       %{

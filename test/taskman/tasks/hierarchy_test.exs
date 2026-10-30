@@ -88,15 +88,32 @@ defmodule Taskman.Tasks.HierarchyTest do
     planning = list_fixture(project, nil, %{name: "Planning"})
     launch = list_fixture(project, planning, %{name: "Launch"})
 
-    current = task_fixture(project, %{title: "Current"})
-    descendant = task_fixture(project, launch, %{title: "Descendant"}, parent: current)
-    eligible = task_fixture(project, planning, %{title: "Eligible"})
-    foreign = task_fixture(other_project, %{title: "Eligible"})
+    current = task_fixture(project, %{title: "Candidate current"})
+    child = task_fixture(project, launch, %{title: "Candidate child"}, parent: current)
+    grandchild = task_fixture(project, %{title: "Candidate grandchild"}, parent: child)
 
-    results = Tasks.search_parent_candidates(project, current, "")
+    great_grandchild =
+      task_fixture(project, planning, %{title: "Candidate great-grandchild"}, parent: grandchild)
 
-    assert [%TaskWithLocation{task: ^eligible, location_path: [^planning]}] = results
-    refute Enum.any?(results, &(&1.task.id in [current.id, descendant.id, foreign.id]))
+    eligible = task_fixture(project, planning, %{title: "Candidate eligible"})
+    foreign = task_fixture(other_project, %{title: "Candidate foreign"})
+
+    for query <- ["", "Candidate"] do
+      results = Tasks.search_parent_candidates(project, current, query)
+
+      assert Enum.map(results, & &1.task.id) == [eligible.id]
+      assert [%TaskWithLocation{task: ^eligible, location_path: [^planning]}] = results
+
+      refute Enum.any?(results, fn candidate ->
+               candidate.task.id in [
+                 current.id,
+                 child.id,
+                 grandchild.id,
+                 great_grandchild.id,
+                 foreign.id
+               ]
+             end)
+    end
   end
 
   test "hierarchy returns the selected Task as the disconnected root" do
@@ -116,10 +133,12 @@ defmodule Taskman.Tasks.HierarchyTest do
   test "hierarchy discovers the topmost root, paths, complete tree, and sibling order" do
     project = project_fixture(%{})
     planning = list_fixture(project, nil, %{name: "Planning"})
+    launch = list_fixture(project, planning, %{name: "Launch"})
+    delivery = list_fixture(project, launch, %{name: "Delivery"})
     root = task_fixture(project, planning, %{title: "Root"})
     first = task_fixture(project, %{title: "First"}, parent: root)
     second = task_fixture(project, %{title: "Second"}, parent: root)
-    selected = task_fixture(project, planning, %{title: "Selected"}, parent: first)
+    selected = task_fixture(project, delivery, %{title: "Selected"}, parent: first)
     second_child = task_fixture(project, %{title: "Second child"}, parent: second)
     _unrelated = task_fixture(project, %{title: "Unrelated"})
     second_child_id = second_child.id
@@ -137,7 +156,7 @@ defmodule Taskman.Tasks.HierarchyTest do
                     children: [
                       %HierarchyNode{
                         task: %{id: selected_id},
-                        location_path: [^planning]
+                        location_path: [^planning, ^launch, ^delivery]
                       }
                     ]
                   },
