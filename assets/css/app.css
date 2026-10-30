@@ -485,6 +485,13 @@
   }
 }
 
+/* Give long List names more room as wide desktop viewports gain space. */
+@media (min-width: 100rem) {
+  #workspace-layout {
+    grid-template-columns: min(calc(19rem + (100vw - 100rem) * 11 / 40), 30rem) minmax(0, 1fr);
+  }
+}
+
 @media (width > 90rem) {
   #task-modal-content:has(> #task-dialog-header) {
     --task-detail-hierarchy-width: min(calc(21rem + (100vw - 90rem) * 0.1), 28rem);

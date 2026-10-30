@@ -18,6 +18,9 @@ The default icon is `briefcase`. Allowed icon keys are `check-circle`, `folder`,
 uppercase `#RRGGBB` value, defaulting to `#6366F1`. The browser supports preset shortcuts and any
 valid six-digit custom hex color. Description, icon, and color are never null.
 
+The desktop navigation sidebar grows smoothly from 304 CSS px at a 1600 CSS px viewport to a
+480 CSS px maximum at 2240 CSS px, giving long List names more room on wide screens.
+
 The sidebar shows one active Project and its Lists. Explicit Project and List URLs select their
 Project; opening `/` restores a valid Project remembered by this browser, otherwise it shows a
 neutral selector. Include child Lists and Statuses are browser preferences retained across
