@@ -69,13 +69,15 @@ def validate_postgresql_authority(value, *, package_track, port, force_postgresq
     return value
 
 
-def validate_postgresql_failure_context(state, *, package_track, port, force_postgresql_config):
-    """Accept only request-bound selection and a closed native failed check."""
+def validate_postgresql_failure_context(state, *, outcome, package_track, port, force_postgresql_config):
+    """Accept consistent failure categories and request-bound selection evidence."""
     if (set(state) != {"failed_boundary", "exit_code", "failed_check", "postgresql_observation"} or
             state.get("failed_boundary") != "postgresql" or
+            type(outcome) is not str or type(state.get("exit_code")) is not int or
+            (outcome, state["exit_code"]) not in {("manual", 5), ("refused", 10)} or
+            type(state.get("failed_check")) is not str or
             state.get("failed_check") not in {"scram-client-prerequisite", "scram-application-access",
-            "schema-inspection", "resource-schema-consistency", "selected-target-or-resource-safety"} or
-            state.get("exit_code") not in {5, 10}):
+            "schema-inspection", "resource-schema-consistency", "selected-target-or-resource-safety"}):
         raise ProtocolError("invalid PostgreSQL failure context")
     observation = state.get("postgresql_observation")
     if observation is not None:

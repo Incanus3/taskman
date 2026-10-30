@@ -22,6 +22,7 @@ convergence through a targeted override with a visible blast radius.
 | D6 | Accepted | Adopt compatible partial resources without password rotation; retain ownership and data-provenance checks | Incompatible resources require operator repair rather than automatic normalization | [Resource adoption and interrupted setup](#resource-adoption-and-interrupted-setup) |
 | D7 | Accepted | Extend existing provision authority and preview; retain existing commands and numeric categories | Internal projections and their consumers must change together | [Preview and authority](#preview-and-authority), [Failure results](#failure-results) |
 | D10 | Accepted | `--force-postgresql-config` explicitly authorizes selected existing-cluster configuration convergence; every existing installation otherwise stays resource-only | Replacing HBA/settings or restarting can break other consumers; operator owns the decision | [Explicit configuration override](#explicit-configuration-override) |
+| D11 | Accepted | Early PostgreSQL failures accept `manual / 5` and `refused / 10`; recognized failed checks remain independent | Does not reject a recognized check paired with an unexpected but internally consistent category | [Early failure receipt validation](#early-failure-receipt-validation) |
 | D8 | Rejected | Per-invocation Taskman-only declaration plus broad corroborating checks | Substantial catalog/coordination logic still cannot independently exclude dormant consumers | [Why there is no sole-consumer detector](#why-there-is-no-sole-consumer-detector) |
 | D3 | Superseded | Allow existing global convergence when Taskman is proven sole consumer | Reliable proof is too complex; strict absence-only D9 was considered before explicit override D10 | [Why there is no sole-consumer detector](#why-there-is-no-sole-consumer-detector) |
 | D9 | Superseded | Allow global convergence only for initially absent PostgreSQL | Too restrictive for deliberate operator repair; D10 retains the safe default and adds explicit authority | [Explicit configuration override](#explicit-configuration-override) |
@@ -375,6 +376,55 @@ dispatch, transport failure and output encoding. `changed=false` is valid only i
 attempted persistent action warrants changed/unknown evidence. Database access failure cannot
 publish a successful selection, migration proof or proxy-pending result. Do not add another exit
 code or make all database failures `10` merely because operator intervention is required.
+
+### Early failure receipt validation
+
+For unsuccessful `provision_authority` and provision-mode `discover` results declaring
+`failed_boundary=postgresql`, validate classification in
+`host_protocol/postgresql.py:validate_postgresql_failure_context` after envelope
+correlation in `workflows/helper.py:run_request`. Require a string outcome and an
+exact integer exit code with only these accepted pairs:
+
+| Outcome | Exit code / public status |
+| --- | --- |
+| `manual` | 5 |
+| `refused` | 10 |
+
+**D11 accepted.** Independently require a string failed-check name from
+`scram-client-prerequisite`, `scram-application-access`, `schema-inspection`,
+`resource-schema-consistency` or `selected-target-or-resource-safety`. Any recognized
+name may accompany either pair; `manual / 5 / resource-schema-consistency` is valid.
+A producer-matching check/category matrix was rejected because it duplicates producer
+policy without a demonstrated additional guarantee. Revisit only if such a mismatch
+causes a material failure that pair validation cannot prevent. Preserve the producer's
+established `manual / 5` classification rather than changing it to `retryable / 5`.
+
+State remains exactly `failed_boundary`, `exit_code`, `failed_check` and
+`postgresql_observation`. Preserve request-bound observation validation and nullable
+observations; absence proves neither cluster identity nor completed checks. Valid
+results retain bounded observation/check state and warnings through public mapping.
+Reject invalid pairs, unknown checks and malformed field types with
+`ProtocolError("invalid PostgreSQL failure context")`. The controller reports status
+10, request-operation stage, message `host helper returned invalid PostgreSQL failure context`,
+empty state and `changed=False`, retaining bounded warnings and inspection guidance.
+Do not import invalid observations/raw diagnostics or continue provisioning. Preserve
+aggregate mutation evidence from any earlier controller preparation.
+
+This policy stays specific to early PostgreSQL failures; generic envelope decoding,
+public error precedence, successful authority, other discovery modes, recovery capture
+and lifecycle mutation schemas keep their existing contracts. A synthetic wire-level
+experiment reproduced acceptance of `refused / 5` (misreported as status 10) and
+`retryable / 10` before the fix; it involved no host connection or mutation.
+
+Validator tests cover both pairs against every recognized check, malformed types and
+nullable observations. Wire-level controller regressions cover both operations, safe
+rejection, valid evidence and retained selection validation. Focused boundary/isolated
+packaging checks passed (318 passed, one opt-in native PostgreSQL skip); full operations
+and application precommit gates passed, independent scoped review found no issues,
+and the operator accepted the result. Repository-relative Task 37, exact description
+marker `Source: taskman/br/tas-lny6.4.7`, owns detailed evidence. This validation-only
+correction requires no new native acceptance or application release build and does
+not extend the earlier bounded native evidence.
 
 ## Operator setup context
 
