@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import os
 import grp
@@ -13,6 +14,7 @@ import re
 import shutil
 import stat
 import tarfile
+from typing import BinaryIO
 
 from taskman_ops.host_protocol import HostRequest, HostResult, PROTOCOL_VERSION
 from taskman_ops.host_protocol.mutation_results import unavailable_observations
@@ -32,7 +34,6 @@ from ..database import (
     migration_versions,
     observe_database_state_or_empty,
 )
-from ...checksums import sha256_file
 from ...migrations import versions_from_filenames
 from ..filesystem import fsync_directory
 from ..lock import LifecycleLockContention, lifecycle_lock
@@ -46,7 +47,7 @@ from ..backup_protection import (
     register_backup_protection,
     retire_protection_attempts,
 )
-from ..paths import ManagedPaths, PathAuthorityError
+from ..paths import ManagedPaths, PathAuthorityError, validate_upload_path
 from ..records import BackupRecord, RecordError, ReleaseRecord, SelectionRecord, append_selection, migration_record_versions
 from ..selection import SelectionAmbiguityError, select_current
 from ..services import change_service
@@ -149,6 +150,7 @@ def converge_deployment(
 
     if _termination not in {"application", "deployment"} or (_termination == "application" and not first_release):
         raise ValueError("invalid private deployment termination")
+    archive: BinaryIO | None = None
     inputs: _Inputs | None = None
     state: HostState | None = None
     backup: BackupRecord | None = None
@@ -164,7 +166,7 @@ def converge_deployment(
         inputs = _inputs(request, first_release=first_release)
         _validate_request_operation(request, first_release, _termination)
         validate_credentials(inputs.credentials)
-        _safe_artifact(inputs)
+        archive = _safe_artifact(inputs)
         authority = host_preflight(inputs.paths, inputs.verification)
         if authority is not None:
             return _result(
@@ -211,7 +213,7 @@ def converge_deployment(
                 genesis_source_ids = frozenset(item.release_id for item in state.releases)
             changed = _normalize_staging(inputs) or changed
 
-            staged = _stage_or_reuse(inputs, state)
+            staged = _stage_or_reuse(inputs, state, archive=archive)
             changed = changed or staged
             state = _observe(inputs)
 
@@ -435,6 +437,10 @@ def converge_deployment(
             public_probe=public_probe,
         )
 
+    finally:
+        if archive is not None:
+            archive.close()
+
     return _result(
         request,
         "succeeded",
@@ -495,7 +501,7 @@ def _inputs(request: HostRequest, *, first_release: bool) -> _Inputs:
         if type(artifact_path_value) is not str:
             raise ValueError("invalid artifact path")
         upload = PurePosixPath(artifact_path_value)
-        if not upload.is_absolute() or not upload.is_relative_to(paths.deployment_root / "uploads"):
+        if not upload.is_absolute() or not upload.is_relative_to(paths.upload_root):
             raise ValueError("artifact is outside the derived upload authority")
         artifact_path = Path(artifact_path_value)
         record = ReleaseRecord(
@@ -1053,13 +1059,13 @@ def _normalize_staging(inputs: _Inputs) -> bool:
     return True
 
 
-def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
+def _stage_or_reuse(inputs: _Inputs, state: HostState, *, archive: BinaryIO | None) -> bool:
     existing = next((item for item in state.releases if item.release_id == inputs.candidate.release_id), None)
     if existing is not None:
         if existing != inputs.candidate:
             raise DeploymentManualError("installed candidate identity contradicts the artifact")
         return False
-    if inputs.artifact_path is None:
+    if archive is None:
         raise DeploymentManualError("requested installed release is unavailable")
     root = Path(inputs.paths.local(inputs.paths.release_root))
     target = root / inputs.candidate.release_id
@@ -1070,7 +1076,7 @@ def _stage_or_reuse(inputs: _Inputs, state: HostState) -> bool:
     owner_gid = _taskman_gid()
     try:
         staging.mkdir(mode=0o750)
-        _extract_release(inputs.artifact_path, staging)
+        _extract_release(archive, staging)
         content = staging / "taskman"
         _validate_release_tree(content)
         _normalize_release_tree(content, owner_uid, owner_gid)
@@ -1107,27 +1113,31 @@ def _write_release_manifest(directory: Path, record: ReleaseRecord, *, owner_uid
     os.chmod(target, 0o600)
 
 
-def _safe_artifact(inputs: _Inputs) -> None:
+def _safe_artifact(inputs: _Inputs) -> BinaryIO | None:
     if inputs.artifact_path is None:
-        return
+        return None
     try:
-        details = inputs.artifact_path.lstat()
-        inputs.artifact_path.relative_to(Path(inputs.paths.local(inputs.paths.deployment_root / "uploads")))
+        validate_upload_path(inputs.paths.install_root, PurePosixPath(inputs.artifact_path))
+        descriptor = os.open(inputs.artifact_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (OSError, ValueError) as error:
         raise ValueError("deployment artifact is unavailable") from error
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_uid != os.geteuid()
-        or stat.S_IMODE(details.st_mode) != 0o600
-        or not 0 < details.st_size <= MAX_RELEASE_ARCHIVE_BYTES
-        or sha256_file(inputs.artifact_path) != inputs.artifact_sha256
-    ):
-        raise ValueError("deployment artifact is unsafe")
+    stream = os.fdopen(descriptor, "rb")
     try:
-        with tarfile.open(inputs.artifact_path, "r:gz") as archive:
+        details = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
+                or stat.S_IMODE(details.st_mode) != 0o600
+                or not 0 < details.st_size <= MAX_RELEASE_ARCHIVE_BYTES):
+            raise ValueError("deployment artifact is unsafe")
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != inputs.artifact_sha256:
+            raise ValueError("deployment artifact is unsafe")
+        stream.seek(0)
+        with tarfile.open(fileobj=stream, mode="r:gz") as archive:
             _validate_archive_members(archive.getmembers())
+        stream.seek(0)
+        return stream
     except (OSError, tarfile.TarError, ValueError) as error:
+        stream.close()
         raise ValueError("deployment artifact inventory is unsafe") from error
 
 
@@ -1167,8 +1177,9 @@ def _verify(request: HostRequest, inputs: _Inputs) -> HostResult:
     )
 
 
-def _extract_release(archive: Path, destination: Path) -> None:
-    with tarfile.open(archive, "r:gz") as source:
+def _extract_release(archive: BinaryIO, destination: Path) -> None:
+    archive.seek(0)
+    with tarfile.open(fileobj=archive, mode="r:gz") as source:
         members = source.getmembers()
         _validate_archive_members(members)
         source.extractall(destination, members=members, filter="data")

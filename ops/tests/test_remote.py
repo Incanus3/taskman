@@ -878,3 +878,37 @@ def test_pyinfra_warning_overflow_retains_changed_failure_recovery_guidance():
         _merge_pyinfra_change_evidence(original, state)
     assert raised.value.changed is True
     assert raised.value.next_action == "inspect retained policy through the console"
+
+
+def test_upload_preserves_private_transfer_stage_and_native_install(tmp_path):
+    source = tmp_path / 'release.tar.gz'
+    source.write_bytes(b'release bytes')
+    remote = RecordingUploadRemote()
+    receipt = remote.put(source, PurePosixPath('/opt/taskman/uploads/release.tar.gz'), mode=0o600, sensitive=True)
+    assert receipt.cleanup_warning is False
+    stage = remote.uploads[0][1]
+    assert stage.parent.parent == PurePosixPath('/tmp')
+    assert [command[0] for command, _ in remote.calls] == ['install', 'chmod', 'install', 'rm', 'rmdir']
+    assert remote.calls[2][0] == ('install', '-m', '600', '--', str(stage), '/opt/taskman/uploads/release.tar.gz')
+    assert remote.calls[2][1]['sudo'] is True
+    assert remote.calls[-2][0] == ('rm', '-f', '--', str(stage))
+    assert remote.calls[-1][0] == ('rmdir', '--', str(stage.parent))
+
+
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_failed_native_install_keeps_generic_transfer_error_and_cleanup(tmp_path, interrupted):
+    class FailedInstallRemote(RecordingUploadRemote):
+        def run(self, argv, **kwargs):
+            command = tuple(argv)
+            self.calls.append((command, kwargs))
+            if command[:2] == ('install', '-m'):
+                if interrupted:
+                    raise OpsError(5, 'remote', 'private failure canary')
+                return CommandResult(1, 'secret stdout canary', 'secret stderr canary')
+            return CommandResult(0)
+    source = tmp_path / 'payload'
+    source.write_bytes(b'private')
+    remote = FailedInstallRemote()
+    with pytest.raises(OpsError):
+        remote.put(source, PurePosixPath('/opt/taskman/uploads/payload'), mode=0o600, sensitive=True)
+    assert [command[0] for command, _ in remote.calls][-2:] == ['rm', 'rmdir']

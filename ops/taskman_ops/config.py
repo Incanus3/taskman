@@ -486,6 +486,10 @@ class EnvironmentConfig(BaseModel):
         return self.install_root / "releases"
 
     @property
+    def upload_root(self) -> PurePosixPath:
+        return self.install_root / "uploads"
+
+    @property
     def deployment_root(self) -> PurePosixPath:
         return self.install_root / "deployments"
 

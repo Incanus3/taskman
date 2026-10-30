@@ -193,11 +193,128 @@ backup_root: /var/backups/taskman
 ```
 
 Release, deployment, upload, lock and `current` paths derive from `install_root`.
+Transient release/helper inputs use `install_root/uploads` (private root/group root `0700`,
+root-owned regular files `0600`), beside the durable `deployments` records. Upload-producing
+requests check existing ancestors and destination names before creating only missing installation
+and upload leaves. Unsafe metadata and existing destinations are refused without repair. Transfers
+reuse private SSH staging and native `install`; do not manually replace validated path components
+during an operation. Consumers recheck ordinary authority and open private inputs without following
+file symlinks. See the [upload checks](../specs/2026-10-30-upload-staging-design.md#simplified-upload-checks)
+for the supported boundary and mutation evidence.
 Do not configure subordinate roots or legacy aliases. Both roots must be normalized absolute paths,
 disjoint from each other and reserved managed locations. Installation roots exclude whitespace,
 backslash, `%`, quotes, ASCII controls and DEL; backup roots may contain quotes.
 Invalid configuration returns status 2 before SSH. See
 [path authority](../specs/2026-09-09-dedicated-host-deployment-design.md#configuration-and-path-authority).
+
+## Remove an obsolete empty upload directory
+
+This one-time procedure concerns only `install_root/deployments/uploads`. It requires separate
+operational authorization for the concrete installations and commands. The example installation
+`/opt/taskman` below is synthetic; retain actual inventory and results in private operator storage.
+Do not run these commands merely because local implementation or review passed.
+
+Identify every controller that can touch each installation, upgrade them to the corrected version,
+and arrange a quiet window with no provisioning, deployment, restore, cleanup or competing lifecycle
+work. Uploads precede lifecycle-lock acquisition, so holding that lock alone is insufficient.
+Coordinate overlapping activity without stopping backup timers solely for this removal. Do not
+terminate unattended controllers or delete recovery material under this procedure.
+
+In a temporary operator shell, define this inspection/removal function. It opens every component
+without following symlinks, retains the validated parent descriptor, requires safe root-owned
+ancestors and an exact root/group root `0700` leaf, and refuses any contents, including dotfiles.
+It never repairs metadata or removes files. Missing paths report `absent` with status 0; unsafe
+metadata, contents, changed identity, failed removal or failed post-check report `refused` with
+status 1. The exact empty-directory `rmdir` is the only deletion operation.
+
+```sh
+inspect_old_uploads() {
+  sudo /usr/bin/python3 -I -S - "$1" "$2" <<'PYTHON'
+import os
+from pathlib import PurePosixPath
+import stat
+import sys
+
+opened = []
+discovered = False
+try:
+    root = PurePosixPath(sys.argv[1])
+    action = sys.argv[2]
+    if (not root.is_absolute() or root.as_posix() != sys.argv[1]
+            or len(root.parts) < 2 or ".." in root.parts
+            or action not in {"inspect", "remove"}):
+        raise ValueError()
+    parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    opened.append(parent)
+    for component in (*root.parts[1:], "deployments"):
+        details = os.fstat(parent)
+        if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+                or details.st_mode & 0o7022):
+            raise ValueError()
+        parent = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        opened.append(parent)
+    details = os.fstat(parent)
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+            or details.st_mode & 0o7022):
+        raise ValueError()
+    leaf = os.open("uploads", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    opened.append(leaf)
+    discovered = True
+    details = os.fstat(leaf)
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0 or details.st_gid != 0
+            or stat.S_IMODE(details.st_mode) != 0o700 or os.listdir(leaf)):
+        raise ValueError()
+    current = os.stat("uploads", dir_fd=parent, follow_symlinks=False)
+    if (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino):
+        raise ValueError()
+    if action == "inspect":
+        print("validated empty directory")
+    else:
+        os.rmdir("uploads", dir_fd=parent)
+        try:
+            os.stat("uploads", dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            print("removed; old path absent")
+        else:
+            raise ValueError()
+except FileNotFoundError:
+    if discovered:
+        print("refused; preserve state and investigate", file=sys.stderr)
+        raise SystemExit(1)
+    print("absent; no cleanup needed")
+except (OSError, ValueError, IndexError):
+    print("refused; preserve state and investigate", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    for descriptor in reversed(opened):
+        os.close(descriptor)
+PYTHON
+}
+inspect_old_uploads /opt/taskman inspect
+```
+
+After reviewing the inspection result and obtaining authorization for the exact removal command,
+keep the quiet window and run:
+
+```sh
+inspect_old_uploads /opt/taskman remove
+```
+
+A nonzero result stops the procedure. Preserve remaining state and investigate; do not use forced
+removal, recursive deletion, wildcard removal, metadata repair or automatic disposal. If a file
+arrives after inspection, `rmdir` fails and preserves it. Repeat read-only inventory/verification
+with the corrected controller and confirm the specific `unknown deployment entry: uploads` warning
+has gone; preserve unrelated warnings. Exercise new uploads only during separately authorized
+operation acceptance. Older controllers can recreate the directory and require reassessment.
+
+The exact shell function and inspection/removal calls above were reproduced with disposable
+installation roots and a test-only `sudo` substitute providing synthetic ownership metadata.
+The unmodified Python body and deletion algorithm were also exercised directly. Missing paths
+and validated empty removal succeeded; a dotfile, nonempty directory, symlink leaf/ancestor,
+wrong owner/group/mode, writable ancestor and a file arriving immediately before `rmdir`
+returned status 1 and preserved the unexpected entry. A directory disappearing just before
+removal also returned status 1, preserving failed-removal semantics. These local checks establish the procedure's
+filesystem behavior, not host acceptance or permission to run it on installations.
 
 ## Helper cleanup and scheduled backups
 

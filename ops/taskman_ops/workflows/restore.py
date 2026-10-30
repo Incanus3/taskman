@@ -188,12 +188,14 @@ def restore(
                         replace_unfinished=False,
                         reapply=False,
                     )
-                    cleanup_result = run_restore_request(
+                    cleanup_dispatch = run_restore_request(
                         remote,
                         config,
                         request=cleanup_request,
                         prior_mutation_state=prior_mutation_state,
                     )
+                    cleanup_result = cleanup_dispatch.result
+                    prior_mutation_state = cleanup_dispatch.prior_mutation_state
                     if cleanup_result.outcome != "succeeded":
                         raise result_error(
                             cleanup_result,
@@ -284,13 +286,15 @@ def restore(
                     replace_unfinished=replace_unfinished,
                     reapply=reapply,
                 )
-                result = run_restore_request(
+                dispatch = run_restore_request(
                     remote,
                     config,
                     request=request,
                     backup_helper_package=scheduler_package if refresh_required else None,
                     prior_mutation_state=prior_mutation_state,
                 )
+                result = dispatch.result
+                prior_mutation_state = dispatch.prior_mutation_state
                 if _replacement_reconfirmation(result):
                     facts = mutation_result_facts(
                         result,

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+from taskman_ops.workflows.helper import UploadDispatchResult
 
 from taskman_ops.errors import ExitStatus, OpsError
 from taskman_ops.host_helper.commands import CommandError
@@ -206,7 +207,7 @@ def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutatio
         mutations.append(kwargs)
         result = kwargs.pop("result") if "result" in kwargs else None
         if result is not None:
-            return result
+            return UploadDispatchResult(result, kwargs.get("prior_mutation_state", "unchanged"))
         source = release.release_id
         observations = {
             "selected_release_id": source,
@@ -232,7 +233,7 @@ def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutatio
             },
         }
         request = kwargs["request"]
-        return HostResult(
+        return UploadDispatchResult(HostResult(
             PROTOCOL_VERSION,
             "restore",
             request.correlation_id,
@@ -251,7 +252,7 @@ def _install_controller_fakes(monkeypatch, release, backup, discoveries, mutatio
                 "pre_restore_backup_id": SAFETY,
             },
             (),
-        )
+        ), kwargs.get("prior_mutation_state", "unchanged"))
 
     monkeypatch.setattr("taskman_ops.workflows.restore.run_restore_request", mutate)
 

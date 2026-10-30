@@ -892,3 +892,17 @@ def test_optional_restore_checksum_expiry_refuses_instead_of_corruption_warning(
         state = observe_host_state(paths, deadline=1.0)
         assert state.restore_target.backup_id == BACKUP
         assert state.warnings == ()
+
+
+def test_upload_inventory_separates_transient_inputs_from_unknown_deployment_entries(tmp_path):
+    paths = managed_paths(tmp_path)
+    Path(paths.upload_root).mkdir(mode=0o700, parents=True)
+    deployment = Path(paths.deployment_root)
+    deployment.mkdir()
+    (deployment / "selections").mkdir()
+    assert "unknown deployment entry: uploads" not in observe_host_state(paths).warnings
+    (deployment / "uploads").mkdir(mode=0o700)
+    (deployment / "operator-notes").write_text("preserved")
+    warnings = observe_host_state(paths).warnings
+    assert "unknown deployment entry: uploads" in warnings
+    assert "unknown deployment entry: operator-notes" in warnings

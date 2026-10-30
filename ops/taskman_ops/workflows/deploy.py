@@ -273,7 +273,7 @@ def deploy(
                 ):
                     raise _safety("deployment authority changed after confirmation; rerun to acknowledge a new plan")
                 scheduler_upload = None if not scheduler_refresh_required else "pending-controller-upload"
-                result = run_deployment_request(
+                dispatch = run_deployment_request(
                     remote,
                     config,
                     deployment_target,
@@ -284,9 +284,16 @@ def deploy(
                     backup_helper_package=scheduler_package,
                 )
                 break
+        result = dispatch.result
         if result.outcome != "succeeded":
-            raise result_error(result, starting_state=expected_state)
-        payload = _payload_result(config, candidate, policy, result, previous_release_id=previous)
+            raise result_error(
+                result, starting_state=expected_state,
+                prior_mutation_state=dispatch.prior_mutation_state,
+            )
+        payload = _payload_result(
+            config, candidate, policy, result, previous_release_id=previous,
+            prior_mutation_state=dispatch.prior_mutation_state,
+        )
         return _with_artifact_source(payload, deployment_target.source)
     except OpsError as error:
         return _failure_result(config, error, candidate=candidate)
@@ -629,7 +636,7 @@ def _first_release(
                 next_action="review the redacted provisioning plan and rerun without --dry-run after confirmation",
             )
         with temporary_scheduled_backup_helper_package() as scheduler_package:
-            result = run_deployment_request(
+            dispatch = run_deployment_request(
                 remote,
                 config,
                 deployment_target,
@@ -647,8 +654,12 @@ def _first_release(
                 backup_helper_package=scheduler_package,
                 operation=operation,
             )
+        result = dispatch.result
         if result.outcome != "succeeded":
-            raise result_error(result, starting_state=starting_state or expected_state)
+            raise result_error(
+                result, starting_state=starting_state or expected_state,
+                prior_mutation_state=dispatch.prior_mutation_state,
+            )
         return _payload_result(
             config,
             candidate,
@@ -657,14 +668,15 @@ def _first_release(
             previous_release_id=None,
             genesis=True,
             starting_state=starting_state or expected_state,
+            prior_mutation_state=dispatch.prior_mutation_state,
         )
     except OpsError as error:
-        if prepared_expected_state is not None and not error.state:
+        if prepared_expected_state is not None and "observations" not in error.state:
             from ..host_protocol.mutation_results import unavailable_observations
             observations, unavailable = unavailable_observations("genesis")
-            error.state = {"observations": observations, "unavailable_fields": unavailable,
+            error.state = {**error.state, "observations": observations, "unavailable_fields": unavailable,
                            "inspection_error": "fresh completion admission was not established",
-                           "mutation_state": "unchanged"}
+                           "mutation_state": error.state.get("mutation_state", "unknown" if error.changed else "unchanged")}
         result = _failure_result(config, error, candidate=candidate, genesis=True)
         if starting_state is None:
             return result
@@ -920,6 +932,7 @@ def _payload_result(
     previous_release_id: str | None,
     genesis: bool = False,
     starting_state: Mapping[str, object] | None = None,
+    prior_mutation_state: str = "unchanged",
 ) -> WorkflowResult:
     facts = _facts(
         result,
@@ -928,6 +941,7 @@ def _payload_result(
         previous_release_id=previous_release_id,
         genesis=genesis,
         starting_state=starting_state,
+        prior_mutation_state=prior_mutation_state,
     )
     changed = facts["changed"]
     assert isinstance(changed, bool)
@@ -955,23 +969,26 @@ def _facts(
     previous_release_id: str | None,
     genesis: bool,
     starting_state: Mapping[str, object] | None,
+    prior_mutation_state: str = "unchanged",
 ) -> dict[str, object]:
     try:
-        evidence = mutation_result_facts(result)
+        evidence = mutation_result_facts(result, prior_mutation_state=prior_mutation_state)
         observations = evidence["observations"]
         application = result.operation == "prepare_genesis"
         verification = successful_verification(
             evidence["local_report" if application else "report"], candidate, application=application
         )
     except (TypeError, ValueError):
-        raise _safety("deployment helper returned invalid success evidence")
+        raise _safety("deployment helper returned invalid success evidence",
+                      prior_mutation_state=prior_mutation_state)
     if (
         not isinstance(observations, Mapping)
         or evidence["desired_release_id"] != candidate
         or observations["selected_release_id"] != candidate
         or observations["service_state"] != "running"
     ):
-        raise _safety("deployment helper returned invalid success evidence") from None
+        raise _safety("deployment helper returned invalid success evidence",
+                      prior_mutation_state=prior_mutation_state) from None
     changed = evidence["mutation_state"] != "unchanged"
     return {
         "starting_state": None if starting_state is None else dict(starting_state),
@@ -981,7 +998,7 @@ def _facts(
         "selected_release_id": candidate,
         "backup_id": evidence["backup_id"],
         "migration_policy": policy,
-        "database_changed": evidence["mutation_state"] == "changed",
+        "database_changed": result.state["mutation_state"] == "changed",
         "database_state": observations["database_state"],
         "service_state": observations["service_state"],
         "mutation_state": evidence["mutation_state"],
@@ -1124,12 +1141,13 @@ def _confirm_downgrade(_plan: Mapping[str, object]) -> bool:
     return input("Acknowledge the downgrade or unknown ordering? Type yes to continue: ").strip().lower() == "yes"
 
 
-def _safety(message: str) -> OpsError:
+def _safety(message: str, *, prior_mutation_state: str = "unchanged") -> OpsError:
     return OpsError(
         ExitStatus.SAFETY,
         "deploy",
         message,
-        changed=False,
+        changed=prior_mutation_state != "unchanged",
+        state={"mutation_state": prior_mutation_state} if prior_mutation_state != "unchanged" else None,
         next_action="inspect the completed host state before retrying",
     )
 

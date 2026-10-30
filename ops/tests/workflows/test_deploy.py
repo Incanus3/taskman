@@ -15,6 +15,7 @@ from taskman_ops.releases.identifiers import build_release_id
 from taskman_ops.releases.manifests import OTP_VERSION, MigrationFingerprint
 from tests.support.environments import valid_environment
 from tests.workflows.support import CANDIDATE, deployment_artifact, successful_verification_report
+from taskman_ops.workflows.helper import UploadDispatchResult
 from taskman_ops.workflows.deploy import (
     _confirmed_expected_state as observed_expected_state,
     _downgrade_acknowledgment as observed_downgrade_authority,
@@ -98,7 +99,7 @@ def test_changed_migrations_require_explicit_policy_before_confirmation_or_uploa
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("missing policy must prevent upload"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("missing policy must prevent upload"), "unchanged"),
     )
     result = deploy(
         object(),
@@ -229,7 +230,7 @@ def test_first_release_binds_the_exact_fresh_expected_state_to_genesis(
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: fresh)
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **kwargs: captured.update(kwargs) or genesis_result,
+        lambda *_args, **kwargs: UploadDispatchResult(captured.update(kwargs) or genesis_result, "unchanged"),
     )
 
     result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
@@ -261,7 +262,7 @@ def test_first_release_sends_confirmed_null_baseline_pruning_to_genesis(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **kwargs: sent.append(kwargs["prune_backup_ids"]) or _success(),
+        lambda *_args, **kwargs: UploadDispatchResult(sent.append(kwargs["prune_backup_ids"]) or _success(), "unchanged"),
     )
 
     result = deploy_first_release(object(), config(), deployment_artifact(tmp_path))
@@ -287,7 +288,7 @@ def test_first_release_refuses_post_pyinfra_release_authority_drift(
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: drifted)
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach genesis"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("drifted authority must not reach genesis"), "unchanged"),
     )
 
     result = deploy_first_release(
@@ -312,7 +313,7 @@ def test_first_release_refuses_a_changed_target_after_durable_history(
     monkeypatch.setattr("taskman_ops.workflows.deploy._confirmed_expected_state", lambda *_args, **_kwargs: _EXPECTED)
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("a changed completed target must require deploy"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("a changed completed target must require deploy"), "unchanged"),
     )
 
     from taskman_ops.workflows import deploy as module
@@ -344,7 +345,7 @@ def test_first_release_refuses_when_history_names_a_different_completed_release(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("changed completed target must require deploy"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("changed completed target must require deploy"), "unchanged"),
     )
 
     from taskman_ops.workflows import deploy as module
@@ -361,7 +362,7 @@ def test_deploy_consumes_exact_v3_mutation_success_and_preserves_final_observati
     from taskman_ops.workflows.deploy import deploy
 
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: _success())
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(_success(), "unchanged"))
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), present_plan=lambda _plan: None, confirm=lambda _plan: True)
 
@@ -384,7 +385,7 @@ def test_deploy_preserves_unknown_lost_reply_evidence_in_the_public_failure(
         {**failed.state, "exit_code": 8, "failed_boundary": "service", "report": None}, (),
     )
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: failed)
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(failed, "unchanged"))
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), present_plan=lambda _plan: None, confirm=lambda _plan: True)
 
@@ -422,7 +423,7 @@ def test_public_lifecycle_verification_failure_preserves_exit_eight(
     )
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr(
-        "taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: helper_result
+        "taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(helper_result, "unchanged")
     )
 
     if genesis:
@@ -459,7 +460,7 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     matches = iter((False, True, True))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(mutations.append("apply") or _success(), "unchanged"))
 
     result = deploy(
         object(),
@@ -490,7 +491,7 @@ def test_clean_build_drift_during_refresh_retries_within_the_deploy_bound(
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     matches = iter((False, True, True))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: mutations.append("apply") or _success())
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(mutations.append("apply") or _success(), "unchanged"))
 
     def refresh() -> tuple[DeploymentTarget, CleanInputs]:
         nonlocal refreshed
@@ -528,7 +529,7 @@ def test_interactive_deploy_refuses_authority_drift_after_confirmation(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach the helper"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("drifted authority must not reach the helper"), "unchanged"),
     )
 
     result = deploy(
@@ -554,7 +555,7 @@ def test_deploy_refuses_clean_source_drift_after_confirmation(
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("post-confirmation source drift must not mutate"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("post-confirmation source drift must not mutate"), "unchanged"),
     )
 
     result = deploy(
@@ -579,7 +580,7 @@ def test_apply_time_authority_drift_after_yes_requires_a_new_invocation(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("drifted authority must not reach the helper"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("drifted authority must not reach the helper"), "unchanged"),
     )
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
@@ -611,7 +612,7 @@ def test_apply_time_named_recovery_or_baseline_drift_requires_a_new_invocation(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("changed material acknowledgment must not reach the helper"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("changed material acknowledgment must not reach the helper"), "unchanged"),
     )
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True, allow_downgrade=True)
@@ -656,7 +657,7 @@ def test_apply_time_protection_projection_drift_requires_a_new_invocation(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("changed protection projection must not reach the helper"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("changed protection projection must not reach the helper"), "unchanged"),
     )
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
@@ -699,7 +700,7 @@ def test_deploy_sends_the_exact_prune_ids_shown_in_the_material_plan(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **kwargs: sent.append(kwargs["prune_backup_ids"]) or _success(),
+        lambda *_args, **kwargs: UploadDispatchResult(sent.append(kwargs["prune_backup_ids"]) or _success(), "unchanged"),
     )
 
     result = deploy(
@@ -830,7 +831,7 @@ def test_json_mode_requires_a_downgrade_flag_without_prompting(
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("missing downgrade consent must prevent mutation"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("missing downgrade consent must prevent mutation"), "unchanged"),
     )
 
     result = deploy(
@@ -853,7 +854,7 @@ def test_unattended_unknown_baseline_requires_independent_downgrade_acknowledgme
     )
     monkeypatch.setattr(
         "taskman_ops.workflows.deploy.run_deployment_request",
-        lambda *_args, **_kwargs: pytest.fail("missing downgrade acknowledgment must prevent mutation"),
+        lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("missing downgrade acknowledgment must prevent mutation"), "unchanged"),
     )
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
@@ -870,7 +871,7 @@ def test_equal_source_version_rebuild_needs_only_ordinary_acknowledgment(
 
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr("taskman_ops.workflows.deploy._downgrade_acknowledgment", lambda *_args, **_kwargs: (False, ()))
-    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: _success())
+    monkeypatch.setattr("taskman_ops.workflows.deploy.run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(_success(), "unchanged"))
 
     result = deploy(object(), config(), deployment_artifact(tmp_path), yes=True)
 
@@ -891,7 +892,7 @@ def test_prepare_first_release_uses_shared_admission_and_local_proof(tmp_path, m
     prepared = HostResult(3, "prepare_genesis", success.correlation_id, "succeeded", "prepared", state, ())
     captured = {}
     monkeypatch.setattr(module, "_confirmed_expected_state", lambda *_a, **_k: fresh)
-    monkeypatch.setattr(module, "run_deployment_request", lambda *_a, **kw: captured.update(kw) or prepared)
+    monkeypatch.setattr(module, "run_deployment_request", lambda *_a, **kw: UploadDispatchResult(captured.update(kw) or prepared, "unchanged"))
     handler = getattr(module, "prepare_first_release", None)
     assert callable(handler), "controller preparation capability is missing"
     result = handler(object(), config(), artifact)
@@ -918,7 +919,7 @@ def test_prepare_first_release_preserves_local_failure_report_and_probe(tmp_path
     state.update(exit_code=9,failed_boundary="verification",local_report=proof,public_probe="not-attempted")
     failed = HostResult(3,"prepare_genesis",success.correlation_id,"retryable","readiness failed",state,())
     monkeypatch.setattr(module,"_confirmed_expected_state",lambda *_a,**_kw:fresh)
-    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:failed)
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:UploadDispatchResult(failed, "unchanged"))
     result = module.prepare_first_release(object(),config(),deployment_artifact(tmp_path))
     assert result.exit_status == 9
     assert result.facts["local_report"] == proof
@@ -965,7 +966,7 @@ def test_prepared_completion_uses_fresh_exact_authority_and_original_public_star
     monkeypatch.setattr(module, "run_request", lambda *_a: HostResult(3,"discover", "op-"+"1"*32,"succeeded","discovered",fresh,()))
     monkeypatch.setattr(module,"_confirmed_expected_state",lambda *_a,**_kw:{key:fresh[key] for key in _EXPECTED})
     calls = []
-    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**kw:calls.append(kw) or _success())
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**kw:UploadDispatchResult(calls.append(kw) or _success(), "unchanged"))
     result = module.finalize_first_release(object(), config(), artifact, preparation=prepared,
                                           starting_state=starting, migration_policy="restore-required",
                                           prune_backup_ids=(), scheduler_create=())
@@ -991,7 +992,7 @@ def test_prepared_completion_refuses_drift_without_claiming_old_observations(tmp
     monkeypatch.setattr(module,"temporary_scheduled_backup_helper_package",package)
     fresh[field] = value
     monkeypatch.setattr(module,"run_request",lambda *_a:HostResult(3,"discover","op-"+"1"*32,"succeeded","discovered",fresh,()))
-    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:pytest.fail("drift must prevent full dispatch"))
+    monkeypatch.setattr(module,"run_deployment_request",lambda *_a,**_kw:UploadDispatchResult(pytest.fail("drift must prevent full dispatch"), "unchanged"))
     result=module.finalize_first_release(object(),config(),artifact,preparation=prepared,starting_state=starting,
                                          prune_backup_ids=(),scheduler_create=())
     assert result.exit_status == ExitStatus.SAFETY
@@ -1067,7 +1068,7 @@ def test_post_convergence_first_release_discovery_failure_preserves_postgresql_r
             {"failed_boundary": "postgresql", "exit_code": 5}, ("transient helper cleanup was incomplete",))
     monkeypatch.setattr(module, "run_request", failed)
     monkeypatch.setattr(module, "_confirmed_expected_state", observed_expected_state)
-    monkeypatch.setattr(module, "run_deployment_request", lambda *_args, **_kwargs: pytest.fail("failed SCRAM proof must stop release effects"))
+    monkeypatch.setattr(module, "run_deployment_request", lambda *_args, **_kwargs: UploadDispatchResult(pytest.fail("failed SCRAM proof must stop release effects"), "unchanged"))
     target = deployment_artifact(tmp_path)
     if completed_preparation:
         result = module.finalize_first_release(object(), config(), target,
@@ -1084,3 +1085,30 @@ def test_post_convergence_first_release_discovery_failure_preserves_postgresql_r
     if completed_preparation:
         assert result.facts["mutation_state"] == "unchanged"
         assert result.facts["starting_state"] == {"confirmed": "before-convergence"}
+
+
+@pytest.mark.parametrize("helper_mutation,prior,aggregate,database_changed", (
+    ("unchanged", "changed", "changed", False),
+    ("unchanged", "unknown", "unknown", False),
+    ("changed", "unchanged", "changed", True),
+))
+def test_deployment_preparation_mutation_does_not_claim_database_change(helper_mutation, prior, aggregate, database_changed):
+    from taskman_ops.workflows.deploy import _payload_result
+    raw = _success(mutation_state=helper_mutation)
+    result = _payload_result(config(), CANDIDATE, "no-change", raw,
+        previous_release_id=CURRENT, prior_mutation_state=prior)
+    assert result.facts["mutation_state"] == aggregate
+    assert result.facts["database_changed"] is database_changed
+    assert raw.state["mutation_state"] == helper_mutation
+
+
+def test_deployment_success_validation_failure_retains_preparation_mutation():
+    from dataclasses import replace
+    from taskman_ops.workflows.deploy import _payload_result
+    raw = _success(mutation_state="unchanged")
+    raw = replace(raw, state={**raw.state, "report": None})
+    with pytest.raises(OpsError) as raised:
+        _payload_result(config(), CANDIDATE, "no-change", raw,
+            previous_release_id=CURRENT, prior_mutation_state="changed")
+    assert raised.value.changed
+    assert raised.value.state["mutation_state"] == "changed"

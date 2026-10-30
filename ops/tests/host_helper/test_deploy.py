@@ -16,6 +16,10 @@ from dataclasses import replace
 
 import pytest
 
+from tests.support.uploads import upload_authority
+
+pytestmark = pytest.mark.usefixtures("upload_authority")
+
 from taskman_ops.host_helper.operations import deploy as deploy_module
 from taskman_ops.host_helper.operations import discover as discover_module
 from taskman_ops.host_helper import services as service_capability
@@ -220,8 +224,8 @@ def _request(
     application_version: str = "0.2.0",
 ) -> HostRequest:
     roots = _roots(tmp_path)
-    upload = Path(roots["install_root"]) / "deployments" / "uploads" / "artifact.tar.gz"
-    upload.parent.mkdir(parents=True, exist_ok=True)
+    upload = Path(roots["install_root"]) / "uploads" / "artifact.tar.gz"
+    upload.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     checksum = _archive(upload)
     candidate_release_id = build_release_id(
         application_version,
@@ -608,7 +612,7 @@ def test_command_observation_failure_keeps_operation_evidence_through_entrypoint
     assert result.state["backup_id"] == (
         "backup-00000000000000000000000000000001" if operation == "deploy" else None
     )
-    assert "unknown deployment entry: uploads" in result.warnings
+    assert "unknown deployment entry: uploads" not in result.warnings
     if final_available:
         assert observation_failures == 1
         assert result.state["observations"]["selected_release_id"] == _candidate_id(request)
@@ -897,7 +901,7 @@ def test_genesis_scheduler_refresh_revalidates_the_first_release_state(
             **request.parameters,
             "backup_helper": {
                 "sha256": "b" * 64,
-                "upload_path": str(Path(request.paths["install_root"]) / "deployments" / "uploads" / "backup.pyz"),
+                "upload_path": str(Path(request.paths["install_root"]) / "uploads" / "backup.pyz"),
             },
         },
     )
@@ -1164,7 +1168,8 @@ def test_completed_pending_prune_is_changed_when_immediate_reobservation_is_ambi
     _install_runtime(monkeypatch, runtime)
     initial_inputs = deploy_module._inputs(request, first_release=False)
     initial_state = deploy_module._observe(initial_inputs)
-    assert deploy_module._stage_or_reuse(initial_inputs, initial_state) is True
+    with deploy_module._safe_artifact(initial_inputs) as archive:
+        assert deploy_module._stage_or_reuse(initial_inputs, initial_state, archive=archive) is True
     deploy_module.select_current(initial_inputs.paths, initial_inputs.candidate.release_id)
 
     request = _replanned_request(request, runtime)
@@ -2404,12 +2409,21 @@ def test_isolated_packaged_preparation_runs_real_lifecycle_and_proof_with_many_m
     package = build_helper_package(tmp_path / "prepare.pyz")
     script = '''import os, subprocess, sys
 sys.path.insert(0, sys.argv[1])
-from taskman_ops.host_helper import __main__ as entry, state, services, verification
+from taskman_ops.host_helper import __main__ as entry, state, services, verification, paths as upload_paths
+from pathlib import Path
+import stat
 from taskman_ops.host_helper.operations import deploy
 from taskman_ops.host_helper.backup_helper import BackupHelperConvergence, BackupHelperMutation
 from taskman_ops.host_protocol import decode_request
 payload = sys.stdin.buffer.read()
 request = decode_request(payload)
+ancestors = {p.stat().st_ino for p in Path(request.paths['install_root']).parent.parents}
+metadata = upload_paths._upload_metadata
+def synthetic_metadata(path):
+    values = list(metadata(path)); values[4:6] = [0, 0]
+    if values[1] in ancestors and stat.S_ISDIR(values[0]): values[0] = stat.S_IFDIR | 0o755
+    return os.stat_result(values)
+upload_paths._upload_metadata = synthetic_metadata
 manifest = request.parameters['target']['manifest']
 release = manifest['release_id']
 versions = tuple(int(m['filename'][:14]) for m in manifest['migrations'])
@@ -2478,7 +2492,7 @@ def test_preparation_refreshes_scheduled_executable_under_shared_lock_sequence(t
     installed = tmp_path / "scheduler" / "taskman-backup.pyz"
     installed.parent.mkdir(mode=0o750)
     installed.write_bytes(b"old compatible scheduler"); installed.chmod(0o750)
-    upload = Path(request.paths["install_root"]) / "deployments" / "uploads" / "backup.pyz"
+    upload = Path(request.paths["install_root"]) / "uploads" / "backup.pyz"
     upload.write_bytes(b"new compatible scheduler"); upload.chmod(0o600)
     old_digest = hashlib.sha256(installed.read_bytes()).hexdigest()
     desired_digest = hashlib.sha256(upload.read_bytes()).hexdigest()
@@ -2596,3 +2610,69 @@ def test_preparation_installed_exact_retry_needs_no_archive_or_repeated_migratio
     assert state["desired_release_id"] == candidate
     assert state["observations"]["last_successful_selection_id"] is None
     assert record_path.read_bytes() == record_bytes
+
+
+def test_release_upload_uses_validated_root(tmp_path):
+    """An opened archive remains authoritative when its pathname is replaced before extraction."""
+    request = _request(tmp_path)
+    inputs = deploy_module._inputs(request, first_release=False)
+    archive = deploy_module._safe_artifact(inputs)
+    try:
+        assert archive is not None
+        original = inputs.artifact_path
+        original.rename(original.with_suffix(".retained"))
+        original.write_bytes(b"unchecked replacement")
+        original.chmod(0o600)
+        destination = tmp_path / "extracted"
+        destination.mkdir()
+        deploy_module._extract_release(archive, destination)
+        assert (destination / "taskman/bin/server").read_text() == "release\n"
+    finally:
+        if archive is not None:
+            archive.close()
+
+
+@pytest.mark.parametrize("invalid", ("old", "root-mode", "file-mode", "checksum"))
+def test_release_upload_refuses_invalid_authority(tmp_path, invalid):
+    request = _request(tmp_path)
+    inputs = deploy_module._inputs(request, first_release=False)
+    if invalid == "old":
+        old = inputs.artifact_path.parent.parent / "deployments/uploads/artifact.tar.gz"
+        old.parent.mkdir(mode=0o700, parents=True)
+        inputs.artifact_path.rename(old)
+        inputs = replace(inputs, artifact_path=old)
+    elif invalid == "root-mode":
+        inputs.artifact_path.parent.chmod(0o750)
+    elif invalid == "file-mode":
+        inputs.artifact_path.chmod(0o640)
+    else:
+        inputs.artifact_path.write_bytes(b"altered archive")
+    with pytest.raises(ValueError):
+        deploy_module._safe_artifact(inputs)
+
+
+@pytest.mark.parametrize("preflight_error", (False, True))
+def test_release_upload_stream_closes_after_early_refusal(tmp_path, monkeypatch, preflight_error):
+    request = _request(tmp_path)
+    stream = deploy_module._safe_artifact(deploy_module._inputs(request, first_release=False))
+    monkeypatch.setattr(deploy_module, "_safe_artifact", lambda _inputs: stream)
+    def preflight(*_args):
+        if preflight_error:
+            raise ValueError("unsafe prerequisites")
+        return "preflight"
+    monkeypatch.setattr(deploy_module, "host_preflight", preflight)
+    result = deploy(request)
+    assert result.outcome == "refused"
+    assert stream.closed
+
+
+def test_release_upload_open_failure_retains_input_refusal(tmp_path, monkeypatch):
+    inputs = deploy_module._inputs(_request(tmp_path), first_release=False)
+    real_open = os.open
+    def unavailable(path, *args, **kwargs):
+        if Path(path) == inputs.artifact_path:
+            raise PermissionError('private open canary')
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(deploy_module.os, 'open', unavailable)
+    with pytest.raises(ValueError, match='deployment artifact is unavailable'):
+        deploy_module._safe_artifact(inputs)

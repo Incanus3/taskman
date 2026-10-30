@@ -13,24 +13,16 @@
 
 ## Specifications
 
+- [Upload staging outside deployment records (implemented and operator accepted; native evidence remains limited to the earlier relocation)](specs/2026-10-30-upload-staging-design.md)
 - [Modal-local hierarchy status filter (implemented and operator accepted)](specs/2026-10-28-hierarchy-status-filter-design.md)
-
 - [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)
-
 - [Task detail layout, hierarchy and responsive sizing (implemented and accepted)](specs/2026-10-28-task-detail-layout-design.md)
-
 - [Task tree guides in the main listing (implemented and operator accepted)](specs/2026-10-27-task-tree-guides-design.md)
-
 - [Expandable Task listing (implemented and operator accepted)](specs/2026-10-27-expandable-task-listing-design.md)
-
 - [Task counts in List navigation and headers (implemented and operator accepted)](specs/2026-10-26-list-task-counts-design.md)
-
 - [Named CLI hosts and repository Project bindings (implemented and operator accepted)](specs/2026-09-30-repository-backends-design.md)
-
 - [PostgreSQL provisioning with operator-owned cluster configuration (approved; implementation and bounded native acceptance complete; results accepted)](specs/2026-10-07-shared-postgresql-design.md)
-
 - [Caddy provisioning with operator-owned configuration (implemented; bounded native results accepted)](specs/2026-10-01-shared-caddy-design.md)
-
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
 - [Projects and basic Tasks first slice (Project directory requirements superseded)](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
 - [Task editing and human-controlled lifecycle](specs/2026-07-31-task-editing-lifecycle-design.md)
@@ -67,7 +59,6 @@ No active implementation plans. Completed implementation contracts and verificat
 ## Guides
 
 - [Native operations acceptance contracts and limits](guides/native-acceptance.md)
-
 - [Documentation roles, placement and retirement](guides/documentation.md)
 - [Development guide](guides/development.md)
 - [Operations development guidelines](guides/development.md#operations-development)
@@ -86,9 +77,7 @@ No active implementation plans. Completed implementation contracts and verificat
 ## Research
 
 - [Verification timeout assessment and approved bounded-phase correction (implemented and locally verified)](research/2026-10-07-verification-timeout-review.md)
-
 - [UFW Python API and host-helper integration evaluation](research/2026-10-01-ufw-python-api-evaluation.md)
-
 - [Operations test overlap and branch coverage ownership](research/2026-09-17-operations-test-overlap.md)
 - [Operations test parallelism measurements](research/2026-09-16-operations-test-parallelism.md)
 - [Cosmos capabilities](research/cosmos-capabilities.md)
