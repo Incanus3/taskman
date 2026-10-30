@@ -75,6 +75,8 @@ nor external agent work automatically changes Task state.
   Guides cap indentation at six levels, sharing the final lane for deeper nesting. Hovering or
   focusing a row highlights the connectors throughout its displayed root family. See the
   [Task tree guide design](../specs/2026-10-27-task-tree-guides-design.md).
+  The location header shows controls beneath the title at viewport widths below 1280 CSS pixels.
+  At 1280 pixels and above, they sit beside the title, matching the Task row layout breakpoint.
   Column headers are shown at viewport widths of 1280 CSS pixels and above. Below that,
   a Sort button beside Statuses offers ID, Name, Status, Priority and, when child Lists are
   included, Location. Both controls use icons only below 1280 CSS pixels. The menu shares the

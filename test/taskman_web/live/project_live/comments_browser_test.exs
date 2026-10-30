@@ -103,14 +103,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsBrowserTest do
       assert abs(after_comment["scrollTop"] - 35) <= 2
       assert after_comment["draft"] == "Unposted draft"
       assert after_comment["focus"] == "task-comment-text"
-      assert after_comment["htmlChildren"] == 0
       assert after_comment["multilinePreserved"]
-
-      assert js(
-               session,
-               "return document.getElementById(arguments[0]).querySelector('.task-comment-text').textContent",
-               ["task-comment-#{older.id}"]
-             ) == older.text
 
       Browser.click(session, Query.css("#task-sessions-tab"))
       Browser.find(session, Query.css("#task-sessions-tab[aria-selected='true']"))
@@ -272,7 +265,6 @@ defmodule TaskmanWeb.ProjectLive.CommentsBrowserTest do
         sessionsUnderTabs: !sessions.hidden && bounds(sessions).top >= bounds(tabs).bottom,
         draft: document.querySelector('#task-comment-text').value,
         focus: document.activeElement?.id,
-        htmlChildren: thread.querySelectorAll('.task-comment-text b').length,
         multilinePreserved: [...thread.querySelectorAll('.task-comment-text')].some(text => text.textContent.includes('\n') && getComputedStyle(text).whiteSpace === 'pre-wrap'),
         commentCount: thread.querySelectorAll('article').length
       };

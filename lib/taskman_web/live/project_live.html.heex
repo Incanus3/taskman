@@ -191,7 +191,7 @@
             :if={@workspace.selected_project && !@workspace.location_not_found?}
             class="flex min-h-0 flex-1 flex-col p-6"
           >
-            <header class="mb-5 flex shrink-0 flex-col items-stretch gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <header class="mb-5 flex shrink-0 flex-col items-stretch gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div class="min-w-0">
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
                   {if(@workspace.selected_list, do: "List", else: "Project")}
@@ -226,7 +226,7 @@
                   <% end %>
                 </h1>
               </div>
-              <div class="flex min-w-0 flex-wrap items-center gap-2 lg:shrink-0 lg:gap-3">
+              <div class="flex min-w-0 flex-wrap items-center gap-2 xl:shrink-0 xl:gap-3">
                 <TaskCountBadge.badge
                   :if={
                     counts =

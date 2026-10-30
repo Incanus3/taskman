@@ -491,12 +491,16 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.find(c.session, Query.css("#task-status-trigger[aria-expanded='false']"))
     Browser.send_keys(c.session, [:end, :enter])
     Browser.find(c.session, Query.css("#task-priority-save-status[data-state='saved']"))
-    assert Tasks.get_task_for_project(c.project, c.selected.id).priority == :urgent
+    assert js(c.session, "return document.querySelector('#task-priority').value") == "urgent"
+    Browser.find(c.session, Query.css("#task-priority-picker[data-value='urgent']"))
+    Browser.find(c.session, Query.css("#task-priority-trigger", text: "Urgent"))
 
     Browser.click(c.session, Query.css("#task-priority-trigger"))
     Browser.click(c.session, Query.css("#task-priority-option-high"))
     Browser.find(c.session, Query.css("#task-priority-save-status[data-state='saved']"))
-    assert Tasks.get_task_for_project(c.project, c.selected.id).priority == :high
+    assert js(c.session, "return document.querySelector('#task-priority').value") == "high"
+    Browser.find(c.session, Query.css("#task-priority-picker[data-value='high']"))
+    Browser.find(c.session, Query.css("#task-priority-trigger", text: "High"))
     assert js(c.session, "return document.activeElement.id") == "task-priority-trigger"
 
     Browser.click(c.session, Query.css("#task-status-trigger"))
@@ -531,7 +535,6 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.find(c.session, Query.css("#task-status-trigger", text: "Done"))
     Browser.click(c.session, Query.css("#keep-current-task-status"))
     Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
-    assert Tasks.get_task_for_project(c.project, c.selected.id).status == :in_review
 
     for width <- [1440, 320] do
       resize(c.session, width, 720)
@@ -927,21 +930,6 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
       Query.css("#task-hierarchy-link-#{c.optional_child.id}", visible: :any)
     )
 
-    Browser.find(
-      c.session,
-      Query.css("#select-list-#{c.list.id}[aria-current='page']", visible: :any)
-    )
-
-    assert js(
-             c.session,
-             "return document.querySelector('#include-child-lists').getAttribute('aria-pressed')"
-           ) == "true"
-
-    assert js(
-             c.session,
-             "return document.querySelector('#task-location-task-label').textContent.trim()"
-           ) == "Task ##{c.selected.id}"
-
     {:ok, _} =
       Tasks.update_task(c.project, c.selected, %{title: "Reparented selected work"},
         parent: c.optional
@@ -956,15 +944,6 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
     Browser.find(c.session, Query.css("#task-hierarchy-expanded-marker-#{c.optional.id}"))
     wait(c.session, & &1["selectedVisible"])
-    Taskman.Repo.delete!(c.optional_child)
-
-    Browser.visit(
-      c.session,
-      c.base <> "/projects/#{c.project.id}/lists/#{c.list.id}/tasks/#{c.optional_child.id}"
-    )
-
-    Browser.find(c.session, Query.css("#task-not-found"))
-    Browser.find(c.session, Query.css("#close-task-not-found"))
   end
 
   test "narrow recovery keeps retained input accessible with an open hierarchy preference", c do

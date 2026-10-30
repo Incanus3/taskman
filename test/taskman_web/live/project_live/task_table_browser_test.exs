@@ -99,7 +99,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         true
       )
 
-      for width <- [1280, 1279, 768, 767, 640, 639, 475, 474, 450, 390, 320] do
+      for width <- [1280, 1279, 1024, 1023, 768, 767, 640, 639, 475, 474, 450, 390, 320] do
         Browser.resize_window(session, width, 800)
 
         state =
@@ -116,6 +116,8 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
             width: innerWidth,
             fits: document.documentElement.scrollWidth <= innerWidth &&
               document.querySelector('#main-panel').scrollWidth <= document.querySelector('#main-panel').clientWidth,
+            controlsBelowTitle: document.querySelector('#include-child-lists').parentElement.getBoundingClientRect().top >=
+              document.querySelector('#location-heading').getBoundingClientRect().bottom,
             counts: visible(document.querySelector('#location-task-count')),
             actionRows: new Set(actionRows).size,
             header: visible(document.querySelector('#task-table-header')),
@@ -127,6 +129,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
 
         assert state["width"] == width
         assert state["fits"]
+        assert state["controlsBelowTitle"] == width < 1280
         assert state["counts"] == width >= 475
         if width in [474, 450], do: assert(state["actionRows"] == 1, inspect(state))
         assert state["header"] == width >= 1280
