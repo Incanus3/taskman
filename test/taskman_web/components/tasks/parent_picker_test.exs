@@ -12,7 +12,7 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
 
   test "renders an accessible combobox and stable candidate option IDs" do
     parent = %Task{id: 41, title: "Roadmap", project_id: 7}
-    child = %Task{id: 42, title: "Launch", project_id: 7}
+    child = %Task{id: 42, title: "Roadmap", project_id: 7}
 
     state = %ParentPicker{
       mode: :create,
@@ -22,7 +22,10 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
       options: [
         %TaskWithLocation{
           task: parent,
-          location_path: [%TaskList{id: 11, name: "Planning"}]
+          location_path: [
+            %TaskList{id: 11, name: "Planning"},
+            %TaskList{id: 12, name: "Launch", parent_list_id: 11}
+          ]
         },
         %TaskWithLocation{task: child, location_path: []}
       ]
@@ -45,16 +48,27 @@ defmodule TaskmanWeb.Tasks.ParentPickerTest do
     refute Enum.empty?(
              LazyHTML.query(
                document,
-               "#task-parent-search[value=''][role='combobox'][aria-controls='task-parent-results'][aria-expanded='true'][phx-hook='TaskmanWeb.Tasks.ParentPicker.TaskParentPickerKeyboard']"
+               "#task-parent-search[value=''][phx-change='search_task_parents'][phx-keydown='task_parent_keydown'][role='combobox'][aria-controls='task-parent-results'][aria-expanded='true'][phx-hook='TaskmanWeb.Tasks.ParentPicker.TaskParentPickerKeyboard']"
              )
            )
 
     refute Enum.empty?(LazyHTML.query(document, "#task-parent-results[role='listbox']"))
     assert Enum.empty?(LazyHTML.query(document, "#task-parent-trigger"))
     assert Enum.empty?(LazyHTML.query(document, "#task-parent-selected"))
-    refute Enum.empty?(LazyHTML.query(document, "#task-parent-option-41[role='option']"))
-    refute Enum.empty?(LazyHTML.query(document, "#task-parent-option-42[role='option']"))
-    assert LazyHTML.text(LazyHTML.query(document, "#task-parent-option-41")) =~ "Planning"
+
+    for {id, location} <- [{41, "Planning / Launch"}, {42, "Project"}] do
+      option = LazyHTML.query(document, "#task-parent-option-#{id}")
+      assert LazyHTML.text(option) =~ "Roadmap"
+      assert LazyHTML.text(option) =~ "Task ##{id}"
+      assert LazyHTML.text(option) =~ location
+
+      refute Enum.empty?(
+               LazyHTML.query(
+                 document,
+                 "#task-parent-option-#{id}[role='option'][aria-label='Roadmap · Task ##{id} · #{location}'][phx-click='select_task_parent'][phx-value-parent-id='#{id}']"
+               )
+             )
+    end
 
     refute Enum.empty?(
              LazyHTML.query(
