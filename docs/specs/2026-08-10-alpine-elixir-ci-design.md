@@ -91,7 +91,7 @@ services:
 ```
 
 The workflow installs its runtime packages through
-`apk add --no-cache bash build-base fish git tar` before checkout and cache
+`apk add --no-cache bash build-base fish git nodejs npm tar` before checkout and cache
 restoration. This ensures both cache restore and post-job cache save use GNU tar. `config/test.exs`
 reads `POSTGRES_HOST` with `localhost` as its default so the container job can use the service label
 without changing local development behavior. No application source, production runtime
@@ -151,6 +151,8 @@ prevent a later upgrade when compatibility is established.
 - Exercise a cache miss followed by restoration from a compatible later commit and saving under
   its new SHA. Inspect restore/save logs and compare build/test step durations before claiming
   cross-commit reuse. A same-revision rerun alone proves only exact-key restoration.
+- Keep the hosted cache logs and measurements with
+  [the cache implementation PR](https://github.com/Incanus3/taskman/pull/47).
 - Treat a completed successful GitHub-hosted run as the final acceptance gate.
 
 ## Acceptance boundary
