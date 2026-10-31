@@ -13,6 +13,7 @@ import time
 
 MAX_COMMAND_OUTPUT_BYTES = 16 * 1024
 _TERMINATION_GRACE_SECONDS = 0.2
+_CANCELLATION_POLL_SECONDS = 0.05
 
 
 class CommandError(RuntimeError):
@@ -23,6 +24,14 @@ class CommandTimeout(CommandError):
     """A command exceeded its single external-call deadline."""
 
 
+class CommandCleanupError(CommandError):
+    """Bounded cancellation cleanup could not establish process quiescence."""
+
+
+class CommandCancelled(CommandError):
+    """A command was cancelled after its process and pipe workers stopped."""
+
+
 def run_command(
     argv: tuple[str, ...],
     *,
@@ -30,10 +39,13 @@ def run_command(
     env: Mapping[str, str] | None = None,
     timeout_seconds: float,
     output_limit: int = MAX_COMMAND_OUTPUT_BYTES,
+    cancellation: Event | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one non-shell command with protected optional stdin and bounded output."""
 
     _validate_inputs(argv, stdin, env, timeout_seconds, output_limit)
+    if cancellation is not None and cancellation.is_set():
+        raise CommandCancelled("command cancelled")
     deadline = time.monotonic() + timeout_seconds
     try:
         process = subprocess.Popen(
@@ -73,20 +85,31 @@ def run_command(
     workers = (*readers, *((writer,) if writer is not None else ()))
     timed_out = False
     drain_timed_out = False
+    cancelled = False
+    cleanup_incomplete = False
     try:
-        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        cancelled = _wait_for_process(process, deadline, cancellation)
     except subprocess.TimeoutExpired:
         timed_out = True
     finally:
-        if timed_out or overflow.is_set() or read_failed.is_set():
-            _abort_process_tree(process, process_group, stopping)
-            _join_workers(workers, time.monotonic() + _TERMINATION_GRACE_SECONDS)
+        cancelled = cancelled or cancellation is not None and cancellation.is_set()
+        if timed_out or cancelled or overflow.is_set() or read_failed.is_set():
+            _abort_process_tree(process, process_group, stopping, close_streams=cancellation is None)
+            cleanup_incomplete = _join_workers(workers, time.monotonic() + _TERMINATION_GRACE_SECONDS)
         else:
-            drain_timed_out = _join_workers(workers, deadline)
-            if drain_timed_out:
-                _abort_process_tree(process, process_group, stopping)
-                _join_workers(workers, time.monotonic() + _TERMINATION_GRACE_SECONDS)
+            drain_timed_out = _join_workers(workers, deadline, cancellation)
+            cancelled = cancellation is not None and cancellation.is_set()
+            if drain_timed_out or cancelled:
+                _abort_process_tree(process, process_group, stopping, close_streams=cancellation is None)
+                cleanup_incomplete = _join_workers(workers, time.monotonic() + _TERMINATION_GRACE_SECONDS)
 
+    if cancellation is not None:
+        if cleanup_incomplete or process.returncode is None:
+            raise CommandCleanupError("command cancellation cleanup failed")
+        # Buffered stream close can block on a pipe worker, so close only after joining.
+        _close_process_streams(process)
+    if cancelled:
+        raise CommandCancelled("command cancelled")
     if timed_out or drain_timed_out:
         raise CommandTimeout("command timed out")
     if overflow.is_set():
@@ -140,20 +163,53 @@ def _write_stdin(process: subprocess.Popen[bytes], stdin: bytes | None) -> Threa
     return writer
 
 
-def _join_workers(workers: tuple[Thread, ...], deadline: float) -> bool:
+def _wait_for_process(
+    process: subprocess.Popen[bytes], deadline: float, cancellation: Event | None,
+) -> bool:
+    """Wait for exit or return cancellation without leaving the command deadline."""
+    if cancellation is None:
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        return False
+    while True:
+        if cancellation.is_set():
+            return True
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            process.wait(timeout=min(remaining, _CANCELLATION_POLL_SECONDS))
+            return False
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise
+
+
+def _join_workers(
+    workers: tuple[Thread, ...], deadline: float, cancellation: Event | None = None,
+) -> bool:
     """Join concurrent pipe workers only until their command deadline."""
 
     for worker in workers:
-        worker.join(max(0.0, deadline - time.monotonic()))
+        if cancellation is None:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        else:
+            while worker.is_alive():
+                if cancellation.is_set():
+                    return True
+                remaining = max(0.0, deadline - time.monotonic())
+                worker.join(min(remaining, _CANCELLATION_POLL_SECONDS))
+                if time.monotonic() >= deadline:
+                    return True
     return any(worker.is_alive() for worker in workers)
 
 
-def _abort_process_tree(process: subprocess.Popen[bytes], process_group: int, stopping: Event) -> None:
-    """Force the command group down, close its pipes, and reap its direct child."""
+def _abort_process_tree(
+    process: subprocess.Popen[bytes], process_group: int, stopping: Event, *, close_streams: bool = True,
+) -> None:
+    """Force the command group down and reap its direct child."""
 
     stopping.set()
     _terminate_process_tree(process, process_group)
-    _close_process_streams(process)
+    if close_streams:
+        _close_process_streams(process)
     try:
         process.wait(timeout=_TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
@@ -217,6 +273,8 @@ def _validate_inputs(
 
 
 __all__ = [
+    "CommandCancelled",
+    "CommandCleanupError",
     "CommandError",
     "CommandTimeout",
     "MAX_COMMAND_OUTPUT_BYTES",

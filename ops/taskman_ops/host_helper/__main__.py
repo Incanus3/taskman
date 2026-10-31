@@ -26,7 +26,10 @@ from taskman_ops.host_protocol import (
     validate_verification_report,
     validate_application_report,
 )
-from taskman_ops.host_protocol.postgresql import validate_postgresql_recovery_request, validate_postgresql_recovery_result
+from taskman_ops.host_protocol.postgresql import (validate_postgresql_recovery_request, validate_postgresql_recovery_result,
+    POSTGRESQL_CONFIGURATION_OPERATIONS, validate_postgresql_configuration_request, validate_postgresql_configuration_result)
+from taskman_ops.host_helper.operations.postgresql import (inspect_postgresql, configure_postgresql,
+    postgresql_configuration_failure_result, _failure as postgresql_configuration_failure)
 from taskman_ops.host_helper.postgresql_recovery import postgresql_config_recovery, postgresql_recovery_failure_result
 from taskman_ops.host_protocol.envelope import validate_result_for_request
 from taskman_ops.host_helper.credentials import validate_credentials
@@ -536,6 +539,8 @@ _DISPATCH: dict[str, Callable[[HostRequest], HostResult]] = {
     "firewall": firewall,
     "caddy": caddy,
     "postgresql_config_recovery": postgresql_config_recovery,
+    "inspect_postgresql": inspect_postgresql,
+    "configure_postgresql": configure_postgresql,
     "deploy": deploy,
     "genesis": genesis,
     "prepare_genesis": prepare_genesis,
@@ -562,6 +567,8 @@ def _encode_or_internal_failure(
     try:
         return encode_result(result)
     except Exception:
+        if request is not None and request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+            return encode_result(postgresql_configuration_failure_result(request, result))
         if request is not None and request.operation == "postgresql_config_recovery":
             return encode_result(postgresql_recovery_failure_result(request, result))
         if request is not None and request.operation == "caddy":
@@ -620,6 +627,17 @@ def _dispatch(request: HostRequest) -> HostResult:
         handler = _DISPATCH[request.operation]
     except KeyError as error:
         raise ValueError("helper operation is unsupported") from error
+    if request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+        result = None
+        try:
+            validate_postgresql_configuration_request(request)
+        except ProtocolError:
+            return postgresql_configuration_failure(request, "invalid_request")
+        try:
+            result = handler(request)
+            return validate_postgresql_configuration_result(request, result)
+        except (Exception, SystemExit):
+            return postgresql_configuration_failure_result(request, result)
     if request.operation == "postgresql_config_recovery":
         result = None
         try:
@@ -691,7 +709,9 @@ def main() -> int:
             try:
                 result = _dispatch(request)
             except Exception:
-                if request.operation == "postgresql_config_recovery":
+                if request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+                    result = postgresql_configuration_failure_result(request)
+                elif request.operation == "postgresql_config_recovery":
                     result = postgresql_recovery_failure_result(request)
                 else:
                     result = (

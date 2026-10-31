@@ -28,8 +28,6 @@ _REVIEWED_EXECUTABLE_OWNERS = frozenset(
         ("taskman_ops/host/facts.py", "_RUNTIME_PREFLIGHT"),
         ("taskman_ops/host/facts.py", "_DATABASE_PREFLIGHT"),
         ("taskman_ops/host/facts.py", "_TASKMAN_SERVICE_AUTHORITY_SCRIPT"),
-        ("taskman_ops/services/postgresql.py", "_render_postgresql_native_predicates"),
-        ("taskman_ops/services/postgresql.py", "render_postgresql_native_configuration_script"),
     }
 )
 _FORBIDDEN_MODULES = (

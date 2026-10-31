@@ -781,3 +781,59 @@ def test_early_postgresql_failure_preserves_valid_category(operation, outcome, c
     assert mutable(error.state) == state
     assert error.changed is False
     assert result.warnings == error.warnings == ("safe inspection warning",)
+
+
+@pytest.mark.parametrize("operation,dispatched,mutation", [
+    ("configure_postgresql", True, "unknown"), ("configure_postgresql", False, "unchanged"),
+    ("inspect_postgresql", True, "unchanged"),
+])
+@pytest.mark.parametrize("prior", ["unchanged", "changed"])
+def test_postgresql_transport_loss_preserves_mutation_and_cleanup(operation, dispatched, mutation, prior):
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.errors import HelperTransportError, OpsError
+    from taskman_ops.workflows.helper import run_request
+    def lose(*_a):
+        raise HelperTransportError(OpsError(5, "helper", "lost", changed=False,
+            warnings=("transient helper cleanup was incomplete",)), helper_entry_dispatched=dispatched)
+    with pytest.raises(OpsError) as caught:
+        run_request(None, configuration_request(operation), package=object(), invoker=lose, prior_mutation_state=prior)
+    assert caught.value.status == 5
+    assert caught.value.stage == "postgresql"
+    assert caught.value.state["mutation_state"] == ("changed" if prior == "changed" else mutation)
+    assert caught.value.warnings == ("transient helper cleanup was incomplete",)
+
+
+@pytest.mark.parametrize("bad", ["extra", "mismatch", "classification", "boolean"])
+def test_postgresql_complete_wire_rejection_does_not_salvage_change(bad):
+    from dataclasses import replace
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.errors import OpsError
+    from taskman_ops.workflows.helper import run_request
+    request = configuration_request()
+    result = HostResult.for_request(request, "succeeded", "done", {"changed": False})
+    if bad == "mismatch":
+        result = replace(result, correlation_id="op-" + "2" * 32)
+    elif bad == "classification":
+        result = replace(result, outcome="refused", state={"mutation_state": "changed"})
+    else:
+        result = replace(result, state={"changed": 0} if bad == "boolean" else {"changed": False, "extra": True})
+    with pytest.raises(OpsError) as caught:
+        run_request(None, request, package=object(), invoker=lambda *_a: result)
+    assert caught.value.status == 5
+    assert caught.value.state["mutation_state"] == "unknown"
+    assert caught.value.changed
+
+
+def test_postgresql_invalid_request_and_status_two_mapping():
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.errors import OpsError
+    from taskman_ops.workflows.helper import run_request, result_error
+    request = configuration_request(parameters={})
+    with pytest.raises(OpsError) as caught:
+        run_request(None, request, package=object(), invoker=lambda *_a: pytest.fail("invalid dispatch"))
+    assert caught.value.status == 2
+    state = dict(exit_code=2, changed=False, mutation_state="unchanged", failed_boundary="postgresql", reason="invalid_request")
+    result = HostResult.for_request(request, "refused", "failed", state)
+    assert result_error(result).status == 2

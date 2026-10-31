@@ -1,8 +1,11 @@
 # PostgreSQL provisioning with operator-owned cluster configuration
 
-Status: approved design; local implementation, scoped review, local verification and bounded native acceptance are complete. Selected-cluster ownership, native access proof,
-compatible adoption, reporting and explicit configuration override with retained private backups
-and operator-controlled recovery are accepted. Native and external-action authority remain separate.
+Status: accepted, implemented design. The earlier shared-provisioning implementation completed bounded
+native acceptance. Its host-side Python configuration replacement is locally verified, independently
+reviewed and operator accepted, with no new native acceptance. Selected-cluster ownership, native
+access proof, compatible adoption, reporting and explicit configuration override with retained
+private backups and operator-controlled recovery remain accepted. Native and external-action
+authority remain separate. Updated: 2026-10-31.
 Workstream: `tas-lny6.4`, under `tas-lny6`. Design evidence baseline: `1f18ba74` on `operations/shared-host`.
 
 ## Purpose and decision inventory
@@ -32,7 +35,8 @@ PostgreSQL behave like shared Caddy: manage isolated parts and provide a clear f
 configuration is unsuitable. D10 was explicitly agreed after rejecting complex sole-consumer
 proof in favor of an operator-controlled override. D4 selection and D5 native SCRAM proof with retained resources after failure are accepted.
 D6 compatible resource adoption, D7 preview/failure results and concrete D10 recovery mechanics
-are accepted. The implementation plan separately authorizes local implementation. D3/D9 preserve superseded alternatives and D8 preserves the rejected proof approach.
+are accepted. D3/D9 preserve superseded alternatives and D8 preserves the rejected proof approach.
+The separate [Python extraction decisions](#python-extraction-decisions) retain their original identifiers and scope.
 
 ## Evidence and inherited constraints
 
@@ -42,20 +46,8 @@ and prove the selected endpoint rather than assume a dedicated server. Actual ma
 role/database names and credentials are private deployment inputs; the
 [inventory privacy policy](../inventories/operations-environments.md) governs their storage.
 
-At the source baseline:
-
-- `services/postgresql.py` builds desired packages, replaces the native HBA, configures
-  `listen_addresses`, `port` and `password_encryption`, and can restart the selected cluster.
-  `provisioning.py` declares these operations before role/database convergence. This is unsafe
-  unchanged on the shared production cluster.
-- Resource convergence already refuses mismatched role attributes/memberships and database
-  ownership, preserves adopted passwords, and creates missing resources through native tools.
-- `host_helper/operations/discover.py` selects by package track and validates live cluster identity,
-  but its role/database observation rejects compatible role-only partial state. Host discovery and
-  the verification prerequisite also contain admin queries using the default PostgreSQL endpoint.
-- Existing listener verification accepts both loopback families. It does not require rewriting
-  `localhost` into a single literal address. Actual listener ownership and selected endpoint proof
-  remain required.
+Listener verification accepts both loopback families. It does not require rewriting `localhost`
+into a single literal address. Actual listener ownership and selected endpoint proof remain required.
 
 Retain [operations contracts](2026-09-18-operations-contracts.md), particularly initial-install
 admission, migration provenance, protected credentials, truthful mutation evidence, lifecycle
@@ -173,6 +165,232 @@ reporting; keep the additional original configuration copy available for deliber
 recovery. Restoring configuration and restarting/reloading remain separate consequential actions.
 Do not automatically restore unrelated files or repair other consumers. Default shared provisioning
 performs none of this write/recovery capture because it has no global configuration authority.
+
+## Python extraction decisions
+
+These accepted, implemented decisions preserve the identifiers from the completed native
+configuration extraction. Their `Python` qualifier distinguishes them from ownership D1–D11 above.
+The [operations contracts](2026-09-18-operations-contracts.md#postgresql-configuration-requests-and-results)
+own exact wire and mutation semantics; the [runbook](../guides/deployment.md#explicit-postgresql-configuration-override-and-recovery)
+owns operator recovery steps.
+
+| ID | Status | Decision | Concrete cost | Rationale |
+| --- | --- | --- | --- | --- |
+| Python D1 | Accepted | Extract only native inspection/configuration for bootstrap and explicit override | Two helper operations and cancellation integration for a path default shared provisioning skips | [Extraction scope and alternatives](#extraction-scope-and-alternatives) |
+| Python D2 | Accepted | Bind the frozen selected target and retain separate recovery capture | Capture/configure remain separate calls without whole-provision serialization | [Configuration and recovery procedure](#configuration-and-recovery-procedure) |
+| Python D3 | Accepted | Reuse PostgreSQL modules without merging admission/configuration policies | Separate observation policies retain distinct bootstrap/live-port rules | [Native configuration architecture](#native-configuration-architecture) |
+| Python D4 | Accepted | Keep bounded protocol-v3 failure projection and explicit mutation evidence | Narrow branches in dispatch, encoding and controller validation | [Internal failure and encoding](2026-09-18-operations-contracts.md#postgresql-internal-failure-and-encoding) |
+| Python D5 | Accepted | PostgreSQL-first extraction using the transient helper, existing authenticated connection and inspect/configure boundary | Retains helper transport overhead | [Native configuration architecture](#native-configuration-architecture) |
+
+### Extraction scope and alternatives
+
+**Python D1 and D5 accepted.** Host Python owns cluster/runtime observation, desired-state
+comparison, configuration sequencing, HBA backup/replacement/restoration and post-restart
+validation. Pyinfra retains provisioning order and change reporting. The previous substantial
+shell combined cluster/PID/SQL parsing, setting changes, candidate installation, traps and partial
+recovery; Python gives that procedure direct state/failure tests. Default shared provisioning
+skips this path, so the extraction is maintenance work rather than a provisioning prerequisite.
+
+| Alternative | Benefit | Cost and disposition |
+| --- | --- | --- |
+| Keep generated shell | No new operation/schema/runner changes | Viable deferral; retains quoting/trap and indirect test complexity; extraction chosen instead |
+| Extract only native inspection/configuration | Removes the substantial generated workflow while preserving provisioning ownership | Accepted; two closed operations and a small cancellation seam |
+| Move all PostgreSQL provisioning into the helper | One location for resources and native configuration | Outside scope; unnecessary credential/admission/provisioning redesign |
+
+Moving shell into a `.sh` file changes navigation only. A separate Python transport duplicates
+transfer, authentication and result handling. Neither improves the chosen boundary. Revisit the
+extraction if it requires a generic recovery/observer framework or materially more persistent state.
+
+Package selection, root/configuration inputs, staged HBA content/mode, native topology, protected
+resource convergence and final SCRAM-required application proof retain their existing owners.
+Ready authority still authenticates; runtime validation is unconditional. Caddy, UFW, systemd,
+release/builder/toolchain workflows, unrelated short shell commands, public CLI/error/output
+contracts and dry-run semantics remain outside this extraction. There is no resident helper,
+temporary PostgreSQL instance, alternate HBA path, configurable command/path escape hatch,
+new controller/host dependency, generic workflow engine or blanket configuration rollback.
+
+### Native configuration architecture
+
+Paths below are relative to `ops/taskman_ops/`.
+
+| Owner | Responsibility |
+| --- | --- |
+| `services/postgresql.py` | Plans, pyinfra declarations, protected database work and request/result integration |
+| `host_helper/postgresql.py` | Admission observation and genuinely common parsing/native-command primitives |
+| `host_helper/postgresql_configuration.py` | Native configuration observation, desired-state checks and the HBA procedure |
+| `host_helper/operations/postgresql.py` | Narrow request validation, lifecycle lock, capability invocation and bounded final results |
+| `host_helper/commands.py` | Opt-in PostgreSQL cancellation with unchanged defaults for existing consumers |
+| `host_protocol/postgresql.py` | Exact configuration, authority and recovery request/result schemas |
+| `host_helper/postgresql_recovery.py` | Protected capture and its separate failure projection |
+| `workflows/helper.py` | Closed request/result validation, error mapping and transport-loss accounting |
+| `host_protocol/operations.py`, `host_helper/__main__.py` | Exact operation names, dispatch validation and PostgreSQL-specific failure/encoding projection |
+| `helper_client/package.py` | Transient-only configuration modules and scheduled-backup least authority |
+| `provisioning.py` | Validated non-secret operation inputs and declaration/consequence order |
+
+**Python D3 accepted.** Keep configuration in a focused sibling module: admission requires an already
+configured endpoint and observes resources, whereas bootstrap configuration must inspect the old
+live port before changing it. Do not call the full admission observer from configuration or weaken
+admission to accommodate bootstrap. Reuse small parsing/native-query primitives only when their
+contracts match; do not migrate unrelated admission policies or duplicate whole observers.
+
+Small private dataclasses hold observed cluster identity and in-flight HBA restoration state.
+Keep them local to PostgreSQL; do not add generic state machines or durable journals. Extract a
+separate filesystem module only if the cohesive HBA transition becomes independently substantial.
+Reuse `host_helper/commands.py` for bounded argv subprocess execution.
+
+The pyinfra operation receives validated configuration alongside its plan. During execution its
+inspection invokes the existing helper using a `PyinfraRemote` wrapping that same host/state.
+If configuration is required, its `FunctionCommand` invokes configuration through the same
+adapter. Do not call `run_deploy` recursively. No helper is invoked during prepare or dry-run.
+Bootstrap packages and staged HBA must execute first. Resource-only existing plans never invoke
+either configuration operation. Requests bind the selected target under the
+[operations contract](2026-09-18-operations-contracts.md#postgresql-configuration-requests-and-results).
+An unchanged inspection yields no mutation operation;
+configuration always reobserves authority and never trusts an earlier inspection snapshot.
+
+Keep pyinfra's existing execution-based change semantics. A converged inspection skips the
+`FunctionCommand` and reports no change. Once yielded and executed, that command counts as
+changed in pyinfra even if another actor converged state between inspection and configuration,
+and the helper consequently reports `changed: false`. The helper boolean describes its own
+mutation; it does not override pyinfra's completed-operation accounting. Accept this conservative
+race result rather than mutating private operation metadata or running the mutation inside the
+inspection generator merely to change accounting. This distinction is a regression obligation.
+
+### Observation and native command semantics
+
+The native configuration path retains its accepted selection checks; the stricter complete-inventory
+admission parser remains authoritative for admission. Do not silently broaden supported cluster
+states while sharing primitives. Select exactly one `pg_lsclusters --no-header` row in the requested
+track (or across all tracks when unspecified). Validate numeric version/port, safe cluster name, online/down status,
+and `postgres` owner. Refuse zero or multiple candidates. Do not simply choose the first row.
+
+Read the data directory with `pg_conftool -s VERSION CLUSTER show data_directory`; retain its
+absolute, canonical, restricted-path check. Validate native configuration directory and regular
+non-link configuration/HBA files without changing parent metadata. Parse the eight-line
+`postmaster.pid`, including PID, data directory, start epoch, live port, socket and ready status.
+Require `pg_ctlcluster VERSION CLUSTER status` and cross-check live SQL port/data/parent-PID
+identity. The third SQL value is `(regexp_match(pg_read_file('/proc/self/status'),
+'^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]`, compared with the first `postmaster.pid` line.
+Continue validating the numeric start-epoch line locally, but do not compare it with rounded
+`pg_postmaster_start_time()` SQL: native acceptance corrected that unreliable comparison.
+
+Administrative SQL uses `runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align
+--field-separator | --host /var/run/postgresql --port LIVE_PORT --username postgres
+--dbname=postgres --command SQL` as individual argv elements. Use the observed old live port
+before restart and the desired port afterward. Verify `SHOW config_file`, `SHOW hba_file`, and
+`SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL` against the exact selected cluster.
+An unsuccessful query is never an empty successful result.
+
+Inspect staged digest, final bytes and `postgres:postgres:0640` metadata, absence of the temporary sibling HBA recovery
+material, configured settings, and native effective settings. Use the versioned `postgres`
+binary with `--config-file=... -C SETTING` as postgres. Retain all four effective settings:
+`hba_file`, `listen_addresses`, `port`, and `password_encryption`.
+
+Retain `pg_conftool` for setting configuration. Python replaces only the narrowly recognized
+unquoted `127.0.0.1` assignment emitted by that utility, preserving comments, other content and
+file metadata. Do not normalize IPv6 or introduce a PostgreSQL configuration-file rewriter.
+
+Use finite subprocess output and timeout limits through the existing runner. Give each helper
+procedure a 600-second total budget, including a 5-second lock acquisition allowance and a
+reserved 30-second bounded cleanup/restoration allowance; individual commands use at most
+60 seconds and the remaining work budget. The existing 660-second transport allowance encloses
+that budget. Signal handling must terminate/reap active command groups before bounded restoration;
+do not leave a parser/restart child racing the restored file. `run_command` accepts an optional
+cancellation event, defaulting to no cancellation. With that event supplied, bounded waiting must
+notice cancellation, abort/reap the existing process group and join its I/O workers before raising
+a fixed cancellation error. PostgreSQL's temporary HUP/INT/TERM handlers only set the event;
+the procedure checks it between commands and enters bounded cleanup after runner termination.
+Restore previous handlers on exit. Restoration uses its reserved deadline without the already-set
+work cancellation event; repeated handled signals must not restart or interrupt restoration.
+`CommandCancelled` proves direct-child reaping and completed pipe workers. A distinct
+`CommandCleanupError` means command quiescence is unproven: inspection stops with unchanged
+`manual / recovery_required / 10`; configuration retains its available mutation and HBA evidence,
+uses `manual / recovery_required / 10`, and performs no automatic restoration or continuation.
+This exceptional guard prevents restoration racing a possibly active native command; it does not
+introduce a journal or change ordinary cancellation cleanup. The cost is one narrow exception
+and capability branch; conservative refusal can require manual inspection even if the command
+stops safely after the cleanup deadline.
+Default calls retain their behavior. The optional cancellation seam is the only shared-runner
+extension in this capability; cancellation and unchanged existing consumers remain regression obligations.
+
+### Configuration and recovery procedure
+
+```mermaid
+flowchart TD
+  A[Execution inspection] --> B{Configuration required?}
+  B -->|No| N[Return unchanged]
+  B -->|Yes, override| C[Retain both native originals]
+  B -->|Yes, bootstrap| D[Configure under lifecycle lock]
+  C -->|Capture succeeds| D
+  C -->|Capture fails| F[Stop with retained mutation evidence]
+  D --> E{Candidate HBA validates?}
+  E -->|No| R[Restore HBA bytes and metadata]
+  R --> F
+  E -->|Yes| P[Restart if changed and postcheck]
+  P -->|Failure| K[Retain any created recovery evidence]
+  P -->|Success| S[Remove temporary HBA backup only]
+  K --> F
+```
+
+Both operations use the existing lifecycle lock for coherent observation and configuration.
+Baseline directories precede invocation; no outer lock is held across the helper call. Recheck
+all authority under the configure lock. Do not claim that package installation or all provisioning
+has become one transaction.
+
+For `configure-existing`, retain the existing controller sequence: execution-time inspection skips
+all capture/configuration for an exact no-op; otherwise `postgresql_config_recovery` succeeds
+before the configure request. Its existing request, retained-copy format, reducer and error codes
+stay unchanged. Bind capture and configuration to the same frozen target. Capture failure prevents
+configuration. Preserve the known capture result separately on pyinfra state and in provisioning
+results even if configure transport/encoding fails. Aggregate that persistent capture as changed.
+Do not fold capture into configuration or add a token, journal, pruning or automatic restoration.
+The existing capture/configure gap still requires coordinated operator maintenance; these calls
+are not one transaction. A concurrent convergence can produce a retained copy followed by a
+configure no-op. No capture is introduced for bootstrap or ordinary shared provisioning.
+
+The [explicit override contract](#explicit-configuration-override) owns the persistent two-file
+recovery format and custody. Only the temporary sibling HBA backup below is eligible for this
+procedure's cleanup.
+
+1. Prove a reachable online selected cluster, PID/SQL identity, native active config/HBA paths,
+   current parser success, staged digest, and absence of the temporary sibling HBA recovery path (including symlinks). Retained
+   UUID override recovery directories are expected and do not themselves block convergence.
+2. Compare configuration and HBA bytes/metadata. Set only differing settings with `pg_conftool`,
+   normalize the exact IPv4 assignment if necessary, and validate native effective settings.
+   These configuration changes may survive later failure; there is no whole-file rollback.
+3. If HBA replacement is needed, create the exact sibling `pg_hba.conf.taskman-backup` directory
+   privately as root, mode `0700`. Preserve the old bytes in `pg_hba.conf`, mode `0600`, and old
+   numeric `uid:gid:mode` plus newline in `metadata`, mode `0600`. Never overwrite existing evidence.
+4. Create a sibling candidate, assign postgres ownership and mode `0640`, and atomically replace
+   the native HBA. Query the existing live server's rules view before any reload/restart.
+5. On parser rejection, query failure, or handled HUP/INT/TERM before successful validation,
+   atomically restore the old bytes and metadata. Remove only owned temporary files and the
+   completed restoration's backup. Restoration requires proven command cleanup as specified above;
+   if cleanup is unproven or restoration fails, preserve available evidence and require manual recovery.
+6. After candidate parser success, do not restore the old HBA automatically. Restart only when
+   required. On restart or postcheck failure retain any HBA backup created by this invocation;
+   that sibling blocks a later mutation until operator resolution. A settings-only change with
+   already exact HBA creates no sibling backup or new durable refusal marker. Its failure still
+   reports settings/runtime uncertainty and retains any override copies. Do not add a journal to
+   force the HBA barrier onto settings-only failures. This preserves the earlier shell procedure's
+   accepted behavior.
+7. Reobserve runtime PID, desired port, SQL identity, native config/HBA paths, and parser success.
+   Only then clean this invocation's temporary HBA recovery material and report success.
+
+SIGKILL, power loss, or controller transport termination can bypass cleanup. The accepted live-path
+disk window remains; Python does not eliminate it. Existing temporary sibling HBA recovery artifacts, even recognizable
+ones, require manual inspection rather than automatic replay. Retain their current names/content
+so runbook recovery remains applicable. Do not delete unrelated native or legacy-HBA residue.
+
+### Native HBA rationale
+
+Earlier bounded native acceptance established that
+`hba_file` is startup-only and the rules view reads current disk contents. Source provenance is
+the PostgreSQL 18 [file-location documentation](https://www.postgresql.org/docs/18/runtime-config-file-locations.html)
+and [rules-view documentation](https://www.postgresql.org/docs/18/view-pg-hba-file-rules.html).
+The two official documentation pages were rechecked on 2026-10-31; they still document
+these properties. Those sources and earlier observations do not establish native acceptance of
+the Python replacement.
 
 ## Why there is no sole-consumer detector
 
@@ -472,14 +690,14 @@ installation awaiting proxy activation.
 
 ## Implementation boundaries and verification
 
-Expected source owners:
+Source owners:
 
 - `services/postgresql.py`: frozen desired/ownership plan, existing/absent/explicit-configuration
   branches, protected override recovery capture, resource convergence, session-local password
   creation and native application access proof.
 - `host_helper/operations/discover.py` and focused shared helper capability if needed: selected
   cluster/resource observations and compatible partial-resource admission. Keep substantial new
-  workflow logic in Python without expanding the parked whole-module Python refactor.
+  workflow logic in Python; native configuration has the [focused owners above](#native-configuration-architecture).
 - `host/facts.py`, `host/acceptance.py`, `provisioning.py`, `workflows/provision.py`: consistent
   PostgreSQL admission, compatible database/missing-account admission, configured endpoint queries,
   plan binding, preview and failure propagation. Include `workflows/deploy.py` and shared discovery
@@ -506,7 +724,25 @@ and selected-cluster restart; flag/yes/dry-run/argument-validation parity and ta
 known/possible mutation retention and human/JSON setup context; no migration/first-success
 publication after failure. Reuse existing provenance, resource fixtures and meaningful lifecycle coverage rather than duplicating every case.
 
-Run the repository operations, compile/shell and `mix precommit` gates after implementation.
+Native configuration regression obligations additionally cover zero/multiple/malformed clusters,
+stopped/unreachable servers, PID/SQL/path contradictions, parser availability, default/custom ports,
+old-port to desired-port transitions, staged digest/metadata drift, unchanged native parent metadata,
+IPv4 normalization with IPv6 preservation, recovery-residue refusal, exact HBA restoration on parser
+failure/handled signals, restart/postcheck evidence retention, settings-only failure without a new
+marker, failed restoration and unproven command cleanup. Programmatic pyinfra coverage distinguishes
+prepare/dry-run, first change, converged skip and the executed configure-no-op race. Both deterministic
+zipapps execute under `python3 -I -S`; configuration capabilities remain transient-only. Architecture
+guards have no PostgreSQL substantial-shell exemption. The exact helper/encoding regression obligations
+belong to the [operations contracts](2026-09-18-operations-contracts.md#postgresql-configuration-verification).
+
+The Python replacement's full local gate on 2026-10-31 passed: locked dependency sync, Python
+`compileall`, four-worker operations suite (2,795 passed, 22 environment/opt-in skips), shell syntax
+and `mix precommit` (1,398 passed, three opt-in executable skips, 51 browser exclusions). Real handled
+signals, command cleanup, isolated helper archives, strict results and pyinfra paths are locally
+covered with synthetic native boundaries. Scoped independent review found no outstanding findings;
+the completed replacement and test-support extractions are operator accepted.
+
+Use the repository operations, compile/shell and `mix precommit` gates for future implementation changes.
 Native acceptance must use a separately approved disposable-host scope with a sibling database,
 preservation/health evidence, operator-setup/retry proof, and a separately authorized explicit
 override/no-op/failure-recovery case on a disposable cluster. The ordinary shared case must not
@@ -518,8 +754,13 @@ inspection here is read-only evidence, not a native provisioning acceptance test
 ## Implementation outcome and authorization
 
 The written design decisions and configuration recovery trade-offs are accepted and implemented.
-Local verification and bounded native acceptance are complete; actual host results remain in private
-operator records. The [native acceptance guide](../guides/native-acceptance.md) owns portable
+Bounded native acceptance applies to the earlier shared-provisioning implementation; actual host
+results remain in private operator records. The subsequent host-side Python configuration replacement
+is locally verified, independently reviewed and operator accepted. It has no new PostgreSQL/systemd
+host acceptance: local fakes and subprocess tests do not prove native behavior. A separately
+authorized supported-host check must establish native parsing/ownership, first and second convergence
+and custom-port behavior for that replacement. Failure injection, port changes and restart are not
+authorized merely to satisfy its regression matrix. The [native acceptance guide](../guides/native-acceptance.md) owns portable
 verification criteria and limits.
 
 Future provisioning, native tests, shared PostgreSQL restart/reload, fixture deletion, pushing,

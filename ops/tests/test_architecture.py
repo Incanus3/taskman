@@ -370,20 +370,6 @@ def test_architecture_scan_rejects_a_substantial_controller_program_outside_revi
     )
 
 
-def test_architecture_scan_accepts_a_local_program_owned_by_its_enclosing_reviewed_function() -> None:
-    program = "\n".join(["set -e"] + ["systemctl status taskman.service"] * 11)
-    tree = ast.parse(
-        "def render_postgresql_native_configuration_script():\n"
-        "    program = "
-        + repr(program)
-        + "\n"
-    )
-
-    assert tuple(
-        _executable_string_violations("ops/taskman_ops/services/postgresql.py", tree)
-    ) == ()
-
-
 @pytest.mark.parametrize(
     ("source", "line"),
     (

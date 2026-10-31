@@ -529,10 +529,15 @@ and run directory are mode `0700`; `postgresql.conf`, `pg_hba.conf` and `metadat
 before native modification. Copies remain on success and downstream failure and their known
 location survives result/transport errors; uncertain replies retain possible mutation.
 
-The native HBA path also uses the scoped `pg_hba.conf.taskman-backup` directory beside HBA,
-containing `pg_hba.conf` and metadata. It restores that HBA's bytes/metadata on parser failure;
-this does not restore all settings or running service state. A leftover native recovery directory
-blocks another attempt until manually reconciled. Later restart/verification failure retains it.
+The native Python configuration procedure creates the scoped `pg_hba.conf.taskman-backup`
+directory beside HBA only when replacing HBA, containing `pg_hba.conf` and metadata. It restores
+that HBA's bytes/metadata on parser/query failure or handled cancellation before validation,
+after proving active command cleanup; this does not restore all settings or running service state.
+Unproven command cleanup stops continuation and automatic restoration, retains available evidence,
+and requires manual inspection (`recovery_required`, status 10). A leftover native recovery
+directory blocks another attempt until manually reconciled. Later restart/verification failure
+retains any sibling created by that invocation. Settings-only failure creates no sibling or new
+durable refusal marker; settings/runtime remain uncertain and override originals remain retained.
 The brief installation-to-validation crash/power-loss window remains an accepted inspection boundary.
 
 Never infer restored runtime from restored files. Configuration restoration, reload/restart and

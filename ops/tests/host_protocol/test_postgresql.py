@@ -155,3 +155,100 @@ def test_postgresql_failure_rejects_invalid_classification(outcome, code):
 def test_postgresql_failure_rejects_invalid_check(check):
     with pytest.raises(ProtocolError, match="^invalid PostgreSQL failure context$"):
         validate_failure(failure_context(failed_check=check), "manual")
+
+
+def configuration_request(operation="configure_postgresql", **changes):
+    from taskman_ops.host_protocol import HostRequest, PROTOCOL_VERSION
+    value = dict(protocol_version=PROTOCOL_VERSION, operation=operation,
+        correlation_id="op-" + "1" * 32, expected_state={},
+        paths={"install_root": "/srv/taskman", "backup_root": "/srv/taskman-backups"},
+        parameters={"package_track": "18", "database": {"host": "127.0.0.1", "port": 5432,
+            "role": "taskman", "name": "taskman"}, "cluster": dict(CLUSTER), "hba_sha256": "a" * 64})
+    value.update(changes)
+    return HostRequest(**value)
+
+
+def test_configuration_request_accepts_frozen_and_bootstrap_targets():
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_configuration_request
+    request = configuration_request()
+    assert validate_postgresql_configuration_request(request) is request
+    request = configuration_request(parameters={**request.to_mapping()["parameters"], "cluster": None})
+    assert validate_postgresql_configuration_request(request) is request
+
+
+@pytest.mark.parametrize("changes", [
+    {"credentials_path": "/etc/taskman/pgpass"}, {"hba_stage": "/tmp/hba"},
+    {"command": "true"}, {"owner": "root"}, {"password": "synthetic"},
+    {"package_track": True}, {"package_track": "18;true"}, {"hba_sha256": "A" * 64},
+    {"database": {"host": "localhost", "port": 5432, "name": "taskman", "role": "taskman"}},
+    {"database": {"host": "127.0.0.1", "port": True, "name": "taskman", "role": "taskman"}},
+    {"database": {"host": "127.0.0.1", "port": 5432, "name": "taskman", "role": "bad;role"}},
+    {"cluster": {**CLUSTER, "port": 5433}}, {"cluster": {**CLUSTER, "version": "17"}},
+    {"cluster": {**CLUSTER, "extra": True}},
+])
+def test_configuration_request_rejects_open_or_unbound_parameters(changes):
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_configuration_request
+    value = configuration_request().to_mapping()
+    value["parameters"].update(changes)
+    with pytest.raises(ProtocolError):
+        validate_postgresql_configuration_request(configuration_request(**value))
+
+
+@pytest.mark.parametrize("changes", [
+    {"expected_state": {"ready": True}}, {"paths": {"install_root": "/srv/taskman"}},
+    {"paths": {"install_root": "/srv/taskman", "backup_root": "/srv/taskman/backups"}},
+    {"paths": {"install_root": "/srv/taskman", "backup_root": "/srv/taskman-backups", "stage": "/tmp/hba"}},
+])
+def test_configuration_request_rejects_unexpected_state_or_roots(changes):
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_configuration_request
+    with pytest.raises(ProtocolError):
+        validate_postgresql_configuration_request(configuration_request(**changes))
+
+
+@pytest.mark.parametrize("operation,state", [
+    ("inspect_postgresql", {"changed": False, "configuration_required": True}),
+    ("inspect_postgresql", {"changed": False, "configuration_required": False}),
+    ("configure_postgresql", {"changed": True}), ("configure_postgresql", {"changed": False}),
+])
+def test_configuration_success_is_exact(operation, state):
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_configuration_result
+    request = configuration_request(operation)
+    result = HostResult.for_request(request, "succeeded", "PostgreSQL configuration complete", state)
+    assert validate_postgresql_configuration_result(request, result) is result
+    for bad in ({**state, "extra": True}, {**state, "changed": 1}):
+        with pytest.raises(ProtocolError):
+            validate_postgresql_configuration_result(request, HostResult.for_request(request, "succeeded", "done", bad))
+
+
+@pytest.mark.parametrize("reason,outcome,code", [
+    ("invalid_request", "refused", 2), ("unsafe_state", "refused", 10),
+    ("lock_unavailable", "retryable", 12), ("internal_failure", "retryable", 5),
+    ("command_failed", "retryable", 5), ("command_failed", "manual", 5),
+    ("recovery_required", "manual", 10),
+])
+@pytest.mark.parametrize("mutation", ["unchanged", "changed", "unknown"])
+def test_configuration_failure_classification_is_exact(reason, outcome, code, mutation):
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.host_protocol.postgresql import validate_postgresql_configuration_result
+    request = configuration_request()
+    state = dict(exit_code=code, changed=mutation != "unchanged", mutation_state=mutation,
+        reason=reason, failed_boundary="postgresql")
+    if reason == "lock_unavailable":
+        state["locked"] = True
+    valid = reason not in {"invalid_request", "lock_unavailable"} or mutation == "unchanged"
+    result = HostResult.for_request(request, outcome, "failed", state)
+    if not valid:
+        with pytest.raises(ProtocolError):
+            validate_postgresql_configuration_result(request, result)
+        return
+    assert validate_postgresql_configuration_result(request, result) is result
+    for field, value in (("exit_code", True), ("exit_code", 8), ("changed", not state["changed"]),
+                         ("locked", False), ("extra", True), ("reason", "other")):
+        with pytest.raises(ProtocolError):
+            validate_postgresql_configuration_result(request,
+                HostResult.for_request(request, outcome, "failed", {**state, field: value}))
+    if mutation != "unchanged":
+        inspection = configuration_request("inspect_postgresql")
+        with pytest.raises(ProtocolError):
+            validate_postgresql_configuration_result(inspection, HostResult.for_request(inspection, outcome, "failed", state))

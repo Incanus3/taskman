@@ -1,6 +1,6 @@
 # Operations contracts
 
-Status: accepted, implemented contracts. Updated: 2026-09-18.
+Status: accepted, implemented contracts. Updated: 2026-10-31.
 
 This is the canonical reference for Taskman's artifact, record, protocol, admission,
 confirmation, recovery and failure-evidence contracts. The
@@ -26,6 +26,7 @@ identified historical evidence and limits are retained privately. These contract
   [protocol budgets/pagination](#reconciliation-procedure-and-transport).
 - [Mutation/failure evidence](#failures-and-reporting),
   [internal recovery/encoding](#internal-helper-failure-recovery),
+  [PostgreSQL configuration](#postgresql-configuration-requests-and-results),
   [verification requirements](#acceptance-scenarios).
 
 ## Reliability scope
@@ -62,7 +63,8 @@ Follow the [operations development policy](../guides/development.md#operations-d
 procedures own multi-step orchestration; short shell remains suitable when simpler. Do not repeat
 unchanged validation within a locked phase without an intervening action that can invalidate it.
 Verification covers distinct durable states and public entry paths, not every equivalent timing/flag
-permutation. The parked PostgreSQL refactor and proposed CLI UX do not alter these accepted contracts.
+permutation. PostgreSQL native configuration uses the focused contracts below; the proposed CLI UX
+does not change the accepted reliability boundary.
 
 ## One-time compatibility boundary
 
@@ -1317,7 +1319,8 @@ separate lifecycle obligation, not a requirement to accept old transient wire re
 
 The finite vocabulary is `discover`, `list_releases`, `list_backups`, `verify`, `genesis`, `deploy`,
 `backup`, `rollback`, `restore`, `restore_preflight`, `provision_authority`, `cleanup`, `firewall`,
-`caddy`, and `prepare_genesis`.
+`caddy`, `prepare_genesis`, `postgresql_config_recovery`, `inspect_postgresql`, and
+`configure_postgresql`.
 Correlation is ephemeral transport identity, never persistent operation/release/backup/database
 identity. Application paths contain exactly installation and backup roots; the internal `caddy`
 operation uses empty paths and its fixed reserved destinations. Handlers own operation semantics.
@@ -1548,6 +1551,140 @@ Capture/inspection failures use 5 or 10; unexpected dispatch/encoding failure re
 recovery-file creation survives failure reporting. The selected-cluster and recovery identity
 validators live in `host_protocol/postgresql.py`; this operation adds no public command.
 
+### PostgreSQL configuration requests and results
+
+The internal `inspect_postgresql` and `configure_postgresql` operations perform native configuration
+only on confirmed bootstrap or explicit override paths. The [shared-PostgreSQL design](2026-10-07-shared-postgresql-design.md#native-configuration-architecture)
+owns native architecture, cancellation, recovery and the accepted extraction decisions; resource-only
+shared provisioning invokes neither operation. Override capture remains a separate earlier operation
+with its existing coordination gap and retained-copy format.
+
+Finite operation names, exact schemas, dispatch handlers and package membership stay synchronized.
+The helper requires its dispatch keys to match the vocabulary; separate activation can prevent
+import and break unrelated operations.
+
+`inspect_postgresql` and `configure_postgresql` belong to the finite transient vocabulary. Keep the
+version-3 envelope and bounds: this is an additive operation extension, not an envelope redesign.
+The matching helper is packaged and transferred for each invocation; old helpers reject the new
+names. There is no installed transient-helper compatibility fallback.
+
+Both requests require empty `expected_state`, the existing exact two-root `paths` mapping, and
+these exact `parameters` fields. The `paths` keys are `install_root` and `backup_root`;
+neither root may contain the other. Existing envelope path validation applies.
+
+Parameters:
+
+- `package_track`: null or a string matching `[0-9]+` for the PostgreSQL package track.
+- `database`: exactly `host`, `port`, `role`, and `name`. `host` is the string `127.0.0.1` or
+  `::1`; `port` is an exact integer from 1 through 65535, excluding booleans. `role` and `name`
+  are strings matching `[a-z_][a-z0-9_]{0,62}`. Host validation imports no controller dependencies.
+- `cluster`: null only for confirmed bootstrap, otherwise the exact frozen six-field selected
+  cluster validated by `validate_postgresql_cluster`: exactly `version`, `name`, `data_directory`,
+  `config_file`, `hba_file` and `port`. Version is a `[0-9]+` string, cluster name matches
+  `[A-Za-z0-9_][A-Za-z0-9_-]*`, and port is an exact integer from 1 through 65535, equal to the
+  desired database port. Version matches the requested track when supplied. Paths are canonical
+  absolute restricted-path strings; config/HBA paths are exactly
+  `/etc/postgresql/VERSION/CLUSTER/postgresql.conf` and `/etc/postgresql/VERSION/CLUSTER/pg_hba.conf`.
+  No caller-selected alternate paths.
+- `hba_sha256`: lowercase 64-hex digest of the desired staged HBA bytes.
+
+The controller constructs these requests only from the validated ownership plan, never from an
+independent boolean or guessed branch. For a selected target, reobserve and match version/name,
+data directory, config/HBA paths and configured port before consequence; refuse drift. For bootstrap,
+select exactly one newly installed cluster under the current native rules, permitting its old live
+port to differ from the desired port. The null target is not permission to configure an existing
+cluster from a resource-only plan.
+
+The staged file is fixed at `/etc/taskman/pg_hba.conf.staged`; the final file and executable paths
+are derived from the validated selected Ubuntu cluster. SCRAM is fixed. No HBA text, credentials,
+arbitrary settings, commands, owner overrides, or final-path overrides cross the protocol.
+Controller test-only path overrides become local capability test seams, not privileged wire inputs.
+
+Successful inspection state is exactly `changed: false` and `configuration_required: <boolean>`.
+It reports required configuration for safe drift or an unprovable desired-state predicate, matching
+the current probe; it does not certify that mutation is safe. Malformed input, transport failure,
+or inability to acquire the lock is an error, not ordinary drift.
+
+Successful configuration state is exactly `changed: <boolean>`. Failures carry exact fields `exit_code`, `changed`,
+`failed_boundary: "postgresql"`, and a fixed `reason` selected from `invalid_request`,
+`unsafe_state`, `command_failed`, `recovery_required`, `lock_unavailable`, or `internal_failure`;
+only lock failure also carries `locked: true`. Every failure additionally carries `mutation_state`, exactly
+`unchanged`, `changed`, or `unknown`; `changed` is false exactly for `unchanged` and true for the
+other two states. Successful states keep the exact boolean schemas above. Outcomes are
+`refused` for invalid/unsafe authority, `manual` when recovery material needs inspection, and
+`retryable` for command failure without such material or lock failure. Messages and warnings are fixed and contain no raw subprocess output, configuration contents, or exceptions.
+`workflows/helper.py` uses explicit validation and `result_error` mapping; the generic
+refused mapping would otherwise turn invalid-request status 2 into status 10. Dispatched
+configuration uses transport-loss accounting without the unrelated deployment mutation-state schema.
+Validate the entire exact operation-specific state, outcome and reason at both helper dispatch
+and controller consumption. Unknown fields, inconsistent boolean/classification, inappropriate
+lock markers and mismatched envelopes invalidate the complete wire reply.
+
+The failure `exit_code` is the exact integer public status below. `reason`/outcome/code must
+match these rules; no coercion of booleans or strings. `invalid_request` is `refused / 2`,
+`unsafe_state` is `refused / 10`, `lock_unavailable` is `retryable / 12`, and
+`internal_failure` is `retryable / 5`. `recovery_required` is `manual / 10`;
+`command_failed` is `retryable / 5` or `manual / 5` when retained HBA evidence needs inspection.
+Inspection failures always have `mutation_state: unchanged`; successful inspection/configuration
+states retain their exact schemas, without failure fields.
+
+Invalid requests map to status `2`. Preserve status `10` for cluster/runtime safety refusal
+and the existing provisioning failure translation (status `5`) for ordinary command/transport errors, including restart/postcheck command
+failure even when recovery material remains; lock contention maps to `12`. `manual` with
+`recovery_required` maps to `10` when preexisting evidence prevents safe action, native command
+cleanup is unproven, or restoration cannot be completed (failed restoration takes precedence
+over the original command error).
+Unexpected internal/encoding failure uses `reason: internal_failure` and status `5`.
+On other native command failures, retain `reason: command_failed` and status `5`
+even when the outcome is `manual` because evidence requires inspection. Preserve
+pyinfra's categorized-error propagation. Never use helper process status `0` as proof of success:
+decode and validate the correlated final result. The former PostgreSQL shell status-marker parser
+is removed.
+
+Known earlier changes remain reported after failure. A dispatched configuration helper with a
+lost or invalid result means possible mutation and must not become `changed: false`; inspection
+transport loss alone does not prove a PostgreSQL mutation. The enclosing deploy retains its
+existing conservative possible-change reporting once execution has begun. Preserve cleanup warnings through
+pyinfra and the public error boundary. Transient upload cleanup is not a managed configuration change.
+
+#### PostgreSQL internal failure and encoding
+
+These operations have their own exact state schemas; do not add them blindly to the release
+`MUTATION_OPERATIONS` set whose validators require deployment/restore/cleanup observations.
+Use explicit PostgreSQL dispatch and encoding branches with the shared PostgreSQL validator.
+Preserve the release operations' independent evidence groups and encoding guarantees.
+
+The capability accumulates actual mutation before raising or returning a categorized failure.
+Known configuration/HBA changes survive later command, restoration or inspection failure.
+A proved pre-mutation refusal is unchanged; uncertain consequence is unknown. Inspection itself
+never mutates configuration and all its failures are unchanged. Unexpected configuration exceptions
+and invalid internal replies default to unknown, with fixed retryable `internal_failure` and public
+status 5. Only a matching in-process result may preserve independently validated positive change
+from an otherwise invalid result. An unchanged claim requires a completely valid result or a
+locally proved pre-mutation refusal; malformed siblings must not manufacture unchanged or success.
+A completely validated successful configure result with `changed: true` proves actual mutation
+and retains that classification if encoding fails. For an otherwise-invalid matching internal
+failure result, `mutation_state: changed` of exact string type is independent positive evidence;
+a bare `changed: true` can mean unknown and must not prove actual mutation. Reject malformed
+or uncorrelated identities.
+No observer, handler retry or configuration/recovery action is performed merely to repair a result.
+HBA restoration remains exclusively the [native capability procedure](2026-10-07-shared-postgresql-design.md#configuration-and-recovery-procedure).
+
+At encoding, try the completed result once. If it cannot encode within the current envelope bounds,
+make one bounded PostgreSQL failure projection and one final encoding attempt: inspection is
+unchanged; configuration retains validated positive change, and otherwise is unknown unless the
+complete valid original result established unchanged. Use fixed redacted `internal_failure`/status 5;
+a former success becomes failure. If no valid final reply arrives, the controller uses the same
+complete-wire rejection policy as transport loss. It never salvages fields from malformed wire JSON.
+
+Map configuration unknown to conservative public `changed: true`, while retaining classification
+in available public facts. Aggregate earlier controller/provisioning changes using the current
+command-wide rules: changed dominates unknown, which dominates unchanged. Native safety/status 10,
+ordinary provisioning/status 5 and lock/status 12 precedence above remain unchanged. These
+branches preserve the existing public failure categories and do not introduce a generic recovery framework.
+
+### Deployment mutation sequence
+
 Existing operation contracts, wire version 3, public schema 1, manifest v3 and persisted records
 remain unchanged.
 
@@ -1578,7 +1715,8 @@ loopback topology, journal, readiness, and HSTS checks as uploaded artifacts.
 ## Failures and reporting
 
 [Internal helper failure recovery](#internal-helper-failure-recovery) governs malformed matching
-in-process results and encoding failure. Wire validation still rejects the complete invalid reply;
+release-operation results and encoding failure; [PostgreSQL configuration](#postgresql-internal-failure-and-encoding)
+has its own narrow projection. Wire validation still rejects the complete invalid reply;
 internal evidence salvage does not relax controller trust or authorize another consequence.
 
 Preserve the bounded verification report on exit 9, including checks actually attempted; do not
@@ -1853,6 +1991,8 @@ Application preparation uses the same evidence-preserving recovery/encoding path
 application proof cannot reconstruct a successful preparation from an invalid result; encoding
 failure retains eligible report/mutation/identity proof and emits failure with unavailable final
 facts. Caddy uses its own closed failure state and never falls through to release mutation evidence.
+PostgreSQL configuration uses its [separate internal failure and encoding contract](#postgresql-internal-failure-and-encoding);
+the release evidence groups and fresh-observer policy below do not apply to it.
 
 
 Only matching cooperative in-process handler results may contribute independently validated
@@ -2043,6 +2183,18 @@ This accepted split retains real large-observer coverage while losing combined l
 consumer exercise. The [parallelism report](../research/2026-09-16-operations-test-parallelism.md)
 owns measurement rationale. Credential-free early provisioning inspection remains proposed in the
 CLI UX workstream; it is not claimed as delivered coverage here.
+
+### PostgreSQL configuration verification
+
+Exact request/result coverage rejects extra parameters, forbidden path/secret inputs, malformed or
+mismatched results and wrong field types. Controller/helper tests retain cleanup warnings and earlier
+capture/provisioning mutation through transport loss and partial failure. Internal/encoding tests
+retain known change from completely valid successful configure results and independently valid
+`mutation_state: changed` from matching invalid failures, reject malformed siblings/envelopes/types,
+keep unexpected inspection failure unchanged, use at most two encodes and reject the complete
+malformed wire reply. These focused branches preserve release-operation recovery and scheduled
+executable boundaries. Native recovery/pyinfra evidence and the Python replacement's local-only
+acceptance limit are recorded in the [shared-PostgreSQL verification section](2026-10-07-shared-postgresql-design.md#implementation-boundaries-and-verification).
 
 ## Verification gates
 
