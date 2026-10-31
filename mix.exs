@@ -50,6 +50,9 @@ defmodule Taskman.MixProject do
       {:ash_authentication, "~> 4.14"},
       {:ash_authentication_phoenix, "~> 2.17"},
       {:ash_admin, "~> 1.3"},
+      # AshAdmin's bundled JavaScript lacks the hooks required by Cinder 0.18.
+      # Keep this pin until AshAdmin registers those hooks in its own bundle.
+      {:cinder, "~> 0.17.0"},
       {:ash_rate_limiter, "~> 2.0"},
       {:simple_sat, "~> 0.1"},
       {:hammer, "~> 7.4"},
