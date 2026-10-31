@@ -11,19 +11,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import hashlib
 from io import StringIO
-from pathlib import PurePosixPath
 import re
-import shlex
 from types import MappingProxyType
 from typing import Mapping
 
 from pyinfra.api import operation
-from pyinfra.api.command import FunctionCommand, QuoteString, StringCommand
+from pyinfra.api.command import FunctionCommand
 
 from ..config import EnvironmentConfig
 from ..errors import ExitStatus, OpsError
-from ..host.pyinfra_support import operation_sudo, probe_changed
-from ..remote import ChangeSet, CommandResult, Remote
+from ..remote import ChangeSet, CommandResult, Remote, merge_change_warnings
 
 
 _POSTGRES_ADMIN_SOCKET = "/var/run/postgresql"
@@ -94,15 +91,6 @@ class PostgreSQLPlan:
     database_creation_argv: tuple[str, ...]
     cluster: SelectedPostgreSQLCluster | None = None
     resource_authority: tuple[str, str] | None = None
-
-
-@dataclass(frozen=True)
-class PostgreSQLCluster:
-    """The one concrete Ubuntu cluster that may receive Taskman settings."""
-
-    version: str
-    name: str
-    configured_port: str
 
 
 @dataclass(frozen=True)
@@ -232,13 +220,14 @@ def declare_postgresql(ownership: PostgreSQLOwnershipPlan, *, config: Environmen
     if ownership.branch == "existing":
         return plan
     recovery_request = None
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("PostgreSQL configuration requires bound environment configuration")
+    observation = {"branch": ownership.branch, "cluster": None if ownership.cluster is None else asdict(ownership.cluster),
+        "role": ownership.role, "database": ownership.database, "access": ownership.access}
+    if build_postgresql_ownership_plan(config, observation,
+            force_postgresql_config=ownership.branch == "configure-existing") != ownership:
+        raise ValueError("PostgreSQL configuration does not match environment configuration")
     if ownership.branch == "configure-existing":
-        if not isinstance(config, EnvironmentConfig):
-            raise TypeError("PostgreSQL override requires bound environment configuration")
-        observation = {"branch": ownership.branch, "cluster": asdict(ownership.cluster),
-            "role": ownership.role, "database": ownership.database, "access": ownership.access}
-        if build_postgresql_ownership_plan(config, observation, force_postgresql_config=True) != ownership:
-            raise ValueError("PostgreSQL override does not match environment configuration")
         from ..host_protocol import HostRequest, PROTOCOL_VERSION
         from ..helper_client.runner import new_correlation_id
         recovery_request = HostRequest(PROTOCOL_VERSION, "postgresql_config_recovery", new_correlation_id(), {},
@@ -265,342 +254,88 @@ def declare_postgresql(ownership: PostgreSQLOwnershipPlan, *, config: Environmen
     return plan
 
 
+def _configuration_request(plan, config, operation):
+    from ..host_protocol.postgresql import validate_postgresql_configuration_request
+    from ..workflows.helper import request, database_settings
+    if not isinstance(config, EnvironmentConfig):
+        raise TypeError("PostgreSQL configuration requires bound environment configuration")
+    return validate_postgresql_configuration_request(request(operation, config, parameters={
+        "package_track": plan.package_track, "database": database_settings(config),
+        "cluster": None if plan.cluster is None else asdict(plan.cluster),
+        "hba_sha256": hashlib.sha256(plan.hba.encode()).hexdigest(),
+    }))
+
+
 @operation(is_idempotent=True)
-def _configure_postgresql_cluster(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str = "/etc/taskman/pg_hba.conf.staged",
-    hba_final: str | None = None,
-    hba_owner: str | None = "postgres",
-    hba_group: str | None = "postgres",
-    recovery_request=None,
-    config: EnvironmentConfig | None = None,
-):
-    """Keep native cluster selection and HBA transition in one guarded action."""
-
-    from pyinfra.context import state
-
-    if state.is_executing:
-        try:
-            required = _postgresql_configuration_required(plan, hba_stage=hba_stage,
-                hba_final=hba_final, hba_owner=hba_owner, hba_group=hba_group)
-        except Exception:
-            if recovery_request is None:
-                raise
-            failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration inspection failed",
-                changed=False,
-                next_action="establish selected PostgreSQL native inspection access before retrying")
-            setattr(state, "_taskman_categorized_error", failure)
-            raise failure from None
-        if not required:
-            return
-    yield FunctionCommand(
-        _run_postgresql_native_configuration,
-        (plan, hba_stage, hba_final, hba_owner, hba_group),
-        {"recovery_request": recovery_request, "config": config},
-    )
-
-
-def _postgresql_configuration_required(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str,
-    hba_final: str | None,
-    hba_owner: str | None,
-    hba_group: str | None,
-) -> bool:
-    """Inspect one guarded cluster at execution time without mutating it."""
-
-    from pyinfra.context import host
-
-    runner = getattr(host, "run_shell_command", None)
-    if not callable(runner):
-        raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
-    succeeded, output = runner(
-        StringCommand(
-            render_postgresql_native_configuration_script(
-                plan,
-                hba_stage=hba_stage,
-                hba_final=hba_final,
-                hba_owner=hba_owner,
-                hba_group=hba_group,
-                inspection=True,
-            )
-        ),
-        print_output=False,
-        print_input=False,
-        _sudo=operation_sudo(host),
-    )
-    if not succeeded:
-        raise RuntimeError("PostgreSQL state inspection failed")
-    return probe_changed(output, "PostgreSQL state inspection")
-
-
-def _run_postgresql_native_configuration(
-    state: object,
-    host: object,
-    plan: PostgreSQLPlan,
-    hba_stage: str,
-    hba_final: str | None,
-    hba_owner: str | None,
-    hba_group: str | None,
-    *, recovery_request=None, config: EnvironmentConfig | None = None,
-) -> None:
-    """Carry a native safety refusal through pyinfra's public deploy boundary."""
-
-    from ..host_protocol.postgresql import validate_postgresql_recovery_request
+def _configure_postgresql_cluster(plan: PostgreSQLPlan, *, recovery_request=None,
+                                  config: EnvironmentConfig):
+    """Inspect at execution time; let pyinfra account for executed functions."""
+    from pyinfra.context import ctx_state, ctx_host
+    state, host = ctx_state.get(), ctx_host.get()
     from ..remote import PyinfraRemote
     from ..workflows.helper import run_request, result_error
 
+    inspection = _configuration_request(plan, config, "inspect_postgresql")
+    configuration = _configuration_request(plan, config, "configure_postgresql")
+    if state.is_executing:
+        try:
+            result = run_request(PyinfraRemote(host, config, state=state), inspection)
+            state._taskman_warnings = merge_change_warnings(getattr(state, "_taskman_warnings", ()), result.warnings)
+            if result.outcome != "succeeded":
+                raise result_error(result)
+            if not result.state["configuration_required"]:
+                return
+        except OpsError as error:
+            setattr(state, "_taskman_categorized_error", error)
+            raise
+        except Exception:
+            failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "PostgreSQL configuration inspection failed",
+                changed=False, next_action="establish selected PostgreSQL native inspection access before retrying")
+            setattr(state, "_taskman_categorized_error", failure)
+            raise failure from None
+    yield FunctionCommand(_run_postgresql_configuration, (configuration,),
+        {"recovery_request": recovery_request, "config": config})
+
+
+def _run_postgresql_configuration(state, host, configuration, *, recovery_request=None, config):
+    """Keep retained capture independent of the later configuration reply."""
+    from ..host_protocol.postgresql import validate_postgresql_recovery_request
+    from ..remote import PyinfraRemote
+    from ..workflows.helper import run_request, result_error, aggregate_mutation_state, merge_warnings
+
     recovery = None
+    remote = PyinfraRemote(host, config, state=state)
     try:
         if recovery_request is not None:
             validate_postgresql_recovery_request(recovery_request)
-            if (not isinstance(config, EnvironmentConfig) or plan.cluster is None or
-                    recovery_request.parameters["cluster"] != asdict(plan.cluster) or
-                    dict(recovery_request.paths) != {"install_root": config.install_root.as_posix(),
-                                                    "backup_root": config.backup_root.as_posix()}):
-                raise ValueError("PostgreSQL recovery request is not bound to native target")
-            recovery = run_request(PyinfraRemote(host, config, state=state), recovery_request)
+            if (recovery_request.parameters["cluster"] != configuration.parameters["cluster"] or
+                    recovery_request.paths != configuration.paths):
+                raise ValueError("PostgreSQL recovery target mismatch")
+            recovery = run_request(remote, recovery_request)
             if recovery.outcome != "succeeded":
                 raise result_error(recovery)
             setattr(state, "_taskman_postgresql_recovery", recovery)
-        runner = getattr(host, "run_shell_command", None)
-        if not callable(runner):
-            raise RuntimeError("invalid pyinfra host for PostgreSQL configuration")
-        script = render_postgresql_native_configuration_script(plan, hba_stage=hba_stage,
-            hba_final=hba_final, hba_owner=hba_owner, hba_group=hba_group)
-        wrapped = StringCommand("sh", "-c", QuoteString(
-            f"({script}); taskman_status=$?; "
-            "printf '__taskman_postgresql_status=%s\\n' \"$taskman_status\"; exit 0"))
-        succeeded, output = runner(wrapped, print_output=False, print_input=False,
-                                   _sudo=operation_sudo(host))
-        if not succeeded:
-            raise RuntimeError("PostgreSQL configuration transport failed")
-        status = _captured_status(output)
-        if status == 0:
-            return
-        if status == int(ExitStatus.SAFETY):
-            raise _cluster_refusal()
-        raise RuntimeError("PostgreSQL configuration failed")
+            state._taskman_warnings = merge_change_warnings(getattr(state, "_taskman_warnings", ()), recovery.warnings)
+        result = run_request(remote, configuration,
+            prior_mutation_state="changed" if recovery is not None else "unchanged")
+        state._taskman_warnings = merge_change_warnings(getattr(state, "_taskman_warnings", ()), result.warnings)
+        if result.outcome != "succeeded":
+            raise result_error(result, prior_mutation_state="changed" if recovery is not None else "unchanged")
     except Exception as error:
-        if isinstance(error, OpsError):
-            failure = error
-            if recovery_request is not None and error.stage != "postgresql":
-                failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration convergence failed",
-                    changed=error.changed, state=error.state, warnings=error.warnings,
-                    next_action="inspect selected PostgreSQL settings/runtime and retained recovery copies before retrying")
-        elif recovery_request is not None:
-            failure = OpsError(ExitStatus.REMOTE_PREFLIGHT, "postgresql", "selected PostgreSQL configuration convergence failed",
-                changed=recovery is not None, next_action="inspect selected PostgreSQL settings/runtime and retained recovery copies before retrying")
-        else:
-            raise
-        if recovery is not None and recovery.outcome == "succeeded":
-            failure.state = {**failure.state, **dict(recovery.state), "postgresql_recovery": dict(recovery.state)}
-            failure.changed = True
-            failure.warnings = (*recovery.warnings, *failure.warnings)
+        failure = error if isinstance(error, OpsError) else OpsError(
+            ExitStatus.REMOTE_PREFLIGHT, "postgresql", "PostgreSQL configuration convergence failed",
+            changed=True, state={"mutation_state": "unknown"},
+            next_action="inspect selected PostgreSQL configuration and retained recovery evidence before retrying")
+        if recovery is not None:
+            mutation = aggregate_mutation_state(recovery.state["mutation_state"],
+                failure.state.get("mutation_state", "unknown" if failure.changed else "unchanged"))
+            failure.state = {**failure.state, "mutation_state": mutation,
+                "recovery_directory": recovery.state["recovery_directory"], "postgresql_recovery": dict(recovery.state)}
+            failure.changed = mutation != "unchanged"
+            failure.warnings = merge_warnings(recovery.warnings, failure.warnings)
             failure.next_action = "inspect retained PostgreSQL recovery copies; HBA rollback does not restore all settings/runtime; restoration and cleanup require separate authorization"
         setattr(state, "_taskman_categorized_error", failure)
         raise failure from None
-
-
-def _validate_native_configuration_inputs(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str,
-    hba_final: str | None,
-    hba_owner: str | None,
-    hba_group: str | None,
-) -> PurePosixPath | None:
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("native PostgreSQL script requires a plan")
-    if (hba_owner is None) != (hba_group is None):
-        raise ValueError("PostgreSQL HBA owner and group must be provided together")
-    if not isinstance(hba_stage, str) or (hba_final is not None and not isinstance(hba_final, str)):
-        raise TypeError("PostgreSQL HBA paths must be strings")
-    if not PurePosixPath(hba_stage).is_absolute() or ".." in PurePosixPath(hba_stage).parts:
-        raise ValueError("PostgreSQL HBA stage path must be an absolute safe path")
-    if hba_final is None:
-        return None
-    final_path = PurePosixPath(hba_final)
-    if not final_path.is_absolute() or ".." in final_path.parts:
-        raise ValueError("PostgreSQL HBA final path must be an absolute safe path")
-    return final_path
-
-
-def _render_postgresql_native_predicates(plan: PostgreSQLPlan) -> str:
-    """Render the read/mutation predicates that identify one live cluster."""
-
-    track = "" if plan.package_track is None else plan.package_track
-    listen = plan.settings["listen_addresses"]
-    port = plan.settings["port"]
-    encryption = plan.settings["password_encryption"]
-    target_guard = ""
-    if plan.cluster is not None:
-        selected = plan.cluster
-        target_guard = f"""[ "$version" = {shlex.quote(selected.version)} ] &&
-  [ "$cluster" = {shlex.quote(selected.name)} ] &&
-  [ "$3" = {shlex.quote(str(selected.port))} ] &&
-  [ "$data_directory" = {shlex.quote(selected.data_directory)} ] &&
-  [ "$config_file" = {shlex.quote(selected.config_file)} ] &&
-  [ "$native_hba_file" = {shlex.quote(selected.hba_file)} ] || refuse_runtime
-"""
-    return f"""clusters=$(pg_lsclusters --no-header)
-if ! candidates=$(printf '%s\\n' "$clusters" | awk -v track={shlex.quote(track)} '
-  track == "" || $1 == track {{
-    if (NF < 5 || $1 !~ /^[0-9]+$/ || $2 !~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ ||
-        $3 !~ /^[0-9]+$/ || ($4 != "online" && $4 != "down") || $5 != "postgres") exit 2
-    print $1, $2, $3, $4
-  }}
-'); then refuse_cluster; fi
-candidate_count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
-[ "$candidate_count" -eq 1 ] || refuse_cluster
-set -- $candidates
-version=$1
-cluster=$2
-cluster_state=$4
-desired_port={shlex.quote(port)}
-data_directory=$(pg_conftool -s "$version" "$cluster" show data_directory 2>/dev/null) || refuse_runtime
-case "$data_directory" in
-  /*) ;;
-  *) refuse_runtime ;;
-esac
-case "$data_directory" in
-  *[!A-Za-z0-9_./-]*) refuse_runtime ;;
-esac
-[ -d "$data_directory" ] && [ "$(readlink -f -- "$data_directory")" = "$data_directory" ] || refuse_runtime
-config_file="/etc/postgresql/$version/$cluster/postgresql.conf"
-postgres_binary="/usr/lib/postgresql/$version/bin/postgres"
-native_hba_file="/etc/postgresql/$version/$cluster/pg_hba.conf"
-{target_guard}pid_file="$data_directory/postmaster.pid"
-admin_query() {{
-  endpoint=$1
-  query=$2
-  runuser -u postgres -- psql --no-psqlrc --tuples-only --no-align --field-separator '|' --host {shlex.quote(_POSTGRES_ADMIN_SOCKET)} --port "$endpoint" --username postgres --dbname=postgres --command "$query"
-}}
-load_runtime_pid() {{
-  [ -f "$pid_file" ] && [ ! -L "$pid_file" ] || return 1
-  [ "$(wc -l < "$pid_file" | tr -d ' ')" -eq 8 ] || refuse_runtime
-  runtime_pid=$(sed -n '1p' "$pid_file")
-  runtime_data=$(sed -n '2p' "$pid_file")
-  runtime_start=$(sed -n '3p' "$pid_file")
-  runtime_port=$(sed -n '4p' "$pid_file")
-  runtime_socket=$(sed -n '5p' "$pid_file")
-  runtime_status=$(sed -n '8p' "$pid_file" | sed 's/[[:space:]]*$//')
-  case "$runtime_pid" in ''|*[!0-9]*) refuse_runtime ;; esac
-  case "$runtime_start" in ''|*[!0-9]*) refuse_runtime ;; esac
-  case "$runtime_port" in ''|*[!0-9]*) refuse_runtime ;; esac
-  [ "$runtime_pid" -gt 1 ] && [ "$runtime_port" -ge 1 ] && [ "$runtime_port" -le 65535 ] || refuse_runtime
-  [ "$runtime_data" = "$data_directory" ] || refuse_runtime
-  [ "$runtime_socket" = {shlex.quote(_POSTGRES_ADMIN_SOCKET)} ] || refuse_runtime
-  [ "$runtime_status" = ready ] || refuse_runtime
-  pg_ctlcluster "$version" "$cluster" status >/dev/null 2>&1 || refuse_runtime
-}}
-validate_runtime_identity() {{
-  identity=$1
-  old_ifs=$IFS
-  IFS='|'
-  set -- $identity
-  IFS=$old_ifs
-  [ "$#" -eq 3 ] || refuse_runtime
-  [ "$1" = "$runtime_port" ] && [ "$2" = "$data_directory" ] && [ "$3" = "$runtime_pid" ] || refuse_runtime
-}}
-validate_configured_settings() {{
-  expected_hba_file=$1
-  [ "$(pg_conftool -s "$version" "$cluster" show hba_file 2>/dev/null || true)" = "$expected_hba_file" ] &&
-  [ "$(pg_conftool -s "$version" "$cluster" show listen_addresses 2>/dev/null || true)" = {shlex.quote(listen)} ] &&
-  [ "$(pg_conftool -s "$version" "$cluster" show port 2>/dev/null || true)" = "$desired_port" ] &&
-  [ "$(pg_conftool -s "$version" "$cluster" show password_encryption 2>/dev/null || true)" = {shlex.quote(encryption)} ]
-}}
-validate_effective_settings() {{
-  expected_hba_file=$1
-  runuser -u postgres -- "$postgres_binary" --config-file="$config_file" -C listen_addresses | grep -Fx {shlex.quote(listen)} >/dev/null &&
-  runuser -u postgres -- "$postgres_binary" --config-file="$config_file" -C port | grep -Fx "$desired_port" >/dev/null &&
-  runuser -u postgres -- "$postgres_binary" --config-file="$config_file" -C password_encryption | grep -Fx {shlex.quote(encryption)} >/dev/null &&
-  runuser -u postgres -- "$postgres_binary" --config-file="$config_file" -C hba_file | grep -Fx "$expected_hba_file" >/dev/null
-}}
-validate_hba_parser() {{
-  if ! hba_errors=$(admin_query "$runtime_port" 'SELECT error FROM pg_hba_file_rules WHERE error IS NOT NULL'); then
-    return 1
-  fi
-  test -z "$hba_errors"
-}}
-"""
-
-
-def _render_postgresql_hba_metadata_probe(
-    *,
-    hba_owner: str | None,
-    hba_group: str | None,
-) -> str:
-    if hba_owner is None:
-        return """hba_state=$(stat --format='%a' "$hba_final" 2>/dev/null || true)
-hba_metadata_ok() { [ "$hba_state" = 640 ]; }
-"""
-    return f"""hba_state=$(stat --format='%U:%G:%a' "$hba_final" 2>/dev/null || true)
-hba_metadata_ok() {{ [ "$hba_state" = {shlex.quote(f'{hba_owner}:{hba_group}:640')} ]; }}
-"""
-
-
-def _render_postgresql_native_configuration_inspection(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str,
-    hba_final: str | None,
-    hba_owner: str | None,
-    hba_group: str | None,
-) -> str:
-    """Render a read-only desired-state check from the native predicates."""
-
-    expected_hba_digest = hashlib.sha256(plan.hba.encode("utf-8")).hexdigest()
-    hba_override = "" if hba_final is None else hba_final
-    native_cluster_guard = ""
-    if hba_final is None:
-        native_cluster_guard = """cluster_config_dir="/etc/postgresql/$version/$cluster"
-[ -d "$cluster_config_dir" ] && [ ! -L "$cluster_config_dir" ] &&
-  [ "$(readlink -f -- "$cluster_config_dir")" = "$cluster_config_dir" ] || refuse_runtime
-[ -f "$config_file" ] && [ ! -L "$config_file" ] || refuse_runtime
-"""
-    return f"""set -eu
-changed() {{ printf 'changed=1\\n'; exit 0; }}
-refuse_cluster() {{ changed; }}
-refuse_runtime() {{ changed; }}
-{_render_postgresql_native_predicates(plan)}
-hba_final="$native_hba_file"
-if [ -n {shlex.quote(hba_override)} ]; then hba_final={shlex.quote(hba_override)}; fi
-hba_recovery_path="$hba_final.taskman-backup"
-{native_cluster_guard}
-[ "$cluster_state" = online ] || changed
-load_runtime_pid || changed
-if ! runtime_identity=$(admin_query "$runtime_port" "SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]"); then changed; fi
-validate_runtime_identity "$runtime_identity"
-active_config_file=$(admin_query "$runtime_port" 'SHOW config_file') || changed
-active_hba_file=$(admin_query "$runtime_port" 'SHOW hba_file') || changed
-{_render_postgresql_hba_metadata_probe(hba_owner=hba_owner, hba_group=hba_group)}stage_digest=$(sha256sum {shlex.quote(hba_stage)} 2>/dev/null | awk '{{print $1}}')
-if [ "$runtime_port" = "$desired_port" ] &&
-   [ "$active_config_file" = "$config_file" ] &&
-   [ "$active_hba_file" = "$hba_final" ] &&
-   [ ! -e "$hba_recovery_path" ] &&
-   [ ! -L "$hba_recovery_path" ] &&
-   validate_hba_parser &&
-   [ "$stage_digest" = {shlex.quote(expected_hba_digest)} ] &&
-   cmp -s {shlex.quote(hba_stage)} "$hba_final" &&
-   hba_metadata_ok &&
-   validate_configured_settings "$hba_final" &&
-   validate_effective_settings "$hba_final"; then
-  printf 'changed=0\\n'
-else
-  printf 'changed=1\\n'
-fi
-"""
-
-
-def _captured_status(output: object) -> int:
-    lines = getattr(output, "stdout_lines", ())
-    markers = [line.removeprefix("__taskman_postgresql_status=") for line in lines if line.startswith("__taskman_postgresql_status=")]
-    if len(markers) != 1 or not markers[0].isdecimal():
-        raise RuntimeError("PostgreSQL configuration returned an invalid status")
-    return int(markers[0])
 
 
 def render_role_password_input(role: DatabaseRole, password: str) -> bytes:
@@ -984,244 +719,12 @@ def _safety_refusal() -> OpsError:
     )
 
 
-def select_postgresql_cluster(output: str, plan: PostgreSQLPlan) -> tuple[str, str, str]:
-    """Select exactly one intended cluster without silently using the first row.
-
-    A single fresh cluster may still have Ubuntu's default port before this
-    capability sets a requested custom port. That unambiguous initial candidate
-    is accepted; every zero/multiple candidate state is refused.
-    """
-
-    if not isinstance(plan, PostgreSQLPlan):
-        raise TypeError("cluster selection requires a PostgreSQL plan")
-    candidates: list[PostgreSQLCluster] = []
-    for line in output.splitlines():
-        fields = line.split()
-        if len(fields) < 3 or not fields[0].isdigit() or not fields[1] or not fields[2].isdigit():
-            raise _cluster_refusal()
-        if plan.package_track is not None and fields[0] != plan.package_track:
-            continue
-        candidates.append(PostgreSQLCluster(fields[0], fields[1], fields[2]))
-    if len(candidates) == 1:
-        cluster = candidates[0]
-        return cluster.version, cluster.name, cluster.configured_port
-    raise _cluster_refusal()
-
-
-def render_postgresql_native_configuration_script(
-    plan: PostgreSQLPlan,
-    *,
-    hba_stage: str = "/etc/taskman/pg_hba.conf.staged",
-    hba_final: str | None = None,
-    hba_owner: str | None = "postgres",
-    hba_group: str | None = "postgres",
-    inspection: bool = False,
-) -> str:
-    """Render shared native-state inspection or guarded convergence logic."""
-
-    _validate_native_configuration_inputs(
-        plan,
-        hba_stage=hba_stage,
-        hba_final=hba_final,
-        hba_owner=hba_owner,
-        hba_group=hba_group,
-    )
-    if not isinstance(inspection, bool):
-        raise TypeError("PostgreSQL inspection mode must be boolean")
-    if inspection:
-        return _render_postgresql_native_configuration_inspection(
-            plan,
-            hba_stage=hba_stage,
-            hba_final=hba_final,
-            hba_owner=hba_owner,
-            hba_group=hba_group,
-        )
-
-    expected_hba_state = "640" if hba_owner is None else f"{hba_owner}:{hba_group}:640"
-    hba_install_owner = "" if hba_owner is None else f"-o {shlex.quote(hba_owner)} -g {shlex.quote(hba_group)} "
-    hba_override = "" if hba_final is None else hba_final
-    native_cluster_guard = ""
-    if hba_final is None:
-        native_cluster_guard = """cluster_config_dir="/etc/postgresql/$version/$cluster"
-[ -d "$cluster_config_dir" ] && [ ! -L "$cluster_config_dir" ] &&
-  [ "$(readlink -f -- "$cluster_config_dir")" = "$cluster_config_dir" ] || refuse_runtime
-[ -f "$config_file" ] && [ ! -L "$config_file" ] || refuse_runtime
-"""
-    expected_hba_digest = hashlib.sha256(plan.hba.encode("utf-8")).hexdigest()
-    listen_normalization = ""
-    if plan.settings["listen_addresses"] == "127.0.0.1":
-        # Debian's pg_conftool leaves dotted numeric IPv4 values unquoted.
-        # Repair only that exact generated assignment before native parsing.
-        listen_normalization = """normalize_loopback_listen_address() {
-  if grep -Eq '^[[:space:]]*listen_addresses[[:space:]]*=[[:space:]]*127[.]0[.]0[.]1([[:space:]]*(#.*)?)?$' "$config_file"; then
-    [ -f "$config_file" ] && [ ! -L "$config_file" ] || refuse_runtime
-    config_state=$(stat --format='%u:%g:%a' "$config_file" 2>/dev/null || true)
-    [ -n "$config_state" ] || refuse_runtime
-    config_uid=${config_state%%:*}
-    config_rest=${config_state#*:}
-    config_gid=${config_rest%%:*}
-    config_mode=${config_rest#*:}
-    hba_config_temp=$(mktemp "$config_file.taskman.XXXXXX")
-    sed -E "s/^([[:space:]]*listen_addresses[[:space:]]*=[[:space:]]*)127[.]0[.]0[.]1([[:space:]]*(#.*)?)$/\\1'127.0.0.1'\\2/" "$config_file" > "$hba_config_temp"
-    chown "$config_uid:$config_gid" "$hba_config_temp"
-    chmod "$config_mode" "$hba_config_temp"
-    mv -f -- "$hba_config_temp" "$config_file"
-    hba_config_temp=
-    changed=1
-  fi
-  return 0
-}
-normalize_loopback_listen_address
-"""
-    hba_state_probe = (
-        'hba_state=$(stat --format=\'%a\' "$hba_final" 2>/dev/null || true)'
-        if hba_owner is None
-        else 'hba_state=$(stat --format=\'%U:%G:%a\' "$hba_final" 2>/dev/null || true)'
-    )
-    backup_functions = f"""hba_backup_dir=
-hba_backup_created=0
-hba_config_temp=
-hba_backup_file=
-hba_backup_uid=
-hba_backup_gid=
-hba_backup_mode=
-hba_candidate=
-hba_restore_on_failure=0
-hba_cleanup_backup=0
-restore_hba_backup() {{
-  restore_status=$?
-  trap - EXIT HUP INT TERM
-  if [ -n "$hba_config_temp" ]; then rm -f -- "$hba_config_temp"; fi
-  if [ -n "$hba_candidate" ]; then rm -f -- "$hba_candidate"; fi
-  if [ "$hba_restore_on_failure" -eq 1 ]; then
-    restore_candidate=$(mktemp "$hba_final.taskman-restore.XXXXXX")
-    install -o "$hba_backup_uid" -g "$hba_backup_gid" -m "$hba_backup_mode" "$hba_backup_file" "$restore_candidate"
-    mv -f -- "$restore_candidate" "$hba_final"
-    hba_cleanup_backup=1
-  elif [ "$restore_status" -eq 0 ]; then
-    hba_cleanup_backup=1
-  fi
-  if [ "$hba_backup_created" -eq 1 ] && [ "$hba_cleanup_backup" -eq 1 ]; then
-    rm -f -- "$hba_backup_file" "$hba_backup_dir/metadata"
-    rmdir -- "$hba_backup_dir"
-  fi
-  exit "$restore_status"
-}}
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap restore_hba_backup EXIT
-backup_hba() {{
-  [ -f "$hba_final" ] && [ ! -L "$hba_final" ] || refuse_runtime
-  [ ! -e "$hba_recovery_path" ] && [ ! -L "$hba_recovery_path" ] || refuse_runtime
-  mkdir "$hba_recovery_path"
-  hba_backup_dir="$hba_recovery_path"
-  hba_backup_created=1
-  chmod 700 "$hba_backup_dir"
-  hba_backup_file="$hba_backup_dir/pg_hba.conf"
-  hba_backup_state=$(stat --format='%u:%g:%a' "$hba_final" 2>/dev/null || true)
-  [ -n "$hba_backup_state" ] || refuse_runtime
-  hba_backup_uid=${{hba_backup_state%%:*}}
-  hba_backup_rest=${{hba_backup_state#*:}}
-  hba_backup_gid=${{hba_backup_rest%%:*}}
-  hba_backup_mode=${{hba_backup_rest#*:}}
-  cat "$hba_final" > "$hba_backup_file"
-  chmod 600 "$hba_backup_file"
-  printf '%s\\n' "$hba_backup_state" > "$hba_backup_dir/metadata"
-  chmod 600 "$hba_backup_dir/metadata"
-  hba_restore_on_failure=1
-}}
-"""
-    return f"""set -eu
-refuse_cluster() {{ echo 'ambiguous PostgreSQL cluster' >&2; exit {int(ExitStatus.SAFETY)}; }}
-refuse_runtime() {{ echo 'ambiguous PostgreSQL runtime state' >&2; exit {int(ExitStatus.SAFETY)}; }}
-{_render_postgresql_native_predicates(plan)}
-hba_final="$native_hba_file"
-if [ -n {shlex.quote(hba_override)} ]; then hba_final={shlex.quote(hba_override)}; fi
-hba_recovery_path="$hba_final.taskman-backup"
-{native_cluster_guard}
-{backup_functions}
-changed=0
-runtime_state=unreachable
-case \"$cluster_state\" in
-  online) ;;
-  down|*) refuse_runtime ;;
-esac
-load_runtime_pid || refuse_runtime
-if ! runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]\"); then
-  refuse_runtime
-fi
-validate_runtime_identity \"$runtime_identity\"
-runtime_state=reachable
-if [ "$runtime_port" != "$desired_port" ]; then changed=1; fi
-if ! active_config_file=$(admin_query \"$runtime_port\" 'SHOW config_file'); then refuse_runtime; fi
-[ \"$active_config_file\" = \"$config_file\" ] || refuse_runtime
-if ! active_hba_file=$(admin_query \"$runtime_port\" 'SHOW hba_file'); then refuse_runtime; fi
-[ \"$active_hba_file\" = \"$hba_final\" ] || refuse_runtime
-[ -f \"$hba_final\" ] && [ ! -L \"$hba_final\" ] || refuse_runtime
-[ ! -e \"$hba_recovery_path\" ] && [ ! -L \"$hba_recovery_path\" ] || refuse_runtime
-if ! validate_hba_parser; then refuse_runtime; fi
-stage_digest=$(sha256sum {shlex.quote(hba_stage)} | awk '{{print $1}}')
-[ \"$stage_digest\" = {shlex.quote(expected_hba_digest)} ] || refuse_runtime
-{hba_state_probe}
-hba_needs_install=0
-if ! cmp -s {shlex.quote(hba_stage)} "$hba_final" || [ "$hba_state" != {shlex.quote(expected_hba_state)} ]; then
-  hba_needs_install=1
-  changed=1
-fi
-configure() {{
-  key=$1 value=$2
-  current=$(pg_conftool -s \"$version\" \"$cluster\" show \"$key\" 2>/dev/null || true)
-  if [ \"$current\" != \"$value\" ]; then pg_conftool \"$version\" \"$cluster\" set \"$key\" \"$value\"; changed=1; fi
-}}
-configure hba_file \"$hba_final\"
-configure listen_addresses {shlex.quote(plan.settings["listen_addresses"])}
-configure port \"$desired_port\"
-configure password_encryption {shlex.quote(plan.settings["password_encryption"])}
-{listen_normalization}validate_effective_settings \"$hba_final\"
-if [ \"$hba_needs_install\" -eq 1 ]; then
-  backup_hba
-  hba_candidate=$(mktemp \"$hba_final.taskman.XXXXXX\")
-  install {hba_install_owner}-m 0640 {shlex.quote(hba_stage)} \"$hba_candidate\"
-  mv -f -- \"$hba_candidate\" \"$hba_final\"
-  hba_candidate=
-  if ! validate_hba_parser; then refuse_runtime; fi
-  hba_restore_on_failure=0
-fi
-hba_restore_on_failure=0
-if [ \"$changed\" -eq 1 ]; then
-  pg_ctlcluster \"$version\" \"$cluster\" restart
-fi
-load_runtime_pid || refuse_runtime
-[ \"$runtime_port\" = \"$desired_port\" ] || refuse_runtime
-runtime_identity=$(admin_query \"$runtime_port\" \"SELECT current_setting('port'), current_setting('data_directory'), (regexp_match(pg_read_file('/proc/self/status'), '^PPid:[[:space:]]+([0-9]+)$', 'm'))[1]\")
-validate_runtime_identity \"$runtime_identity\"
-[ \"$(admin_query \"$runtime_port\" 'SHOW config_file')\" = \"$config_file\" ] || refuse_runtime
-[ \"$(admin_query \"$runtime_port\" 'SHOW hba_file')\" = \"$hba_final\" ] || refuse_runtime
-validate_hba_parser
-"""
-
-
-def _cluster_refusal() -> OpsError:
-    return OpsError(
-        ExitStatus.SAFETY,
-        "postgresql",
-        "PostgreSQL cluster or runtime state is ambiguous or unsupported",
-        changed=False,
-        next_action=(
-            "inspect the selected PostgreSQL cluster, live endpoint, native HBA file, "
-            "and any Taskman HBA recovery state before retrying"
-        ),
-    )
-
-
 __all__ = [
     "Database",
     "DatabaseRole",
     "ExistingDatabase",
     "ExistingRole",
     "ManagedFile",
-    "PostgreSQLCluster",
     "PostgreSQLPlan",
     "PostgreSQLOwnershipPlan",
     "SelectedPostgreSQLCluster",
@@ -1230,8 +733,6 @@ __all__ = [
     "converge_database",
     "declare_postgresql",
     "install_pgpass",
-    "render_postgresql_native_configuration_script",
     "render_role_password_input",
-    "select_postgresql_cluster",
     "validate_existing_database_state",
 ]

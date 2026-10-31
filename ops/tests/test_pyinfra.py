@@ -587,34 +587,34 @@ def test_firewall_refusal_preserves_safety_and_prior_changes_through_pyinfra(mon
 def test_direct_postgresql_refusal_preserves_safety_through_the_programmatic_pyinfra_boundary(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """An ambiguous direct PostgreSQL cluster must not become REMOTE_PREFLIGHT."""
-
-    postgresql = importlib.import_module("taskman_ops.services.postgresql")
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    write_shell_script(
-        binaries / "pg_lsclusters",
-        "printf '16 main 5432 online postgres /var/lib/postgresql/16/main /log\\n'\n"
-        "printf '16 secondary 5433 online postgres /var/lib/postgresql/16/secondary /log\\n'",
-    )
-    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+    """A native configuration refusal must retain safety and stop later work."""
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.services import postgresql
+    from taskman_ops.workflows import helper
+    config = environment_config()
+    calls = []
+    def invoke(_remote, request, **kwargs):
+        calls.append(request.operation)
+        if request.operation == "inspect_postgresql":
+            return HostResult.for_request(request, "succeeded", "checked",
+                {"changed": False, "configuration_required": True})
+        return HostResult.for_request(request, "refused", "PostgreSQL configuration failed",
+            dict(exit_code=10, changed=False, mutation_state="unchanged", failed_boundary="postgresql",
+                reason="unsafe_state"))
+    monkeypatch.setattr(helper, "run_request", invoke)
     target = tmp_path / "must-not-exist"
     remote = _local_pyinfra_remote()
-
     @deploy("Direct PostgreSQL refusal")
     def converge() -> None:
-        postgresql._configure_postgresql_cluster(
-            postgresql.build_postgresql_plan(EnvironmentConfig.model_validate(valid_environment())),
-            name="Validate and configure PostgreSQL",
-            _sudo=False,
-        )
+        postgresql._configure_postgresql_cluster(postgresql.build_postgresql_plan(config),
+            config=config, name="Validate and configure PostgreSQL", _sudo=False)
         _later_touch(target)
-
     with pytest.raises(OpsError) as error:
         remote.run_deploy(converge)
-
     assert error.value.status is ExitStatus.SAFETY
-    assert target.exists() is False
+    assert error.value.stage == "postgresql"
+    assert calls == ["inspect_postgresql", "configure_postgresql"]
+    assert not target.exists()
 
 
 def test_programmatic_pyinfra_deploy_converges_then_repairs_ordinary_drift(tmp_path: Path) -> None:
@@ -755,7 +755,7 @@ def test_categorized_pyinfra_failure_preserves_category_and_prior_mutation(tmp_p
     assert error.value.message == "existing UFW policy is conflicting or unrecognized and will not be replaced"
     assert error.value.changed is True
     assert error.value.next_action == "inspect the active UFW rules and resolve the contradiction before retrying"
-    assert error.value.state == {"failed_boundary": "firewall"}
+    assert error.value.state == {"failed_boundary": "firewall", "mutation_state": "changed"}
     assert error.value.warnings == ("safe category warning",)
 
 
@@ -1139,3 +1139,52 @@ def test_declaration_without_postgresql_ownership_has_no_earlier_consequences():
         add_deploy(state, taskman_provisioning, inputs=inputs)
     assert refused.value.stage == "postgresql"
     assert all(not operations for operations in state.ops.values())
+
+
+@pytest.mark.parametrize("earlier_change,expected", [(True, "changed"), (False, "unknown")])
+def test_provisioning_retains_pyinfra_mutation_before_unchanged_postgresql_failure(monkeypatch, earlier_change, expected):
+    from pyinfra.api import operation
+    from pyinfra.api.command import FunctionCommand
+    from taskman_ops import provisioning
+    from taskman_ops.host_protocol import HostResult
+    from taskman_ops.services import postgresql
+    from taskman_ops.workflows import helper
+
+    config = environment_config()
+    ownership = build_postgresql_ownership_plan(config,
+        {"branch": "bootstrap", "cluster": None, "role": "absent", "database": "absent", "access": "unproven"},
+        force_postgresql_config=False)
+    inputs = ProvisioningInputs(config=config, caddy_plan=controller_plan(config, branch="existing"),
+        systemd_plan=build_systemd_plan(config), runtime_environment=b"runtime", pgpass=b"pgpass",
+        role_password_input=b"password", firewall_authority=_firewall_authority(), postgresql_plan=ownership)
+    executed = []
+    replies = []
+    @operation(is_idempotent=True)
+    def earlier():
+        yield FunctionCommand(lambda: executed.append("earlier managed change"), (), {})
+    @deploy("Converge PostgreSQL")
+    def converge(*, inputs):
+        if earlier_change:
+            earlier(name="Earlier managed change")
+        postgresql._configure_postgresql_cluster(inputs.postgresql_plan.desired, config=inputs.config, _sudo=False)
+    def inspect(_remote, request, **kwargs):
+        assert request.operation == "inspect_postgresql"
+        reply = HostResult.for_request(request, "retryable", "PostgreSQL configuration failed",
+            dict(exit_code=12, changed=False, mutation_state="unchanged", failed_boundary="postgresql",
+                reason="lock_unavailable", locked=True), ("transient helper cleanup was incomplete",))
+        replies.append(reply)
+        return reply
+    monkeypatch.setattr(provisioning, "taskman_provisioning", converge)
+    monkeypatch.setattr(helper, "run_request", inspect)
+    monkeypatch.setattr(provisioning, "converge_database", lambda *_a, **_k: pytest.fail("database after lock refusal"))
+    monkeypatch.setattr(provisioning, "install_runtime_environment", lambda *_a, **_k: pytest.fail("runtime after lock refusal"))
+    with pytest.raises(OpsError) as caught:
+        provisioning.converge_provisioning(_local_pyinfra_remote(), inputs)
+    assert executed == (["earlier managed change"] if earlier_change else [])
+    assert replies[0].state["mutation_state"] == "unchanged"
+    assert replies[0].state["changed"] is False
+    assert caught.value.status == ExitStatus.LOCKED
+    assert caught.value.stage == "postgresql"
+    assert caught.value.state["mutation_state"] == expected
+    assert caught.value.changed is True
+    assert caught.value.warnings == ("transient helper cleanup was incomplete",)

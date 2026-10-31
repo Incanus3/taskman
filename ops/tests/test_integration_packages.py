@@ -10,6 +10,9 @@ import subprocess
 from tests.support.integration_packages import integration_packages
 
 
+ARCHIVE_SCENARIOS = Path(__file__).resolve().parent / "support/integration_package_scenarios.py"
+
+
 def test_integration_packages_materialize_private_independent_executable_copies(
     integration_packages, tmp_path: Path
 ) -> None:
@@ -57,14 +60,13 @@ def test_isolated_archive_imports_adapter_lazily_without_ufw(integration_package
     import sys
 
     package = integration_packages.materialize_helper(tmp_path / "helper.pyz")
-    script = '''import json, sys
-sys.path.insert(0, sys.argv[1])
-from taskman_ops.host_helper import ufw_adapter
-assert not any(name == 'ufw' or name.startswith('ufw.') for name in sys.modules)
-print(json.dumps({'lazy': True}))
-'''
-    completed = subprocess.run([sys.executable, "-I", "-S", "-c", script, str(package.path)],
-                               capture_output=True, check=False)
+    completed = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(ARCHIVE_SCENARIOS), "lazy_ufw_import",
+            str(package.path),
+        ],
+        capture_output=True, check=False,
+    )
     assert completed.returncode == 0
     assert completed.stdout == b'{"lazy": true}\n'
     assert completed.stderr == b""
@@ -75,23 +77,13 @@ def test_isolated_archive_byte_warning_stays_out_of_json(integration_packages, t
     import sys
 
     package = integration_packages.materialize_helper(tmp_path / "helper.pyz")
-    script = '''import json, sys, time
-sys.path.insert(0, sys.argv[1])
-from taskman_ops.host_helper import ufw_adapter
-before = sys.stdout, sys.stderr
-def warn(**kwargs):
-    sys.stderr.buffer.write(b'WARN: malformed tuple\\n')
-ufw_adapter._read_backend = warn
-try:
-    ufw_adapter.inspect_ufw(deadline=time.monotonic() + 45)
-except ufw_adapter.UfwInspectionError as error:
-    assert (sys.stdout, sys.stderr) == before
-    print(json.dumps({'reason': error.reason}))
-else:
-    raise AssertionError('warning accepted')
-'''
-    completed = subprocess.run([sys.executable, "-I", "-S", "-c", script, str(package.path)],
-                               capture_output=True, check=False)
+    completed = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(ARCHIVE_SCENARIOS), "byte_warning",
+            str(package.path),
+        ],
+        capture_output=True, check=False,
+    )
     assert completed.returncode == 0
     assert json.loads(completed.stdout) == {"reason": "inspection_failed"}
     assert completed.stderr == b""
@@ -112,27 +104,56 @@ def test_isolated_archive_real_ufw_warning_stays_out_of_json(integration_package
     for name in ("__init__.py", "backend_iptables.py", "util.py"):
         assert (extracted / "usr/lib/python3/dist-packages/ufw" / name).is_file()
     package = integration_packages.materialize_helper(tmp_path / "helper.pyz")
-    script = '''import json, sys, time
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from taskman_ops.host_helper import ufw_adapter
-ufw_adapter._UFW_PACKAGE = Path(sys.argv[2]) / 'usr/lib/python3/dist-packages/ufw'
-# Fixture-only extracted source has an unprivileged temporary parent.
-ufw_adapter._trusted_path = lambda path: None
-def warn(*, deadline):
-    ufw_adapter._load_package(deadline=deadline)
-    import ufw.util
-    ufw.util.warn('malformed tuple')
-ufw_adapter._read_backend = warn
-try:
-    ufw_adapter.inspect_ufw(deadline=time.monotonic() + 45)
-except ufw_adapter.UfwInspectionError as error:
-    print(json.dumps({'reason': error.reason}))
-else:
-    raise AssertionError('warning accepted')
-'''
-    completed = subprocess.run([sys.executable, "-I", "-S", "-c", script, str(package.path), str(extracted)],
-                               capture_output=True, check=False)
+    completed = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(ARCHIVE_SCENARIOS), "real_ufw_warning",
+            str(package.path), str(extracted),
+        ],
+        capture_output=True, check=False,
+    )
     assert completed.returncode == 0
     assert json.loads(completed.stdout) == {"reason": "inspection_failed"}
     assert completed.stderr == b""
+
+
+def test_isolated_archive_dispatches_postgresql_and_preserves_encoding_change(integration_packages, tmp_path):
+    import json
+    import sys
+    import zipfile
+    from taskman_ops.helper_client.package import BACKUP_ARCHIVE_MEMBERS
+    package = integration_packages.materialize_helper(tmp_path / 'helper.pyz')
+    with zipfile.ZipFile(package.path) as archive:
+        assert {'taskman_ops/host_helper/postgresql_configuration.py',
+                'taskman_ops/host_helper/operations/postgresql.py'} <= set(archive.namelist())
+    assert not any('postgresql' in name for name in BACKUP_ARCHIVE_MEMBERS)
+    completed = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(ARCHIVE_SCENARIOS), "postgresql_dispatch",
+            str(package.path),
+        ],
+        capture_output=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == b''
+    assert json.loads(completed.stdout) == {'operation': 'configure_postgresql', 'changed': True}
+
+
+def test_configuration_archive_runner_loss_is_unknown_and_cleans_transient_paths(integration_packages, tmp_path):
+    import pytest
+    from tests.host_protocol.test_postgresql import configuration_request
+    from tests.support.remotes import HelperRunnerRemote
+    from taskman_ops.remote import CommandResult
+    from taskman_ops.errors import OpsError
+    from taskman_ops.workflows.helper import run_request
+    request = configuration_request()
+    package = integration_packages.materialize_helper(tmp_path / 'helper.pyz')
+    installed = f'/run/taskman-ops/{request.correlation_id}/taskman-host.pyz'
+    remote = HelperRunnerRemote(package.sha256, CommandResult(0, ''))
+    remote.add_response(('sudo', '--preserve-env=SSH_CONNECTION', '--', 'python3', installed),
+        OpsError(5, 'remote', 'synthetic dispatched loss'))
+    with pytest.raises(OpsError) as caught:
+        run_request(remote, request, package=package)
+    assert caught.value.status == 5
+    assert caught.value.changed
+    assert caught.value.state['mutation_state'] == 'unknown'
+    assert ('rm', '--', installed) in [command for command, _ in remote.calls]

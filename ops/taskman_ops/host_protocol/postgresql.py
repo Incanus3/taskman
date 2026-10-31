@@ -186,3 +186,72 @@ def reduce_postgresql_recovery_evidence(request, result=None):
         if raw.get("recovery_directory") is not None and state["mutation_state"] == "unchanged":
             state["mutation_state"] = "unknown"
     return state
+
+
+POSTGRESQL_CONFIGURATION_OPERATIONS = frozenset({"inspect_postgresql", "configure_postgresql"})
+
+
+def validate_postgresql_configuration_request(request):
+    """Validate narrow native configuration authority without controller imports."""
+    from .envelope import HostRequest
+    if (not isinstance(request, HostRequest) or request.operation not in POSTGRESQL_CONFIGURATION_OPERATIONS or
+            request.expected_state or set(request.paths) != {"install_root", "backup_root"} or
+            set(request.parameters) != {"package_track", "database", "cluster", "hba_sha256"}):
+        raise ProtocolError("invalid PostgreSQL configuration request")
+    roots = [PurePosixPath(request.paths[key]) for key in ("install_root", "backup_root")]
+    if roots[0].is_relative_to(roots[1]) or roots[1].is_relative_to(roots[0]):
+        raise ProtocolError("overlapping PostgreSQL configuration roots")
+    parameters = request.parameters
+    track = parameters["package_track"]
+    validate_postgresql_context(track, False)
+    database = parameters["database"]
+    if (not isinstance(database, Mapping) or set(database) != {"host", "port", "role", "name"} or
+            type(database["host"]) is not str or database["host"] not in {"127.0.0.1", "::1"} or
+            type(database["port"]) is not int or not 0 < database["port"] < 65536 or
+            any(type(database[key]) is not str or re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", database[key]) is None
+                for key in ("role", "name"))):
+        raise ProtocolError("invalid PostgreSQL configuration database")
+    cluster = parameters["cluster"]
+    if cluster is not None:
+        validate_postgresql_cluster(cluster)
+        if cluster["port"] != database["port"] or track is not None and cluster["version"] != track:
+            raise ProtocolError("PostgreSQL configuration target mismatch")
+    if type(parameters["hba_sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}", parameters["hba_sha256"]) is None:
+        raise ProtocolError("invalid PostgreSQL staged digest")
+    return request
+
+
+def validate_postgresql_configuration_result(request, result):
+    """Validate the complete correlated reply, including exact failure semantics."""
+    from .envelope import validate_result_for_request
+    validate_result_for_request(request, result)
+    if request.operation not in POSTGRESQL_CONFIGURATION_OPERATIONS:
+        raise ProtocolError("invalid PostgreSQL configuration operation")
+    state = result.state
+    inspection = request.operation == "inspect_postgresql"
+    if result.outcome == "succeeded":
+        keys = {"changed", "configuration_required"} if inspection else {"changed"}
+        if (set(state) != keys or type(state["changed"]) is not bool or
+                inspection and (state["changed"] or type(state["configuration_required"]) is not bool)):
+            raise ProtocolError("invalid PostgreSQL configuration success")
+        return result
+    reason = state.get("reason")
+    classification = {
+        "invalid_request": {("refused", 2)}, "unsafe_state": {("refused", 10)},
+        "lock_unavailable": {("retryable", 12)}, "internal_failure": {("retryable", 5)},
+        "command_failed": {("retryable", 5), ("manual", 5)}, "recovery_required": {("manual", 10)},
+    }
+    if type(reason) is not str or reason not in classification:
+        raise ProtocolError("invalid PostgreSQL configuration reason")
+    keys = {"exit_code", "changed", "failed_boundary", "reason", "mutation_state"}
+    if reason == "lock_unavailable":
+        keys.add("locked")
+    if (set(state) != keys or type(state["exit_code"]) is not int or
+            (result.outcome, state["exit_code"]) not in classification[reason] or
+            state["failed_boundary"] != "postgresql" or type(state["mutation_state"]) is not str or
+            state["mutation_state"] not in {"unchanged", "changed", "unknown"} or
+            type(state["changed"]) is not bool or state["changed"] != (state["mutation_state"] != "unchanged") or
+            reason == "lock_unavailable" and state["locked"] is not True or
+            (inspection or reason in {"invalid_request", "lock_unavailable"}) and state["mutation_state"] != "unchanged"):
+        raise ProtocolError("invalid PostgreSQL configuration failure")
+    return result

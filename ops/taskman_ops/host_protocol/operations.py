@@ -23,6 +23,8 @@ OPERATION_NAMES = frozenset(
         "list_releases",
         "provision_authority",
         "postgresql_config_recovery",
+        "inspect_postgresql",
+        "configure_postgresql",
         "restore",
         "restore_preflight",
         "rollback",

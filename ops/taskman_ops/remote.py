@@ -1002,18 +1002,28 @@ def _text(value: object) -> str:
 
 
 def _pyinfra_deploy_error(message: str, state: State) -> OpsError:
-    changed = _pyinfra_deploy_may_have_changed(state)
+    mutation = _pyinfra_deploy_mutation_state(state)
+    changed = mutation != "unchanged"
     next_action = _PARTIAL_PROVISIONING_NEXT_ACTION if changed else None
     error = _remote_error(message, changed=changed, next_action=next_action)
+    error.state = {"mutation_state": mutation}
     error.warnings = getattr(state, "_taskman_warnings", ())
     return error
 
 
 def _merge_pyinfra_change_evidence(error: OpsError, state: State) -> OpsError:
-    """Retain category guidance while adding prior or possible pyinfra changes."""
+    """Project command-wide mutation without changing helper-local results."""
 
-    if not error.changed and _pyinfra_deploy_may_have_changed(state):
-        error.changed = True
+    pyinfra_mutation = _pyinfra_deploy_mutation_state(state)
+    local_mutation = error.state.get("mutation_state", "unknown" if error.changed else "unchanged")
+    if type(local_mutation) is not str or local_mutation not in {"unchanged", "unknown", "changed"}:
+        local_mutation = "unknown" if error.changed else "unchanged"
+    mutation = next(value for value in ("changed", "unknown", "unchanged")
+                    if value in (local_mutation, pyinfra_mutation))
+    error.state = {**error.state, "mutation_state": mutation}
+    error.changed = mutation != "unchanged"
+    if "changed" in error.state:
+        error.state["changed"] = error.changed
     error.warnings = merge_change_warnings(
         getattr(state, "_taskman_warnings", ()), error.warnings,
         changed=error.changed, next_action=error.next_action,
@@ -1021,20 +1031,20 @@ def _merge_pyinfra_change_evidence(error: OpsError, state: State) -> OpsError:
     return error
 
 
-def _pyinfra_deploy_may_have_changed(state: State) -> bool:
-    """Report known changes or possible mutation after pyinfra starts execution."""
+def _pyinfra_deploy_mutation_state(state: State) -> str:
+    """Distinguish completed changes from conservative execution uncertainty."""
 
     try:
         for host in state.inventory:
             for op_hash in host.op_hash_order:
                 operation_meta = state.get_op_data_for_host(host, op_hash).operation_meta
                 if operation_meta.is_complete() and operation_meta.did_change():
-                    return True
+                    return "changed"
     except Exception:
         # A malformed/incomplete result must not hide the conservative execution
         # boundary or leak pyinfra diagnostics into the operator-facing error.
         pass
-    return bool(state.is_executing)
+    return "unknown" if getattr(state, "is_executing", False) else "unchanged"
 
 
 def _remote_error(

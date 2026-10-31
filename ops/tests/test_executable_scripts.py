@@ -7,8 +7,8 @@ import ast
 from tests.support.architecture import _executable_string_violations
 
 
-def test_reviewed_postgresql_script_is_approved_by_its_bounded_owner_not_a_source_line() -> None:
-    """Moving the reviewed renderer must not turn it into an accidental scanner failure."""
+def test_native_configuration_programs_require_host_helper_ownership() -> None:
+    """Substantial native programs belong behind the helper boundary."""
 
     tree = ast.parse(
         "def render_postgresql_native_configuration_script():\n"
@@ -17,4 +17,6 @@ def test_reviewed_postgresql_script_is_approved_by_its_bounded_owner_not_a_sourc
         + "\n"
     )
 
-    assert tuple(_executable_string_violations("ops/taskman_ops/services/postgresql.py", tree)) == ()
+    assert tuple(_executable_string_violations("ops/taskman_ops/services/postgresql.py", tree)) == (
+        "ops/taskman_ops/services/postgresql.py:2: substantial executable controller string belongs in a helper or declarative operation",
+    )

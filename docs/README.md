@@ -21,7 +21,7 @@
 - [Expandable Task listing (implemented and operator accepted)](specs/2026-10-27-expandable-task-listing-design.md)
 - [Task counts in List navigation and headers (implemented and operator accepted)](specs/2026-10-26-list-task-counts-design.md)
 - [Named CLI hosts and repository Project bindings (implemented and operator accepted)](specs/2026-09-30-repository-backends-design.md)
-- [PostgreSQL provisioning with operator-owned cluster configuration (approved; implementation and bounded native acceptance complete; results accepted)](specs/2026-10-07-shared-postgresql-design.md)
+- [PostgreSQL provisioning and native Python configuration (accepted; earlier provisioning native evidence; Python replacement locally verified only)](specs/2026-10-07-shared-postgresql-design.md)
 - [Caddy provisioning with operator-owned configuration (implemented; bounded native results accepted)](specs/2026-10-01-shared-caddy-design.md)
 - [Foundation documentation](specs/2026-07-18-foundation-documentation-design.md)
 - [Projects and basic Tasks first slice (Project directory requirements superseded)](specs/2026-07-18-projects-basic-tasks-first-slice-design.md)
@@ -46,7 +46,6 @@
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
 - [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
-- [PostgreSQL host-side Python configuration (parked proposal)](specs/2026-09-09-postgresql-host-python-design.md)
 
 ## Handoffs
 

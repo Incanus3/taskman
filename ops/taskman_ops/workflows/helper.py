@@ -28,7 +28,8 @@ from ..host_protocol import (
 )
 from ..host_protocol.postgresql import (
     validate_postgresql_recovery_request, validate_postgresql_recovery_result,
-    reduce_postgresql_recovery_evidence,
+    reduce_postgresql_recovery_evidence, POSTGRESQL_CONFIGURATION_OPERATIONS,
+    validate_postgresql_configuration_request, validate_postgresql_configuration_result,
 )
 from ..host_protocol.envelope import merge_result_warning, validate_result_for_request
 from ..host_protocol.identifiers import ProtocolError
@@ -162,6 +163,11 @@ def run_request(
     """Invoke once and enforce final protocol/version/operation/correlation."""
 
     aggregate_mutation_state(prior_mutation_state)
+    if request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+        try:
+            validate_postgresql_configuration_request(request)
+        except ProtocolError:
+            raise _postgresql_configuration_error(request, code=2, mutation="unchanged", prior=prior_mutation_state) from None
     if request.operation == "postgresql_config_recovery":
         try:
             validate_postgresql_recovery_request(request)
@@ -176,6 +182,10 @@ def run_request(
             else:
                 result = invoker(remote, selected, request, deadline=deadline)
     except HelperTransportError as error:
+        if request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+            raise _postgresql_configuration_error(request,
+                mutation="unknown" if request.operation == "configure_postgresql" and error.helper_entry_dispatched else "unchanged",
+                prior=prior_mutation_state, warnings=error.warnings) from None
         if request.operation == "postgresql_config_recovery":
             raise _postgresql_recovery_error(request, exit_code=5,
                 mutation_state="unknown" if error.helper_entry_dispatched else "unchanged",
@@ -191,6 +201,13 @@ def run_request(
             ) from None
         raise
 
+    if request.operation in POSTGRESQL_CONFIGURATION_OPERATIONS:
+        try:
+            return validate_postgresql_configuration_result(request, result)
+        except (TypeError, ValueError, AttributeError):
+            warnings = (("transient helper cleanup was incomplete",)
+                if isinstance(result, HostResult) and result.local_cleanup_incomplete else ())
+            raise _postgresql_configuration_error(request, prior=prior_mutation_state, warnings=warnings) from None
     if request.operation == "postgresql_config_recovery":
         try:
             return validate_postgresql_recovery_result(request, result)
@@ -271,6 +288,16 @@ def run_request(
     return result
 
 
+def _postgresql_configuration_error(request, *, code=5, mutation=None, prior="unchanged", warnings=()):
+    if mutation is None:
+        mutation = "unknown" if request.operation == "configure_postgresql" else "unchanged"
+    mutation = aggregate_mutation_state(prior, mutation)
+    return OpsError(ExitStatus(code), "postgresql", "PostgreSQL configuration helper failed",
+        changed=mutation != "unchanged", state={"mutation_state": mutation, "failed_boundary": "postgresql",
+            "exit_code": code}, warnings=warnings,
+        next_action="inspect selected PostgreSQL configuration and retained recovery evidence before retrying")
+
+
 def _postgresql_recovery_error(request, result=None, *, exit_code=8, mutation_state=None,
                                prior_mutation_state="unchanged", warnings=()):
     state = reduce_postgresql_recovery_evidence(request, result)
@@ -296,7 +323,7 @@ def result_error(
 
     if not isinstance(result, HostResult) or result.outcome == "succeeded":
         raise ValueError("result_error requires a final unsuccessful result")
-    if result.operation == "postgresql_config_recovery":
+    if result.operation in POSTGRESQL_CONFIGURATION_OPERATIONS or result.operation == "postgresql_config_recovery":
         state = dict(result.state)
         state["mutation_state"] = aggregate_mutation_state(prior_mutation_state, state["mutation_state"])
         return OpsError(ExitStatus(state["exit_code"]), "postgresql", result.message,

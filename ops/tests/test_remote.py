@@ -912,3 +912,25 @@ def test_failed_native_install_keeps_generic_transfer_error_and_cleanup(tmp_path
     with pytest.raises(OpsError):
         remote.put(source, PurePosixPath('/opt/taskman/uploads/payload'), mode=0o600, sensitive=True)
     assert [command[0] for command, _ in remote.calls][-2:] == ['rm', 'rmdir']
+
+
+@pytest.mark.parametrize("executing,completed,local,expected", [
+    (False, False, "unchanged", "unchanged"),
+    (True, False, "unchanged", "unknown"),
+    (True, True, "unchanged", "changed"),
+    (True, True, "unknown", "changed"),
+    (True, False, "changed", "changed"),
+])
+def test_pyinfra_error_classification_aggregates_completed_and_possible_work(executing, completed, local, expected):
+    from types import SimpleNamespace
+    from taskman_ops.remote import _merge_pyinfra_change_evidence
+    operation = SimpleNamespace(is_complete=lambda: completed, did_change=lambda: completed)
+    host = SimpleNamespace(op_hash_order=("managed-operation",))
+    state = SimpleNamespace(inventory=(host,), is_executing=executing,
+        get_op_data_for_host=lambda *_: SimpleNamespace(operation_meta=operation))
+    error = OpsError(ExitStatus.LOCKED, "postgresql", "locked", changed=local != "unchanged",
+        state={"mutation_state": local, "changed": local != "unchanged"})
+    merged = _merge_pyinfra_change_evidence(error, state)
+    assert merged.state["mutation_state"] == expected
+    assert merged.changed is (expected != "unchanged")
+    assert merged.state["changed"] is merged.changed

@@ -72,6 +72,7 @@ def test_builder_writes_only_lexical_fixed_metadata_members(tmp_path: Path) -> N
     assert not any(
         forbidden in name.lower()
         for name in names
+        if name != "taskman_ops/host_helper/postgresql_configuration.py"
         for forbidden in ("config", "secret", "test", "cache", "pyc", ".git", "metadata")
     )
 

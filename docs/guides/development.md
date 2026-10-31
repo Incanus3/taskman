@@ -223,9 +223,8 @@ one long embedded string to satisfy a size check. Explain a substantial-shell ex
 is introduced.
 
 This is not a prerequisite to rewrite all existing shell code. The
-[PostgreSQL host-side Python proposal](../specs/2026-09-09-postgresql-host-python-design.md) remains the
-separately scoped refactor of its existing workflow; its parked status does not limit this general
-preference for future ops work.
+[PostgreSQL native configuration architecture](../specs/2026-10-07-shared-postgresql-design.md#native-configuration-architecture) implements
+the bounded native configuration workflow; the general preference also applies to future ops work.
 
 ## Verification expectations
 

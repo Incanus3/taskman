@@ -7,8 +7,11 @@ import importlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+import signal
 import subprocess
+import sys
+import time
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -340,3 +343,59 @@ def test_operations_do_not_reintroduce_a_second_host_capability_owner() -> None:
         tree = ast.parse((operation_root / f"{name}.py").read_text(encoding="utf-8"))
         definitions = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
         assert definitions.isdisjoint(forbidden), name
+
+
+@pytest.mark.parametrize("signal_name", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_postgresql_signals_reap_candidate_child_before_exact_restoration(tmp_path, signal_name):
+    """Only the disposable helper process receives actual operating-system signals."""
+    module = "tests.host_helper.postgresql_signal_scenario"
+    process = subprocess.Popen(
+        [sys.executable, "-m", module, str(tmp_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (tmp_path / "ready").exists(), process.communicate(timeout=1)
+        os.kill(process.pid, getattr(signal, signal_name))
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        assert stdout == b"restored after reaping\n"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        # A failed signal-ownership assertion must also clean its disposable command.
+        marker = tmp_path / "ready"
+        if marker.exists():
+            child_pid = int(marker.read_text())
+            try:
+                command = Path('/proc') / str(child_pid) / 'cmdline'
+                if str(marker).encode() in command.read_bytes():
+                    os.killpg(child_pid, signal.SIGKILL)
+            except (ProcessLookupError, FileNotFoundError):
+                pass
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_postgresql_adapter_restores_previous_handlers_on_completion(monkeypatch, failure):
+    import signal
+    from contextlib import nullcontext
+    from taskman_ops.host_helper.operations import postgresql
+    from tests.host_protocol.test_postgresql import configuration_request
+    previous = {number: signal.getsignal(number) for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)}
+    monkeypatch.setattr(postgresql, "lifecycle_lock", lambda *_a, **_k: nullcontext())
+    observed = []
+    def configure(*_a, **kwargs):
+        assert not kwargs['cancellation'].is_set()
+        observed.append(all(signal.getsignal(number) != handler for number, handler in previous.items()))
+        if failure:
+            raise RuntimeError('private diagnostics')
+        return False
+    monkeypatch.setattr(postgresql, "configure_cluster", configure)
+    result = postgresql.configure_postgresql(configuration_request())
+    assert result.outcome == ('retryable' if failure else 'succeeded')
+    assert observed == [True]
+    assert all(signal.getsignal(number) == handler for number, handler in previous.items())

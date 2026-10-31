@@ -50,11 +50,13 @@ ARCHIVE_MEMBERS = (
     "taskman_ops/host_helper/operations/deploy.py",
     "taskman_ops/host_helper/operations/discover.py",
     "taskman_ops/host_helper/operations/firewall.py",
+    "taskman_ops/host_helper/operations/postgresql.py",
     "taskman_ops/host_helper/operations/preflight.py",
     "taskman_ops/host_helper/operations/restore.py",
     "taskman_ops/host_helper/operations/rollback.py",
     "taskman_ops/host_helper/paths.py",
     "taskman_ops/host_helper/postgresql.py",
+    "taskman_ops/host_helper/postgresql_configuration.py",
     "taskman_ops/host_helper/postgresql_recovery.py",
     "taskman_ops/host_helper/records.py",
     "taskman_ops/host_helper/restore_database.py",
@@ -105,6 +107,8 @@ BACKUP_ARCHIVE_MEMBERS = (
 )
 
 _SOURCE_MEMBERS = {
+    "taskman_ops/host_helper/postgresql_configuration.py": _SOURCE_ROOT / "host_helper" / "postgresql_configuration.py",
+    "taskman_ops/host_helper/operations/postgresql.py": _SOURCE_ROOT / "host_helper" / "operations" / "postgresql.py",
     "taskman_ops/host_helper/postgresql_recovery.py": _SOURCE_ROOT / "host_helper" / "postgresql_recovery.py",
     "taskman_ops/host_helper/postgresql.py": _SOURCE_ROOT / "host_helper" / "postgresql.py",
     "taskman_ops/host_protocol/postgresql.py": _SOURCE_ROOT / "host_protocol" / "postgresql.py",

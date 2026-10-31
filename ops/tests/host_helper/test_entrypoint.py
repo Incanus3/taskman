@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
@@ -1673,3 +1673,110 @@ def test_postgresql_recovery_dispatch_reduces_unproven_failure_evidence(monkeypa
     assert final.state["mutation_state"] == "changed"
     assert final.state["recovery_directory"] == DIRECTORY
     assert final.state["cluster"] == CLUSTER
+
+
+@pytest.mark.parametrize("operation", ["inspect_postgresql", "configure_postgresql"])
+def test_postgresql_actual_dispatch_validates_before_lock(monkeypatch, operation):
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.host_helper.operations import postgresql
+    request = configuration_request(operation, parameters={})
+    monkeypatch.setattr(postgresql, "lifecycle_lock", lambda *_a, **_k: pytest.fail("invalid input reached lock"))
+    result = entrypoint._dispatch(request)
+    assert result.outcome == "refused"
+    assert dict(result.state) == dict(exit_code=2, changed=False, mutation_state="unchanged",
+        failed_boundary="postgresql", reason="invalid_request")
+
+
+@pytest.mark.parametrize("operation", ["inspect_postgresql", "configure_postgresql"])
+@pytest.mark.parametrize("reason,manual,code,outcome", [
+    ("unsafe_state", False, 10, "refused"), ("command_failed", False, 5, "retryable"),
+    ("command_failed", True, 5, "manual"), ("recovery_required", True, 10, "manual"),
+])
+def test_postgresql_actual_dispatch_projects_capability_failures(monkeypatch, operation, reason, manual, code, outcome):
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.host_helper.operations import postgresql
+    monkeypatch.setattr(postgresql, "lifecycle_lock", lambda *_a, **_k: nullcontext())
+    def fail(*_a, **_k):
+        raise postgresql.PostgreSQLConfigurationError(reason=reason, mutation_state="changed", manual=manual)
+    monkeypatch.setattr(postgresql, "inspect_configuration", fail)
+    monkeypatch.setattr(postgresql, "configure_cluster", fail)
+    result = entrypoint._dispatch(configuration_request(operation))
+    assert result.outcome == outcome
+    assert result.state["exit_code"] == code
+    assert result.state["reason"] == reason
+    assert result.state["mutation_state"] == ("unchanged" if operation == "inspect_postgresql" else "changed")
+
+
+def test_postgresql_lock_failure_never_calls_capability(monkeypatch):
+    from tests.host_protocol.test_postgresql import configuration_request
+    from taskman_ops.host_helper.operations import postgresql
+    def lock(*_a, **_k):
+        raise postgresql.LifecycleLockContention()
+    monkeypatch.setattr(postgresql, "lifecycle_lock", lock)
+    monkeypatch.setattr(postgresql, "configure_cluster", lambda *_a, **_k: pytest.fail("locked capability"))
+    result = entrypoint._dispatch(configuration_request())
+    assert result.outcome == "retryable"
+    assert result.state["exit_code"] == 12
+    assert result.state["mutation_state"] == "unchanged"
+    assert result.state["locked"] is True
+
+
+@pytest.mark.parametrize("state,outcome,expected", [
+    ({"changed": True}, "succeeded", "changed"),
+    ({"changed": False}, "succeeded", "unchanged"),
+    ({"changed": True, "extra": True}, "succeeded", "unknown"),
+    ({"changed": False, "extra": True}, "succeeded", "unknown"),
+    ({"mutation_state": "changed", "extra": True}, "retryable", "changed"),
+    ({"mutation_state": True}, "retryable", "unknown"),
+])
+def test_postgresql_internal_evidence_and_encoding_are_bounded(monkeypatch, state, outcome, expected):
+    from tests.host_protocol.test_postgresql import configuration_request
+    request = configuration_request()
+    raw = HostResult.for_request(request, outcome, "done", state)
+    monkeypatch.setitem(entrypoint._DISPATCH, request.operation, lambda _r: raw)
+    result = entrypoint._dispatch(request)
+    attempts = []
+    real_encode = entrypoint.encode_result
+    def encode(value):
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise ProtocolError("synthetic encoding failure")
+        return real_encode(value)
+    monkeypatch.setattr(entrypoint, "encode_result", encode)
+    final = decode_result(entrypoint._encode_or_internal_failure(result, request=request,
+        operation=request.operation, correlation_id=request.correlation_id))
+    assert len(attempts) == 2
+    assert final.state["reason"] == "internal_failure"
+    assert final.state["mutation_state"] == expected
+
+
+def test_postgresql_uncorrelated_internal_change_is_rejected(monkeypatch):
+    from tests.host_protocol.test_postgresql import configuration_request
+    request = configuration_request()
+    raw = HostResult.for_request(replace(request, correlation_id="op-" + "2" * 32),
+        "retryable", "failed", {"mutation_state": "changed"})
+    monkeypatch.setitem(entrypoint._DISPATCH, request.operation, lambda _r: raw)
+    assert entrypoint._dispatch(request).state["mutation_state"] == "unknown"
+
+
+@pytest.mark.parametrize('operation', ['inspect_postgresql', 'configure_postgresql'])
+def test_postgresql_encoding_stops_after_second_failure_without_retrying_handler(monkeypatch, operation):
+    from tests.host_protocol.test_postgresql import configuration_request
+    request = configuration_request(operation)
+    state = {'changed': False, 'configuration_required': False} if operation == 'inspect_postgresql' else {'changed': False}
+    calls = []
+    def handler(value):
+        calls.append('handler')
+        return HostResult.for_request(value, 'succeeded', 'done', state)
+    monkeypatch.setitem(entrypoint._DISPATCH, operation, handler)
+    monkeypatch.setattr(entrypoint, '_observe_final_mutation', lambda *_a: pytest.fail('PostgreSQL fallback observer'))
+    result = entrypoint._dispatch(request)
+    def fail_encode(value):
+        calls.append('encode')
+        assert value.state.get('mutation_state', 'unchanged') == 'unchanged'
+        raise ProtocolError('synthetic encoding failure')
+    monkeypatch.setattr(entrypoint, 'encode_result', fail_encode)
+    with pytest.raises(ProtocolError):
+        entrypoint._encode_or_internal_failure(result, request=request, operation=operation,
+            correlation_id=request.correlation_id)
+    assert calls == ['handler', 'encode', 'encode']

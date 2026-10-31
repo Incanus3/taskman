@@ -13,8 +13,8 @@ This document specifies that increment; it does not authorize implementation or 
 The [dedicated-host design](2026-09-09-dedicated-host-deployment-design.md) continues to own host
 safety, immutable release identity, confirmation, recovery, and protocol bounds. The
 [runbook](../guides/deployment.md) owns current commands; [development guidance](../guides/development.md) owns
-engineering and verification rules. The [PostgreSQL Python proposal](2026-09-09-postgresql-host-python-design.md)
-remains parked and is not a prerequisite.
+engineering and verification rules. The [PostgreSQL native Python configuration](2026-10-07-shared-postgresql-design.md#python-extraction-decisions)
+is implemented and operator accepted, with local verification only; it is not a prerequisite.
 
 The [operations contract reference](2026-09-18-operations-contracts.md) owns the implemented
 protocol baseline (version 3), artifact identity, dirty-source support, deploy/provision `--yes`,

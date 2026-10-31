@@ -52,4 +52,5 @@ host changes are authorized here.
 
 No host changes are authorized by this design work. The separate
 [native acceptance guide](../guides/native-acceptance.md) defines portable criteria; actual host/artifact evidence is retained privately;
-the [PostgreSQL refactor](postgresql-host-python.md) remains parked.
+the [PostgreSQL native configuration](../specs/2026-10-07-shared-postgresql-design.md#python-extraction-decisions) is implemented and
+operator accepted; no new native acceptance is claimed.
