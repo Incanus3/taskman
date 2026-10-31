@@ -38,12 +38,24 @@ jobs:
     - name: Install runtime packages
       run: apk add --no-cache bash build-base fish git nodejs npm tar
     - uses: actions/checkout@v7
-    - name: Restore dependencies cache
+    - name: Restore Mix cache
       uses: actions/cache@v6
       with:
-        path: deps
-        key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
-        restore-keys: ${{ runner.os }}-mix-
+        path: |
+          deps
+          _build
+        # The workflow hash includes the pinned runtime image and build commands.
+        # A commit suffix refreshes immutable caches; restore only compatible builds.
+        key: ${{ runner.os }}-${{ runner.arch }}-mix-build-v1-${{ hashFiles('.github/workflows/elixir.yml', 'mix.lock') }}-${{ github.sha }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-mix-build-v1-${{ hashFiles('.github/workflows/elixir.yml', 'mix.lock') }}-
+    - name: Locate npm cache
+      id: npm-cache-directory
+      run: echo "path=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+    - name: Restore npm downloads
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.npm-cache-directory.outputs.path }}
+        key: ${{ runner.os }}-${{ runner.arch }}-npm-v1-${{ hashFiles('assets/package-lock.json') }}
     - name: Install dependencies
       run: mix deps.get
     - name: Build assets
