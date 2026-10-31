@@ -72,6 +72,7 @@
 
 ## Research
 
+- [Invitation inbox-placement investigation and evidence limits](research/2026-10-31-invitation-inbox-placement.md)
 - [Verification timeout assessment and approved bounded-phase correction (implemented and locally verified)](research/2026-10-07-verification-timeout-review.md)
 - [UFW Python API and host-helper integration evaluation](research/2026-10-01-ufw-python-api-evaluation.md)
 - [Operations test overlap and branch coverage ownership](research/2026-09-17-operations-test-overlap.md)
