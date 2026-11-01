@@ -21,14 +21,16 @@ The latest accepted revision replaces exact current-use availability with a page
 observed additional states. Bootstrap once per Project load, maintain prepared direct/subtree/
 whole-Project sets on relevant external events and successful local writes, and retain observations
 until full reload/remount. Selector opening, List navigation and Include child Lists changes only
-read prepared entries. Relevant source evidence: Task notifications are invalidations, only the
-active Project is subscribed, and the publisher excludes itself. Revisit/reconnect snapshots cover
+read prepared entries. Task events will now include persisted `status` and `list_id` snapshots,
+so availability observation performs no per-client Task read. This supersedes the earlier
+single-Task-refetch proposal. Existing listing/detail invalidations remain separate. Only the
+active Project is subscribed and the publisher excludes itself; revisit/reconnect snapshots cover
 subscription gaps. Do not add persistent usage history or last-instance reference counts.
 
-Independent builder checks, including the new index/lifetime contract against notification,
-workspace, reconciliation and movement code, found no consequential gaps. Badge hover must still
-preserve the existing pointer-event passthrough for click/tap Task navigation and add no keyboard
-tab stops.
+Independent builder checks, including the index/lifetime and compact event-snapshot contracts
+against notification, workspace, reconciliation and movement code, found no consequential gaps.
+Badge hover must still preserve the existing pointer-event passthrough for click/tap Task navigation
+and add no keyboard tab stops.
 
 ## Remaining sequence and gates
 

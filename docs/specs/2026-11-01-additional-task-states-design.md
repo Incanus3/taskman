@@ -19,7 +19,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
 | D7 | Accepted | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
 | D8 | Accepted | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
-| D9 | Accepted | Precompute List availability and retain observed states for the open page; reload rebuilds from current Tasks | Retained states may have zero current Tasks; PubSub invalidations may require a single-Task read | [Updates](#availability-is-prepared-before-controls-open) |
+| D9 | Accepted | Precompute page-local availability; update from event state/location snapshots without per-client Task reads | Events gain a compact payload; retained states may have zero current Tasks | [Updates](#availability-is-prepared-before-controls-open) |
 
 D1–D9 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
@@ -127,7 +127,7 @@ the index for a Project when it is loaded; do not bootstrap every Project in the
 | Trigger | Availability work |
 |---|---|
 | Initial Project load | One grouped/distinct `(list_id, status)` snapshot of current additional-state Tasks, unfiltered by status preferences; prepare all direct and aggregate entries for that Project |
-| Relevant external Task event | On create, move, or a change to status/owning List, read the authoritative Task as needed and union its additional state into its current direct-location entry; update affected aggregate entries |
+| Relevant external Task event | On create, move, or a change to status/owning List, merge the event's persisted state/location snapshot into its direct-location entry and update affected aggregates; no Task read |
 | Successful local create/edit/move | Apply the same observation using the returned persisted Task; do not wait for a self-excluded PubSub event |
 | Task leaves an additional state, moves away, or is removed | Retain the source location's observed state; no last-instance query or decrement |
 | List create/reparent/remove reconciliation | Update valid location keys and rebuild aggregate unions from retained direct entries and current List ancestry; never discover Task states by scanning the listing |
@@ -151,12 +151,35 @@ existing tree reload but do not affect List ownership. Filter checkbox changes d
 the availability index. Any existing listing/count refreshes remain separate from availability
 maintenance; opening a form must not introduce extra availability work.
 
-Current notifications are invalidations, so the minimal external-event path may read one Task
-through the Tasks context; do not requery every List or the whole Project for each event. Reuse
-an authoritative Task already fetched during reconciliation when practical. Observations use
-persisted snapshots actually seen by the page; the index is not an audit log and does not
-reconstruct intermediate states overwritten before reconciliation reads them. Invalid or foreign
-Project events must not change the index.
+Extend every Task create/update/move event with `status` and `list_id`, taken directly from the
+persisted Task already passed to `ChangeNotifications.publish_task/3`. Existing `project_id`,
+`entity_id`, `lock_version`, and changed `fields` remain. `list_id: nil` explicitly means direct
+Project ownership. Other event types do not carry Task state/location data. Include the final
+snapshot even on ordinary updates; the consumer uses the relevant-event rules above to avoid
+unnecessary availability work. Do not publish drafts, full Task structs, or extra descriptive data.
+
+The Task context owns publication after successful persistence as before. Local callers use the
+same persisted result directly. The availability consumer structurally validates the snapshot
+(supported state, nil or positive owning List ID, valid matching Project) and performs only set
+unions and prepared rollup updates. Invalid or missing snapshots do not trigger a fallback Task
+read. All in-repository producers and event fixtures must be updated together; no public event
+schema or legacy producer compatibility layer is introduced. A well-formed observation for a List
+not yet present in navigation can be retained by ID until topology reconciliation supplies that
+List; do not issue a discovery query to validate each notification's ownership.
+
+For availability, the snapshot is evidence of persisted use at the time of that mutation, not a
+claim about the Task's latest state. Duplicate or out-of-order snapshots may add a previously
+used state and never remove one; no per-Task version cache or old-state/location payload is needed.
+Existing revision metadata remains available to other consumers. The existing invalidation/refetch
+contract still owns current listing, counts, detail and hierarchy reconciliation; do not replace
+their authoritative reads with these two fields. This change eliminates additional availability
+reads per client, not every database read performed by existing event handling.
+
+This bounded event extension supersedes the metadata-only restriction in the live-updates design
+for Task availability observations. Existing ephemeral delivery and enclosing-transaction
+publication caveats remain: the cache is not an audit log, missed events are repaired from current
+Tasks on resnapshot, and historical states cannot be reconstructed after a remount. No outbox or
+broader event-driven view rewrite is included.
 
 This eager session index avoids selector latency and last-instance bookkeeping. A database usage
 history would survive reload but is outside the accepted lifetime. Requerying upon selector open
@@ -309,10 +332,11 @@ Approaches considered:
 Expected boundaries:
 
 - Tasks context/persistence owns project-scoped represented-state discovery and List scope
-  validation. Provide grouped bootstrap discovery and bounded single-Task observation reads
-  through existing context boundaries; do not load entire Projects solely to discover a handful
+  validation. Provide grouped bootstrap discovery through existing context boundaries; event
+  observations require no Task reads. Do not load entire Projects solely to discover a handful
   of state values. Missing or cross-Project List scopes preserve existing `{:error, :not_found}`
-  handling, never broaden to the whole Project.
+  handling, never broaden to the whole Project. `ChangeNotifications` and its Event struct own
+  the compact persisted Task snapshot; the Tasks context supplies the already-persisted Task.
 - Listing state/preferences, creation/editing state, hierarchy projection and reconciliation own
   availability and lifetime. A focused page-local index owns direct observations and prepared
   rollups, shared by navigation/listing/forms; hierarchy availability is prepared on tree load.
@@ -343,7 +367,9 @@ acceptance has been performed. Implementation planning must cover:
    cross-Project isolation, empty populations and state filters that exclude all matching Tasks.
    Verify monotonic direct observations, local/external updates, topology rollups, Project return,
    reconnect/remount behavior and reload reset. Verify selector opening adds no availability
-   queries or tree traversal, and unrelated events do not trigger discovery.
+   queries or tree traversal, external event observation adds no Task read, and unrelated events
+   do not trigger discovery. Cover publisher snapshot values after create/update/move, nil owning
+   List, duplicate/out-of-order delivery, a not-yet-loaded List, and malformed/foreign snapshots.
 3. Main/hierarchy checkbox preference retention across absent states, navigation, live changes,
    empty submissions, explicit URL snapshots and existing browser storage.
 4. Form auto-availability, selected draft retention, one-way reveal, validation/autosave lifetime,
@@ -360,7 +386,8 @@ acceptance has been performed. Implementation planning must cover:
 
 At implementation completion, update the domain, MVP, relationships and affected historical
 specification rules to identify this specification's replacements; do not publish contradictory
-current contracts. Audit changed files for privacy and leaked planning terminology.
+current contracts. Include the bounded Task snapshot extension in the live-updates contract.
+Audit changed files for privacy and leaked planning terminology.
 
 Next: obtain full design approval, then write and review an implementation plan. Plan approval is
 the clean-session boundary unless the operator explicitly chooses to implement in that session.
