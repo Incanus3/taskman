@@ -4,6 +4,9 @@
 **Evidence:** Static inspection of current notification producers and LiveView consumers.
 No performance benchmark or implementation verification has been performed.
 
+Follow-up: Task **70**, relative to this repository's registered Taskman Project.
+Validate its description marker: `Source: Incanus3/taskman:notification-read-amplification`.
+
 The [additional-state design](../specs/2026-11-01-additional-task-states-design.md)
 already calls for persisted Task `status` and `list_id` in events, eliminating extra availability
 reads. The candidates below are findings for scope discussion, not additions to that feature.
