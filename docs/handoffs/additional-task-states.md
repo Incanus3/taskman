@@ -32,6 +32,10 @@ against notification, workspace, reconciliation and movement code, found no cons
 Badge hover must still preserve the existing pointer-event passthrough for click/tap Task navigation
 and add no keyboard tab stops.
 
+[Related notification-read analysis](../research/2026-11-01-notification-read-amplification.md)
+records other small-payload and refresh-gating candidates. These findings do not expand the
+approved individual decisions or the intended additional-state implementation scope.
+
 ## Remaining sequence and gates
 
 1. Obtain full design approval; incorporate operator corrections.
