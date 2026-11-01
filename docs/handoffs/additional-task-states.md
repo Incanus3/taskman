@@ -20,6 +20,11 @@ questions after inspecting the specification against the relevant existing code 
 The operator subsequently clarified D4: selectors and Task status sorting must share the canonical
 sequence in the specification, with descending sorting reversing it. The draft's separate sort
 ranking was rejected; the specification and verification criteria now reflect that correction.
+Proposals D7–D8 now include shared color tokens and delayed description tooltips on state options.
+Existing tooltips use a 450 ms hover delay but need opt-in active-option, accessibility and
+top-layer support; ordinary tooltip consumers should retain their current behavior. These revised
+details await full design approval. The read-only reviewer also checked these revisions and the
+unified sorting contract, finding no consequential unanswered questions.
 
 ## Remaining sequence and gates
 

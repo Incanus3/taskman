@@ -11,8 +11,8 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 
 | ID | Status | Choice | Cost or constraint | Contract |
 |---|---|---|---|---|
-| D7 | Proposed | Centralize domain state definitions; keep Tailwind presentation in the web layer | Existing hardcoded state lists and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
-| D8 | Proposed | Add descriptions as metadata; retain existing interaction and warning boundaries | Descriptions do not introduce a new tooltip or transition engine | [Definitions](#state-definitions) |
+| D7 | Proposed | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
+| D8 | Proposed | Show state descriptions in delayed option tooltips | Enhanced pickers require active-option and top-layer tooltip support | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 | D1 | Accepted | Default states plus contextually represented additional states in selectors | Options change with location and live updates | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
@@ -44,6 +44,11 @@ Inspected source on branch `feature/additional_states`, starting at revision
   states. `Mutations.unresolved_blocker_summaries/1` currently excludes Done and Will Not Do.
 - Selectors use `Task.statuses/0`, while SQL and hierarchy status sorting have a separate existing
   rank: Will Not Do, Icebox, Pending, In Progress, In Review, Done in ascending order.
+- `assets/js/tooltips.js` uses a 450 ms hover delay and immediate keyboard-focus display.
+  Its tooltip is appended to the document body and marked `aria-hidden`. The enhanced select
+  instead focuses its listbox and tracks the active option with `aria-activedescendant`, while
+  both the select options and hierarchy filter can use top-layer popovers. Existing tooltip
+  behavior therefore needs bounded extensions for these description tooltips.
 
 This specification replaces the blocker-resolution rule in the domain, relationships, MVP and
 blocking specification when implemented. Other lifecycle, ownership, recovery and confirmation
@@ -72,10 +77,11 @@ explicitly abandoned or declined work. Human acceptance of completed work remain
 Closed, completed and blocker-resolving are distinct concepts; no configurable completion engine
 is needed for the existing Done-specific behavior.
 
-Descriptions belong in domain metadata and product/agent documentation. Exact visual exposure
-is left to later UI work; this feature does not require tooltip interactions. Color is web
-presentation metadata. Choose an accessible subdued color for Not Planned without altering
-existing state colors; exact shade is an implementation choice.
+Descriptions and a color token belong in the shared state definitions and product/agent
+documentation. The web layer maps the token to concrete text/background styles rather than
+maintaining an independent state-to-color assignment. Preserve existing state colors; choose an
+accessible subdued color for Not Planned. Exact shade/token is an implementation choice.
+The additional-option background treatment remains separate from each state's identifying color.
 
 ## Option availability uses the unfiltered Task population
 
@@ -170,6 +176,34 @@ both listing SQL and hierarchy sorting, preserving existing tie-breakers and sel
 This replaces the existing separate ranking described in the baseline. The earlier draft's
 proposal to preserve that ranking was rejected: consistent ordering across surfaces takes precedence.
 
+## Descriptions appear in delayed option tooltips
+
+Show the shared description for every state option, default or additional, in the enhanced
+create/edit state picker and both status filters. Use a 450 ms delay on pointer hover or keyboard
+focus/active-option changes. This is the existing hover delay, proposed for consistent pacing;
+the delay is not configurable per state. In the enhanced picker, follow its keyboard-active
+option without moving DOM focus or changing the selected value. For filters, follow the focused
+checkbox as well as hover over its option row.
+
+Moving to another option restarts the delay and removes the previous tooltip. Cancel pending
+and visible tooltips on selection, picker/filter close, scroll, navigation, disconnected or removed
+options, and form/dialog changes. Keep the tooltip visible while the pointer remains over its
+trigger or tooltip; Escape dismisses it while retaining existing picker/filter/dialog dismissal
+precedence. Tooltip handling must not consume Escape in place of the control's existing action.
+
+Render above the owning dialog/popover without clipping, constrain to the viewport, and never
+cover the option being described when space allows. Tooltips contain plain descriptive text,
+with no focusable controls. Descriptions must also be available to assistive technology through
+the option's accessible description independently of visual timing; the current globally
+`aria-hidden` tooltip alone is insufficient. Touch users can select immediately; do not introduce
+a long-press requirement or delay selection. Native select tooltip presentation is platform-owned;
+custom timing applies to the enhanced picker and the application-owned checkbox filters.
+
+Reuse/extend the existing tooltip infrastructure with opt-in description/active-option support,
+including a top-layer-capable presentation path. Preserve existing non-state tooltip behavior,
+including immediate keyboard-focus display. Adding description tooltips is limited to state
+options; this does not add tooltips to every Task badge or other picker type.
+
 ## Closed work can still block other Tasks
 
 Not Planned is excluded from open counts. Preserve the established count contract: when any
@@ -192,9 +226,10 @@ blockers now appear in those summaries. No new error type or confirmation flag i
 
 Prefer a small compile-time domain state catalogue under `lib/taskman/tasks/`, consumed by the
 Task schema, preference defaults, counting, validation and blocker resolution. It owns identifiers,
-labels, descriptions, order and semantic flags. Keep Tailwind classes in the existing web Status
-module, keyed by the same identifiers. Avoid database-backed state definitions, per-Project
-configuration, user-created states and a generic state-machine framework.
+labels, descriptions, color tokens, order and semantic flags. Keep concrete style mappings in the
+web layer, keyed by color token rather than assigning colors independently by state. Avoid
+database-backed state definitions, per-Project configuration, user-created states and a generic
+state-machine framework.
 
 Approaches considered:
 
@@ -214,7 +249,9 @@ Expected boundaries:
 - Listing state/preferences, creation/editing state, hierarchy projection and reconciliation own
   availability and lifetime. Derive hierarchy availability from its existing complete tree.
 - `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js`
-  and relevant CSS own option rendering, metadata and picker synchronization. No web-layer queries.
+  and relevant CSS own option rendering, metadata and picker synchronization. `assets/js/tooltips.js`
+  owns shared tooltip scheduling/presentation extensions; opt-in state handling must preserve
+  other tooltip consumers. No web-layer queries.
 - `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions consume the new
   definitions/rank without introducing unrelated query or workflow refactors.
 - Generate a new Ecto migration to extend `tasks_status_check`; keep existing rows unchanged.
@@ -243,8 +280,11 @@ acceptance has been performed. Implementation planning must cover:
 5. API/CLI create/update/list parity for `not_planned`, help/completion/skill consistency and the
    rebuilt executable gate from the development guide.
 6. Focused browser checks for stored preferences across reload, enhanced picker option updates,
-   keyboard reveal/selection/dismissal and muted option readability. Preserve existing popup
-   placement, native bridge, focus and recovery behavior. Run `mix precommit` after implementation.
+   keyboard reveal/selection/dismissal and muted option readability. Verify delayed description
+   display for hover and keyboard-active options, cancellation and stale-tooltip removal, actual
+   visibility above dialogs/popovers, viewport placement, accessible descriptions and preserved
+   ordinary tooltip behavior. Preserve existing popup placement, native bridge, focus and recovery
+   behavior. Run `mix precommit` after implementation.
 
 At implementation completion, update the domain, MVP, relationships and affected historical
 specification rules to identify this specification's replacements; do not publish contradictory
