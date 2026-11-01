@@ -12,7 +12,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | ID | Status | Choice | Cost or constraint | Contract |
 |---|---|---|---|---|
 | D7 | Proposed | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
-| D8 | Proposed | Show state descriptions in delayed option tooltips | Enhanced pickers require active-option and top-layer tooltip support | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
+| D8 | Proposed | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 | D1 | Accepted | Default states plus contextually represented additional states in selectors | Options change with location and live updates | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
@@ -49,6 +49,8 @@ Inspected source on branch `feature/additional_states`, starting at revision
   instead focuses its listbox and tracks the active option with `aria-activedescendant`, while
   both the select options and hierarchy filter can use top-layer popovers. Existing tooltip
   behavior therefore needs bounded extensions for these description tooltips.
+- Table state badges currently disable pointer events so clicking their area reaches the row's
+  task-opening link. Adding hover descriptions must preserve that navigation behavior.
 
 This specification replaces the blocker-resolution rule in the domain, relationships, MVP and
 blocking specification when implemented. Other lifecycle, ownership, recovery and confirmation
@@ -185,11 +187,19 @@ the delay is not configurable per state. In the enhanced picker, follow its keyb
 option without moving DOM focus or changing the selected value. For filters, follow the focused
 checkbox as well as hover over its option row.
 
-Moving to another option restarts the delay and removes the previous tooltip. Cancel pending
-and visible tooltips on selection, picker/filter close, scroll, navigation, disconnected or removed
-options, and form/dialog changes. Keep the tooltip visible while the pointer remains over its
-trigger or tooltip; Escape dismisses it while retaining existing picker/filter/dialog dismissal
-precedence. Tooltip handling must not consume Escape in place of the control's existing action.
+Show the same state description on the main table's state badges after 450 ms of pointer hover,
+including contextual and expanded rows. Apply to every state. Badges remain noninteractive labels
+without extra keyboard tab stops; expose their descriptions to assistive technology independently
+of visual hover. Preserve clicking/tapping the badge area to open its Task and the existing row
+hover treatment. Account for the current pointer-event passthrough rather than simply attaching
+tooltip attributes to an element that cannot receive hover events.
+
+Moving to another option or badge restarts the delay and removes the previous tooltip. Cancel
+pending and visible tooltips on selection, picker/filter close, scroll, navigation, disconnected
+or removed options/badges, changed badge state, and form/dialog changes. Keep the tooltip visible
+while the pointer remains over its trigger or tooltip; Escape dismisses it while retaining existing
+picker/filter/dialog dismissal precedence. Tooltip handling must not consume Escape in place of
+the control's existing action.
 
 Render above the owning dialog/popover without clipping, constrain to the viewport, and never
 cover the option being described when space allows. Tooltips contain plain descriptive text,
@@ -201,8 +211,8 @@ custom timing applies to the enhanced picker and the application-owned checkbox 
 
 Reuse/extend the existing tooltip infrastructure with opt-in description/active-option support,
 including a top-layer-capable presentation path. Preserve existing non-state tooltip behavior,
-including immediate keyboard-focus display. Adding description tooltips is limited to state
-options; this does not add tooltips to every Task badge or other picker type.
+including immediate keyboard-focus display. Description tooltips cover state options and table
+state badges; other badge locations, priority badges and other picker types are outside this scope.
 
 ## Closed work can still block other Tasks
 
@@ -283,8 +293,9 @@ acceptance has been performed. Implementation planning must cover:
    keyboard reveal/selection/dismissal and muted option readability. Verify delayed description
    display for hover and keyboard-active options, cancellation and stale-tooltip removal, actual
    visibility above dialogs/popovers, viewport placement, accessible descriptions and preserved
-   ordinary tooltip behavior. Preserve existing popup placement, native bridge, focus and recovery
-   behavior. Run `mix precommit` after implementation.
+   ordinary tooltip behavior. Cover table state-badge hover delay, correct descriptions after live
+   updates, and preserved click/tap navigation without added tab stops. Preserve existing popup
+   placement, native bridge, focus and recovery behavior. Run `mix precommit` after implementation.
 
 At implementation completion, update the domain, MVP, relationships and affected historical
 specification rules to identify this specification's replacements; do not publish contradictory

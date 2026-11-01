@@ -25,6 +25,10 @@ Existing tooltips use a 450 ms hover delay but need opt-in active-option, access
 top-layer support; ordinary tooltip consumers should retain their current behavior. These revised
 details await full design approval. The read-only reviewer also checked these revisions and the
 unified sorting contract, finding no consequential unanswered questions.
+Description tooltips now also cover main-table state badges with the same 450 ms hover delay.
+Badge pointer-event passthrough currently preserves row-link navigation; implementation must
+support hover without losing click/tap navigation or adding keyboard tab stops. This bounded
+addition received source inspection and a documentation consistency check.
 
 ## Remaining sequence and gates
 
