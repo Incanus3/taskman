@@ -16,7 +16,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D1 | Accepted | Default states plus contextually represented additional states in selectors | Options change with location and live updates | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
-| D4 | Accepted | One logical selector order; additional options have a muted background | Background distinction must remain readable alongside focus/selection | [Presentation](#selector-order-and-presentation) |
+| D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
 | D5 | Accepted | Not Planned is additional, closed, initially excluded only in the main listing | Closed work remains available through explicit filtering | [Definitions](#state-definitions) |
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
 
@@ -163,11 +163,12 @@ priority or other picker consumers. Native fallback must offer the same values a
 native option backgrounds may be platform-controlled. Verify the enhanced option distinction
 visually rather than asserting CSS class strings.
 
-Status sorting of Task rows retains the existing six states' relative ranks. As an implementation
-choice, insert Not Planned immediately after Will Not Do in ascending status sort, so descending
-sort starts Done, In Review, In Progress, Pending, Icebox, Not Planned, Will Not Do. Both listing
-and hierarchy sorting use the same ranking. Selector order and existing work-priority sort are
-different concerns; a broader sort redesign is outside this feature.
+Selectors and Task status sorting share one canonical order:
+**Icebox, Pending, In Progress, In Review, Done, Not Planned, Will Not Do**.
+Ascending status sort follows that sequence; descending reverses it. Apply the same ranking in
+both listing SQL and hierarchy sorting, preserving existing tie-breakers and selected directions.
+This replaces the existing separate ranking described in the baseline. The earlier draft's
+proposal to preserve that ranking was rejected: consistent ordering across surfaces takes precedence.
 
 ## Closed work can still block other Tasks
 
@@ -231,7 +232,8 @@ Design evidence is source inspection, not executed feature tests. No visual prot
 acceptance has been performed. Implementation planning must cover:
 
 1. Metadata, schema/database acceptance, count classification, and only-Done blocker resolution,
-   including Will Not Do regression coverage and existing confirmation behavior.
+   including Will Not Do regression coverage and existing confirmation behavior. Verify selectors
+   and ascending/descending listing and hierarchy status sorts against the same canonical sequence.
 2. Scoped discovery for direct Project, direct List, descendant Lists and whole Project, including
    cross-Project isolation, empty populations and state filters that exclude all matching Tasks.
 3. Main/hierarchy checkbox preference retention across absent states, navigation, live changes,

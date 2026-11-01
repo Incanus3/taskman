@@ -17,6 +17,9 @@ proposals D7–D8, awaits approval. Product code is unchanged. Source inspection
 Will Not Do currently resolves blockers; the operator explicitly requires changing that behavior.
 Only Done will resolve blockers. A fresh read-only builder check found no consequential unanswered
 questions after inspecting the specification against the relevant existing code boundaries.
+The operator subsequently clarified D4: selectors and Task status sorting must share the canonical
+sequence in the specification, with descending sorting reversing it. The draft's separate sort
+ranking was rejected; the specification and verification criteria now reflect that correction.
 
 ## Remaining sequence and gates
 
