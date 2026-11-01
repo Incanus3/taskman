@@ -12,19 +12,19 @@ owns requirements, decisions, source evidence, boundaries and verification crite
 
 ## Current checkpoint
 
-Behavioral decisions D1–D6 are operator accepted in discussion. The full written design, including
-proposals D7–D8, awaits approval. Product code is unchanged. Source inspection confirmed that
+All individual decisions D1–D8 are operator accepted in discussion. The complete written design
+awaits approval. Product code is unchanged. Source inspection confirmed that
 Will Not Do currently resolves blockers; the operator explicitly requires changing that behavior.
 Only Done will resolve blockers. A fresh read-only builder check found no consequential unanswered
 questions after inspecting the specification against the relevant existing code boundaries.
 The operator subsequently clarified D4: selectors and Task status sorting must share the canonical
 sequence in the specification, with descending sorting reversing it. The draft's separate sort
 ranking was rejected; the specification and verification criteria now reflect that correction.
-Proposals D7–D8 now include shared color tokens and delayed description tooltips on state options.
+Accepted decisions D7–D8 include shared color tokens and delayed description tooltips on state options.
 Existing tooltips use a 450 ms hover delay but need opt-in active-option, accessibility and
-top-layer support; ordinary tooltip consumers should retain their current behavior. These revised
-details await full design approval. The read-only reviewer also checked these revisions and the
-unified sorting contract, finding no consequential unanswered questions.
+top-layer support; ordinary tooltip consumers should retain their current behavior. The read-only
+reviewer also checked these revisions and the unified sorting contract, finding no consequential
+unanswered questions.
 Description tooltips now also cover main-table state badges with the same 450 ms hover delay.
 Badge pointer-event passthrough currently preserves row-link navigation; implementation must
 support hover without losing click/tap navigation or adding keyboard tab stops. This bounded
@@ -49,5 +49,5 @@ the four changed documentation files. `mix precommit` passed against the unchang
 
 ## Workstream rulings
 
-No autonomous implementation rulings. Specification proposals and builder choices are identified
-in the design and remain subject to full design approval.
+No autonomous implementation rulings. All individual design decisions are accepted; builder
+choices are identified in the specification. Approval of the complete written design remains pending.

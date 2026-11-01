@@ -11,16 +11,16 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 
 | ID | Status | Choice | Cost or constraint | Contract |
 |---|---|---|---|---|
-| D7 | Proposed | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
-| D8 | Proposed | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 | D1 | Accepted | Default states plus contextually represented additional states in selectors | Options change with location and live updates | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
 | D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
 | D5 | Accepted | Not Planned is additional, closed, initially excluded only in the main listing | Closed work remains available through explicit filtering | [Definitions](#state-definitions) |
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
+| D7 | Accepted | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
+| D8 | Accepted | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 
-D1–D6 reflect explicit operator decisions. D7–D8 and the complete contract below require design
+D1–D8 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
 blocker correction; it does not authorize implementation, pushing, merging or deployment.
 
@@ -182,7 +182,7 @@ proposal to preserve that ranking was rejected: consistent ordering across surfa
 
 Show the shared description for every state option, default or additional, in the enhanced
 create/edit state picker and both status filters. Use a 450 ms delay on pointer hover or keyboard
-focus/active-option changes. This is the existing hover delay, proposed for consistent pacing;
+focus/active-option changes. This matches the existing hover delay for consistent pacing;
 the delay is not configurable per state. In the enhanced picker, follow its keyboard-active
 option without moving DOM focus or changing the selected value. For filters, follow the focused
 checkbox as well as hover over its option row.
@@ -234,7 +234,7 @@ blockers now appear in those summaries. No new error type or confirmation flag i
 
 ## Ownership and implementation boundaries
 
-Prefer a small compile-time domain state catalogue under `lib/taskman/tasks/`, consumed by the
+Use a small compile-time domain state catalogue under `lib/taskman/tasks/`, consumed by the
 Task schema, preference defaults, counting, validation and blocker resolution. It owns identifiers,
 labels, descriptions, color tokens, order and semantic flags. Keep concrete style mappings in the
 web layer, keyed by color token rather than assigning colors independently by state. Avoid
@@ -246,7 +246,7 @@ Approaches considered:
 - **Remember preferences separately from contextual options (selected):** retains navigation
   intent and compact UI, but requires partial checkbox updates. Resetting unavailable preferences
   loses choices; retaining every selected option visibly accumulates clutter.
-- **Central domain definitions (recommended):** current consumers need independent visibility,
+- **Central domain definitions (selected):** current consumers need independent visibility,
   count and blocker properties. Extending scattered hardcoded lists is initially smaller but
   risks reintroducing the incorrect assumption that every closed state resolves blockers.
 
