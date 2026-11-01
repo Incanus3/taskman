@@ -12,23 +12,23 @@ owns requirements, decisions, source evidence, boundaries and verification crite
 
 ## Current checkpoint
 
-All individual decisions D1–D8 are operator accepted in discussion. The complete written design
-awaits approval. Product code is unchanged. Source inspection confirmed that
-Will Not Do currently resolves blockers; the operator explicitly requires changing that behavior.
-Only Done will resolve blockers. A fresh read-only builder check found no consequential unanswered
-questions after inspecting the specification against the relevant existing code boundaries.
-The operator subsequently clarified D4: selectors and Task status sorting must share the canonical
-sequence in the specification, with descending sorting reversing it. The draft's separate sort
-ranking was rejected; the specification and verification criteria now reflect that correction.
-Accepted decisions D7–D8 include shared color tokens and delayed description tooltips on state options.
-Existing tooltips use a 450 ms hover delay but need opt-in active-option, accessibility and
-top-layer support; ordinary tooltip consumers should retain their current behavior. The read-only
-reviewer also checked these revisions and the unified sorting contract, finding no consequential
-unanswered questions.
-Description tooltips now also cover main-table state badges with the same 450 ms hover delay.
-Badge pointer-event passthrough currently preserves row-link navigation; implementation must
-support hover without losing click/tap navigation or adding keyboard tab stops. This bounded
-addition received source inspection and a documentation consistency check.
+All individual decisions D1–D9 are operator accepted in discussion; full written design approval
+is pending. Product code is unchanged. The specification owns all behavioral detail, including
+only-Done blocker resolution, unified sorting, shared color tokens and delayed descriptions on
+state options and main-table state badges.
+
+The latest accepted revision replaces exact current-use availability with a page-local index of
+observed additional states. Bootstrap once per Project load, maintain prepared direct/subtree/
+whole-Project sets on relevant external events and successful local writes, and retain observations
+until full reload/remount. Selector opening, List navigation and Include child Lists changes only
+read prepared entries. Relevant source evidence: Task notifications are invalidations, only the
+active Project is subscribed, and the publisher excludes itself. Revisit/reconnect snapshots cover
+subscription gaps. Do not add persistent usage history or last-instance reference counts.
+
+Independent builder checks, including the new index/lifetime contract against notification,
+workspace, reconciliation and movement code, found no consequential gaps. Badge hover must still
+preserve the existing pointer-event passthrough for click/tap Task navigation and add no keyboard
+tab stops.
 
 ## Remaining sequence and gates
 

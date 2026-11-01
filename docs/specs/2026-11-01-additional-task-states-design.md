@@ -11,7 +11,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 
 | ID | Status | Choice | Cost or constraint | Contract |
 |---|---|---|---|---|
-| D1 | Accepted | Default states plus contextually represented additional states in selectors | Options change with location and live updates | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
+| D1 | Accepted | Default states plus additional states observed in the relevant scope | List options can remain available after their last matching Task changes state | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
 | D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
@@ -19,8 +19,9 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
 | D7 | Accepted | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
 | D8 | Accepted | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
+| D9 | Accepted | Precompute List availability and retain observed states for the open page; reload rebuilds from current Tasks | Retained states may have zero current Tasks; PubSub invalidations may require a single-Task read | [Updates](#availability-is-prepared-before-controls-open) |
 
-D1–D8 reflect explicit operator decisions. The complete written specification still requires design
+D1–D9 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
 blocker correction; it does not authorize implementation, pushing, merging or deployment.
 
@@ -51,6 +52,10 @@ Inspected source on branch `feature/additional_states`, starting at revision
   behavior therefore needs bounded extensions for these description tooltips.
 - Table state badges currently disable pointer events so clicking their area reaches the row's
   task-opening link. Adding hover descriptions must preserve that navigation behavior.
+- `ChangeNotifications.Event` carries Task IDs and changed-field names, not state/location
+  snapshots. Task notifications target the active Project subscription and use `broadcast_from`,
+  excluding the publishing LiveView. `Workspace.refresh/1` loads List navigation; listing count
+  queries exclude unchecked closed states and cannot themselves discover all additional states.
 
 This specification replaces the blocker-resolution rule in the domain, relationships, MVP and
 blocking specification when implemented. Other lifecycle, ownership, recovery and confirmation
@@ -87,10 +92,13 @@ The additional-option background treatment remains separate from each state's id
 
 ## Option availability uses the unfiltered Task population
 
-Every selector includes all default states. Add each additional state represented by at least
-one persisted Task in the following population, regardless of checked states or collapsed branches.
+Every selector includes all default states. Bootstrap additional-state availability from the
+following unfiltered populations. List/Project scopes then retain additional states observed in
+use for the open page, even after their last matching Task changes state or moves away. This
+session-local retention replaces the earlier draft's requirement to remove unused List states.
+The hierarchy continues to derive availability from its complete currently loaded tree.
 
-| Selector | Population for represented additional states |
+| Selector | Population for initial/current state observation |
 |---|---|
 | Main listing, List, child Lists off | Tasks owned directly by that List |
 | Main listing, List, child Lists on | Tasks owned by that List or any descendant List |
@@ -104,10 +112,56 @@ List ancestry and Task parentage are different. Main-listing contextual ancestor
 Task descendants outside the owning-location population do not enlarge that selector's scope.
 Hierarchy scope includes every node even when filtering or collapsing conceals it.
 
-Recompute availability on relevant navigation, Include child Lists changes, form ownership
-changes, and reconciled Task create/update/move/delete or List topology changes. Unchecking the
-last represented state does not remove its option; changing or deleting the last Task in that
-state may remove it. No state-filter predicate may restrict discovery of represented states.
+No state-filter predicate may restrict discovery. Main listing and form selectors share the
+same observed direct-location sets, with the scope differences in the table above. Merely
+revealing options or selecting an unsaved draft state does not mark that state used in a List.
+
+## Availability is prepared before controls open
+
+Keep a small availability index in LiveView state alongside navigation data, keyed by Project
+and owning List (including the direct-Project location). Store observed additional states for
+each direct location, plus prepared subtree and whole-Project unions using current List ancestry.
+Do not duplicate default states in every entry or maintain per-state reference counts. Build
+the index for a Project when it is loaded; do not bootstrap every Project in the workspace.
+
+| Trigger | Availability work |
+|---|---|
+| Initial Project load | One grouped/distinct `(list_id, status)` snapshot of current additional-state Tasks, unfiltered by status preferences; prepare all direct and aggregate entries for that Project |
+| Relevant external Task event | On create, move, or a change to status/owning List, read the authoritative Task as needed and union its additional state into its current direct-location entry; update affected aggregate entries |
+| Successful local create/edit/move | Apply the same observation using the returned persisted Task; do not wait for a self-excluded PubSub event |
+| Task leaves an additional state, moves away, or is removed | Retain the source location's observed state; no last-instance query or decrement |
+| List create/reparent/remove reconciliation | Update valid location keys and rebuild aggregate unions from retained direct entries and current List ancestry; never discover Task states by scanning the listing |
+| Navigate between Lists, change Include child Lists, change form ownership | Read the appropriate prepared entry; no discovery query or subtree aggregation |
+| Open/close a filter or state picker | Read already prepared options; no availability query, Task scan or aggregate rebuild |
+| Hierarchy load/refresh | Derive its state set once from the complete loaded tree before rendering its filter; opening that filter performs no traversal |
+| Return to a Project or reconnect | Refresh the current database snapshot to cover periods without a subscription; merge with observations retained by the same mounted page and rebuild aggregates |
+| Full reload/new LiveView mount | Discard observed availability and bootstrap from current Tasks |
+
+Keep observed direct entries for previously visited Projects within that mounted page. Switching
+Projects must refresh the selected Project on return because only the active Project's Task
+events are subscribed. Drop invalid List/Project keys when reconciling authoritative topology.
+Reparenting a List changes subtree unions according to its current ancestry; it does not record
+permanent history in its former ancestors. Closing a task form resets its explicit reveal flag,
+but does not reset the page's observed availability. A transient connection loss on the same
+LiveView preserves observations; a replacement process/remount starts fresh.
+
+Title, description, priority, due-date, comment, and blocking-link-only updates do not trigger
+availability discovery. Parent-Task changes can refresh hierarchy availability through the
+existing tree reload but do not affect List ownership. Filter checkbox changes do not rebuild
+the availability index. Any existing listing/count refreshes remain separate from availability
+maintenance; opening a form must not introduce extra availability work.
+
+Current notifications are invalidations, so the minimal external-event path may read one Task
+through the Tasks context; do not requery every List or the whole Project for each event. Reuse
+an authoritative Task already fetched during reconciliation when practical. Observations use
+persisted snapshots actually seen by the page; the index is not an audit log and does not
+reconstruct intermediate states overwritten before reconciliation reads them. Invalid or foreign
+Project events must not change the index.
+
+This eager session index avoids selector latency and last-instance bookkeeping. A database usage
+history would survive reload but is outside the accepted lifetime. Requerying upon selector open
+adds latency; refreshing exact per-state counts after every update adds unnecessary work when
+state availability is intentionally retained.
 
 ## Filter preferences survive absence and navigation
 
@@ -134,16 +188,18 @@ Required ancestry may remain visible despite unchecked states, as in the existin
 
 | Scenario | Expected result |
 |---|---|
-| Check Not Planned in List A; navigate to B with no such Tasks | Option disappears in B; remembered inclusion survives |
+| Check Not Planned in List A; navigate to B where it has not been observed | Option is hidden in B; remembered inclusion survives |
 | Change Pending in B; return to A | Not Planned is still checked |
 | Uncheck Not Planned while its Tasks exist | Option stays visible and unchecked |
+| Last Not Planned Task in A becomes Pending | Not Planned remains offered in A until a full reload, including after closing/reopening forms |
+| Reload with no remaining Not Planned Tasks in A | A's option is hidden again; browser-stored filter preference survives |
 | All Tasks are Not Planned with fresh main defaults | Filtered-empty listing; Not Planned remains offered unchecked |
 | Open a hierarchy containing Not Planned | Option appears checked; matching nodes are eligible normally |
 | Will Not Do is the only blocker | Done transition requires the existing unresolved-blocker confirmation |
 
 ## Forms can reveal all states without changing the selected value
 
-Create/edit status controls normally offer default states, represented additional states, and
+Create/edit status controls normally offer default states, observed additional states, and
 the current selected value. This last exception preserves an existing Task or draft when its
 ownership changes or the last other Task using that state disappears.
 
@@ -253,11 +309,13 @@ Approaches considered:
 Expected boundaries:
 
 - Tasks context/persistence owns project-scoped represented-state discovery and List scope
-  validation. Prefer distinct state queries or reuse suitable already-loaded data; do not load
-  entire Projects solely to discover a handful of state values. Missing or cross-Project List
-  scopes preserve existing `{:error, :not_found}` handling, never broaden to the whole Project.
+  validation. Provide grouped bootstrap discovery and bounded single-Task observation reads
+  through existing context boundaries; do not load entire Projects solely to discover a handful
+  of state values. Missing or cross-Project List scopes preserve existing `{:error, :not_found}`
+  handling, never broaden to the whole Project.
 - Listing state/preferences, creation/editing state, hierarchy projection and reconciliation own
-  availability and lifetime. Derive hierarchy availability from its existing complete tree.
+  availability and lifetime. A focused page-local index owns direct observations and prepared
+  rollups, shared by navigation/listing/forms; hierarchy availability is prepared on tree load.
 - `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js`
   and relevant CSS own option rendering, metadata and picker synchronization. `assets/js/tooltips.js`
   owns shared tooltip scheduling/presentation extensions; opt-in state handling must preserve
@@ -283,6 +341,9 @@ acceptance has been performed. Implementation planning must cover:
    and ascending/descending listing and hierarchy status sorts against the same canonical sequence.
 2. Scoped discovery for direct Project, direct List, descendant Lists and whole Project, including
    cross-Project isolation, empty populations and state filters that exclude all matching Tasks.
+   Verify monotonic direct observations, local/external updates, topology rollups, Project return,
+   reconnect/remount behavior and reload reset. Verify selector opening adds no availability
+   queries or tree traversal, and unrelated events do not trigger discovery.
 3. Main/hierarchy checkbox preference retention across absent states, navigation, live changes,
    empty submissions, explicit URL snapshots and existing browser storage.
 4. Form auto-availability, selected draft retention, one-way reveal, validation/autosave lifetime,
