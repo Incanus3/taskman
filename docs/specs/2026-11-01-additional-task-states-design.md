@@ -20,8 +20,9 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D7 | Accepted | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
 | D8 | Accepted | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 | D9 | Accepted | Precompute page-local availability; update from event state/location snapshots without per-client Task reads | Events gain a compact payload; retained states may have zero current Tasks | [Updates](#availability-is-prepared-before-controls-open) |
+| D10 | Accepted | Share one Project location model between navigation and selectors; Project root is a location entry | Retains List metadata currently loaded for navigation; direct/subtree sets are derived caches | [Shared state](#availability-is-prepared-before-controls-open) |
 
-D1–D9 reflect explicit operator decisions. The complete written specification still requires design
+D1–D10 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
 blocker correction; it does not authorize implementation, pushing, merging or deployment.
 
@@ -56,6 +57,9 @@ Inspected source on branch `feature/additional_states`, starting at revision
   snapshots. Task notifications target the active Project subscription and use `broadcast_from`,
   excluding the publishing LiveView. `Workspace.refresh/1` loads List navigation; listing count
   queries exclude unchecked closed states and cannot themselves discover all additional states.
+- `Workspace.refresh/1` currently reloads Lists and emits `NavigationNode` rows into a LiveView
+  stream; `Workspace.State` does not retain a reusable complete List index. The shared location
+  model below introduces that owner rather than duplicating an existing retained collection.
 
 This specification replaces the blocker-resolution rule in the domain, relationships, MVP and
 blocking specification when implemented. Other lifecycle, ownership, recovery and confirmation
@@ -118,11 +122,38 @@ revealing options or selecting an unsaved draft state does not mark that state u
 
 ## Availability is prepared before controls open
 
-Keep a small availability index in LiveView state alongside navigation data, keyed by Project
-and owning List (including the direct-Project location). Store observed additional states for
-each direct location, plus prepared subtree and whole-Project unions using current List ancestry.
-Do not duplicate default states in every entry or maintain per-state reference counts. Build
-the index for a Project when it is loaded; do not bootstrap every Project in the workspace.
+Keep one page-local Project location model shared by navigation and selectors. Each List entry
+owns its List record (including its parent relationship), observed direct additional-state set
+and prepared subtree additional-state set. Use one canonical collection of List metadata/topology,
+not a separate availability-only List tree. Selection paths and streamed navigation rows are
+derived projections of that owner, not independently refreshed collections. Exact module/type
+names are implementation choices.
+
+Represent the Project root as another location entry. Its direct set covers Tasks without an
+owning List; its subtree set covers the whole Project, including all Lists. Do not store a separate
+third whole-Project set. A subtree set is the union of that entry's direct set and every child
+location's subtree set: each additional state appears at most once in the result. Compute these
+summaries at bootstrap and on relevant updates, never by traversing children when opening controls.
+
+For example, if only child List B has observed Not Planned:
+
+| Location | Direct additional states | Subtree additional states |
+|---|---|---|
+| Project root | None | Not Planned |
+| List A, a root List | None | Not Planned |
+| List B, child of A | Not Planned | Not Planned |
+
+Repeated state identifiers in direct/subtree summaries are deliberate caching for immediate
+lookups; List records and topology have one owner. Do not duplicate default states in entries or
+maintain per-state reference counts. Populate the model when a Project is loaded; do not bootstrap
+every Project in the workspace. Navigation rendering reuses the retained List records rather than
+loading another collection solely to render the same topology. Preserve authoritative refreshes
+on relevant workspace notifications and subscription-gap resnapshots.
+
+Existing exact Task counts and current direct-Task presence have independent refresh semantics.
+They may remain separately derived values; do not infer either from observed additional states,
+which can remain after all matching Tasks leave. This shared owner does not require the broader
+count-delta or notification optimizations recorded in the separate research.
 
 | Trigger | Availability work |
 |---|---|
@@ -338,8 +369,10 @@ Expected boundaries:
   handling, never broaden to the whole Project. `ChangeNotifications` and its Event struct own
   the compact persisted Task snapshot; the Tasks context supplies the already-persisted Task.
 - Listing state/preferences, creation/editing state, hierarchy projection and reconciliation own
-  availability and lifetime. A focused page-local index owns direct observations and prepared
-  rollups, shared by navigation/listing/forms; hierarchy availability is prepared on tree load.
+  availability and lifetime. A shared page-local Project location model owns canonical List
+  records/topology and each location's direct observations and subtree summary. Navigation streams,
+  listing and forms consume it; the Project-root subtree is the whole-Project summary. Hierarchy
+  availability is prepared separately on tree load.
 - `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js`
   and relevant CSS own option rendering, metadata and picker synchronization. `assets/js/tooltips.js`
   owns shared tooltip scheduling/presentation extensions; opt-in state handling must preserve
@@ -370,6 +403,8 @@ acceptance has been performed. Implementation planning must cover:
    queries or tree traversal, external event observation adds no Task read, and unrelated events
    do not trigger discovery. Cover publisher snapshot values after create/update/move, nil owning
    List, duplicate/out-of-order delivery, a not-yet-loaded List, and malformed/foreign snapshots.
+   Verify shared-model navigation projections and direct/subtree selection, including the Project
+   root's whole-Project summary; preserve exact count and current direct-Task-presence semantics.
 3. Main/hierarchy checkbox preference retention across absent states, navigation, live changes,
    empty submissions, explicit URL snapshots and existing browser storage.
 4. Form auto-availability, selected draft retention, one-way reveal, validation/autosave lifetime,
