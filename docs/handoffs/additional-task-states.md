@@ -20,6 +20,8 @@ state options and main-table state badges.
 Create/edit reveal is now a distinctive action row inside the open enhanced picker (D3), shown
 only while additional states remain hidden. It removes itself and reveals states in canonical
 order while keeping the popup open and leaving the selected/native value and autosave unchanged.
+Reveal lasts for the whole open edit dialog across Task navigation; closing it resets reveal.
+Each new creation form starts unrevealed. Do not add a Task-identity-based reveal reset.
 The native fallback shows all real states directly, without a pseudo-option (D13).
 
 The shared page-local Project location model owns canonical List records/topology and direct/subtree

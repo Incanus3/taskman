@@ -13,7 +13,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 |---|---|---|---|---|
 | D1 | Accepted | Default states plus additional states observed in the relevant scope | List options can remain available after their last matching Task changes state | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
-| D3 | Accepted | One-way reveal action inside the open create/edit state picker; retain its selected state | Action rows need distinct activation semantics and the existing form lifetime | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
+| D3 | Accepted | One-way reveal action inside the state picker; preserve across Task navigation in the same edit dialog | Additional states stay exposed until the dialog closes; each new creation form starts unrevealed | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
 | D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
 | D5 | Accepted | Not Planned is additional, closed, initially excluded only in the main listing | Closed work remains available through explicit filtering | [Definitions](#state-definitions) |
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
@@ -177,7 +177,7 @@ count-delta or notification optimizations recorded in the separate research.
 |---|---|
 | Switch Projects | Retain previously visited Projects' direct observations in the mounted page. Refresh the selected Project on return because only the active Project's Task events are subscribed. |
 | Reconcile topology | Drop invalid List/Project keys. Reparenting changes subtree unions using current ancestry; former ancestors do not retain permanent usage history. |
-| Close a Task form | Reset its explicit reveal flag; retain the page's observed availability. |
+| Close a creation form or edit dialog | Reset its explicit reveal flag; retain the page's observed availability. Navigating between Tasks inside the same open edit dialog does not reset reveal. |
 | Lose and restore the connection | If the same LiveView survives, preserve observations and merge a fresh snapshot; a replacement process/remount bootstraps from current Tasks. |
 
 ### Changes that do not discover availability
@@ -309,7 +309,7 @@ changes or the last other Task using that state disappears.
 | Visibility | Offer only when at least one supported additional state is still hidden after including observed states and the current selected value; omit when all additional states are already offered |
 | Activation | Remove the action row and insert all hidden additional states at their canonical positions; keep the popup open and the selected value unchanged |
 | Form semantics | This is an action, not a Task state. Never assign or submit it through the native select, validate a fake state, trigger an autosave or mark the form changed |
-| Direction and storage | One-way for the form's lifetime; no reverse toggle or browser storage |
+| Direction and storage | One-way for a creation form or the entire open edit dialog, including Task navigation; no reverse toggle or browser storage |
 
 The action row is outside the canonical ordering of real states. Its styling and accessible
 semantics must distinguish revealing options from selecting a state. Keyboard users can reach
@@ -331,7 +331,8 @@ vocabulary; rendering hidden native options does not mark them observed in a Lis
 | Event | Reveal/value behavior |
 |---|---|
 | Validation error, autosave, ownership change, ordinary live refresh of the same form | Preserve reveal state |
-| Close/reopen, start another creation form, navigate to a different Task's editing form in the same detail dialog | Reset reveal state |
+| Navigate to another Task's editing form in the same open detail dialog | Preserve reveal state; all additional states remain revealed for the newly selected Task |
+| Close/reopen the creation form or edit dialog; start another creation form | Reset reveal state |
 | Recovery disables controls | Keep them disabled and retain the displayed value |
 | Open the picker | Do not mark the Task changed |
 | Filter available options | Never discard a current or recoverable draft value |
@@ -484,7 +485,7 @@ acceptance have not been performed.
 | No added interactive reads | Selector opening performs no availability queries or tree traversal; external observation performs no Task read |
 | Shared location model | Navigation projections, direct/subtree selection and Project-root whole-Project summary; preserve exact counts/current direct-Task presence |
 | Preferences | Main/hierarchy independence, absent-state retention, navigation/live changes, empty submissions, explicit URL snapshots and existing browser storage |
-| Forms | Automatic availability, selected draft retention, conditional reveal-action visibility, validation/autosave lifetime, Task switching, close/reopen reset, independent hierarchy lifetime and all-real-state native fallback |
+| Forms | Automatic availability, selected draft retention, conditional reveal-action visibility, validation/autosave lifetime, reveal retention across Task navigation in the same dialog, close/reopen and new-creation-form reset, independent hierarchy lifetime and all-real-state native fallback |
 | API/CLI | Create/update/list parity, help/completion/skill consistency and the development guide's rebuilt-executable gate |
 | Picker reveal (browser) | Click/keyboard activation removes the action and inserts states in order; popup stays open, focus remains valid, selected/native value stays unchanged and autosave stays idle; action appears only while states remain hidden |
 | Browser behavior | Stored preferences across reload; enhanced option updates; selection/dismissal; muted option readability; delayed hover/keyboard-active descriptions; cancellation/stale removal; visibility above dialogs/popovers; viewport placement and accessible descriptions |
