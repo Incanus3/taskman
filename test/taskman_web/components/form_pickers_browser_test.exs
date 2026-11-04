@@ -74,6 +74,62 @@ defmodule TaskmanWeb.FormPickersBrowserTest do
     assert events(s) == [["change", "meeting-room"], ["change", "meeting-host"]]
   end
 
+  test "ordinary updates preserve keyboard focus on an unactivated reveal action", %{session: s} do
+    click(s, "meeting-room-trigger")
+    Browser.send_keys(s, [:end, :down_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-reveal"
+
+    assert js(s, "probeHooks['meeting-room'].updated(); return document.activeElement.id") ==
+             "meeting-room-reveal"
+
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "blue", "red"]
+    assert events(s) == []
+    assert js(s, "return probePushes") == []
+    assert js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+
+    Browser.send_keys(s, [:up_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-options"
+    Browser.send_keys(s, [:down_arrow, :enter])
+    assert js(s, "return probePushes") == [["reveal_rooms", %{}]]
+    assert events(s) == []
+    Browser.send_keys(s, [:escape])
+    assert js(s, "return document.activeElement.id") == "meeting-room-trigger"
+    refute js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+  end
+
+  test "automatically offered options return action focus to the open listbox without selection",
+       %{session: s} do
+    click(s, "meeting-room-trigger")
+    Browser.send_keys(s, [:end, :down_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-reveal"
+
+    assert js(s, ~S"""
+           const hook = probeHooks['meeting-room'];
+           hook.el.dataset.visibleValues = 'null';
+           hook.el.dataset.action = 'null';
+           hook.updated();
+           return document.activeElement.id;
+           """) == "meeting-room-options"
+
+    assert js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+    refute js(s, "return !!document.querySelector('#meeting-room-reveal')")
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "blue", "red"]
+    assert events(s) == []
+    assert js(s, "return probePushes") == []
+    Browser.send_keys(s, [:home, :down_arrow])
+
+    assert js(
+             s,
+             "return document.querySelector('#meeting-room-options').getAttribute('aria-activedescendant')"
+           ) == "meeting-room-option-red"
+
+    assert events(s) == []
+    Browser.send_keys(s, [:enter])
+    assert Enum.at(values(s), 2) == "red"
+    assert events(s) == [["change", "meeting-room"]]
+    assert js(s, "return document.activeElement.id") == "meeting-room-trigger"
+  end
+
   test "unrelated date and select instances isolate values, events, notices and focus", %{
     session: s
   } do

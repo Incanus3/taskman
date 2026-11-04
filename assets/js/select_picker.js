@@ -74,6 +74,8 @@ const SelectPicker = {
   },
 
   sync() {
+    const popupFocused = this.popup.contains(document.activeElement)
+    const actionFocused = document.activeElement === this.popup.querySelector("[data-picker-action]")
     const previousValues = new Set((this.options || []).map(option => option.value))
     const visible = JSON.parse(this.el.dataset.visibleValues || "null")
     const metadata = JSON.parse(this.el.dataset.optionMetadata || "{}")
@@ -88,14 +90,15 @@ const SelectPicker = {
     this.renderSelection()
     if (this.opened) {
       const revealCompleted = this.pendingReveal && !this.action
-      const revealedIndex = revealCompleted ?
+      const actionRemoved = actionFocused && !this.action
+      const revealedIndex = revealCompleted || actionRemoved ?
         this.options.findIndex(option => !previousValues.has(option.value)) : -1
       this.active = revealedIndex >= 0 ? revealedIndex :
-        this.pendingReveal && this.action ? this.options.length : this.selectedIndex()
+        (this.pendingReveal || actionFocused) && this.action ? this.options.length : this.selectedIndex()
       if (revealCompleted) this.pendingReveal = false
       this.renderOptions()
       this.position()
-      if (revealCompleted || this.pendingReveal) this.focusActive()
+      if (popupFocused || revealCompleted || this.pendingReveal) this.focusActive()
     }
   },
 
