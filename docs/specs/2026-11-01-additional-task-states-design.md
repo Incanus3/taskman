@@ -1,6 +1,6 @@
 # Additional Task states and Not Planned
 
-**Status:** Implemented and locally verified; child reviews accepted, final integration review and operator acceptance pending.
+**Status:** Implemented, locally verified and independently reviewed; operator acceptance pending.
 D1–D13 and the written design remain operator approved.
 **Date:** 2026-11-01
 
@@ -525,8 +525,9 @@ Current product documentation and affected lifecycle, blocking, notification, co
 filter and shared-control specifications identify the resulting contracts and supersessions.
 The separate notification read-optimization research remains outside this feature.
 
-Next: complete independent scoped review and present the implemented feature for operator
-acceptance. Tests and local commits establish
-technical evidence; they do not mark the workstream accepted or authorize publication. The
-[approved plan](../plans/2026-11-04-additional-task-states.md) remains active until delivery is complete
-and its durable conclusions are harvested.
+Independent child and session-scoped integration reviews accepted the implementation with no
+unresolved findings. Next: operator acceptance through the
+[active workstream handoff](../handoffs/additional-task-states.md). Tests, reviews and local commits
+establish technical evidence; they do not mark the workstream accepted or authorize publication.
+The completed implementation plan was retired after harvesting its durable contracts here and
+in the current product and CLI documentation.

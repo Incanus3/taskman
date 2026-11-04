@@ -2,7 +2,7 @@
 
 This is the complete index of current repository handoffs.
 
-- [Additional Task states](additional-task-states.md) — active — All deliverables accepted; final session integration review and operator acceptance pending — `$resume additional-task-states`
+- [Additional Task states](additional-task-states.md) — active — Implemented and independently reviewed; operator acceptance and ruling acknowledgement pending — `$resume additional-task-states`
 
 - [Operations CLI UX](operations-cli-ux.md) — parked — Finish readable progress, outcome, and provisioning-rerun design after the operations merge — `$resume operations-cli-ux`
 

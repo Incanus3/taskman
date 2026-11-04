@@ -10,7 +10,6 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
-- [Additional Task states implementation plan (approved; implementation underway)](plans/2026-11-04-additional-task-states.md)
 
 ## Specifications
 
