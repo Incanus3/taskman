@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; catalogue, availability, filters and picker accepted; descriptions underway.
+**Status:** Operator approved; UI/domain deliverables accepted; external parity and integrated verification underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -389,14 +389,14 @@ browser tests. Keep existing non-state tooltip consumers unchanged.
 current hover delay and immediate keyboard-focus behavior. Real enhanced option metadata supplies
 the text; accessible descriptions exist independently of the delayed visual popup.
 
-- [ ] **Write failing browser assertions.** State options and checkbox rows describe all states;
+- [x] **Write failing browser assertions.** State options and checkbox rows describe all states;
   keyboard-active picker rows show the corresponding description after the delay without changing
   selection. Hover a table state badge, verify the correct description, then click that same area
   and verify Task opening. Add stale-source cancellation, Escape precedence, hover over tooltip,
   changed badge state and no extra badge tab stops. Verify generic action tooltips still behave as
   before and description popups actually appear above the open picker/filter/dialog.
-- [ ] **Run red:** `mix test.browser test/taskman_web/live/project_live/additional_states_browser_test.exs`.
-- [ ] **Implement opt-in scheduling, presentation and accessibility.** Use a manual top-layer
+- [x] **Run red:** `mix test.browser test/taskman_web/live/project_live/additional_states_browser_test.exs`.
+- [x] **Implement opt-in scheduling, presentation and accessibility.** Use a manual top-layer
   popover for description tooltips, bounded to the viewport, plain text only, with no focusable
   controls. Hovering its trigger/tooltip keeps it open. Dismiss on the specification's source,
   lifecycle, scroll, selection and state-change boundaries; Escape must not consume the owning
@@ -405,12 +405,12 @@ the text; accessible descriptions exist independently of the delayed visual popu
   Preserve badge pointer passthrough: opt-in row hover hit testing against the badge rectangle
   can identify a `data-tooltip-pass-through` source without changing the underlying Task link.
   Use a generic `data-tooltip-scope` on the row rather than coupling the shared module to Task IDs.
-- [ ] **Run green:** the red command plus
+- [x] **Run green:** the red command plus
   `mix test.browser test/taskman_web/live/project_live/task_table_browser_test.exs test/taskman_web/live/project_live/task_detail_browser_test.exs test/taskman_web/components/form_pickers_browser_test.exs`.
   Use condition-based browser waits, not process sleeps. Inspect actual 1440×900, 390×844 and
   320×400 CSS viewports for clipping, focus, muted readability and horizontal overflow. Record
   native fallback inspection and assistive-technology limits honestly.
-- [ ] **Review and commit:** `Describe task states in delayed accessible tooltips`.
+- [x] **Review and commit:** `Describe task states in delayed accessible tooltips`.
 
 ## Task 7: Complete external parity, canonical documentation and the integrated gate
 
