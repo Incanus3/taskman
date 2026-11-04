@@ -367,6 +367,8 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
       project_id: project.id,
       entity_id: task.id,
       lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: [:title, :status, :parent_task_id, :list_id]
     })
 

@@ -239,6 +239,8 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
       project_id: project.id,
       entity_id: task.id,
       lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: [:description]
     }
   end

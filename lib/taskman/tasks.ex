@@ -7,6 +7,7 @@ defmodule Taskman.Tasks do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
+  alias Taskman.Tasks.AvailabilityPersistence
   alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.Blocking
   alias Taskman.Tasks.BlockingLink
@@ -38,6 +39,18 @@ defmodule Taskman.Tasks do
   @spec count_tasks_by_location(Project.t(), [term()], boolean()) :: Counts.t()
   def count_tasks_by_location(project, visible_statuses, include_descendants?),
     do: Counts.for_project(project, visible_statuses, include_descendants?)
+
+  @doc "Returns current additional Task states grouped by direct owning location in a Project."
+  @spec additional_states_by_location(Project.t()) :: %{
+          (pos_integer() | nil) => MapSet.t(atom())
+        }
+  def additional_states_by_location(%Project{id: project_id}) do
+    project_id
+    |> AvailabilityPersistence.list_location_states(Status.additional_values())
+    |> Enum.reduce(%{}, fn {list_id, state}, observations ->
+      Map.update(observations, list_id, MapSet.new([state]), &MapSet.put(&1, state))
+    end)
+  end
 
   @doc "Returns List IDs owning direct Tasks in the given Project, regardless of Task status."
   @spec list_ids_with_direct_tasks(Project.t()) :: MapSet.t(pos_integer())

@@ -14,13 +14,15 @@ defmodule Taskman.Tasks.NotificationsTest do
     project = project_fixture(%{})
     topic = subscribe_task_events(project)
 
-    assert {:ok, task} = Tasks.create_task(project, %{title: "Published"})
+    assert {:ok, task} = Tasks.create_task(project, %{title: "Published", status: :not_planned})
     refute_receive %Event{}, 50
 
     assert_receive {:task_event, ^topic,
                     %Event{
                       entity: :task,
                       operation: :created,
+                      status: :not_planned,
+                      list_id: nil,
                       project_id: project_id,
                       entity_id: task_id,
                       lock_version: lock_version,
@@ -47,7 +49,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     topic = subscribe_task_events(project)
 
     assert {:ok, updated} =
-             Tasks.update_task(project, task, %{description: "Changed", status: :done})
+             Tasks.update_task(project, task, %{description: "Changed", status: :not_planned})
 
     assert_receive {:task_event, ^topic,
                     %Event{
@@ -55,6 +57,8 @@ defmodule Taskman.Tasks.NotificationsTest do
                       operation: :updated,
                       entity_id: task_id,
                       lock_version: lock_version,
+                      status: :not_planned,
+                      list_id: nil,
                       fields: [:description, :status]
                     }}
 
@@ -62,10 +66,32 @@ defmodule Taskman.Tasks.NotificationsTest do
     assert lock_version == updated.lock_version
   end
 
+  test "title-only updates include the final persisted state and List" do
+    project = project_fixture(%{})
+    location = list_fixture(project)
+    task = task_fixture(project, location, %{title: "Before", status: :not_planned})
+    topic = subscribe_task_events(project)
+
+    assert {:ok, updated} = Tasks.update_task(project, task, %{title: "After"})
+
+    assert_receive {:task_event, ^topic,
+                    %Event{
+                      entity: :task,
+                      operation: :updated,
+                      entity_id: id,
+                      status: :not_planned,
+                      list_id: list_id,
+                      lock_version: revision,
+                      fields: [:title]
+                    }}
+
+    assert {id, list_id, revision} == {updated.id, location.id, updated.lock_version}
+  end
+
   test "parent mutations publish parent_task_id with their ordinary changed fields" do
     project = project_fixture(%{})
     parent = task_fixture(project, %{title: "Parent"})
-    child = task_fixture(project, %{title: "Before"})
+    child = task_fixture(project, %{title: "Before", status: :not_planned})
     topic = subscribe_task_events(project)
 
     assert {:ok, updated} =
@@ -76,6 +102,8 @@ defmodule Taskman.Tasks.NotificationsTest do
                       operation: :updated,
                       entity_id: task_id,
                       lock_version: lock_version,
+                      status: :not_planned,
+                      list_id: nil,
                       fields: [:parent_task_id, :title]
                     }}
 
@@ -86,7 +114,7 @@ defmodule Taskman.Tasks.NotificationsTest do
   test "Task movement publishes only list_id after persistence" do
     project = project_fixture(%{})
     destination = list_fixture(project, nil, %{name: "Planning"})
-    task = task_fixture(project, %{title: "Move me"})
+    task = task_fixture(project, %{title: "Move me", status: :not_planned})
     topic = subscribe_task_events(project)
 
     assert {:ok, moved} = Tasks.move_task(project, task, destination)
@@ -96,11 +124,21 @@ defmodule Taskman.Tasks.NotificationsTest do
                       operation: :moved,
                       entity_id: task_id,
                       lock_version: lock_version,
+                      status: :not_planned,
+                      list_id: destination_id,
                       fields: [:list_id]
                     }}
 
     assert task_id == moved.id
     assert lock_version == moved.lock_version
+    assert destination_id == destination.id
+
+    assert {:ok, direct} = Tasks.move_task(project, moved, nil)
+
+    assert_receive {:task_event, ^topic,
+                    %Event{operation: :moved, entity_id: id, status: :not_planned, list_id: nil}}
+
+    assert id == direct.id
   end
 
   test "failed, conflicting, and unchanged Task mutations publish no event" do
@@ -108,6 +146,12 @@ defmodule Taskman.Tasks.NotificationsTest do
     destination = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, %{title: "Before"})
     topic = subscribe_task_events(project)
+
+    assert {:error, _changeset} = Tasks.create_task(project, %{title: "", status: :not_planned})
+    refute_receive {:task_event, ^topic, %Event{}}, 50
+
+    assert {:error, _changeset} = Tasks.create_task(project, nil, %{title: ""}, parent: task)
+    refute_receive {:task_event, ^topic, %Event{}}, 50
 
     assert {:error, _changeset} = Tasks.update_task(project, task, %{title: ""})
     refute_receive {:task_event, ^topic, %Event{}}, 50

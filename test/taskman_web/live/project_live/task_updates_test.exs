@@ -162,7 +162,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project_b.id}")
 
-    send(view.pid, task_event(project_a.id, task_a.id, :updated, [:title]))
+    send(view.pid, task_event(task_a, :updated, [:title]))
     sync_view(view)
     assert view_assigns(view).workspace.selected_project.id == project_b.id
     assert has_element?(view, "#task-#{task_b.id}")
@@ -438,8 +438,8 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, latest} =
              externally(fn -> Tasks.update_task(project, first, %{title: "Latest"}) end)
 
-    send(view.pid, task_event(project.id, first.id, :updated, [:title]))
-    send(view.pid, task_event(project.id, first.id, :updated, [:title]))
+    send(view.pid, task_event(first, :updated, [:title]))
+    send(view.pid, task_event(first, :updated, [:title]))
     sync_view(view)
 
     assert latest.title == "Latest"
@@ -453,13 +453,15 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     |> Task.await()
   end
 
-  defp task_event(project_id, task_id, operation, fields) do
+  defp task_event(task, operation, fields) do
     %Event{
       entity: :task,
       operation: operation,
-      project_id: project_id,
-      entity_id: task_id,
-      lock_version: nil,
+      project_id: task.project_id,
+      entity_id: task.id,
+      lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: fields
     }
   end
