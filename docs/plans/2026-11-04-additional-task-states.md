@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Awaiting operator approval; implementation has not started.
+**Status:** Operator approved; implementation has not started.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -21,6 +21,11 @@ JavaScript hooks and Tailwind CSS. Use existing dependencies.
 **Spec:** [Additional Task states and Not Planned](../specs/2026-11-01-additional-task-states-design.md)
 (operator approved, D1–D13).
 
+**Tracker:** Workstream Task 71, with description marker
+`Source: Incanus3/taskman:additional-task-states`. Task IDs in this plan are relative to this repository's registered Taskman
+Project; every child below includes its exact description marker. The parent and all seven children
+are Pending. The verified sibling dependency chain follows the plan's execution order.
+
 ## Global constraints
 
 - Canonical order: `icebox`, `pending`, `in_progress`, `in_review`, `done`, `not_planned`, `will_not_do`.
@@ -40,8 +45,9 @@ JavaScript hooks and Tailwind CSS. Use existing dependencies.
 - Keep live-update conflict handling, recovery, exact counts, direct-Task presence, required tree
   ancestry, selection and popup dismissal contracts. Do not implement the separate notification
   read-optimization research tracked outside this feature.
-- No tracker task creation until plan approval. No implementation in this planning session without
-  the operator's explicit choice to continue here. Pushing/merging/deployment require separate authority.
+- Use the recorded workstream parent and children; task creation and plan approval are complete.
+  No implementation in this planning session without the operator's explicit choice to continue
+  here. Pushing/merging/deployment require separate authority.
 
 ## Review focus
 
@@ -70,6 +76,8 @@ All names below are implementation-plan decisions. Change a seam only after reco
 consumers and recording a material deviation; do not let workers silently invent incompatible APIs.
 
 ## Task 1: Establish the state catalogue and persisted lifecycle behavior
+
+**Tracker:** Task 72, marker `Source: Incanus3/taskman:additional-task-states:state-catalogue`.
 
 **Dependencies:** None.
 
@@ -134,6 +142,8 @@ count/query/hierarchy/Done-confirmation tests.
 
 ## Task 2: Publish compact observations and provide one bootstrap query
 
+**Tracker:** Task 73, marker `Source: Incanus3/taskman:additional-task-states:availability-events`.
+
 **Dependencies:** Task 1.
 
 **Files:** Create `lib/taskman/tasks/availability_persistence.ex` and
@@ -175,6 +185,8 @@ the existing test factories that construct Task `%Event{}` values.
 - [ ] **Review and commit:** `Publish task state observations for availability`.
 
 ## Task 3: Give navigation and availability one location owner
+
+**Tracker:** Task 74, marker `Source: Incanus3/taskman:additional-task-states:shared-locations`.
 
 **Dependencies:** Tasks 1–2.
 
@@ -237,6 +249,8 @@ querying two-argument path helper. Navigation consumes the model rather than loa
 
 ## Task 4: Maintain observations and filter only offered choices
 
+**Tracker:** Task 75, marker `Source: Incanus3/taskman:additional-task-states:availability-filters`.
+
 **Dependencies:** Task 3.
 
 **Files:** Create `lib/taskman_web/live/project_live/tasks/state_options.ex`,
@@ -297,6 +311,8 @@ TaskTablePreferences, Task Table/Detail components, ProjectLive HEEx, `assets/cs
 - [ ] **Review and commit:** `Apply contextual task state availability without selector discovery`.
 
 ## Task 5: Reveal additional states inside the shared picker
+
+**Tracker:** Task 76, marker `Source: Incanus3/taskman:additional-task-states:picker-reveal`.
 
 **Dependencies:** Task 4.
 
@@ -359,6 +375,8 @@ LiveView tests. Create `test/taskman_web/live/project_live/additional_states_bro
 
 ## Task 6: Display delayed descriptions without breaking popup or row interaction
 
+**Tracker:** Task 77, marker `Source: Incanus3/taskman:additional-task-states:state-descriptions`.
+
 **Dependencies:** Task 5.
 
 **Files:** Modify `assets/js/tooltips.js`, `assets/js/select_picker.js`, `assets/css/app.css`,
@@ -395,6 +413,8 @@ the text; accessible descriptions exist independently of the delayed visual popu
 - [ ] **Review and commit:** `Describe task states in delayed accessible tooltips`.
 
 ## Task 7: Complete external parity, canonical documentation and the integrated gate
+
+**Tracker:** Task 78, marker `Source: Incanus3/taskman:additional-task-states:external-parity-verification`.
 
 **Dependencies:** Tasks 1–6; public CLI work depends on Task 1, but final verification waits for all.
 
@@ -454,8 +474,8 @@ all five Review Focus cases and plan proportion. Independent readiness review fo
 gaps. Scoped reviewers verify each implemented deliverable directly; a full-branch review is not
 part of this plan.
 
-After operator plan approval, create/reuse the appropriate Product workstream grouping in the
-registered repository tracker under its policy, refresh the handoff and offer the approved clean
-implementation-session boundary. Default to delegated implementation after resumption; an explicit
-operator choice to continue here or implement inline takes precedence. Plan approval itself does
-not authorize publication.
+The operator has approved the plan and the Product workstream grouping above has been created
+and verified. Continue from the [workstream handoff](../handoffs/additional-task-states.md) in a
+fresh implementation session by default, using the existing Task IDs rather than recreating them.
+Default to delegated implementation after resumption; an explicit operator choice to continue here
+or implement inline takes precedence. Plan approval does not authorize publication.
