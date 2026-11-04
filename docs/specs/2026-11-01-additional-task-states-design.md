@@ -13,7 +13,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 |---|---|---|---|---|
 | D1 | Accepted | Default states plus additional states observed in the relevant scope | List options can remain available after their last matching Task changes state | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
-| D3 | Accepted | One-way reveal for the lifetime of a create/edit form; retain its selected state | Reveal state must reset at the correct form boundary | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
+| D3 | Accepted | One-way reveal action inside the open create/edit state picker; retain its selected state | Action rows need distinct activation semantics and the existing form lifetime | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
 | D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
 | D5 | Accepted | Not Planned is additional, closed, initially excluded only in the main listing | Closed work remains available through explicit filtering | [Definitions](#state-definitions) |
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
@@ -23,8 +23,9 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D10 | Accepted | Share one Project location model between navigation and selectors; Project root is a location entry | Retains List metadata currently loaded for navigation; direct/subtree sets are derived caches | [Shared state](#availability-is-prepared-before-controls-open) |
 | D11 | Accepted | Retain ephemeral PubSub delivery and current-state resnapshots | Missed events are not replayed; transient historical state use may be lost | [Delivery limits](#accepted-delivery-and-publication-limitations) |
 | D12 | Accepted | Retain the existing enclosing-transaction publication limitation | An outer rollback can leave an already-delivered availability observation for an uncommitted change | [Publication limits](#accepted-delivery-and-publication-limitations) |
+| D13 | Accepted | Native select fallback offers all real states directly, without a reveal pseudo-option | Contextual decluttering applies to the enhanced picker; native fallback may show unused additional states | [Fallback](#presentation-and-fallback-constraints) |
 
-D1–D12 reflect explicit operator decisions. The complete written specification still requires design
+D1–D13 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
 blocker correction; it does not authorize implementation, pushing, merging or deployment.
 
@@ -298,16 +299,32 @@ inclusion survives local absence.
 
 ### Offer the selected value and a one-way reveal
 
-Create/edit controls offer default states, observed additional states and the **current selected
-value**. Preserve that value for persisted Tasks and drafts even when ownership changes or the
-last other Task using that state disappears.
+Enhanced create/edit controls offer default states, observed additional states and the
+**current selected value**. Preserve that value for persisted Tasks and drafts even when ownership
+changes or the last other Task using that state disappears.
 
-| Reveal control | Contract |
+| Reveal action | Contract |
 |---|---|
-| Label and placement | Small keyboard-accessible “Show additional states” button beside/below the status control |
-| Visibility | Show while unrevealed options remain; remove when everything is offered |
-| Effect | Reveal all supported additional states without changing a field value or submitting a state option |
+| Label and placement | “Show additional states” as a visually distinctive final action row inside the open enhanced picker popup; no beside/below button in the enhanced control |
+| Visibility | Offer only when at least one supported additional state is still hidden after including observed states and the current selected value; omit when all additional states are already offered |
+| Activation | Remove the action row and insert all hidden additional states at their canonical positions; keep the popup open and the selected value unchanged |
+| Form semantics | This is an action, not a Task state. Never assign or submit it through the native select, validate a fake state, trigger an autosave or mark the form changed |
 | Direction and storage | One-way for the form's lifetime; no reverse toggle or browser storage |
+
+The action row is outside the canonical ordering of real states. Its styling and accessible
+semantics must distinguish revealing options from selecting a state. Keyboard users can reach
+and activate it with Enter/Space; do not describe it as the selected Task state or attach a state
+description/color to it. Exact DOM structure may separate the semantic action from the listbox
+while keeping it visually within the same options popup.
+
+After activation, keep a valid keyboard focus/active-option target within the open picker and
+make the revealed options reachable. The native input retains its original state until a real
+state is selected. Repeated activation is harmless and never produces a form value change.
+
+The native fallback offers every real supported state in canonical order, with no pseudo-option
+or separate reveal control. Its form bridge contains only valid Task state values. The enhanced
+picker receives its contextual option subset and reveal action separately from that full native
+vocabulary; rendering hidden native options does not mark them observed in a List.
 
 ### Reveal lifetime and value protection
 
@@ -340,7 +357,7 @@ was rejected in favor of consistency across surfaces.
 | Additional options in every affected selector | Subtly duller background with readable contrast and intact hover, focus, checked and selected affordances |
 | State badges | Retain ordinary state-specific presentation |
 | Enhanced picker | Reuse the existing picker and native form bridge; metadata must not break priority or other consumers |
-| Native fallback | Offer identical values/order; exact option backgrounds may be platform-controlled |
+| Native fallback | Offer all real supported states in canonical order, with no reveal pseudo-option; exact option backgrounds may be platform-controlled |
 | Visual verification | Inspect the enhanced distinction visually instead of asserting CSS class strings |
 
 ## Descriptions appear in delayed option tooltips
@@ -430,7 +447,7 @@ and a generic state-machine framework are outside scope.
 | Shared page-local Project location model | Canonical List records/topology, direct observations and subtree summaries; Project-root subtree is the whole-Project summary. Navigation streams, listing and forms consume it. |
 | Listing/preferences, creation/editing and reconciliation | Workflow selection, reveal/availability lifetime and coordinated model updates. |
 | Hierarchy projection | Prepare its separate availability on tree load. |
-| `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js` and relevant CSS | Option rendering, metadata and picker synchronization; no web-layer queries. |
+| `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js` and relevant CSS | State/action row rendering, metadata and picker synchronization; reveal activation bypasses ordinary value-selection behavior. No web-layer queries. |
 | `assets/js/tooltips.js` | Shared tooltip scheduling/presentation extensions that preserve other consumers. |
 | `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions | Consume the definitions/rank without unrelated query or workflow refactors. |
 
@@ -467,9 +484,10 @@ acceptance have not been performed.
 | No added interactive reads | Selector opening performs no availability queries or tree traversal; external observation performs no Task read |
 | Shared location model | Navigation projections, direct/subtree selection and Project-root whole-Project summary; preserve exact counts/current direct-Task presence |
 | Preferences | Main/hierarchy independence, absent-state retention, navigation/live changes, empty submissions, explicit URL snapshots and existing browser storage |
-| Forms | Automatic availability, selected draft retention, one-way reveal, validation/autosave lifetime, Task switching, close/reopen reset and independent hierarchy lifetime |
+| Forms | Automatic availability, selected draft retention, conditional reveal-action visibility, validation/autosave lifetime, Task switching, close/reopen reset, independent hierarchy lifetime and all-real-state native fallback |
 | API/CLI | Create/update/list parity, help/completion/skill consistency and the development guide's rebuilt-executable gate |
-| Browser behavior | Stored preferences across reload; enhanced option updates; keyboard reveal/selection/dismissal; muted option readability; delayed hover/keyboard-active descriptions; cancellation/stale removal; visibility above dialogs/popovers; viewport placement and accessible descriptions |
+| Picker reveal (browser) | Click/keyboard activation removes the action and inserts states in order; popup stays open, focus remains valid, selected/native value stays unchanged and autosave stays idle; action appears only while states remain hidden |
+| Browser behavior | Stored preferences across reload; enhanced option updates; selection/dismissal; muted option readability; delayed hover/keyboard-active descriptions; cancellation/stale removal; visibility above dialogs/popovers; viewport placement and accessible descriptions |
 | Browser regressions | Ordinary tooltip behavior, badge hover delay, correct descriptions after live updates, click/tap navigation without extra tab stops, popup placement, native bridge, focus and recovery |
 
 Run `mix precommit` after implementation.
