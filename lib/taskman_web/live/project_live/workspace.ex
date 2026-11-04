@@ -7,7 +7,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Lists
   alias Taskman.Projects
   alias Taskman.Tasks
-  alias TaskmanWeb.ProjectLive.{ListEdit, Paths, ProjectEdit}
+  alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Paths, ProjectEdit}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
   alias __MODULE__, as: Workspace
@@ -16,9 +16,10 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Projects.Project
 
   defmodule State do
-    alias TaskmanWeb.ProjectLive.{ListEdit, ProjectEdit}
+    alias TaskmanWeb.ProjectLive.{ListEdit, Locations, ProjectEdit}
 
-    defstruct selected_project: nil,
+    defstruct locations: Locations.new(),
+              selected_project: nil,
               subscribed_project_id: nil,
               project_not_found?: false,
               selected_list: nil,
@@ -33,6 +34,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
               list_edit: ListEdit.empty()
 
     @type t :: %__MODULE__{
+            locations: Locations.t(),
             selected_project: Project.t() | nil,
             subscribed_project_id: pos_integer() | nil,
             project_not_found?: boolean(),
@@ -229,13 +231,66 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   def remembered_project(_id), do: :stale
 
-  @spec location_path(Project.t(), TaskList.t() | nil) :: [TaskList.t()]
-  def location_path(_project, nil), do: []
-
-  def location_path(project, %TaskList{} = task_list) do
-    project
-    |> Lists.list_lists_for_project()
+  @spec location_path(Phoenix.LiveView.Socket.t(), Project.t(), TaskList.t() | nil) :: [
+          TaskList.t()
+        ]
+  def location_path(socket, project, task_list) do
+    socket.assigns.workspace.locations
+    |> Locations.lists(project.id)
     |> Lists.path_for(task_list)
+  end
+
+  @doc "Loads one Project's locations and availability only if it has not been bootstrapped."
+  @spec ensure_locations(Phoenix.LiveView.Socket.t(), Project.t()) :: Phoenix.LiveView.Socket.t()
+  def ensure_locations(socket, %Project{} = project) do
+    if Locations.loaded?(socket.assigns.workspace.locations, project.id),
+      do: socket,
+      else: load_locations(socket, project)
+  end
+
+  @doc "Merges a fresh active-Project snapshot with observations retained by this page."
+  @spec resnapshot_locations(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def resnapshot_locations(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket
+      ),
+      do: load_locations(socket, project)
+
+  def resnapshot_locations(socket), do: socket
+
+  @doc "Refreshes active-Project List topology without discovering Task states."
+  @spec refresh_locations(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def refresh_locations(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket
+      ),
+      do: reconcile_locations(socket, project, Lists.list_lists_for_project(project))
+
+  def refresh_locations(socket), do: socket
+
+  @doc "Returns active-Project canonical Lists without reading persistence."
+  @spec lists(Phoenix.LiveView.Socket.t()) :: [TaskList.t()]
+  def lists(%{
+        assigns: %{workspace: %{selected_project: %Project{id: id}, locations: locations}}
+      }),
+      do: Locations.lists(locations, id)
+
+  def lists(_socket), do: []
+
+  defp load_locations(socket, project) do
+    socket = sync_project_task_subscription(socket, project)
+    task_lists = Lists.list_lists_for_project(project)
+    observed = Tasks.additional_states_by_location(project)
+
+    update_workspace(
+      socket,
+      &%{&1 | locations: Locations.load(&1.locations, project.id, task_lists, observed)}
+    )
+  end
+
+  defp reconcile_locations(socket, project, task_lists) do
+    update_workspace(
+      socket,
+      &%{&1 | locations: Locations.reconcile_lists(&1.locations, project.id, task_lists)}
+    )
   end
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
@@ -391,6 +446,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
              socket
              |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
              |> clear_list_edit()
+             |> refresh_locations()
              |> Listing.refresh_counts()}
 
           {:error, %Ecto.Changeset{} = changeset} ->
@@ -403,6 +459,8 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
       {%ListEdit{project: %Project{} = project}, {:ok, {:rename, current_list}, _task_list}} ->
         case Lists.rename_list(project, current_list, list_params) do
           {:ok, renamed_list} ->
+            socket = refresh_locations(socket)
+
             selected_list =
               case socket.assigns.workspace.selected_list do
                 %TaskList{id: id} when id == renamed_list.id -> renamed_list
@@ -414,7 +472,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
             selected_location_path =
               case {selected_project, selected_list} do
                 {%Project{} = current_project, %TaskList{}} ->
-                  location_path(current_project, selected_list)
+                  location_path(socket, current_project, selected_list)
 
                 _no_selected_list ->
                   []
@@ -615,7 +673,8 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   @doc "Refreshes the active Project's List navigation stream."
   @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def refresh(%{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket) do
-    stream_navigation(socket, project, Lists.list_lists_for_project(project))
+    socket = ensure_locations(socket, project)
+    stream_navigation(socket, project, lists(socket))
   end
 
   def refresh(socket), do: stream(socket, :navigation_nodes, [], reset: true)
@@ -638,7 +697,29 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         nil -> %{}
       end
 
-    {projects, lists_by_project}
+    socket =
+      update_workspace(
+        socket,
+        &%{
+          &1
+          | locations:
+              Locations.retain_projects(
+                &1.locations,
+                Enum.map(projects, fn project -> project.id end)
+              )
+        }
+      )
+
+    socket =
+      case socket.assigns.workspace.selected_project do
+        %Project{} = project ->
+          reconcile_locations(socket, project, Map.fetch!(lists_by_project, project.id))
+
+        nil ->
+          socket
+      end
+
+    {socket, projects, lists_by_project}
   end
 
   defp stream_navigation(socket, project, task_lists) do
@@ -678,6 +759,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     workspace = %{
       workspace
       | selected_project: selected_project,
+        locations: Locations.retain_projects(workspace.locations, Enum.map(projects, & &1.id)),
         project_edit: ProjectEdit.reconcile(workspace.project_edit, projects)
     }
 
@@ -692,7 +774,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def reconcile(socket, %Event{entity: :list, project_id: project_id}) do
-    {projects, lists_by_project} = workspace_snapshot(socket)
+    {socket, projects, lists_by_project} = workspace_snapshot(socket)
 
     socket =
       socket
@@ -716,7 +798,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           {Phoenix.LiveView.Socket.t(),
            :unchanged | {:location_changed, [TaskList.t()]} | {:location_missing, [TaskList.t()]}}
   def refresh_selected_location(socket) do
-    {projects, lists_by_project} = workspace_snapshot(socket)
+    {socket, projects, lists_by_project} = workspace_snapshot(socket)
     selected_project_id = project_id(socket.assigns.workspace.selected_project)
 
     {socket, outcome} =
@@ -793,6 +875,29 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         include_children?,
         location_path
       ) do
+    previous_project_id = project_id(socket.assigns.workspace.selected_project)
+    socket = sync_project_task_subscription(socket, selected_project)
+
+    socket =
+      case selected_project do
+        %Project{id: id} = project when id != previous_project_id ->
+          load_locations(socket, project)
+
+        %Project{} = project ->
+          ensure_locations(socket, project)
+
+        nil ->
+          socket
+      end
+
+    socket =
+      reconcile_route_location(socket, selected_project, selected_list, location_not_found?)
+
+    location_path =
+      if selected_project,
+        do: location_path(socket, selected_project, selected_list),
+        else: location_path
+
     workspace =
       socket.assigns.workspace
       |> workspace_location_state(
@@ -810,13 +915,40 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     projects = Projects.list_projects()
 
     socket
-    |> assign_workspace(workspace)
-    |> sync_project_task_subscription(selected_project)
+    |> assign_workspace(%{
+      workspace
+      | locations: Locations.retain_projects(workspace.locations, Enum.map(projects, & &1.id))
+    })
     |> update(:listing, &ListingState.close_filter/1)
     |> assign(:projects_empty?, projects == [])
     |> stream(:projects, projects, reset: true)
     |> refresh()
   end
+
+  @doc "Reconciles newly authoritative location metadata through the canonical topology owner."
+  @spec reconcile_location(Phoenix.LiveView.Socket.t(), Project.t(), TaskList.t() | nil) ::
+          Phoenix.LiveView.Socket.t()
+  def reconcile_location(socket, %Project{} = project, task_list) do
+    canonical =
+      if task_list,
+        do:
+          Enum.find(
+            Locations.lists(socket.assigns.workspace.locations, project.id),
+            &(&1.id == task_list.id)
+          )
+
+    if canonical != task_list,
+      do: reconcile_locations(socket, project, Lists.list_lists_for_project(project)),
+      else: socket
+  end
+
+  defp reconcile_route_location(socket, %Project{} = project, _task_list, true),
+    do: reconcile_locations(socket, project, Lists.list_lists_for_project(project))
+
+  defp reconcile_route_location(socket, %Project{} = project, task_list, false),
+    do: reconcile_location(socket, project, task_list)
+
+  defp reconcile_route_location(socket, _project, _list, _missing?), do: socket
 
   defp workspace_location_state(
          workspace,

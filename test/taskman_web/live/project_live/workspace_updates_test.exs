@@ -44,6 +44,44 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceUpdatesTest do
     assert subscription_count(view, project_task_topic(project_b)) == 0
   end
 
+  test "repeated navigation rendering in open detail reuses prepared locations", %{conn: conn} do
+    project = project_fixture(%{})
+    parent = list_fixture(project)
+    child = list_fixture(project, parent)
+    task = task_fixture(project, %{title: "Open detail"})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+    owner = self()
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:taskman, :repo, :query],
+        fn _, _, metadata, {owner, view_pid} ->
+          if self() == view_pid do
+            if (String.contains?(metadata.query, "FROM \"lists\" AS l0") and
+                  String.contains?(metadata.query, "ORDER BY l0.\"inserted_at\"")) or
+                 String.starts_with?(
+                   metadata.query,
+                   "SELECT DISTINCT t0.\"list_id\", t0.\"status\""
+                 ) do
+              send(owner, {:unexpected_location_read, metadata.query})
+            end
+          end
+        end,
+        {owner, view.pid}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    view |> element("#toggle-list-#{parent.id}") |> render_click()
+    assert has_element?(view, "#list-#{child.id}")
+    view |> element("#toggle-list-#{parent.id}") |> render_click()
+    refute has_element?(view, "#list-#{child.id}")
+    assert has_element?(view, "#task-modal")
+    refute_receive {:unexpected_location_read, _}, 0
+  end
+
   test "external Project creation refreshes index and selected Project sidebars", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/")

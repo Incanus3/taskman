@@ -8,7 +8,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
-  alias TaskmanWeb.ProjectLive.Paths
+  alias TaskmanWeb.ProjectLive.{Paths, Workspace}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, LocationScope, Messages, ParentPicker}
 
   @events ["validate_task", "save_task"]
@@ -120,7 +120,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     changeset = Tasks.change_task(project)
 
     {location, parent_picker} = task_create_state(project, selected_list, params)
-    location_options = location_options(project)
+    socket = Workspace.reconcile_location(socket, project, location)
+    location_options = location_options(project, Workspace.lists(socket))
     location_key = location_key(location)
     location_label = location_label(location_options, location_key)
 
@@ -155,7 +156,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
       |> State.validate(to_form(changeset))
       |> State.choose_location(
         location,
-        location_options(socket.assigns.workspace.selected_project)
+        location_options(socket.assigns.workspace.selected_project, Workspace.lists(socket))
       )
 
     {:noreply, assign(socket, :creation, creation)}
@@ -168,9 +169,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
 
     case resolve_location(project, location) do
       {:ok, destination} ->
+        socket = Workspace.reconcile_location(socket, project, destination)
         create_task(socket, project, destination, task_params, location)
 
       :error ->
+        socket = Workspace.refresh_locations(socket)
         {:noreply, assign_invalid_location(socket, task_params, location)}
     end
   end
@@ -220,7 +223,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
                project,
                socket.assigns.workspace,
                destination,
-               Lists.list_lists_for_project(project)
+               Workspace.lists(socket)
              )
          )}
 
@@ -242,7 +245,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
            :creation,
            socket.assigns.creation
            |> State.validate(to_form(changeset))
-           |> State.choose_location(location, location_options(project))
+           |> State.choose_location(location, location_options(project, Workspace.lists(socket)))
          )}
     end
   end
@@ -260,7 +263,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
       |> State.validate(to_form(changeset))
       |> State.choose_location(
         location,
-        location_options(socket.assigns.workspace.selected_project)
+        location_options(socket.assigns.workspace.selected_project, Workspace.lists(socket))
       )
     )
   end
@@ -301,11 +304,6 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
       nil -> :error
     end
   end
-
-  defp location_options(project, task_lists \\ nil)
-
-  defp location_options(%Project{} = project, nil),
-    do: location_options(project, Lists.list_lists_for_project(project))
 
   defp location_options(%Project{name: name}, task_lists) do
     [{"Project #{name}", "project"}] ++
