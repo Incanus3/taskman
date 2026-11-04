@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; UI/domain deliverables accepted; external parity and integrated verification underway.
+**Status:** Operator approved; All deliverables independently accepted; final integration review and operator acceptance pending.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -433,19 +433,19 @@ and its durable conclusions have been harvested under repository documentation p
 existing API/CLI commands and JSON shapes are preserved. The UI-only availability/reveal model
 adds no public state-metadata endpoint or CLI operation.
 
-- [ ] **Write failing parity tests.** API create/update/list and CLI parser/request/help/completion
+- [x] **Write failing parity tests.** API create/update/list and CLI parser/request/help/completion
   tests accept `not_planned`; unknown values retain existing failures. Add a boundary test for a
   Will Not Do blocker returning HTTP 409/`unresolved_blockers` and succeeding only through existing
   confirmation. Pin the exact state vocabulary in tests, including Bash/Fish output, instead of
   deriving every expected value from the implementation under test.
-- [ ] **Run red:** `mix test test/taskman/cli test/taskman_web/controllers/api/task_controller_test.exs`.
-- [ ] **Implement parity and documentation.** Derive Registry values/help alternatives from the
+- [x] **Run red:** `mix test test/taskman/cli test/taskman_web/controllers/api/task_controller_test.exs`.
+- [x] **Implement parity and documentation.** Derive Registry values/help alternatives from the
   domain catalogue; update bundled skill definitions, main defaults and only-Done blocker rules.
   Mark superseded rules in earlier specs and point to the accepted current contract. Document the
   payload extension, shared location ownership, native fallback and reveal/tooltip lifetimes.
   Check local links/privacy and search changed implementation-facing files for leaked planning
   terminology. Do not implement the separate optimization research or change its tracker status.
-- [ ] **Run the integrated gate sequentially, with source edits stopped:**
+- [x] **Run the integrated gate sequentially, with source edits stopped:**
 
   ```sh
   mix test test/taskman/tasks test/taskman_web/live/project_live test/taskman_web/components
@@ -462,7 +462,7 @@ adds no public state-metadata endpoint or CLI operation.
   generated escript untracked and use disposable test configuration. If stale compressed assets
   are demonstrated, rebuild with `MIX_ENV=test mix do assets.build + phx.digest` before retrying.
   Follow the development guide for a working display/Xvfb when headed tests require it.
-- [ ] **Review the session's implementation and commit the verified checkpoint.** Record exact
+- [x] **Review the session's implementation and commit the verified checkpoint.** Record exact
   evidence, unresolved limits and autonomous rulings in their canonical owners/handoff. Present
   the feature for operator acceptance. Do not treat tests, commits or independent child review as
   authority to mark the whole workstream Done, retire its handoff, push, merge or deploy.

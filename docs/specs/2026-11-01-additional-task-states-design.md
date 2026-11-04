@@ -1,6 +1,6 @@
 # Additional Task states and Not Planned
 
-**Status:** Implemented and locally verified; independent scoped review and operator acceptance pending.
+**Status:** Implemented and locally verified; child reviews accepted, final integration review and operator acceptance pending.
 D1–D13 and the written design remain operator approved.
 **Date:** 2026-11-01
 

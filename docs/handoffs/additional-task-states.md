@@ -22,7 +22,9 @@ at `f890b632`. Shared location ownership (Task 74) is accepted at `33fc77c9`. Co
 filters and mutation/reconnect observations (Task 75) are accepted at `9accc530` plus correction
 `bfac6854`. The in-picker reveal action (Task 76) is accepted at `ba5caabf` plus focus
 correction `31ab1620`. Delayed descriptions (Task 77) are accepted at `6f3419e3`. External
-parity, canonical documentation and integrated verification (Task 78) are underway.
+parity, canonical documentation and integrated verification (Task 78) are accepted at `b2ab2550`.
+All seven deliverables are implemented and independently accepted; final session integration
+review and operator acceptance remain.
 
 The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
 compact Task event snapshots, one shared location owner, contextual filter preferences, picker
@@ -44,34 +46,33 @@ is tracked separately through the reference recorded there. It does not expand t
 Workstream Task **71** is relative to this repository's registered Taskman Project. Verify its
 exact description marker: `Source: Incanus3/taskman:additional-task-states`.
 Children **72–78**, their exact markers and dependency order are recorded in the approved plan.
-The root and Task 78 are In Progress in Product; Tasks 72–77 are Done after independent review.
-The sibling blocker chain is verified; Task 78’s prerequisite is Done. Do not recreate this grouping.
+The root remains In Progress pending final integration review; Tasks 72–78 are Done after
+independent review. The complete sibling dependency chain is satisfied. Do not recreate this grouping.
 
 ## Remaining sequence and gates
 
-1. Finish Task 78: API/CLI parity and canonical documentation with its integrated gates.
-2. Independently review the final deliverable and this session’s integration, commit verified
-   results, then harvest remaining durable conclusions and retire the completed plan/references.
-3. Complete the integrated verification gates in the plan and record evidence, material limits
-   and autonomous implementation rulings in their canonical owners.
-4. Present the workstream for operator acceptance before retiring this handoff. Do not equate
-   child review or tests with acceptance of the whole workstream.
-5. Publication, merge and deployment remain separately authorized actions.
+1. Complete independent review of this session’s integrated implementation and resolve findings.
+2. Retire the completed implementation plan after harvesting remaining durable conclusions and
+   updating its references. Record the final evidence and present the root In Review.
+3. Obtain operator acceptance of the workstream and explicit acknowledgement/revision of the
+   autonomous rulings below before marking the root Done or retiring this handoff.
+4. Publication, merge and deployment remain separately authorized actions.
 
 ## Verification
 
-Latest gates at Task 77: `ERL_FLAGS='+S 8:8' mix precommit` passed with 1,448 passed,
-3 skipped and 60 browser exclusions. The combined required browser gate passed 29 tests across
-additional states, Task table/detail and generic picker files. Independent review inspected actual
-logs and five screenshots, accepted spec/quality and found no issues.
+Integrated frozen-source gates passed: domain/UI 741 tests, API 100 tests, CLI 299 tests
+(three rebuilt-executable skips), `ERL_FLAGS='+S 8:8' mix precommit` 1,452 passed/3 skipped/60
+browser exclusions, executable build, all three rebuilt-executable smoke tests with zero skips,
+and all 29 required headed browser tests. Independent final-deliverable review inspected actual
+successful logs and accepted both spec compliance and quality with no findings. Evidence and
+scoped reviews are recorded on Tasks 72–78.
 
-Actual CSS viewport measurements were 1440×900, 390×844 and 320×400 with matching document
-scroll widths; screenshots showed readable muted rows/focus and unclipped description tooltips.
-Hit tests verified descriptions above picker and hierarchy popovers. Native closed control and
-all seven real options were inspected with enhancement hidden. Native expanded styling, fully
-JavaScript-disabled behavior, physical touch and real screen-reader announcements remain unverified.
-Earlier accepted evidence/reviews are recorded on Tasks 72–77. API/CLI and final integrated
-verification remain pending.
+Actual CSS viewports were 1440×900, 390×844 and 320×400 with matching document scroll widths;
+fresh screenshots showed readable muted rows/focus and unclipped description tooltips. Hit tests
+verified descriptions above picker/hierarchy popovers. Native closed control/all seven options
+were inspected with enhancement hidden. Native expanded styling, fully JavaScript-disabled
+behavior, physical touch and real screen-reader announcements remain unverified. Local results
+do not establish deployment or the pinned release runtime.
 
 The host’s default 72 async test cases exceeded the configured database pool of 16; use the
 command-local scheduler bound above (16 cases), without changing repository test configuration.
