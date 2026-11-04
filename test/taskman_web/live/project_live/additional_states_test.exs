@@ -382,6 +382,179 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     refute offered?(view)
   end
 
+  test "edit reveal changes only dialog presentation and survives autosave and Task navigation",
+       %{conn: conn} do
+    project = project_fixture(%{})
+    root = task_fixture(project)
+    child = task_fixture(project, %{}, parent: root)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_edit_states']")
+    assert has_element?(view, "#task-status option[value='not_planned']")
+    before = :sys.get_state(view.pid).socket.assigns.editing.autosave
+    assert_no_queries(view, fn -> render_click(view, "reveal_task_edit_states", %{}) end)
+    assert :sys.get_state(view.pid).socket.assigns.editing.autosave == before
+    assert Tasks.get_task_for_project(project, root.id).lock_version == root.lock_version
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view
+    |> form("#task-form", task: %{priority: "high"})
+    |> render_change(%{"_target" => ["task", "priority"]})
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view |> element("#task-hierarchy-link-#{child.id}") |> render_click()
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view |> element("#task-modal-close") |> render_click()
+    render_patch(view, ~p"/projects/#{project.id}/tasks/#{root.id}")
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_edit_states']")
+  end
+
+  test "creation scope uses owning List and retains drafts and reveal through validation", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    observed = list_fixture(project)
+    empty = list_fixture(project)
+    task_fixture(project, observed, %{status: :not_planned})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{empty.id}/tasks/new")
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
+
+    view
+    |> form("#task-form", task: %{title: "Draft"}, location: "list:#{observed.id}")
+    |> render_change()
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view
+    |> form("#task-form",
+      task: %{title: "Draft", status: "not_planned"},
+      location: "list:#{empty.id}"
+    )
+    |> render_change()
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view |> form("#task-form", task: %{title: "Draft", status: "pending"}) |> render_change()
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
+    before = :sys.get_state(view.pid).socket.assigns.creation.form
+    assert_no_queries(view, fn -> render_click(view, "reveal_task_creation_states", %{}) end)
+    assert :sys.get_state(view.pid).socket.assigns.creation.form == before
+    view |> form("#task-form", task: %{title: "", status: "pending"}) |> render_change()
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    view
+    |> form("#task-form", task: %{title: "Draft"}, location: "list:#{observed.id}")
+    |> render_change()
+
+    view
+    |> form("#task-form", task: %{title: "Draft"}, location: "list:#{empty.id}")
+    |> render_change()
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    render_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}")
+    render_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}/tasks/new")
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
+    render_patch(view, ~p"/projects/#{project.id}/tasks/new")
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+           )
+  end
+
+  test "recovery disables the state control and ignores forged reveal events", %{conn: conn} do
+    project = project_fixture(%{})
+    lost = list_fixture(project)
+    task = task_fixture(project, lost, %{})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{title: ""})
+    |> render_change(%{"_target" => ["task", "title"]})
+
+    Taskman.Repo.delete!(task)
+    Taskman.Repo.delete!(lost)
+
+    send(view.pid, %Event{
+      entity: :list,
+      operation: :updated,
+      project_id: project.id,
+      entity_id: lost.id,
+      fields: [:name]
+    })
+
+    assert has_element?(
+             view,
+             "#task-recovery #task-status[disabled] option[selected][value='pending']"
+           )
+
+    before = :sys.get_state(view.pid).socket.assigns
+
+    assert_no_queries(view, fn ->
+      render_click(view, "reveal_task_edit_states", %{})
+      render_click(view, "reveal_task_creation_states", %{})
+    end)
+
+    after_reveal = :sys.get_state(view.pid).socket.assigns
+    assert after_reveal.editing == before.editing
+    assert after_reveal.creation == before.creation
+    assert after_reveal.recovery == before.recovery
+
+    assert has_element?(
+             view,
+             "#task-recovery #task-status[disabled] option[selected][value='pending']"
+           )
+  end
+
+  defp assert_no_queries(view, action) do
+    handler = "reveal-#{System.unique_integer([:positive])}"
+    parent = self()
+    view_pid = view.pid
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:taskman, :repo, :query],
+        fn _, _, metadata, _ ->
+          if self() == view_pid, do: send(parent, {:reveal_query, metadata.query})
+        end,
+        nil
+      )
+
+    try do
+      action.()
+      refute_received {:reveal_query, _}
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
   defp socket(project) do
     %Phoenix.LiveView.Socket{
       assigns: %{

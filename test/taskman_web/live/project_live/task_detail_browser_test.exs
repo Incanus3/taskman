@@ -554,7 +554,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
       bounds =
         js(
           c.session,
-          "const p=document.querySelector('#task-priority-options'), r=p.getBoundingClientRect(); return {open:p.matches(':popover-open'),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,page:document.documentElement.scrollWidth,hit:p.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}"
+          "const p=document.querySelector('#task-priority-popup'), r=p.getBoundingClientRect(); return {open:p.matches(':popover-open'),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,page:document.documentElement.scrollWidth,hit:p.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}"
         )
 
       assert bounds["open"] && bounds["hit"]
@@ -572,7 +572,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
     assert js(
              c.session,
-             "return document.querySelector('#task-status-options').matches(':popover-open')"
+             "return document.querySelector('#task-status-popup').matches(':popover-open')"
            ) == false
   end
 
@@ -991,7 +991,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
     assert js(
              c.session,
-             "return document.querySelectorAll('[id^=task-status-options]:popover-open, [id^=task-priority-options]:popover-open, #task-due-at-popup:popover-open').length"
+             "return document.querySelectorAll('[id^=task-status-popup]:popover-open, [id^=task-priority-popup]:popover-open, #task-due-at-popup:popover-open').length"
            ) == 0
 
     Browser.find(c.session, Query.css("#task-recovery #task-hierarchy", count: 0))

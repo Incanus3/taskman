@@ -11,11 +11,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   alias TaskmanWeb.ProjectLive.{Paths, Workspace}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, LocationScope, Messages, ParentPicker}
 
-  @events ["validate_task", "save_task"]
+  @events ["validate_task", "save_task", "reveal_task_creation_states"]
 
   defmodule State do
     defstruct form: nil,
               enabled?: false,
+              additional_states_revealed?: false,
               location: nil,
               location_label: nil,
               location_options: [],
@@ -24,6 +25,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     @type t :: %__MODULE__{
             form: Phoenix.HTML.Form.t() | nil,
             enabled?: boolean(),
+            additional_states_revealed?: boolean(),
             location: String.t() | nil,
             location_label: String.t() | nil,
             location_options: [{String.t(), String.t()}],
@@ -37,6 +39,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
             t()
     def open(%__MODULE__{} = state, form, location, location_label, location_options) do
       state
+      |> Map.put(:additional_states_revealed?, false)
       |> Map.put(:form, form)
       |> Map.put(:location, location)
       |> Map.put(:location_label, location_label)
@@ -141,6 +144,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("reveal_task_creation_states", _params, socket) do
+    creation = %{socket.assigns.creation | additional_states_revealed?: true}
+    {:noreply, assign(socket, :creation, creation)}
+  end
+
   def handle_event("validate_task", %{"task" => task_params} = params, socket) do
     task_params = DateTimeInput.normalize_params(task_params, "due_at")
 

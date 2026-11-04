@@ -4,6 +4,7 @@ const SelectPicker = {
     this.input = document.getElementById(this.el.dataset.inputId)
     this.trigger = this.el.querySelector("button")
     this.panel = this.el.querySelector("[role=listbox]")
+    this.popup = this.el.querySelector("[popover]")
     this.context = this.el.dataset.contextId
     this.onTrigger = () => this.opened ? this.close(true) : this.open()
     this.onKey = event => this.keydown(event)
@@ -16,6 +17,7 @@ const SelectPicker = {
     this.onChoice = event => {
       const option = event.target.closest("[role=option]")
       if (option) this.choose(Number(option.dataset.index))
+      else if (event.target.closest("[data-picker-action]")) this.reveal()
     }
     this.onFocus = event => {
       if (!this.el.contains(event.target)) this.close(false)
@@ -25,7 +27,7 @@ const SelectPicker = {
       this.positionFrame = requestAnimationFrame(() => this.position())
     }
     this.trigger.addEventListener("click", this.onTrigger)
-    this.panel.addEventListener("click", this.onChoice)
+    this.popup.addEventListener("click", this.onChoice)
     document.addEventListener("keydown", this.onKey, true)
     document.addEventListener("pointerdown", this.onOutside, true)
     document.addEventListener("focusin", this.onFocus)
@@ -39,7 +41,10 @@ const SelectPicker = {
   },
 
   updated() {
-    if (this.context !== this.el.dataset.contextId) this.close(false)
+    if (this.context !== this.el.dataset.contextId) {
+      this.pendingReveal = false
+      this.close(false)
+    }
     this.context = this.el.dataset.contextId
     this.sync()
   },
@@ -59,7 +64,7 @@ const SelectPicker = {
     cancelAnimationFrame(this.positionFrame)
     this.resizeObserver.disconnect()
     this.trigger.removeEventListener("click", this.onTrigger)
-    this.panel.removeEventListener("click", this.onChoice)
+    this.popup.removeEventListener("click", this.onChoice)
     document.removeEventListener("keydown", this.onKey, true)
     document.removeEventListener("pointerdown", this.onOutside, true)
     document.removeEventListener("focusin", this.onFocus)
@@ -69,16 +74,28 @@ const SelectPicker = {
   },
 
   sync() {
-    this.options = JSON.parse(this.el.dataset.options)
+    const previousValues = new Set((this.options || []).map(option => option.value))
+    const visible = JSON.parse(this.el.dataset.visibleValues || "null")
+    const metadata = JSON.parse(this.el.dataset.optionMetadata || "{}")
+    this.allOptions = JSON.parse(this.el.dataset.options)
+    this.options = this.allOptions.filter(option => !visible || visible.includes(option.value))
+      .map(option => ({...option, ...metadata[option.value]}))
+    this.action = JSON.parse(this.el.dataset.action || "null")
     // Data attributes are patched even on the ignored subtree. They also avoid relying on
     // browser selection retention when LiveView patches an unfocused native select.
     this.input.value = this.el.dataset.value
     this.trigger.setAttribute("aria-invalid", this.el.dataset.invalid)
     this.renderSelection()
     if (this.opened) {
-      this.active = this.selectedIndex()
+      const revealCompleted = this.pendingReveal && !this.action
+      const revealedIndex = revealCompleted ?
+        this.options.findIndex(option => !previousValues.has(option.value)) : -1
+      this.active = revealedIndex >= 0 ? revealedIndex :
+        this.pendingReveal && this.action ? this.options.length : this.selectedIndex()
+      if (revealCompleted) this.pendingReveal = false
       this.renderOptions()
       this.position()
+      if (revealCompleted || this.pendingReveal) this.focusActive()
     }
   },
 
@@ -88,7 +105,7 @@ const SelectPicker = {
 
   renderSelection() {
     this.el.querySelector("[data-picker-label]").textContent =
-      this.options.find(option => option.value === this.input.value)?.label || ""
+      this.allOptions.find(option => option.value === this.input.value)?.label || ""
   },
 
   open() {
@@ -99,7 +116,7 @@ const SelectPicker = {
     this.active = this.selectedIndex()
     this.renderOptions()
     this.trigger.setAttribute("aria-expanded", "true")
-    this.panel.showPopover()
+    this.popup.showPopover()
     this.position()
     // The hidden popup has no scrollable layout until it enters the top layer and is sized.
     this.panel.children[this.active].scrollIntoView({block: "nearest"})
@@ -109,7 +126,8 @@ const SelectPicker = {
   close(restoreFocus) {
     if (!this.opened) return
     this.opened = false
-    this.panel.hidePopover()
+    this.pendingReveal = false
+    this.popup.hidePopover()
     this.trigger.setAttribute("aria-expanded", "false")
     this.panel.removeAttribute("aria-activedescendant")
     if (restoreFocus && this.trigger.isConnected) this.trigger.focus({preventScroll: true})
@@ -122,6 +140,9 @@ const SelectPicker = {
       // Caller values may contain whitespace, which cannot appear in an ARIA ID reference.
       row.id = `${this.input.id}-option-${encodeURIComponent(option.value)}`
       row.dataset.index = index
+      row.dataset.value = option.value
+      row.dataset.additional = String(!!option.additional)
+      if (option.description) row.setAttribute("aria-description", option.description)
       row.dataset.active = String(index === this.active)
       row.setAttribute("aria-selected", String(selected))
       row.querySelector("[data-option-label]").textContent = option.label
@@ -135,8 +156,35 @@ const SelectPicker = {
       row.classList.toggle("ring-indigo-400/50", index === this.active)
       return row
     }))
-    this.panel.setAttribute("aria-activedescendant", this.panel.children[this.active].id)
-    this.panel.children[this.active].scrollIntoView({block: "nearest"})
+    this.popup.querySelector("[data-picker-action]")?.remove()
+    if (this.action) {
+      const action = document.createElement("button")
+      action.type = "button"
+      action.id = `${this.input.id}-reveal`
+      action.dataset.pickerAction = ""
+      action.className = "select-picker-action"
+      action.textContent = this.action.label
+      this.popup.append(action)
+    }
+    const activeRow = this.panel.children[this.active]
+    if (activeRow) {
+      this.panel.setAttribute("aria-activedescendant", activeRow.id)
+      activeRow.scrollIntoView({block: "nearest"})
+    } else {
+      this.panel.removeAttribute("aria-activedescendant")
+    }
+  },
+
+  focusActive() {
+    const target = this.active === this.options.length ?
+      this.popup.querySelector("[data-picker-action]") : this.panel
+    target?.focus({preventScroll: true})
+  },
+
+  reveal() {
+    if (!this.action || this.pendingReveal) return
+    this.pendingReveal = true
+    this.pushEvent(this.action.event, {})
   },
 
   choose(index) {
@@ -167,9 +215,16 @@ const SelectPicker = {
     event.stopImmediatePropagation()
     switch (event.key) {
       case "Escape": this.close(true); return
-      case "Enter": case " ": this.choose(this.active); return
-      case "ArrowDown": this.active = (this.active + 1) % this.options.length; break
-      case "ArrowUp": this.active = (this.active - 1 + this.options.length) % this.options.length; break
+      case "Enter": case " ":
+        if (this.active === this.options.length) this.reveal()
+        else this.choose(this.active)
+        return
+      case "ArrowDown": this.active = (this.active + 1) % (this.options.length + (this.action ? 1 : 0)); break
+      case "ArrowUp": {
+        const count = this.options.length + (this.action ? 1 : 0)
+        this.active = (this.active - 1 + count) % count
+        break
+      }
       case "Home": this.active = 0; break
       case "End": this.active = this.options.length - 1; break
       default: {
@@ -181,6 +236,7 @@ const SelectPicker = {
       }
     }
     this.renderOptions()
+    this.focusActive()
   },
 
   position() {
@@ -196,12 +252,12 @@ const SelectPicker = {
     const margin = 12, gap = 8
     const below = innerHeight - anchor.bottom - margin - gap
     const above = anchor.top - margin - gap
-    this.panel.style.width = `${Math.min(anchor.width, innerWidth - 2 * margin)}px`
-    this.panel.style.maxHeight = `${Math.max(0, Math.min(240, Math.max(above, below)))}px`
-    const panel = this.panel.getBoundingClientRect()
+    this.popup.style.width = `${Math.min(anchor.width, innerWidth - 2 * margin)}px`
+    this.popup.style.maxHeight = `${Math.max(0, Math.min(240, Math.max(above, below)))}px`
+    const panel = this.popup.getBoundingClientRect()
     const top = below >= panel.height || below >= above ? anchor.bottom + gap : anchor.top - gap - panel.height
-    this.panel.style.left = `${Math.max(margin, Math.min(anchor.left, innerWidth - panel.width - margin))}px`
-    this.panel.style.top = `${Math.max(margin, Math.min(top, innerHeight - panel.height - margin))}px`
+    this.popup.style.left = `${Math.max(margin, Math.min(anchor.left, innerWidth - panel.width - margin))}px`
+    this.popup.style.top = `${Math.max(margin, Math.min(top, innerHeight - panel.height - margin))}px`
   }
 }
 

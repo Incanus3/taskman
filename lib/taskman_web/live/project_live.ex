@@ -602,4 +602,23 @@ defmodule TaskmanWeb.ProjectLive do
     RecoveryWorkflow.blocked?(socket) or
       (socket.assigns.workspace.location_not_found? and not ordinary_creation_active?(socket))
   end
+
+  defp form_status_options(workspace, form, list_id, revealed?) do
+    TaskmanWeb.ProjectLive.Tasks.StateOptions.for_form(
+      workspace.locations,
+      workspace.selected_project.id,
+      list_id,
+      form[:status].value,
+      revealed?
+    )
+  end
+
+  defp creation_list_id("list:" <> id) do
+    case Integer.parse(id) do
+      {value, ""} when value > 0 -> value
+      _ -> nil
+    end
+  end
+
+  defp creation_list_id(_), do: nil
 end

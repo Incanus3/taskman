@@ -86,6 +86,39 @@ defmodule TaskmanWeb.FormPickersTest do
     assert Enum.empty?(LazyHTML.query(document, "[phx-hook]"))
   end
 
+  test "select subset and action are independent of the complete native vocabulary" do
+    form = to_form(%{"room" => "blue"}, as: :meeting)
+
+    document =
+      render_component(&SelectPicker.select_picker/1,
+        field: form[:room],
+        id: "meeting-room",
+        label: "Room",
+        options: [{"Blue", "blue"}, {"Red", "red"}],
+        visible_values: ["blue"],
+        option_metadata: %{"red" => %{description: "Extra room", additional: true}},
+        action: %{label: "Show more rooms", event: "reveal_rooms"}
+      )
+      |> LazyHTML.from_fragment()
+
+    picker = LazyHTML.query(document, "#meeting-room-picker")
+    assert LazyHTML.attribute(picker, "data-visible-values") == [~s(["blue"])]
+
+    assert picker |> LazyHTML.attribute("data-action") |> hd() |> Jason.decode!() == %{
+             "event" => "reveal_rooms",
+             "label" => "Show more rooms"
+           }
+
+    assert Enum.count(LazyHTML.query(document, "#meeting-room option")) == 2
+
+    refute Enum.empty?(
+             LazyHTML.query(
+               document,
+               "#meeting-room-popup[popover] #meeting-room-options[role=listbox]"
+             )
+           )
+  end
+
   test "select controls use caller fields, context and disabled native fallbacks" do
     form = to_form(%{"room" => "blue", "host" => "red"}, as: :meeting)
 

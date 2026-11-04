@@ -23,6 +23,8 @@ defmodule TaskmanWeb.Tasks.Form do
   attr :parent_picker, ParentPicker, required: true
   attr :conflicts, :map, default: %{}
   attr :field_states, :map, default: %{}
+  attr :status_values, :list, default: nil
+  attr :reveal_states_event, :string, default: nil
   attr :recovery?, :boolean, default: false
 
   def form(assigns) do
@@ -56,6 +58,8 @@ defmodule TaskmanWeb.Tasks.Form do
   attr :parent_picker, ParentPicker, required: true
   attr :conflicts, :map, default: %{}
   attr :field_states, :map, default: %{}
+  attr :status_values, :list, default: nil
+  attr :reveal_states_event, :string, default: nil
   attr :recovery?, :boolean, default: false
 
   defp fields(assigns) do
@@ -190,6 +194,11 @@ defmodule TaskmanWeb.Tasks.Form do
           id="task-status"
           label="Status"
           options={select_options(Table.status_options(), @form[:status].value, @recovery?)}
+          visible_values={@status_values}
+          option_metadata={status_metadata()}
+          action={
+            @reveal_states_event && %{label: "Show additional states", event: @reveal_states_event}
+          }
           disabled={@recovery?}
           context_id={Map.get(@form.data, :id)}
         />
@@ -323,6 +332,8 @@ defmodule TaskmanWeb.Tasks.Form do
 
   attr :field, :string, required: true
   attr :value, :any, required: true
+  attr :status_values, :list, default: nil
+  attr :reveal_states_event, :string, default: nil
   attr :recovery?, :boolean, default: false
 
   defp conflict_notice(assigns) do
@@ -395,4 +406,13 @@ defmodule TaskmanWeb.Tasks.Form do
   end
 
   defp select_options(options, _value, false), do: options
+
+  defp status_metadata do
+    Map.new(Taskman.Tasks.Status.values(), fn state ->
+      definition = Taskman.Tasks.Status.definition(state)
+
+      {Atom.to_string(state),
+       %{description: definition.description, additional: definition.additional?}}
+    end)
+  end
 end

@@ -42,6 +42,8 @@ defmodule TaskmanWeb.Tasks.Detail do
 
   attr :task, Task, required: true
   attr :project, Project, default: nil
+  attr :status_values, :list, default: nil
+  attr :reveal_states_event, :string, default: nil
   attr :task_autosave, Autosave, required: true
   attr :parent_picker, ParentPicker, required: true
   attr :cancel, :string, required: true
@@ -264,6 +266,8 @@ defmodule TaskmanWeb.Tasks.Detail do
             </div>
             <Form.form
               form={@task_autosave.form}
+              status_values={@status_values}
+              reveal_states_event={@reveal_states_event}
               mode={:edit}
               change="autosave_task"
               submit="submit_task_edit"

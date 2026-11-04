@@ -511,8 +511,17 @@
       <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
         Add task
       </h2>
+      <% status_options =
+        form_status_options(
+          @workspace,
+          @creation.form,
+          creation_list_id(@creation.location),
+          @creation.additional_states_revealed?
+        ) %>
       <Form.form
         form={@creation.form}
+        status_values={status_options.values}
+        reveal_states_event={if(status_options.hidden?, do: "reveal_task_creation_states")}
         mode={:new}
         change="validate_task"
         submit="save_task"
@@ -587,12 +596,21 @@
           </:actions>
         </Detail.header>
       </:header>
+      <% status_options =
+        form_status_options(
+          @workspace,
+          @editing.autosave.form,
+          @editing.selected_task.list_id,
+          @editing.additional_states_revealed?
+        ) %>
       <Detail.detail
         task={@editing.selected_task}
         comments={@comments}
         comment_stream={@streams.comments}
         project={@workspace.selected_project}
         task_autosave={@editing.autosave}
+        status_values={status_options.values}
+        reveal_states_event={if(status_options.hidden?, do: "reveal_task_edit_states")}
         related_tasks={@editing.related_tasks}
         related_picker={@editing.related_picker}
         related_task_path={related_task_path_fn(@workspace)}
