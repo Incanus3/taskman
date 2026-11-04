@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; implementation has not started.
+**Status:** Operator approved; state catalogue/lifecycle accepted, remaining deliverables underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -23,8 +23,8 @@ JavaScript hooks and Tailwind CSS. Use existing dependencies.
 
 **Tracker:** Workstream Task 71, with description marker
 `Source: Incanus3/taskman:additional-task-states`. Task IDs in this plan are relative to this repository's registered Taskman
-Project; every child below includes its exact description marker. The parent and all seven children
-are Pending. The verified sibling dependency chain follows the plan's execution order.
+Project; every child below includes its exact description marker. The sibling dependency chain
+follows the plan’s execution order; current progress is recorded in the tracker and workstream handoff.
 
 ## Global constraints
 
@@ -103,7 +103,7 @@ count/query/hierarchy/Done-confirmation tests.
   `resolves_blocker?(state) :: boolean()` is true only for Done.
 - Keep `Task.statuses/0` as the existing facade over `Status.values/0`.
 
-- [ ] **Write failing contracts.** Catalogue tests assert the exact seven-state order and four
+- [x] **Write failing contracts.** Catalogue tests assert the exact seven-state order and four
   initial listing values; retain Pending as the new-Task default. Use these assertions:
 
   ```elixir
@@ -120,9 +120,9 @@ count/query/hierarchy/Done-confirmation tests.
   Test that selected Not Planned participates in visible/eligible counts, and unselected Not
   Planned does not become open work. Update Done-warning expectations: both Not Planned and
   Will Not Do require the existing confirmation, including the API's HTTP 409 contract.
-- [ ] **Run the red tests.** `mix test test/taskman/tasks/status_test.exs test/taskman/tasks/counts_test.exs test/taskman/tasks/done_confirmation_test.exs test/taskman/tasks/queries_test.exs test/taskman_web/live/project_live/tasks/hierarchy_test.exs`.
+- [x] **Run the red tests.** `mix test test/taskman/tasks/status_test.exs test/taskman/tasks/counts_test.exs test/taskman/tasks/done_confirmation_test.exs test/taskman/tasks/queries_test.exs test/taskman_web/live/project_live/tasks/hierarchy_test.exs`.
   Expect missing catalogue/new-state support or old blocker/order assertions, not fixture errors.
-- [ ] **Implement the catalogue, migration and consumers.** Preserve existing descriptions/colors;
+- [x] **Implement the catalogue, migration and consumers.** Preserve existing descriptions/colors;
   use color tokens `sky`, `amber`, `red`, `orange`, `emerald`, `stone`, `slate` in canonical order,
   with the web palette preserving existing styles and a subdued stone style for Not Planned.
   Derive SQL sorting from the catalogue's ordered string array, using PostgreSQL
@@ -133,12 +133,12 @@ count/query/hierarchy/Done-confirmation tests.
   `project_identity_test.exs`, including refusal without row loss and successful down after rows
   are explicitly changed. Derive server defaults and a `data-default-task-statuses` browser input
   from `initial_listing_values/0`; browser fallback must not accidentally include Not Planned.
-- [ ] **Run the green gate.** Run the red command plus the new migration test,
+- [x] **Run the green gate.** Run the red command plus the new migration test,
   `test/taskman_web/live/project_live/task_table_preferences_test.exs`,
   `test/taskman_web/live/project_live/done_warning_test.exs` and
   `test/taskman_web/controllers/api/task_controller_test.exs`. Inspect both sort directions and
   unchanged unknown-state validation. Expected: all pass.
-- [ ] **Review the owned diff/privacy and commit:** `Add shared task state definitions and Not Planned lifecycle`.
+- [x] **Review the owned diff/privacy and commit:** `Add shared task state definitions and Not Planned lifecycle`.
 
 ## Task 2: Publish compact observations and provide one bootstrap query
 

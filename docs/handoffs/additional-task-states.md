@@ -16,8 +16,8 @@ The complete [design](../specs/2026-11-01-additional-task-states-design.md), inc
 is operator approved. The [implementation plan](../plans/2026-11-04-additional-task-states.md)
 is operator approved, author-self-reviewed and independently reviewed with no material gaps.
 The clean-session boundary has been crossed. Implementation is underway in the existing feature
-worktree, starting with the state catalogue/lifecycle deliverable (Task 72). No implementation
-checkpoint has yet been verified or accepted.
+worktree. The state catalogue/lifecycle deliverable (Task 72) is implemented at `5f54b091`
+and independently accepted with no findings. Compact event/bootstrap work (Task 73) is next.
 
 The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
 compact Task event snapshots, one shared location owner, contextual filter preferences, picker
@@ -39,14 +39,13 @@ is tracked separately through the reference recorded there. It does not expand t
 Workstream Task **71** is relative to this repository's registered Taskman Project. Verify its
 exact description marker: `Source: Incanus3/taskman:additional-task-states`.
 Children **72–78**, their exact markers and dependency order are recorded in the approved plan.
-The root and Task 72 are In Progress in Product; Tasks 73–78 remain Pending. The sibling
-blocker chain is verified; Task 72 has no incoming blockers. Do not recreate this grouping.
+The root and Task 73 are In Progress in Product; Task 72 is Done after independent review;
+Tasks 74–78 remain Pending. The sibling blocker chain is verified; Task 73’s prerequisite is Done. Do not recreate this grouping.
 
 ## Remaining sequence and gates
 
-1. Finish Task 72 with its red/green gates and independent scoped review; implementation is
-   delegated and the root/child pickup transitions have been verified.
-2. Continue Tasks 73–78 in the approved dependency order with independent scoped reviews and
+1. Finish Task 73: compact persisted Task event snapshots and grouped availability bootstrap.
+2. Continue Tasks 74–78 in the approved dependency order with independent scoped reviews and
    verified local commits. Update canonical product/API/CLI/help/completion/skill/spec owners.
 3. Complete the integrated verification gates in the plan and record evidence, material limits
    and autonomous implementation rulings in their canonical owners.
@@ -56,13 +55,12 @@ blocker chain is verified; Task 72 has no incoming blockers. Do not recreate thi
 
 ## Verification
 
-No feature implementation checkpoint has yet been verified. Earlier `mix precommit` passed against the unchanged
-product baseline: 1,398 passed, 3 skipped, 51 browser-tag exclusions. This does not establish
-new-feature behavior. Design checks include source inspection and independent builder reviews.
-Plan verification includes author coverage/interface/step/proportion review, independent readiness
-review with no material gaps, and local-link, whitespace and scoped privacy checks. Backend reads
-verified the new parent/child hierarchy, source markers, Pending/List placement and sibling blocker
-chain. These tracker operations did not start implementation.
+Task 72 verification: 144 focused tests passed; `mix precommit` passed with 1,410 passed,
+3 skipped and 51 browser exclusions; assets build passed. Independent scoped review accepted
+spec compliance and quality with no findings. Coverage includes transactional migration rollback
+refusal without row loss, canonical sorting/counts and Will Not Do/Not Planned Done confirmation.
+Browser acceptance and remaining feature integration are pending. Review and evidence are recorded
+on Task 72. The existing local development PostgreSQL container was started to enable tests.
 
 ## Workstream rulings
 
