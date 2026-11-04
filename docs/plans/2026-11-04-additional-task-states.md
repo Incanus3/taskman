@@ -10,9 +10,10 @@ specification before implementation; this plan does not replace its contracts.
 queries, while making counting and blocker resolution independent.
 
 **Architecture:** A compile-time state catalogue supplies domain semantics and presentation tokens.
-A page-local Project location model owns List metadata and prepared availability sets; committed
-Task snapshots extend those sets through local results and PubSub. Existing controls gain a reveal
-action and delayed descriptions while retaining their native value bridge.
+A page-local Project location model owns List metadata and prepared availability sets. Local
+mutation results and PubSub events extend those sets using the Task state/location values returned
+by successful database operations, subject to the accepted outer-transaction limitation. Existing
+controls gain a reveal action and delayed descriptions while retaining their native value bridge.
 
 **Tech stack:** Elixir 1.20.4, Erlang/OTP 29, Phoenix 1.8/LiveView, Ecto/PostgreSQL, existing
 JavaScript hooks and Tailwind CSS. Use existing dependencies.
