@@ -53,6 +53,18 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     assert help =~ "Example"
   end
 
+  test "Task status help exposes the complete lifecycle in canonical order" do
+    values = "icebox|pending|in_progress|in_review|done|not_planned|will_not_do"
+
+    for command <- ~w(create update list) do
+      assert Help.render(["tasks", command]) =~ "--status STATUS (#{values})"
+    end
+
+    for command <- ~w(create update) do
+      assert Help.render(["tasks", command]) =~ "[--status #{values}]"
+    end
+  end
+
   test "Task hierarchy help documents the exact inspect invocation" do
     assert Help.render(~w(tasks hierarchy)) =~
              "taskman tasks hierarchy [--project PROJECT_ID] TASK_ID"

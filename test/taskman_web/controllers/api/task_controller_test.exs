@@ -350,6 +350,38 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert project_id == project.id
   end
 
+  test "Not Planned is accepted by create, update and explicit list filters", %{conn: conn} do
+    project = project_fixture(%{})
+    collection = "/api/v1/projects/#{project.id}/tasks"
+
+    assert %{"data" => %{"id" => id, "status" => "not_planned"}} =
+             conn
+             |> post(collection, %{
+               "task" => %{"title" => "Reconsider later", "status" => "not_planned"}
+             })
+             |> json_response(201)
+
+    task = task_fixture(project)
+
+    assert %{"data" => %{"status" => "not_planned"}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "not_planned"}})
+             |> json_response(200)
+
+    assert %{"data" => tasks} =
+             conn |> get(collection <> "?statuses[]=not_planned") |> json_response(200)
+
+    assert Enum.sort(Enum.map(tasks, & &1["id"])) == Enum.sort([id, task.id])
+    assert Enum.all?(tasks, &(&1["status"] == "not_planned"))
+
+    assert %{"error" => %{"code" => "validation_failed", "fields" => %{"status" => [_]}}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "unknown"}})
+             |> json_response(422)
+
+    assert Tasks.get_task_for_project(project, task.id).status == :not_planned
+  end
+
   test "POST creates a Task in a List with every editable field", %{conn: conn} do
     project = project_fixture(%{})
     root = list_fixture(project, %{name: "Planning"})

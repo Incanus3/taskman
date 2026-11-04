@@ -33,12 +33,18 @@ Task relationships never automatically alter Task state.
   listing blocker IDs. When specific blocker IDs are confirmed, the Done write may proceed if the
   current unresolved direct blocker set is unchanged, smaller, or empty. A newly unresolved
   blocker absent from the confirmed IDs requires a fresh warning.
-- A direct blocker is resolved for that warning when its Task is either **Done** or **Will Not Do**.
-  No relationship state is changed automatically.
+- A direct blocker is resolved for that warning only when its Task is **Done**. **Not Planned** and
+  **Will Not Do** are closed for counting but remain unresolved blockers. No relationship state is
+  changed automatically.
 - A Task that remains Done needs no new warning for an unchanged status or an ordinary field edit.
   Explicit status requests retain optimistic conflict checks: a stale Done request cannot silently
   succeed after another user reopens the Task. A warning or conflict rejects all fields in the
   same update.
+
+The API returns HTTP 409 with `error.code = "unresolved_blockers"` and message
+“Review unresolved direct blockers before marking Done”; its current summaries include
+Not Planned and Will Not Do blockers. Existing ID-based or one-request force confirmation remains
+the only override. See the [only-Done and confirmation contract](../specs/2026-11-01-additional-task-states-design.md#closed-work-can-still-block-other-tasks).
 
 ## Creation and display rules
 

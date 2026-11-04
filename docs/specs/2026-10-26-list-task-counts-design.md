@@ -6,6 +6,13 @@ Show the size of each List under the active filters, and show how much work the 
 represents relative to its broader task population. This is a small UI addition to the existing
 Phoenix LiveView workspace; it needs no schema migration or dependency.
 
+> **Superseded in part:** The [additional Task states
+> contract](2026-11-01-additional-task-states-design.md#closed-work-can-still-block-other-tasks)
+> extends closed-state classification to Not Planned. Existing count formulas apply with the
+> complete closed set; fresh defaults remain the four open states. Shared List/topology ownership
+> now follows its availability model; exact counts and current direct-Task presence retain
+> independent refresh semantics.
+
 ## Decisions for review
 
 | ID | Status | Choice | Cost or constraint | Details |
@@ -20,11 +27,11 @@ Phoenix LiveView workspace; it needs no schema migration or dependency.
 ## Counting contract
 
 For a location, let `S` be the selected statuses and `U` be Icebox, Pending, In Progress, and
-In Review. Closed statuses are Done and Will Not Do.
+In Review. Closed statuses are Done, Not Planned and Will Not Do.
 
 - **Visible (`a`)** counts tasks whose status belongs to `S`.
 - **Eligible (`b`)** counts tasks whose status belongs to `U` plus whichever closed statuses
-  belong to `S`: `U ∪ (S ∩ {Done, Will Not Do})`.
+  belong to `S`: `U ∪ (S ∩ {Done, Not Planned, Will Not Do})`.
 - Both use identical location scope. With Include child Lists off, count only tasks owned directly
   by that List, or directly by the Project for “Project tasks”. With it on, add every descendant
   List; “Project tasks” then covers the entire Project.
@@ -35,11 +42,11 @@ In Review. Closed statuses are Done and Will Not Do.
   selection. The selected location's sidebar number equals the header numerator.
 - An empty status selection gives `a = 0` and `b = count(U)`. An empty population shows `0 / 0`.
   The set rule ensures `0 ≤ a ≤ b`; this is not a completed / total progress indicator.
-- The new default status selection is `U`, excluding both Done and Will Not Do. The default view
+- The new default status selection is `U`, excluding Done, Not Planned and Will Not Do. The default view
   therefore counts all unclosed tasks in both numerator and denominator.
 
 For a synthetic location with counts Icebox 2, Pending 3, In Progress 4, In Review 1, Done 5,
-and Will Not Do 6, keeping the location scope fixed:
+Not Planned 0, and Will Not Do 6, keeping the location scope fixed:
 
 | Selected statuses | Sidebar / numerator | Header |
 |---|---|---|
@@ -104,7 +111,7 @@ Top-level Lists have null `parent_list_id`, identifying the Project-tasks row as
 destination. The null-ID row is the terminal root, not its own child. No List names, Task records,
 or other hierarchy lookup are required for count calculation.
 
-Let `E = U ∪ (S ∩ {Done, Will Not Do})`. Restrict the aggregate's input to the Project and statuses
+Let `E = U ∪ (S ∩ {Done, Not Planned, Will Not Do})`. Restrict the aggregate's input to the Project and statuses
 in `E`. Count all remaining tasks in each group for the eligible count, and conditionally count
 those with status in `S` for the visible count. This is valid because `S` is a subset of `E`.
 An empty `S` produces zero visible counts while still counting all unclosed tasks as eligible.
@@ -117,8 +124,9 @@ omit empty intermediate ancestors needed to reach higher Lists and the Project.
 Accumulate both counts from children to parents when enabled, using only the returned parent
 IDs. With inclusion off, use the direct counts. Keep aggregation proportional to the number of
 Lists, including empty ancestors with nonempty descendants. No separate hierarchy query, Task
-hierarchy traversal, persisted counters, or cache are needed for this accounting. Navigation may
-still load its own List data. Filter changes recompute the query; do not retain per-status buckets.
+hierarchy traversal, persisted counters, or per-status cache are needed for this accounting.
+Navigation projects the retained shared location model; exact count refresh remains independent.
+Filter changes recompute the query; do not retain per-status buckets.
 The internal count operation accepts a list of status values and retains only supported status
 atoms, matching existing location-query normalization. Unsupported atoms and non-atom values are
 ignored before deriving either status set; an entirely unsupported selection behaves like an empty
@@ -130,10 +138,11 @@ Returning hierarchy alongside the counts requires the List join and explicit Pro
 SQL statement and returns zero-count Lists too. A task-only aggregate can be smaller and its query
 is simpler, but its caller must obtain the complete hierarchy separately. The accepted shape makes
 accounting independent of navigation's loaded data and reads its parent links and counts together.
-In the current implementation, `Workspace.refresh/1` consumes the hierarchy to build navigation
-without retaining it for `Listing.refresh/1`; task-table queries also load Lists internally.
-Reusing those reads would require passing the hierarchy through the refresh paths or retaining
-shared hierarchy state. The extra List join keeps this feature independent of that coordination.
+The shared page-local location owner now retains List metadata for navigation and state-option
+availability, as specified by the superseding contract. Counts still read current parent links and
+Task counts together; they are not inferred from retained state observations. Reusing the location
+owner inside this accounting query would couple exact refreshes to that separate lifecycle and is
+not required by the additional-state feature. The List join keeps count calculation independent.
 
 Grouping by both List and status and fetching every status was also considered. The accepted
 direct count pair returns at most one row per owning location and removes application-side status

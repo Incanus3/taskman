@@ -3,9 +3,11 @@ defmodule Taskman.CLI.Registry do
 
   alias Taskman.CLI.Registry.{Argument, Command, Option}
   alias Taskman.Projects.Project
+  alias Taskman.Tasks.Status
 
   @project_icons Project.icons()
-  @statuses ~w(icebox pending in_progress in_review done will_not_do)
+  @statuses Enum.map(Status.values(), &Atom.to_string/1)
+  @status_alternatives Enum.join(@statuses, "|")
   @priorities ~w(none low medium high urgent)
   @task_sort_fields ~w(id title status priority location)
   @sort_directions ~w(asc desc)
@@ -317,7 +319,7 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks create),
         summary: "Create a Task.",
         usage:
-          "taskman tasks create [--project PROJECT_ID] --title TITLE [--parent TASK_ID] [--list LIST_ID] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
+          "taskman tasks create [--project PROJECT_ID] --title TITLE [--parent TASK_ID] [--list LIST_ID] [--description TEXT] [--status #{@status_alternatives}] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601]",
         handler: {:tasks, :create},
         context_role: :project_required,
         options: [
@@ -340,7 +342,7 @@ defmodule Taskman.CLI.Registry do
         path: ~w(tasks update),
         summary: "Update editable Task fields or lifecycle state.",
         usage:
-          "taskman tasks update [--project PROJECT_ID] TASK_ID [--title TITLE] [--description TEXT] [--status icebox|pending|in_progress|in_review|done|will_not_do] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent] [--confirm-unresolved-blockers ID,ID | --force-done-with-unresolved-blockers]",
+          "taskman tasks update [--project PROJECT_ID] TASK_ID [--title TITLE] [--description TEXT] [--status #{@status_alternatives}] [--priority none|low|medium|high|urgent] [--due-at LOCAL_ISO_8601 | --clear-due-at] [--parent PARENT_TASK_ID | --no-parent] [--confirm-unresolved-blockers ID,ID | --force-done-with-unresolved-blockers]",
         handler: {:tasks, :update},
         context_role: :project_required,
         arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],

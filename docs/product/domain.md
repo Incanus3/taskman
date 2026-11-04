@@ -74,9 +74,9 @@ current Project model does not define a local execution directory. Explicit assi
 nonterminal Task authorizes an agent to make bounded updates within its agreed scope, append
 evidence comments and explicitly move it to In Progress or In Review after inspecting the Task,
 thread and blockers. Assignment is operator authorization; registration and runtime events are not.
-Done, Will Not Do, reopening terminal work, blocker overrides, deletion and material scope/priority
-changes require explicit operator decisions. These are operating rules, not new API authorization
-enforcement or automatic transitions. In Progress is not an atomic claim; coordinate ownership.
+Done, Not Planned, Will Not Do, reopening terminal work, blocker overrides, deletion and material
+scope/priority changes require explicit operator decisions. These are operating rules, not new API
+authorization enforcement or automatic transitions. In Progress is not an atomic claim; coordinate ownership.
 
 ## Deletion
 
@@ -128,8 +128,8 @@ enforcement or automatic transitions. In Progress is not an atomic claim; coordi
   [relationship contract](relationships.md).
 - **Blocks / Blocked by** may span Projects. It is directed, has at most one edge per ordered Task
   pair, rejects self-links and all cycles, and counts as resolved for the **Done** warning only when
-  the blocking Task is **Done** or **Will Not Do**. Moving a Task with unresolved blockers to **Done**
-  requires warning confirmation.
+  the blocking Task is **Done**. Not Planned and Will Not Do remain unresolved. Moving a Task with
+  unresolved blockers to **Done** requires warning confirmation.
 - Parent-child is an acyclic, same-Project work-breakdown relationship: one parent may have many
   children, while a child has at most one parent. It does not change a Task's List ownership or status.
 - Parent-child and Blocks may coexist between the same Tasks. A child may block its parent, but
@@ -144,7 +144,29 @@ enforcement or automatic transitions. In Progress is not an atomic claim; coordi
 - **In Progress**: work actively being performed by a person, an external agent, or both.
 - **In Review**: work awaiting human assessment before it can be completed.
 - **Done**: the terminal state for work a human has reviewed and explicitly accepted as complete.
+- **Not Planned**: work we currently consider unnecessary, retained for reconsideration if the need arises.
 - **Will Not Do**: the terminal state for work explicitly abandoned or declined by the operator.
+
+The canonical selector and status-sort order is Icebox, Pending, In Progress, In Review, Done,
+Not Planned, Will Not Do; storage/API values are `icebox`, `pending`, `in_progress`, `in_review`,
+`done`, `not_planned`, `will_not_do`. Done, Not Planned and Will Not Do are closed for counting;
+only Done is completed and resolves blockers. Explicitly selected closed states participate in
+visible and eligible counts. Choosing Not Planned requires an explicit operator decision.
+
+Not Planned is an additional state. Browser selectors offer default states plus additional states
+represented in their unfiltered scope. Main-listing and form selectors retain page observations
+until reload/remount. Main-listing scope follows owning location and Include child Lists; form
+scope is the direct owning List or the whole Project when no List is selected. Hierarchy availability
+is derived from the complete currently loaded connected tree.
+Remembered filtering choices survive when an option is temporarily absent. Hierarchy choices start
+with every supported state checked and last for one open detail dialog.
+
+Enhanced form pickers always retain their selected value and can reveal hidden states through
+**Show additional states** inside the popup. Reveal keeps the popup open and value unchanged,
+survives Task navigation in the same edit dialog, and resets for a new creation form or reopened
+dialog. Native fallback offers all seven real states directly. State options and main-table badges
+show delayed descriptions; see the [additional-state contract](../specs/2026-11-01-additional-task-states-design.md)
+for exact scopes, lifetimes, accessibility and delivery limits.
 
 ## Task creation
 

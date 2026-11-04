@@ -37,11 +37,13 @@ deferred to a separate accepted design.
 Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
 and a user may explicitly select another lifecycle state during creation. Its fixed lifecycle is
 **Icebox → Pending → In Progress → In Review → Done**; In Review may return to Pending or In
-Progress. **Will Not Do** is the other terminal state. Explicit assignment to a nonterminal Task
-authorizes bounded agent updates, evidence comments and explicit In Progress/In Review transitions.
-Done, Will Not Do, reopening terminal work, blocker overrides, deletion and material scope/priority
-changes require explicit operator decisions. A human reviews and accepts work before Done. See
-the [agent-work contract](domain.md#agent-work); these operating rules add no API enforcement or
+Progress. **Not Planned** is closed work currently considered unnecessary but retained for
+reconsideration. **Will Not Do** is explicitly abandoned or declined work. Explicit assignment to a
+nonterminal Task authorizes bounded agent updates, evidence comments and explicit In Progress/In
+Review transitions.
+Done, Not Planned, Will Not Do, reopening terminal work, blocker overrides, deletion and material
+scope/priority changes require explicit operator decisions. A human reviews and accepts work before
+Done. See the [agent-work contract](domain.md#agent-work); these operating rules add no API enforcement or
 automatic lifecycle transitions.
 
 After a successful Task move, the browser stays on the current Project/List backdrop if the Task is
@@ -94,6 +96,16 @@ nor external agent work automatically changes Task state.
   [expandable Task listing design](../specs/2026-10-27-expandable-task-listing-design.md).
 - Include child Lists and Statuses persist as browser preferences across navigation. A Share
   control copies the current route with both filters encoded when a reproducible view is needed.
+- Canonical status order for selectors and sorting is Icebox, Pending, In Progress, In Review,
+  Done, Not Planned, Will Not Do. Main defaults select the first four; all three closed states
+  contribute to visible/eligible counts only when explicitly selected. Hierarchy selection starts
+  with all supported states checked.
+- Not Planned is an additional state. Contextual selectors offer it when observed in the unfiltered
+  owning-location population (with descendant Lists when enabled), or the complete hierarchy tree.
+  Form scope is its direct owning List or whole Project without a List. Main/form page observations
+  survive state changes and location navigation; reload/remount rebuilds them from current Tasks.
+  Hierarchy options follow the complete currently loaded tree. Filter
+  preferences survive an absent option. See the [availability contract](../specs/2026-11-01-additional-task-states-design.md#option-availability-uses-the-unfiltered-task-population).
 - Opening a Task shows a modal over the preserved list state. The selected Task is shareable in
   the URL.
 - The authenticated navbar has a global Task jump search centered between Taskman and account
@@ -114,6 +126,16 @@ nor external agent work automatically changes Task state.
   The custom menus retain the existing form values, autosave, Done warning and conflict behavior;
   native controls remain the fallback and recovery controls stay disabled. See the
   [field picker contract](../specs/2026-10-28-form-controls-design.md#select-picker).
+- Enhanced state pickers offer the current value and an in-popup **Show additional states** action
+  when any real state remains hidden. Revealing preserves the value, keeps the popup open and
+  does not autosave. It lasts across Task navigation in one edit dialog and resets on dialog close
+  or a new creation form. Native fallback offers every real state directly in canonical order.
+- State options show descriptions after 450 ms of hover or keyboard focus/active-option navigation;
+  main-table state badges use a 450 ms hover delay while preserving click/tap Task opening and no
+  extra tab stop. Persistent accessible descriptions are independent of visual timing. Selection,
+  popup close, scrolling, navigation, removal, changed state and form/dialog changes cancel pending
+  or visible descriptions. Tooltip hover retains them; Escape preserves existing dismissal order.
+  See the [description contract](../specs/2026-11-01-additional-task-states-design.md#descriptions-appear-in-delayed-option-tooltips).
 - The Due date/time popup stages calendar and time choices until Apply. Cancel, Escape or
   dismissal discards the popup draft; Clear is also staged until Apply. The editable field uses
   `DD.MM.YYYY HH:mm` with 24-hour time, for example `28.10.2026 17:45`, consistently across browsers.
@@ -201,9 +223,9 @@ nor external agent work automatically changes Task state.
 ### Task comments and Activity
 
 - An authenticated user may append and read comments on any Task in the shared workspace,
-  including Done and Will Not Do Tasks. An API key posts as its owning user. Each comment records
-  the authenticated posting account while that account exists; callers cannot choose another
-  account or supply a creation time. API and CLI posts may include an optional custom display name.
+  including Done, Not Planned and Will Not Do Tasks. An API key posts as its owning user. Each
+  comment records the authenticated posting account while that account exists; callers cannot choose
+  another account or supply a creation time. API and CLI posts may include an optional custom display name.
   That name is a label, not delegated identity or authority. Browser posts use the account login.
 - The comment thread is append-only plain text, ordered by creation time and then comment ID.
   Submission trims surrounding whitespace, requires nonempty text, and limits it to 10,000 Unicode
@@ -286,7 +308,8 @@ never block its child. Relationships do not automatically transition Tasks. An u
 Done with an unresolved direct blocker warns and leaves status unchanged. A person may confirm the
 move after reviewing that warning. API and CLI also accept confirmed blocker IDs on the first
 request when the person already knows them, or a case-specific, one-request force confirmation
-without listing blocker IDs. A blocker is resolved for the warning when it is Done or Will Not Do.
+without listing blocker IDs. A blocker is resolved for the warning only when it is Done.
+Not Planned and Will Not Do remain unresolved.
 The warning identifies each unresolved direct blocker with its status and priority.
 Confirmation remains valid when the blocker set is unchanged or only shrinks; a newly unresolved
 blocker that was not confirmed requires a fresh warning.

@@ -11,6 +11,12 @@
 > human-only nonterminal-transition wording. Explicit assignment permits In Progress/In Review;
 > terminal decisions still require human acceptance. UI behavior is unchanged.
 
+> **Superseded in part:** The [additional Task states
+> contract](2026-11-01-additional-task-states-design.md) supersedes the six-state vocabulary and
+> unconditional display of every state. It defines contextual options, in-picker reveal, native
+> fallback and description lifetimes. Human-controlled lifecycle and autosave contracts remain
+> authoritative.
+
 ## Goal
 
 Finish Task editing and explicit human-controlled lifecycle behavior in the existing list-first
@@ -88,13 +94,14 @@ edit surfaces that the product does not need.
 
 ### Human-controlled lifecycle
 
-The modal exposes every persisted status:
+The modal supports every persisted status, with contextual display and reveal as specified above:
 
 - Icebox
 - Pending
 - In Progress
 - In Review
 - Done
+- Not Planned
 - Will Not Do
 
 Selecting a status in the modal is an explicit human action and persists immediately. Runtime
@@ -229,7 +236,7 @@ The canonical Task modal contains:
 
 - a title input;
 - a plain multiline description input;
-- a status select with all six lifecycle values;
+- a status select supporting every lifecycle value, with contextual options and reveal;
 - a priority select with None, Low, Medium, High, and Urgent;
 - a local `datetime-local` due date-time input with minute precision;
 - a Close action; and

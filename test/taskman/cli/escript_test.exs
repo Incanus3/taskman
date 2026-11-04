@@ -59,6 +59,21 @@ defmodule Taskman.CLI.EscriptTest do
     assert help =~ "TASKMAN_API_KEY_HOST"
     assert help =~ "taskman repo"
 
+    for leaf <- ~w(create update list) do
+      assert {help, 0} = command(fixture, ["tasks", leaf, "--help"])
+      assert help =~ "icebox|pending|in_progress|in_review|done|not_planned|will_not_do"
+    end
+
+    for shell <- ~w(bash fish) do
+      assert {completion, 0} = command(fixture, ["completions", shell])
+      assert completion =~ "not_planned"
+    end
+
+    {error, 2} =
+      command(fixture, ~w(tasks update 42 --status unknown --json), stderr_to_stdout: true)
+
+    assert %{"error" => %{"code" => "invalid_invocation"}} = Jason.decode!(error)
+
     assert data(fixture, ~w(config hosts add personal --url https://taskman.example.invalid)) ==
              %{"saved" => true}
 

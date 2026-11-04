@@ -159,7 +159,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
       assert conn.request_path == "/api/v1/projects/7/tasks"
 
       assert conn.query_params == %{
-               "statuses" => ["pending", "done"],
+               "statuses" => ["pending", "not_planned"],
                "sort" => "title",
                "direction" => "asc"
              }
@@ -177,7 +177,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "--status",
           "pending",
           "--status",
-          "done",
+          "not_planned",
           "--sort",
           "title",
           "--direction",
@@ -307,7 +307,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
                "task" => %{
                  "title" => "Prepare launch",
                  "description" => "",
-                 "status" => "in_review",
+                 "status" => "not_planned",
                  "priority" => "urgent",
                  "due_at" => "2026-08-29T12:00:00",
                  "list_id" => 11
@@ -320,7 +320,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
         data:
           task_response(%{
             description: "",
-            status: "in_review",
+            status: "not_planned",
             priority: "urgent",
             due_at: "2026-08-29T12:00:00"
           })
@@ -339,7 +339,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "--description",
           "",
           "--status",
-          "in_review",
+          "not_planned",
           "--priority",
           "urgent",
           "--due-at",
@@ -420,11 +420,11 @@ defmodule Taskman.CLI.Commands.TasksTest do
       assert conn.request_path == "/api/v1/projects/7/tasks/42"
 
       assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
-               "task" => %{"status" => "in_review", "priority" => "urgent", "due_at" => nil}
+               "task" => %{"status" => "not_planned", "priority" => "urgent", "due_at" => nil}
              }
 
       Req.Test.json(conn, %{
-        data: task_response(%{status: "in_review", priority: "urgent", due_at: nil})
+        data: task_response(%{status: "not_planned", priority: "urgent", due_at: nil})
       })
     end)
 
@@ -437,7 +437,7 @@ defmodule Taskman.CLI.Commands.TasksTest do
           "7",
           "42",
           "--status",
-          "in_review",
+          "not_planned",
           "--priority",
           "urgent",
           "--clear-due-at",
@@ -448,7 +448,9 @@ defmodule Taskman.CLI.Commands.TasksTest do
 
     assert result.status == 0
     assert result.stderr == ""
-    assert %{"data" => %{"status" => "in_review", "due_at" => nil}} = Jason.decode!(result.stdout)
+
+    assert %{"data" => %{"status" => "not_planned", "due_at" => nil}} =
+             Jason.decode!(result.stdout)
   end
 
   test "clear due date alone sends only the due_at null field" do

@@ -11,6 +11,13 @@ The [Task detail layout contract](2026-10-28-task-detail-layout-design.md) retai
 for responsive layout, selection, manual expansion, recovery and focus. The
 [comment contract](2026-09-26-task-comments-design.md) retains departure/draft behavior.
 
+> **Superseded in part:** The [additional Task states
+> contract](2026-11-01-additional-task-states-design.md) extends the vocabulary to seven states and
+> supersedes unconditional option display with contextual availability. All supported states start
+> checked; absent preferences survive within the dialog. Availability and the visible sorted tree
+> are cached before rendering; opening the filter does not traverse the hierarchy. Ancestry,
+> selection, expansion and dismissal remain authoritative.
+
 ## Decisions
 
 | ID | Status | Choice | Downside or constraint | Contract |
@@ -45,7 +52,7 @@ not automatically expand optional branches, while the current path remains requi
 
 ## Choices last for one open dialog
 
-All six statuses start checked. Changes apply immediately and independently of the main
+All supported statuses start checked. Changes apply immediately and independently of the main
 listing. Preserve choices during Task navigation, including a different connected tree, and
 while hiding/reopening the hierarchy panel within that dialog. Close resets the selection;
 reopening starts with all statuses checked. No URL parameters, browser storage or persisted

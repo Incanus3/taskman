@@ -5,7 +5,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
   alias Taskman.CLI.Registry
   alias Taskman.CLI.Registry.Command
 
-  @lifecycle_values ~w(icebox pending in_progress in_review done will_not_do)
+  @lifecycle_values ~w(icebox pending in_progress in_review done not_planned will_not_do)
   @priority_values ~w(none low medium high urgent)
 
   @tag :tmp_dir
@@ -45,6 +45,22 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
 
     assert {_output, 0} = System.cmd("bash", ["-n", bash_path], stderr_to_stdout: true)
     assert {_output, 0} = System.cmd("fish", ["-n", fish_path], stderr_to_stdout: true)
+  end
+
+  @tag :tmp_dir
+  test "shells complete exactly the supported Task states", %{tmp_dir: tmp_dir} do
+    bash = Path.join(tmp_dir, "taskman.bash")
+    fish = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash, Completions.bash())
+    File.write!(fish, Completions.fish())
+
+    for command <- ~w(create update list) do
+      assert bash_query(bash, ["taskman", "tasks", command, "--status", ""]) ==
+               ~w(icebox pending in_progress in_review done not_planned will_not_do)
+
+      assert Enum.sort(fish_query(fish, "taskman tasks #{command} --status ")) ==
+               ~w(done icebox in_progress in_review not_planned pending will_not_do)
+    end
   end
 
   test "fixed values are sourced from command option metadata" do

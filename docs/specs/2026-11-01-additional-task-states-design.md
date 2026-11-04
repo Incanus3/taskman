@@ -1,6 +1,7 @@
 # Additional Task states and Not Planned
 
-**Status:** Design and implementation plan approved; implementation not started.
+**Status:** Implemented and locally verified; independent scoped review and operator acceptance pending.
+D1–D13 and the written design remain operator approved.
 **Date:** 2026-11-01
 
 Keep ordinary Task selectors compact as the supported state vocabulary grows. Introduce
@@ -32,42 +33,20 @@ authorization gates.
 
 ## Existing contracts and observed baseline
 
-Inspected source on branch `feature/additional_states`, starting at revision
-`8754d59462f300d056c3da17d956405575f95027`; no product changes have been made for this feature.
+The implementation extends the accepted lifecycle, hierarchy filter, shared controls and live-update
+contracts. Current product behavior is owned by the [domain model](../product/domain.md),
+[MVP specification](../product/mvp-spec.md) and [relationships](../product/relationships.md).
+The contracts below supersede the six-state vocabulary, separate status-sort ranking,
+Done-or-Will-Not-Do blocker resolution, unconditional state-option display and metadata-only Task
+event restriction in their older specifications. Other lifecycle, recovery, warning, conflict,
+count, tree-ancestry and dismissal guarantees remain authoritative.
 
-- [Domain model](../product/domain.md) owns current lifecycle and count semantics.
-- [Hierarchy filter](2026-10-28-hierarchy-status-filter-design.md) owns modal-local preferences,
-  ancestry preservation, required paths, expansion and dismissal behavior.
-- [Shared controls](2026-10-28-form-controls-design.md) owns the native-select bridge and enhanced
-  picker behavior. [Live updates](2026-09-01-live-task-updates-design.md) owns reconciliation.
-- `Task.statuses/0` currently returns six Ecto enum values. The initial migration also restricts
-  the string column with `tasks_status_check`.
-- `TaskTablePreferences` and `assets/js/project_live_hooks.js` persist a full inclusion list in
-  browser local storage. Explicit URL snapshots take precedence. Defaults omit Done and Will Not Do.
-- Hierarchy state starts with every supported state checked, retains choices within an open
-  dialog, and resets on close. Its complete source tree is available before projection.
-- `Tasks.Counts` derives eligible counts from all open states plus explicitly selected closed
-  states. `Mutations.unresolved_blocker_summaries/1` currently excludes Done and Will Not Do.
-- Selectors use `Task.statuses/0`, while SQL and hierarchy status sorting have a separate existing
-  rank: Will Not Do, Icebox, Pending, In Progress, In Review, Done in ascending order.
-- `assets/js/tooltips.js` uses a 450 ms hover delay and immediate keyboard-focus display.
-  Its tooltip is appended to the document body and marked `aria-hidden`. The enhanced select
-  instead focuses its listbox and tracks the active option with `aria-activedescendant`, while
-  both the select options and hierarchy filter can use top-layer popovers. Existing tooltip
-  behavior therefore needs bounded extensions for these description tooltips.
-- Table state badges currently disable pointer events so clicking their area reaches the row's
-  task-opening link. Adding hover descriptions must preserve that navigation behavior.
-- `ChangeNotifications.Event` carries Task IDs and changed-field names, not state/location
-  snapshots. Task notifications target the active Project subscription and use `broadcast_from`,
-  excluding the publishing LiveView. `Workspace.refresh/1` loads List navigation; listing count
-  queries exclude unchecked closed states and cannot themselves discover all additional states.
-- `Workspace.refresh/1` currently reloads Lists and emits `NavigationNode` rows into a LiveView
-  stream; `Workspace.State` does not retain a reusable complete List index. The shared location
-  model below introduces that owner rather than duplicating an existing retained collection.
-
-This specification replaces the blocker-resolution rule in the domain, relationships, MVP and
-blocking specification when implemented. Other lifecycle, ownership, recovery and confirmation
-contracts remain authoritative.
+Implemented owners are `Tasks.Status`, the Ecto schema and check-constraint migration, compact
+`ChangeNotifications.Event` observations, `ProjectLive.Locations` within `Workspace.State`,
+`StateOptions`, cached `ProjectLive.Tasks.Hierarchy` projections, shared picker/tooltip modules,
+and CLI Registry metadata. The main listing still persists full inclusion lists under its existing
+browser key; URL snapshots override storage and defaults. Hierarchy selection remains independent
+and modal-local. These are contextual display rules, not public input restrictions.
 
 ## State definitions
 
@@ -95,7 +74,8 @@ is needed for the existing Done-specific behavior.
 Descriptions and a color token belong in the shared state definitions and product/agent
 documentation. The web layer maps the token to concrete text/background styles rather than
 maintaining an independent state-to-color assignment. Preserve existing state colors; choose an
-accessible subdued color for Not Planned. Exact shade/token is an implementation choice.
+accessible subdued color for Not Planned. The implementation uses the `stone` token for Not
+Planned and retains existing state colors.
 The additional-option background treatment remains separate from each state's identifying color.
 
 ## Option availability uses the unfiltered Task population
@@ -453,10 +433,27 @@ and a generic state-machine framework are outside scope.
 | `assets/js/tooltips.js` | Shared tooltip scheduling/presentation extensions that preserve other consumers. |
 | `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions | Consume the definitions/rank without unrelated query or workflow refactors. |
 
+### Implemented derived-state ownership
+
+`Workspace.State.locations` owns the page-local `Locations` collection. Navigation, location
+choices and additional-state selectors project the same retained List records/topology.
+`StateOptions` combines canonical definitions with prepared availability and the current value;
+checkbox merges preserve absent preferences. `ProjectLive.Tasks.Hierarchy` caches its available
+states and sorted visible tree when the complete tree loads or the selection/sort changes.
+Rendering a filter reads those projections; it does not rescan Tasks or rebuild a subtree.
+
+Description visuals use a manual top-layer popover, with stable source-specific hidden text and
+`aria-describedby` independent of visual timing. A 120 ms description-only leave grace permits
+crossing the placement gap into the tooltip. Generic tooltips retain immediate keyboard display.
+Table badge hit testing uses the badge rectangle while the underlying Task link keeps pointer
+ownership; focus order and click/tap navigation are unchanged.
+
 ### Persistence and rollback
 
 - Generate a new Ecto migration extending `tasks_status_check`; preserve existing rows.
-- Rollback refuses while `not_planned` rows exist; never delete or silently reclassify them.
+- Rollback recreates the prior PostgreSQL check constraint transactionally. PostgreSQL rejects
+  that constraint while `not_planned` rows exist, rolling back the migration and retaining the
+  current constraint/data; it never deletes or silently reclassifies them.
 - Older application code cannot read the new enum value. Explicitly revert those rows before
   rolling back application/migration. Deployment is outside this work.
 
@@ -471,8 +468,36 @@ and a generic state-machine framework are outside scope.
 
 ### Evidence available now
 
-Source inspection establishes the design context. Feature tests, visual prototypes and browser
-acceptance have not been performed.
+The catalogue, migration, counts, only-Done blockers, event snapshots, shared location owner,
+contextual filters, reveal and description contracts have focused context/component/LiveView and
+Chromium browser coverage. API create/update/list and CLI parser/request/help/Bash/Fish tests
+exercise Not Planned and unknown-state failures; existing API regression coverage verifies
+Will Not Do and Not Planned HTTP 409 warnings followed by explicit-ID confirmation.
+
+Integrated local verification used frozen runtime/test sources and sequential successful gates:
+
+| Gate | Result |
+|---|---|
+| Task context, ProjectLive and component suites | 741 passed; 46 browser tests excluded |
+| API controller suite | 100 passed |
+| CLI suite | 299 passed; 3 executable-only tests deferred to the rebuilt gate |
+| `mix precommit` | 1452 passed; 3 executable-only skips and 60 browser exclusions |
+| `mix escript.build`, then `TASKMAN_TEST_ESCRIPT="$PWD/taskman" mix test test/taskman/cli/escript_test.exs` | Build succeeded; all 3 rebuilt-executable tests passed with disposable configuration |
+| Additional-state, table, detail and form-picker browser suites | 29 passed in headed Chromium |
+
+Every Mix invocation used `ERL_FLAGS='+S 8:8'`. The executable gate ran against the newly built
+ignored binary. These are local API/Req.Test/executable/browser results, not deployed-backend or
+pinned-release-runtime acceptance. Browser coverage includes the new description/reveal contracts
+and existing popup, recovery, focus and native-value-bridge behavior.
+
+Chromium screenshots inspected at 1440×900, 390×844 and 320×400 CSS pixels showed readable muted
+additional options, independent focus/selection affordances, descriptions above their source and
+no clipped tooltip or horizontal overflow. Native fallback inspection exposed the native control
+while JavaScript remained loaded and verified all seven real options in canonical order. It does
+not establish a fully JavaScript-disabled run, native expanded palette/backgrounds or native tooltip
+timing. Persistent ARIA descriptions and keyboard focus were checked in Chromium, without a real
+screen reader. Narrow screens retained desktop hover capability; physical touch hardware was not
+used. These limits apply to the browser evidence above.
 
 ### Required implementation evidence
 
@@ -496,12 +521,12 @@ Run `mix precommit` after implementation.
 
 ### Documentation completion and next gate
 
-At implementation completion:
+Current product documentation and affected lifecycle, blocking, notification, count, hierarchy
+filter and shared-control specifications identify the resulting contracts and supersessions.
+The separate notification read-optimization research remains outside this feature.
 
-- Update domain, MVP, relationships and affected historical specification rules to identify this
-  specification's replacements; keep current contracts consistent.
-- Include the bounded Task snapshot extension in the live-updates contract.
-- Audit changed files for privacy and leaked planning terminology.
-
-Next: implement the [approved plan](../plans/2026-11-04-additional-task-states.md) after the clean-session
-boundary, unless the operator explicitly chooses to continue implementation in the planning session.
+Next: complete independent scoped review and present the implemented feature for operator
+acceptance. Tests and local commits establish
+technical evidence; they do not mark the workstream accepted or authorize publication. The
+[approved plan](../plans/2026-11-04-additional-task-states.md) remains active until delivery is complete
+and its durable conclusions are harvested.
