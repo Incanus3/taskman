@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; state catalogue/lifecycle accepted, remaining deliverables underway.
+**Status:** Operator approved; catalogue and events/bootstrap accepted, remaining deliverables underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -161,7 +161,7 @@ the existing test factories that construct Task `%Event{}` values.
 - Task `%Event{}` gains `status` and `list_id`. Every create/update/move publisher uses the
   returned persisted Task, preserving identity/revision/changed-field metadata and self-exclusion.
 
-- [ ] **Write failing tests.** Seed direct-Project, direct-List, child-List and foreign-Project
+- [x] **Write failing tests.** Seed direct-Project, direct-List, child-List and foreign-Project
   Not Planned Tasks alongside default-state Tasks. Assert only the correct additional observations
   are returned. Extend publish tests with exact final values, including `list_id: nil`:
 
@@ -173,16 +173,16 @@ the existing test factories that construct Task `%Event{}` values.
 
   Verify create, status update, ordinary title update, move and failed mutation behavior;
   failed/rolled-back supported operations still emit no success event.
-- [ ] **Run red:** `mix test test/taskman/tasks/availability_test.exs test/taskman/change_notifications_test.exs test/taskman/tasks/notifications_test.exs`.
+- [x] **Run red:** `mix test test/taskman/tasks/availability_test.exs test/taskman/change_notifications_test.exs test/taskman/tasks/notifications_test.exs`.
   Expect absent snapshot fields/bootstrap API.
-- [ ] **Implement only the new payload and grouped query.** Do not fetch a Task again inside
+- [x] **Implement only the new payload and grouped query.** Do not fetch a Task again inside
   publication, add old-state payloads, alter other event types or add delivery infrastructure.
   Update in-repository Task event fixtures from the Task they represent; malformed-snapshot tests
   deliberately retain missing/invalid values.
-- [ ] **Run green:** the red command plus
+- [x] **Run green:** the red command plus
   `mix test test/taskman_web/live/project_live/reconciliation_test.exs test/taskman_web/live/project_live/external_updates_test.exs`.
   Expected: payload/query contracts and existing invalidation consumers pass.
-- [ ] **Review and commit:** `Publish task state observations for availability`.
+- [x] **Review and commit:** `Publish task state observations for availability`.
 
 ## Task 3: Give navigation and availability one location owner
 
