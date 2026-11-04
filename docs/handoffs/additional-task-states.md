@@ -18,7 +18,8 @@ is operator approved, author-self-reviewed and independently reviewed with no ma
 The clean-session boundary has been crossed. Implementation is underway in the existing feature
 worktree. The state catalogue/lifecycle deliverable (Task 72) is implemented at `5f54b091`
 and independently accepted with no findings. Compact event/bootstrap work (Task 73) is accepted
-at `f890b632`. Shared location ownership (Task 74) is underway.
+at `f890b632`. Shared location ownership (Task 74) is accepted at `33fc77c9`. Contextual
+filters and mutation/reconnect observations (Task 75) are underway.
 
 The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
 compact Task event snapshots, one shared location owner, contextual filter preferences, picker
@@ -40,13 +41,13 @@ is tracked separately through the reference recorded there. It does not expand t
 Workstream Task **71** is relative to this repository's registered Taskman Project. Verify its
 exact description marker: `Source: Incanus3/taskman:additional-task-states`.
 Children **72–78**, their exact markers and dependency order are recorded in the approved plan.
-The root and Task 74 are In Progress in Product; Tasks 72–73 are Done after independent review;
-Tasks 75–78 remain Pending. The sibling blocker chain is verified; Task 74’s prerequisite is Done. Do not recreate this grouping.
+The root and Task 75 are In Progress in Product; Tasks 72–74 are Done after independent review;
+Tasks 76–78 remain Pending. The sibling blocker chain is verified; Task 75’s prerequisite is Done. Do not recreate this grouping.
 
 ## Remaining sequence and gates
 
-1. Finish Task 74: shared Project location ownership and Workspace/navigation integration.
-2. Continue Tasks 75–78 in the approved dependency order with independent scoped reviews and
+1. Finish Task 75: contextual filters, persisted observations and Project-ID reconnect resnapshot.
+2. Continue Tasks 76–78 in the approved dependency order with independent scoped reviews and
    verified local commits. Update canonical product/API/CLI/help/completion/skill/spec owners.
 3. Complete the integrated verification gates in the plan and record evidence, material limits
    and autonomous implementation rulings in their canonical owners.
@@ -62,8 +63,10 @@ spec compliance and quality with no findings. Coverage includes transactional mi
 refusal without row loss, canonical sorting/counts and Will Not Do/Not Planned Done confirmation.
 Task 73 verification: 22 focused and 9 consumer tests passed; `mix precommit` passed with
 1,414 passed, 3 skipped and 51 browser exclusions. Independent review accepted both verdicts
-with no findings. Browser acceptance and remaining feature integration are pending. Review
-and evidence are recorded on the respective Tasks. The existing local development PostgreSQL container was started to enable tests.
+with no findings. Task 74 verification: 100 focused tests passed; `mix precommit` passed with
+1,428 passed, 3 skipped and 51 browser exclusions. Independent review accepted both verdicts
+without findings. Browser acceptance and remaining integration are pending. Review and evidence
+are recorded on the respective Tasks. The existing local development PostgreSQL container was started to enable tests.
 
 ## Workstream rulings
 

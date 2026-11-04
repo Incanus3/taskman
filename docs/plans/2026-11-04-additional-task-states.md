@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; catalogue and events/bootstrap accepted, remaining deliverables underway.
+**Status:** Operator approved; catalogue, events and shared locations accepted; contextual filters underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -218,7 +218,7 @@ Counts and current direct-Task presence keep their existing independent sources.
 `lists(socket)` own context reads; `location_path(socket, project, task_list)` replaces the old
 querying two-argument path helper. Navigation consumes the model rather than loading another tree.
 
-- [ ] **Write failing model/workspace tests.** Assert direct/subtree/root distinctions, no removal
+- [x] **Write failing model/workspace tests.** Assert direct/subtree/root distinctions, no removal
   when an observed state ceases to be current, Project isolation, reparented subtree changes,
   invalid-key pruning and pending observations. Representative assertions after fixture setup:
 
@@ -231,8 +231,8 @@ querying two-argument path helper. Navigation consumes the model rather than loa
 
   Observe a Task for a newly created List before reconciling that List, then assert its direct
   state and ancestor/root summaries appear without a Task read when metadata arrives.
-- [ ] **Run red:** `mix test test/taskman_web/live/project_live/locations_test.exs test/taskman_web/live/project_live/workspace_test.exs`.
-- [ ] **Implement the pure model and Workspace integration.** Subscribe before bootstrap so queued
+- [x] **Run red:** `mix test test/taskman_web/live/project_live/locations_test.exs test/taskman_web/live/project_live/workspace_test.exs`.
+- [x] **Implement the pure model and Workspace integration.** Subscribe before bootstrap so queued
   observations can merge afterward. Bootstrap only on first Project entry or return after changing
   Projects; known same-Project navigation reuses prepared metadata/sets. Workspace notifications
   reconcile one authoritative List snapshot into the owner before navigation/forms consume it.
@@ -241,11 +241,11 @@ querying two-argument path helper. Navigation consumes the model rather than loa
   not turn selector opening into a query or discover Task states on ordinary List navigation.
   Supply creation location options and selection paths from the owner; retain current missing-List
   recovery behavior and exact navigation presence/count semantics.
-- [ ] **Run green:** the red command plus
+- [x] **Run green:** the red command plus
   `mix test test/taskman_web/live/project_live/workspace_updates_test.exs test/taskman_web/live/project_live/lists_test.exs test/taskman_web/live/project_live/creation_location_test.exs test/taskman_web/live/project_live/detail_recovery_test.exs test/taskman_web/components/workspace_navigation_test.exs`.
   Use Repo telemetry like `reconciliation_test.exs` to prove repeated navigation rendering does not
   reload a second List tree or run availability bootstrap again. Expected: all pass.
-- [ ] **Review and commit:** `Share project locations between navigation and state availability`.
+- [x] **Review and commit:** `Share project locations between navigation and state availability`.
 
 ## Task 4: Maintain observations and filter only offered choices
 
