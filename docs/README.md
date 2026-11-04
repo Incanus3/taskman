@@ -10,11 +10,11 @@
 ## Planning
 
 - [MVP roadmap](planning/roadmap.md)
-- [Additional Task states implementation plan (approved; awaiting implementation)](plans/2026-11-04-additional-task-states.md)
+- [Additional Task states implementation plan (approved; implementation underway)](plans/2026-11-04-additional-task-states.md)
 
 ## Specifications
 
-- [Additional Task states and Not Planned (design and plan approved; awaiting implementation)](specs/2026-11-01-additional-task-states-design.md)
+- [Additional Task states and Not Planned (approved; implementation underway)](specs/2026-11-01-additional-task-states-design.md)
 - [Upload staging outside deployment records (implemented and operator accepted; native evidence remains limited to the earlier relocation)](specs/2026-10-30-upload-staging-design.md)
 - [Modal-local hierarchy status filter (implemented and operator accepted)](specs/2026-10-28-hierarchy-status-filter-design.md)
 - [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)

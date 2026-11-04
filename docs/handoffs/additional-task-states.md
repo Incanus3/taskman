@@ -15,8 +15,9 @@ owns requirements, decisions, source evidence, boundaries and verification crite
 The complete [design](../specs/2026-11-01-additional-task-states-design.md), including D1–D13,
 is operator approved. The [implementation plan](../plans/2026-11-04-additional-task-states.md)
 is operator approved, author-self-reviewed and independently reviewed with no material gaps.
-Product code is unchanged; implementation has not started. The approved clean-session boundary
-has been presented; after resumption, begin implementation rather than requesting that boundary again.
+The clean-session boundary has been crossed. Implementation is underway in the existing feature
+worktree, starting with the state catalogue/lifecycle deliverable (Task 72). No implementation
+checkpoint has yet been verified or accepted.
 
 The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
 compact Task event snapshots, one shared location owner, contextual filter preferences, picker
@@ -38,16 +39,15 @@ is tracked separately through the reference recorded there. It does not expand t
 Workstream Task **71** is relative to this repository's registered Taskman Project. Verify its
 exact description marker: `Source: Incanus3/taskman:additional-task-states`.
 Children **72–78**, their exact markers and dependency order are recorded in the approved plan.
-All eight Tasks are Pending in Product. The sibling blocker chain is verified; Task 72 has no
-incoming blockers. Do not recreate this grouping.
+The root and Task 72 are In Progress in Product; Tasks 73–78 remain Pending. The sibling
+blocker chain is verified; Task 72 has no incoming blockers. Do not recreate this grouping.
 
 ## Remaining sequence and gates
 
-1. Resume in a fresh implementation session and read the full approved design and plan. Default to
-   delegated execution; continue in the planning session only if the operator explicitly chooses it.
-2. Pick up Task 72 under the tracker policy, including moving its Pending workstream ancestor to
-   In Progress, then execute the seven tasks in dependency order with independent scoped reviews
-   and verified local commits. Update canonical product/API/CLI/help/completion/skill/spec owners.
+1. Finish Task 72 with its red/green gates and independent scoped review; implementation is
+   delegated and the root/child pickup transitions have been verified.
+2. Continue Tasks 73–78 in the approved dependency order with independent scoped reviews and
+   verified local commits. Update canonical product/API/CLI/help/completion/skill/spec owners.
 3. Complete the integrated verification gates in the plan and record evidence, material limits
    and autonomous implementation rulings in their canonical owners.
 4. Present the workstream for operator acceptance before retiring this handoff. Do not equate
@@ -56,7 +56,7 @@ incoming blockers. Do not recreate this grouping.
 
 ## Verification
 
-No feature implementation/tests have run. Earlier `mix precommit` passed against the unchanged
+No feature implementation checkpoint has yet been verified. Earlier `mix precommit` passed against the unchanged
 product baseline: 1,398 passed, 3 skipped, 51 browser-tag exclusions. This does not establish
 new-feature behavior. Design checks include source inspection and independent builder reviews.
 Plan verification includes author coverage/interface/step/proportion review, independent readiness
@@ -67,4 +67,5 @@ chain. These tracker operations did not start implementation.
 ## Workstream rulings
 
 No autonomous implementation rulings. All individual design decisions are accepted; builder
-choices are identified in the specification. The complete design and implementation plan are approved.
+choices are identified in the specification. Final integration review follows the repository’s
+scope rule: this session’s changes and relevant interactions.
