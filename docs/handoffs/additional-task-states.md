@@ -1,7 +1,7 @@
 # Additional Task states
 
 Status: active
-Updated: 2026-11-03
+Updated: 2026-11-04
 Resume: `$resume additional-task-states`
 
 ## Objective and authority
@@ -12,7 +12,7 @@ owns requirements, decisions, source evidence, boundaries and verification crite
 
 ## Current checkpoint
 
-All individual decisions D1–D10 are operator accepted in discussion; full written design approval
+All individual decisions D1–D12 are operator accepted in discussion; full written design approval
 is pending. Product code is unchanged. The specification owns all behavioral detail, including
 only-Done blocker resolution, unified sorting, shared color tokens and delayed descriptions on
 state options and main-table state badges.
@@ -27,6 +27,10 @@ snapshots, so availability observation performs no per-client Task read. This su
 single-Task-refetch proposal. Existing listing/detail invalidations remain separate. Only the
 active Project is subscribed and the publisher excludes itself; revisit/reconnect snapshots cover
 subscription gaps. Do not add persistent usage history or last-instance reference counts.
+
+The operator explicitly accepts ephemeral delivery and the existing enclosing-transaction
+publication limitation (D11–D12). Their meaning and cache consequences are documented in the
+specification; no after-commit mechanism is added to this feature.
 
 Independent builder checks, including the shared location model, lifetime and compact event-snapshot
 contracts against notification, workspace, navigation, reconciliation and movement code, found no

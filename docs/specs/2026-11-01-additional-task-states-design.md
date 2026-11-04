@@ -21,8 +21,10 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D8 | Accepted | Show state descriptions in delayed tooltips on options and table state badges | Pickers require active-option/top-layer support; badge hover must preserve row navigation | [Descriptions](#descriptions-appear-in-delayed-option-tooltips) |
 | D9 | Accepted | Precompute page-local availability; update from event state/location snapshots without per-client Task reads | Events gain a compact payload; retained states may have zero current Tasks | [Updates](#availability-is-prepared-before-controls-open) |
 | D10 | Accepted | Share one Project location model between navigation and selectors; Project root is a location entry | Retains List metadata currently loaded for navigation; direct/subtree sets are derived caches | [Shared state](#availability-is-prepared-before-controls-open) |
+| D11 | Accepted | Retain ephemeral PubSub delivery and current-state resnapshots | Missed events are not replayed; transient historical state use may be lost | [Delivery limits](#accepted-delivery-and-publication-limitations) |
+| D12 | Accepted | Retain the existing enclosing-transaction publication limitation | An outer rollback can leave an already-delivered availability observation for an uncommitted change | [Publication limits](#accepted-delivery-and-publication-limitations) |
 
-D1–D10 reflect explicit operator decisions. The complete written specification still requires design
+D1–D12 reflect explicit operator decisions. The complete written specification still requires design
 approval before implementation planning. Approval covers this feature and the Will Not Do
 blocker correction; it does not authorize implementation, pushing, merging or deployment.
 
@@ -214,9 +216,10 @@ no public event schema or legacy producer compatibility layer is introduced.
    reconciliation supplies its record. Do not query to validate each notification's ownership.
 4. Invalid or missing snapshots do not trigger a fallback Task read.
 
-The snapshot records persisted use at the time of the mutation. Duplicate or out-of-order events
-can add a previously used state and never remove one. No per-Task version cache or old-state/location
-payload is needed for availability; existing revision metadata remains available to other consumers.
+The snapshot records the successful Task mutation at publication time, subject to the accepted
+outer-transaction limitation below. Duplicate or out-of-order events can add a previously used state
+and never remove one. No per-Task version cache or old-state/location payload is needed for
+availability; existing revision metadata remains available to other consumers.
 
 ### Event guarantees and limits
 
@@ -225,9 +228,21 @@ payload is needed for availability; existing revision metadata remains available
 | Current Task presentation | Listing, counts, detail and hierarchy retain their authoritative invalidation/refetch paths; these two fields do not replace those reads. |
 | Database savings | Eliminate additional availability reads per client, not every read in existing event handling. |
 | Existing event contract | Supersede the live-updates design's metadata-only restriction only for Task availability observations. |
-| Delivery and publication | Preserve ephemeral delivery and the existing enclosing-transaction publication caveat. |
+| Delivery and publication | Retain the explicitly accepted limitations below. |
 | Recovery | Resnapshot current Tasks after missed events; historical states cannot be reconstructed after remount. The cache is not an audit log. |
 | Scope | No outbox or broader event-driven view rewrite. |
+
+#### Accepted delivery and publication limitations
+
+| Limitation | Meaning | Effect on availability |
+|---|---|---|
+| Ephemeral delivery | PubSub does not store or replay messages for disconnected subscribers. Reconnection reloads current database state. | States used only transiently while disconnected cannot be reconstructed. |
+| Enclosing transaction | The Task context publishes after its own operation succeeds. A caller's outer transaction may still be pending and can subsequently roll back. | An already-delivered snapshot can add an additional state even though that outer transaction never committed the change; the observation can remain until reload/remount. |
+
+Current supported UI/API Task mutation paths call the contexts at the top level and avoid the
+enclosing-transaction case. Future callers composing these mutations inside a larger transaction
+must address publication timing before relying on outer-transaction atomicity. This feature does
+not add an after-commit mechanism or prohibit nesting; both limitations are accepted as documented.
 
 The eager session model avoids selector latency and last-instance bookkeeping. Persistent database
 usage history would exceed the accepted lifetime. Selector-time queries add latency; exact per-state
