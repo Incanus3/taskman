@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; catalogue, availability and contextual filters accepted; picker reveal underway.
+**Status:** Operator approved; catalogue, availability, filters and picker accepted; descriptions underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -338,7 +338,7 @@ LiveView tests. Create `test/taskman_web/live/project_live/additional_states_bro
 - Stable IDs: retain real option/native/trigger IDs; action is `ID-reveal`. Keep `ID-options` as the
   listbox and use a new `ID-popup` top-layer wrapper containing the listbox and semantic action button.
 
-- [ ] **Write failing interaction tests.** Before observation, the enhanced form omits Not Planned,
+- [x] **Write failing interaction tests.** Before observation, the enhanced form omits Not Planned,
   the native select contains all seven real states, and the action exists. After reveal assert
   canonical insertion, absent action, same native value/Task lock version, no ordinary change event
   or autosave, and an open popup. Check conditional absence when all additional states are already
@@ -355,9 +355,9 @@ LiveView tests. Create `test/taskman_web/live/project_live/additional_states_bro
   rendering/focus and popup visibility in browser tests, not raw LiveView HTML. The generic probe
   records hook `pushEvent` calls and simulates the metadata patch; the application browser test
   proves the real LiveView round trip.
-- [ ] **Run red:** `mix test test/taskman_web/live/project_live/additional_states_test.exs test/taskman_web/components/form_pickers_test.exs`; then
+- [x] **Run red:** `mix test test/taskman_web/live/project_live/additional_states_test.exs test/taskman_web/components/form_pickers_test.exs`; then
   `mix test.browser test/taskman_web/live/project_live/additional_states_browser_test.exs`.
-- [ ] **Implement the separate action path.** Task Form passes all native values plus the scoped
+- [x] **Implement the separate action path.** Task Form passes all native values plus the scoped
   enhanced subset supplied by its ProjectLive caller. Render additional rows with the agreed muted
   background and keep real-state order independent of the final action. Do not route activation
   through the existing `choose()` path, which writes the input and closes the popup.
@@ -367,11 +367,11 @@ LiveView tests. Create `test/taskman_web/live/project_live/additional_states_bro
   selecting it. Maintain popup position/open state during this reveal update; existing Task-context
   changes may close the popup while the server's dialog reveal flag remains true. Do not attach
   state colors/descriptions or a fabricated native value to the action.
-- [ ] **Run green:** the red commands plus
+- [x] **Run green:** the red commands plus
   `mix test test/taskman_web/components/tasks/form_test.exs test/taskman_web/live/project_live/autosave_test.exs test/taskman_web/live/project_live/detail_recovery_test.exs` and
   `mix test.browser test/taskman_web/components/form_pickers_browser_test.exs`.
   Use the shared browser probe to prove other select instances still isolate values/change events.
-- [ ] **Review and commit:** `Reveal additional task states from the open picker`.
+- [x] **Review and commit:** `Reveal additional task states from the open picker`.
 
 ## Task 6: Display delayed descriptions without breaking popup or row interaction
 

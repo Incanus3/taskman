@@ -20,7 +20,8 @@ worktree. The state catalogue/lifecycle deliverable (Task 72) is implemented at 
 and independently accepted with no findings. Compact event/bootstrap work (Task 73) is accepted
 at `f890b632`. Shared location ownership (Task 74) is accepted at `33fc77c9`. Contextual
 filters and mutation/reconnect observations (Task 75) are accepted at `9accc530` plus correction
-`bfac6854`. The in-picker reveal action (Task 76) is underway.
+`bfac6854`. The in-picker reveal action (Task 76) is accepted at `ba5caabf` plus focus
+correction `31ab1620`. Delayed descriptions (Task 77) are underway.
 
 The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
 compact Task event snapshots, one shared location owner, contextual filter preferences, picker
@@ -42,13 +43,13 @@ is tracked separately through the reference recorded there. It does not expand t
 Workstream Task **71** is relative to this repository's registered Taskman Project. Verify its
 exact description marker: `Source: Incanus3/taskman:additional-task-states`.
 Children **72–78**, their exact markers and dependency order are recorded in the approved plan.
-The root and Task 76 are In Progress in Product; Tasks 72–75 are Done after independent review;
-Tasks 77–78 remain Pending. The sibling blocker chain is verified; Task 76’s prerequisite is Done. Do not recreate this grouping.
+The root and Task 77 are In Progress in Product; Tasks 72–76 are Done after independent review;
+Task 78 remains Pending. The sibling blocker chain is verified; Task 77’s prerequisite is Done. Do not recreate this grouping.
 
 ## Remaining sequence and gates
 
-1. Finish Task 76: generic picker action/subset, reveal lifetime and browser value/focus checks.
-2. Continue Tasks 77–78 in the approved dependency order with independent scoped reviews and
+1. Finish Task 77: delayed state descriptions, accessibility, click-through badges and browser checks.
+2. Continue Task 78 in the approved dependency order with independent scoped reviews and
    verified local commits. Update canonical product/API/CLI/help/completion/skill/spec owners.
 3. Complete the integrated verification gates in the plan and record evidence, material limits
    and autonomous implementation rulings in their canonical owners.
@@ -58,16 +59,19 @@ Tasks 77–78 remain Pending. The sibling blocker chain is verified; Task 76’s
 
 ## Verification
 
-Latest gate after the Task 75 review correction: `ERL_FLAGS='+S 8:8' mix precommit`
-passed with 1,444 passed, 3 skipped and 51 browser exclusions. The focused correction gate
-passed 60 tests. A real rendered poisoned-source regression proves hierarchy filter opening,
-closing and expansion use prepared projections without SQL/traversal; navigation refreshes the
-selected breadcrumb. Independent re-review accepted both spec and quality with no findings.
+Latest gate after the Task 76 focus correction: `ERL_FLAGS='+S 8:8' mix precommit`
+passed with 1,448 passed, 3 skipped and 55 browser exclusions. Six covering browser tests and
+ten component tests passed. Earlier picker gates included 61 server tests and two existing
+responsive/recovery browsers. Actual LiveView reveal preserves native value/lock version and
+popup focus without change/autosave; real selection autosaves normally. Headed visual inspection
+verified the visible footer and muted additional row. Independent re-review accepted both
+verdicts with no remaining findings.
 
 Earlier accepted children establish safe migration rollback, canonical counts/sorting and
-only-Done blocker behavior, compact snapshots/bootstrap and shared topology. Evidence and scoped
-review results are on Tasks 72–75. Assets build passed before the projection-only correction.
-Browser acceptance and remaining integration are pending.
+only-Done blockers, compact snapshots/bootstrap, shared topology, retained contextual selections,
+read-free observations/reconnect and cached hierarchy projections. Evidence and scoped review
+results are on Tasks 72–76. Delayed descriptions, final viewport checks and integrated/API/CLI
+acceptance remain pending.
 
 The host’s default 72 async test cases exceeded the configured database pool of 16; use the
 command-local scheduler bound above (16 cases), without changing repository test configuration.
