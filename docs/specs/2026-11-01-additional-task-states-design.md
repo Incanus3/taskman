@@ -167,7 +167,7 @@ count-delta or notification optimizations recorded in the separate research.
 | Navigate between Lists, change Include child Lists, change form ownership | Read the appropriate prepared entry; no discovery query or subtree aggregation |
 | Open/close a filter or state picker | Read already prepared options; no availability query, Task scan or aggregate rebuild |
 | Hierarchy load/refresh | Derive its state set once from the complete loaded tree before rendering its filter; opening that filter performs no traversal |
-| Return to a Project or reconnect | Refresh the current database snapshot to cover periods without a subscription; merge with observations retained by the same mounted page and rebuild aggregates |
+| Return to a Project or re-establish the connection | Conservatively refresh current database state whether or not any events were missed; merge surviving page observations and rebuild aggregates |
 | Full reload/new LiveView mount | Discard observed availability and bootstrap from current Tasks |
 
 ### Page lifetime and topology
@@ -177,7 +177,7 @@ count-delta or notification optimizations recorded in the separate research.
 | Switch Projects | Retain previously visited Projects' direct observations in the mounted page. Refresh the selected Project on return because only the active Project's Task events are subscribed. |
 | Reconcile topology | Drop invalid List/Project keys. Reparenting changes subtree unions using current ancestry; former ancestors do not retain permanent usage history. |
 | Close a Task form | Reset its explicit reveal flag; retain the page's observed availability. |
-| Lose and restore the connection | Preserve observations if the same LiveView survives; a replacement process/remount starts fresh. |
+| Lose and restore the connection | If the same LiveView survives, preserve observations and merge a fresh snapshot; a replacement process/remount bootstraps from current Tasks. |
 
 ### Changes that do not discover availability
 
@@ -229,7 +229,7 @@ availability; existing revision metadata remains available to other consumers.
 | Database savings | Eliminate additional availability reads per client, not every read in existing event handling. |
 | Existing event contract | Supersede the live-updates design's metadata-only restriction only for Task availability observations. |
 | Delivery and publication | Retain the explicitly accepted limitations below. |
-| Recovery | Resnapshot current Tasks after missed events; historical states cannot be reconstructed after remount. The cache is not an audit log. |
+| Recovery | Refresh at known potential gaps: Project return, connection re-establishment or remount. No individual missed-event detector; the cache is not an audit log. |
 | Scope | No outbox or broader event-driven view rewrite. |
 
 #### Accepted delivery and publication limitations
@@ -238,6 +238,12 @@ availability; existing revision metadata remains available to other consumers.
 |---|---|---|
 | Ephemeral delivery | PubSub does not store or replay messages for disconnected subscribers. Reconnection reloads current database state. | States used only transiently while disconnected cannot be reconstructed. |
 | Enclosing transaction | The Task context publishes after its own operation succeeds. A caller's outer transaction may still be pending and can subsequently roll back. | An already-delivered snapshot can add an additional state even though that outer transaction never committed the change; the observation can remain until reload/remount. |
+
+Recovery is triggered by those lifecycle boundaries, not by evidence that a particular event was
+lost. There are no sequence-gap checks, delivery acknowledgements or replay mechanism. If a
+publication fails while a client remains connected, the client cannot detect that loss; current
+state is repaired at its next resnapshot boundary. Transient historical state use remains
+unrecoverable after a gap/remount.
 
 Current supported UI/API Task mutation paths call the contexts at the top level and avoid the
 enclosing-transaction case. Future callers composing these mutations inside a larger transaction

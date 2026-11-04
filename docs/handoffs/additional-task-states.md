@@ -27,6 +27,9 @@ snapshots, so availability observation performs no per-client Task read. This su
 single-Task-refetch proposal. Existing listing/detail invalidations remain separate. Only the
 active Project is subscribed and the publisher excludes itself; revisit/reconnect snapshots cover
 subscription gaps. Do not add persistent usage history or last-instance reference counts.
+Resnapshots run conservatively at Project return, connection re-establishment or remount; no
+individual missed-event detector exists. Silent publication loss while connected is repaired
+only at the next such refresh boundary.
 
 The operator explicitly accepts ephemeral delivery and the existing enclosing-transaction
 publication limitation (D11–D12). Their meaning and cache consequences are documented in the
