@@ -36,6 +36,7 @@
     </div>
     <div
       id="workspace-content"
+      data-project-id={@workspace.selected_project && @workspace.selected_project.id}
       phx-hook="TaskmanWeb.ProjectLive.TaskTablePreferences"
       data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
       data-default-task-statuses={
@@ -286,6 +287,7 @@
                 </button>
                 <Table.status_filter
                   form={@listing.status_filter_form}
+                  available_statuses={Workspace.available_statuses(@workspace)}
                   visible_statuses={@listing.visible_statuses}
                   open?={@listing.filter_open?}
                 />

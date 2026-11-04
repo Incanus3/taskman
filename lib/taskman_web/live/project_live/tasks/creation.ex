@@ -213,8 +213,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     case Tasks.create_task(project, destination, task_params,
            parent: ParentPicker.selected_parent(socket.assigns.task_parent_picker)
          ) do
-      {:ok, _task} ->
-        socket = Listing.refresh(socket)
+      {:ok, task} ->
+        socket = socket |> Workspace.observe_task(task) |> Listing.refresh()
 
         {:noreply,
          push_patch(socket,

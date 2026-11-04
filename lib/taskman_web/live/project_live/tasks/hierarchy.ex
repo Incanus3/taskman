@@ -1,12 +1,15 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Status, Task}
 
+  alias TaskmanWeb.ProjectLive.Tasks.StateOptions
+
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]
   defstruct hierarchy: nil,
             root_id: nil,
             expanded_node_ids: MapSet.new(),
             required_node_ids: MapSet.new(),
             visible_statuses: Task.statuses(),
+            available_statuses: Status.default_values(),
             filter_open?: false,
             sort: {:status, :desc},
             sort_open?: false
@@ -17,6 +20,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
           expanded_node_ids: MapSet.t(pos_integer()),
           required_node_ids: MapSet.t(pos_integer()),
           visible_statuses: [Task.status()],
+          available_statuses: [Task.status()],
           filter_open?: boolean(),
           sort: {atom(), :asc | :desc},
           sort_open?: boolean()
@@ -48,14 +52,28 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
       | hierarchy: hierarchy,
         root_id: root_id,
         expanded_node_ids: expanded_node_ids,
-        required_node_ids: required_node_ids
+        required_node_ids: required_node_ids,
+        available_statuses: available_statuses(hierarchy.root)
     }
+  end
+
+  defp available_statuses(root) do
+    represented = represented_statuses(root, MapSet.new())
+
+    Enum.filter(
+      Status.values(),
+      &(&1 in Status.default_values() or MapSet.member?(represented, &1))
+    )
+  end
+
+  defp represented_statuses(node, acc) do
+    Enum.reduce(node.children, MapSet.put(acc, node.task.status), &represented_statuses/2)
   end
 
   @spec filter_statuses(t(), [term()]) :: t()
   def filter_statuses(%__MODULE__{} = state, statuses) when is_list(statuses) do
     visible_statuses =
-      Enum.filter(Task.statuses(), &(&1 in statuses || Atom.to_string(&1) in statuses))
+      StateOptions.merge_selection(state.visible_statuses, state.available_statuses, statuses)
 
     %{state | visible_statuses: visible_statuses}
   end

@@ -121,7 +121,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     refute TaskHierarchy.expanded?(filtered, 4)
     assert filtered.hierarchy == source
     assert state.hierarchy == source
-    assert filtered.visible_statuses == [:pending]
+    assert filtered.visible_statuses == [:pending, :not_planned]
   end
 
   test "no checked statuses retains only the current path and navigation recomputes it" do
@@ -136,8 +136,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     navigated = TaskHierarchy.load(filtered, hierarchy(5))
     assert tree_ids(TaskHierarchy.visible_root(navigated)) == [1, 4, 5]
     assert TaskHierarchy.expanded?(navigated, 4)
-    assert navigated.visible_statuses == []
-    assert TaskHierarchy.load(navigated, other_hierarchy()).visible_statuses == []
+    assert navigated.visible_statuses == [:not_planned]
+    assert TaskHierarchy.load(navigated, other_hierarchy()).visible_statuses == [:not_planned]
     assert TaskHierarchy.clear(navigated).visible_statuses == Task.statuses()
   end
 

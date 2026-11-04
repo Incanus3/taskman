@@ -83,7 +83,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       ) do
     socket =
       if well_formed_task_event?(event) and event.project_id == project.id do
-        reconcile_task_event(socket, event)
+        socket |> Workspace.observe_task_event(event) |> reconcile_task_event(event)
       else
         socket
       end

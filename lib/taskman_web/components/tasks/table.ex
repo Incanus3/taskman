@@ -11,6 +11,7 @@ defmodule TaskmanWeb.Tasks.Table do
   def priority_label(priority), do: Priority.label(priority)
 
   attr :form, Phoenix.HTML.Form, required: true
+  attr :available_statuses, :list, default: Taskman.Tasks.Status.default_values()
   attr :visible_statuses, :list, required: true
   attr :open?, :boolean, required: true
 
@@ -85,8 +86,12 @@ defmodule TaskmanWeb.Tasks.Table do
           <input type="hidden" name={@form[:statuses].name <> "[]"} value="" />
           <label
             :for={{label, status} <- status_options()}
+            :if={status in @available_statuses}
             for={"#{@id}-option-#{status}"}
-            class="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/[0.06]"
+            class={[
+              "flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/[0.06]",
+              status in Taskman.Tasks.Status.additional_values() && "task-state-additional-option"
+            ]}
           >
             <input
               id={"#{@id}-option-#{status}"}

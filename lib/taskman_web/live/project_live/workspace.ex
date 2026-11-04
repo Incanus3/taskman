@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Lists
   alias Taskman.Projects
   alias Taskman.Tasks
+  alias Taskman.Tasks.{Status, Task}
   alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Paths, ProjectEdit}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
@@ -187,7 +188,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   def selected_location(%State{selected_list: %TaskList{id: list_id}}), do: {:list, list_id}
   def selected_location(%State{}), do: nil
 
-  @events ~w(toggle_project_selector close_project_selector toggle_mobile_sidebar close_mobile_sidebar open_project_new open_project_edit cancel_project_edit select_project_color validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
+  @events ~w(resnapshot_task_locations toggle_project_selector close_project_selector toggle_mobile_sidebar close_mobile_sidebar open_project_new open_project_edit cancel_project_edit select_project_color validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
 
   @spec events() :: [String.t()]
   def events, do: @events
@@ -257,6 +258,63 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   def resnapshot_locations(socket), do: socket
 
+  @doc "Observes a successful persisted local result without reading Tasks."
+  @spec observe_task(Phoenix.LiveView.Socket.t(), Task.t()) :: Phoenix.LiveView.Socket.t()
+  def observe_task(socket, %Task{id: id, project_id: project_id, list_id: list_id, status: status})
+      when is_integer(id) and id > 0 do
+    observe_snapshot(socket, project_id, list_id, status)
+  end
+
+  def observe_task(socket, _task), do: socket
+
+  @doc "Merges relevant persisted event snapshots; malformed snapshots never cause a lookup."
+  @spec observe_task_event(Phoenix.LiveView.Socket.t(), Event.t()) :: Phoenix.LiveView.Socket.t()
+  def observe_task_event(socket, %Event{
+        entity: :task,
+        operation: operation,
+        entity_id: id,
+        project_id: project_id,
+        list_id: list_id,
+        status: status,
+        fields: fields,
+        lock_version: version
+      })
+      when operation in [:created, :updated, :moved] and is_integer(id) and id > 0 and
+             is_list(fields) and (is_nil(version) or (is_integer(version) and version >= 0)) do
+    relevant? = operation in [:created, :moved] or Enum.any?(fields, &(&1 in [:status, :list_id]))
+
+    if relevant? and Enum.all?(fields, &is_atom/1),
+      do: observe_snapshot(socket, project_id, list_id, status),
+      else: socket
+  end
+
+  def observe_task_event(socket, _event), do: socket
+
+  defp observe_snapshot(socket, project_id, list_id, status) do
+    workspace = socket.assigns.workspace
+
+    if is_integer(project_id) and project_id > 0 and
+         project_id(workspace.selected_project) == project_id and status in Status.values() and
+         (is_nil(list_id) or (is_integer(list_id) and list_id > 0)) do
+      locations = Locations.observe(workspace.locations, project_id, list_id, status)
+
+      if locations == workspace.locations,
+        do: socket,
+        else: update_workspace(socket, &%{&1 | locations: locations})
+    else
+      socket
+    end
+  end
+
+  @doc "Returns the selected listing's prepared direct or subtree choices."
+  def available_statuses(%State{selected_project: %Project{id: id}} = workspace) do
+    list_id = workspace.selected_list && workspace.selected_list.id
+    scope = if workspace.include_children?, do: :subtree, else: :direct
+    Locations.available(workspace.locations, id, list_id, scope)
+  end
+
+  def available_statuses(%State{}), do: Status.default_values()
+
   @doc "Refreshes active-Project List topology without discovering Task states."
   @spec refresh_locations(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def refresh_locations(
@@ -295,6 +353,19 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("resnapshot_task_locations", %{"project_id" => supplied_id}, socket) do
+    workspace = socket.assigns.workspace
+    selected_id = project_id(workspace.selected_project)
+
+    valid? =
+      is_integer(selected_id) and workspace.subscribed_project_id == selected_id and
+        supplied_id in [selected_id, to_string(selected_id)]
+
+    {:noreply, if(valid?, do: resnapshot_locations(socket), else: socket)}
+  end
+
+  def handle_event("resnapshot_task_locations", _params, socket), do: {:noreply, socket}
+
   def handle_event("toggle_project_selector", _params, socket) do
     socket = update_workspace(socket, &State.toggle_project_selector/1)
 

@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
+  alias TaskmanWeb.ProjectLive.Workspace
   alias TaskmanWeb.ProjectLive.Paths
 
   alias TaskmanWeb.ProjectLive.Tasks.{
@@ -526,6 +527,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   defp sync_autosave(socket, autosave, task) do
+    socket =
+      case socket.assigns.editing.selected_task do
+        %Task{status: status, list_id: list_id}
+        when status != task.status or list_id != task.list_id ->
+          Workspace.observe_task(socket, task)
+
+        _unchanged_persisted_location_or_status ->
+          socket
+      end
+
     hierarchy_changed? =
       case socket.assigns.editing.selected_task do
         %Task{title: title, status: status, priority: priority} ->

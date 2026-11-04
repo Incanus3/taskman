@@ -119,6 +119,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             id="task-hierarchy-status-filter"
             form={@hierarchy_status_form}
             visible_statuses={@task_hierarchy.visible_statuses}
+            available_statuses={@task_hierarchy.available_statuses}
             open?={@task_hierarchy.filter_open?}
             toggle_event="toggle_hierarchy_status_filter"
             close_event="close_hierarchy_status_filter"

@@ -153,6 +153,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
           {:ok, task_move, moved_task} ->
             socket =
               socket
+              |> Workspace.observe_task(moved_task)
               |> assign(:task_move, task_move)
               |> Editing.refresh_after_move(moved_task.id)
               |> Editing.reload_hierarchy()

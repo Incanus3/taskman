@@ -784,3 +784,10 @@
   background: var(--color-indigo-500);
   color: white;
 }
+
+/* Keep contextual backgrounds below utility hover and selected states. */
+@layer components {
+  .task-state-additional-option {
+    background-color: rgb(148 163 184 / 0.08);
+  }
+}
