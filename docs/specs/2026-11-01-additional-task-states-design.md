@@ -168,77 +168,99 @@ count-delta or notification optimizations recorded in the separate research.
 | Return to a Project or reconnect | Refresh the current database snapshot to cover periods without a subscription; merge with observations retained by the same mounted page and rebuild aggregates |
 | Full reload/new LiveView mount | Discard observed availability and bootstrap from current Tasks |
 
-Keep observed direct entries for previously visited Projects within that mounted page. Switching
-Projects must refresh the selected Project on return because only the active Project's Task
-events are subscribed. Drop invalid List/Project keys when reconciling authoritative topology.
-Reparenting a List changes subtree unions according to its current ancestry; it does not record
-permanent history in its former ancestors. Closing a task form resets its explicit reveal flag,
-but does not reset the page's observed availability. A transient connection loss on the same
-LiveView preserves observations; a replacement process/remount starts fresh.
+### Page lifetime and topology
 
-Title, description, priority, due-date, comment, and blocking-link-only updates do not trigger
-availability discovery. Parent-Task changes can refresh hierarchy availability through the
-existing tree reload but do not affect List ownership. Filter checkbox changes do not rebuild
-the availability index. Any existing listing/count refreshes remain separate from availability
-maintenance; opening a form must not introduce extra availability work.
+| Boundary | What survives or changes |
+|---|---|
+| Switch Projects | Retain previously visited Projects' direct observations in the mounted page. Refresh the selected Project on return because only the active Project's Task events are subscribed. |
+| Reconcile topology | Drop invalid List/Project keys. Reparenting changes subtree unions using current ancestry; former ancestors do not retain permanent usage history. |
+| Close a Task form | Reset its explicit reveal flag; retain the page's observed availability. |
+| Lose and restore the connection | Preserve observations if the same LiveView survives; a replacement process/remount starts fresh. |
 
-Extend every Task create/update/move event with `status` and `list_id`, taken directly from the
-persisted Task already passed to `ChangeNotifications.publish_task/3`. Existing `project_id`,
-`entity_id`, `lock_version`, and changed `fields` remain. `list_id: nil` explicitly means direct
-Project ownership. Other event types do not carry Task state/location data. Include the final
-snapshot even on ordinary updates; the consumer uses the relevant-event rules above to avoid
-unnecessary availability work. Do not publish drafts, full Task structs, or extra descriptive data.
+### Changes that do not discover availability
 
-The Task context owns publication after successful persistence as before. Local callers use the
-same persisted result directly. The availability consumer structurally validates the snapshot
-(supported state, nil or positive owning List ID, valid matching Project) and performs only set
-unions and prepared rollup updates. Invalid or missing snapshots do not trigger a fallback Task
-read. All in-repository producers and event fixtures must be updated together; no public event
-schema or legacy producer compatibility layer is introduced. A well-formed observation for a List
-not yet present in navigation can be retained by ID until topology reconciliation supplies that
-List; do not issue a discovery query to validate each notification's ownership.
+- Title, description, priority, due-date, comment and blocking-link-only changes do not trigger
+  availability discovery.
+- Parent-Task changes can refresh hierarchy availability through the existing tree reload, but
+  do not affect List ownership.
+- Filter checkbox changes do not rebuild the availability index.
 
-For availability, the snapshot is evidence of persisted use at the time of that mutation, not a
-claim about the Task's latest state. Duplicate or out-of-order snapshots may add a previously
-used state and never remove one; no per-Task version cache or old-state/location payload is needed.
-Existing revision metadata remains available to other consumers. The existing invalidation/refetch
-contract still owns current listing, counts, detail and hierarchy reconciliation; do not replace
-their authoritative reads with these two fields. This change eliminates additional availability
-reads per client, not every database read performed by existing event handling.
+Existing listing/count refreshes remain independent of availability maintenance. Opening a form
+must not introduce extra availability work.
 
-This bounded event extension supersedes the metadata-only restriction in the live-updates design
-for Task availability observations. Existing ephemeral delivery and enclosing-transaction
-publication caveats remain: the cache is not an audit log, missed events are repaired from current
-Tasks on resnapshot, and historical states cannot be reconstructed after a remount. No outbox or
-broader event-driven view rewrite is included.
+### Task events carry the persisted state and location
 
-This eager session index avoids selector latency and last-instance bookkeeping. A database usage
-history would survive reload but is outside the accepted lifetime. Requerying upon selector open
-adds latency; refreshing exact per-state counts after every update adds unnecessary work when
-state availability is intentionally retained.
+Extend every Task create/update/move event with the final `status` and `list_id` from the persisted
+Task already passed to `ChangeNotifications.publish_task/3`, including ordinary updates.
+Consumers still use the trigger rules above to decide whether availability work is relevant.
+
+| Payload | Contract |
+|---|---|
+| `status` | Supported persisted Task state |
+| `list_id` | Positive owning List ID; `list_id: nil` explicitly means direct Project ownership |
+| Existing metadata | Retain `project_id`, `entity_id`, `lock_version` and changed `fields` |
+| Other event types | Do not carry Task state/location data |
+| Excluded data | No drafts, full Task structs or extra descriptive data |
+
+The Task context publishes after successful persistence, as before. Local callers observe the
+same persisted result directly. Update all in-repository producers and event fixtures together;
+no public event schema or legacy producer compatibility layer is introduced.
+
+### Consumers merge observations without Task reads
+
+1. Structurally validate the supported state, nil/positive owning List ID and valid matching Project.
+2. Merge valid observations using set unions and prepared rollup updates.
+3. For a List not yet present in navigation, retain the observation by ID until topology
+   reconciliation supplies its record. Do not query to validate each notification's ownership.
+4. Invalid or missing snapshots do not trigger a fallback Task read.
+
+The snapshot records persisted use at the time of the mutation. Duplicate or out-of-order events
+can add a previously used state and never remove one. No per-Task version cache or old-state/location
+payload is needed for availability; existing revision metadata remains available to other consumers.
+
+### Event guarantees and limits
+
+| Concern | Boundary |
+|---|---|
+| Current Task presentation | Listing, counts, detail and hierarchy retain their authoritative invalidation/refetch paths; these two fields do not replace those reads. |
+| Database savings | Eliminate additional availability reads per client, not every read in existing event handling. |
+| Existing event contract | Supersede the live-updates design's metadata-only restriction only for Task availability observations. |
+| Delivery and publication | Preserve ephemeral delivery and the existing enclosing-transaction publication caveat. |
+| Recovery | Resnapshot current Tasks after missed events; historical states cannot be reconstructed after remount. The cache is not an audit log. |
+| Scope | No outbox or broader event-driven view rewrite. |
+
+The eager session model avoids selector latency and last-instance bookkeeping. Persistent database
+usage history would exceed the accepted lifetime. Selector-time queries add latency; exact per-state
+counts add unnecessary update work when observed availability is intentionally retained.
 
 ## Filter preferences survive absence and navigation
 
-The main listing continues to store selections across Lists and Projects in the existing browser
-preference key. Availability does not alter that full supported-state inclusion list. Rendering
-uses the contextual subset; querying uses remembered selection. An absent state has no matching
+### Main listing remembers the complete selection
+
+Keep the existing browser preference key across Lists and Projects. Render contextual options,
+but query using the full remembered supported-state inclusion list. An absent state has no matching
 Tasks in that population, so retaining its preference has no filtering effect there.
 
-When a checkbox form submits, update only the states offered by that selector. Preserve all
-other supported-state preferences. Validate against the server's current offered states rather
-than accepting arbitrary client-provided availability. An empty offered selection unchecks the
-offered options while retaining absent options. Explicit full URL snapshots and hydration remain
-full replacements, including an explicitly empty selection; unknown state values follow existing
-normalization. Do not let contextual option lists become the browser's allowed-state vocabulary.
+| Input | How it changes remembered selection |
+|---|---|
+| Checkbox submission | Update only currently offered states; preserve preferences for other supported states. Validate availability against the server's offered set. |
+| Empty offered selection | Uncheck offered states while retaining absent states. |
+| Explicit URL snapshot or hydration | Replace the full selection, including an explicitly empty selection; retain existing unknown-value normalization. |
+| Browser allowed-state vocabulary | Continue to include all supported states; never reduce it to contextual options. |
 
-Not Planned starts unchecked with fresh defaults. Existing stored arrays and URL snapshots
-that omit `not_planned` also leave it unchecked. No preference reset or storage migration is
-required. A stored explicit inclusion of `not_planned` is retained even when it is absent locally.
+Not Planned starts unchecked with fresh defaults. Existing stored arrays or URL snapshots that omit
+`not_planned` also leave it unchecked; no reset or storage migration is required. Explicit stored
+inclusion survives local absence.
 
-Hierarchy filtering remains independent and modal-local. Start with all supported states checked,
-render only default and represented additional states, and preserve absent preferences when
-navigating to another tree inside the same dialog. Closing the dialog resets the selection.
-Required ancestry may remain visible despite unchecked states, as in the existing contract.
+### Hierarchy selection lasts for one dialog
+
+- Start with **all supported states checked**; offer default and represented additional states.
+- Keep selection independent of the main listing and preserve absent preferences when navigating
+  to another tree inside the same dialog.
+- Closing the dialog resets selection. Required ancestry may remain visible despite unchecked
+  states, following the existing hierarchy contract.
+
+### Navigation and empty-result examples
 
 | Scenario | Expected result |
 |---|---|
@@ -253,176 +275,192 @@ Required ancestry may remain visible despite unchecked states, as in the existin
 
 ## Forms can reveal all states without changing the selected value
 
-Create/edit status controls normally offer default states, observed additional states, and
-the current selected value. This last exception preserves an existing Task or draft when its
-ownership changes or the last other Task using that state disappears.
+### Offer the selected value and a one-way reveal
 
-Provide a small keyboard-accessible “Show additional states” button beside/below the status
-control when unrevealed options remain. It reveals all supported additional states, changes no
-field value, and is not submitted as a state option. Remove the button once everything is offered.
-It is a one-way action for that form's lifetime, without browser storage or a reverse toggle.
+Create/edit controls offer default states, observed additional states and the **current selected
+value**. Preserve that value for persisted Tasks and drafts even when ownership changes or the
+last other Task using that state disappears.
 
-Keep reveal state across validation errors, autosaves, ownership changes and ordinary live
-refreshes of the same form. Reset on closing/reopening, starting a new creation form, or navigating
-to a different Task's editing form inside the same detail dialog. Existing disabled recovery
-controls remain disabled and retain the displayed value. Opening the picker must never mark a
-Task changed. A current or recoverable draft value must not be lost through option filtering.
+| Reveal control | Contract |
+|---|---|
+| Label and placement | Small keyboard-accessible “Show additional states” button beside/below the status control |
+| Visibility | Show while unrevealed options remain; remove when everything is offered |
+| Effect | Reveal all supported additional states without changing a field value or submitting a state option |
+| Direction and storage | One-way for the form's lifetime; no reverse toggle or browser storage |
+
+### Reveal lifetime and value protection
+
+| Event | Reveal/value behavior |
+|---|---|
+| Validation error, autosave, ownership change, ordinary live refresh of the same form | Preserve reveal state |
+| Close/reopen, start another creation form, navigate to a different Task's editing form in the same detail dialog | Reset reveal state |
+| Recovery disables controls | Keep them disabled and retain the displayed value |
+| Open the picker | Do not mark the Task changed |
+| Filter available options | Never discard a current or recoverable draft value |
 
 ## Selector order and presentation
 
-Use the ordered sequence in the state-definition table for both filters and create/edit options.
-Insert newly available options at their logical positions; do not append them, group them, or
-add separators. Give additional options a subtly duller background while preserving contrast,
-hover, focus, checked and selected affordances. Apply this to additional options in all affected
-selectors. State badges retain their ordinary state-specific presentation.
+### One canonical order serves selectors and sorting
 
-Use the existing enhanced picker and native form bridge. Additional metadata must not break
-priority or other picker consumers. Native fallback must offer the same values and order; exact
-native option backgrounds may be platform-controlled. Verify the enhanced option distinction
-visually rather than asserting CSS class strings.
-
-Selectors and Task status sorting share one canonical order:
 **Icebox, Pending, In Progress, In Review, Done, Not Planned, Will Not Do**.
-Ascending status sort follows that sequence; descending reverses it. Apply the same ranking in
-both listing SQL and hierarchy sorting, preserving existing tie-breakers and selected directions.
-This replaces the existing separate ranking described in the baseline. The earlier draft's
-proposal to preserve that ranking was rejected: consistent ordering across surfaces takes precedence.
+
+- Filters and create/edit options use this sequence, matching the state-definition table.
+- Insert newly available options at their logical position; do not append, group or separate them.
+- Ascending Task status sorting follows the sequence; descending reverses it. Listing SQL and
+  hierarchy sorting share the ranking, preserving existing tie-breakers and selected directions.
+
+This replaces the baseline's separate sort ranking. The earlier proposal to preserve that ranking
+was rejected in favor of consistency across surfaces.
+
+### Presentation and fallback constraints
+
+| Surface | Requirement |
+|---|---|
+| Additional options in every affected selector | Subtly duller background with readable contrast and intact hover, focus, checked and selected affordances |
+| State badges | Retain ordinary state-specific presentation |
+| Enhanced picker | Reuse the existing picker and native form bridge; metadata must not break priority or other consumers |
+| Native fallback | Offer identical values/order; exact option backgrounds may be platform-controlled |
+| Visual verification | Inspect the enhanced distinction visually instead of asserting CSS class strings |
 
 ## Descriptions appear in delayed option tooltips
 
-Show the shared description for every state option, default or additional, in the enhanced
-create/edit state picker and both status filters. Use a 450 ms delay on pointer hover or keyboard
-focus/active-option changes. This matches the existing hover delay for consistent pacing;
-the delay is not configurable per state. In the enhanced picker, follow its keyboard-active
-option without moving DOM focus or changing the selected value. For filters, follow the focused
-checkbox as well as hover over its option row.
+### Surfaces, triggers and delay
 
-Show the same state description on the main table's state badges after 450 ms of pointer hover,
-including contextual and expanded rows. Apply to every state. Badges remain noninteractive labels
-without extra keyboard tab stops; expose their descriptions to assistive technology independently
-of visual hover. Preserve clicking/tapping the badge area to open its Task and the existing row
-hover treatment. Account for the current pointer-event passthrough rather than simply attaching
-tooltip attributes to an element that cannot receive hover events.
+Use shared descriptions for every state, default or additional. The **450 ms** delay matches the
+existing hover delay and is not configurable per state.
 
-Moving to another option or badge restarts the delay and removes the previous tooltip. Cancel
-pending and visible tooltips on selection, picker/filter close, scroll, navigation, disconnected
-or removed options/badges, changed badge state, and form/dialog changes. Keep the tooltip visible
-while the pointer remains over its trigger or tooltip; Escape dismisses it while retaining existing
-picker/filter/dialog dismissal precedence. Tooltip handling must not consume Escape in place of
-the control's existing action.
+| Surface | Trigger | Interaction constraints |
+|---|---|---|
+| Enhanced create/edit state picker | Hover or keyboard-active option after 450 ms | Follow the active option without moving DOM focus or changing selection |
+| Main and hierarchy filters | Hover over the row or keyboard focus on its checkbox after 450 ms | Describe the corresponding state |
+| Main-table state badges, including contextual/expanded rows | Pointer hover after 450 ms | Keep badges noninteractive with no extra tab stops; preserve click/tap Task opening and row hover |
 
-Render above the owning dialog/popover without clipping, constrain to the viewport, and never
-cover the option being described when space allows. Tooltips contain plain descriptive text,
-with no focusable controls. Descriptions must also be available to assistive technology through
-the option's accessible description independently of visual timing; the current globally
-`aria-hidden` tooltip alone is insufficient. Touch users can select immediately; do not introduce
-a long-press requirement or delay selection. Native select tooltip presentation is platform-owned;
-custom timing applies to the enhanced picker and the application-owned checkbox filters.
+Badge hover must work with the current pointer-event passthrough; attaching tooltip attributes to
+an element that cannot receive hover events is insufficient. Expose badge descriptions to assistive
+technology independently of hover.
 
-Reuse/extend the existing tooltip infrastructure with opt-in description/active-option support,
-including a top-layer-capable presentation path. Preserve existing non-state tooltip behavior,
-including immediate keyboard-focus display. Description tooltips cover state options and table
-state badges; other badge locations, priority badges and other picker types are outside this scope.
+### Tooltip lifetime and dismissal
+
+- Moving to another option/badge removes the old tooltip and restarts the delay.
+- Cancel pending and visible tooltips on selection, picker/filter close, scroll, navigation,
+  disconnected/removed options or badges, changed badge state, and form/dialog changes.
+- Keep the tooltip visible while the pointer remains over its trigger or the tooltip.
+- Escape dismisses the tooltip while preserving existing picker/filter/dialog dismissal precedence;
+  tooltip handling must not consume Escape in place of the control's existing action.
+
+### Placement, accessibility and integration
+
+| Concern | Contract |
+|---|---|
+| Placement | Render above the owning dialog/popover without clipping, constrain to the viewport, and avoid covering the described option when space allows |
+| Content | Plain descriptive text with no focusable controls |
+| Accessible description | Available through the option's accessible description independently of visual timing; the current globally `aria-hidden` tooltip alone is insufficient |
+| Touch | Immediate selection; no long-press requirement or selection delay |
+| Native select | Tooltip presentation is platform-owned; custom timing applies to the enhanced picker and application-owned checkbox filters |
+| Shared infrastructure | Reuse/extend existing tooltips with opt-in description/active-option support and a top-layer-capable presentation path |
+| Other consumers | Preserve non-state tooltip behavior, including immediate keyboard-focus display |
+| Scope | State options and table state badges only; other badge locations, priority badges and other picker types remain outside scope |
 
 ## Closed work can still block other Tasks
 
-Not Planned is excluded from open counts. Preserve the established count contract: when any
-closed state is explicitly selected, its Tasks participate in visible and eligible counts.
-Changing Will Not Do's blocker semantics does not change its closed classification.
+### Counting and blocker resolution are independent
 
-Only Done resolves an existing blocking relationship. Not Planned and Will Not Do remain
-unresolved even though they are closed. No link is removed or changed by assigning a state.
-An operator may revisit the blocking Task or explicitly remove the relationship when it no
-longer represents a dependency.
+- Not Planned is excluded from open counts. Preserve the existing rule that explicitly selected
+  closed states participate in visible and eligible counts.
+- Will Not Do retains its closed classification despite the changed blocker semantics.
+- **Only Done resolves a blocking relationship.** Not Planned and Will Not Do remain unresolved.
+- Assigning a state never removes or changes a link. Revisit the blocking Task or explicitly remove
+  the relationship when it no longer represents a dependency.
 
-Preserve the existing warning boundary: unresolved blockers warn on a transition to Done;
-they do not newly prohibit entering In Progress or other states. Preserve explicit ID-based
-confirmation, force confirmation, concurrent rechecks, and human-controlled lifecycle behavior.
-API failure remains HTTP 409, `error.code = "unresolved_blockers"`, with current blocker summaries
-and message “Review unresolved direct blockers before marking Done”. Not Planned and Will Not Do
-blockers now appear in those summaries. No new error type or confirmation flag is introduced.
+### Preserve the existing Done-confirmation boundary
+
+Unresolved blockers warn on transition to Done; they do not newly prohibit In Progress or other
+states. Keep explicit ID-based confirmation, force confirmation, concurrent rechecks and
+human-controlled lifecycle behavior.
+
+| API outcome | Contract |
+|---|---|
+| Status/code | HTTP 409; `error.code = "unresolved_blockers"` |
+| Message | “Review unresolved direct blockers before marking Done” |
+| Evidence | Current blocker summaries now include Not Planned and Will Not Do blockers |
+| Compatibility | No new error type or confirmation flag |
 
 ## Ownership and implementation boundaries
 
-Use a small compile-time domain state catalogue under `lib/taskman/tasks/`, consumed by the
-Task schema, preference defaults, counting, validation and blocker resolution. It owns identifiers,
-labels, descriptions, color tokens, order and semantic flags. Keep concrete style mappings in the
-web layer, keyed by color token rather than assigning colors independently by state. Avoid
-database-backed state definitions, per-Project configuration, user-created states and a generic
-state-machine framework.
+### Definitions and selected approaches
 
-Approaches considered:
+Use a small compile-time state catalogue under `lib/taskman/tasks/` for identifiers, labels,
+descriptions, color tokens, order and semantic flags. The Task schema, preference defaults,
+counting, validation and blocker resolution consume it. Concrete styles remain in the web layer,
+keyed by color token. Database-backed definitions, per-Project configuration, user-created states
+and a generic state-machine framework are outside scope.
 
-- **Remember preferences separately from contextual options (selected):** retains navigation
-  intent and compact UI, but requires partial checkbox updates. Resetting unavailable preferences
-  loses choices; retaining every selected option visibly accumulates clutter.
-- **Central domain definitions (selected):** current consumers need independent visibility,
-  count and blocker properties. Extending scattered hardcoded lists is initially smaller but
-  risks reintroducing the incorrect assumption that every closed state resolves blockers.
+| Selected approach | Benefit and trade-off | Alternatives considered |
+|---|---|---|
+| Remember preferences independently of contextual options | Retains navigation intent and compact UI; requires partial checkbox updates | Resetting unavailable preferences loses choices; displaying every selected option accumulates clutter |
+| Central domain definitions | Keeps visibility, counting and blocker semantics independent | Scattered hardcoded lists are initially smaller but risk treating all closed states as blocker-resolving |
 
-Expected boundaries:
+### Responsibility map
 
-- Tasks context/persistence owns project-scoped represented-state discovery and List scope
-  validation. Provide grouped bootstrap discovery through existing context boundaries; event
-  observations require no Task reads. Do not load entire Projects solely to discover a handful
-  of state values. Missing or cross-Project List scopes preserve existing `{:error, :not_found}`
-  handling, never broaden to the whole Project. `ChangeNotifications` and its Event struct own
-  the compact persisted Task snapshot; the Tasks context supplies the already-persisted Task.
-- Listing state/preferences, creation/editing state, hierarchy projection and reconciliation own
-  availability and lifetime. A shared page-local Project location model owns canonical List
-  records/topology and each location's direct observations and subtree summary. Navigation streams,
-  listing and forms consume it; the Project-root subtree is the whole-Project summary. Hierarchy
-  availability is prepared separately on tree load.
-- `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js`
-  and relevant CSS own option rendering, metadata and picker synchronization. `assets/js/tooltips.js`
-  owns shared tooltip scheduling/presentation extensions; opt-in state handling must preserve
-  other tooltip consumers. No web-layer queries.
-- `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions consume the new
-  definitions/rank without introducing unrelated query or workflow refactors.
-- Generate a new Ecto migration to extend `tasks_status_check`; keep existing rows unchanged.
-  Rollback must refuse while `not_planned` rows exist rather than deleting or silently reclassifying
-  them. Older application code cannot read the new enum value: revert such rows explicitly before
-  rolling back application/migration. No deployment is part of this work.
-- Existing API create/update/list and CLI `--status` accept `not_planned`, even when UI options
-  hide it. Update registry validation, help, Bash/Fish completions, bundled CLI skill and focused
-  tests. Keep existing JSON shapes; successful create/update remain 201/200. Invalid values retain
-  existing validation/error contracts. No state-metadata endpoint is required for this UI feature.
+| Owner | Responsibility |
+|---|---|
+| Tasks context/persistence | Grouped bootstrap discovery and List-scope validation; avoid loading full Projects merely to discover states. Missing/cross-Project List scopes keep `{:error, :not_found}` and never broaden to the Project. |
+| `ChangeNotifications` and Event struct | Compact persisted Task snapshot supplied by the Tasks context; event observations require no Task reads. |
+| Shared page-local Project location model | Canonical List records/topology, direct observations and subtree summaries; Project-root subtree is the whole-Project summary. Navigation streams, listing and forms consume it. |
+| Listing/preferences, creation/editing and reconciliation | Workflow selection, reveal/availability lifetime and coordinated model updates. |
+| Hierarchy projection | Prepare its separate availability on tree load. |
+| `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js` and relevant CSS | Option rendering, metadata and picker synchronization; no web-layer queries. |
+| `assets/js/tooltips.js` | Shared tooltip scheduling/presentation extensions that preserve other consumers. |
+| `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions | Consume the definitions/rank without unrelated query or workflow refactors. |
+
+### Persistence and rollback
+
+- Generate a new Ecto migration extending `tasks_status_check`; preserve existing rows.
+- Rollback refuses while `not_planned` rows exist; never delete or silently reclassify them.
+- Older application code cannot read the new enum value. Explicitly revert those rows before
+  rolling back application/migration. Deployment is outside this work.
+
+### API, CLI and documentation parity
+
+- Existing API create/update/list and CLI `--status` accept `not_planned`, including when UI options
+  hide it. Successful create/update remain HTTP 201/200 with existing JSON shapes.
+- Preserve invalid-value validation/error contracts. No state-metadata endpoint is required.
+- Update CLI registry validation, help, Bash/Fish completions, bundled CLI skill and focused tests.
 
 ## Verification and next steps
 
-Design evidence is source inspection, not executed feature tests. No visual prototype or browser
-acceptance has been performed. Implementation planning must cover:
+### Evidence available now
 
-1. Metadata, schema/database acceptance, count classification, and only-Done blocker resolution,
-   including Will Not Do regression coverage and existing confirmation behavior. Verify selectors
-   and ascending/descending listing and hierarchy status sorts against the same canonical sequence.
-2. Scoped discovery for direct Project, direct List, descendant Lists and whole Project, including
-   cross-Project isolation, empty populations and state filters that exclude all matching Tasks.
-   Verify monotonic direct observations, local/external updates, topology rollups, Project return,
-   reconnect/remount behavior and reload reset. Verify selector opening adds no availability
-   queries or tree traversal, external event observation adds no Task read, and unrelated events
-   do not trigger discovery. Cover publisher snapshot values after create/update/move, nil owning
-   List, duplicate/out-of-order delivery, a not-yet-loaded List, and malformed/foreign snapshots.
-   Verify shared-model navigation projections and direct/subtree selection, including the Project
-   root's whole-Project summary; preserve exact count and current direct-Task-presence semantics.
-3. Main/hierarchy checkbox preference retention across absent states, navigation, live changes,
-   empty submissions, explicit URL snapshots and existing browser storage.
-4. Form auto-availability, selected draft retention, one-way reveal, validation/autosave lifetime,
-   Task switching and close/reopen reset; independent hierarchy lifetime.
-5. API/CLI create/update/list parity for `not_planned`, help/completion/skill consistency and the
-   rebuilt executable gate from the development guide.
-6. Focused browser checks for stored preferences across reload, enhanced picker option updates,
-   keyboard reveal/selection/dismissal and muted option readability. Verify delayed description
-   display for hover and keyboard-active options, cancellation and stale-tooltip removal, actual
-   visibility above dialogs/popovers, viewport placement, accessible descriptions and preserved
-   ordinary tooltip behavior. Cover table state-badge hover delay, correct descriptions after live
-   updates, and preserved click/tap navigation without added tab stops. Preserve existing popup
-   placement, native bridge, focus and recovery behavior. Run `mix precommit` after implementation.
+Source inspection establishes the design context. Feature tests, visual prototypes and browser
+acceptance have not been performed.
 
-At implementation completion, update the domain, MVP, relationships and affected historical
-specification rules to identify this specification's replacements; do not publish contradictory
-current contracts. Include the bounded Task snapshot extension in the live-updates contract.
-Audit changed files for privacy and leaked planning terminology.
+### Required implementation evidence
+
+| Area | Coverage |
+|---|---|
+| State definitions and persistence | Metadata, schema/database acceptance, count classification, and one canonical sequence for selectors plus ascending/descending listing/hierarchy status sorts |
+| Blockers | Only-Done resolution, Will Not Do regression coverage and existing confirmation behavior |
+| Scope isolation | Direct Project, direct List, descendant Lists and whole Project; cross-Project isolation, empty populations and filters excluding every matching Task |
+| Availability updates | Monotonic direct observations, local/external updates, topology rollups, Project return, reconnect/remount and reload reset; unrelated events do not discover states |
+| Event contract | Publisher values after create/update/move, nil owning List, duplicate/out-of-order delivery, not-yet-loaded Lists and malformed/foreign snapshots |
+| No added interactive reads | Selector opening performs no availability queries or tree traversal; external observation performs no Task read |
+| Shared location model | Navigation projections, direct/subtree selection and Project-root whole-Project summary; preserve exact counts/current direct-Task presence |
+| Preferences | Main/hierarchy independence, absent-state retention, navigation/live changes, empty submissions, explicit URL snapshots and existing browser storage |
+| Forms | Automatic availability, selected draft retention, one-way reveal, validation/autosave lifetime, Task switching, close/reopen reset and independent hierarchy lifetime |
+| API/CLI | Create/update/list parity, help/completion/skill consistency and the development guide's rebuilt-executable gate |
+| Browser behavior | Stored preferences across reload; enhanced option updates; keyboard reveal/selection/dismissal; muted option readability; delayed hover/keyboard-active descriptions; cancellation/stale removal; visibility above dialogs/popovers; viewport placement and accessible descriptions |
+| Browser regressions | Ordinary tooltip behavior, badge hover delay, correct descriptions after live updates, click/tap navigation without extra tab stops, popup placement, native bridge, focus and recovery |
+
+Run `mix precommit` after implementation.
+
+### Documentation completion and next gate
+
+At implementation completion:
+
+- Update domain, MVP, relationships and affected historical specification rules to identify this
+  specification's replacements; keep current contracts consistent.
+- Include the bounded Task snapshot extension in the live-updates contract.
+- Audit changed files for privacy and leaked planning terminology.
 
 Next: obtain full design approval, then write and review an implementation plan. Plan approval is
 the clean-session boundary unless the operator explicitly chooses to implement in that session.
