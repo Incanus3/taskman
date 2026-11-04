@@ -5,29 +5,48 @@ const margin = 8
 
 let trigger = null
 let timer = null
+let leaveTimer = null
 let tooltip = null
+let label = null
 let pointerDown = false
 
-function hide() {
+export function dismissTooltip() {
   clearTimeout(timer)
-  timer = null
+  clearTimeout(leaveTimer)
+  timer = leaveTimer = null
   tooltip?.remove()
-  tooltip = null
-  trigger = null
+  tooltip = trigger = label = null
+}
+
+function description(target) {
+  return target?.dataset.tooltipMode === "description"
+}
+
+function content(target) {
+  return target.dataset.tooltip || target.getAttribute("aria-label")
+}
+
+function valid(target) {
+  return target?.isConnected && target.getClientRects().length > 0 &&
+    !target.matches(":disabled, [aria-disabled='true']") &&
+    !target.closest("[hidden]") &&
+    (!target.closest("[popover]") || target.closest("[popover]").matches(":popover-open"))
 }
 
 function show(target) {
-  if (!target.isConnected || target.matches(":disabled, [aria-disabled='true']")) return
-
-  const label = target.dataset.tooltip || target.getAttribute("aria-label")
-  if (!label) return
+  timer = null
+  if (!valid(target) || content(target) !== label) return dismissTooltip()
 
   tooltip = document.createElement("div")
   tooltip.setAttribute("role", "tooltip")
+  // Sources have their own persistent accessible description; visual timing is independent.
   tooltip.setAttribute("aria-hidden", "true")
   tooltip.className = "taskman-tooltip"
   tooltip.textContent = label
-  document.body.append(tooltip)
+  if (description(target)) tooltip.setAttribute("popover", "manual")
+  const container = target.closest("dialog") || document.body
+  container.append(tooltip)
+  if (description(target)) tooltip.showPopover()
 
   const targetBounds = target.getBoundingClientRect()
   const tipBounds = tooltip.getBoundingClientRect()
@@ -44,44 +63,103 @@ function show(target) {
 }
 
 function schedule(target, immediate = false) {
+  clearTimeout(leaveTimer)
+  leaveTimer = null
   if (trigger === target) {
     if (immediate && timer) {
       clearTimeout(timer)
-      timer = null
       show(target)
     }
     return
   }
-  hide()
-  if (!target || target.matches(":disabled, [aria-disabled='true']")) return
-
+  dismissTooltip()
+  if (!valid(target)) return
+  label = content(target)
+  if (!label) return
   trigger = target
   if (immediate) show(target)
   else timer = setTimeout(() => show(target), delay)
 }
 
-document.addEventListener("pointerover", event => {
-  schedule(event.target.closest(selector))
-})
+export function requestDescriptionTooltip(target) {
+  if (description(target)) schedule(target)
+  else dismissTooltip()
+}
 
+function pointerSource(event) {
+  const direct = event.target.closest(selector)
+  if (direct) return direct
+  // A noninteractive badge leaves the pointer on its enclosing row link. Hit test only
+  // explicitly opted-in scopes, preserving that link as the actual event target.
+  const scope = event.target.closest("[data-tooltip-scope]")
+  return scope && [...scope.querySelectorAll("[data-tooltip-pass-through]")].find(source => {
+    const r = source.getBoundingClientRect()
+    return event.clientX >= r.left && event.clientX <= r.right &&
+      event.clientY >= r.top && event.clientY <= r.bottom
+  })
+}
+
+function leaveSource() {
+  if (description(trigger)) {
+    // Allow crossing the small placement gap into the tooltip itself.
+    if (!leaveTimer) leaveTimer = setTimeout(dismissTooltip, 120)
+  } else dismissTooltip()
+}
+
+function pointerOver(event) {
+  if (tooltip?.contains(event.target)) {
+    clearTimeout(leaveTimer)
+    leaveTimer = null
+    return
+  }
+  const source = pointerSource(event)
+  if (source) schedule(source)
+  else if (trigger) leaveSource()
+}
+
+document.addEventListener("pointerover", pointerOver)
+document.addEventListener("pointermove", event => {
+  if (event.target.closest("[data-tooltip-scope]") || trigger?.hasAttribute("data-tooltip-pass-through")) {
+    pointerOver(event)
+  }
+})
 document.addEventListener("pointerout", event => {
-  if (trigger && !trigger.contains(event.relatedTarget)) hide()
+  if (!trigger || trigger.contains(event.relatedTarget) || tooltip?.contains(event.relatedTarget)) return
+  leaveSource()
 })
 
 document.addEventListener("focusin", event => {
-  if (!pointerDown) schedule(event.target.closest(selector), true)
+  if (!pointerDown) {
+    const target = event.target.closest(selector)
+    schedule(target, !description(target))
+  }
 })
-
 document.addEventListener("focusout", event => {
-  if (trigger?.contains(event.target)) hide()
+  if (trigger?.contains(event.target)) dismissTooltip()
 })
-
 document.addEventListener("pointerdown", () => {
   pointerDown = true
-  hide()
+  dismissTooltip()
 })
 document.addEventListener("pointerup", () => { pointerDown = false })
 document.addEventListener("pointercancel", () => { pointerDown = false })
-document.addEventListener("scroll", hide, true)
-window.addEventListener("phx:page-loading-start", hide)
-window.addEventListener("resize", hide)
+// Capture without consuming Escape: the owning picker/filter/dialog still handles it.
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") dismissTooltip()
+}, true)
+document.addEventListener("change", dismissTooltip, true)
+document.addEventListener("scroll", dismissTooltip, true)
+document.addEventListener("toggle", event => {
+  if (event.newState === "closed" && event.target.contains(trigger)) dismissTooltip()
+}, true)
+document.addEventListener("phx:update", () => {
+  if (description(trigger)) dismissTooltip()
+})
+window.addEventListener("phx:page-loading-start", dismissTooltip)
+window.addEventListener("resize", dismissTooltip)
+new MutationObserver(() => {
+  if (trigger && (!valid(trigger) || content(trigger) !== label)) dismissTooltip()
+}).observe(document.documentElement, {
+  subtree: true, childList: true, attributes: true,
+  attributeFilter: ["data-tooltip", "hidden", "open", "disabled", "aria-disabled"]
+})

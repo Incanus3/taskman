@@ -1,3 +1,5 @@
+import {requestDescriptionTooltip, dismissTooltip} from "./tooltips"
+
 // An enhancement of the ordinary form select; the native input remains the form bridge.
 const SelectPicker = {
   mounted() {
@@ -74,6 +76,7 @@ const SelectPicker = {
   },
 
   sync() {
+    dismissTooltip()
     const popupFocused = this.popup.contains(document.activeElement)
     const actionFocused = document.activeElement === this.popup.querySelector("[data-picker-action]")
     const previousValues = new Set((this.options || []).map(option => option.value))
@@ -98,7 +101,10 @@ const SelectPicker = {
       if (revealCompleted) this.pendingReveal = false
       this.renderOptions()
       this.position()
-      if (popupFocused || revealCompleted || this.pendingReveal) this.focusActive()
+      if (popupFocused || revealCompleted || this.pendingReveal) {
+        this.focusActive()
+        this.describeActive()
+      }
     }
   },
 
@@ -124,10 +130,13 @@ const SelectPicker = {
     // The hidden popup has no scrollable layout until it enters the top layer and is sized.
     this.panel.children[this.active].scrollIntoView({block: "nearest"})
     this.panel.focus({preventScroll: true})
+    this.describeActive()
   },
 
   close(restoreFocus) {
     if (!this.opened) return
+    dismissTooltip()
+    cancelAnimationFrame(this.descriptionFrame)
     this.opened = false
     this.pendingReveal = false
     this.popup.hidePopover()
@@ -137,6 +146,7 @@ const SelectPicker = {
   },
 
   renderOptions() {
+    dismissTooltip()
     this.panel.replaceChildren(...this.options.map((option, index) => {
       const row = this.el.querySelector("template").content.firstElementChild.cloneNode(true)
       const selected = option.value === this.input.value
@@ -145,7 +155,16 @@ const SelectPicker = {
       row.dataset.index = index
       row.dataset.value = option.value
       row.dataset.additional = String(!!option.additional)
-      if (option.description) row.setAttribute("aria-description", option.description)
+      if (option.description) {
+        const text = document.createElement("span")
+        text.id = `${row.id}-description`
+        text.hidden = true
+        text.textContent = option.description
+        row.append(text)
+        row.setAttribute("aria-describedby", text.id)
+        row.dataset.tooltip = option.description
+        row.dataset.tooltipMode = "description"
+      }
       row.dataset.active = String(index === this.active)
       row.setAttribute("aria-selected", String(selected))
       row.querySelector("[data-option-label]").textContent = option.label
@@ -176,6 +195,13 @@ const SelectPicker = {
     } else {
       this.panel.removeAttribute("aria-activedescendant")
     }
+  },
+
+  describeActive() {
+    cancelAnimationFrame(this.descriptionFrame)
+    this.descriptionFrame = requestAnimationFrame(() => {
+      if (this.opened) requestDescriptionTooltip(this.panel.children[this.active])
+    })
   },
 
   focusActive() {
@@ -240,6 +266,7 @@ const SelectPicker = {
     }
     this.renderOptions()
     this.focusActive()
+    this.describeActive()
   },
 
   position() {

@@ -135,6 +135,12 @@
   box-shadow: 0 10px 22px rgb(0 0 0 / 0.3);
 }
 
+.taskman-tooltip[popover] {
+  margin: 0;
+  inset: auto;
+  pointer-events: auto;
+}
+
 #task-detail-layout {
   position: relative;
   display: grid;

@@ -26,6 +26,8 @@ defmodule TaskmanWeb.Tasks.Status do
   @spec label(atom()) :: String.t()
   def label(status), do: Status.definition(status).label
 
+  def description(status), do: Status.definition(status).description
+
   @spec text_class(atom()) :: String.t()
   def text_class(status), do: Map.fetch!(@text_classes, Status.definition(status).color)
 
