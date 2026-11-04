@@ -1,6 +1,6 @@
 # Additional Task States Implementation Plan
 
-**Status:** Operator approved; catalogue, events and shared locations accepted; contextual filters underway.
+**Status:** Operator approved; catalogue, availability and contextual filters accepted; picker reveal underway.
 
 **Execution:** Implement the checked tasks in dependency order, with independent scoped review
 before advancing. Follow repository execution and version-control guidance. Read the complete
@@ -273,7 +273,7 @@ TaskTablePreferences, Task Table/Detail components, ProjectLive HEEx, `assets/cs
 - Hierarchy state gains `available_statuses`, computed in `Hierarchy.load/2` from its full tree;
   checkbox submissions update only that offered set. `Table.status_filter/1` accepts offered values.
 
-- [ ] **Write failing preference/scope tests.** Use named tests for remembered absent state,
+- [x] **Write failing preference/scope tests.** Use named tests for remembered absent state,
   empty checkbox submission, empty URL replacement, direct Project versus whole Project, List
   direct versus subtree, filtered-empty listing and all-checked hierarchy initialization:
 
@@ -287,8 +287,8 @@ TaskTablePreferences, Task Table/Detail components, ProjectLive HEEx, `assets/cs
   Also test local create/status/move, external snapshots, duplicate/out-of-order snapshots, foreign
   and malformed inputs, unchanged availability on unrelated fields, last-use retention, Project
   return, conservative reconnect refresh, remount reset and current hierarchy projection refresh.
-- [ ] **Run red:** `mix test test/taskman_web/live/project_live/tasks/state_options_test.exs test/taskman_web/live/project_live/additional_states_test.exs test/taskman_web/live/project_live/hierarchy_status_filter_test.exs`.
-- [ ] **Wire updates and UI scopes.** Observe valid matching Task create/move/status/List changes
+- [x] **Run red:** `mix test test/taskman_web/live/project_live/tasks/state_options_test.exs test/taskman_web/live/project_live/additional_states_test.exs test/taskman_web/live/project_live/hierarchy_status_filter_test.exs`.
+- [x] **Wire updates and UI scopes.** Observe valid matching Task create/move/status/List changes
   before presentation refreshes. Local create must retain the returned Task currently discarded
   by `Creation.create_task`; editing and movement observe their persisted results directly because
   broadcasts exclude the caller. Preserve existing authoritative listing/detail/graph reads.
@@ -302,13 +302,13 @@ TaskTablePreferences, Task Table/Detail components, ProjectLive HEEx, `assets/cs
   merges a fresh snapshot without resetting forms/recovery; remount naturally bootstraps.
   Do not add missed-event detection, polling or per-event Task lookup. Keep the browser's allowed
   states and persisted/share-link selections complete even when rendered options are contextual.
-- [ ] **Run green:** the red command plus
+- [x] **Run green:** the red command plus
   `mix test test/taskman_web/live/project_live/task_table_preferences_test.exs test/taskman_web/live/project_live/task_counts_test.exs test/taskman_web/live/project_live/external_updates_test.exs test/taskman_web/live/project_live/reconciliation_test.exs test/taskman_web/live/project_live/hierarchy_sort_test.exs`.
   Add focused telemetry assertions around observation helpers and selector toggles: zero
   availability queries, zero hierarchy traversal on filter open, and no Task reads from snapshot
   observation. Do not misclassify existing listing refresh queries as new availability work.
   Test stale/valid reconnect Project IDs and preserve refresh after share-link query cleanup.
-- [ ] **Review and commit:** `Apply contextual task state availability without selector discovery`.
+- [x] **Review and commit:** `Apply contextual task state availability without selector discovery`.
 
 ## Task 5: Reveal additional states inside the shared picker
 
