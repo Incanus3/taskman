@@ -1,6 +1,6 @@
 # Additional Task states and Not Planned
 
-**Status:** Behavioral decisions accepted in discussion; full design awaiting approval.
+**Status:** Design approved; implementation not started.
 **Date:** 2026-11-01
 
 Keep ordinary Task selectors compact as the supported state vocabulary grows. Introduce
@@ -25,9 +25,9 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D12 | Accepted | Retain the existing enclosing-transaction publication limitation | An outer rollback can leave an already-delivered availability observation for an uncommitted change | [Publication limits](#accepted-delivery-and-publication-limitations) |
 | D13 | Accepted | Native select fallback offers all real states directly, without a reveal pseudo-option | Contextual decluttering applies to the enhanced picker; native fallback may show unused additional states | [Fallback](#presentation-and-fallback-constraints) |
 
-D1–D13 reflect explicit operator decisions. The complete written specification still requires design
-approval before implementation planning. Approval covers this feature and the Will Not Do
-blocker correction; it does not authorize implementation, pushing, merging or deployment.
+D1–D13 and the complete written specification are operator approved. Approval covers this feature
+and the Will Not Do blocker correction. Implementation requires an approved implementation plan;
+pushing, merging and deployment retain their separate authorization gates.
 
 ## Existing contracts and observed baseline
 
@@ -502,5 +502,6 @@ At implementation completion:
 - Include the bounded Task snapshot extension in the live-updates contract.
 - Audit changed files for privacy and leaked planning terminology.
 
-Next: obtain full design approval, then write and review an implementation plan. Plan approval is
-the clean-session boundary unless the operator explicitly chooses to implement in that session.
+Next: review and approve the [implementation plan](../plans/2026-11-04-additional-task-states.md).
+Plan approval is the clean-session boundary unless the operator explicitly chooses to implement
+in that session.

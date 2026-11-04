@@ -2,7 +2,7 @@
 
 This is the complete index of current repository handoffs.
 
-- [Additional Task states](additional-task-states.md) — active — Approve the contextual-state and Not Planned design, then plan implementation — `$resume additional-task-states`
+- [Additional Task states](additional-task-states.md) — active — Design approved; review the implementation plan before the implementation-session boundary — `$resume additional-task-states`
 
 - [Operations CLI UX](operations-cli-ux.md) — parked — Finish readable progress, outcome, and provisioning-rerun design after the operations merge — `$resume operations-cli-ux`
 

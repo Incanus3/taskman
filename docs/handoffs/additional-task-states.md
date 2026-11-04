@@ -12,64 +12,49 @@ owns requirements, decisions, source evidence, boundaries and verification crite
 
 ## Current checkpoint
 
-All individual decisions D1–D13 are operator accepted in discussion; full written design approval
-is pending. Product code is unchanged. The specification owns all behavioral detail, including
-only-Done blocker resolution, unified sorting, shared color tokens and delayed descriptions on
-state options and main-table state badges.
+The complete [design](../specs/2026-11-01-additional-task-states-design.md), including D1–D13,
+is operator approved. The [implementation plan](../plans/2026-11-04-additional-task-states.md)
+is written, author-self-reviewed and independently reviewed with no material gaps. Plan approval
+is pending. Product code is unchanged; no feature implementation or new tracker decomposition has
+started.
 
-Create/edit reveal is now a distinctive action row inside the open enhanced picker (D3), shown
-only while additional states remain hidden. It removes itself and reveals states in canonical
-order while keeping the popup open and leaving the selected/native value and autosave unchanged.
-Reveal lasts for the whole open edit dialog across Task navigation; closing it resets reveal.
-Each new creation form starts unrevealed. Do not add a Task-identity-based reveal reset.
-The native fallback shows all real states directly, without a pseudo-option (D13).
+The plan carries the accepted scopes and ordering: Not Planned/only-Done blocker semantics,
+compact Task event snapshots, one shared location owner, contextual filter preferences, picker
+reveal and delayed descriptions, then external parity and integrated verification. Reveal persists
+across Task navigation within the same edit dialog; native fallback offers all real states.
+Location observations are page-local and additive; event handling adds no availability Task read.
+Resnapshots run at known lifecycle boundaries, without missed-event detection. Accepted publication
+and ephemeral-delivery limitations remain in the design.
 
-The shared page-local Project location model owns canonical List records/topology and direct/subtree
-observed-state sets. The Project root is a location; its subtree set is the whole-Project summary,
-not a third stored set. Navigation streams and selectors consume that one owner. Bootstrap once
-per Project load, update on relevant external events and successful local writes, and retain
-observations until full reload/remount. Selector opening, List navigation and Include child Lists
-changes only read prepared entries. Task events will now include persisted `status` and `list_id`
-snapshots, so availability observation performs no per-client Task read. This supersedes the earlier
-single-Task-refetch proposal. Existing listing/detail invalidations remain separate. Only the
-active Project is subscribed and the publisher excludes itself; revisit/reconnect snapshots cover
-subscription gaps. Do not add persistent usage history or last-instance reference counts.
-Resnapshots run conservatively at Project return, connection re-establishment or remount; no
-individual missed-event detector exists. Silent publication loss while connected is repaired
-only at the next such refresh boundary.
+Earlier independent design checks found no consequential gaps. Source inspection informed the
+plan's explicit safeguards for persisted results versus unsaved autosave drafts, Project-ID-based
+reconnect recovery after browser URL cleanup, generic action/value separation and badge click-through.
 
-The operator explicitly accepts ephemeral delivery and the existing enclosing-transaction
-publication limitation (D11–D12). Their meaning and cache consequences are documented in the
-specification; no after-commit mechanism is added to this feature.
-
-Independent builder checks, including the shared location model, lifetime and compact event-snapshot
-contracts against notification, workspace, navigation, reconciliation and movement code, found no
-consequential gaps.
-Badge hover must still preserve the existing pointer-event passthrough for click/tap Task navigation
-and add no keyboard tab stops.
-
-[Related notification-read analysis](../research/2026-11-01-notification-read-amplification.md)
-records other small-payload and refresh-gating candidates. These findings do not expand the
-approved individual decisions or the intended additional-state implementation scope.
+[Related notification-read research](../research/2026-11-01-notification-read-amplification.md)
+is tracked separately through the reference recorded there. It does not expand this feature's scope.
 
 ## Remaining sequence and gates
 
-1. Obtain full design approval; incorporate operator corrections.
-2. After design approval, write and review an implementation plan using the writing-plans skill.
-3. Obtain plan approval. At that boundary, refresh this handoff and offer a fresh implementation
-   session; continue in the same session only if explicitly requested.
-4. Implement the approved plan, verify the scoped changes, and update canonical product contracts,
-   API/CLI/help/completion/skill surfaces and affected documentation. Commit verified checkpoints
-   locally; publication requires separate authorization.
-5. Present verification evidence, outstanding limitations and autonomous implementation rulings
-   for operator acceptance before retiring this workstream.
+1. Obtain operator approval of the reviewed implementation plan; incorporate requested corrections.
+2. After that approval, create/reuse the repository tracker's appropriate Product workstream
+   grouping under its task policy; refresh this handoff and offer the clean implementation-session
+   boundary. Continue here only if the operator explicitly chooses it.
+3. Execute the approved plan in dependency order, with independent scoped reviews and verified
+   local commits; update the canonical product/API/CLI/help/completion/skill and specification owners.
+4. Present integrated verification evidence, material limitations and autonomous implementation
+   rulings for operator acceptance before retiring this workstream. Do not equate child review or
+   tests with acceptance of the whole workstream.
+5. Publication, merge and deployment remain separately authorized actions.
 
-No implementation or feature tests have run. Design verification includes source inspection,
-the independent builder check, and passing local-link, whitespace and scoped privacy checks for
-the four changed documentation files. `mix precommit` passed against the unchanged product baseline:
-1,398 passed, 3 skipped, 51 browser-tag exclusions. This does not establish new-feature behavior.
+## Verification
+
+No feature implementation/tests have run. Earlier `mix precommit` passed against the unchanged
+product baseline: 1,398 passed, 3 skipped, 51 browser-tag exclusions. This does not establish
+new-feature behavior. Design checks include source inspection and independent builder reviews.
+Plan verification includes author coverage/interface/step/proportion review, independent readiness
+review with no material gaps, and local-link, whitespace and scoped privacy checks.
 
 ## Workstream rulings
 
 No autonomous implementation rulings. All individual design decisions are accepted; builder
-choices are identified in the specification. Approval of the complete written design remains pending.
+choices are identified in the specification. The complete design is approved; implementation-plan approval remains pending.
