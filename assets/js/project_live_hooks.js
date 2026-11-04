@@ -105,7 +105,7 @@ const TaskTablePreferences = {
     const explicit = this.explicitSnapshot()
     const includeChildren = explicit.include_children ?? this.readIncludeChildren() ?? false
     const statuses = explicit.statuses ?? this.readStatuses() ??
-      this.allowedStatuses.filter(status => !["done", "will_not_do"].includes(status))
+      this.normalizeStatuses(this.el.dataset.defaultTaskStatuses?.split(",")) ?? []
 
     this.persist(explicit)
 

@@ -3,7 +3,9 @@ defmodule Taskman.Tasks.Task do
 
   import Ecto.Changeset
 
-  @statuses [:icebox, :pending, :in_progress, :in_review, :done, :will_not_do]
+  alias Taskman.Tasks.Status
+
+  @statuses Status.values()
   @priorities [:none, :low, :medium, :high, :urgent]
 
   @type t :: %__MODULE__{
@@ -34,7 +36,7 @@ defmodule Taskman.Tasks.Task do
     timestamps(type: :utc_datetime)
   end
 
-  def statuses, do: @statuses
+  def statuses, do: Status.values()
   def priorities, do: @priorities
 
   def changeset(task, attrs) do

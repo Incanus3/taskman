@@ -9,6 +9,7 @@ defmodule Taskman.Tasks.Mutations do
   alias Taskman.Tasks.GraphLock
   alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.Task
+  alias Taskman.Tasks.Status
 
   @creation_fields [
     :description,
@@ -519,8 +520,8 @@ defmodule Taskman.Tasks.Mutations do
       ids
       |> Enum.flat_map(fn id ->
         case Map.fetch(summaries, id) do
-          {:ok, %{status: status} = summary} when status not in [:done, :will_not_do] ->
-            [summary]
+          {:ok, %{status: status} = summary} ->
+            if Status.resolves_blocker?(status), do: [], else: [summary]
 
           _ ->
             []

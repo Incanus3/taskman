@@ -489,6 +489,40 @@ defmodule TaskmanWeb.API.TaskControllerTest do
            } = json_response(conn, 422)
   end
 
+  for state <- [:not_planned, :will_not_do] do
+    test "PATCH Done requires confirmation for a #{state} blocker", %{conn: conn} do
+      project = project_fixture(%{})
+
+      assert {:ok, blocker} =
+               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+
+      blocked = task_fixture(project)
+      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+      path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
+
+      assert %{
+               "error" => %{
+                 "code" => "unresolved_blockers",
+                 "message" => "Review unresolved direct blockers before marking Done",
+                 "blockers" => [summary]
+               }
+             } =
+               conn |> patch(path, %{"task" => %{"status" => "done"}}) |> json_response(409)
+
+      assert summary["id"] == blocker.id
+      assert summary["status"] == Atom.to_string(unquote(state))
+      assert Tasks.get_task_for_project(project, blocked.id).status == :pending
+
+      assert %{"data" => %{"status" => "done"}} =
+               conn
+               |> patch(path, %{
+                 "task" => %{"status" => "done"},
+                 "confirmation" => %{"unresolved_blocker_ids" => [blocker.id]}
+               })
+               |> json_response(200)
+    end
+  end
+
   test "PATCH Done warns with direct unresolved blocker summaries and changes no fields", %{
     conn: conn
   } do

@@ -38,6 +38,9 @@
       id="workspace-content"
       phx-hook="TaskmanWeb.ProjectLive.TaskTablePreferences"
       data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
+      data-default-task-statuses={
+        Enum.map_join(Taskman.Tasks.Status.initial_listing_values(), ",", &Atom.to_string/1)
+      }
       data-preferences-hydrated={to_string(@preferences_hydrated?)}
       inert={not is_nil(RecoveryWorkflow.view(@recovery))}
       class="h-full"

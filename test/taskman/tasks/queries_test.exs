@@ -9,6 +9,28 @@ defmodule Taskman.Tasks.QueriesTest do
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
+  test "all supported persisted states sort in canonical order in either direction" do
+    project = project_fixture(%{})
+    states = [:icebox, :pending, :in_progress, :in_review, :done, :not_planned, :will_not_do]
+
+    for status <- Enum.reverse(states) do
+      assert {:ok, task} = Tasks.create_task(project, %{title: "State #{status}", status: status})
+      assert Tasks.get_task_for_project(project, task.id).status == status
+    end
+
+    for {direction, expected} <- [asc: states, desc: Enum.reverse(states)] do
+      assert {:ok, tasks} =
+               Tasks.list_tasks_for_location(project, nil, sort: {:status, direction})
+
+      assert Enum.map(tasks, & &1.task.status) == expected
+    end
+
+    assert {:error, changeset} =
+             Tasks.create_task(project, %{title: "Invalid", status: "unknown"})
+
+    assert %{status: ["is invalid"]} = errors_on(changeset)
+  end
+
   test "change_task/2 builds a valid Project-owned creation changeset" do
     project = project_fixture(%{})
     other_project = project_fixture(%{})

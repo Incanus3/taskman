@@ -60,6 +60,35 @@ defmodule Taskman.Tasks.CountsTest do
     end
   end
 
+  test "Not Planned contributes only when explicitly selected" do
+    project = project_fixture(%{})
+    list = list_fixture(project)
+    task_fixture(project, list, %{status: :pending})
+
+    assert {:ok, _} =
+             Tasks.create_task(project, list, %{title: "Reconsider later", status: :not_planned})
+
+    assert Tasks.count_tasks_by_location(project, [:pending], false)[list.id] == %{
+             visible: 1,
+             eligible: 1
+           }
+
+    assert Tasks.count_tasks_by_location(project, [], false)[list.id] == %{
+             visible: 0,
+             eligible: 1
+           }
+
+    assert Tasks.count_tasks_by_location(project, [:not_planned], false)[list.id] == %{
+             visible: 1,
+             eligible: 2
+           }
+
+    assert Tasks.count_tasks_by_location(project, [:pending, :not_planned], false)[list.id] == %{
+             visible: 2,
+             eligible: 2
+           }
+  end
+
   test "rollup reaches every empty ancestor and counts Tasks by owning location" do
     project = project_fixture(%{})
     root = list_fixture(project)

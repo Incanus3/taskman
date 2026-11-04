@@ -18,6 +18,7 @@ defmodule Taskman.Tasks do
   alias Taskman.Tasks.Mutations
   alias Taskman.Tasks.Search
   alias Taskman.Tasks.Task
+  alias Taskman.Tasks.Status
   alias Taskman.Tasks.TaskWithLocation
 
   def list_tasks_for_project(%Project{id: project_id}) do
@@ -352,10 +353,13 @@ defmodule Taskman.Tasks do
         ])
 
       :status ->
+        status_order = Enum.map(Status.values(), &Atom.to_string/1)
+
         order_by(query, [task], [
           {^direction,
            fragment(
-             "CASE ? WHEN 'will_not_do' THEN 0 WHEN 'icebox' THEN 1 WHEN 'pending' THEN 2 WHEN 'in_progress' THEN 3 WHEN 'in_review' THEN 4 WHEN 'done' THEN 5 END",
+             "array_position(?::text[], ?::text)",
+             ^status_order,
              task.status
            )},
           {:asc, task.id}

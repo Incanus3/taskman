@@ -1,5 +1,5 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
-  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Status, Task}
 
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]
   defstruct hierarchy: nil,
@@ -107,12 +107,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   defp sort_value(task, :id), do: task.id
   defp sort_value(task, :title), do: String.downcase(task.title)
 
-  defp sort_value(task, :status) do
-    Map.fetch!(
-      %{will_not_do: 0, icebox: 1, pending: 2, in_progress: 3, in_review: 4, done: 5},
-      task.status
-    )
-  end
+  defp sort_value(task, :status), do: Status.rank(task.status)
 
   defp sort_value(task, :priority) do
     Map.fetch!(%{none: 0, low: 1, medium: 2, high: 3, urgent: 4}, task.priority)
