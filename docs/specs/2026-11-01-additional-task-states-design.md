@@ -319,7 +319,7 @@ while keeping it visually within the same options popup.
 
 After activation, keep a valid keyboard focus/active-option target within the open picker and
 make the revealed options reachable. The native input retains its original state until a real
-state is selected. Repeated activation is harmless and never produces a form value change.
+state is selected.
 
 The native fallback offers every real supported state in canonical order, with no pseudo-option
 or separate reveal control. Its form bridge contains only valid Task state values. The enhanced
