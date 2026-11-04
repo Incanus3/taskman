@@ -191,7 +191,74 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     assert offered?(view)
   end
 
-  test "opening filters only reads prepared choices and does not traverse the hierarchy" do
+  test "rendered hierarchy filter opening uses prepared projection and selected List path", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+    root = task_fixture(project)
+    selected = task_fixture(project, task_list, %{status: :pending}, parent: root)
+    branch = task_fixture(project, %{}, parent: root)
+    descendant = task_fixture(project, %{}, parent: branch)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-node-#{root.id} #task-hierarchy-node-#{selected.id}"
+           )
+
+    assert has_element?(view, "#task-location-list-#{task_list.id}")
+
+    :sys.replace_state(view.pid, fn state ->
+      hierarchy = state.socket.assigns.editing.hierarchy
+
+      source = %{
+        hierarchy.hierarchy
+        | root: %{hierarchy.hierarchy.root | children: :unavailable_tree}
+      }
+
+      editing = %{state.socket.assigns.editing | hierarchy: %{hierarchy | hierarchy: source}}
+      put_in(state.socket.assigns.editing, editing)
+    end)
+
+    handler = "rendered-filter-#{System.unique_integer([:positive])}"
+    parent = self()
+    view_pid = view.pid
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:taskman, :repo, :query],
+        fn _, _, metadata, _ ->
+          if self() == view_pid, do: send(parent, {:filter_query, metadata.query})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    assert has_element?(view, "#task-hierarchy-status-filter-form")
+
+    assert has_element?(
+             view,
+             "#task-hierarchy-node-#{root.id} #task-hierarchy-node-#{selected.id}"
+           )
+
+    assert has_element?(view, "#task-location-list-#{task_list.id}")
+    render_click(view, "close_hierarchy_status_filter")
+    refute has_element?(view, "#task-hierarchy-status-filter-form")
+    assert has_element?(view, "#task-hierarchy-node-#{selected.id}")
+    view |> element("#task-hierarchy-disclosure-#{branch.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-node-#{descendant.id}")
+    refute_received {:filter_query, _}
+
+    view |> element("#task-hierarchy-link-#{branch.id}") |> render_click()
+    assert has_element?(view, "#task-hierarchy-link-#{branch.id}[aria-current='true']")
+    refute has_element?(view, "#task-location-list-#{task_list.id}")
+  end
+
+  test "filter handlers and option calculation perform no persistence reads" do
     alias TaskmanWeb.ProjectLive.Tasks.{Editing, Hierarchy, Listing}
     project = project_fixture(%{})
     handler = "filters-#{System.unique_integer([:positive])}"
@@ -208,8 +275,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
       )
 
     on_exit(fn -> :telemetry.detach(handler) end)
-    # Deliberately unusable source tree: opening/filtering must use only prepared metadata.
-    hierarchy = %{Hierarchy.empty() | hierarchy: :unavailable_tree}
+    hierarchy = Hierarchy.empty()
     socket = socket(project)
     socket = Phoenix.Component.assign(socket, :listing, Listing.State.new([:pending]))
 

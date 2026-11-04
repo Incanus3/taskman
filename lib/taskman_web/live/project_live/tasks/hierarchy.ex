@@ -6,6 +6,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]
   defstruct hierarchy: nil,
             root_id: nil,
+            visible_root: nil,
+            selected_location_path: [],
             expanded_node_ids: MapSet.new(),
             required_node_ids: MapSet.new(),
             visible_statuses: Task.statuses(),
@@ -17,6 +19,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   @type t :: %__MODULE__{
           hierarchy: Hierarchy.t() | nil,
           root_id: pos_integer() | nil,
+          visible_root: HierarchyNode.t() | nil,
+          selected_location_path: [Taskman.Lists.TaskList.t()],
           expanded_node_ids: MapSet.t(pos_integer()),
           required_node_ids: MapSet.t(pos_integer()),
           visible_statuses: [Task.status()],
@@ -53,8 +57,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
         root_id: root_id,
         expanded_node_ids: expanded_node_ids,
         required_node_ids: required_node_ids,
-        available_statuses: available_statuses(hierarchy.root)
+        available_statuses: available_statuses(hierarchy.root),
+        selected_location_path:
+          selected_location_path(hierarchy.root, hierarchy.selected_task_id) || []
     }
+    |> prepare_projection()
   end
 
   defp available_statuses(root) do
@@ -75,7 +82,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
     visible_statuses =
       StateOptions.merge_selection(state.visible_statuses, state.available_statuses, statuses)
 
-    %{state | visible_statuses: visible_statuses}
+    prepare_projection(%{state | visible_statuses: visible_statuses})
   end
 
   @spec sort_by(t(), atom()) :: t()
@@ -88,17 +95,19 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
         _ -> :asc
       end
 
-    %{state | sort: {field, direction}, sort_open?: false}
+    prepare_projection(%{state | sort: {field, direction}, sort_open?: false})
   end
 
   def sort_by(%__MODULE__{} = state, _field), do: state
 
   @spec visible_root(t()) :: HierarchyNode.t() | nil
-  def visible_root(%__MODULE__{hierarchy: nil}), do: nil
+  def visible_root(%__MODULE__{visible_root: root}), do: root
 
-  def visible_root(%__MODULE__{} = state) do
-    project_node(state.hierarchy.root, state)
-  end
+  defp prepare_projection(%__MODULE__{hierarchy: nil} = state),
+    do: %{state | visible_root: nil}
+
+  defp prepare_projection(%__MODULE__{} = state),
+    do: %{state | visible_root: project_node(state.hierarchy.root, state)}
 
   defp project_node(%HierarchyNode{} = node, state) do
     children =
@@ -158,13 +167,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
     do: !MapSet.member?(state.required_node_ids, task_id)
 
   @spec selected_location_path(t()) :: [Taskman.Lists.TaskList.t()]
-  def selected_location_path(%__MODULE__{
-        hierarchy: %Hierarchy{root: root, selected_task_id: selected_task_id}
-      }) do
-    selected_location_path(root, selected_task_id) || []
-  end
-
-  def selected_location_path(%__MODULE__{}), do: []
+  def selected_location_path(%__MODULE__{selected_location_path: path}), do: path
 
   @spec clear(t()) :: t()
   def clear(_state), do: empty()
