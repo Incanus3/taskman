@@ -67,7 +67,7 @@ container was started for testing.
 
 ## Workstream rulings
 
-1. **Superseded; acknowledgement pending:** Initially interpreted “no hierarchy traversal on
+1. **Superseded; operator acknowledged 2026-11-05:** Initially interpreted “no hierarchy traversal on
    filter opening” as availability discovery only, retaining existing render-time row/path
    projection. Rationale: availability was the feature’s performance scope. Cost if retained:
    filter opening would still traverse the source tree. Independent review found this weaker
