@@ -34,13 +34,14 @@ unresolved. No tests were changed to hide the failure.
 ## Tracker and acceptance gates
 
 Workstream Task **71** is relative to this repository’s registered Taskman Project; verify its exact
-marker `Source: Incanus3/taskman:additional-task-states`. It is In Review for operator acceptance.
+marker `Source: Incanus3/taskman:additional-task-states`. It is In Review pending the closure
+gate below; the operator accepted the implemented workstream and requested closure on 2026-11-05.
 Children **72–78** are Done after independent review; their evidence remains in their threads.
 Do not recreate the grouping or reopen completed work without operator direction.
 
-1. Obtain operator acceptance of the implemented feature and explicit acknowledgement/revision
-   of both autonomous rulings below. Acceptance confirms the workstream outcome; acknowledging
-   rulings confirms the implementation interpretation and its correction.
+1. Obtain explicit acknowledgement/revision of both autonomous rulings below. Workstream
+   acceptance is complete; acknowledging rulings confirms the implementation interpretation
+   and its correction.
 2. After those gates and durable harvesting are satisfied, mark the root Done and retire this
    handoff/index entry together. Until then keep the verified baseline and pending decisions.
 3. Publication, merge and deployment remain separately authorized actions. Refresh relevant

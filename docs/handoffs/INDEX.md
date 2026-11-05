@@ -2,11 +2,9 @@
 
 This is the complete index of current repository handoffs.
 
-- [List editing extraction](list-editing-extraction.md) — active — Implemented, independently reviewed and locally verified; operator acceptance and ruling acknowledgement pending — `$resume list-editing-extraction`
+- [List editing extraction](list-editing-extraction.md) — active — Operator accepted; explicit ruling acknowledgement is the remaining retirement gate — `$resume list-editing-extraction`
 
-- [Project editing extraction](project-editing-extraction.md) — active — Implemented, independently reviewed and locally verified; operator acceptance pending — `$resume project-editing-extraction`
-
-- [Additional Task states](additional-task-states.md) — active — Implemented and independently reviewed; operator acceptance and ruling acknowledgement pending — `$resume additional-task-states`
+- [Additional Task states](additional-task-states.md) — active — Operator accepted; explicit ruling acknowledgement remains before tracker completion and handoff retirement — `$resume additional-task-states`
 
 - [Operations CLI UX](operations-cli-ux.md) — parked — Finish readable progress, outcome, and provisioning-rerun design after the operations merge — `$resume operations-cli-ux`
 

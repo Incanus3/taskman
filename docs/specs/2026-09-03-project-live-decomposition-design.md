@@ -197,6 +197,8 @@ Workflow modules decide when to navigate and call `Paths` to construct the targe
 
 ### `TaskmanWeb.ProjectLive.Workspace`
 
+The Project and List editor collaborator extractions are implemented and operator accepted.
+
 `Workspace` owns Project, List, and sidebar workflows:
 
 - Project validation and creation events;
@@ -644,6 +646,14 @@ Tests should continue to assert observable LiveView outcomes. New direct unit te
 for pure `Paths` behavior, workflow-state invariants, or a newly explicit tagged-result contract,
 but the refactor must not replace application-level coverage with implementation-detail
 assertions.
+
+The Project and List editor extractions and blank-List-rename correction passed independent
+scoped review. The final ordinary `mix precommit` gate passed 1,473 tests with 3 executable-only
+skips and 60 browser exclusions. Focused tests cover editor state, fresh scoped targets, retained
+error drafts, navigation and successful saves; nil, empty and whitespace List names return
+required-field errors without changing the persisted name. Concurrent second-check disappearance
+and Project persistence-error paths were checked by code comparison rather than deterministic
+race tests. Browser tests were not rerun for these server-side editor extractions.
 
 Required final verification:
 

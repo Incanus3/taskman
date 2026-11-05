@@ -1,6 +1,6 @@
 # Additional Task states and Not Planned
 
-**Status:** Implemented, locally verified and independently reviewed; operator acceptance pending.
+**Status:** Implemented, locally verified, independently reviewed and operator accepted.
 D1–D13 and the written design remain operator approved.
 **Date:** 2026-11-01
 
@@ -499,6 +499,14 @@ timing. Persistent ARIA descriptions and keyboard focus were checked in Chromium
 screen reader. Narrow screens retained desktop hover capability; physical touch hardware was not
 used. These limits apply to the browser evidence above.
 
+The shared picker and tooltip controller refactors also passed independent scoped review and
+the final 29-test headed browser gate. An unchanged baseline badge re-hover test failed once,
+then passed its focused repeat and the final full browser gate; its cause remains unresolved.
+No test was weakened or bug fix claimed for that transient result. Later server-side editor
+and test-concurrency corrections passed ordinary `mix precommit`: 1,473 passed, 3 executable-only
+skips and 60 browser exclusions. These later checks do not extend the browser or release-runtime
+evidence above.
+
 ### Required implementation evidence
 
 | Area | Coverage |
@@ -519,15 +527,14 @@ used. These limits apply to the browser evidence above.
 
 Run `mix precommit` after implementation.
 
-### Documentation completion and next gate
+### Documentation completion and acceptance
 
 Current product documentation and affected lifecycle, blocking, notification, count, hierarchy
 filter and shared-control specifications identify the resulting contracts and supersessions.
 The separate notification read-optimization research remains outside this feature.
 
 Independent child and session-scoped integration reviews accepted the implementation with no
-unresolved findings. Next: operator acceptance through the
-[active workstream handoff](../handoffs/additional-task-states.md). Tests, reviews and local commits
-establish technical evidence; they do not mark the workstream accepted or authorize publication.
+unresolved findings. The operator accepted the implemented workstream on 2026-11-05.
+Publication, merging and deployment remain separately authorized actions.
 The completed implementation plan was retired after harvesting its durable contracts here and
 in the current product and CLI documentation.

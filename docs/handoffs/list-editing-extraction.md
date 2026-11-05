@@ -9,6 +9,8 @@ Extract List opening, validation and submission from Workspace into a socket-fre
 `ListEditing` collaborator while preserving behavior. Implementation and focused tests are
 complete and independently reviewed without actionable findings. The resulting ownership
 is recorded in the [workflow decomposition specification](../specs/2026-09-03-project-live-decomposition-design.md#taskmanwebprojectliveworkspace).
+The operator accepted the completed workstream and requested closure on 2026-11-05;
+only explicit acknowledgement of the ruling below remains before retirement.
 
 `ListEdit` retains state and fresh target lookup. Workspace applies editor outcomes and owns
 parent expansion, selected paths, topology refreshes, counts and movement refresh order.
@@ -37,7 +39,7 @@ concurrency to the configured pool. The concurrency contract is in the
   of the two follow-up fixes also found no issues.
 - Implementation is locally committed as `e9d5a13f34ccd04f704cd132ecc2b520faaecb60`.
   Follow-up fixes are locally committed as `1161e749a26b34e476059d33a9b7e810a496ed7e`.
-  Next: obtain operator acceptance of the verified extraction and acknowledgement of the ruling below.
+  Next: obtain acknowledgement of the ruling below; operator acceptance is complete.
   Retire this handoff only after those gates. No publication is authorized.
 
 ## Rulings awaiting acknowledgement
