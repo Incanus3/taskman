@@ -8,7 +8,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Projects
   alias Taskman.Tasks
   alias Taskman.Tasks.{Status, Task}
-  alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Paths, ProjectEdit}
+  alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Paths, ProjectEdit, ProjectEditing}
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
   alias __MODULE__, as: Workspace
@@ -433,25 +433,9 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     do: put_project_validation(socket, params)
 
   def handle_event("save_project", %{"project" => params}, socket) do
-    edit = socket.assigns.workspace.project_edit
-
-    case ProjectEdit.target(edit) do
-      {:ok, :new, _project} ->
-        validate_project_submission(socket, edit, params)
-
-      {:ok, :edit, project} ->
-        case Projects.get_project(project.id) do
-          nil ->
-            unavailable = ProjectEdit.reconcile(edit, [])
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
-
-          current ->
-            validate_project_submission(socket, ProjectEdit.reconcile(edit, [current]), params)
-        end
-
-      :error ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.project_edit
+    |> ProjectEditing.save(params)
+    |> apply_project_editing(socket)
   end
 
   def handle_event("toggle_navigation_node", params, socket) when is_map(params) do
@@ -571,77 +555,35 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     end
   end
 
-  defp validate_project_submission(socket, edit, params) do
-    case ProjectEdit.validate(edit, params) do
-      {:ok, validated} ->
-        cond do
-          not validated.changeset.valid? ->
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, validated))}
-
-          true ->
-            persist_project_edit(socket, validated)
-        end
-
-      {:error, :not_found} ->
-        {:noreply, socket}
-    end
-  end
-
   defp put_project_validation(socket, params) do
-    case ProjectEdit.validate(socket.assigns.workspace.project_edit, params) do
-      {:ok, edit} -> {:noreply, update_workspace(socket, &State.put_project_edit(&1, edit))}
-      {:error, :not_found} -> {:noreply, socket}
-    end
+    socket.assigns.workspace.project_edit
+    |> ProjectEditing.validate(params)
+    |> apply_project_editing(socket)
   end
 
-  defp persist_project_edit(socket, edit) do
-    attrs = Map.take(edit.changeset.params || %{}, ["name", "description", "icon", "color"])
-    attrs = Map.put(attrs, "color", Ecto.Changeset.get_field(edit.changeset, :color))
-
-    case ProjectEdit.target(edit) do
-      {:ok, :new, _project} ->
-        case Projects.create_project(attrs) do
-          {:ok, project} ->
-            {:noreply,
-             socket
-             |> update_workspace(&State.close_project_edit/1)
-             |> push_patch(
-               to: Paths.browse_path(project, nil, socket.assigns.workspace.include_children?)
-             )}
-
-          {:error, changeset} ->
-            {:noreply, project_edit_error(socket, edit, changeset)}
-        end
-
-      {:ok, :edit, project} ->
-        case Projects.get_project(project.id) do
-          nil ->
-            unavailable = ProjectEdit.reconcile(edit, Projects.list_projects())
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
-
-          current ->
-            case Projects.update_project(current, attrs) do
-              {:ok, updated} ->
-                {:noreply,
-                 update_workspace(socket, fn state ->
-                   state
-                   |> State.close_project_edit()
-                   |> Map.put(:selected_project, updated)
-                 end)
-                 |> stream(:projects, Projects.list_projects(), reset: true)}
-
-              {:error, changeset} ->
-                {:noreply, project_edit_error(socket, edit, changeset)}
-            end
-        end
-
-      :error ->
-        {:noreply, socket}
-    end
+  defp apply_project_editing({:changed, edit}, socket) do
+    {:noreply, update_workspace(socket, &State.put_project_edit(&1, edit))}
   end
 
-  defp project_edit_error(socket, edit, changeset) do
-    update_workspace(socket, &State.put_project_edit(&1, ProjectEdit.put_error(edit, changeset)))
+  defp apply_project_editing({:unchanged, _edit}, socket), do: {:noreply, socket}
+
+  defp apply_project_editing({:created, project}, socket) do
+    {:noreply,
+     socket
+     |> update_workspace(&State.close_project_edit/1)
+     |> push_patch(
+       to: Paths.browse_path(project, nil, socket.assigns.workspace.include_children?)
+     )}
+  end
+
+  defp apply_project_editing({:updated, project}, socket) do
+    {:noreply,
+     update_workspace(socket, fn state ->
+       state
+       |> State.close_project_edit()
+       |> Map.put(:selected_project, project)
+     end)
+     |> stream(:projects, Projects.list_projects(), reset: true)}
   end
 
   defp navigation_identity(

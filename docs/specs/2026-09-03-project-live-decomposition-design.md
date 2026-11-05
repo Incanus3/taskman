@@ -209,6 +209,15 @@ Workflow modules decide when to navigate and call `Paths` to construct the targe
 `ListEdit` remains a socket-free state value. `Workspace` coordinates that value with LiveView
 assigns, contexts, streams, and navigation.
 
+Project validation and submission delegate to `ProjectEditing`, a socket-free workflow using
+the existing `ProjectEdit` form state and public `Projects` context. It owns fresh-target checks,
+validation, persisted attribute selection, and persistence-error translation. It returns editor
+state or an explicit creation/update outcome; it never calls `Workspace`. `Workspace` retains
+modal lifecycle, preset-event guards, selected-Project assignment, page title, streams, and route
+patches. This isolates editing policy without coupling the collaborator to workspace state or
+introducing callbacks. List editing remains coordinated here because its successful mutations
+also affect navigation topology, selected paths, counts, and movement destinations.
+
 `Workspace.State` groups workspace-local assigns. Its transformations include:
 
 - `new/1` for the initial Project form and empty navigation state;
