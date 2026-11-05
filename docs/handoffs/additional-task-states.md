@@ -13,7 +13,7 @@ in-picker reveal, delayed accessible descriptions and API/CLI parity are impleme
 
 All seven implementation children are independently accepted. Final session-scoped integration
 review of `0f4144f..38a6b104` approved with no findings. The feature implementation checkpoint is
-`b2ab2550`; subsequent local commits finalize documentation and the review correction below.
+`b2ab2550`; subsequent local commits finalize documentation and the review corrections below.
 The completed plan has been harvested into product/spec/CLI owners and removed. Tracker references retain its approved
 historical revision. No push, merge or deployment was performed.
 
@@ -22,6 +22,14 @@ changing its contracts. All 66 functions/callbacks span at most 14 physical line
 baseline passed 11 tests; the refactored picker/detail gates passed 24 tests, and bounded
 `mix precommit` passed 1,452 tests with 3 skipped and 60 browser exclusions. Independent scoped
 review accepted behavior preservation and readability with no findings.
+
+The tooltip review correction on 2026-11-05 encapsulates state, event wiring and rendering in one
+internal controller. Top-level statements fell from 36 to 4; all 33 functions/callbacks span at
+most 13 physical lines. All 29 tooltip/picker/table/detail browser tests and bounded precommit
+(1,452 passed, 3 skipped, 60 excluded) passed. Independent review approved behavior preservation
+and verified identical ordered listener/observer wiring. One unchanged baseline badge re-hover
+test failed, then passed its focused repeat and the final full browser gate; its cause remains
+unresolved. No tests were changed to hide the failure.
 
 ## Tracker and acceptance gates
 
