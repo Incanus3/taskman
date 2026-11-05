@@ -8,7 +8,16 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Projects
   alias Taskman.Tasks
   alias Taskman.Tasks.{Status, Task}
-  alias TaskmanWeb.ProjectLive.{ListEdit, Locations, Paths, ProjectEdit, ProjectEditing}
+
+  alias TaskmanWeb.ProjectLive.{
+    ListEdit,
+    ListEditing,
+    Locations,
+    Paths,
+    ProjectEdit,
+    ProjectEditing
+  }
+
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
   alias __MODULE__, as: Workspace
@@ -452,17 +461,9 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def handle_event("open_list_form", params, socket) do
-    case action_project(socket, params) do
-      %Project{} = project ->
-        case Map.get(params, "kind") do
-          "new" -> open_new_list_form(socket, project, parent_id_param(params))
-          "rename" -> open_rename_list_form(socket, project, list_id_param(params))
-          _other -> {:noreply, socket}
-        end
-
-      _project_not_selected ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.selected_project
+    |> ListEditing.open(params)
+    |> apply_list_editing(socket)
   end
 
   def handle_event("cancel_list_form", _params, socket) do
@@ -473,86 +474,71 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def handle_event("validate_list", %{"list" => list_params}, socket) do
-    case ListEdit.validate(socket.assigns.workspace.list_edit, list_params) do
-      {:ok, list_edit} ->
-        {:noreply,
-         socket
-         |> update_workspace(&Workspace.State.put_list_edit(&1, list_edit))
-         |> refresh()}
-
-      {:error, :not_found} ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.list_edit
+    |> ListEditing.validate(list_params)
+    |> apply_list_editing(socket)
   end
 
   def handle_event("save_list", %{"list" => list_params}, socket) do
-    case {socket.assigns.workspace.list_edit, ListEdit.target(socket.assigns.workspace.list_edit)} do
-      {%ListEdit{project: %Project{} = project}, {:ok, {:new, parent}, _task_list}} ->
-        case Lists.create_list(project, parent, list_params) do
-          {:ok, _task_list} ->
-            expanded_node_ids =
-              if parent do
-                MapSet.put(socket.assigns.workspace.expanded_node_ids, {:list, parent.id})
-              else
-                socket.assigns.workspace.expanded_node_ids
-              end
+    socket.assigns.workspace.list_edit
+    |> ListEditing.save(list_params)
+    |> apply_list_editing(socket)
+  end
 
-            {:noreply,
-             socket
-             |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
-             |> clear_list_edit()
-             |> refresh_locations()
-             |> Listing.refresh_counts()}
+  defp apply_list_editing({:changed, list_edit}, socket) do
+    {:noreply,
+     socket
+     |> update_workspace(&Workspace.State.put_list_edit(&1, list_edit))
+     |> refresh()}
+  end
 
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_edit_error(socket, changeset)}
+  defp apply_list_editing(:unchanged, socket), do: {:noreply, socket}
 
-          {:error, :not_found} ->
-            {:noreply, socket}
-        end
+  defp apply_list_editing({:created, _task_list, parent}, socket) do
+    expanded_node_ids =
+      if parent do
+        MapSet.put(socket.assigns.workspace.expanded_node_ids, {:list, parent.id})
+      else
+        socket.assigns.workspace.expanded_node_ids
+      end
 
-      {%ListEdit{project: %Project{} = project}, {:ok, {:rename, current_list}, _task_list}} ->
-        case Lists.rename_list(project, current_list, list_params) do
-          {:ok, renamed_list} ->
-            socket = refresh_locations(socket)
+    {:noreply,
+     socket
+     |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
+     |> clear_list_edit()
+     |> refresh_locations()
+     |> Listing.refresh_counts()}
+  end
 
-            selected_list =
-              case socket.assigns.workspace.selected_list do
-                %TaskList{id: id} when id == renamed_list.id -> renamed_list
-                selected -> selected
-              end
+  defp apply_list_editing({:renamed, renamed_list}, socket) do
+    socket = refresh_locations(socket)
 
-            selected_project = socket.assigns.workspace.selected_project
+    selected_list =
+      case socket.assigns.workspace.selected_list do
+        %TaskList{id: id} when id == renamed_list.id -> renamed_list
+        selected -> selected
+      end
 
-            selected_location_path =
-              case {selected_project, selected_list} do
-                {%Project{} = current_project, %TaskList{}} ->
-                  location_path(socket, current_project, selected_list)
+    selected_project = socket.assigns.workspace.selected_project
 
-                _no_selected_list ->
-                  []
-              end
+    selected_location_path =
+      case {selected_project, selected_list} do
+        {%Project{} = current_project, %TaskList{}} ->
+          location_path(socket, current_project, selected_list)
 
-            {:noreply,
-             socket
-             |> update_workspace(
-               &%{&1 | selected_list: selected_list, location_path: selected_location_path}
-             )
-             |> clear_list_edit()
-             |> refresh()
-             |> Listing.refresh()
-             |> Movement.refresh()}
+        _no_selected_list ->
+          []
+      end
 
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_edit_error(socket, changeset)}
-
-          {:error, :not_found} ->
-            {:noreply, socket}
-        end
-
-      _invalid_form ->
-        {:noreply, socket}
-    end
+    {:noreply,
+     socket
+     |> update_workspace(
+       &%{&1 | selected_list: selected_list, location_path: selected_location_path}
+     )
+     |> clear_list_edit()
+     |> refresh()
+     |> Listing.refresh()
+     |> Movement.refresh()}
   end
 
   defp put_project_validation(socket, params) do
@@ -609,74 +595,6 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
       {parsed, ""} when parsed > 0 -> {:ok, parsed}
       _invalid -> :error
     end
-  end
-
-  defp parent_id_param(params), do: Map.get(params, "parent-id", Map.get(params, "parent_id", ""))
-  defp list_id_param(params), do: Map.get(params, "list-id", Map.get(params, "list_id"))
-
-  defp action_project(socket, params) do
-    project_id = Map.get(params, "project-id", Map.get(params, "project_id"))
-
-    case {socket.assigns.workspace.selected_project, project_id} do
-      {%Project{} = project, nil} ->
-        project
-
-      {%Project{id: id} = project, requested_id} when requested_id == id ->
-        project
-
-      {%Project{id: id} = project, requested_id} ->
-        if to_string(requested_id) == Integer.to_string(id), do: project, else: nil
-
-      _other ->
-        nil
-    end
-  end
-
-  defp open_new_list_form(socket, project, parent_id) do
-    case resolve_parent_list(project, parent_id) do
-      {:ok, parent} ->
-        {:noreply,
-         socket
-         |> update_workspace(
-           &Workspace.State.put_list_edit(&1, ListEdit.open_new(project, parent))
-         )
-         |> refresh()}
-
-      :error ->
-        {:noreply, socket}
-    end
-  end
-
-  defp open_rename_list_form(socket, project, list_id) do
-    case Lists.get_list_for_project(project, list_id) do
-      %TaskList{} = task_list ->
-        {:noreply,
-         socket
-         |> update_workspace(
-           &Workspace.State.put_list_edit(&1, ListEdit.open_rename(project, task_list))
-         )
-         |> refresh()}
-
-      nil ->
-        {:noreply, socket}
-    end
-  end
-
-  defp resolve_parent_list(_project, parent_id) when parent_id in [nil, ""], do: {:ok, nil}
-
-  defp resolve_parent_list(project, parent_id) do
-    case Lists.get_list_for_project(project, parent_id) do
-      %TaskList{} = parent -> {:ok, parent}
-      nil -> :error
-    end
-  end
-
-  defp assign_list_edit_error(socket, changeset) do
-    socket
-    |> update_workspace(
-      &Workspace.State.put_list_edit(&1, ListEdit.put_error(&1.list_edit, changeset))
-    )
-    |> refresh()
   end
 
   defp clear_list_edit(socket) do
