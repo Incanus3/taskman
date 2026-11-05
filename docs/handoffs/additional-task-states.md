@@ -1,7 +1,7 @@
 # Additional Task states
 
 Status: active
-Updated: 2026-11-04
+Updated: 2026-11-05
 Resume: `$resume additional-task-states`
 
 ## Objective and checkpoint
@@ -12,10 +12,16 @@ catalogue, compact persisted snapshots, shared Project locations, contextual fil
 in-picker reveal, delayed accessible descriptions and API/CLI parity are implemented.
 
 All seven implementation children are independently accepted. Final session-scoped integration
-review of `0f4144f..38a6b104` approved with no findings. The final implementation checkpoint is
-`b2ab2550`; later local commits finalize documentation and continuation state. The completed plan
-has been harvested into product/spec/CLI owners and removed. Tracker references retain its approved
+review of `0f4144f..38a6b104` approved with no findings. The feature implementation checkpoint is
+`b2ab2550`; subsequent local commits finalize documentation and the review correction below.
+The completed plan has been harvested into product/spec/CLI owners and removed. Tracker references retain its approved
 historical revision. No push, merge or deployment was performed.
+
+Review correction on 2026-11-05 refactored the shared SelectPicker into cohesive helpers without
+changing its contracts. All 66 functions/callbacks span at most 14 physical lines. The browser
+baseline passed 11 tests; the refactored picker/detail gates passed 24 tests, and bounded
+`mix precommit` passed 1,452 tests with 3 skipped and 60 browser exclusions. Independent scoped
+review accepted behavior preservation and readability with no findings.
 
 ## Tracker and acceptance gates
 
