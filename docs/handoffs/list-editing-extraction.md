@@ -13,25 +13,32 @@ is recorded in the [workflow decomposition specification](../specs/2026-09-03-pr
 `ListEdit` retains state and fresh target lookup. Workspace applies editor outcomes and owns
 parent expansion, selected paths, topology refreshes, counts and movement refresh order.
 
+The approved follow-up fixes blank rename validation/submission and bounds default test
+concurrency to the configured pool. The concurrency contract is in the
+[development guide](../guides/development.md#verification-expectations).
+
 ## Verification and remaining sequence
 
 - Ten new direct tests were observed failing before implementation, then passing.
 - The new tests and existing List editor, List LiveView, workspace and workspace-update tests
   passed together: 72 tests, using `--max-cases 16`.
-- `mix precommit --max-cases 16` passed: 1,469 passed, 3 skipped, 60 browser tests excluded.
+- Four blank-rename regressions reproduced `String.trim(nil)` before the nil-safe normalization
+  fix; the context and List LiveView suite then passed all 48 tests. Nil, empty and whitespace
+  names now produce required-name errors. The editor and persisted name survive invalid
+  validation/submission, and a corrected trimmed name saves successfully.
+- Startup checks confirmed concurrency 16 by default, 7 with `TEST_DATABASE_POOL_SIZE=7`,
+  3 with explicit `--max-cases 3`, and 1 with `--trace`.
+- Ordinary `mix precommit` passed: 1,473 passed, 3 skipped, 60 browser tests excluded.
   Formatting and scoped whitespace checks passed. Browser verification was not run for this
   server-side extraction.
 - Independent review compared the extracted code with the removed handlers and checked
   relevant existing state/context and LiveView coverage; no scoped findings. The review
-  assessed recorded test evidence without repeating the suite.
+  assessed recorded test evidence without repeating the suite. Separate independent review
+  of the two follow-up fixes also found no issues.
 - Implementation is locally committed as `e9d5a13f34ccd04f704cd132ecc2b520faaecb60`.
+  Follow-up fixes are locally committed as `1161e749a26b34e476059d33a9b7e810a496ed7e`.
   Next: obtain operator acceptance of the verified extraction and acknowledgement of the ruling below.
   Retire this handoff only after those gates. No publication is authorized.
-
-Known limitation: existing blank rename submissions and validation can raise in
-`TaskList.changeset/2` because Ecto coerces blank names to nil before `String.trim/1`.
-This extraction preserves that behavior. Blank creation errors and duplicate rename errors
-are covered; fixing the shared changeset would require a separate scope decision.
 
 ## Rulings awaiting acknowledgement
 
