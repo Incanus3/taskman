@@ -638,6 +638,45 @@ defmodule TaskmanWeb.ProjectLive.ListsTest do
     refute has_element?(view, "#list-rename-form-#{root.id}")
   end
 
+  test "a blank List rename retains its editor and saved name until corrected", %{conn: conn} do
+    project = project_fixture(%{})
+    task_list = list_fixture(project, nil, %{name: "Planning"})
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{task_list.id}")
+
+    view |> element("#rename-list-#{task_list.id}") |> render_click()
+
+    view
+    |> form("#list-rename-form-#{task_list.id}", list: %{name: ""})
+    |> render_change()
+
+    assert has_element?(view, "#list-rename-form-#{task_list.id}")
+    assert has_element?(view, "#list-rename-form-#{task_list.id} [data-role='field-error']")
+    assert has_element?(view, "#list-name[value='']")
+    assert has_element?(view, "#list-#{task_list.id}[aria-current='page']")
+    assert has_element?(view, "#location-heading", "Planning")
+    assert Lists.get_list_for_project(project, task_list.id).name == "Planning"
+
+    view
+    |> form("#list-rename-form-#{task_list.id}", list: %{name: ""})
+    |> render_submit()
+
+    assert has_element?(view, "#list-rename-form-#{task_list.id}")
+    assert has_element?(view, "#list-rename-form-#{task_list.id} [data-role='field-error']")
+    assert has_element?(view, "#list-name[value='']")
+    assert has_element?(view, "#list-#{task_list.id}[aria-current='page']")
+    assert has_element?(view, "#location-heading", "Planning")
+    assert Lists.get_list_for_project(project, task_list.id).name == "Planning"
+
+    view
+    |> form("#list-rename-form-#{task_list.id}", list: %{name: "  Roadmap  "})
+    |> render_submit()
+
+    refute has_element?(view, "#list-rename-form-#{task_list.id}")
+    assert has_element?(view, "#list-#{task_list.id}[aria-current='page']", "Roadmap")
+    assert has_element?(view, "#location-heading", "Roadmap")
+    assert Lists.get_list_for_project(project, task_list.id).name == "Roadmap"
+  end
+
   test "renaming a List with a duplicate sibling name keeps its form and selection", %{
     conn: conn
   } do
