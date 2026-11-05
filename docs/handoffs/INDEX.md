@@ -2,6 +2,8 @@
 
 This is the complete index of current repository handoffs.
 
+- [List editing extraction](list-editing-extraction.md) — active — Implemented, independently reviewed and locally verified; operator acceptance and ruling acknowledgement pending — `$resume list-editing-extraction`
+
 - [Project editing extraction](project-editing-extraction.md) — active — Implemented, independently reviewed and locally verified; operator acceptance pending — `$resume project-editing-extraction`
 
 - [Additional Task states](additional-task-states.md) — active — Implemented and independently reviewed; operator acceptance and ruling acknowledgement pending — `$resume additional-task-states`

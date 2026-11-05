@@ -3,7 +3,7 @@
 ## Status
 
 Implemented and verified; the missing-location recovery workstream remains separately gated.
-Updated: 2026-09-19.
+Updated: 2026-11-05.
 
 ## Context
 
@@ -108,6 +108,7 @@ lib/taskman_web/live/
     workspace.ex
     reconciliation.ex
     list_edit.ex
+    list_editing.ex
     tasks/
       listing.ex
       creation.ex
@@ -215,8 +216,24 @@ validation, persisted attribute selection, and persistence-error translation. It
 state or an explicit creation/update outcome; it never calls `Workspace`. `Workspace` retains
 modal lifecycle, preset-event guards, selected-Project assignment, page title, streams, and route
 patches. This isolates editing policy without coupling the collaborator to workspace state or
-introducing callbacks. List editing remains coordinated here because its successful mutations
-also affect navigation topology, selected paths, counts, and movement destinations.
+introducing callbacks.
+
+List opening, validation, and submission delegate to `ListEditing`, another socket-free workflow.
+It consumes the selected Project and action parameters when opening, and the existing `ListEdit`
+state plus submitted attributes when validating or saving. It preserves active-Project action
+guards and fresh scoped target lookup through `ListEdit` and the public `Lists` context. Results
+are changed editor state, an unchanged outcome, or explicit creation/rename outcomes carrying
+the persisted List and, for creation, its parent. Changeset errors remain on the editor; missing
+targets remain no-ops.
+
+`Workspace` applies those outcomes. Creation expands the parent, clears the editor, refreshes
+canonical locations, then refreshes counts. Rename refreshes locations, updates selected List
+metadata and its path, clears the editor, then refreshes navigation, Listing, and Movement in
+that order. Cancellation and external editor reconciliation also stay in `Workspace`.
+`ListEditing` never receives a socket or calls back into workspace coordination. This follows
+the Project editing boundary instead of moving socket handlers wholesale, which would couple
+the new collaborator to topology, streams and other workflows. The cost is retaining explicit
+outcome application in `Workspace`; that code expresses its coordination responsibility.
 
 `Workspace.State` groups workspace-local assigns. Its transformations include:
 
@@ -417,6 +434,8 @@ Workspace
   ├── Tasks.Listing
   └── Tasks.Movement
 
+Workspace → ListEditing → ListEdit / public Lists context
+
 All workflow modules
   ├── Paths
   ├── existing socket-free state modules
@@ -613,6 +632,8 @@ Existing tests are the behavior-preservation baseline:
 - `project_live/project_live_test.exs` covers primary routing, creation, and detail behavior.
 - `project_live/lists_test.exs`, `list_edit_test.exs`, and
   `workspace_updates_test.exs` cover `Workspace`.
+- `project_live/list_editing_test.exs` covers socket-free List editor target resolution,
+  validation, persistence outcomes, and error retention.
 - `project_live/task_table_test.exs` covers `Listing`.
 - `project_live/autosave_test.exs` and `tasks/autosave_test.exs` cover `Editing` and autosave state.
 - `project_live/tasks/parent_picker_test.exs` and component tests cover `ParentSelection`.
