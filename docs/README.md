@@ -45,7 +45,7 @@
 - [Dedicated-host deployment architecture](specs/2026-09-09-dedicated-host-deployment-design.md)
 - [Additive ordinary-UFW convergence (implemented; bounded native scope accepted)](specs/2026-09-30-additive-ufw-design.md)
 - [Operations contracts (artifacts, protocol, recovery and failure evidence)](specs/2026-09-18-operations-contracts.md)
-- [Operations admission and provisioning recovery (written design awaiting approval; separate post-merge workstream)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
+- [Operations admission and provisioning recovery (Not Planned; retained unimplemented proposal)](specs/2026-09-18-provisioning-lock-coverage-proposal.md)
 - [Operations CLI progress and outcomes (proposed)](specs/2026-09-09-operations-cli-ux-design.md)
 
 ## Handoffs

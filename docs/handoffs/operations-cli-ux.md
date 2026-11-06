@@ -30,9 +30,9 @@ without conversion of old staging formats.
 Current provision discovers the host before target resolution/build but decrypts secrets first.
 Credential-free completed-install refusal and presentation remain proposed. The specification
 owns the historical incident and presentation architecture; documentation checks do not verify UX.
-The separate [lock-coverage workstream](operations-lock-coverage.md) is parked for its own
-dedicated branch after the operations merge. No PostgreSQL refactor or
-host changes are authorized here.
+The separate [lock-coverage proposal](../specs/2026-09-18-provisioning-lock-coverage-proposal.md)
+is Not Planned and retained for possible reconsideration. No PostgreSQL refactor or host changes
+are authorized here.
 
 ## Next actions when selected after the operations merge
 

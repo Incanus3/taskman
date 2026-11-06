@@ -103,8 +103,8 @@ Implemented baseline, observed on 2026-09-18:
 Identified source, artifact, native and CI evidence is retained privately; the
 [native acceptance guide](../guides/native-acceptance.md) defines portable criteria. Historical incident identities above do not establish acceptance
 of the current source or the proposed UX. The separate
-[lock-coverage proposal](2026-09-18-provisioning-lock-coverage-proposal.md) belongs to its [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md);
-early UX inspection does not itself serialize provisioning convergence.
+[lock-coverage proposal](2026-09-18-provisioning-lock-coverage-proposal.md) is Not Planned and
+retained for reconsideration; early UX inspection does not itself serialize provisioning convergence.
 
 The lock pins pyinfra **3.10.0**. Installed-source inspection established:
 

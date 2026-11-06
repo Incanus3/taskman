@@ -1301,10 +1301,9 @@ obsolete executable by a trusted administrator are outside the normal scheduler 
 Keep orchestration in the controller and lifecycle mutation in the host-side helper; add no generic
 workflow engine. Controller-driven provisioning resource/database/runtime convergence is an existing
 exception and currently runs outside the lifecycle lock. Fresh confirmation checks are not
-serialization. The approved [coverage direction](2026-09-18-provisioning-lock-coverage-proposal.md)
-has an independently reviewed written design awaiting full design/plan approval and implementation
-in the [dedicated post-merge workstream](../handoffs/operations-lock-coverage.md); it does not block
-the current operations merge and is not current behavior.
+serialization. The [coverage proposal](2026-09-18-provisioning-lock-coverage-proposal.md) is
+Not Planned and retained for reconsideration. Its earlier direction and technical review do not
+establish implementation or a current whole-provision coordination guarantee.
 The transient controller/helper use protocol version 3. Retain envelope,
 correlation and redaction rules; use the explicit collection and byte budgets below. Old transient protocol requests refuse; the
 controller always transfers its matching helper. Future persisted-format compatibility is a
