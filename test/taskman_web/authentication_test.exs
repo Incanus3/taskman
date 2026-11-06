@@ -186,6 +186,16 @@ defmodule TaskmanWeb.AuthenticationTest do
 
     assert redirected_to(conn) == "/projects/42"
     assert is_binary(get_session(conn, :user_token))
+
+    assert %{value: cookie, max_age: 2_592_000, http_only: true, same_site: "Lax"} =
+             conn.resp_cookies["_taskman_key"]
+
+    fresh_conn =
+      build_conn()
+      |> put_req_header("cookie", "_taskman_key=" <> cookie)
+      |> get("/")
+
+    assert to_string(fresh_conn.assigns.current_user.email) == email
   end
 
   test "a rejected password sign-in retains the generic credential response", %{conn: conn} do

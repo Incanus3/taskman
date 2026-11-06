@@ -21,6 +21,8 @@ deferred to a separate accepted design.
 - Authentication is an application-wide access gate. Projects, Lists, and Tasks are not owned or
   filtered by user, and the MVP has no collaboration permissions or Task-edit attribution. Explicit
   Task comments record the authenticated posting account as described below.
+- Browser sign-in uses a persistent cookie that survives browser restarts for up to 30 days.
+  Authentication tokens expire 30 days after issuance; browser activity does not extend them.
 - Taskman can run as an OTP release behind an HTTPS reverse proxy on a dedicated server.
 
 ## 3. Core domain model
