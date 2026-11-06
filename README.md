@@ -5,6 +5,48 @@ provisioned users can use its LiveView browser interface and API-key-authenticat
 arbitrary clients; Taskman does not assign ownership or permissions to individual domain
 records. The MVP product definition and delivery context live in [the project documentation](docs/README.md).
 
+## A look inside
+
+Screenshots below show the running application with fictional demo data.
+
+### Browse Projects, Lists, and task trees
+
+Organize work into Projects and nested Lists. Expand subtasks in place, include child Lists in the
+current view, filter by status, and sort the task table. Status and priority indicators and task
+counts help you scan work without opening each Task.
+
+![Project task table with nested Lists, expanded subtasks, statuses, and priorities](docs/images/workspace.png)
+
+### Keep task context together
+
+Edit a Task's description, status, priority, and due date while navigating its parent-child hierarchy.
+Use Blocks / Blocked by links for prerequisites, including across Projects, and discuss the work in
+an append-only comment thread. Marking a Task Done with unresolved blockers asks for explicit
+confirmation; relationships never change statuses automatically.
+
+![Task detail with parent-child hierarchy, editable fields, a blocking dependency, and comments](docs/images/task-detail.png)
+
+### Jump straight to a Task
+
+Search Tasks across Projects by ID or title from the top bar. Results include their Project/List
+location, status, and priority, and open directly into task detail. Share links to Tasks or the
+current filtered task view to help others find the same context.
+
+![Global task search showing matching Tasks with their locations, statuses, and priorities](docs/images/task-search.png)
+
+### Browser, CLI, and API
+
+- **Live updates:** connected browser views refresh as shared workspace data changes.
+- **Programmatic access:** a versioned JSON API and the `taskman` CLI support Project, List, Task,
+  relationship, and comment operations, with readable output or JSON for automation.
+- **Agent tooling:** built-in onboarding, an installable CLI skill, and Bash/Fish completions.
+- **Authenticated access:** invitation-based accounts, revocable browser sessions, and expiring API
+  keys. All active users share the same workspace; domain records have no per-user permissions.
+
+See [the product specification](docs/product/mvp-spec.md) for the full behavior and scope.
+
+## Deployment
+
 For a dedicated HTTPS host, use the repository-owned `./ops/taskman` automation and follow the
 self-contained [deployment runbook](docs/guides/deployment.md). It provisions and operates the supported
 Ubuntu host while retaining Taskman's OTP release, Caddy, systemd, and loopback PostgreSQL
