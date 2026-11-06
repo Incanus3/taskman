@@ -17,17 +17,19 @@ Hex packages were refreshed to current stable versions except the existing Cinde
 pin. Assent is explicitly overridden to 0.3.2; the updated Hex audit reports no advisories or
 retirements. Python lock updates include Pydantic, pydantic-core and typing-inspection.
 The npm package, Heroicons and daisyUI are already current. Tailwind is updated to 4.3.4 and
-CI to Elixir 1.20.5 / OTP 29.1.2 and PostgreSQL 18.6.
+CI to Elixir 1.20.5 / OTP 29.1.2 / Alpine 3.24.4 and PostgreSQL 18.6.
 
 The [release toolchain contract](../specs/2026-09-09-dedicated-host-deployment-design.md#build-and-artifact-identity)
 owns current pins and prior-toolchain compatibility. Runtime implementation and independent
 compatibility review are complete. The full operations suite passed 2,809 tests, with 22 optional
-tests skipped; actual release build evidence is pending.
+tests skipped. The clean source checkpoint `8339f64e9867cd870c3d1450891450a1b42fc231` built
+successfully with the new toolchain; archive, checksum, manifest and cache reuse were validated,
+and both packaged credential-prompt tests passed against the extracted release.
 
 ## Remaining sequence
 
-1. Build the clean source checkpoint on the new toolchain and run the packaged credential-prompt
-   test against the extracted release. Retain explicit audit limitations.
+1. Commit the final CI image/documentation checkpoint. Production inputs are unchanged from the
+   verified release build; retain explicit audit limitations.
 2. Refresh remote target state, publish and land under the existing operator authorization;
    confirm CI and build the exact landed source before deployment.
 3. Obtain the deployment environment selection; inspect host/release/backup state and dry-run.
@@ -45,7 +47,8 @@ tests skipped; actual release build evidence is pending.
   The rebuilt executable subsequently passed all three smoke tests. Focused CLI suite: 299 passed,
   three executable cases skipped before the separately rebuilt executable gate.
 - `mix hex.audit`: clean after package update. `npm audit`: zero vulnerabilities.
-- Python compileall and shell syntax checks passed. Full operations suite: 2,809 passed, 22
+- Clean release build, complete artifact validation, exact-input cache reuse, and two packaged
+  credential-prompt tests passed. Python compileall and shell syntax checks passed. Full operations suite: 2,809 passed, 22
   skipped, 176 warnings (including existing gevent/fork and PTY warnings).
 - `uv audit --locked` still flags Paramiko 4.0.0, CVE-2026-44405. A fixed Paramiko 5.x release
   exists, but stable pyinfra 3.10.0 requires Paramiko and types-paramiko below 5. This is a

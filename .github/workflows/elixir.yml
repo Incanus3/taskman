@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-26.04
     container:
       # OTP 29.1 includes the Alpine x64 signal-stack fix from erlang/otp#11376.
-      image: hexpm/elixir:1.20.5-erlang-29.1.2-alpine-3.24.3
+      image: hexpm/elixir:1.20.5-erlang-29.1.2-alpine-3.24.4
     env:
       POSTGRES_HOST: postgres
     services:
