@@ -5,7 +5,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
   alias Taskman.CLI.Registry
   alias Taskman.CLI.Registry.Command
 
-  @lifecycle_values ~w(icebox pending in_progress in_review done not_planned will_not_do)
+  @lifecycle_values ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
   @priority_values ~w(none low medium high urgent)
 
   @tag :tmp_dir
@@ -56,10 +56,10 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
 
     for command <- ~w(create update list) do
       assert bash_query(bash, ["taskman", "tasks", command, "--status", ""]) ==
-               ~w(icebox pending in_progress in_review done not_planned will_not_do)
+               ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
 
       assert Enum.sort(fish_query(fish, "taskman tasks #{command} --status ")) ==
-               ~w(done icebox in_progress in_review not_planned pending will_not_do)
+               ~w(done icebox in_analysis in_progress in_review not_planned pending will_not_do)
     end
   end
 
@@ -335,6 +335,7 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
     File.write!(bash_path, Completions.bash())
 
     assert bash_query(bash_path, ["taskman", "tasks", "create", "--status=in_"]) == [
+             "--status=in_analysis",
              "--status=in_progress",
              "--status=in_review"
            ]

@@ -229,7 +229,8 @@ defmodule Taskman.CLI.Execution.ParserTest do
   end
 
   test "accepts the complete lifecycle vocabulary for create, update and list" do
-    for status <- ~w(icebox pending in_progress in_review done not_planned will_not_do) do
+    for status <-
+          ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do) do
       for args <- [~w(tasks create --title Work), ~w(tasks update 42), ~w(tasks list)] do
         assert {:ok, invocation} = Parser.parse(args ++ ["--status", status], %{})
 

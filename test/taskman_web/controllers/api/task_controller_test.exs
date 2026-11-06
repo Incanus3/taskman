@@ -382,6 +382,38 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert Tasks.get_task_for_project(project, task.id).status == :not_planned
   end
 
+  test "In Analysis is accepted by create, update and explicit list filters", %{conn: conn} do
+    project = project_fixture(%{})
+    collection = "/api/v1/projects/#{project.id}/tasks"
+
+    assert %{"data" => %{"id" => id, "status" => "in_analysis"}} =
+             conn
+             |> post(collection, %{
+               "task" => %{"title" => "Investigate work", "status" => "in_analysis"}
+             })
+             |> json_response(201)
+
+    task = task_fixture(project)
+
+    assert %{"data" => %{"status" => "in_analysis"}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "in_analysis"}})
+             |> json_response(200)
+
+    assert %{"data" => tasks} =
+             conn |> get(collection <> "?statuses[]=in_analysis") |> json_response(200)
+
+    assert Enum.sort(Enum.map(tasks, & &1["id"])) == Enum.sort([id, task.id])
+    assert Enum.all?(tasks, &(&1["status"] == "in_analysis"))
+
+    assert %{"error" => %{"code" => "validation_failed", "fields" => %{"status" => [_]}}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "unknown"}})
+             |> json_response(422)
+
+    assert Tasks.get_task_for_project(project, task.id).status == :in_analysis
+  end
+
   test "POST creates a Task in a List with every editable field", %{conn: conn} do
     project = project_fixture(%{})
     root = list_fixture(project, %{name: "Planning"})
@@ -521,7 +553,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
            } = json_response(conn, 422)
   end
 
-  for state <- [:not_planned, :will_not_do] do
+  for state <- [:in_analysis, :not_planned, :will_not_do] do
     test "PATCH Done requires confirmation for a #{state} blocker", %{conn: conn} do
       project = project_fixture(%{})
 

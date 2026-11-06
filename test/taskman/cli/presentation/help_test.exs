@@ -54,7 +54,7 @@ defmodule Taskman.CLI.Presentation.HelpTest do
   end
 
   test "Task status help exposes the complete lifecycle in canonical order" do
-    values = "icebox|pending|in_progress|in_review|done|not_planned|will_not_do"
+    values = "icebox|pending|in_analysis|in_progress|in_review|done|not_planned|will_not_do"
 
     for command <- ~w(create update list) do
       assert Help.render(["tasks", command]) =~ "--status STATUS (#{values})"

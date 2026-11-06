@@ -3,7 +3,16 @@ defmodule Taskman.Tasks.StatusTest do
 
   alias Taskman.Tasks.{Status, Task}
 
-  @values [:icebox, :pending, :in_progress, :in_review, :done, :not_planned, :will_not_do]
+  @values [
+    :icebox,
+    :pending,
+    :in_analysis,
+    :in_progress,
+    :in_review,
+    :done,
+    :not_planned,
+    :will_not_do
+  ]
 
   test "catalogue defines the canonical order and independent lifecycle classifications" do
     assert Status.values() == @values
@@ -18,20 +27,30 @@ defmodule Taskman.Tasks.StatusTest do
              :will_not_do
            ]
 
-    assert Status.additional_values() == [:not_planned]
-    assert Status.initial_listing_values() == [:icebox, :pending, :in_progress, :in_review]
-    assert Status.open_values() == [:icebox, :pending, :in_progress, :in_review]
+    assert Status.additional_values() == [:in_analysis, :not_planned]
+
+    assert Status.initial_listing_values() == [
+             :icebox,
+             :pending,
+             :in_analysis,
+             :in_progress,
+             :in_review
+           ]
+
+    assert Status.open_values() == [:icebox, :pending, :in_analysis, :in_progress, :in_review]
     assert %Task{}.status == :pending
 
     for {state, rank} <- Enum.with_index(@values) do
       definition = Status.definition(state)
       assert Status.rank(state) == rank
-      assert definition.additional? == (state == :not_planned)
+      assert definition.additional? == state in [:in_analysis, :not_planned]
 
       assert definition.initially_selected? ==
-               state in [:icebox, :pending, :in_progress, :in_review]
+               state in [:icebox, :pending, :in_analysis, :in_progress, :in_review]
 
-      assert definition.open? == state in [:icebox, :pending, :in_progress, :in_review]
+      assert definition.open? ==
+               state in [:icebox, :pending, :in_analysis, :in_progress, :in_review]
+
       assert definition.resolves_blocker? == (state == :done)
       assert Status.resolves_blocker?(state) == (state == :done)
     end
@@ -46,6 +65,8 @@ defmodule Taskman.Tasks.StatusTest do
       {:icebox, "Icebox", "Intentionally deferred work that is not currently ready to begin.",
        :sky},
       {:pending, "Pending", "Work that is ready to be started.", :amber},
+      {:in_analysis, "In Analysis",
+       "Work being investigated or clarified before implementation begins.", :violet},
       {:in_progress, "In Progress",
        "Work actively being performed by a person, an external agent, or both.", :red},
       {:in_review, "In Review", "Work awaiting human assessment before it can be completed.",

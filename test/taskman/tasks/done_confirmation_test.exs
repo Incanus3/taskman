@@ -44,7 +44,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     assert Tasks.get_task_for_project(project, indirect.id).status == :pending
   end
 
-  for state <- [:not_planned, :will_not_do] do
+  for state <- [:in_analysis, :not_planned, :will_not_do] do
     test "#{state} remains unresolved and requires explicit Done confirmation" do
       project = project_fixture(%{})
 

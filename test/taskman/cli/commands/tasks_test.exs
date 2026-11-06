@@ -190,6 +190,43 @@ defmodule Taskman.CLI.Commands.TasksTest do
     assert result.stderr == ""
   end
 
+  test "In Analysis: lists Tasks with repeated status filters and field sorting query parameters" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/api/v1/projects/7/tasks"
+
+      assert conn.query_params == %{
+               "statuses" => ["pending", "in_analysis"],
+               "sort" => "title",
+               "direction" => "asc"
+             }
+
+      Req.Test.json(conn, %{data: []})
+    end)
+
+    result =
+      Taskman.CLI.Fixtures.run_with_host(
+        [
+          "tasks",
+          "list",
+          "--project",
+          "7",
+          "--status",
+          "pending",
+          "--status",
+          "in_analysis",
+          "--sort",
+          "title",
+          "--direction",
+          "asc"
+        ],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0, result.stderr
+    assert result.stderr == ""
+  end
+
   test "tasks list rejects malformed collection members as an invalid response" do
     Req.Test.expect(TaskCommands, fn conn ->
       Req.Test.json(conn, %{
@@ -356,6 +393,64 @@ defmodule Taskman.CLI.Commands.TasksTest do
     assert %{"data" => %{"id" => 42}} = Jason.decode!(result.stdout)
   end
 
+  test "In Analysis: creates a task with every present field, including an explicit empty description" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "POST"
+      assert conn.request_path == "/api/v1/projects/7/tasks"
+
+      assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
+               "task" => %{
+                 "title" => "Prepare launch",
+                 "description" => "",
+                 "status" => "in_analysis",
+                 "priority" => "urgent",
+                 "due_at" => "2026-08-29T12:00:00",
+                 "list_id" => 11
+               }
+             }
+
+      conn
+      |> Plug.Conn.put_status(201)
+      |> Req.Test.json(%{
+        data:
+          task_response(%{
+            description: "",
+            status: "in_analysis",
+            priority: "urgent",
+            due_at: "2026-08-29T12:00:00"
+          })
+      })
+    end)
+
+    result =
+      Taskman.CLI.Fixtures.run_with_host(
+        [
+          "tasks",
+          "create",
+          "--project",
+          "7",
+          "--title",
+          "Prepare launch",
+          "--description",
+          "",
+          "--status",
+          "in_analysis",
+          "--priority",
+          "urgent",
+          "--due-at",
+          "2026-08-29T12:00:00",
+          "--list",
+          "11",
+          "--json"
+        ],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0
+    assert result.stderr == ""
+    assert %{"data" => %{"id" => 42}} = Jason.decode!(result.stdout)
+  end
+
   test "creates a project-root task while omitting absent optional fields" do
     Req.Test.expect(TaskCommands, fn conn ->
       assert conn.method == "POST"
@@ -450,6 +545,45 @@ defmodule Taskman.CLI.Commands.TasksTest do
     assert result.stderr == ""
 
     assert %{"data" => %{"status" => "not_planned", "due_at" => nil}} =
+             Jason.decode!(result.stdout)
+  end
+
+  test "In Analysis: updates selected fields and sends a null due date" do
+    Req.Test.expect(TaskCommands, fn conn ->
+      assert conn.method == "PATCH"
+      assert conn.request_path == "/api/v1/projects/7/tasks/42"
+
+      assert conn |> Req.Test.raw_body() |> Jason.decode!() == %{
+               "task" => %{"status" => "in_analysis", "priority" => "urgent", "due_at" => nil}
+             }
+
+      Req.Test.json(conn, %{
+        data: task_response(%{status: "in_analysis", priority: "urgent", due_at: nil})
+      })
+    end)
+
+    result =
+      Taskman.CLI.Fixtures.run_with_host(
+        [
+          "tasks",
+          "update",
+          "--project",
+          "7",
+          "42",
+          "--status",
+          "in_analysis",
+          "--priority",
+          "urgent",
+          "--clear-due-at",
+          "--json"
+        ],
+        req_options: [plug: {Req.Test, TaskCommands}]
+      )
+
+    assert result.status == 0
+    assert result.stderr == ""
+
+    assert %{"data" => %{"status" => "in_analysis", "due_at" => nil}} =
              Jason.decode!(result.stdout)
   end
 

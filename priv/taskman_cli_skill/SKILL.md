@@ -187,14 +187,15 @@ before changing its status or relationships. Search is navigation, not permissio
 ## Task states
 
 API and CLI accept every real state, regardless of contextual browser visibility. The canonical
-order for selectors and status sorting is Icebox, Pending, In Progress, In Review, Done,
-Not Planned, Will Not Do. Main browser defaults select only the first four; hierarchy filters start
-with all seven checked. Explicit CLI status filters select exactly the supplied states.
+order for selectors and status sorting is Icebox, Pending, In Analysis, In Progress, In Review, Done,
+Not Planned, Will Not Do. Main browser defaults select only the first five; hierarchy filters start
+with all eight checked. Explicit CLI status filters select exactly the supplied states.
 
 | Value | Meaning |
 |---|---|
 | `icebox` | Intentionally deferred work that is not currently ready to begin. |
 | `pending` | Work that is ready to be started. |
+| `in_analysis` | Work being investigated or clarified before implementation begins. |
 | `in_progress` | Work actively being performed by a person, an external agent, or both. |
 | `in_review` | Work awaiting human assessment before it can be completed. |
 | `done` | The terminal state for work a human has reviewed and explicitly accepted as complete. |
@@ -203,6 +204,7 @@ with all seven checked. Explicit CLI status filters select exactly the supplied 
 
 Not Planned, Done and Will Not Do are excluded from open counts; explicitly selected closed states
 participate in visible and eligible counts. State changes never remove blocking relationships.
+In Analysis is additional, open and included in fresh browser filters. It does not resolve blockers.
 Not Planned requires an explicit operator decision, like other closed-state choices.
 
 ```sh

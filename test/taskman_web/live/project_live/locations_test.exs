@@ -5,7 +5,15 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
   alias TaskmanWeb.ProjectLive.Locations
 
   @defaults [:icebox, :pending, :in_progress, :in_review, :done, :will_not_do]
-  @all [:icebox, :pending, :in_progress, :in_review, :done, :not_planned, :will_not_do]
+  @with_not_planned [
+    :icebox,
+    :pending,
+    :in_progress,
+    :in_review,
+    :done,
+    :not_planned,
+    :will_not_do
+  ]
 
   test "direct, ancestor and Project availability use distinct prepared scopes" do
     parent = task_list(10)
@@ -17,12 +25,12 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
     assert Locations.loaded?(model, 1)
     refute Locations.loaded?(model, 2)
     assert Locations.lists(model, 1) == task_lists
-    assert Locations.available(model, 1, 11, :direct) == @all
+    assert Locations.available(model, 1, 11, :direct) == @with_not_planned
     assert Locations.available(model, 1, 10, :direct) == @defaults
-    assert Locations.available(model, 1, 10, :subtree) == @all
+    assert Locations.available(model, 1, 10, :subtree) == @with_not_planned
     assert Locations.available(model, 1, 12, :subtree) == @defaults
     assert Locations.available(model, 1, nil, :direct) == @defaults
-    assert Locations.available(model, 1, nil, :subtree) == @all
+    assert Locations.available(model, 1, nil, :subtree) == @with_not_planned
   end
 
   test "canonical List order follows insertion time with ID ties" do
@@ -42,8 +50,8 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
       |> Locations.load(2, [task_list(20, nil, 2)], %{})
       |> Locations.load(1, [task_list(10)], %{})
 
-    assert Locations.available(model, 1, 10, :direct) == @all
-    assert Locations.available(model, 1, nil, :direct) == @all
+    assert Locations.available(model, 1, 10, :direct) == @with_not_planned
+    assert Locations.available(model, 1, nil, :direct) == @with_not_planned
     assert Locations.available(model, 2, nil, :subtree) == @defaults
     assert Locations.available(model, 2, 10, :direct) == @defaults
     assert Locations.lists(Locations.retain_projects(model, [2]), 1) == []
@@ -61,8 +69,8 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
     moved = %{child | parent_list_id: 12, name: "Moved"}
     model = Locations.reconcile_lists(model, 1, [task_list(10), moved, task_list(12)])
     assert Locations.available(model, 1, 10, :subtree) == @defaults
-    assert Locations.available(model, 1, 12, :subtree) == @all
-    assert Locations.available(model, 1, 11, :direct) == @all
+    assert Locations.available(model, 1, 12, :subtree) == @with_not_planned
+    assert Locations.available(model, 1, 11, :direct) == @with_not_planned
     assert Enum.find(Locations.lists(model, 1), &(&1.id == 11)) == moved
 
     model = Locations.reconcile_lists(model, 1, [task_list(10), task_list(12)])
@@ -81,9 +89,9 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
     assert Locations.lists(model, 1) == [task_list(10)]
     assert Locations.available(model, 1, nil, :subtree) == @defaults
     model = Locations.reconcile_lists(model, 1, [task_list(10), task_list(11, 10)])
-    assert Locations.available(model, 1, 11, :direct) == @all
-    assert Locations.available(model, 1, 10, :subtree) == @all
-    assert Locations.available(model, 1, nil, :subtree) == @all
+    assert Locations.available(model, 1, 11, :direct) == @with_not_planned
+    assert Locations.available(model, 1, 10, :subtree) == @with_not_planned
+    assert Locations.available(model, 1, nil, :subtree) == @with_not_planned
 
     model = Locations.reconcile_lists(model, 1, [task_list(10), task_list(11, 10), task_list(99)])
     assert Locations.available(model, 1, 99, :direct) == @defaults
@@ -95,8 +103,8 @@ defmodule TaskmanWeb.ProjectLive.LocationsTest do
     assert Locations.available(model, 1, nil, :subtree) == @defaults
 
     model = Locations.reconcile_lists(model, 1, [task_list(10), task_list(11, 10)])
-    assert Locations.available(model, 1, 11, :direct) == @all
-    assert Locations.available(model, 1, nil, :subtree) == @all
+    assert Locations.available(model, 1, 11, :direct) == @with_not_planned
+    assert Locations.available(model, 1, nil, :subtree) == @with_not_planned
   end
 
   test "unsupported observations and foreign snapshot keys cannot broaden availability" do

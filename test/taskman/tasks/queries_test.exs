@@ -11,7 +11,17 @@ defmodule Taskman.Tasks.QueriesTest do
 
   test "all supported persisted states sort in canonical order in either direction" do
     project = project_fixture(%{})
-    states = [:icebox, :pending, :in_progress, :in_review, :done, :not_planned, :will_not_do]
+
+    states = [
+      :icebox,
+      :pending,
+      :in_analysis,
+      :in_progress,
+      :in_review,
+      :done,
+      :not_planned,
+      :will_not_do
+    ]
 
     for status <- Enum.reverse(states) do
       assert {:ok, task} = Tasks.create_task(project, %{title: "State #{status}", status: status})

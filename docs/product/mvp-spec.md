@@ -38,7 +38,8 @@ deferred to a separate accepted design.
 
 Tasks may move only between locations in their current Project. A new Task defaults to **Pending**,
 and a user may explicitly select another lifecycle state during creation. Its fixed lifecycle is
-**Icebox → Pending → In Progress → In Review → Done**; In Review may return to Pending or In
+**Icebox → Pending → In Progress → In Review → Done**, with optional **In Analysis** between
+Pending and In Progress for investigation or clarification. In Review may return to Pending or In
 Progress. **Not Planned** is closed work currently considered unnecessary but retained for
 reconsideration. **Will Not Do** is explicitly abandoned or declined work. Explicit assignment to a
 nonterminal Task authorizes bounded agent updates, evidence comments and explicit In Progress/In
@@ -98,12 +99,13 @@ nor external agent work automatically changes Task state.
   [expandable Task listing design](../specs/2026-10-27-expandable-task-listing-design.md).
 - Include child Lists and Statuses persist as browser preferences across navigation. A Share
   control copies the current route with both filters encoded when a reproducible view is needed.
-- Canonical status order for selectors and sorting is Icebox, Pending, In Progress, In Review,
-  Done, Not Planned, Will Not Do. Main defaults select the first four; all three closed states
-  contribute to visible/eligible counts only when explicitly selected. Hierarchy selection starts
+- Canonical status order for selectors and sorting is Icebox, Pending, In Analysis, In Progress,
+  In Review, Done, Not Planned, Will Not Do. Fresh main defaults select the first five; all three
+  closed states contribute to visible/eligible counts only when explicitly selected. Hierarchy selection starts
   with all supported states checked.
-- Not Planned is an additional state. Contextual selectors offer it when observed in the unfiltered
-  owning-location population (with descendant Lists when enabled), or the complete hierarchy tree.
+- In Analysis and Not Planned are additional states. In Analysis is open and initially included;
+  existing explicit saved filters and URL snapshots keep their choices. Contextual selectors offer
+  additional states when observed in the unfiltered owning-location population (with descendant Lists when enabled), or the complete hierarchy tree.
   Form scope is its direct owning List or whole Project without a List. Main/form page observations
   survive state changes and location navigation; reload/remount rebuilds them from current Tasks.
   Hierarchy options follow the complete currently loaded tree. Filter

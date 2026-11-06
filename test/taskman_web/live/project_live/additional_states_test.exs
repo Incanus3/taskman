@@ -16,6 +16,46 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     %{conn: log_in_user(conn, user_fixture())}
   end
 
+  test "fresh listing observes analysis as selected while an explicit old filter excludes it", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
+    open_filter(view)
+    refute has_element?(view, "#task-status-filter-option-in_analysis")
+    task = task_fixture(project, %{status: :in_analysis})
+    assert has_element?(view, "#open-task-#{task.id}")
+    assert has_element?(view, "#task-status-filter-option-in_analysis[checked]")
+
+    {:ok, explicit, _} =
+      live(conn, ~p"/projects/#{project.id}?statuses=icebox,pending,in_progress,in_review")
+
+    open_filter(explicit)
+    assert has_element?(explicit, "#task-status-filter-option-in_analysis")
+    refute has_element?(explicit, "#task-status-filter-option-in_analysis[checked]")
+    refute has_element?(explicit, "#open-task-#{task.id}")
+  end
+
+  test "creation reveal offers both additional states and persists analysis", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")
+    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
+    render_click(view, "reveal_task_creation_states", %{})
+
+    assert has_element?(
+             view,
+             "#task-status-picker[data-visible-values*='in_analysis'][data-visible-values*='not_planned'][data-action='null']"
+           )
+
+    assert has_element?(view, "#task-status option[selected][value='pending']")
+
+    view
+    |> form("#task-form", task: %{title: "Investigate", status: "in_analysis"})
+    |> render_submit()
+
+    assert [%{status: :in_analysis}] = Tasks.list_tasks_for_project(project)
+  end
+
   test "direct Project versus whole Project and List direct versus subtree", %{conn: conn} do
     project = project_fixture(%{})
     parent = list_fixture(project)
@@ -272,7 +312,12 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     {:noreply, opened} = Editing.handle_event("toggle_hierarchy_status_filter", %{}, socket)
     assert opened.assigns.editing.hierarchy.filter_open?
-    assert Hierarchy.filter_statuses(hierarchy, []).visible_statuses == [:not_planned]
+
+    assert Hierarchy.filter_statuses(hierarchy, []).visible_statuses == [
+             :in_analysis,
+             :not_planned
+           ]
+
     {:noreply, opened} = Listing.handle_event("toggle_task_status_filter", %{}, opened)
     assert opened.assigns.listing.filter_open?
 
@@ -425,7 +470,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     assert has_element?(
              view,
-             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+             "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
 
     view
@@ -437,7 +482,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     assert has_element?(
              view,
-             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+             "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
 
     view |> form("#task-form", task: %{title: "Draft", status: "pending"}) |> render_change()
@@ -472,7 +517,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     assert has_element?(
              view,
-             "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
+             "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
   end
 

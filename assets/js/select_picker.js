@@ -130,8 +130,8 @@ const SelectPicker = {
     const visible = JSON.parse(this.el.dataset.visibleValues || "null")
     const metadata = JSON.parse(this.el.dataset.optionMetadata || "{}")
     this.allOptions = JSON.parse(this.el.dataset.options)
-    this.options = this.allOptions.filter(option => !visible || visible.includes(option.value))
       .map(option => ({...option, ...metadata[option.value]}))
+    this.options = this.allOptions.filter(option => !visible || visible.includes(option.value))
     this.action = JSON.parse(this.el.dataset.action || "null")
   },
 
@@ -168,8 +168,19 @@ const SelectPicker = {
   },
 
   renderSelection() {
-    this.el.querySelector("[data-picker-label]").textContent =
-      this.allOptions.find(option => option.value === this.input.value)?.label || ""
+    const selected = this.allOptions.find(option => option.value === this.input.value)
+    const label = this.el.querySelector("[data-picker-label]")
+    label.textContent = selected?.label || ""
+    this.renderLabelColor(label, selected?.text_class)
+  },
+
+  renderLabelColor(label, textClass) {
+    // Only replace classes supplied by trusted option metadata; retain label structure.
+    const previous = label.dataset.optionTextClass
+    if (previous) label.classList.remove(...previous.split(/\s+/))
+    const current = typeof textClass === "string" ? textClass.trim() : ""
+    if (current) label.classList.add(...current.split(/\s+/))
+    label.dataset.optionTextClass = current
   },
 
   open() {
@@ -238,7 +249,9 @@ const SelectPicker = {
     const selected = option.value === this.input.value
     row.dataset.active = String(index === this.active)
     row.setAttribute("aria-selected", String(selected))
-    row.querySelector("[data-option-label]").textContent = option.label
+    const label = row.querySelector("[data-option-label]")
+    label.textContent = option.label
+    this.renderLabelColor(label, option.text_class)
     row.querySelector(".hero-check").hidden = !selected
     row.classList.toggle("bg-indigo-400/15", selected)
     row.classList.toggle("text-indigo-100", selected)
@@ -248,7 +261,7 @@ const SelectPicker = {
   },
 
   renderOptionActive(row, active) {
-    row.classList.toggle("ring-2", active)
+    row.classList.toggle("group-focus-visible/select-options:ring-2", active)
     row.classList.toggle("ring-inset", active)
     row.classList.toggle("ring-indigo-400/50", active)
   },

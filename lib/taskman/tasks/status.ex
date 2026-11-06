@@ -20,6 +20,15 @@ defmodule Taskman.Tasks.Status do
       open?: true,
       resolves_blocker?: false
     },
+    in_analysis: %{
+      label: "In Analysis",
+      description: "Work being investigated or clarified before implementation begins.",
+      color: :violet,
+      additional?: true,
+      initially_selected?: true,
+      open?: true,
+      resolves_blocker?: false
+    },
     in_progress: %{
       label: "In Progress",
       description: "Work actively being performed by a person, an external agent, or both.",
