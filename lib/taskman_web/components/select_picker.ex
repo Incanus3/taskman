@@ -65,7 +65,7 @@ defmodule TaskmanWeb.SelectPicker do
             role="listbox"
             aria-labelledby={@id <> "-label"}
             tabindex="-1"
-            class="min-h-0 space-y-1 overflow-y-auto outline-none"
+            class="group/select-options space-y-1 outline-none"
           >
           </div>
         </div>
@@ -74,7 +74,7 @@ defmodule TaskmanWeb.SelectPicker do
             type="button"
             role="option"
             tabindex="-1"
-            class="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+            class="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           >
             <span data-option-label></span>
             <.icon name="hero-check" class="size-4 shrink-0 self-center text-indigo-300" />

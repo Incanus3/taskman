@@ -12,7 +12,7 @@ for responsive layout, selection, manual expansion, recovery and focus. The
 [comment contract](2026-09-26-task-comments-design.md) retains departure/draft behavior.
 
 > **Superseded in part:** The [additional Task states
-> contract](2026-11-01-additional-task-states-design.md) extends the vocabulary to seven states and
+> contract](2026-11-01-additional-task-states-design.md) extends the vocabulary and
 > supersedes unconditional option display with contextual availability. All supported states start
 > checked; absent preferences survive within the dialog. Availability is prepared before rendering.
 > Display filtering, sorting and selected-location path lookup use the loaded tree during rendering;

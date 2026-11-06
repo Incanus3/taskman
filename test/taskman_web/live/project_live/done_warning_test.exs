@@ -10,7 +10,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
   setup %{conn: conn}, do: {:ok, conn: log_in_user(conn, user_fixture())}
 
-  for state <- [:not_planned, :will_not_do] do
+  for state <- [:in_analysis, :not_planned, :will_not_do] do
     test "Done warns for a #{state} blocker until confirmed", %{conn: conn} do
       project = project_fixture(%{})
       task = task_fixture(project)

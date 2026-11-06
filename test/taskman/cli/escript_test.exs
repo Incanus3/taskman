@@ -61,12 +61,15 @@ defmodule Taskman.CLI.EscriptTest do
 
     for leaf <- ~w(create update list) do
       assert {help, 0} = command(fixture, ["tasks", leaf, "--help"])
-      assert help =~ "icebox|pending|in_progress|in_review|done|not_planned|will_not_do"
+
+      assert help =~
+               "icebox|pending|in_analysis|in_progress|in_review|done|not_planned|will_not_do"
     end
 
     for shell <- ~w(bash fish) do
       assert {completion, 0} = command(fixture, ["completions", shell])
       assert completion =~ "not_planned"
+      assert completion =~ "in_analysis"
     end
 
     {error, 2} =

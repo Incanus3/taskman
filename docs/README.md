@@ -13,7 +13,7 @@
 
 ## Specifications
 
-- [Additional Task states and Not Planned (implemented and operator accepted; local verification limits recorded)](specs/2026-11-01-additional-task-states-design.md)
+- [Additional Task states, In Analysis and Not Planned (implemented and operator accepted; local verification limits recorded)](specs/2026-11-01-additional-task-states-design.md)
 - [Upload staging outside deployment records (implemented and operator accepted; native evidence remains limited to the earlier relocation)](specs/2026-10-30-upload-staging-design.md)
 - [Modal-local hierarchy status filter (implemented and operator accepted)](specs/2026-10-28-hierarchy-status-filter-design.md)
 - [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)

@@ -6,7 +6,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferencesTest do
   test "defaults select only unclosed tasks" do
     assert Preferences.defaults() == %{
              include_children: false,
-             statuses: [:icebox, :pending, :in_progress, :in_review]
+             statuses: [:icebox, :pending, :in_analysis, :in_progress, :in_review]
            }
   end
 
@@ -16,6 +16,21 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferencesTest do
     assert saved.statuses == [:done]
     assert Preferences.apply_hydration(defaults, %{"statuses" => []}).statuses == []
     assert Preferences.apply_route(saved, %{"statuses" => "pending"}).statuses == [:pending]
+  end
+
+  test "fresh defaults include analysis but explicit saved and route snapshots keep their choices" do
+    defaults = Preferences.defaults()
+    assert :in_analysis in defaults.statuses
+    old = ["icebox", "pending", "in_progress", "in_review"]
+
+    assert Preferences.apply_hydration(defaults, %{"statuses" => old}).statuses ==
+             [:icebox, :pending, :in_progress, :in_review]
+
+    assert Preferences.apply_route(defaults, %{"statuses" => Enum.join(old, ",")}).statuses ==
+             [:icebox, :pending, :in_progress, :in_review]
+
+    assert Preferences.apply_hydration(defaults, %{"statuses" => ["in_analysis"]}).statuses ==
+             [:in_analysis]
   end
 
   test "normalizes statuses in Task order without accepting unknown or duplicate keys" do

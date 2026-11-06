@@ -330,12 +330,12 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
 
     assert has_element?(
              view,
-             "#workspace-content[data-task-statuses='icebox,pending,in_progress,in_review,done,not_planned,will_not_do']"
+             "#workspace-content[data-task-statuses='icebox,pending,in_analysis,in_progress,in_review,done,not_planned,will_not_do']"
            )
 
     assert has_element?(
              view,
-             "#workspace-content[data-default-task-statuses='icebox,pending,in_progress,in_review']"
+             "#workspace-content[data-default-task-statuses='icebox,pending,in_analysis,in_progress,in_review']"
            )
 
     assert has_element?(view, "#task-status-filter-button[aria-expanded='false']")

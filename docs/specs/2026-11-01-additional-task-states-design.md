@@ -1,13 +1,14 @@
-# Additional Task states and Not Planned
+# Additional Task states
 
 **Status:** Implemented, locally verified, independently reviewed and operator accepted.
-D1–D14 and the written design remain operator approved.
+D1–D16 and the written design are operator approved.
 **Date:** 2026-11-01
 **Updated:** 2026-11-06
 
-Keep ordinary Task selectors compact as the supported state vocabulary grows. Introduce
-**Not Planned** for work currently considered unnecessary but retained for reconsideration.
-Additional states remain valid everywhere; contextual visibility only limits UI options.
+Keep ordinary Task selectors compact as the supported state vocabulary grows. **In Analysis**
+represents investigation or clarification before implementation; **Not Planned** represents work
+currently considered unnecessary but retained for reconsideration. Both are additional states
+and remain valid everywhere; contextual visibility only limits UI options.
 
 ## Decisions and approval scope
 
@@ -16,7 +17,7 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D1 | Accepted | Default states plus additional states observed in the relevant scope | List options can remain available after their last matching Task changes state | [Scopes](#option-availability-uses-the-unfiltered-task-population) |
 | D2 | Accepted | Preserve filter preferences independently of available options | Checkbox submissions must preserve absent states | [Preferences](#filter-preferences-survive-absence-and-navigation) |
 | D3 | Accepted | One-way reveal action inside the state picker; preserve across Task navigation in the same edit dialog | Additional states stay exposed until the dialog closes; each new creation form starts unrevealed | [Forms](#forms-can-reveal-all-states-without-changing-the-selected-value) |
-| D4 | Accepted | One canonical order for selectors and Task status sorting; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
+| D4 | Accepted | One canonical order and identifying text colors across selectors; additional options have a muted background | Existing SQL/hierarchy sort ranks change; muted backgrounds must preserve focus/selection readability | [Presentation](#selector-order-and-presentation) |
 | D5 | Accepted | Not Planned is additional, closed, initially excluded only in the main listing | Closed work remains available through explicit filtering | [Definitions](#state-definitions) |
 | D6 | Accepted | Only Done resolves blockers; Will Not Do and Not Planned remain unresolved | Previously non-warning Done transitions may now require confirmation | [Blocking](#closed-work-can-still-block-other-tasks) |
 | D7 | Accepted | Centralize state definitions including a color token; translate tokens into styles in the web layer | Existing hardcoded state lists, colors and semantic checks must be reconciled | [Ownership](#ownership-and-implementation-boundaries) |
@@ -27,11 +28,13 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D12 | Accepted | Retain the existing enclosing-transaction publication limitation | An outer rollback can leave an already-delivered availability observation for an uncommitted change | [Publication limits](#accepted-delivery-and-publication-limitations) |
 | D13 | Accepted | Native select fallback offers all real states directly, without a reveal pseudo-option | Contextual decluttering applies to the enhanced picker; native fallback may show unused additional states | [Fallback](#presentation-and-fallback-constraints) |
 | D14 | Accepted | Compute hierarchy display rows and selected location paths from loaded data during rendering; keep availability prepared | Rendering repeats in-memory traversal and sorting; avoids stored display projections and their synchronization | [Hierarchy display](#implemented-derived-state-ownership) |
+| D15 | Accepted | In Analysis is additional, open, initially included in fresh main filters and ordered before In Progress | Existing explicit filter selections omitting it must opt in; it does not resolve blockers | [Definitions](#state-definitions), [Preferences](#main-listing-remembers-the-complete-selection) |
+| D16 | Accepted | Identify In Analysis with violet | Adds one web presentation token; unselected additional choices remain subdued | [Colors](#state-colors-and-selector-metadata) |
 
-D1–D14, the complete written specification and the implementation plan are operator approved.
-Approval covers this feature and the Will Not Do blocker correction. Execution follows the
-approved implementation-session boundary; pushing, merging and deployment retain their separate
-authorization gates.
+The In Analysis extension is consolidated here: its catalogue and filter decisions belong to D7
+and D2, and its state and color choices are D15 and D16. The implemented state extension, picker
+refinements and selector colors are operator accepted. Publication, merging and deployment retain
+separate authorization gates.
 
 ## Existing contracts and observed baseline
 
@@ -56,28 +59,42 @@ and modal-local. These are contextual display rules, not public input restrictio
 |---|---|---|---|---|---|
 | `icebox` | Icebox | Default | Yes | Yes | No |
 | `pending` | Pending | Default | Yes | Yes | No |
+| `in_analysis` | In Analysis | Additional | Yes | Yes | No |
 | `in_progress` | In Progress | Default | Yes | Yes | No |
 | `in_review` | In Review | Default | Yes | Yes | No |
 | `done` | Done | Default | No | No | Yes |
 | `not_planned` | Not Planned | Additional | No | No | No |
 | `will_not_do` | Will Not Do | Default | No | No | No |
 
-Identifiers are stable storage/API values, independent of labels. Keep every existing state
+Identifiers are stable storage/API values, independent of labels. Keep the six baseline states
 default-visible. Pending remains the single initial Task state; hierarchy initialization remains
 the general rule “all supported states checked,” not per-state metadata.
 
-Descriptions explain intended usage. Preserve existing definitions for the six existing states.
+Descriptions explain intended usage. In Analysis means “Work being investigated or clarified
+before implementation begins.” It is optional between Pending and In Progress: no Task is required
+to pass through it, and no new transition prerequisites or lifecycle authority are introduced.
 Not Planned means “Work we currently consider unnecessary, retained for reconsideration if the
 need arises.” Icebox means deferred work expected to remain actionable; Will Not Do means
 explicitly abandoned or declined work. Human acceptance of completed work remains specific to Done.
 Closed, completed and blocker-resolving are distinct concepts; no configurable completion engine
-is needed for the existing Done-specific behavior.
+is needed for the existing Done-specific behavior. Adding a state never automatically reclassifies
+existing Tasks.
+
+### State colors and selector metadata
 
 Descriptions and a color token belong in the shared state definitions and product/agent
 documentation. The web layer maps the token to concrete text/background styles rather than
-maintaining an independent state-to-color assignment. Preserve existing state colors; choose an
-accessible subdued color for Not Planned. The implementation uses the `stone` token for Not
-Planned and retains existing state colors.
+maintaining an independent state-to-color assignment. Not Planned uses `stone`; In Analysis uses
+`violet` (`text-violet-300`, `bg-violet-400/10`). Violet was chosen instead of cyan to distinguish
+analysis from Icebox's sky blue. Preserve the other existing state colors.
+
+State picker and filter labels reuse `TaskmanWeb.Tasks.Status.text_class/1`; priority picker labels
+reuse `TaskmanWeb.Tasks.Priority.text_class/1`. Picker metadata carries the trusted text class for
+both menu labels and the selected trigger value. On updates, remove the previously applied color
+without removing structural classes; options without color metadata retain the generic fallback.
+Apply color only to labels, preserving the existing check, selection-background and keyboard-focus
+colors. Unselected/unchecked additional choices retain their hue with subdued text; this replaces
+the earlier neutral slate treatment. Native option colors remain platform-controlled.
 The additional-option background treatment remains separate from each state's identifying color.
 
 ## Option availability uses the unfiltered Task population
@@ -253,9 +270,14 @@ Tasks in that population, so retaining its preference has no filtering effect th
 | Explicit URL snapshot or hydration | Replace the full selection, including an explicitly empty selection; retain existing unknown-value normalization. |
 | Browser allowed-state vocabulary | Continue to include all supported states; never reduce it to contextual options. |
 
-Not Planned starts unchecked with fresh defaults. Existing stored arrays or URL snapshots that omit
-`not_planned` also leave it unchecked; no reset or storage migration is required. Explicit stored
-inclusion survives local absence.
+Fresh main defaults include every open state: Icebox, Pending, In Analysis, In Progress and In
+Review. In Analysis remains included even while its option is absent, so newly observed matching
+Tasks appear normally. Not Planned starts unchecked.
+
+Existing explicit stored arrays and URL snapshots preserve their complete inclusion choices.
+Omitting `in_analysis` or `not_planned` leaves that state unchecked; do not silently add a newly
+supported state, reset preferences or migrate browser storage. Explicit inclusion survives local
+absence. Hierarchy defaults remain all supported states checked, independently of main filters.
 
 ### Hierarchy selection lasts for one dialog
 
@@ -275,6 +297,8 @@ inclusion survives local absence.
 | Last Not Planned Task in A becomes Pending | Not Planned remains offered in A until a full reload, including after closing/reopening forms |
 | Reload with no remaining Not Planned Tasks in A | A's option is hidden again; browser-stored filter preference survives |
 | All Tasks are Not Planned with fresh main defaults | Filtered-empty listing; Not Planned remains offered unchecked |
+| In Analysis becomes observed with fresh main defaults | Its option appears checked and matching Tasks are visible |
+| Existing explicit main filter omits In Analysis | Its option appears unchecked once observed; retain the saved selection |
 | Open a hierarchy containing Not Planned | Option appears checked; matching nodes are eligible normally |
 | Will Not Do is the only blocker | Done transition requires the existing unresolved-blocker confirmation |
 
@@ -290,6 +314,7 @@ changes or the last other Task using that state disappears.
 |---|---|
 | Label and placement | “Show additional states” as a visually distinctive final action row inside the open enhanced picker popup; no beside/below button in the enhanced control |
 | Visibility | Offer only when at least one supported additional state is still hidden after including observed states and the current selected value; omit when all additional states are already offered |
+| Scrolling | Scroll with the real options rather than remain pinned; retain its distinctive color and separator border |
 | Activation | Remove the action row and insert all hidden additional states at their canonical positions; keep the popup open and the selected value unchanged |
 | Form semantics | This is an action, not a Task state. Never assign or submit it through the native select, validate a fake state, trigger an autosave or mark the form changed |
 | Direction and storage | One-way for a creation form or the entire open edit dialog, including Task navigation; no reverse toggle or browser storage |
@@ -301,8 +326,14 @@ description/color to it. Exact DOM structure may separate the semantic action fr
 while keeping it visually within the same options popup.
 
 After activation, keep a valid keyboard focus/active-option target within the open picker and
-make the revealed options reachable. The native input retains its original state until a real
-state is selected.
+make the revealed options reachable. Target the first newly revealed state in canonical order.
+Navigation rings appear only during keyboard use; pointer reveal must not make the new option
+look selected. The native input retains its original state until a real state is selected.
+
+If neither additional state is available, reveal inserts In Analysis between Pending and In
+Progress and Not Planned before Will Not Do. Pending remains selected when it was selected before
+reveal. If In Analysis is already represented, reveal remains offered for hidden Not Planned;
+revealing or selecting an unsaved draft never publishes availability.
 
 The native fallback offers every real supported state in canonical order, with no pseudo-option
 or separate reveal control. Its form bridge contains only valid Task state values. The enhanced
@@ -324,7 +355,7 @@ vocabulary; rendering hidden native options does not mark them observed in a Lis
 
 ### One canonical order serves selectors and sorting
 
-**Icebox, Pending, In Progress, In Review, Done, Not Planned, Will Not Do**.
+**Icebox, Pending, In Analysis, In Progress, In Review, Done, Not Planned, Will Not Do**.
 
 - Filters and create/edit options use this sequence, matching the state-definition table.
 - Insert newly available options at their logical position; do not append, group or separate them.
@@ -338,9 +369,11 @@ was rejected in favor of consistency across surfaces.
 
 | Surface | Requirement |
 |---|---|
-| Additional options in every affected selector | Subtly duller background with readable contrast and intact hover, focus, checked and selected affordances |
+| State picker and both status filters | Use each state's identifying text color for option labels; preserve checked/selected and keyboard-focus indicators |
+| Additional options in every affected selector | Subtly duller background and subdued unselected/unchecked label text that retains its state hue, with readable contrast and intact hover, focus, checked and selected affordances |
 | State badges | Retain ordinary state-specific presentation |
-| Enhanced picker | Reuse the existing picker and native form bridge; metadata must not break priority or other consumers |
+| Enhanced picker | Use the selected state's identifying color in the trigger; preserve the native form bridge and generic consumers |
+| Priority picker | Use existing priority text colors in menu and trigger labels; preserve selected background, tick and focus indicators |
 | Native fallback | Offer all real supported states in canonical order, with no reveal pseudo-option; exact option backgrounds may be platform-controlled |
 | Visual verification | Inspect the enhanced distinction visually instead of asserting CSS class strings |
 
@@ -390,7 +423,7 @@ technology independently of hover.
 - Not Planned is excluded from open counts. Preserve the existing rule that explicitly selected
   closed states participate in visible and eligible counts.
 - Will Not Do retains its closed classification despite the changed blocker semantics.
-- **Only Done resolves a blocking relationship.** Not Planned and Will Not Do remain unresolved.
+- **Only Done resolves a blocking relationship.** In Analysis, Not Planned and Will Not Do remain unresolved.
 - Assigning a state never removes or changes a link. Revisit the blocking Task or explicitly remove
   the relationship when it no longer represents a dependency.
 
@@ -431,7 +464,7 @@ and a generic state-machine framework are outside scope.
 | Shared page-local Project location model | Canonical List records/topology, direct observations and subtree summaries; Project-root subtree is the whole-Project summary. Navigation streams, listing and forms consume it. |
 | Listing/preferences, creation/editing and reconciliation | Workflow selection, reveal/availability lifetime and coordinated model updates. |
 | Hierarchy projection | Prepare its separate availability on tree load. |
-| `components/tasks/{table,form,status}.ex`, `select_picker.ex`, `assets/js/select_picker.js` and relevant CSS | State/action row rendering, metadata and picker synchronization; reveal activation bypasses ordinary value-selection behavior. No web-layer queries. |
+| `components/tasks/{table,form,status,priority}.ex`, `select_picker.ex`, `assets/js/select_picker.js` and relevant CSS | State/action row rendering, metadata and picker synchronization; reveal activation bypasses ordinary value-selection behavior. No web-layer queries. |
 | `assets/js/tooltips.js` | Shared tooltip scheduling/presentation extensions that preserve other consumers. |
 | `Tasks.Counts`, mutations/blocking checks and SQL/hierarchy sort expressions | Consume the definitions/rank without unrelated query or workflow refactors. |
 
@@ -455,13 +488,6 @@ handling without a demonstrated need at the expected size. Revisit if measured i
 latency at actual hierarchy sizes warrants more complexity. Availability summaries remain
 prepared separately; this decision does not permit selector-time discovery queries.
 
-The D14 correction passed 98 focused hierarchy/filter/sort/autosave/update tests and ordinary
-`mix precommit` (1,473 passed, 3 skipped, 60 browser exclusions). The rendered filter test
-checks the actual loaded tree, selected location path, disclosure and selection behavior,
-and no persistence reads while opening/closing the filter. No latency benchmark or new browser
-run was performed for this server-side state simplification. Independent scoped review found
-no issues in the correction.
-
 Description visuals use a manual top-layer popover, with stable source-specific hidden text and
 `aria-describedby` independent of visual timing. A 120 ms description-only leave grace permits
 crossing the placement gap into the tooltip. Generic tooltips retain immediate keyboard display.
@@ -470,91 +496,70 @@ ownership; focus order and click/tap navigation are unchanged.
 
 ### Persistence and rollback
 
-- Generate a new Ecto migration extending `tasks_status_check`; preserve existing rows.
-- Rollback recreates the prior PostgreSQL check constraint transactionally. PostgreSQL rejects
-  that constraint while `not_planned` rows exist, rolling back the migration and retaining the
-  current constraint/data; it never deletes or silently reclassifies them.
-- Older application code cannot read the new enum value. Explicitly revert those rows before
-  rolling back application/migration. Deployment is outside this work.
+`Tasks.Status` owns the ordered values and lifecycle classifications. The Ecto enum, CLI registry,
+SQL/hierarchy sorting and counts consume it; PostgreSQL independently enforces `tasks_status_check`.
+Extending this existing catalogue and constraint provides persistence and filtering without a
+second state framework. A label-only change cannot represent a new stored state; configurable
+state definitions would expand scope without a current need.
+
+| Migration | Change | Transactional rollback |
+|---|---|---|
+| `20261104203312_add_not_planned_task_status.exs` | Extend the six-state constraint to permit `not_planned` | Restore the six-state constraint; refuse while `not_planned` rows exist |
+| `20261106125437_add_in_analysis_task_status.exs` | Extend the seven-state constraint to permit `in_analysis` | Restore the seven-state constraint; refuse while `in_analysis` rows exist |
+
+Both migrations preserve existing rows. PostgreSQL rejection rolls back the migration, retaining
+the current constraint and data; rollback never deletes or silently reclassifies Tasks. Generate
+future migrations with `mix ecto.gen.migration`, preserving the prior migrations as history.
+
+Apply the additive constraint before serving code that writes its new value. Older application
+code cannot decode the new enum value: explicitly resolve affected rows before rolling back the
+application and migration. Local verification does not establish hosted deployment acceptance.
 
 ### API, CLI and documentation parity
 
-- Existing API create/update/list and CLI `--status` accept `not_planned`, including when UI options
-  hide it. Successful create/update remain HTTP 201/200 with existing JSON shapes.
+- Existing API create/update/list and CLI `--status` accept `in_analysis` and `not_planned`, including
+  when UI options hide them. Successful create/update remain HTTP 201/200 with existing JSON shapes.
+  API `statuses[]` and repeated CLI `--status` filters select exactly the supplied supported states.
 - Preserve invalid-value validation/error contracts. No state-metadata endpoint is required.
 - Update CLI registry validation, help, Bash/Fish completions, bundled CLI skill and focused tests.
 
-## Verification and next steps
+## Verification
 
-### Evidence available now
+### Verification boundaries
 
-The catalogue, migration, counts, only-Done blockers, event snapshots, shared location owner,
-contextual filters, reveal and description contracts have focused context/component/LiveView and
-Chromium browser coverage. API create/update/list and CLI parser/request/help/Bash/Fish tests
-exercise Not Planned and unknown-state failures; existing API regression coverage verifies
-Will Not Do and Not Planned HTTP 409 warnings followed by explicit-ID confirmation.
+Local context/component/LiveView, API/Req.Test, rebuilt-executable and Chromium checks establish
+application behavior; they do not establish deployed-backend or pinned-release-runtime acceptance.
+Run executable checks against the newly built ignored binary using disposable HOME/XDG, Git and
+installation roots, as required by the development guide.
 
-Integrated local verification used frozen runtime/test sources and sequential successful gates:
+Native fallback inspection with JavaScript still loaded establishes the native option vocabulary,
+not fully JavaScript-disabled operation, native expanded palettes or native tooltip timing.
+Chromium ARIA and keyboard checks do not replace real screen-reader testing. Narrow-viewport
+checks with desktop hover capability do not establish physical touch-device behavior.
 
-| Gate | Result |
-|---|---|
-| Task context, ProjectLive and component suites | 741 passed; 46 browser tests excluded |
-| API controller suite | 100 passed |
-| CLI suite | 299 passed; 3 executable-only tests deferred to the rebuilt gate |
-| `mix precommit` | 1452 passed; 3 executable-only skips and 60 browser exclusions |
-| `mix escript.build`, then `TASKMAN_TEST_ESCRIPT="$PWD/taskman" mix test test/taskman/cli/escript_test.exs` | Build succeeded; all 3 rebuilt-executable tests passed with disposable configuration |
-| Additional-state, table, detail and form-picker browser suites | 29 passed in headed Chromium |
-
-Every Mix invocation used `ERL_FLAGS='+S 8:8'`. The executable gate ran against the newly built
-ignored binary. These are local API/Req.Test/executable/browser results, not deployed-backend or
-pinned-release-runtime acceptance. Browser coverage includes the new description/reveal contracts
-and existing popup, recovery, focus and native-value-bridge behavior.
-
-Chromium screenshots inspected at 1440×900, 390×844 and 320×400 CSS pixels showed readable muted
-additional options, independent focus/selection affordances, descriptions above their source and
-no clipped tooltip or horizontal overflow. Native fallback inspection exposed the native control
-while JavaScript remained loaded and verified all seven real options in canonical order. It does
-not establish a fully JavaScript-disabled run, native expanded palette/backgrounds or native tooltip
-timing. Persistent ARIA descriptions and keyboard focus were checked in Chromium, without a real
-screen reader. Narrow screens retained desktop hover capability; physical touch hardware was not
-used. These limits apply to the browser evidence above.
-
-The shared picker and tooltip controller refactors also passed independent scoped review and
-the final 29-test headed browser gate. An unchanged baseline badge re-hover test failed once,
-then passed its focused repeat and the final full browser gate; its cause remains unresolved.
-No test was weakened or bug fix claimed for that transient result. Later server-side editor
-and test-concurrency corrections passed ordinary `mix precommit`: 1,473 passed, 3 executable-only
-skips and 60 browser exclusions. These later checks do not extend the browser or release-runtime
-evidence above.
-
-### Required implementation evidence
+### Coverage requirements
 
 | Area | Coverage |
 |---|---|
-| State definitions and persistence | Metadata, schema/database acceptance, count classification, and one canonical sequence for selectors plus ascending/descending listing/hierarchy status sorts |
+| State definitions and persistence | Both additional states, metadata, schema/database acceptance and rollback refusal, count classification, and one canonical selector/ascending/descending listing/hierarchy order |
 | Blockers | Only-Done resolution, Will Not Do regression coverage and existing confirmation behavior |
 | Scope isolation | Direct Project, direct List, descendant Lists and whole Project; cross-Project isolation, empty populations and filters excluding every matching Task |
 | Availability updates | Monotonic direct observations, local/external updates, topology rollups, Project return, reconnect/remount and reload reset; unrelated events do not discover states |
 | Event contract | Publisher values after create/update/move, nil owning List, duplicate/out-of-order delivery, not-yet-loaded Lists and malformed/foreign snapshots |
 | No added interactive reads | Selector opening performs no persistence reads or availability discovery; in-memory hierarchy display filtering/sorting/path lookup is allowed. External observation performs no Task read. |
 | Shared location model | Navigation projections, direct/subtree selection and Project-root whole-Project summary; preserve exact counts/current direct-Task presence |
-| Preferences | Main/hierarchy independence, absent-state retention, navigation/live changes, empty submissions, explicit URL snapshots and existing browser storage |
+| Preferences | Main/hierarchy independence, fresh In Analysis inclusion versus explicit stored exclusion, absent-state retention, navigation/live changes, empty submissions and URL snapshots |
 | Forms | Automatic availability, selected draft retention, conditional reveal-action visibility, validation/autosave lifetime, reveal retention across Task navigation in the same dialog, close/reopen and new-creation-form reset, independent hierarchy lifetime and all-real-state native fallback |
 | API/CLI | Create/update/list parity, help/completion/skill consistency and the development guide's rebuilt-executable gate |
 | Picker reveal (browser) | Click/keyboard activation removes the action and inserts states in order; popup stays open, focus remains valid, selected/native value stays unchanged and autosave stays idle; action appears only while states remain hidden |
-| Browser behavior | Stored preferences across reload; enhanced option updates; selection/dismissal; muted option readability; delayed hover/keyboard-active descriptions; cancellation/stale removal; visibility above dialogs/popovers; viewport placement and accessible descriptions |
+| Browser behavior | Stored preferences across reload; both additional states revealed together or partially available; state/priority colors and updates in menus/triggers and both filters; selected/focus indicators; subdued-label readability; delayed descriptions, cancellation, top-layer placement and accessible descriptions |
 | Browser regressions | Ordinary tooltip behavior, badge hover delay, correct descriptions after live updates, click/tap navigation without extra tab stops, popup placement, native bridge, focus and recovery |
 
-Run `mix precommit` after implementation.
+Use focused tests, the browser task and the [development guide](../guides/development.md#verification-expectations)
+for subsequent changes, including `mix precommit` and rebuilt CLI verification when CLI behavior changes.
 
-### Documentation completion and acceptance
+### Related documentation
 
 Current product documentation and affected lifecycle, blocking, notification, count, hierarchy
-filter and shared-control specifications identify the resulting contracts and supersessions.
+filter and shared-control specifications own the resulting contracts and supersessions.
 The separate notification read-optimization research remains outside this feature.
-
-Independent child and session-scoped integration reviews accepted the implementation with no
-unresolved findings. The operator accepted the implemented workstream on 2026-11-05.
-Publication, merging and deployment remain separately authorized actions.
-The completed implementation plan was retired after harvesting its durable contracts here and
-in the current product and CLI documentation.

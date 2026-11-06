@@ -17,9 +17,10 @@ and dialog composition. No domain migration or new API/CLI operation is introduc
 > **Superseded in part:** The [additional Task states
 > contract](2026-11-01-additional-task-states-design.md) extends Status with contextual option
 > metadata, a one-way in-popup reveal action and delayed descriptions. Native fallback exposes all
-> seven real states. Its reveal/value/tooltip lifetimes supersede the no-metadata restriction for
-> Status only; priority, date/time, value-bridge, recovery and dismissal contracts remain
-> authoritative.
+> supported real states. Its reveal/value/tooltip lifetimes supersede the no-metadata restriction
+> for Status. Status and Priority now also supply identifying text colors through option metadata;
+> their palettes remain owned by their existing presentation modules. Date/time, value-bridge,
+> recovery and dismissal contracts remain authoritative.
 
 ## Accepted decisions
 
@@ -114,7 +115,7 @@ caller keeps current IDs, so application tests continue exercising its original 
 
 The Task form supplies IDs `task-status` and `task-priority`, field-derived names, and canonical
 option order from `Task.statuses/0` and `Task.priorities/0`: statuses `icebox`, `pending`,
-`in_progress`, `in_review`, `done`, `not_planned`, `will_not_do`; priorities `none`, `low`, `medium`, `high`,
+`in_analysis`, `in_progress`, `in_review`, `done`, `not_planned`, `will_not_do`; priorities `none`, `low`, `medium`, `high`,
 `urgent`. Recovery disables the controls and can retain an unknown captured value.
 
 ### Presentation matches Parent Task
@@ -125,8 +126,15 @@ slate-700 border, slate-950 background, 4 px padding, 8 px gap and dark shadow, 
 scrolling maximum. Rows use rounded-lg corners, 12/8 px horizontal/vertical padding, 14 px text,
 slate hover, indigo selection and a `hero-check` marker.
 
+Status and Priority option labels and the selected value in each trigger use their identifying
+text colors from the shared presentation modules. Additional-state options retain their hue with
+subdued unselected text. Color does not replace the selected background, tick or keyboard-focus
+ring; check icons and focus indicators retain their existing colors. Other picker consumers
+without color metadata retain their existing presentation. Native option colors remain controlled
+by the platform.
+
 Keep the catalogue labels, canonical option order and real values. Status metadata and reveal
-follow the superseding contract above; other picker consumers retain their existing presentation.
+follow the superseding contract above.
 Do not add search or status editing elsewhere. Location behavior remains unchanged; the date/time contract is specified below. Parent Task's
 search/navigation behavior is unchanged.
 

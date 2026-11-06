@@ -40,8 +40,8 @@ or that location and all descendant Lists when on. Task parentage and sidebar di
 change this scope. Filters apply to unselected sidebar rows too, and the selected row's count
 matches the header's first number. Counts refresh with the existing workspace updates.
 
-Fresh status selection includes Icebox, Pending, In Progress, and In Review; Include child Lists
-defaults to off. Explicit URL filters override saved browser selections, which override defaults.
+Fresh status selection includes Icebox, Pending, In Analysis, In Progress, and In Review;
+Include child Lists defaults to off. Explicit URL filters override saved browser selections, which override defaults.
 Saved Done and empty selections remain valid and are preserved without migration.
 
 Badges remain aligned across List nesting. On hover-capable devices, row hover or keyboard focus
@@ -141,20 +141,23 @@ authorization enforcement or automatic transitions. In Progress is not an atomic
   human-authorized transition to **Done**.
 - **Icebox**: intentionally deferred work that is not currently ready to begin.
 - **Pending**: work that is ready to be started.
+- **In Analysis**: work being investigated or clarified before implementation begins.
 - **In Progress**: work actively being performed by a person, an external agent, or both.
 - **In Review**: work awaiting human assessment before it can be completed.
 - **Done**: the terminal state for work a human has reviewed and explicitly accepted as complete.
 - **Not Planned**: work we currently consider unnecessary, retained for reconsideration if the need arises.
 - **Will Not Do**: the terminal state for work explicitly abandoned or declined by the operator.
 
-The canonical selector and status-sort order is Icebox, Pending, In Progress, In Review, Done,
-Not Planned, Will Not Do; storage/API values are `icebox`, `pending`, `in_progress`, `in_review`,
-`done`, `not_planned`, `will_not_do`. Done, Not Planned and Will Not Do are closed for counting;
+The canonical selector and status-sort order is Icebox, Pending, In Analysis, In Progress, In Review,
+Done, Not Planned, Will Not Do; storage/API values are `icebox`, `pending`, `in_analysis`,
+`in_progress`, `in_review`, `done`, `not_planned`, `will_not_do`. Done, Not Planned and Will Not Do are closed for counting;
 only Done is completed and resolves blockers. Explicitly selected closed states participate in
 visible and eligible counts. Choosing Not Planned requires an explicit operator decision.
 
-Not Planned is an additional state. Browser selectors offer default states plus additional states
-represented in their unfiltered scope. Main-listing and form selectors retain page observations
+In Analysis and Not Planned are additional states. In Analysis counts as open and is included in
+fresh default filters; existing explicit saved selections or URL snapshots that omit it remain
+unchanged. Browser selectors offer default states plus additional states represented in their
+unfiltered scope. Main-listing and form selectors retain page observations
 until reload/remount. Main-listing scope follows owning location and Include child Lists; form
 scope is the direct owning List or the whole Project when no List is selected. Hierarchy availability
 is derived from the complete currently loaded connected tree.
@@ -164,9 +167,13 @@ with every supported state checked and last for one open detail dialog.
 Enhanced form pickers always retain their selected value and can reveal hidden states through
 **Show additional states** inside the popup. Reveal keeps the popup open and value unchanged,
 survives Task navigation in the same edit dialog, and resets for a new creation form or reopened
-dialog. Native fallback offers all seven real states directly. State options and main-table badges
+dialog. Native fallback offers all supported real states directly. State options and main-table badges
 show delayed descriptions; see the [additional-state contract](../specs/2026-11-01-additional-task-states-design.md)
-for exact scopes, lifetimes, accessibility and delivery limits.
+for exact scopes, lifetimes, accessibility, delivery limits and filter compatibility.
+
+State picker labels (including its selected trigger value) and both status filters use the same
+identifying state hues as badges. Unselected/unchecked additional-state options remain subdued.
+Selected/checked and keyboard-focus indicators remain independent of the text color.
 
 ## Task creation
 
@@ -178,6 +185,7 @@ for exact scopes, lifetimes, accessibility and delivery limits.
 
 - **Priority**: a required, single-valued Task attribute with one fixed value: **None**, **Low**, **Medium**, **High**, or **Urgent**.
 - **None** is the sole representation of a Task that has not been prioritized; priority is never unset.
+- Priority picker options and the selected trigger value use the existing priority badge text colors.
 - Priority does not change Task-state transitions or automatically order work.
 
 ## Due date-time
@@ -188,7 +196,8 @@ for exact scopes, lifetimes, accessibility and delivery limits.
 
 ## Lifecycle rules
 
-- The normal forward flow is **Icebox → Pending → In Progress → In Review → Done**.
+- The normal forward flow is **Icebox → Pending → In Progress → In Review → Done**, with optional
+  **In Analysis** between Pending and In Progress; no transition through it is required.
 - A Task in **In Review** may return to **In Progress** or **Pending** when further work or reprioritization is needed.
 - External agent work never completes a Task by itself.
 - Assignment may authorize explicit In Progress/In Review transitions under the [agent-work

@@ -26,7 +26,7 @@ Phoenix LiveView workspace; it needs no schema migration or dependency.
 
 ## Counting contract
 
-For a location, let `S` be the selected statuses and `U` be Icebox, Pending, In Progress, and
+For a location, let `S` be the selected statuses and `U` be Icebox, Pending, In Analysis, In Progress, and
 In Review. Closed statuses are Done, Not Planned and Will Not Do.
 
 - **Visible (`a`)** counts tasks whose status belongs to `S`.
@@ -60,7 +60,8 @@ Not Planned 0, and Will Not Do 6, keeping the location scope fixed:
 
 ## Default status selection
 
-D5 changes the fallback status selection to Icebox, Pending, In Progress, and In Review.
+D5 selects open states by default. The [additional-state contract](2026-11-01-additional-task-states-design.md)
+adds In Analysis to Icebox, Pending, In Progress and In Review for fresh fallback selection.
 Done remains available in the filter, and selecting it still expands both counts according to
 the counting contract. Include child Lists continues to default to off.
 

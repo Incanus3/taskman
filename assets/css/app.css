@@ -798,22 +798,24 @@
   }
 }
 
-/* Keep the semantic action footer visible while real choices scroll. */
+/* Scroll real choices and the final reveal action together. */
 .select-picker-popup:popover-open {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  display: block;
+  overflow-y: auto;
 }
 
 /* Additional real choices remain distinct beneath selection and keyboard focus. */
 .select-picker [role="option"][data-additional="true"][aria-selected="false"] {
   background-color: rgb(51 65 85 / 0.4);
 }
+.select-picker [role="option"][data-additional="true"][aria-selected="false"] [data-option-label],
+.task-state-additional-option:has(input:not(:checked)) [data-state-label] {
+  opacity: 0.85;
+}
 .select-picker [role="option"][data-additional="true"][aria-selected="false"]:hover {
   background-color: rgb(71 85 105 / 0.6);
 }
 .select-picker-action {
-  flex-shrink: 0;
   display: block;
   width: 100%;
   margin-top: 0.25rem;

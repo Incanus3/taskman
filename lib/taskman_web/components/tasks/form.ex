@@ -8,7 +8,7 @@ defmodule TaskmanWeb.Tasks.Form do
   alias TaskmanWeb.DateTimeInput
   alias TaskmanWeb.DateTimePicker
   alias TaskmanWeb.SelectPicker
-  alias TaskmanWeb.Tasks.Table
+  alias TaskmanWeb.Tasks.{Priority, Status, Table}
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :mode, :atom, values: [:new, :edit], required: true
@@ -220,6 +220,7 @@ defmodule TaskmanWeb.Tasks.Form do
           id="task-priority"
           label="Priority"
           options={select_options(Table.priority_options(), @form[:priority].value, @recovery?)}
+          option_metadata={priority_metadata()}
           disabled={@recovery?}
           context_id={Map.get(@form.data, :id)}
         />
@@ -407,12 +408,22 @@ defmodule TaskmanWeb.Tasks.Form do
 
   defp select_options(options, _value, false), do: options
 
+  defp priority_metadata do
+    Map.new(Taskman.Tasks.Task.priorities(), fn priority ->
+      {Atom.to_string(priority), %{text_class: Priority.text_class(priority)}}
+    end)
+  end
+
   defp status_metadata do
     Map.new(Taskman.Tasks.Status.values(), fn state ->
       definition = Taskman.Tasks.Status.definition(state)
 
       {Atom.to_string(state),
-       %{description: definition.description, additional: definition.additional?}}
+       %{
+         description: definition.description,
+         additional: definition.additional?,
+         text_class: Status.text_class(state)
+       }}
     end)
   end
 end

@@ -105,7 +105,7 @@ defmodule TaskmanWeb.Tasks.Table do
               aria-describedby={"#{@id}-description-#{status}"}
               class="size-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-2 focus:ring-indigo-400/40 focus:ring-offset-0"
             />
-            <span>{label}</span>
+            <span data-state-label class={Status.text_class(status)}>{label}</span>
             <span id={"#{@id}-description-#{status}"} hidden>{Status.description(status)}</span>
           </label>
         </.form>

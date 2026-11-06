@@ -6,6 +6,7 @@ defmodule TaskmanWeb.Tasks.Status do
   @text_classes %{
     sky: "text-sky-300",
     amber: "text-amber-300",
+    violet: "text-violet-300",
     red: "text-red-300",
     orange: "text-orange-300",
     emerald: "text-emerald-300",
@@ -16,6 +17,7 @@ defmodule TaskmanWeb.Tasks.Status do
   @background_classes %{
     sky: "bg-sky-400/10",
     amber: "bg-amber-400/10",
+    violet: "bg-violet-400/10",
     red: "bg-red-400/10",
     orange: "bg-orange-400/10",
     emerald: "bg-emerald-400/10",

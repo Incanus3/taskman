@@ -695,7 +695,7 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
   defp check_share(session, base_url, project_id, list_id, task_id) do
     project_url = "#{base_url}/projects/#{project_id}"
     task_route = "#{project_url}/lists/#{list_id}/tasks/#{task_id}"
-    default_statuses = "icebox%2Cpending%2Cin_progress%2Cin_review"
+    default_statuses = "icebox%2Cpending%2Cin_analysis%2Cin_progress%2Cin_review"
 
     for route <- [project_url, "#{project_url}/lists/#{list_id}", task_route] do
       Browser.visit(session, route)

@@ -16,6 +16,9 @@
 Done confirmation, and search API/CLI operations. Their exact command and response contracts extend
 the original operation surface below; its slice-specific exclusions are historical scope.
 
+The current lifecycle vocabulary follows the [additional-state contract](2026-11-01-additional-task-states-design.md),
+including `not_planned` and `in_analysis` in creation, updates and filtering. Earlier value lists below are historical.
+
 ## Context
 
 Taskman is a locally started, single-user Phoenix application whose delivered UI supports Projects,

@@ -43,6 +43,33 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
     %{session: session, base: base, project: project, task: task}
   end
 
+  test "fresh browser filters include analysis while explicit saved arrays preserve exclusion",
+       c do
+    s = c.session
+    {:ok, _} = Tasks.update_task(c.project, c.task, %{status: :in_analysis})
+    url = c.base <> "/projects/#{c.project.id}"
+    js(s, "localStorage.removeItem('taskman.task-table.visible-statuses')")
+    Browser.visit(s, url)
+    Browser.find(s, Query.css("#workspace-content[data-preferences-hydrated='true']"))
+    Browser.find(s, Query.css("#open-task-#{c.task.id}"))
+    Browser.click(s, Query.css("#task-status-filter-button"))
+    Browser.find(s, Query.css("#task-status-filter-option-in_analysis:checked"))
+
+    js(
+      s,
+      ~s|localStorage.setItem('taskman.task-table.visible-statuses', '["icebox","pending","in_progress","in_review"]')|
+    )
+
+    Browser.visit(s, url)
+    Browser.find(s, Query.css("#workspace-content[data-preferences-hydrated='true']"))
+    Browser.find(s, Query.css("#open-task-#{c.task.id}", count: 0))
+    Browser.click(s, Query.css("#task-status-filter-button"))
+    Browser.find(s, Query.css("#task-status-filter-option-in_analysis:not(:checked)"))
+
+    assert js(s, "return JSON.parse(localStorage.getItem('taskman.task-table.visible-statuses'))") ==
+             ~w(icebox pending in_progress in_review)
+  end
+
   test "reveal round trip retains native value, popup and keyboard focus without autosave", c do
     s = c.session
     Browser.visit(s, c.base <> "/projects/#{c.project.id}/tasks/#{c.task.id}")
@@ -52,15 +79,25 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
              s,
              "window.statusChanges = []; document.addEventListener('change', e => {if (e.target.id === 'task-status') statusChanges.push(e.target.value)}); return [...document.querySelector('#task-status').options].map(o => o.value)"
            ) ==
-             ~w(icebox pending in_progress in_review done not_planned will_not_do)
+             ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
 
     Browser.click(s, Query.css("#task-status-trigger"))
-    assert js(s, "return !document.getElementById('task-status-option-not_planned')")
+
+    assert js(
+             s,
+             "return !document.getElementById('task-status-option-not_planned') && !document.getElementById('task-status-option-in_analysis')"
+           )
+
     Browser.find(s, Query.css("#task-status-reveal"))
 
     assert js(
              s,
-             "const p = document.querySelector('#task-status-popup').getBoundingClientRect(); const a = document.querySelector('#task-status-reveal').getBoundingClientRect(); return a.top >= p.top && a.bottom <= p.bottom"
+             "const p = document.querySelector('#task-status-popup'); p.scrollTop = 0; const a = document.querySelector('#task-status-reveal').getBoundingClientRect(); return p.scrollHeight > p.clientHeight && a.bottom > p.getBoundingClientRect().bottom"
+           )
+
+    assert js(
+             s,
+             "const p = document.querySelector('#task-status-popup'); p.scrollTop = p.scrollHeight; const a = document.querySelector('#task-status-reveal').getBoundingClientRect(); const r = p.getBoundingClientRect(); return p.scrollTop > 0 && a.top >= r.top && a.bottom <= r.bottom"
            )
 
     Browser.send_keys(s, [:end, :down_arrow])
@@ -90,17 +127,18 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
              %{
                "open" => true,
                "focus" => "task-status-options",
-               "active" => "task-status-option-not_planned",
+               "active" => "task-status-option-in_analysis",
                "value" => "pending",
                "changes" => [],
                "action" => false,
-               "values" => ~w(icebox pending in_progress in_review done not_planned will_not_do)
+               "values" =>
+                 ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
              }
 
     wait(
       s,
       "return document.querySelector('[role=tooltip]')?.textContent",
-      "Work we currently consider unnecessary, retained for reconsideration if the need arises."
+      "Work being investigated or clarified before implementation begins."
     )
 
     persisted = Tasks.get_task_for_project(c.project, c.task.id)
@@ -413,7 +451,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
 
     assert js(
              s,
-             "const s = document.querySelector('#task-status'); return s.getBoundingClientRect().width > 0 && [...s.options].map(o => o.value).join(',') === 'icebox,pending,in_progress,in_review,done,not_planned,will_not_do'"
+             "const s = document.querySelector('#task-status'); return s.getBoundingClientRect().width > 0 && [...s.options].map(o => o.value).join(',') === 'icebox,pending,in_analysis,in_progress,in_review,done,not_planned,will_not_do'"
            )
 
     capture(s, "native-fallback")
