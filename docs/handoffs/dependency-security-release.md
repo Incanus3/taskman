@@ -7,12 +7,14 @@ Status: active. Updated: 2026-11-06. Resume: `$resume dependency-security-releas
 Update package dependencies and the pinned release toolchain before the authorized landing and
 deployment. The operator explicitly included release toolchain upgrades. Additional task states
 already landed through PR #49 as `2030dfdca79a75f1fbf04d8f6249e96a5a7ee17a`.
-The deployment environment is still awaiting an explicit operator selection; no host mutation
-has occurred. Follow the [deployment runbook](../guides/deployment.md).
+Deployment requires an explicit operator environment selection. Follow the
+[deployment runbook](../guides/deployment.md); actual host state and receipts remain private.
 
 ## Current checkpoint
 
-Dependency updates are on branch `deploy-additional-states`, based on the landed revision.
+The dependency update is published through [PR #50](https://github.com/Incanus3/taskman/pull/50),
+which owns current publication, CI and release-build evidence. Once merged, continue from its
+refreshed main-branch result rather than reviving its implementation branch.
 Hex packages were refreshed to current stable versions except the existing Cinder compatibility
 pin. Assent is explicitly overridden to 0.3.2; the updated Hex audit reports no advisories or
 retirements. Python lock updates include Pydantic, pydantic-core and typing-inspection.
@@ -28,11 +30,12 @@ and both packaged credential-prompt tests passed against the extracted release.
 
 ## Remaining sequence
 
-1. Commit the final CI image/documentation checkpoint. Production inputs are unchanged from the
-   verified release build; retain explicit audit limitations.
-2. Refresh remote target state, publish and land under the existing operator authorization;
-   confirm CI and build the exact landed source before deployment.
-3. Obtain the deployment environment selection; inspect host/release/backup state and dry-run.
+1. Check PR #50's current state. If still open, confirm hosted CI and land under the existing
+   operator authorization. Production inputs are unchanged from the verified source build;
+   retain explicit audit limitations.
+2. Build the exact landed source if no validated matching artifact exists; preserve artifact,
+   checksum, manifest and cache evidence in the PR and private controller records.
+3. Confirm the operator-selected environment; inspect host/release/backup state and dry-run.
    The new task-state migration requires `restore-required`: older application code cannot read
    `not_planned` rows. Deploy the exact landed revision, then verify the selected release and health.
 4. Record the outcome and remaining limitations; retire this handoff only after explicit completion
