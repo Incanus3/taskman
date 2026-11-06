@@ -19,7 +19,7 @@ from taskman_ops.workflows.backup import run_backup
 from tests.support.environments import environment_config
 
 
-RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + "b" * 64
 BACKUP = "backup-0123456789abcdef0123456789abcdef"
 TARGET = build_release_id(
     "0.2.1", "c" * 40, artifact_sha256="d" * 64, source_dirty=False
@@ -140,11 +140,11 @@ def _release(
             "built_at": "2026-09-14T12:00:00Z",
             "target_os": "ubuntu26.04",
             "architecture": "amd64",
-            "otp_version": "29.0.6",
-            "elixir_version": "1.20.4",
+            "otp_version": "29.1.2",
+            "elixir_version": "1.20.5",
             "node_version": "22.22.1",
-            "hex_version": "2.5.1",
-            "rebar3_version": "3.24.0",
+            "hex_version": "2.6.0",
+            "rebar3_version": "3.28.0",
             "builder_base_tag": BUILDER_BASE_TAG,
             "builder_base_digest": BUILDER_BASE_DIGEST,
             "migrations": list(migrations),

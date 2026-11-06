@@ -20,7 +20,7 @@ from taskman_ops.releases.identifiers import (
 
 REVISION = "a" * 40
 DIGEST = "b" * 64
-CLEAN = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + DIGEST
+CLEAN = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + DIGEST
 DIRTY = CLEAN + "-dirty"
 
 
@@ -42,7 +42,7 @@ def test_release_identity_exposes_each_supported_component() -> None:
     assert release_application_version(CLEAN) == "0.2.0"
     assert release_source_revision(CLEAN) == REVISION[:12]
     assert release_artifact_sha256(CLEAN) == DIGEST
-    assert release_otp_version(CLEAN) == "29.0.6"
+    assert release_otp_version(CLEAN) == "29.1.2"
     assert release_source_dirty(CLEAN) is False
     assert release_source_dirty(DIRTY) is True
     assert managed_release_path(PurePosixPath("/srv/taskman/releases"), CLEAN) == PurePosixPath(
@@ -53,10 +53,10 @@ def test_release_identity_exposes_each_supported_component() -> None:
 @pytest.mark.parametrize(
     "value",
     (
-        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6",
+        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2",
         "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp27.3.4.6-" + DIGEST,
-        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "A" * 64,
-        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 63,
+        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + "A" * 64,
+        "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + "b" * 63,
         CLEAN + "-dirty-extra",
         CLEAN + "/outside",
     ),

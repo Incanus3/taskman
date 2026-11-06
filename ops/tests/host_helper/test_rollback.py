@@ -51,9 +51,9 @@ def _install_release(paths: ManagedPaths, release_id: str, revision: str) -> Non
     manifest = ArtifactManifest.from_mapping({
         "schema_version": 3, "application": "taskman", "application_version": release_id.split("-", 1)[0],
         "source_revision": revision, "release_id": release_id, "built_at": "2026-09-07T12:00:00Z",
-        "target_os": "ubuntu26.04", "architecture": "amd64", "otp_version": "29.0.6",
-        "elixir_version": "1.20.4", "node_version": "22.22.1", "hex_version": "2.5.1",
-        "rebar3_version": "3.24.0", "builder_base_tag": BUILDER_BASE_TAG,
+        "target_os": "ubuntu26.04", "architecture": "amd64", "otp_version": "29.1.2",
+        "elixir_version": "1.20.5", "node_version": "22.22.1", "hex_version": "2.6.0",
+        "rebar3_version": "3.28.0", "builder_base_tag": BUILDER_BASE_TAG,
         "builder_base_digest": BUILDER_BASE_DIGEST, "migrations": [MIGRATION], "top_level": "taskman",
         "artifact_sha256": digest, "source_dirty": False,
     })

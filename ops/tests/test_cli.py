@@ -482,7 +482,7 @@ def test_automatic_deploy_refresh_uses_the_production_authority_resolver(
     environment = object()
     remote = object()
     artifact = deployment_artifact(tmp_path)
-    first = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    first = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "b" * 64, "taskman", ())
     second = CleanInputs(**{**first.__dict__, "source_revision": "c" * 40})
     identified = iter((first, second))
     resolution_inputs: list[CleanInputs] = []
@@ -526,7 +526,7 @@ def test_automatic_deploy_retries_a_clean_build_drift_during_production_resoluti
     environment = object()
     remote = object()
     artifact = deployment_artifact(tmp_path)
-    first = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    first = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "b" * 64, "taskman", ())
     second = CleanInputs(**{**first.__dict__, "source_revision": "c" * 40})
     identified = iter((first, second))
     resolved: list[CleanInputs] = []
@@ -577,7 +577,7 @@ def test_automatic_deploy_refuses_after_exhausting_initial_clean_resolution_retr
 
     environment = object()
     remote = object()
-    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "b" * 64, "taskman", ())
     identified = 0
     resolutions = 0
     admissions: list[object] = []
@@ -636,7 +636,7 @@ def test_automatic_deploy_shares_initial_retry_budget_with_workflow_refresh(
     environment = environment_config()
     remote = object()
     artifact = deployment_artifact(tmp_path)
-    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "b" * 64, "taskman", ())
+    inputs = CleanInputs("a" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "b" * 64, "taskman", ())
     resolutions = 0
     expected = {
         "selected_release_id": artifact.manifest.release_id,

@@ -344,18 +344,24 @@ permits a private frozen snapshot. It never contacts a host. The pinned
 deployment, and OTP release assembly. The reviewed base is:
 
 ```text
-ubuntu:resolute-20260811.1
-sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
+ubuntu:resolute-20261024.1
+sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 ```
 
 The dated tag communicates the image release; the digest fixes the content. They are reviewed and
-updated together. New builds pin OTP `29.0.6`, Elixir `1.20.4`, Node `22.22.1`, Hex `2.5.1`, and
-Rebar3 `3.24.0`. OTP and Elixir come from the published HexPM Ubuntu 26.04/amd64 and OTP-29
+updated together. New builds pin OTP `29.1.2`, Elixir `1.20.5`, Node `22.22.1`, Hex `2.6.0`, and
+Rebar3 `3.28.0`. OTP and Elixir come from the published HexPM Ubuntu 26.04/amd64 and OTP-29
 archives, each verified against its fixed SHA-256 before installation. The versioned Rebar3 binary
 is checked against its recorded SHA-512. The Containerfile and artifact schema own the exact
 toolchain constraints. External package indexes mean
 this is not a claim of bit-for-bit reproducible release archives.
 
+The prior OTP `29.0.6` / Elixir `1.20.4` tuple remains supported for installed releases,
+rollback and backup/restore provenance, together with its original Node, Hex, Rebar3 and builder
+identity. The release ID selects one complete allowlisted toolchain by OTP version; mixing
+fields from the old and new tuples is rejected. Each supported OTP version selects one exact
+tuple; a future Elixir or builder update reusing the same OTP requires an explicit provenance
+selection change rather than replacing an existing entry. New builds use only the current tuple.
 The historical OTP 27 / Elixir 1.18 tuple is outside the supported baseline. OTP 29 also
 supports the administrator prompt's reversible raw/cooked terminal API, introduced in OTP 28.
 The separate [Alpine CI decision](2026-08-10-alpine-elixir-ci-design.md) remains independent.

@@ -31,6 +31,24 @@ RELEASE_ID = build_release_id(
     "0.2.0", REVISION, artifact_sha256=ARTIFACT_SHA256, source_dirty=False
 )
 CHECKSUM = "c" * 64
+PRIOR_TOOLCHAIN = {
+    "otp_version": "29.0.6",
+    "elixir_version": "1.20.4",
+    "node_version": "22.22.1",
+    "hex_version": "2.5.1",
+    "rebar3_version": "3.24.0",
+    "builder_base_tag": "ubuntu:resolute-20260811.1",
+    "builder_base_digest": "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b",
+}
+CURRENT_TOOLCHAIN = {
+    "otp_version": "29.1.2",
+    "elixir_version": "1.20.5",
+    "node_version": "22.22.1",
+    "hex_version": "2.6.0",
+    "rebar3_version": "3.28.0",
+    "builder_base_tag": "ubuntu:resolute-20261024.1",
+    "builder_base_digest": "sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c",
+}
 
 
 def manifest_payload(**overrides: object) -> dict[str, object]:
@@ -43,13 +61,13 @@ def manifest_payload(**overrides: object) -> dict[str, object]:
         "built_at": "2026-09-04T20:15:30Z",
         "target_os": "ubuntu26.04",
         "architecture": "amd64",
-        "otp_version": "29.0.6",
-        "elixir_version": "1.20.4",
+        "otp_version": "29.1.2",
+        "elixir_version": "1.20.5",
         "node_version": "22.22.1",
         "builder_base_tag": BUILDER_BASE_TAG,
         "builder_base_digest": BUILDER_BASE_DIGEST,
-        "hex_version": "2.5.1",
-        "rebar3_version": "3.24.0",
+        "hex_version": "2.6.0",
+        "rebar3_version": "3.28.0",
         "migrations": [
             {
                 "filename": "20260904065131_install_ash_functions_extensions_1.exs",
@@ -203,6 +221,43 @@ def test_manifest_round_trip_has_the_exact_schema_and_utc_provenance() -> None:
     assert manifest_from_json(manifest_to_json(manifest)) == manifest
     with pytest.raises(FrozenInstanceError):
         manifest.release_id = "different"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("toolchain", (PRIOR_TOOLCHAIN, CURRENT_TOOLCHAIN), ids=("prior", "current"))
+def test_manifest_round_trip_preserves_each_complete_pinned_toolchain(
+    toolchain: dict[str, str],
+) -> None:
+    payload = manifest_payload(
+        **toolchain,
+        release_id=f"0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp{toolchain['otp_version']}-" + "b" * 64,
+    )
+
+    manifest = manifest_from_json(json.dumps(payload))
+
+    assert manifest.to_mapping() == payload
+    assert manifest_from_json(manifest_to_json(manifest)).to_mapping() == payload
+
+
+@pytest.mark.parametrize(
+    ("toolchain", "other"),
+    ((PRIOR_TOOLCHAIN, CURRENT_TOOLCHAIN), (CURRENT_TOOLCHAIN, PRIOR_TOOLCHAIN)),
+    ids=("prior-release", "current-release"),
+)
+@pytest.mark.parametrize(
+    "field",
+    ("otp_version", "elixir_version", "hex_version", "rebar3_version", "builder_base_tag", "builder_base_digest"),
+)
+def test_manifest_rejects_fields_cross_mixed_between_pinned_toolchains(
+    toolchain: dict[str, str], other: dict[str, str], field: str,
+) -> None:
+    payload = manifest_payload(
+        **toolchain,
+        release_id=f"0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp{toolchain['otp_version']}-" + "b" * 64,
+    )
+    payload[field] = other[field]
+
+    with pytest.raises(ValueError, match="toolchain"):
+        ArtifactManifest.from_mapping(payload)
 
 
 def test_manifest_records_the_readable_and_immutable_builder_base_identity() -> None:

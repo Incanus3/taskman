@@ -31,11 +31,11 @@ TARGET_OS = "ubuntu26.04"
 ARCHITECTURE = "amd64"
 OTP_VERSION = CURRENT_RUNTIME.otp_version
 ELIXIR_VERSION = CURRENT_RUNTIME.elixir_version
-NODE_VERSION = "22.22.1"
-HEX_VERSION = "2.5.1"
-REBAR3_VERSION = "3.24.0"
-BUILDER_BASE_TAG = "ubuntu:resolute-20260811.1"
-BUILDER_BASE_DIGEST = "sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b"
+NODE_VERSION = CURRENT_RUNTIME.node_version
+HEX_VERSION = CURRENT_RUNTIME.hex_version
+REBAR3_VERSION = CURRENT_RUNTIME.rebar3_version
+BUILDER_BASE_TAG = CURRENT_RUNTIME.builder_base_tag
+BUILDER_BASE_DIGEST = CURRENT_RUNTIME.builder_base_digest
 TOP_LEVEL = "taskman"
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_MANIFEST_BYTES = 128 * 1024
@@ -208,11 +208,11 @@ class ArtifactManifest:
         if (
             mapping["otp_version"] != runtime.otp_version
             or mapping["elixir_version"] != runtime.elixir_version
-            or mapping["node_version"] != NODE_VERSION
-            or mapping["hex_version"] != HEX_VERSION
-            or mapping["rebar3_version"] != REBAR3_VERSION
-            or mapping["builder_base_tag"] != BUILDER_BASE_TAG
-            or mapping["builder_base_digest"] != BUILDER_BASE_DIGEST
+            or mapping["node_version"] != runtime.node_version
+            or mapping["hex_version"] != runtime.hex_version
+            or mapping["rebar3_version"] != runtime.rebar3_version
+            or mapping["builder_base_tag"] != runtime.builder_base_tag
+            or mapping["builder_base_digest"] != runtime.builder_base_digest
         ):
             raise ValueError("unsupported artifact toolchain or builder base")
         if mapping["top_level"] != TOP_LEVEL:
@@ -236,13 +236,13 @@ class ArtifactManifest:
             architecture=ARCHITECTURE,
             otp_version=runtime.otp_version,
             elixir_version=runtime.elixir_version,
-            node_version=NODE_VERSION,
-            builder_base_tag=BUILDER_BASE_TAG,
-            builder_base_digest=BUILDER_BASE_DIGEST,
+            node_version=runtime.node_version,
+            builder_base_tag=runtime.builder_base_tag,
+            builder_base_digest=runtime.builder_base_digest,
             migrations=migrations,
             top_level=TOP_LEVEL,
-            hex_version=HEX_VERSION,
-            rebar3_version=REBAR3_VERSION,
+            hex_version=runtime.hex_version,
+            rebar3_version=runtime.rebar3_version,
             artifact_sha256=artifact_sha256,
             source_dirty=source_dirty,
         )

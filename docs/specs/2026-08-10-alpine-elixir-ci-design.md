@@ -4,10 +4,11 @@
 
 | ID | Status | Decision | Downside or constraint | Rationale |
 |---|---|---|---|---|
-| D1 | Accepted | Use Elixir 1.20.4 / OTP 29.1.2 / Alpine 3.24.3 | Requires hosted x64 verification after runtime changes | [Released correction](#context) |
-| D3 | Accepted | Keep upstream compatibility constraints in the accompanying dependency refresh | Some dependencies remain below their latest release | [Dependency compatibility](#dependency-compatibility) |
+| D1 | Accepted | Use Elixir 1.20.5 / OTP 29.1.2 / Alpine 3.24.4 | Requires hosted x64 verification after runtime changes | [Released correction](#context) |
 | D4 | Accepted | Reuse compiled Mix output and npm downloads across compatible CI runs | Cache transfers consume storage and time; runtime or lock changes can require a cold build | [Build caching](#build-caching) |
+| D6 | Accepted | Retain upstream pyinfra compatibility constraints from D3 | Paramiko and other constrained packages remain below latest; its SHA-1 advisory remains visible | [Dependency compatibility](#dependency-compatibility) |
 | D2 | Superseded | Temporarily use Elixir 1.19.5 / OTP 26.2.5.21 | Prevented current HTTPoison/Hackney upgrades; replaced by D1 | [Original failure](#context) |
+| D3 | Superseded | Keep all upstream constraints in the earlier dependency refresh | Later security maintenance has its own ruling record; unchanged pyinfra policy is retained by D6 | [Dependency compatibility](#dependency-compatibility) |
 
 ## Context
 
@@ -33,7 +34,7 @@ The complete upstream correction was merged in
 29.0.5 was released. Both the original correction and the follow-up are included in
 [OTP 29.1](https://github.com/erlang/otp/releases/tag/OTP-29.1), released on 2026-09-16.
 OTP 29.1.2 contains that merged correction, and HexPM publishes the compatible
-`hexpm/elixir:1.20.4-erlang-29.1.2-alpine-3.24.3` image. This supersedes the temporary OTP 26
+`hexpm/elixir:1.20.5-erlang-29.1.2-alpine-3.24.4` image. This supersedes the temporary OTP 26
 fallback while preserving the x64 Alpine job topology.
 
 An ARM64 runner was evaluated as a bridge, but
@@ -44,9 +45,9 @@ runners. Keeping ARM64 would require replacing standard checkout and cache actio
 ## Requirements and decisions
 
 - Execute build and test steps inside an Alpine Linux container.
-- Use Elixir 1.20.4 and Erlang/OTP 29.1.2, which includes the complete signal-stack correction.
+- Use Elixir 1.20.5 and Erlang/OTP 29.1.2, which includes the complete signal-stack correction.
 - Pin the complete image tag
-  `hexpm/elixir:1.20.4-erlang-29.1.2-alpine-3.24.3`.
+  `hexpm/elixir:1.20.5-erlang-29.1.2-alpine-3.24.4`.
 - Use `runs-on: ubuntu-26.04` as the GitHub-hosted x64 Docker host. Ordinary `run` steps still
   execute inside Alpine.
 - Use `actions/checkout@v7` and `actions/cache@v6`, whose declared action runtime is Node.js 24.
@@ -82,12 +83,12 @@ The CI job configuration is owned by `.github/workflows/elixir.yml`. The build j
 ```yaml
 runs-on: ubuntu-26.04
 container:
-  image: hexpm/elixir:1.20.4-erlang-29.1.2-alpine-3.24.3
+  image: hexpm/elixir:1.20.5-erlang-29.1.2-alpine-3.24.4
 env:
   POSTGRES_HOST: postgres
 services:
   postgres:
-    image: postgres:18.4-alpine3.24
+    image: postgres:18.6-alpine3.24
 ```
 
 The workflow installs its runtime packages through
@@ -99,7 +100,7 @@ configuration, or product behavior changes.
 
 `mix.exs` owns direct dependency requirements; `mix.lock` records the resolved HTTPoison/Hackney
 versions and their transitive dependencies. Wallaby continues to own this browser-test HTTP client
-chain. The development guide owns the CI/release runtime distinction.
+chain. The development guide owns the CI/release runtime guidance.
 
 ## Build caching
 
@@ -133,19 +134,24 @@ does not replace hosted correctness verification or establish a fixed timing imp
 
 ## Dependency compatibility
 
-The accompanying dependency refresh uses stable versions supported by the existing dependency tree.
-Ash Authentication constrains Assent below 0.3; pyinfra 3.10.0 constrains Paramiko below 5,
-python-dateutil below 3, and types-paramiko below 5. These constraints are accepted for this refresh:
-forcing newer versions would bypass declared compatibility and require separately scoped migration
-or override verification, including authentication and deployment behavior. This decision does not
-prevent a later upgrade when compatibility is established.
+The original refresh retained all upstream constraints (D3). Subsequent Assent security maintenance
+is outside that original CI refresh and is recorded in the
+[security-release handoff](../handoffs/dependency-security-release.md#rulings-awaiting-acknowledgement).
+That handoff is the sole owner of the active ruling and its compatibility evidence.
+
+D6 retains the unchanged accepted pyinfra constraints: stable pyinfra 3.10.0 requires Paramiko below
+5, python-dateutil below 3, and types-paramiko below 5. Paramiko 5.x fixes CVE-2026-44405, but forcing
+it past pyinfra's constraint requires separately scoped native SSH compatibility verification.
+Keep the advisory visible; neither the dependency update nor the toolchain refresh claims to fix it.
+See [pyinfra's published requirements](https://pypi.org/pypi/pyinfra/3.10.0/json) and the
+[Paramiko changelog](https://www.paramiko.org/changelog.html).
 
 ## Verification
 
 - Parse the workflow as YAML.
 - Confirm the workflow contains the x64 runner, pinned compatible image, checkout action, cache
   action, Git and GNU tar installation, and PostgreSQL service contract.
-- Confirm the pinned image reports Alpine 3.24.3, Elixir 1.20.4, and Erlang/OTP 29.1.2.
+- Confirm the pinned image reports Alpine 3.24.4, Elixir 1.20.5, and Erlang/OTP 29.1.2.
 - Confirm dependency resolution and tests succeed in the exact job/service container topology.
 - Run `mix precommit`.
 - Exercise a cache miss followed by restoration from a compatible later commit and saving under

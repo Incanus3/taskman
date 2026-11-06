@@ -20,8 +20,9 @@ from taskman_ops.host_helper.records import BackupRecord, ReleaseRecord, Selecti
 from taskman_ops.host_helper.restore_target import RestoreTarget, replace_restore_target, restore_target_sha256, write_restore_target
 from taskman_ops.host_helper.state import observe_host_state
 from taskman_ops.host_protocol import HostRequest, HostResult, validate_mutation_state
-from taskman_ops.releases.identifiers import build_release_id
-from taskman_ops.releases.manifests import APPLICATION, ARCHITECTURE, BUILDER_BASE_DIGEST, BUILDER_BASE_TAG, ELIXIR_VERSION, HEX_VERSION, NODE_VERSION, OTP_VERSION, REBAR3_VERSION, SCHEMA_VERSION, TARGET_OS, ArtifactManifest, MigrationFingerprint
+from taskman_ops.releases.identifiers import build_release_id, release_otp_version
+from taskman_ops.releases.manifests import APPLICATION, ARCHITECTURE, SCHEMA_VERSION, TARGET_OS, ArtifactManifest, MigrationFingerprint
+from taskman_ops.releases.toolchains import runtime_for_otp_version
 from tests.host_helper.support import database_mapping, managed_paths, verification_settings
 from tests.workflows.support import successful_verification_report
 
@@ -30,7 +31,8 @@ CORRELATION = "op-0123456789abcdef0123456789abcdef"
 CURRENT_REVISION = "a" * 40
 TARGET_REVISION = "b" * 40
 CURRENT = build_release_id("0.2.0", CURRENT_REVISION, artifact_sha256="c" * 64, source_dirty=False)
-TARGET = build_release_id("0.2.0", TARGET_REVISION, artifact_sha256="d" * 64, source_dirty=False)
+# Restoring a retained backup must still select its exact older release toolchain.
+TARGET = build_release_id("0.2.0", TARGET_REVISION, artifact_sha256="d" * 64, source_dirty=False, otp_version="29.0.6")
 INPUT_BACKUP = "backup-" + "a" * 32
 REPLACEMENT_BACKUP = "backup-" + "9" * 32
 THIRD_BACKUP = "backup-" + "8" * 32
@@ -42,11 +44,13 @@ VERSION = 20260905120000
 
 
 def _manifest(release_id: str, revision: str, digest: str) -> ArtifactManifest:
+    runtime = runtime_for_otp_version(release_otp_version(release_id))
     return ArtifactManifest(
         SCHEMA_VERSION, APPLICATION, "0.2.0", revision, release_id,
-        datetime(2026, 9, 14, 10, tzinfo=UTC), TARGET_OS, ARCHITECTURE, OTP_VERSION,
-        ELIXIR_VERSION, NODE_VERSION, BUILDER_BASE_TAG, BUILDER_BASE_DIGEST, (MIGRATION,),
-        "taskman", HEX_VERSION, REBAR3_VERSION, digest, False,
+        datetime(2026, 9, 14, 10, tzinfo=UTC), TARGET_OS, ARCHITECTURE, runtime.otp_version,
+        runtime.elixir_version, runtime.node_version, runtime.builder_base_tag,
+        runtime.builder_base_digest, (MIGRATION,), "taskman", runtime.hex_version,
+        runtime.rebar3_version, digest, False,
     )
 
 

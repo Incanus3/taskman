@@ -454,7 +454,7 @@ def test_clean_input_drift_reresolves_before_yes_mutates(
     from taskman_ops.workflows.deploy import deploy
 
     target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
-    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "a" * 64, "taskman", ())
     mutations: list[str] = []
     refreshed: list[str] = []
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
@@ -485,7 +485,7 @@ def test_clean_build_drift_during_refresh_retries_within_the_deploy_bound(
     from taskman_ops.workflows.deploy import deploy
 
     target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
-    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "a" * 64, "taskman", ())
     refreshed = 0
     mutations: list[str] = []
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
@@ -549,7 +549,7 @@ def test_deploy_refuses_clean_source_drift_after_confirmation(
     from taskman_ops.workflows.deploy import deploy
 
     target = DeploymentTarget(artifact=deployment_artifact(tmp_path), release_record=None, source="built")
-    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.4", "22.22.1", "2.5.1", "3.24.0", "tag", "a" * 64, "taskman", ())
+    inputs = CleanInputs("b" * 40, "0.2.0", "ubuntu26.04", "amd64", OTP_VERSION, "1.20.5", "22.22.1", "2.6.0", "3.28.0", "tag", "a" * 64, "taskman", ())
     matches = iter((True, False))
     monkeypatch.setattr("taskman_ops.workflows.deploy._planning_authority", lambda *_args: (CURRENT, (), ()))
     monkeypatch.setattr("taskman_ops.workflows.deploy.clean_inputs_match", lambda *_args: next(matches))
