@@ -4,12 +4,11 @@
 
 | ID | Status | Decision | Downside or constraint | Rationale |
 |---|---|---|---|---|
-| D5 | Proposed | Use patched Assent 0.3.2 with the current password/API-key authentication configuration | Must be revisited before enabling OAuth/OIDC; operator acknowledgement remains pending | [Dependency compatibility](#dependency-compatibility) |
 | D1 | Accepted | Use Elixir 1.20.5 / OTP 29.1.2 / Alpine 3.24.4 | Requires hosted x64 verification after runtime changes | [Released correction](#context) |
 | D4 | Accepted | Reuse compiled Mix output and npm downloads across compatible CI runs | Cache transfers consume storage and time; runtime or lock changes can require a cold build | [Build caching](#build-caching) |
 | D6 | Accepted | Retain upstream pyinfra compatibility constraints from D3 | Paramiko and other constrained packages remain below latest; its SHA-1 advisory remains visible | [Dependency compatibility](#dependency-compatibility) |
 | D2 | Superseded | Temporarily use Elixir 1.19.5 / OTP 26.2.5.21 | Prevented current HTTPoison/Hackney upgrades; replaced by D1 | [Original failure](#context) |
-| D3 | Superseded | Keep all upstream constraints in the earlier dependency refresh | Assent security remediation now uses D5; unchanged pyinfra policy is retained by D6 | [Dependency compatibility](#dependency-compatibility) |
+| D3 | Superseded | Keep all upstream constraints in the earlier dependency refresh | Later security maintenance has its own ruling record; unchanged pyinfra policy is retained by D6 | [Dependency compatibility](#dependency-compatibility) |
 
 ## Context
 
@@ -135,16 +134,10 @@ does not replace hosted correctness verification or establish a fixed timing imp
 
 ## Dependency compatibility
 
-The original refresh retained all upstream constraints (D3). The security update supersedes its
-Assent restriction with D5: explicitly select Assent 0.3.2 despite stable AshAuthentication 4.x's
-`> 0.2.0 and < 0.3.0` requirement. Taskman configures password and API-key strategies; no application
-OAuth/OIDC provider calls the changed APIs. Independent review found no blocking compatibility issue
-for that configuration. The upstream pin protects against OAuth changes, notably Google's claim
-mapping; reassess the override before enabling OAuth/OIDC. The implementation is verified, while
-operator acknowledgement of this ruling remains pending in the
+The original refresh retained all upstream constraints (D3). Subsequent Assent security maintenance
+is outside that original CI refresh and is recorded in the
 [security-release handoff](../handoffs/dependency-security-release.md#rulings-awaiting-acknowledgement).
-See the [Assent changelog](https://github.com/pow-auth/assent/blob/v0.3.2/CHANGELOG.md) and
-[AshAuthentication's constraint rationale](https://github.com/team-alembic/ash_authentication/issues/1097).
+That handoff is the sole owner of the active ruling and its compatibility evidence.
 
 D6 retains the unchanged accepted pyinfra constraints: stable pyinfra 3.10.0 requires Paramiko below
 5, python-dateutil below 3, and types-paramiko below 5. Paramiko 5.x fixes CVE-2026-44405, but forcing
