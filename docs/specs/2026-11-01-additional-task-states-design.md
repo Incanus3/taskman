@@ -1,8 +1,9 @@
 # Additional Task states and Not Planned
 
 **Status:** Implemented, locally verified, independently reviewed and operator accepted.
-D1–D13 and the written design remain operator approved.
+D1–D14 and the written design remain operator approved.
 **Date:** 2026-11-01
+**Updated:** 2026-11-06
 
 Keep ordinary Task selectors compact as the supported state vocabulary grows. Introduce
 **Not Planned** for work currently considered unnecessary but retained for reconsideration.
@@ -25,8 +26,9 @@ Additional states remain valid everywhere; contextual visibility only limits UI 
 | D11 | Accepted | Retain ephemeral PubSub delivery and current-state resnapshots | Missed events are not replayed; transient historical state use may be lost | [Delivery limits](#accepted-delivery-and-publication-limitations) |
 | D12 | Accepted | Retain the existing enclosing-transaction publication limitation | An outer rollback can leave an already-delivered availability observation for an uncommitted change | [Publication limits](#accepted-delivery-and-publication-limitations) |
 | D13 | Accepted | Native select fallback offers all real states directly, without a reveal pseudo-option | Contextual decluttering applies to the enhanced picker; native fallback may show unused additional states | [Fallback](#presentation-and-fallback-constraints) |
+| D14 | Accepted | Compute hierarchy display rows and selected location paths from loaded data during rendering; keep availability prepared | Rendering repeats in-memory traversal and sorting; avoids stored display projections and their synchronization | [Hierarchy display](#implemented-derived-state-ownership) |
 
-D1–D13, the complete written specification and the implementation plan are operator approved.
+D1–D14, the complete written specification and the implementation plan are operator approved.
 Approval covers this feature and the Will Not Do blocker correction. Execution follows the
 approved implementation-session boundary; pushing, merging and deployment retain their separate
 authorization gates.
@@ -43,7 +45,7 @@ count, tree-ancestry and dismissal guarantees remain authoritative.
 
 Implemented owners are `Tasks.Status`, the Ecto schema and check-constraint migration, compact
 `ChangeNotifications.Event` observations, `ProjectLive.Locations` within `Workspace.State`,
-`StateOptions`, cached `ProjectLive.Tasks.Hierarchy` projections, shared picker/tooltip modules,
+`StateOptions`, loaded-data `ProjectLive.Tasks.Hierarchy` projections, shared picker/tooltip modules,
 and CLI Registry metadata. The main listing still persists full inclusion lists under its existing
 browser key; URL snapshots override storage and defaults. Hierarchy selection remains independent
 and modal-local. These are contextual display rules, not public input restrictions.
@@ -147,8 +149,8 @@ count-delta or notification optimizations recorded in the separate research.
 | Task leaves an additional state, moves away, or is removed | Retain the source location's observed state; no last-instance query or decrement |
 | List create/reparent/remove reconciliation | Update valid location keys and rebuild aggregate unions from retained direct entries and current List ancestry; never discover Task states by scanning the listing |
 | Navigate between Lists, change Include child Lists, change form ownership | Read the appropriate prepared entry; no discovery query or subtree aggregation |
-| Open/close a filter or state picker | Read already prepared options; no availability query, Task scan or aggregate rebuild |
-| Hierarchy load/refresh | Derive its state set once from the complete loaded tree before rendering its filter; opening that filter performs no traversal |
+| Open/close a filter or state picker | Read already prepared options; no availability query, Task scan for availability discovery, or aggregate rebuild |
+| Hierarchy load/refresh | Derive its state availability once from the complete loaded tree; filter opening performs no availability discovery or persistence reads. Display filtering/sorting/path lookup may traverse loaded data. |
 | Return to a Project or re-establish the connection | Conservatively refresh current database state whether or not any events were missed; merge surviving page observations and rebuild aggregates |
 | Full reload/new LiveView mount | Discard observed availability and bootstrap from current Tasks |
 
@@ -438,9 +440,27 @@ and a generic state-machine framework are outside scope.
 `Workspace.State.locations` owns the page-local `Locations` collection. Navigation, location
 choices and additional-state selectors project the same retained List records/topology.
 `StateOptions` combines canonical definitions with prepared availability and the current value;
-checkbox merges preserve absent preferences. `ProjectLive.Tasks.Hierarchy` caches its available
-states and sorted visible tree when the complete tree loads or the selection/sort changes.
-Rendering a filter reads those projections; it does not rescan Tasks or rebuild a subtree.
+checkbox merges preserve absent preferences. `ProjectLive.Tasks.Hierarchy` prepares available
+states when the complete tree loads. It derives filtered/sorted display rows and the selected
+location path from the already-loaded tree during rendering, without persistence reads.
+
+D14 replaces the earlier blanket prohibition on hierarchy traversal during filter rendering.
+The operator's goal is responsive interactions, especially avoiding database queries merely
+to open controls. Hierarchies are expected to rarely exceed 20 items; this is expected usage,
+not a hard size limit or measured latency guarantee. Repeating pure filtering, sorting and
+path lookup avoids storing derived display data and tracking its invalidation dependencies.
+Keeping those display projections cached would avoid repeated computation but add state and
+synchronization risk. Incremental or asynchronous computation adds coordination and stale-result
+handling without a demonstrated need at the expected size. Revisit if measured interaction
+latency at actual hierarchy sizes warrants more complexity. Availability summaries remain
+prepared separately; this decision does not permit selector-time discovery queries.
+
+The D14 correction passed 98 focused hierarchy/filter/sort/autosave/update tests and ordinary
+`mix precommit` (1,473 passed, 3 skipped, 60 browser exclusions). The rendered filter test
+checks the actual loaded tree, selected location path, disclosure and selection behavior,
+and no persistence reads while opening/closing the filter. No latency benchmark or new browser
+run was performed for this server-side state simplification. Independent scoped review found
+no issues in the correction.
 
 Description visuals use a manual top-layer popover, with stable source-specific hidden text and
 `aria-describedby` independent of visual timing. A 120 ms description-only leave grace permits
@@ -516,7 +536,7 @@ evidence above.
 | Scope isolation | Direct Project, direct List, descendant Lists and whole Project; cross-Project isolation, empty populations and filters excluding every matching Task |
 | Availability updates | Monotonic direct observations, local/external updates, topology rollups, Project return, reconnect/remount and reload reset; unrelated events do not discover states |
 | Event contract | Publisher values after create/update/move, nil owning List, duplicate/out-of-order delivery, not-yet-loaded Lists and malformed/foreign snapshots |
-| No added interactive reads | Selector opening performs no availability queries or tree traversal; external observation performs no Task read |
+| No added interactive reads | Selector opening performs no persistence reads or availability discovery; in-memory hierarchy display filtering/sorting/path lookup is allowed. External observation performs no Task read. |
 | Shared location model | Navigation projections, direct/subtree selection and Project-root whole-Project summary; preserve exact counts/current direct-Task presence |
 | Preferences | Main/hierarchy independence, absent-state retention, navigation/live changes, empty submissions, explicit URL snapshots and existing browser storage |
 | Forms | Automatic availability, selected draft retention, conditional reveal-action visibility, validation/autosave lifetime, reveal retention across Task navigation in the same dialog, close/reopen and new-creation-form reset, independent hierarchy lifetime and all-real-state native fallback |

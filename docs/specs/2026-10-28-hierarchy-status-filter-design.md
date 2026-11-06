@@ -14,9 +14,10 @@ for responsive layout, selection, manual expansion, recovery and focus. The
 > **Superseded in part:** The [additional Task states
 > contract](2026-11-01-additional-task-states-design.md) extends the vocabulary to seven states and
 > supersedes unconditional option display with contextual availability. All supported states start
-> checked; absent preferences survive within the dialog. Availability and the visible sorted tree
-> are cached before rendering; opening the filter does not traverse the hierarchy. Ancestry,
-> selection, expansion and dismissal remain authoritative.
+> checked; absent preferences survive within the dialog. Availability is prepared before rendering.
+> Display filtering, sorting and selected-location path lookup use the loaded tree during rendering;
+> opening the filter adds no database reads or availability discovery. Ancestry, selection,
+> expansion and dismissal remain authoritative.
 
 ## Decisions
 
