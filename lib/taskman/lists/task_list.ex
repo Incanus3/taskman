@@ -24,7 +24,7 @@ defmodule Taskman.Lists.TaskList do
   def changeset(task_list, attrs) do
     task_list
     |> cast(attrs, [:name])
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, &trim_if_string/1)
     |> validate_required([:project_id, :name])
     |> validate_length(:name, max: 255)
     |> foreign_key_constraint(:project_id)
@@ -33,4 +33,7 @@ defmodule Taskman.Lists.TaskList do
     )
     |> unique_constraint(:name, name: :lists_sibling_name_index)
   end
+
+  defp trim_if_string(value) when is_binary(value), do: String.trim(value)
+  defp trim_if_string(value), do: value
 end

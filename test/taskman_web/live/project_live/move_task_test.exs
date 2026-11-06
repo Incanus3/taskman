@@ -869,6 +869,8 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
       project_id: task.project_id,
       entity_id: task.id,
       lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: [:parent_task_id, :list_id, :status]
     })
 

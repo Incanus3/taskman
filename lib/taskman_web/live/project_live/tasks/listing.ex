@@ -6,7 +6,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
   alias Taskman.Tasks
   alias Taskman.Tasks.{ListingProjection, Task}
   alias TaskmanWeb.ProjectLive.{TaskTablePreferences, Workspace}
-  alias TaskmanWeb.ProjectLive.Tasks.Move
+  alias TaskmanWeb.ProjectLive.Tasks.{Move, StateOptions}
 
   @events [
     "toggle_task_status_filter",
@@ -146,7 +146,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Listing do
 
   def handle_event("filter_task_statuses", %{"status_filter" => params}, socket)
       when is_map(params) do
-    state = State.apply_statuses(socket.assigns.listing, Map.get(params, "statuses", []))
+    selected =
+      StateOptions.merge_selection(
+        socket.assigns.listing.visible_statuses,
+        Workspace.available_statuses(socket.assigns.workspace),
+        Map.get(params, "statuses", [])
+      )
+
+    state = State.apply_statuses(socket.assigns.listing, Enum.map(selected, &Atom.to_string/1))
 
     {:noreply,
      socket

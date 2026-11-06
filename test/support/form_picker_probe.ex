@@ -69,6 +69,9 @@ defmodule TaskmanWeb.FormPickerProbe do
             id="meeting-room"
             label="Room"
             options={[{"Blue", "blue"}, {"Red", "red"}, {"North room", "North room / 2"}]}
+            visible_values={["blue", "red"]}
+            option_metadata={%{"North room / 2" => %{description: "A quiet room", additional: true}}}
+            action={%{label: "Show more rooms", event: "reveal_rooms"}}
             context_id="meeting-41"
           />
           <SelectPicker.select_picker

@@ -135,6 +135,12 @@
   box-shadow: 0 10px 22px rgb(0 0 0 / 0.3);
 }
 
+.taskman-tooltip[popover] {
+  margin: 0;
+  inset: auto;
+  pointer-events: auto;
+}
+
 #task-detail-layout {
   position: relative;
   display: grid;
@@ -783,4 +789,45 @@
 .date-time-picker-popup [data-vc-date-selected] [data-vc-date-btn] {
   background: var(--color-indigo-500);
   color: white;
+}
+
+/* Keep contextual backgrounds below utility hover and selected states. */
+@layer components {
+  .task-state-additional-option {
+    background-color: rgb(148 163 184 / 0.08);
+  }
+}
+
+/* Keep the semantic action footer visible while real choices scroll. */
+.select-picker-popup:popover-open {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Additional real choices remain distinct beneath selection and keyboard focus. */
+.select-picker [role="option"][data-additional="true"][aria-selected="false"] {
+  background-color: rgb(51 65 85 / 0.4);
+}
+.select-picker [role="option"][data-additional="true"][aria-selected="false"]:hover {
+  background-color: rgb(71 85 105 / 0.6);
+}
+.select-picker-action {
+  flex-shrink: 0;
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  border-top: 1px solid rgb(51 65 85);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  color: rgb(165 180 252);
+  text-align: left;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.select-picker-action:hover,
+.select-picker-action:focus-visible {
+  background-color: rgb(30 41 59);
+  outline: 2px solid rgb(129 140 248 / 0.5);
+  outline-offset: -2px;
 }

@@ -34,16 +34,38 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
   test "resolved direct blockers and indirect unresolved blockers allow Done" do
     project = project_fixture(%{})
     done_blocker = task_fixture(project, %{status: :done})
-    abandoned_blocker = task_fixture(project, %{status: :will_not_do})
     indirect = task_fixture(project)
     blocked = task_fixture(project)
     assert {:ok, _} = Tasks.add_block(project, indirect, done_blocker)
     assert {:ok, _} = Tasks.add_block(project, done_blocker, blocked)
-    assert {:ok, _} = Tasks.add_block(project, abandoned_blocker, blocked)
 
     assert {:ok, updated} = Tasks.update_task(project, blocked, %{status: :done})
     assert updated.status == :done
     assert Tasks.get_task_for_project(project, indirect.id).status == :pending
+  end
+
+  for state <- [:not_planned, :will_not_do] do
+    test "#{state} remains unresolved and requires explicit Done confirmation" do
+      project = project_fixture(%{})
+
+      assert {:ok, blocker} =
+               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+
+      blocked = task_fixture(project)
+      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+      assert {:error, {:unresolved_blockers, [summary]}} =
+               Tasks.update_task(project, blocked, %{status: :done})
+
+      assert summary.id == blocker.id
+      assert summary.status == unquote(state)
+      assert Tasks.get_task_for_project(project, blocked.id).status == :pending
+
+      assert {:ok, %{status: :done}} =
+               Tasks.update_task(project, blocked, %{status: :done},
+                 done_confirmation: {:ids, [blocker.id]}
+               )
+    end
   end
 
   test "an already Done Task needs no confirmation for a no-op or ordinary edit" do
@@ -106,7 +128,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
     assert updated.status == :done
 
-    assert {:ok, _} = Tasks.update_task(project, second, %{status: :will_not_do})
+    assert {:ok, _} = Tasks.update_task(project, second, %{status: :done})
 
     assert {:ok, updated} =
              Tasks.update_task(project, empty, %{status: :done},

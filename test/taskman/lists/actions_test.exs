@@ -168,6 +168,22 @@ defmodule Taskman.Lists.ActionsTest do
     assert Lists.get_list_for_project(project, task_list.id).name == "After"
   end
 
+  for name <- [nil, "", "   "] do
+    test "rejects blank List rename #{inspect(name)} without changing the saved name" do
+      project = project_fixture(%{})
+      task_list = list_fixture(project, nil, %{name: "Planning"})
+      attrs = %{name: unquote(name)}
+
+      changeset = Lists.change_list(task_list, attrs)
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+      assert Lists.get_list_for_project(project, task_list.id).name == "Planning"
+
+      assert {:error, changeset} = Lists.rename_list(project, task_list, attrs)
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+      assert Lists.get_list_for_project(project, task_list.id).name == "Planning"
+    end
+  end
+
   test "a changed List name publishes an updated workspace event" do
     project = project_fixture(%{})
     task_list = list_fixture(project, nil, %{name: "Before"})

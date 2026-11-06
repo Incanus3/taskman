@@ -1,5 +1,7 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
-  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
+  alias Taskman.Tasks.{Hierarchy, HierarchyNode, Status, Task}
+
+  alias TaskmanWeb.ProjectLive.Tasks.StateOptions
 
   @enforce_keys [:hierarchy, :root_id, :expanded_node_ids, :required_node_ids]
   defstruct hierarchy: nil,
@@ -7,6 +9,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
             expanded_node_ids: MapSet.new(),
             required_node_ids: MapSet.new(),
             visible_statuses: Task.statuses(),
+            available_statuses: Status.default_values(),
             filter_open?: false,
             sort: {:status, :desc},
             sort_open?: false
@@ -17,6 +20,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
           expanded_node_ids: MapSet.t(pos_integer()),
           required_node_ids: MapSet.t(pos_integer()),
           visible_statuses: [Task.status()],
+          available_statuses: [Task.status()],
           filter_open?: boolean(),
           sort: {atom(), :asc | :desc},
           sort_open?: boolean()
@@ -48,14 +52,28 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
       | hierarchy: hierarchy,
         root_id: root_id,
         expanded_node_ids: expanded_node_ids,
-        required_node_ids: required_node_ids
+        required_node_ids: required_node_ids,
+        available_statuses: available_statuses(hierarchy.root)
     }
+  end
+
+  defp available_statuses(root) do
+    represented = represented_statuses(root, MapSet.new())
+
+    Enum.filter(
+      Status.values(),
+      &(&1 in Status.default_values() or MapSet.member?(represented, &1))
+    )
+  end
+
+  defp represented_statuses(node, acc) do
+    Enum.reduce(node.children, MapSet.put(acc, node.task.status), &represented_statuses/2)
   end
 
   @spec filter_statuses(t(), [term()]) :: t()
   def filter_statuses(%__MODULE__{} = state, statuses) when is_list(statuses) do
     visible_statuses =
-      Enum.filter(Task.statuses(), &(&1 in statuses || Atom.to_string(&1) in statuses))
+      StateOptions.merge_selection(state.visible_statuses, state.available_statuses, statuses)
 
     %{state | visible_statuses: visible_statuses}
   end
@@ -78,9 +96,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   @spec visible_root(t()) :: HierarchyNode.t() | nil
   def visible_root(%__MODULE__{hierarchy: nil}), do: nil
 
-  def visible_root(%__MODULE__{} = state) do
-    project_node(state.hierarchy.root, state)
-  end
+  def visible_root(%__MODULE__{} = state), do: project_node(state.hierarchy.root, state)
 
   defp project_node(%HierarchyNode{} = node, state) do
     children =
@@ -107,12 +123,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   defp sort_value(task, :id), do: task.id
   defp sort_value(task, :title), do: String.downcase(task.title)
 
-  defp sort_value(task, :status) do
-    Map.fetch!(
-      %{will_not_do: 0, icebox: 1, pending: 2, in_progress: 3, in_review: 4, done: 5},
-      task.status
-    )
-  end
+  defp sort_value(task, :status), do: Status.rank(task.status)
 
   defp sort_value(task, :priority) do
     Map.fetch!(%{none: 0, low: 1, medium: 2, high: 3, urgent: 4}, task.priority)
@@ -145,13 +156,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
     do: !MapSet.member?(state.required_node_ids, task_id)
 
   @spec selected_location_path(t()) :: [Taskman.Lists.TaskList.t()]
-  def selected_location_path(%__MODULE__{
-        hierarchy: %Hierarchy{root: root, selected_task_id: selected_task_id}
-      }) do
-    selected_location_path(root, selected_task_id) || []
-  end
+  def selected_location_path(%__MODULE__{hierarchy: nil}), do: []
 
-  def selected_location_path(%__MODULE__{}), do: []
+  def selected_location_path(%__MODULE__{hierarchy: hierarchy}) do
+    selected_location_path(hierarchy.root, hierarchy.selected_task_id) || []
+  end
 
   @spec clear(t()) :: t()
   def clear(_state), do: empty()

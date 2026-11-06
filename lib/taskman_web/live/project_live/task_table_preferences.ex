@@ -5,10 +5,11 @@ defmodule TaskmanWeb.ProjectLive.TaskTablePreferences do
   import Phoenix.LiveView, only: [push_event: 3]
 
   alias Taskman.Tasks.Task
+  alias Taskman.Tasks.Status
   alias TaskmanWeb.ProjectLive.Tasks.Listing
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
 
-  def defaults, do: %{include_children: false, statuses: Task.statuses() -- [:done, :will_not_do]}
+  def defaults, do: %{include_children: false, statuses: Status.initial_listing_values()}
 
   def normalize_statuses(statuses) when is_list(statuses) do
     Task.statuses()

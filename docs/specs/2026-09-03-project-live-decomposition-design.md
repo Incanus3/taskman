@@ -3,7 +3,7 @@
 ## Status
 
 Implemented and verified; the missing-location recovery workstream remains separately gated.
-Updated: 2026-09-19.
+Updated: 2026-11-05.
 
 ## Context
 
@@ -108,6 +108,7 @@ lib/taskman_web/live/
     workspace.ex
     reconciliation.ex
     list_edit.ex
+    list_editing.ex
     tasks/
       listing.ex
       creation.ex
@@ -196,6 +197,8 @@ Workflow modules decide when to navigate and call `Paths` to construct the targe
 
 ### `TaskmanWeb.ProjectLive.Workspace`
 
+The Project and List editor collaborator extractions are implemented and operator accepted.
+
 `Workspace` owns Project, List, and sidebar workflows:
 
 - Project validation and creation events;
@@ -208,6 +211,31 @@ Workflow modules decide when to navigate and call `Paths` to construct the targe
 
 `ListEdit` remains a socket-free state value. `Workspace` coordinates that value with LiveView
 assigns, contexts, streams, and navigation.
+
+Project validation and submission delegate to `ProjectEditing`, a socket-free workflow using
+the existing `ProjectEdit` form state and public `Projects` context. It owns fresh-target checks,
+validation, persisted attribute selection, and persistence-error translation. It returns editor
+state or an explicit creation/update outcome; it never calls `Workspace`. `Workspace` retains
+modal lifecycle, preset-event guards, selected-Project assignment, page title, streams, and route
+patches. This isolates editing policy without coupling the collaborator to workspace state or
+introducing callbacks.
+
+List opening, validation, and submission delegate to `ListEditing`, another socket-free workflow.
+It consumes the selected Project and action parameters when opening, and the existing `ListEdit`
+state plus submitted attributes when validating or saving. It preserves active-Project action
+guards and fresh scoped target lookup through `ListEdit` and the public `Lists` context. Results
+are changed editor state, an unchanged outcome, or explicit creation/rename outcomes carrying
+the persisted List and, for creation, its parent. Changeset errors remain on the editor; missing
+targets remain no-ops.
+
+`Workspace` applies those outcomes. Creation expands the parent, clears the editor, refreshes
+canonical locations, then refreshes counts. Rename refreshes locations, updates selected List
+metadata and its path, clears the editor, then refreshes navigation, Listing, and Movement in
+that order. Cancellation and external editor reconciliation also stay in `Workspace`.
+`ListEditing` never receives a socket or calls back into workspace coordination. This follows
+the Project editing boundary instead of moving socket handlers wholesale, which would couple
+the new collaborator to topology, streams and other workflows. The cost is retaining explicit
+outcome application in `Workspace`; that code expresses its coordination responsibility.
 
 `Workspace.State` groups workspace-local assigns. Its transformations include:
 
@@ -408,6 +436,8 @@ Workspace
   ├── Tasks.Listing
   └── Tasks.Movement
 
+Workspace → ListEditing → ListEdit / public Lists context
+
 All workflow modules
   ├── Paths
   ├── existing socket-free state modules
@@ -604,6 +634,8 @@ Existing tests are the behavior-preservation baseline:
 - `project_live/project_live_test.exs` covers primary routing, creation, and detail behavior.
 - `project_live/lists_test.exs`, `list_edit_test.exs`, and
   `workspace_updates_test.exs` cover `Workspace`.
+- `project_live/list_editing_test.exs` covers socket-free List editor target resolution,
+  validation, persistence outcomes, and error retention.
 - `project_live/task_table_test.exs` covers `Listing`.
 - `project_live/autosave_test.exs` and `tasks/autosave_test.exs` cover `Editing` and autosave state.
 - `project_live/tasks/parent_picker_test.exs` and component tests cover `ParentSelection`.
@@ -614,6 +646,14 @@ Tests should continue to assert observable LiveView outcomes. New direct unit te
 for pure `Paths` behavior, workflow-state invariants, or a newly explicit tagged-result contract,
 but the refactor must not replace application-level coverage with implementation-detail
 assertions.
+
+The Project and List editor extractions and blank-List-rename correction passed independent
+scoped review. The final ordinary `mix precommit` gate passed 1,473 tests with 3 executable-only
+skips and 60 browser exclusions. Focused tests cover editor state, fresh scoped targets, retained
+error drafts, navigation and successful saves; nil, empty and whitespace List names return
+required-field errors without changing the persisted name. Concurrent second-check disappearance
+and Project persistence-error paths were checked by code comparison rather than deterministic
+race tests. Browser tests were not rerun for these server-side editor extractions.
 
 Required final verification:
 

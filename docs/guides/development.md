@@ -244,6 +244,11 @@ add assertions that only verify styling details such as spacing, colors, or alig
 assertions are appropriate only when they establish functional user-visible state, such as whether
 an element is shown or hidden.
 
+The default ExUnit concurrency is limited to the smaller of twice the online scheduler count
+and the configured test database pool size. `TEST_DATABASE_POOL_SIZE` changes that pool and
+therefore the default concurrency bound. Explicit `mix test --max-cases N` and `--trace` still
+override the default; ordinary `mix test` and `mix precommit` need no concurrency flag.
+
 Use focused LiveView tests for server-owned interactions and rendered outcomes. Keep Wallaby browser
 tests to the minimum: add one only when the behavior cannot be verified with a standard LiveView or
 lower-layer test, and do not repeat those tests in Wallaby. Name the specific browser behavior the

@@ -10,6 +10,29 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
   setup %{conn: conn}, do: {:ok, conn: log_in_user(conn, user_fixture())}
 
+  for state <- [:not_planned, :will_not_do] do
+    test "Done warns for a #{state} blocker until confirmed", %{conn: conn} do
+      project = project_fixture(%{})
+      task = task_fixture(project)
+
+      assert {:ok, blocker} =
+               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+
+      assert {:ok, _} = Tasks.add_block(project, blocker, task)
+      {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+      view
+      |> form("#task-form", task: %{status: "done"})
+      |> render_change(%{"_target" => ["task", "status"]})
+
+      assert has_element?(view, "#task-done-warning")
+      assert has_element?(view, "#task-done-blocker-#{blocker.id}")
+      assert Tasks.get_task_for_project(project, task.id).status == :pending
+      view |> element("#confirm-task-done") |> render_click()
+      assert Tasks.get_task_for_project(project, task.id).status == :done
+    end
+  end
+
   test "Done selection keeps its draft until explicit confirmation or cancellation", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{status: :in_progress})

@@ -11,6 +11,7 @@ defmodule TaskmanWeb.Tasks.Table do
   def priority_label(priority), do: Priority.label(priority)
 
   attr :form, Phoenix.HTML.Form, required: true
+  attr :available_statuses, :list, default: Taskman.Tasks.Status.default_values()
   attr :visible_statuses, :list, required: true
   attr :open?, :boolean, required: true
 
@@ -85,8 +86,14 @@ defmodule TaskmanWeb.Tasks.Table do
           <input type="hidden" name={@form[:statuses].name <> "[]"} value="" />
           <label
             :for={{label, status} <- status_options()}
+            :if={status in @available_statuses}
             for={"#{@id}-option-#{status}"}
-            class="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/[0.06]"
+            data-tooltip={Status.description(status)}
+            data-tooltip-mode="description"
+            class={[
+              "flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-200 transition hover:bg-white/[0.06]",
+              status in Taskman.Tasks.Status.additional_values() && "task-state-additional-option"
+            ]}
           >
             <input
               id={"#{@id}-option-#{status}"}
@@ -95,9 +102,11 @@ defmodule TaskmanWeb.Tasks.Table do
               value={status}
               checked={status in @visible_statuses}
               data-task-status={status}
+              aria-describedby={"#{@id}-description-#{status}"}
               class="size-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-2 focus:ring-indigo-400/40 focus:ring-offset-0"
             />
             <span>{label}</span>
+            <span id={"#{@id}-description-#{status}"} hidden>{Status.description(status)}</span>
           </label>
         </.form>
       </div>
@@ -275,6 +284,7 @@ defmodule TaskmanWeb.Tasks.Table do
     <article
       id={@id}
       data-task-depth={@depth}
+      data-tooltip-scope
       class="task-listing-row relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-3 xl:col-span-full xl:grid-cols-subgrid xl:gap-x-0.5 xl:gap-y-0"
     >
       <.link
@@ -377,12 +387,17 @@ defmodule TaskmanWeb.Tasks.Table do
       >
         <span
           id={"task-status-#{task.id}"}
+          data-tooltip={Status.description(task.status)}
+          data-tooltip-mode="description"
+          data-tooltip-pass-through
+          aria-describedby={"task-status-description-#{task.id}"}
           class={[
             "pointer-events-none relative z-10 w-fit rounded-full px-2.5 py-1 text-xs font-semibold xl:justify-self-center",
             Status.badge_classes(task.status)
           ]}
         >
           {status_label(task.status)}
+          <span id={"task-status-description-#{task.id}"} hidden>{Status.description(task.status)}</span>
         </span>
         <span
           id={"task-priority-#{task.id}"}

@@ -98,7 +98,9 @@ defmodule Taskman.ChangeNotifications do
       operation: operation,
       project_id: project_id,
       entity_id: entity_id,
-      lock_version: Map.get(task, String.to_existing_atom("lock_version")),
+      lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: normalize_fields(fields)
     }
 

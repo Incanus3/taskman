@@ -4,6 +4,9 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
 
+  import Taskman.TasksFixtures
+
+  alias TaskmanWeb.ProjectLive.Locations
   alias TaskmanWeb.ProjectLive.ListEdit
   alias TaskmanWeb.ProjectLive.Workspace
   alias TaskmanWeb.ProjectLive.Workspace.State
@@ -118,6 +121,246 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
       assert updated.assigns.workspace.selected_project == project
       assert_downstream_unchanged(socket, updated)
     end
+  end
+
+  test "navigation and paths reuse one List snapshot and availability bootstrap" do
+    project = project_fixture(%{})
+    parent = list_fixture(project)
+    child = list_fixture(project, parent)
+    task_fixture(project, child, %{status: :not_planned})
+
+    socket =
+      reconciliation_socket(State.select_location(State.new(), project, parent, false, [parent]))
+
+    watch_location_queries()
+
+    socket = Workspace.ensure_locations(socket, project)
+    assert_receive :location_list_query
+    refute_receive :location_list_query, 0
+    assert_receive :availability_query
+    refute_receive :availability_query, 0
+
+    for _ <- 1..3 do
+      refreshed = socket |> Workspace.ensure_locations(project) |> Workspace.refresh()
+      assert Workspace.lists(refreshed) == [parent, child]
+      assert Workspace.location_path(refreshed, project, child) == [parent, child]
+
+      assert Locations.available(
+               refreshed.assigns.workspace.locations,
+               project.id,
+               parent.id,
+               :subtree
+             ) == [:icebox, :pending, :in_progress, :in_review, :done, :not_planned, :will_not_do]
+    end
+
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+  end
+
+  test "List reconciliation updates the owner with one authoritative snapshot and no Task discovery" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+
+    socket =
+      reconciliation_socket(
+        State.select_location(State.new(), project, task_list, false, [task_list])
+      )
+
+    socket = Workspace.ensure_locations(socket, project)
+    {:ok, renamed} = Taskman.Lists.rename_list(project, task_list, %{name: "Current"})
+    watch_location_queries()
+
+    {updated, {:location_changed, [^renamed]}} =
+      Workspace.reconcile(socket, %Event{
+        entity: :list,
+        operation: :updated,
+        project_id: project.id,
+        entity_id: task_list.id,
+        fields: [:name]
+      })
+
+    assert Workspace.lists(updated) == [renamed]
+    assert_receive :location_list_query
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+  end
+
+  test "ordinary creation location validation reads the owner without another List query" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+
+    socket =
+      reconciliation_socket(
+        State.select_location(State.new(), project, task_list, false, [task_list])
+      )
+
+    socket = Workspace.ensure_locations(socket, project)
+    watch_location_queries()
+
+    socket =
+      Phoenix.Component.assign(
+        socket,
+        :creation,
+        TaskmanWeb.ProjectLive.Tasks.Creation.State.empty()
+      )
+
+    socket = TaskmanWeb.ProjectLive.Tasks.Creation.apply_route(socket, %{})
+
+    {:noreply, validated} =
+      TaskmanWeb.ProjectLive.Tasks.Creation.handle_event(
+        "validate_task",
+        %{"task" => %{"title" => "Draft"}, "location" => "list:#{task_list.id}"},
+        socket
+      )
+
+    assert validated.assigns.creation.enabled?
+    assert validated.assigns.creation.location == "list:#{task_list.id}"
+
+    assert {"List #{task_list.name}", "list:#{task_list.id}"} in validated.assigns.creation.location_options
+
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+  end
+
+  test "creation parent authority reconciles an unknown owning List before preparing options" do
+    project = project_fixture(%{})
+    task_list = list_fixture(project)
+
+    socket =
+      reconciliation_socket(
+        State.select_location(State.new(), project, task_list, false, [task_list])
+      )
+
+    socket =
+      socket
+      |> Workspace.ensure_locations(project)
+      |> Phoenix.Component.assign(:creation, TaskmanWeb.ProjectLive.Tasks.Creation.State.empty())
+
+    child = list_fixture(project, task_list)
+    parent_task = task_fixture(project, child, %{})
+    watch_location_queries()
+
+    socket =
+      TaskmanWeb.ProjectLive.Tasks.Creation.apply_route(socket, %{
+        "parent_task_id" => to_string(parent_task.id)
+      })
+
+    assert socket.assigns.creation.location == "list:#{child.id}"
+    assert socket.assigns.creation.location_error == nil
+    assert {"List #{child.name}", "list:#{child.id}"} in socket.assigns.creation.location_options
+    assert Workspace.lists(socket) == [task_list, child]
+    assert_receive :location_list_query
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+  end
+
+  test "Project return merges a fresh snapshot while ordinary same-Project routes reuse it" do
+    project = project_fixture(%{})
+    other_project = project_fixture(%{})
+    parent = list_fixture(project)
+    child = list_fixture(project, parent)
+    task = task_fixture(project, child, %{})
+    socket = navigation_socket()
+    socket = Workspace.assign_location(socket, project, parent, false, false, false, [])
+    watch_location_queries()
+
+    socket = Workspace.assign_location(socket, project, child, false, false, true, [])
+    assert socket.assigns.workspace.location_path == [parent, child]
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+
+    socket = Workspace.assign_location(socket, other_project, nil, false, false, false, [])
+    assert_receive :location_list_query
+    assert_receive :availability_query
+    {:ok, _} = Taskman.Tasks.update_task(project, task, %{status: :not_planned})
+    socket = Workspace.assign_location(socket, project, parent, false, false, false, [])
+    assert_receive :location_list_query
+    assert_receive :availability_query
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+
+    assert :not_planned in Locations.available(
+             socket.assigns.workspace.locations,
+             project.id,
+             parent.id,
+             :subtree
+           )
+
+    refute :not_planned in Locations.available(
+             socket.assigns.workspace.locations,
+             other_project.id,
+             nil,
+             :subtree
+           )
+  end
+
+  test "route authority reconciles previously unknown and changed List metadata without discovering Task states" do
+    project = project_fixture(%{})
+    parent = list_fixture(project)
+
+    socket =
+      Workspace.assign_location(navigation_socket(), project, parent, false, false, false, [])
+
+    child = list_fixture(project, parent)
+    watch_location_queries()
+
+    {:ok, ^project, ^child} =
+      Workspace.resolve_location(%{"project_id" => project.id, "list_id" => child.id})
+
+    socket = Workspace.assign_location(socket, project, child, false, false, false, [])
+    assert Workspace.lists(socket) == [parent, child]
+    assert socket.assigns.workspace.location_path == [parent, child]
+    assert_receive :location_list_query
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+
+    {:ok, renamed} = Taskman.Lists.rename_list(project, child, %{name: "Updated"})
+
+    {:ok, ^project, ^renamed} =
+      Workspace.resolve_location(%{"project_id" => project.id, "list_id" => child.id})
+
+    socket = Workspace.assign_location(socket, project, renamed, false, false, false, [])
+    assert socket.assigns.workspace.location_path == [parent, renamed]
+    assert_receive :location_list_query
+    refute_receive :location_list_query, 0
+    refute_receive :availability_query, 0
+  end
+
+  defp navigation_socket do
+    reconciliation_socket(State.new())
+    |> Phoenix.Component.assign(
+      :listing,
+      TaskmanWeb.ProjectLive.Tasks.Listing.State.new([:pending])
+    )
+  end
+
+  defp watch_location_queries do
+    owner = self()
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:taskman, :repo, :query],
+        fn _, _, metadata, owner ->
+          if self() == owner do
+            cond do
+              String.starts_with?(metadata.query, "SELECT DISTINCT t0.\"list_id\", t0.\"status\"") ->
+                send(owner, :availability_query)
+
+              String.contains?(metadata.query, "FROM \"lists\" AS l0") and
+                  String.contains?(metadata.query, "ORDER BY l0.\"inserted_at\"") ->
+                send(owner, :location_list_query)
+
+              true ->
+                :ok
+            end
+          end
+        end,
+        owner
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
   end
 
   defp reconciliation_socket(state) do

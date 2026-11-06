@@ -2,12 +2,12 @@ defmodule TaskmanWeb.ProjectLive do
   use TaskmanWeb, :live_view
 
   alias Taskman.Projects
-  alias Taskman.Lists
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.ListingRow
 
+  alias TaskmanWeb.ProjectLive.Locations
   alias TaskmanWeb.ProjectLive.Paths
   alias TaskmanWeb.ProjectLive.ShareTaskView
   alias TaskmanWeb.ProjectLive.TaskTablePreferences
@@ -186,8 +186,6 @@ defmodule TaskmanWeb.ProjectLive do
 
     case Workspace.resolve_location(params) do
       {:ok, project, task_list} ->
-        location_path = Workspace.location_path(project, task_list)
-
         socket =
           socket
           |> clear_modal_state_for_action(action, params)
@@ -197,7 +195,7 @@ defmodule TaskmanWeb.ProjectLive do
             false,
             false,
             include_children?,
-            location_path
+            []
           )
           |> Listing.refresh()
 
@@ -577,7 +575,7 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp related_task_path_fn(workspace) do
-    task_lists = Lists.list_lists_for_project(workspace.selected_project)
+    task_lists = Locations.lists(workspace.locations, workspace.selected_project.id)
     fn summary -> related_task_path(workspace, task_lists, summary) end
   end
 
@@ -604,4 +602,23 @@ defmodule TaskmanWeb.ProjectLive do
     RecoveryWorkflow.blocked?(socket) or
       (socket.assigns.workspace.location_not_found? and not ordinary_creation_active?(socket))
   end
+
+  defp form_status_options(workspace, form, list_id, revealed?) do
+    TaskmanWeb.ProjectLive.Tasks.StateOptions.for_form(
+      workspace.locations,
+      workspace.selected_project.id,
+      list_id,
+      form[:status].value,
+      revealed?
+    )
+  end
+
+  defp creation_list_id("list:" <> id) do
+    case Integer.parse(id) do
+      {value, ""} when value > 0 -> value
+      _ -> nil
+    end
+  end
+
+  defp creation_list_id(_), do: nil
 end

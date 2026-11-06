@@ -6,6 +6,12 @@
 
 **Updated:** 2026-09-29
 
+> **Superseded in part:** The [additional Task states
+> contract](2026-11-01-additional-task-states-design.md#closed-work-can-still-block-other-tasks)
+> supersedes the Done-or-Will-Not-Do resolution rule: only Done resolves blockers. Not Planned and
+> Will Not Do remain unresolved; existing warning, confirmation, force, locking and conflict
+> contracts are preserved.
+
 ## Purpose and authority
 
 This design covers directed Blocks / Blocked by links between Tasks in any Projects and explicit
@@ -52,7 +58,7 @@ delivered behavior, architecture, and verification limits.
 ### Lifecycle
 
 - All statuses remain human selectable. A direct blocker is resolved for the Done warning only at
-  `done` or `will_not_do`. Indirect blockers do not trigger it.
+  `done`. Not Planned and Will Not Do remain unresolved. Indirect blockers do not trigger it.
 - The warning applies when an existing Task moves from any non-Done status into Done. A Done no-op
   against the current persisted status or ordinary field edit needs no new confirmation. An
   explicitly submitted unchanged status still participates in optimistic conflict checks; a stale

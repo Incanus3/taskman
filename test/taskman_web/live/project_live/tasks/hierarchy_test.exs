@@ -121,7 +121,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     refute TaskHierarchy.expanded?(filtered, 4)
     assert filtered.hierarchy == source
     assert state.hierarchy == source
-    assert filtered.visible_statuses == [:pending]
+    assert filtered.visible_statuses == [:pending, :not_planned]
   end
 
   test "no checked statuses retains only the current path and navigation recomputes it" do
@@ -136,8 +136,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     navigated = TaskHierarchy.load(filtered, hierarchy(5))
     assert tree_ids(TaskHierarchy.visible_root(navigated)) == [1, 4, 5]
     assert TaskHierarchy.expanded?(navigated, 4)
-    assert navigated.visible_statuses == []
-    assert TaskHierarchy.load(navigated, other_hierarchy()).visible_statuses == []
+    assert navigated.visible_statuses == [:not_planned]
+    assert TaskHierarchy.load(navigated, other_hierarchy()).visible_statuses == [:not_planned]
     assert TaskHierarchy.clear(navigated).visible_statuses == Task.statuses()
   end
 
@@ -168,8 +168,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
 
     state = TaskHierarchy.load(TaskHierarchy.empty(), source)
     projected = TaskHierarchy.visible_root(state)
-    assert Enum.map(projected.children, & &1.task.id) == [3, 4, 2, 5]
-    assert Enum.map(Enum.at(projected.children, 0).children, & &1.task.id) == [7, 6]
+    assert Enum.map(projected.children, & &1.task.id) == [5, 3, 4, 2]
+    assert Enum.map(Enum.at(projected.children, 1).children, & &1.task.id) == [7, 6]
     assert state.hierarchy == source
   end
 
@@ -203,18 +203,58 @@ defmodule TaskmanWeb.ProjectLive.Tasks.HierarchyTest do
     end
 
     assert Enum.map(TaskHierarchy.visible_root(state).children, & &1.task.id) == [
+             7,
              5,
              4,
              3,
              6,
-             2,
-             7
+             2
            ]
 
     assert Enum.map(
              TaskHierarchy.visible_root(TaskHierarchy.sort_by(state, :status)).children,
              & &1.task.id
-           ) == [7, 2, 6, 3, 4, 5]
+           ) == [2, 6, 3, 4, 5, 7]
+  end
+
+  test "all states sort in canonical order in either direction" do
+    children = [
+      status_node(2, :will_not_do),
+      status_node(3, :not_planned),
+      status_node(4, :done),
+      status_node(5, :in_review),
+      status_node(6, :in_progress),
+      status_node(7, :pending),
+      status_node(8, :icebox)
+    ]
+
+    state =
+      TaskHierarchy.load(TaskHierarchy.empty(), %Hierarchy{
+        selected_task_id: 1,
+        root: hierarchy_node(1, children)
+      })
+
+    assert Enum.map(TaskHierarchy.visible_root(state).children, & &1.task.status) == [
+             :will_not_do,
+             :not_planned,
+             :done,
+             :in_review,
+             :in_progress,
+             :pending,
+             :icebox
+           ]
+
+    ascending = TaskHierarchy.sort_by(state, :status)
+
+    assert Enum.map(TaskHierarchy.visible_root(ascending).children, & &1.task.status) == [
+             :icebox,
+             :pending,
+             :in_progress,
+             :in_review,
+             :done,
+             :not_planned,
+             :will_not_do
+           ]
   end
 
   test "sort survives tree changes and filtering, preserves expansion, and resets on clear" do

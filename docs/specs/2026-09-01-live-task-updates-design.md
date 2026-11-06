@@ -9,6 +9,13 @@ relationship invalidations and linked-detail refetch. The publication boundary b
 current top-level context implementation and its limitation against the original enclosing-transaction
 requirement.
 
+> **Superseded in part:** The [additional Task states
+> contract](2026-11-01-additional-task-states-design.md#task-events-carry-the-persisted-state-and-location)
+> extends the metadata-only event restriction with compact persisted Task status/location
+> observations. Its shared page-local location owner and resnapshot/retention rules apply to
+> availability; canonical entity refetch, conflict handling and ephemeral delivery remain
+> authoritative.
+
 ## Design-time context
 
 Taskman is intentionally useful to humans in the browser and to agents through the versioned JSON
@@ -99,14 +106,25 @@ LiveView and the JSON API. A context-neutral `Taskman.ChangeNotifications` modul
 construction, workspace- and Project-topic naming, subscription, and publication. Web modules do
 not publish mutation events themselves.
 
-The event contract contains only routing and reconciliation metadata:
+The event contract contains routing/reconciliation metadata plus the bounded Task observation:
 
 - entity: `project`, `list`, `task`, `comment`, or `relationship`;
 - operation: `created`, `updated`, `moved`, or `invalidated`;
 - owning Project ID;
 - entity ID;
-- the persisted Task `lock_version` for Task events; and
+- the persisted Task `lock_version` for Task events;
+- persisted `status` and `list_id` on every Task create/update/move event, with nil explicitly
+  meaning direct Project ownership; and
 - the set of fields changed by the mutation.
+
+Task observations use the persisted result already supplied to `publish_task/3`; other event types
+carry no Task state/location snapshot. Availability validates supported state, nil/positive List ID
+and matching Project, then merges set unions without per-client Task reads. Unknown List IDs are
+retained until topology reconciliation; malformed snapshots cause no fallback read. No full Task,
+draft, descriptive fields or public metadata endpoint are introduced. Existing presentation/count
+refetches remain independent. Project return and connection restoration resnapshot current state;
+remount discards page observations. Ephemeral delivery cannot recover transient state use, and an
+outer transaction rollback may leave an already-delivered observation until reload/remount.
 
 Comment events identify their owning Task with `task_id`. Relationship events group sorted,
 deduplicated local endpoint IDs in `task_ids`, allowing one event per affected Project even when

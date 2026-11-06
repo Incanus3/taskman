@@ -350,6 +350,38 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert project_id == project.id
   end
 
+  test "Not Planned is accepted by create, update and explicit list filters", %{conn: conn} do
+    project = project_fixture(%{})
+    collection = "/api/v1/projects/#{project.id}/tasks"
+
+    assert %{"data" => %{"id" => id, "status" => "not_planned"}} =
+             conn
+             |> post(collection, %{
+               "task" => %{"title" => "Reconsider later", "status" => "not_planned"}
+             })
+             |> json_response(201)
+
+    task = task_fixture(project)
+
+    assert %{"data" => %{"status" => "not_planned"}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "not_planned"}})
+             |> json_response(200)
+
+    assert %{"data" => tasks} =
+             conn |> get(collection <> "?statuses[]=not_planned") |> json_response(200)
+
+    assert Enum.sort(Enum.map(tasks, & &1["id"])) == Enum.sort([id, task.id])
+    assert Enum.all?(tasks, &(&1["status"] == "not_planned"))
+
+    assert %{"error" => %{"code" => "validation_failed", "fields" => %{"status" => [_]}}} =
+             conn
+             |> patch("#{collection}/#{task.id}", %{"task" => %{"status" => "unknown"}})
+             |> json_response(422)
+
+    assert Tasks.get_task_for_project(project, task.id).status == :not_planned
+  end
+
   test "POST creates a Task in a List with every editable field", %{conn: conn} do
     project = project_fixture(%{})
     root = list_fixture(project, %{name: "Planning"})
@@ -487,6 +519,40 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert %{
              "error" => %{"code" => "validation_failed", "fields" => %{"title" => [_]}}
            } = json_response(conn, 422)
+  end
+
+  for state <- [:not_planned, :will_not_do] do
+    test "PATCH Done requires confirmation for a #{state} blocker", %{conn: conn} do
+      project = project_fixture(%{})
+
+      assert {:ok, blocker} =
+               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+
+      blocked = task_fixture(project)
+      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+      path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
+
+      assert %{
+               "error" => %{
+                 "code" => "unresolved_blockers",
+                 "message" => "Review unresolved direct blockers before marking Done",
+                 "blockers" => [summary]
+               }
+             } =
+               conn |> patch(path, %{"task" => %{"status" => "done"}}) |> json_response(409)
+
+      assert summary["id"] == blocker.id
+      assert summary["status"] == Atom.to_string(unquote(state))
+      assert Tasks.get_task_for_project(project, blocked.id).status == :pending
+
+      assert %{"data" => %{"status" => "done"}} =
+               conn
+               |> patch(path, %{
+                 "task" => %{"status" => "done"},
+                 "confirmation" => %{"unresolved_blocker_ids" => [blocker.id]}
+               })
+               |> json_response(200)
+    end
   end
 
   test "PATCH Done warns with direct unresolved blocker summaries and changes no fields", %{

@@ -13,6 +13,7 @@
 
 ## Specifications
 
+- [Additional Task states and Not Planned (implemented and operator accepted; local verification limits recorded)](specs/2026-11-01-additional-task-states-design.md)
 - [Upload staging outside deployment records (implemented and operator accepted; native evidence remains limited to the earlier relocation)](specs/2026-10-30-upload-staging-design.md)
 - [Modal-local hierarchy status filter (implemented and operator accepted)](specs/2026-10-28-hierarchy-status-filter-design.md)
 - [Shared form controls: select and staged date/time pickers (implemented and accepted)](specs/2026-10-28-form-controls-design.md)
@@ -71,6 +72,7 @@
 
 ## Research
 
+- [Notification read amplification: small payload and targeted refresh opportunities](research/2026-11-01-notification-read-amplification.md)
 - [Invitation inbox-placement investigation and evidence limits](research/2026-10-31-invitation-inbox-placement.md)
 - [Verification timeout assessment and approved bounded-phase correction (implemented and locally verified)](research/2026-10-07-verification-timeout-review.md)
 - [UFW Python API and host-helper integration evaluation](research/2026-10-01-ufw-python-api-evaluation.md)

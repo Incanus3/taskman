@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
+  alias TaskmanWeb.ProjectLive.Workspace
   alias TaskmanWeb.ProjectLive.Paths
 
   alias TaskmanWeb.ProjectLive.Tasks.{
@@ -19,7 +20,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     RelatedTasksPicker
   }
 
-  @events ~w(toggle_hierarchy_sort close_hierarchy_sort sort_hierarchy toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
+  @events ~w(reveal_task_edit_states toggle_hierarchy_sort close_hierarchy_sort sort_hierarchy toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
 
   defmodule State do
     alias Taskman.Tasks.Task
@@ -30,6 +31,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     defstruct selected_task: nil,
               not_found?: false,
               detail_open?: false,
+              additional_states_revealed?: false,
               autosave: Autosave.empty(),
               hierarchy: Hierarchy.empty(),
               related_tasks: %{blocks: [], blocked_by: []},
@@ -39,6 +41,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
             selected_task: Task.t() | nil,
             not_found?: boolean(),
             detail_open?: boolean(),
+            additional_states_revealed?: boolean(),
             autosave: Autosave.t(),
             hierarchy: Hierarchy.t(),
             related_tasks: map(),
@@ -98,7 +101,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
     @spec clear(t()) :: t()
     def clear(%__MODULE__{} = state) do
-      %{clear_transient(state) | detail_open?: false, hierarchy: Hierarchy.clear(state.hierarchy)}
+      %{
+        clear_transient(state)
+        | detail_open?: false,
+          additional_states_revealed?: false,
+          hierarchy: Hierarchy.clear(state.hierarchy)
+      }
     end
   end
 
@@ -212,6 +220,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("reveal_task_edit_states", _params, socket) do
+    {:noreply, update_state(socket, &%{&1 | additional_states_revealed?: true})}
+  end
+
   def handle_event("toggle_hierarchy_sort", _params, socket) do
     {:noreply,
      update_state(socket, fn state ->
@@ -526,6 +538,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   defp sync_autosave(socket, autosave, task) do
+    socket =
+      case socket.assigns.editing.selected_task do
+        %Task{status: status, list_id: list_id}
+        when status != task.status or list_id != task.list_id ->
+          Workspace.observe_task(socket, task)
+
+        _unchanged_persisted_location_or_status ->
+          socket
+      end
+
     hierarchy_changed? =
       case socket.assigns.editing.selected_task do
         %Task{title: title, status: status, priority: priority} ->

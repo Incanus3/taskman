@@ -36,8 +36,12 @@
     </div>
     <div
       id="workspace-content"
+      data-project-id={@workspace.selected_project && @workspace.selected_project.id}
       phx-hook="TaskmanWeb.ProjectLive.TaskTablePreferences"
       data-task-statuses={Enum.map_join(Task.statuses(), ",", &Atom.to_string/1)}
+      data-default-task-statuses={
+        Enum.map_join(Taskman.Tasks.Status.initial_listing_values(), ",", &Atom.to_string/1)
+      }
       data-preferences-hydrated={to_string(@preferences_hydrated?)}
       inert={not is_nil(RecoveryWorkflow.view(@recovery))}
       class="h-full"
@@ -283,6 +287,7 @@
                 </button>
                 <Table.status_filter
                   form={@listing.status_filter_form}
+                  available_statuses={Workspace.available_statuses(@workspace)}
                   visible_statuses={@listing.visible_statuses}
                   open?={@listing.filter_open?}
                 />
@@ -506,8 +511,17 @@
       <h2 id="task-modal-title" class="pr-10 text-xl font-semibold tracking-tight text-slate-100">
         Add task
       </h2>
+      <% status_options =
+        form_status_options(
+          @workspace,
+          @creation.form,
+          creation_list_id(@creation.location),
+          @creation.additional_states_revealed?
+        ) %>
       <Form.form
         form={@creation.form}
+        status_values={status_options.values}
+        reveal_states_event={if(status_options.hidden?, do: "reveal_task_creation_states")}
         mode={:new}
         change="validate_task"
         submit="save_task"
@@ -582,12 +596,21 @@
           </:actions>
         </Detail.header>
       </:header>
+      <% status_options =
+        form_status_options(
+          @workspace,
+          @editing.autosave.form,
+          @editing.selected_task.list_id,
+          @editing.additional_states_revealed?
+        ) %>
       <Detail.detail
         task={@editing.selected_task}
         comments={@comments}
         comment_stream={@streams.comments}
         project={@workspace.selected_project}
         task_autosave={@editing.autosave}
+        status_values={status_options.values}
+        reveal_states_event={if(status_options.hidden?, do: "reveal_task_edit_states")}
         related_tasks={@editing.related_tasks}
         related_picker={@editing.related_picker}
         related_task_path={related_task_path_fn(@workspace)}

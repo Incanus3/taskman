@@ -5,6 +5,9 @@ defmodule TaskmanWeb.SelectPicker do
   attr :id, :string, required: true
   attr :label, :string, required: true
   attr :options, :list, required: true
+  attr :visible_values, :list, default: nil
+  attr :option_metadata, :map, default: %{}
+  attr :action, :map, default: nil
   attr :disabled, :boolean, default: false
   attr :context_id, :any, default: nil
 
@@ -29,6 +32,11 @@ defmodule TaskmanWeb.SelectPicker do
         data-input-id={@id}
         data-value={to_string(@field.value)}
         data-options={Jason.encode!(@option_data)}
+        data-visible-values={
+          Jason.encode!(@visible_values && Enum.map(@visible_values, &to_string/1))
+        }
+        data-option-metadata={Jason.encode!(@option_metadata)}
+        data-action={Jason.encode!(@action)}
         data-context-id={@context_id}
         data-invalid={to_string(@invalid?)}
         hidden
@@ -48,13 +56,18 @@ defmodule TaskmanWeb.SelectPicker do
           <.icon name="hero-chevron-down" class="size-4 shrink-0 text-slate-400" />
         </button>
         <div
-          id={@id <> "-options"}
-          role="listbox"
-          aria-labelledby={@id <> "-label"}
-          tabindex="-1"
+          id={@id <> "-popup"}
           popover="manual"
-          class="fixed m-0 max-h-60 space-y-1 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 p-1 text-slate-200 shadow-xl shadow-black/30 outline-none"
+          class="select-picker-popup fixed m-0 rounded-xl border border-slate-700 bg-slate-950 p-1 text-slate-200 shadow-xl shadow-black/30 outline-none"
         >
+          <div
+            id={@id <> "-options"}
+            role="listbox"
+            aria-labelledby={@id <> "-label"}
+            tabindex="-1"
+            class="min-h-0 space-y-1 overflow-y-auto outline-none"
+          >
+          </div>
         </div>
         <template data-picker-option>
           <button

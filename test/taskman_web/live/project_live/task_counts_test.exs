@@ -230,6 +230,31 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_header(view, 1, 1)
   end
 
+  test "rejected additional-state autosave retains its draft without observing availability", %{
+    conn: conn
+  } do
+    Ecto.Adapters.SQL.query!(Taskman.Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+
+    Ecto.Adapters.SQL.query!(
+      Taskman.Repo,
+      "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'not_planned')"
+    )
+
+    project = project_fixture(%{})
+    task = task_fixture(project, %{status: :pending})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "not_planned"})
+    |> render_change(%{"_target" => ["task", "status"]})
+
+    assert has_element?(view, "#task-status-save-status[data-state='failed']")
+    assert has_element?(view, "#task-status option[selected][value='not_planned']")
+    view |> element("#task-status-filter-button") |> render_click()
+    refute has_element?(view, "#task-status-filter-option-not_planned")
+    assert Tasks.get_task_for_project(project, task.id).status == :pending
+  end
+
   test "local List creation populates its zero count without changing the header", %{conn: conn} do
     project = project_fixture(%{})
     task_fixture(project, %{status: :pending})
@@ -357,6 +382,8 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
       project_id: project.id,
       entity_id: task.id,
       lock_version: task.lock_version,
+      status: task.status,
+      list_id: task.list_id,
       fields: [:status]
     })
 

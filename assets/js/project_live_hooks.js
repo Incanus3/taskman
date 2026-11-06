@@ -101,11 +101,16 @@ const TaskTablePreferences = {
     window.removeEventListener("phx:navigate", this.onNavigate)
   },
 
+  reconnected() {
+    const projectId = this.el.dataset.projectId
+    if (projectId) this.pushEvent("resnapshot_task_locations", {project_id: projectId})
+  },
+
   hydratePreferences() {
     const explicit = this.explicitSnapshot()
     const includeChildren = explicit.include_children ?? this.readIncludeChildren() ?? false
     const statuses = explicit.statuses ?? this.readStatuses() ??
-      this.allowedStatuses.filter(status => !["done", "will_not_do"].includes(status))
+      this.normalizeStatuses(this.el.dataset.defaultTaskStatuses?.split(",")) ?? []
 
     this.persist(explicit)
 

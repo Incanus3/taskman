@@ -7,7 +7,17 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Lists
   alias Taskman.Projects
   alias Taskman.Tasks
-  alias TaskmanWeb.ProjectLive.{ListEdit, Paths, ProjectEdit}
+  alias Taskman.Tasks.{Status, Task}
+
+  alias TaskmanWeb.ProjectLive.{
+    ListEdit,
+    ListEditing,
+    Locations,
+    Paths,
+    ProjectEdit,
+    ProjectEditing
+  }
+
   alias TaskmanWeb.ProjectLive.Tasks.{Listing, Movement}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State, as: ListingState
   alias __MODULE__, as: Workspace
@@ -16,9 +26,10 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   alias Taskman.Projects.Project
 
   defmodule State do
-    alias TaskmanWeb.ProjectLive.{ListEdit, ProjectEdit}
+    alias TaskmanWeb.ProjectLive.{ListEdit, Locations, ProjectEdit}
 
-    defstruct selected_project: nil,
+    defstruct locations: Locations.new(),
+              selected_project: nil,
               subscribed_project_id: nil,
               project_not_found?: false,
               selected_list: nil,
@@ -33,6 +44,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
               list_edit: ListEdit.empty()
 
     @type t :: %__MODULE__{
+            locations: Locations.t(),
             selected_project: Project.t() | nil,
             subscribed_project_id: pos_integer() | nil,
             project_not_found?: boolean(),
@@ -185,7 +197,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   def selected_location(%State{selected_list: %TaskList{id: list_id}}), do: {:list, list_id}
   def selected_location(%State{}), do: nil
 
-  @events ~w(toggle_project_selector close_project_selector toggle_mobile_sidebar close_mobile_sidebar open_project_new open_project_edit cancel_project_edit select_project_color validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
+  @events ~w(resnapshot_task_locations toggle_project_selector close_project_selector toggle_mobile_sidebar close_mobile_sidebar open_project_new open_project_edit cancel_project_edit select_project_color validate_project save_project toggle_navigation_node open_list_form cancel_list_form validate_list save_list)
 
   @spec events() :: [String.t()]
   def events, do: @events
@@ -229,17 +241,140 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
 
   def remembered_project(_id), do: :stale
 
-  @spec location_path(Project.t(), TaskList.t() | nil) :: [TaskList.t()]
-  def location_path(_project, nil), do: []
-
-  def location_path(project, %TaskList{} = task_list) do
-    project
-    |> Lists.list_lists_for_project()
+  @spec location_path(Phoenix.LiveView.Socket.t(), Project.t(), TaskList.t() | nil) :: [
+          TaskList.t()
+        ]
+  def location_path(socket, project, task_list) do
+    socket.assigns.workspace.locations
+    |> Locations.lists(project.id)
     |> Lists.path_for(task_list)
+  end
+
+  @doc "Loads one Project's locations and availability only if it has not been bootstrapped."
+  @spec ensure_locations(Phoenix.LiveView.Socket.t(), Project.t()) :: Phoenix.LiveView.Socket.t()
+  def ensure_locations(socket, %Project{} = project) do
+    if Locations.loaded?(socket.assigns.workspace.locations, project.id),
+      do: socket,
+      else: load_locations(socket, project)
+  end
+
+  @doc "Merges a fresh active-Project snapshot with observations retained by this page."
+  @spec resnapshot_locations(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def resnapshot_locations(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket
+      ),
+      do: load_locations(socket, project)
+
+  def resnapshot_locations(socket), do: socket
+
+  @doc "Observes a successful persisted local result without reading Tasks."
+  @spec observe_task(Phoenix.LiveView.Socket.t(), Task.t()) :: Phoenix.LiveView.Socket.t()
+  def observe_task(socket, %Task{id: id, project_id: project_id, list_id: list_id, status: status})
+      when is_integer(id) and id > 0 do
+    observe_snapshot(socket, project_id, list_id, status)
+  end
+
+  def observe_task(socket, _task), do: socket
+
+  @doc "Merges relevant persisted event snapshots; malformed snapshots never cause a lookup."
+  @spec observe_task_event(Phoenix.LiveView.Socket.t(), Event.t()) :: Phoenix.LiveView.Socket.t()
+  def observe_task_event(socket, %Event{
+        entity: :task,
+        operation: operation,
+        entity_id: id,
+        project_id: project_id,
+        list_id: list_id,
+        status: status,
+        fields: fields,
+        lock_version: version
+      })
+      when operation in [:created, :updated, :moved] and is_integer(id) and id > 0 and
+             is_list(fields) and (is_nil(version) or (is_integer(version) and version >= 0)) do
+    relevant? = operation in [:created, :moved] or Enum.any?(fields, &(&1 in [:status, :list_id]))
+
+    if relevant? and Enum.all?(fields, &is_atom/1),
+      do: observe_snapshot(socket, project_id, list_id, status),
+      else: socket
+  end
+
+  def observe_task_event(socket, _event), do: socket
+
+  defp observe_snapshot(socket, project_id, list_id, status) do
+    workspace = socket.assigns.workspace
+
+    if is_integer(project_id) and project_id > 0 and
+         project_id(workspace.selected_project) == project_id and status in Status.values() and
+         (is_nil(list_id) or (is_integer(list_id) and list_id > 0)) do
+      locations = Locations.observe(workspace.locations, project_id, list_id, status)
+
+      if locations == workspace.locations,
+        do: socket,
+        else: update_workspace(socket, &%{&1 | locations: locations})
+    else
+      socket
+    end
+  end
+
+  @doc "Returns the selected listing's prepared direct or subtree choices."
+  def available_statuses(%State{selected_project: %Project{id: id}} = workspace) do
+    list_id = workspace.selected_list && workspace.selected_list.id
+    scope = if workspace.include_children?, do: :subtree, else: :direct
+    Locations.available(workspace.locations, id, list_id, scope)
+  end
+
+  def available_statuses(%State{}), do: Status.default_values()
+
+  @doc "Refreshes active-Project List topology without discovering Task states."
+  @spec refresh_locations(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def refresh_locations(
+        %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket
+      ),
+      do: reconcile_locations(socket, project, Lists.list_lists_for_project(project))
+
+  def refresh_locations(socket), do: socket
+
+  @doc "Returns active-Project canonical Lists without reading persistence."
+  @spec lists(Phoenix.LiveView.Socket.t()) :: [TaskList.t()]
+  def lists(%{
+        assigns: %{workspace: %{selected_project: %Project{id: id}, locations: locations}}
+      }),
+      do: Locations.lists(locations, id)
+
+  def lists(_socket), do: []
+
+  defp load_locations(socket, project) do
+    socket = sync_project_task_subscription(socket, project)
+    task_lists = Lists.list_lists_for_project(project)
+    observed = Tasks.additional_states_by_location(project)
+
+    update_workspace(
+      socket,
+      &%{&1 | locations: Locations.load(&1.locations, project.id, task_lists, observed)}
+    )
+  end
+
+  defp reconcile_locations(socket, project, task_lists) do
+    update_workspace(
+      socket,
+      &%{&1 | locations: Locations.reconcile_lists(&1.locations, project.id, task_lists)}
+    )
   end
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
+  def handle_event("resnapshot_task_locations", %{"project_id" => supplied_id}, socket) do
+    workspace = socket.assigns.workspace
+    selected_id = project_id(workspace.selected_project)
+
+    valid? =
+      is_integer(selected_id) and workspace.subscribed_project_id == selected_id and
+        supplied_id in [selected_id, to_string(selected_id)]
+
+    {:noreply, if(valid?, do: resnapshot_locations(socket), else: socket)}
+  end
+
+  def handle_event("resnapshot_task_locations", _params, socket), do: {:noreply, socket}
+
   def handle_event("toggle_project_selector", _params, socket) do
     socket = update_workspace(socket, &State.toggle_project_selector/1)
 
@@ -307,25 +442,9 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     do: put_project_validation(socket, params)
 
   def handle_event("save_project", %{"project" => params}, socket) do
-    edit = socket.assigns.workspace.project_edit
-
-    case ProjectEdit.target(edit) do
-      {:ok, :new, _project} ->
-        validate_project_submission(socket, edit, params)
-
-      {:ok, :edit, project} ->
-        case Projects.get_project(project.id) do
-          nil ->
-            unavailable = ProjectEdit.reconcile(edit, [])
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
-
-          current ->
-            validate_project_submission(socket, ProjectEdit.reconcile(edit, [current]), params)
-        end
-
-      :error ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.project_edit
+    |> ProjectEditing.save(params)
+    |> apply_project_editing(socket)
   end
 
   def handle_event("toggle_navigation_node", params, socket) when is_map(params) do
@@ -342,17 +461,9 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def handle_event("open_list_form", params, socket) do
-    case action_project(socket, params) do
-      %Project{} = project ->
-        case Map.get(params, "kind") do
-          "new" -> open_new_list_form(socket, project, parent_id_param(params))
-          "rename" -> open_rename_list_form(socket, project, list_id_param(params))
-          _other -> {:noreply, socket}
-        end
-
-      _project_not_selected ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.selected_project
+    |> ListEditing.open(params)
+    |> apply_list_editing(socket)
   end
 
   def handle_event("cancel_list_form", _params, socket) do
@@ -363,156 +474,102 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def handle_event("validate_list", %{"list" => list_params}, socket) do
-    case ListEdit.validate(socket.assigns.workspace.list_edit, list_params) do
-      {:ok, list_edit} ->
-        {:noreply,
-         socket
-         |> update_workspace(&Workspace.State.put_list_edit(&1, list_edit))
-         |> refresh()}
-
-      {:error, :not_found} ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.list_edit
+    |> ListEditing.validate(list_params)
+    |> apply_list_editing(socket)
   end
 
   def handle_event("save_list", %{"list" => list_params}, socket) do
-    case {socket.assigns.workspace.list_edit, ListEdit.target(socket.assigns.workspace.list_edit)} do
-      {%ListEdit{project: %Project{} = project}, {:ok, {:new, parent}, _task_list}} ->
-        case Lists.create_list(project, parent, list_params) do
-          {:ok, _task_list} ->
-            expanded_node_ids =
-              if parent do
-                MapSet.put(socket.assigns.workspace.expanded_node_ids, {:list, parent.id})
-              else
-                socket.assigns.workspace.expanded_node_ids
-              end
-
-            {:noreply,
-             socket
-             |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
-             |> clear_list_edit()
-             |> Listing.refresh_counts()}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_edit_error(socket, changeset)}
-
-          {:error, :not_found} ->
-            {:noreply, socket}
-        end
-
-      {%ListEdit{project: %Project{} = project}, {:ok, {:rename, current_list}, _task_list}} ->
-        case Lists.rename_list(project, current_list, list_params) do
-          {:ok, renamed_list} ->
-            selected_list =
-              case socket.assigns.workspace.selected_list do
-                %TaskList{id: id} when id == renamed_list.id -> renamed_list
-                selected -> selected
-              end
-
-            selected_project = socket.assigns.workspace.selected_project
-
-            selected_location_path =
-              case {selected_project, selected_list} do
-                {%Project{} = current_project, %TaskList{}} ->
-                  location_path(current_project, selected_list)
-
-                _no_selected_list ->
-                  []
-              end
-
-            {:noreply,
-             socket
-             |> update_workspace(
-               &%{&1 | selected_list: selected_list, location_path: selected_location_path}
-             )
-             |> clear_list_edit()
-             |> refresh()
-             |> Listing.refresh()
-             |> Movement.refresh()}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign_list_edit_error(socket, changeset)}
-
-          {:error, :not_found} ->
-            {:noreply, socket}
-        end
-
-      _invalid_form ->
-        {:noreply, socket}
-    end
+    socket.assigns.workspace.list_edit
+    |> ListEditing.save(list_params)
+    |> apply_list_editing(socket)
   end
 
-  defp validate_project_submission(socket, edit, params) do
-    case ProjectEdit.validate(edit, params) do
-      {:ok, validated} ->
-        cond do
-          not validated.changeset.valid? ->
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, validated))}
+  defp apply_list_editing({:changed, list_edit}, socket) do
+    {:noreply,
+     socket
+     |> update_workspace(&Workspace.State.put_list_edit(&1, list_edit))
+     |> refresh()}
+  end
 
-          true ->
-            persist_project_edit(socket, validated)
-        end
+  defp apply_list_editing(:unchanged, socket), do: {:noreply, socket}
 
-      {:error, :not_found} ->
-        {:noreply, socket}
-    end
+  defp apply_list_editing({:created, _task_list, parent}, socket) do
+    expanded_node_ids =
+      if parent do
+        MapSet.put(socket.assigns.workspace.expanded_node_ids, {:list, parent.id})
+      else
+        socket.assigns.workspace.expanded_node_ids
+      end
+
+    {:noreply,
+     socket
+     |> update_workspace(&%{&1 | expanded_node_ids: expanded_node_ids})
+     |> clear_list_edit()
+     |> refresh_locations()
+     |> Listing.refresh_counts()}
+  end
+
+  defp apply_list_editing({:renamed, renamed_list}, socket) do
+    socket = refresh_locations(socket)
+
+    selected_list =
+      case socket.assigns.workspace.selected_list do
+        %TaskList{id: id} when id == renamed_list.id -> renamed_list
+        selected -> selected
+      end
+
+    selected_project = socket.assigns.workspace.selected_project
+
+    selected_location_path =
+      case {selected_project, selected_list} do
+        {%Project{} = current_project, %TaskList{}} ->
+          location_path(socket, current_project, selected_list)
+
+        _no_selected_list ->
+          []
+      end
+
+    {:noreply,
+     socket
+     |> update_workspace(
+       &%{&1 | selected_list: selected_list, location_path: selected_location_path}
+     )
+     |> clear_list_edit()
+     |> refresh()
+     |> Listing.refresh()
+     |> Movement.refresh()}
   end
 
   defp put_project_validation(socket, params) do
-    case ProjectEdit.validate(socket.assigns.workspace.project_edit, params) do
-      {:ok, edit} -> {:noreply, update_workspace(socket, &State.put_project_edit(&1, edit))}
-      {:error, :not_found} -> {:noreply, socket}
-    end
+    socket.assigns.workspace.project_edit
+    |> ProjectEditing.validate(params)
+    |> apply_project_editing(socket)
   end
 
-  defp persist_project_edit(socket, edit) do
-    attrs = Map.take(edit.changeset.params || %{}, ["name", "description", "icon", "color"])
-    attrs = Map.put(attrs, "color", Ecto.Changeset.get_field(edit.changeset, :color))
-
-    case ProjectEdit.target(edit) do
-      {:ok, :new, _project} ->
-        case Projects.create_project(attrs) do
-          {:ok, project} ->
-            {:noreply,
-             socket
-             |> update_workspace(&State.close_project_edit/1)
-             |> push_patch(
-               to: Paths.browse_path(project, nil, socket.assigns.workspace.include_children?)
-             )}
-
-          {:error, changeset} ->
-            {:noreply, project_edit_error(socket, edit, changeset)}
-        end
-
-      {:ok, :edit, project} ->
-        case Projects.get_project(project.id) do
-          nil ->
-            unavailable = ProjectEdit.reconcile(edit, Projects.list_projects())
-            {:noreply, update_workspace(socket, &State.put_project_edit(&1, unavailable))}
-
-          current ->
-            case Projects.update_project(current, attrs) do
-              {:ok, updated} ->
-                {:noreply,
-                 update_workspace(socket, fn state ->
-                   state
-                   |> State.close_project_edit()
-                   |> Map.put(:selected_project, updated)
-                 end)
-                 |> stream(:projects, Projects.list_projects(), reset: true)}
-
-              {:error, changeset} ->
-                {:noreply, project_edit_error(socket, edit, changeset)}
-            end
-        end
-
-      :error ->
-        {:noreply, socket}
-    end
+  defp apply_project_editing({:changed, edit}, socket) do
+    {:noreply, update_workspace(socket, &State.put_project_edit(&1, edit))}
   end
 
-  defp project_edit_error(socket, edit, changeset) do
-    update_workspace(socket, &State.put_project_edit(&1, ProjectEdit.put_error(edit, changeset)))
+  defp apply_project_editing({:unchanged, _edit}, socket), do: {:noreply, socket}
+
+  defp apply_project_editing({:created, project}, socket) do
+    {:noreply,
+     socket
+     |> update_workspace(&State.close_project_edit/1)
+     |> push_patch(
+       to: Paths.browse_path(project, nil, socket.assigns.workspace.include_children?)
+     )}
+  end
+
+  defp apply_project_editing({:updated, project}, socket) do
+    {:noreply,
+     update_workspace(socket, fn state ->
+       state
+       |> State.close_project_edit()
+       |> Map.put(:selected_project, project)
+     end)
+     |> stream(:projects, Projects.list_projects(), reset: true)}
   end
 
   defp navigation_identity(
@@ -540,74 +597,6 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     end
   end
 
-  defp parent_id_param(params), do: Map.get(params, "parent-id", Map.get(params, "parent_id", ""))
-  defp list_id_param(params), do: Map.get(params, "list-id", Map.get(params, "list_id"))
-
-  defp action_project(socket, params) do
-    project_id = Map.get(params, "project-id", Map.get(params, "project_id"))
-
-    case {socket.assigns.workspace.selected_project, project_id} do
-      {%Project{} = project, nil} ->
-        project
-
-      {%Project{id: id} = project, requested_id} when requested_id == id ->
-        project
-
-      {%Project{id: id} = project, requested_id} ->
-        if to_string(requested_id) == Integer.to_string(id), do: project, else: nil
-
-      _other ->
-        nil
-    end
-  end
-
-  defp open_new_list_form(socket, project, parent_id) do
-    case resolve_parent_list(project, parent_id) do
-      {:ok, parent} ->
-        {:noreply,
-         socket
-         |> update_workspace(
-           &Workspace.State.put_list_edit(&1, ListEdit.open_new(project, parent))
-         )
-         |> refresh()}
-
-      :error ->
-        {:noreply, socket}
-    end
-  end
-
-  defp open_rename_list_form(socket, project, list_id) do
-    case Lists.get_list_for_project(project, list_id) do
-      %TaskList{} = task_list ->
-        {:noreply,
-         socket
-         |> update_workspace(
-           &Workspace.State.put_list_edit(&1, ListEdit.open_rename(project, task_list))
-         )
-         |> refresh()}
-
-      nil ->
-        {:noreply, socket}
-    end
-  end
-
-  defp resolve_parent_list(_project, parent_id) when parent_id in [nil, ""], do: {:ok, nil}
-
-  defp resolve_parent_list(project, parent_id) do
-    case Lists.get_list_for_project(project, parent_id) do
-      %TaskList{} = parent -> {:ok, parent}
-      nil -> :error
-    end
-  end
-
-  defp assign_list_edit_error(socket, changeset) do
-    socket
-    |> update_workspace(
-      &Workspace.State.put_list_edit(&1, ListEdit.put_error(&1.list_edit, changeset))
-    )
-    |> refresh()
-  end
-
   defp clear_list_edit(socket) do
     update_workspace(socket, &Workspace.State.clear_list_edit/1)
   end
@@ -615,7 +604,8 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   @doc "Refreshes the active Project's List navigation stream."
   @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def refresh(%{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket) do
-    stream_navigation(socket, project, Lists.list_lists_for_project(project))
+    socket = ensure_locations(socket, project)
+    stream_navigation(socket, project, lists(socket))
   end
 
   def refresh(socket), do: stream(socket, :navigation_nodes, [], reset: true)
@@ -638,7 +628,29 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         nil -> %{}
       end
 
-    {projects, lists_by_project}
+    socket =
+      update_workspace(
+        socket,
+        &%{
+          &1
+          | locations:
+              Locations.retain_projects(
+                &1.locations,
+                Enum.map(projects, fn project -> project.id end)
+              )
+        }
+      )
+
+    socket =
+      case socket.assigns.workspace.selected_project do
+        %Project{} = project ->
+          reconcile_locations(socket, project, Map.fetch!(lists_by_project, project.id))
+
+        nil ->
+          socket
+      end
+
+    {socket, projects, lists_by_project}
   end
 
   defp stream_navigation(socket, project, task_lists) do
@@ -678,6 +690,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     workspace = %{
       workspace
       | selected_project: selected_project,
+        locations: Locations.retain_projects(workspace.locations, Enum.map(projects, & &1.id)),
         project_edit: ProjectEdit.reconcile(workspace.project_edit, projects)
     }
 
@@ -692,7 +705,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
   end
 
   def reconcile(socket, %Event{entity: :list, project_id: project_id}) do
-    {projects, lists_by_project} = workspace_snapshot(socket)
+    {socket, projects, lists_by_project} = workspace_snapshot(socket)
 
     socket =
       socket
@@ -716,7 +729,7 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
           {Phoenix.LiveView.Socket.t(),
            :unchanged | {:location_changed, [TaskList.t()]} | {:location_missing, [TaskList.t()]}}
   def refresh_selected_location(socket) do
-    {projects, lists_by_project} = workspace_snapshot(socket)
+    {socket, projects, lists_by_project} = workspace_snapshot(socket)
     selected_project_id = project_id(socket.assigns.workspace.selected_project)
 
     {socket, outcome} =
@@ -793,6 +806,29 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
         include_children?,
         location_path
       ) do
+    previous_project_id = project_id(socket.assigns.workspace.selected_project)
+    socket = sync_project_task_subscription(socket, selected_project)
+
+    socket =
+      case selected_project do
+        %Project{id: id} = project when id != previous_project_id ->
+          load_locations(socket, project)
+
+        %Project{} = project ->
+          ensure_locations(socket, project)
+
+        nil ->
+          socket
+      end
+
+    socket =
+      reconcile_route_location(socket, selected_project, selected_list, location_not_found?)
+
+    location_path =
+      if selected_project,
+        do: location_path(socket, selected_project, selected_list),
+        else: location_path
+
     workspace =
       socket.assigns.workspace
       |> workspace_location_state(
@@ -810,13 +846,40 @@ defmodule TaskmanWeb.ProjectLive.Workspace do
     projects = Projects.list_projects()
 
     socket
-    |> assign_workspace(workspace)
-    |> sync_project_task_subscription(selected_project)
+    |> assign_workspace(%{
+      workspace
+      | locations: Locations.retain_projects(workspace.locations, Enum.map(projects, & &1.id))
+    })
     |> update(:listing, &ListingState.close_filter/1)
     |> assign(:projects_empty?, projects == [])
     |> stream(:projects, projects, reset: true)
     |> refresh()
   end
+
+  @doc "Reconciles newly authoritative location metadata through the canonical topology owner."
+  @spec reconcile_location(Phoenix.LiveView.Socket.t(), Project.t(), TaskList.t() | nil) ::
+          Phoenix.LiveView.Socket.t()
+  def reconcile_location(socket, %Project{} = project, task_list) do
+    canonical =
+      if task_list,
+        do:
+          Enum.find(
+            Locations.lists(socket.assigns.workspace.locations, project.id),
+            &(&1.id == task_list.id)
+          )
+
+    if canonical != task_list,
+      do: reconcile_locations(socket, project, Lists.list_lists_for_project(project)),
+      else: socket
+  end
+
+  defp reconcile_route_location(socket, %Project{} = project, _task_list, true),
+    do: reconcile_locations(socket, project, Lists.list_lists_for_project(project))
+
+  defp reconcile_route_location(socket, %Project{} = project, task_list, false),
+    do: reconcile_location(socket, project, task_list)
+
+  defp reconcile_route_location(socket, _project, _list, _missing?), do: socket
 
   defp workspace_location_state(
          workspace,

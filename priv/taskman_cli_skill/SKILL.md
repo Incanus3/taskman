@@ -109,7 +109,7 @@ deletion requires that you obtain explicit authority from the user immediately b
 Repository registration selects context, not execution authority. When the operator assigns a
 nonterminal Task, that assignment authorizes bounded updates within its agreed scope, evidence
 comments, and transitions to In Progress or In Review after inspecting the Task, thread and blockers.
-Done, Will Not Do, reopening terminal work, unresolved-blocker overrides, deletion and material
+Done, Not Planned, Will Not Do, reopening terminal work, unresolved-blocker overrides, deletion and material
 scope/priority changes require explicit operator decisions. Runtime activity and passed checks
 never mark work complete. Broader commitments and unassigned work need their own authorization.
 
@@ -118,7 +118,7 @@ read-only archive. An unbound repository keeps its existing tracker. A failed co
 malformed/dangling binding, authentication failure or unavailable server is not an unbound result:
 report it and stop affected tracker operations without falling back to Beads or changing the binding.
 Use `tasks list --include-descendants` for the whole bound Project, and inspect `tasks blocking show`
-before treating a Pending Task as eligible. Done and Will Not Do blockers are resolved. There is
+before treating a Pending Task as eligible. Only Done resolves blockers; Not Planned and Will Not Do remain unresolved. There is
 no computed ready queue or atomic claim; coordinate ownership before parallel pickup, and never
 treat In Progress as a lock. Discovery alone does not authorize execution.
 
@@ -159,7 +159,7 @@ taskman tasks list --host personal --project 7 --status pending --status in_prog
 
 For workflow discovery, an eligible unstarted Task has status `pending` and no unresolved direct
 blockers. `icebox` is not eligible pending work; `in_progress` and `in_review` represent work underway.
-`done` and `will_not_do` are terminal. Taskman has no Blocked lifecycle status: derive a blocked
+`done` and `will_not_do` are terminal. `not_planned` is closed work retained for reconsideration, not completed or blocker-resolving. Taskman has no Blocked lifecycle status: derive a blocked
 condition from current prerequisite evidence rather than inventing a stored state. Display native
 priority names and order them `urgent`, `high`, `medium`, `low`, `none`; do not translate them into
 another tracker's numeric priority scale.
@@ -183,6 +183,31 @@ taskman tasks show --host personal --project 9 42
 
 A search match helps identify a Task; inspect its current detail and applicable assignment authority
 before changing its status or relationships. Search is navigation, not permission to select new work.
+
+## Task states
+
+API and CLI accept every real state, regardless of contextual browser visibility. The canonical
+order for selectors and status sorting is Icebox, Pending, In Progress, In Review, Done,
+Not Planned, Will Not Do. Main browser defaults select only the first four; hierarchy filters start
+with all seven checked. Explicit CLI status filters select exactly the supplied states.
+
+| Value | Meaning |
+|---|---|
+| `icebox` | Intentionally deferred work that is not currently ready to begin. |
+| `pending` | Work that is ready to be started. |
+| `in_progress` | Work actively being performed by a person, an external agent, or both. |
+| `in_review` | Work awaiting human assessment before it can be completed. |
+| `done` | The terminal state for work a human has reviewed and explicitly accepted as complete. |
+| `not_planned` | Work we currently consider unnecessary, retained for reconsideration if the need arises. |
+| `will_not_do` | The terminal state for work explicitly abandoned or declined by the operator. |
+
+Not Planned, Done and Will Not Do are excluded from open counts; explicitly selected closed states
+participate in visible and eligible counts. State changes never remove blocking relationships.
+Not Planned requires an explicit operator decision, like other closed-state choices.
+
+```sh
+taskman tasks list --project 7 --status not_planned --json
+```
 
 ## Blocking relationships and Done
 

@@ -128,6 +128,22 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
     refute has_element?(c.view, "#task-hierarchy-node-#{c.unrelated.id}")
   end
 
+  test "all supported states start checked while options follow the refreshed complete tree", c do
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
+    filter(c.view, ["pending"])
+    {:ok, _} = Tasks.update_task(c.project, c.unrelated, %{status: :not_planned})
+    assert has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned[checked]")
+    refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
+
+    {:ok, _} =
+      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.unrelated.id), %{
+        status: :pending
+      })
+
+    refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
+  end
+
   defp filter(view, statuses) do
     view
     |> form("#task-hierarchy-status-filter-form", hierarchy_status_filter: %{statuses: statuses})

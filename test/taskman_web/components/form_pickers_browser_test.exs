@@ -20,23 +20,114 @@ defmodule TaskmanWeb.FormPickersBrowserTest do
     Browser.visit(session, "http://127.0.0.1:#{port}/")
     Browser.find(session, Query.css("#meeting-start"))
 
-    # Invoke the real globally registered hooks on real rendered controls. Only lifecycle
-    # delivery is manual; DOM events, popovers, focus and calendar library run in Chromium.
+    # LiveView mounts these hooks on its static-page view. Replace only server delivery;
+    # DOM events, popovers, focus and calendar library run in Chromium.
     assert js(session, ~S"""
            window.probeHooks = {};
-           window.probeEvents = [];
+           window.probeEvents = []; window.probePushes = [];
            document.querySelector('#meeting').addEventListener('input', e => probeEvents.push(['input', e.target.id]));
            document.querySelector('#meeting').addEventListener('change', e => probeEvents.push(['change', e.target.id]));
            for (const el of document.querySelectorAll('[phx-hook]')) {
-             const hook = Object.assign({el}, window.liveSocket.hooks[el.getAttribute('phx-hook')]);
+             const hook = window.liveSocket.main.getHook(el);
+             hook.pushEvent = (event, payload) => {
+               probePushes.push([event, payload]);
+               // An already queued validation patch can precede the reveal reply.
+               probeHooks[el.dataset.inputId].updated();
+               el.dataset.visibleValues = 'null';
+               el.dataset.action = 'null';
+               probeHooks[el.dataset.inputId].updated();
+             };
              if (!hook.mounted) return false;
-             hook.mounted();
              probeHooks[el.dataset.inputId] = hook;
            }
            return Object.keys(probeHooks).length === 4;
            """)
 
     %{session: session}
+  end
+
+  test "generic reveal is a separate action that retains value, open state and isolation", %{
+    session: s
+  } do
+    click(s, "meeting-room-trigger")
+    refute js(s, "return !!document.getElementById('meeting-room-option-North%20room%20%2F%202')")
+    click(s, "meeting-room-reveal")
+    assert js(s, "return probePushes") == [["reveal_rooms", %{}]]
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "blue", "red"]
+    assert events(s) == []
+
+    assert js(
+             s,
+             "return document.querySelector('#meeting-room-popup').matches(':popover-open') && document.activeElement.id === 'meeting-room-options'"
+           )
+
+    assert js(
+             s,
+             "return document.querySelector('#meeting-room-options').getAttribute('aria-activedescendant')"
+           ) == "meeting-room-option-North%20room%20%2F%202"
+
+    click(s, "meeting-room-option-North%20room%20%2F%202")
+    assert events(s) == [["change", "meeting-room"]]
+    click(s, "meeting-host-trigger")
+    click(s, "meeting-host-option-blue")
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "North room / 2", "blue"]
+    assert events(s) == [["change", "meeting-room"], ["change", "meeting-host"]]
+  end
+
+  test "ordinary updates preserve keyboard focus on an unactivated reveal action", %{session: s} do
+    click(s, "meeting-room-trigger")
+    Browser.send_keys(s, [:end, :down_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-reveal"
+
+    assert js(s, "probeHooks['meeting-room'].updated(); return document.activeElement.id") ==
+             "meeting-room-reveal"
+
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "blue", "red"]
+    assert events(s) == []
+    assert js(s, "return probePushes") == []
+    assert js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+
+    Browser.send_keys(s, [:up_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-options"
+    Browser.send_keys(s, [:down_arrow, :enter])
+    assert js(s, "return probePushes") == [["reveal_rooms", %{}]]
+    assert events(s) == []
+    Browser.send_keys(s, [:escape])
+    assert js(s, "return document.activeElement.id") == "meeting-room-trigger"
+    refute js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+  end
+
+  test "automatically offered options return action focus to the open listbox without selection",
+       %{session: s} do
+    click(s, "meeting-room-trigger")
+    Browser.send_keys(s, [:end, :down_arrow])
+    assert js(s, "return document.activeElement.id") == "meeting-room-reveal"
+
+    assert js(s, ~S"""
+           const hook = probeHooks['meeting-room'];
+           hook.el.dataset.visibleValues = 'null';
+           hook.el.dataset.action = 'null';
+           hook.updated();
+           return document.activeElement.id;
+           """) == "meeting-room-options"
+
+    assert js(s, "return document.querySelector('#meeting-room-popup').matches(':popover-open')")
+    refute js(s, "return !!document.querySelector('#meeting-room-reveal')")
+    assert values(s) == ["28.10.2026 17:45", "29.10.2026 18:30", "blue", "red"]
+    assert events(s) == []
+    assert js(s, "return probePushes") == []
+    Browser.send_keys(s, [:home, :down_arrow])
+
+    assert js(
+             s,
+             "return document.querySelector('#meeting-room-options').getAttribute('aria-activedescendant')"
+           ) == "meeting-room-option-red"
+
+    assert events(s) == []
+    Browser.send_keys(s, [:enter])
+    assert Enum.at(values(s), 2) == "red"
+    assert events(s) == [["change", "meeting-room"]]
+    assert js(s, "return document.activeElement.id") == "meeting-room-trigger"
   end
 
   test "unrelated date and select instances isolate values, events, notices and focus", %{
@@ -149,6 +240,7 @@ defmodule TaskmanWeb.FormPickersBrowserTest do
     session: s
   } do
     click(s, "meeting-room-trigger")
+    Browser.send_keys(s, [:end, :down_arrow, :space])
     Browser.send_keys(s, [:end])
 
     assert js(s, ~S"""
@@ -164,7 +256,7 @@ defmodule TaskmanWeb.FormPickersBrowserTest do
     js(s, "Object.values(probeHooks).forEach(h => h.destroyed())")
   end
 
-  defp click(session, id), do: Browser.click(session, Query.css("##{id}"))
+  defp click(session, id), do: Browser.click(session, Query.css(~s([id="#{id}"])))
 
   defp minute(session, id, minute) do
     js(

@@ -68,7 +68,7 @@ defmodule Taskman.ChangeNotificationsTest do
   end
 
   test "publishes Task events to the owning Project topic" do
-    task = %Task{id: 29, project_id: 17, lock_version: 3}
+    task = %Task{id: 29, project_id: 17, lock_version: 3, status: :not_planned, list_id: 23}
 
     assert :ok = ChangeNotifications.subscribe_project(task.project_id)
     start_forwarder("projects:17:tasks")
@@ -83,6 +83,8 @@ defmodule Taskman.ChangeNotificationsTest do
                       project_id: 17,
                       entity_id: 29,
                       lock_version: 3,
+                      status: :not_planned,
+                      list_id: 23,
                       fields: [:list_id]
                     }}
 

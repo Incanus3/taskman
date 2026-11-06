@@ -228,6 +228,24 @@ defmodule Taskman.CLI.Execution.ParserTest do
              Parser.parse(~w(tasks show --project 0 42), %{})
   end
 
+  test "accepts the complete lifecycle vocabulary for create, update and list" do
+    for status <- ~w(icebox pending in_progress in_review done not_planned will_not_do) do
+      for args <- [~w(tasks create --title Work), ~w(tasks update 42), ~w(tasks list)] do
+        assert {:ok, invocation} = Parser.parse(args ++ ["--status", status], %{})
+
+        assert Map.get(invocation.options, :status, Map.get(invocation.options, :statuses)) in [
+                 status,
+                 [status]
+               ]
+      end
+    end
+
+    for args <- [~w(tasks create --title Work), ~w(tasks update 42), ~w(tasks list)] do
+      assert {:error, message, _} = Parser.parse(args ++ ~w(--status unknown), %{})
+      assert message =~ "--status"
+    end
+  end
+
   test "rejects invalid fixed option values" do
     assert {:error, _message, ["tasks", "create"]} =
              Parser.parse(~w(tasks create --project 7 --title Work --status later), %{})
