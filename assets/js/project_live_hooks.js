@@ -51,10 +51,17 @@ const ProjectMemory = {
       return
     }
 
-    if (this.el.dataset.rootRoute !== "true" ||
-        this.el.dataset.preferencesHydrated !== "true" || this.restoreAttempted) return
-
+    if (!this.canRestore()) return
     this.restoreAttempted = true
+    this.restoreRememberedProject()
+  },
+
+  canRestore() {
+    return this.el.dataset.rootRoute === "true" &&
+      this.el.dataset.preferencesHydrated === "true" && !this.restoreAttempted
+  },
+
+  restoreRememberedProject() {
     const savedId = storage.get(projectKey)
 
     if (savedId === null) return
@@ -82,14 +89,16 @@ const TaskTablePreferences = {
 
     this.hydratePreferences()
 
-    this.handleEvent("task_table_preferences_changed", preferences => {
-      this.persist(preferences)
-      const clean = new URL(window.location.href)
-      clean.searchParams.delete("include_children")
-      clean.searchParams.delete("statuses")
-      window.history.replaceState(window.history.state, "", clean.href)
-      this.lastURL = window.location.href
-    })
+    this.handleEvent("task_table_preferences_changed", preferences => this.preferencesChanged(preferences))
+  },
+
+  preferencesChanged(preferences) {
+    this.persist(preferences)
+    const clean = new URL(window.location.href)
+    clean.searchParams.delete("include_children")
+    clean.searchParams.delete("statuses")
+    window.history.replaceState(window.history.state, "", clean.href)
+    this.lastURL = window.location.href
   },
 
   updated() {
@@ -166,17 +175,19 @@ const TaskTablePreferences = {
   readStatuses() {
     const value = storage.get(visibleStatusesKey)
     if (value === null) return null
-
-    try {
-      const parsed = JSON.parse(value)
-      const normalized = this.normalizeStatuses(parsed)
-      if (normalized !== null) return normalized
-    } catch (_error) {
-      // Ignore malformed stored selections.
-    }
-
+    const normalized = this.parseStatuses(value)
+    if (normalized !== null) return normalized
     storage.remove(visibleStatusesKey)
     return null
+  },
+
+  parseStatuses(value) {
+    try {
+      return this.normalizeStatuses(JSON.parse(value))
+    } catch (_error) {
+      // Ignore malformed stored selections.
+      return null
+    }
   },
 
   persist(preferences) {
@@ -192,15 +203,22 @@ const TaskTablePreferences = {
 const TaskTreeFamilies = {
   mounted() {
     this.table = document.getElementById("task-list-scroll")
-    this.scheduleSync = () => {
-      if (this.frame) return
-      this.frame = requestAnimationFrame(() => {
-        this.frame = null
-        this.syncFamilies()
-      })
-    }
+    this.scheduleSync = () => this.scheduleFamilySync()
     this.events = ["pointerover", "pointerout", "focusin", "focusout"]
     this.events.forEach(event => this.table.addEventListener(event, this.scheduleSync))
+    this.observeTaskDepth()
+    this.scheduleSync()
+  },
+
+  scheduleFamilySync() {
+    if (this.frame) return
+    this.frame = requestAnimationFrame(() => {
+      this.frame = null
+      this.syncFamilies()
+    })
+  },
+
+  observeTaskDepth() {
     this.observer = new MutationObserver(this.scheduleSync)
     this.observer.observe(this.table, {
       childList: true,
@@ -208,7 +226,6 @@ const TaskTreeFamilies = {
       attributes: true,
       attributeFilter: ["data-task-depth"]
     })
-    this.scheduleSync()
   },
 
   destroyed() {
@@ -237,45 +254,64 @@ const TaskTreeFamilies = {
 
 const ShareTaskView = {
   mounted() {
-    this.onClick = async () => {
-      const share = new URL(window.location.href)
-      if (this.el.dataset.sharePath) share.pathname = this.el.dataset.sharePath
-      share.searchParams.set("include_children", this.el.dataset.includeChildren)
-      share.searchParams.set("statuses", this.el.dataset.statuses)
-
-      const feedback = document.getElementById(`${this.el.id}-feedback`)
-      const toast = document.getElementById(`${this.el.id}-toast`)
-      const status = document.getElementById(`${this.el.id}-status`)
-      const message = document.getElementById(`${this.el.id}-message`)
-      const label = document.getElementById(`${this.el.id}-url-label`)
-      const input = document.getElementById(`${this.el.id}-url`)
-      window.clearTimeout(this.toastTimer)
-      toast.hidden = true
-
-      try {
-        await navigator.clipboard.writeText(share.href)
-        label.hidden = true
-        input.hidden = true
-        input.value = ""
-        status.textContent = "Link copied"
-        feedback.hidden = true
-        toast.hidden = false
-        this.toastTimer = window.setTimeout(() => {
-          toast.hidden = true
-          status.textContent = ""
-        }, 2500)
-      } catch (_error) {
-        input.value = share.href
-        label.hidden = false
-        input.hidden = false
-        status.textContent = "Copy failed. Select and copy the link below."
-        message.textContent = "Copy failed. Select and copy the link below."
-        feedback.hidden = false
-        input.focus()
-        input.select()
-      }
-    }
+    this.onClick = () => this.copyShareLink()
     this.el.addEventListener("click", this.onClick)
+  },
+
+  shareURL() {
+    const share = new URL(window.location.href)
+    if (this.el.dataset.sharePath) share.pathname = this.el.dataset.sharePath
+    share.searchParams.set("include_children", this.el.dataset.includeChildren)
+    share.searchParams.set("statuses", this.el.dataset.statuses)
+    return share
+  },
+
+  feedbackElements() {
+    return {
+      feedback: document.getElementById(`${this.el.id}-feedback`),
+      toast: document.getElementById(`${this.el.id}-toast`),
+      status: document.getElementById(`${this.el.id}-status`),
+      message: document.getElementById(`${this.el.id}-message`),
+      label: document.getElementById(`${this.el.id}-url-label`),
+      input: document.getElementById(`${this.el.id}-url`)
+    }
+  },
+
+  async copyShareLink() {
+    const share = this.shareURL()
+    const elements = this.feedbackElements()
+    window.clearTimeout(this.toastTimer)
+    elements.toast.hidden = true
+    try {
+      await navigator.clipboard.writeText(share.href)
+      this.showCopySuccess(elements)
+    } catch (_error) {
+      this.showCopyFallback(elements, share.href)
+    }
+  },
+
+  showCopySuccess({label, input, status, feedback, toast}) {
+    label.hidden = true
+    input.hidden = true
+    input.value = ""
+    status.textContent = "Link copied"
+    feedback.hidden = true
+    toast.hidden = false
+    this.toastTimer = window.setTimeout(() => {
+      toast.hidden = true
+      status.textContent = ""
+    }, 2500)
+  },
+
+  showCopyFallback({input, label, status, message, feedback}, href) {
+    input.value = href
+    label.hidden = false
+    input.hidden = false
+    status.textContent = "Copy failed. Select and copy the link below."
+    message.textContent = "Copy failed. Select and copy the link below."
+    feedback.hidden = false
+    input.focus()
+    input.select()
   },
 
   destroyed() {
@@ -291,11 +327,20 @@ const CommentThreadScroll = {
     this.saved = {top: 0, following: true}
     this.activity = this.el.querySelector("#task-activity")
     this.thread = this.el.querySelector("#task-comment-thread")
+    this.trackScroll()
+    this.trackVisibility()
+    requestAnimationFrame(() => this.capture())
+  },
+
+  trackScroll() {
     // Stream reset can zero scrollTop before beforeUpdate; retain the last stable measurement.
     this.onScroll = () => {
       if (!this.patching && this.thread.scrollHeight === this.lastScrollHeight) this.capture()
     }
     this.thread.addEventListener("scroll", this.onScroll)
+  },
+
+  trackVisibility() {
     this.wasHidden = this.activity.hidden
     this.tabs = document.getElementById("task-detail-tabs")
     this.onTabClick = event => {
@@ -308,7 +353,6 @@ const CommentThreadScroll = {
       this.wasHidden = hidden
     })
     this.visibilityObserver.observe(this.activity, {attributes: true, attributeFilter: ["hidden"]})
-    requestAnimationFrame(() => this.capture())
   },
 
   beforeUpdate(toEl) {
@@ -321,25 +365,33 @@ const CommentThreadScroll = {
 
   updated() {
     this.thread = this.el.querySelector("#task-comment-thread")
+    this.syncTask()
+    this.syncRevision()
+    if (this.restoreAfterUpdate && this.visibleWide()) this.scheduleRestore()
+    this.restoreAfterUpdate = false
+  },
+
+  syncTask() {
     if (this.el.dataset.taskId !== this.taskId) {
       this.taskId = this.el.dataset.taskId
       this.saved = {top: 0, following: true}
       this.restoreAfterUpdate = true
     }
+  },
 
+  syncRevision() {
     if (this.el.dataset.revision !== this.revision) {
       this.revision = this.el.dataset.revision
       if (this.visibleWide()) this.restoreAfterUpdate = true
     }
+  },
 
-    if (this.restoreAfterUpdate && this.visibleWide()) {
-      cancelAnimationFrame(this.restoreFrame)
-      this.restoreFrame = requestAnimationFrame(() => {
-        this.restore()
-        requestAnimationFrame(() => { this.patching = false })
-      })
-    }
-    this.restoreAfterUpdate = false
+  scheduleRestore() {
+    cancelAnimationFrame(this.restoreFrame)
+    this.restoreFrame = requestAnimationFrame(() => {
+      this.restore()
+      requestAnimationFrame(() => { this.patching = false })
+    })
   },
 
   destroyed() {
@@ -374,65 +426,103 @@ const CommentDeparture = {
   mounted() {
     this.wasPending = this.el.dataset.pending === "true"
     this.lastTaskId = this.el.dataset.taskId
-    this.onBeforeUnload = event => {
-      event.preventDefault()
-      event.returnValue = true
+    this.onBeforeUnload = event => this.preventUnload(event)
+    this.onInput = event => this.handleInput(event)
+    this.onClick = event => this.handleClick(event)
+    this.onBeforeNavigate = event => this.handleBeforeNavigate(event)
+    this.onFocusCommentError = () => this.scheduleErrorFocus()
+    this.onDescriptionFlush = event => this.handleDescriptionFlush(event)
+    this.onDepartureCommitted = () => this.departureCommitted()
+    this.listenForDeparture()
+    this.syncDescriptionCapture()
+    this.syncWarning()
+  },
+
+  preventUnload(event) {
+    event.preventDefault()
+    event.returnValue = true
+  },
+
+  handleInput(event) {
+    if (event.target?.id === "task-comment-text") this.syncWarning()
+  },
+
+  handleClick(event) {
+    if (this.handleBackdropClick(event)) return
+    if (!this.el.dataset.taskId && !this.hasDraft() && this.el.dataset.pending !== "true") return
+    const link = event.target.closest("a[href]")
+    if (!this.interceptableLink(link, event)) return
+    const url = new URL(link.href, location.href)
+    if (url.origin !== location.origin) return
+    const destination = url.pathname + url.search + url.hash
+    if (this.sameTask(destination) && this.el.dataset.pending !== "true") return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    this.requestDeparture(destination)
+  },
+
+  handleBackdropClick(event) {
+    if (!this.el.dataset.taskId || !event.target.closest("#task-modal") ||
+        event.target.closest("#task-modal-content")) return false
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    this.requestDeparture(this.el.dataset.browsePath)
+    return true
+  },
+
+  interceptableLink(link, event) {
+    return link && !link.target && !link.hasAttribute("download") &&
+      !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
+  },
+
+  handleBeforeNavigate(event) {
+    if (!event.detail.pop) return
+    // History without a comment draft uses server route capture, preserving Forward.
+    const pending = this.el.dataset.pending === "true" || this.el.dataset.descriptionCapturePending === "true"
+    if (!this.hasDraft() && !pending) return
+    const url = new URL(event.detail.href)
+    const destination = url.pathname + url.search + url.hash
+    if (this.sameTask(destination) && !pending) return
+    event.preventDefault()
+    this.requestDeparture(destination)
+  },
+
+  requestDeparture(destination) {
+    this.pushEvent("request_task_departure", {destination, draft: this.draft()})
+  },
+
+  scheduleErrorFocus() {
+    window.setTimeout(() => {
+      const target = document.querySelector("#task-comment-departure-error") ||
+        document.querySelector("#task-comment-error") ||
+        document.querySelector("#task-comment-text")
+      target?.focus()
+    }, 0)
+  },
+
+  handleDescriptionFlush(event) {
+    if (event.detail.action === "flush" && event.detail.ref != null) {
+      this.pushEvent("capture_task_departure_comment", {
+        editor_id: this.descriptionEditorId, ref: event.detail.ref, draft: this.draft()
+      })
     }
-    this.onInput = event => {
-      if (event.target?.id === "task-comment-text") this.syncWarning()
-    }
-    this.onClick = event => {
-      if (this.el.dataset.taskId && event.target.closest("#task-modal") &&
-          !event.target.closest("#task-modal-content")) {
-        event.preventDefault()
-        event.stopImmediatePropagation()
-        this.pushEvent("request_task_departure", {
-          destination: this.el.dataset.browsePath,
-          draft: this.draft()
-        })
-        return
-      }
-      if (!this.hasDraft() && this.el.dataset.pending !== "true") return
-      const link = event.target.closest("a[href]")
-      if (!link || link.target || link.hasAttribute("download") || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-      const url = new URL(link.href, location.href)
-      if (url.origin !== location.origin) return
-      const destination = url.pathname + url.search + url.hash
-      if (this.sameTask(destination) && this.el.dataset.pending !== "true") return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      this.pushEvent("request_task_departure", {destination, draft: this.draft()})
-    }
-    this.onBeforeNavigate = event => {
-      if (!event.detail.pop) return
-      if (!this.hasDraft() && this.el.dataset.pending !== "true") return
-      const url = new URL(event.detail.href)
-      const destination = url.pathname + url.search + url.hash
-      if (this.sameTask(destination) && this.el.dataset.pending !== "true") return
-      event.preventDefault()
-      this.pushEvent("request_task_departure", {destination, draft: this.draft()})
-    }
-    this.onFocusCommentError = () => {
-      window.setTimeout(() => {
-        const target = document.querySelector("#task-comment-departure-error") ||
-          document.querySelector("#task-comment-error") ||
-          document.querySelector("#task-comment-text")
-        target?.focus()
-      }, 0)
-    }
-    this.onDepartureCommitted = () => {
-      this.suppressWarning = true
-      this.syncWarning()
-    }
+  },
+
+  departureCommitted() {
+    this.suppressWarning = true
+    this.syncWarning()
+  },
+
+  listenForDeparture() {
     document.addEventListener("input", this.onInput, true)
     document.addEventListener("click", this.onClick, true)
     window.addEventListener("phx:before-navigate", this.onBeforeNavigate)
     window.addEventListener("phx:focus_task_comment_error", this.onFocusCommentError)
     window.addEventListener("phx:comment_departure_committed", this.onDepartureCommitted)
-    this.syncWarning()
   },
 
   updated() {
+    this.syncDescriptionCapture()
     const returnedToTask = this.wasPending && this.el.dataset.pending === "false" &&
       this.el.dataset.retainedDestination !== "true" && document.querySelector("#task-modal-content")
     if (returnedToTask) {
@@ -445,12 +535,23 @@ const CommentDeparture = {
   },
 
   destroyed() {
+    if (this.descriptionEditorId) window.removeEventListener(`phx:leaf-command:${this.descriptionEditorId}`, this.onDescriptionFlush, true)
     document.removeEventListener("input", this.onInput, true)
     document.removeEventListener("click", this.onClick, true)
     window.removeEventListener("phx:before-navigate", this.onBeforeNavigate)
     window.removeEventListener("phx:focus_task_comment_error", this.onFocusCommentError)
     window.removeEventListener("phx:comment_departure_committed", this.onDepartureCommitted)
     window.removeEventListener("beforeunload", this.onBeforeUnload)
+  },
+
+  // Read comment DOM at the same browser boundary as Leaf's correlated flush.
+  // The server awaits this metadata alongside Leaf's ordinary change/reply events.
+  syncDescriptionCapture() {
+    const id = this.el.dataset.descriptionEditorId || null
+    if (id === this.descriptionEditorId) return
+    if (this.descriptionEditorId) window.removeEventListener(`phx:leaf-command:${this.descriptionEditorId}`, this.onDescriptionFlush, true)
+    this.descriptionEditorId = id
+    if (id) window.addEventListener(`phx:leaf-command:${id}`, this.onDescriptionFlush, true)
   },
 
   draft() {

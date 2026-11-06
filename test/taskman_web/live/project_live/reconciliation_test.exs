@@ -1,5 +1,6 @@
 defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
   use Taskman.DataCase, async: true
+  import TaskmanWeb.DescriptionEditorHelpers
 
   import Taskman.ProjectsFixtures
   import Taskman.ListsFixtures
@@ -23,7 +24,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     Taskman.Repo.delete!(task)
     {:ok, _candidate} = Tasks.update_task(project, candidate, %{title: "Candidate after"})
 
-    {:noreply, reconciled} = Reconciliation.handle_info(task_event(project, candidate), socket)
+    {:noreply, reconciled} = reconcile_captured(task_event(project, candidate), socket)
 
     assert reconciled.assigns.task_parent_picker == picker
     assert reconciled.assigns.editing == socket.assigns.editing
@@ -60,7 +61,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    {:noreply, reconciled} = Reconciliation.handle_info(event, socket)
+    {:noreply, reconciled} = reconcile_captured(event, socket)
 
     assert_receive :parent_candidate_query
     refute_receive :parent_candidate_query, 0
@@ -94,7 +95,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     assert {:ok, _updated} = Tasks.update_task(foreign_project, foreign, %{title: "After"})
 
     event = relationship_event(local_project.id, [selected.id])
-    {:noreply, refreshed} = Reconciliation.handle_info(event, socket)
+    {:noreply, refreshed} = reconcile_captured(event, socket)
 
     assert refreshed.assigns.editing.selected_task.id == selected.id
 
@@ -116,12 +117,12 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     assert {:ok, _edge} = Tasks.remove_block(project, selected, linked)
 
     {:noreply, unchanged} =
-      Reconciliation.handle_info(relationship_event(project.id, [other.id]), socket)
+      reconcile_captured(relationship_event(project.id, [other.id]), socket)
 
     assert unchanged.assigns.editing.related_tasks == socket.assigns.editing.related_tasks
 
     {:noreply, refreshed} =
-      Reconciliation.handle_info(relationship_event(project.id, [linked.id, selected.id]), socket)
+      reconcile_captured(relationship_event(project.id, [linked.id, selected.id]), socket)
 
     assert refreshed.assigns.editing.related_tasks.blocks == []
   end
@@ -150,7 +151,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
       fields: [:name]
     }
 
-    {:noreply, socket} = Reconciliation.handle_info(project_event, socket)
+    {:noreply, socket} = reconcile_captured(project_event, socket)
 
     assert [%{project_name: "After Project"}] = socket.assigns.editing.related_tasks.blocks
 
@@ -165,7 +166,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
       fields: [:name]
     }
 
-    {:noreply, refreshed} = Reconciliation.handle_info(list_event, socket)
+    {:noreply, refreshed} = reconcile_captured(list_event, socket)
 
     assert [%{location: %{path: ["After Parent", "Child"]}}] =
              refreshed.assigns.editing.related_tasks.blocks
@@ -206,7 +207,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
       fields: [:name]
     }
 
-    {:noreply, reconciled} = Reconciliation.handle_info(event, socket)
+    {:noreply, reconciled} = reconcile_captured(event, socket)
 
     assert reconciled.assigns.workspace.location_not_found?
     assert reconciled.assigns.listing.task_counts == %{nil => %{visible: 0, eligible: 0}}
@@ -255,4 +256,7 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
       fields: []
     }
   end
+
+  defp reconcile_captured(message, socket),
+    do: Reconciliation.handle_info(message, socket) |> complete_socket_capture()
 end

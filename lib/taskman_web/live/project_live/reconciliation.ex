@@ -4,6 +4,8 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Projects.Project
   alias Taskman.Tasks
+  alias Taskman.Lists
+  alias Taskman.Projects
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Workspace
   alias TaskmanWeb.ProjectLive.Recovery
@@ -11,6 +13,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   alias TaskmanWeb.ProjectLive.Tasks.{
     Comments,
     Creation,
+    Description,
     Editing,
     Listing,
     Movement,
@@ -20,14 +23,140 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   @doc "Handles scheduled autosaves and validated workspace notifications."
   @spec handle_info(term(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
-  def handle_info({:autosave_task_field, _task_id, _field, _revision} = message, socket),
+          | {:captured, Phoenix.LiveView.Socket.t(), tuple(), String.t(), boolean()}
+  def handle_info({type, _} = message, socket)
+      when type in [
+             :leaf_changed,
+             :leaf_flushed,
+             :leaf_mode_changed,
+             :description_capture_timeout,
+             :description_comment_captured
+           ],
+      do: Description.handle_info(message, socket)
+
+  def handle_info(%Event{} = event, socket) do
+    if capture_event?(event, socket) do
+      socket =
+        if Description.pending?(socket) do
+          Phoenix.Component.assign(socket, :description, %{
+            socket.assigns.description
+            | refresh_event: event
+          })
+        else
+          socket
+        end
+
+      case Description.capture(socket, {:reconcile, event}) do
+        {:pending, socket} -> {:noreply, socket}
+        {:ready, socket} -> continue_info(event, socket)
+      end
+    else
+      continue_info(event, socket)
+    end
+  end
+
+  def handle_info(message, socket), do: continue_info(message, socket)
+
+  def continue_captured(event, socket) do
+    previous_workspace = socket.assigns.workspace
+
+    case Workspace.refresh_selected_location(socket) do
+      {socket, {:location_missing, task_lists}} ->
+        {:noreply, reconcile_location_loss(socket, previous_workspace, task_lists)}
+
+      {socket, _} ->
+        {:noreply, socket} = continue_info(event, socket)
+
+        socket =
+          case socket.assigns.editing.selected_task do
+            %Task{} when event.entity != :task ->
+              socket |> Editing.reconcile(event) |> sync_parent_selection()
+
+            _ ->
+              socket
+          end
+
+        {:noreply, socket}
+    end
+  end
+
+  defp capture_event?(%Event{entity: entity} = event, socket) when entity in [:project, :list],
+    do: well_formed_workspace_event?(event) and refresh_requires_capture?(socket)
+
+  defp capture_event?(%Event{entity: :task} = event, socket) do
+    well_formed_task_event?(event) and
+      match?(
+        %Project{id: id} when id == event.project_id,
+        socket.assigns.workspace.selected_project
+      ) and
+      match?(%Task{}, socket.assigns.editing.selected_task) and refresh_requires_capture?(socket)
+  end
+
+  defp capture_event?(%Event{entity: :relationship} = event, socket),
     do:
-      if(Recovery.blocked?(socket) or socket.assigns.workspace.location_not_found?,
+      well_formed_relationship_event?(event) and relationship_targets_open_detail?(event, socket) and
+        refresh_requires_capture?(socket)
+
+  defp capture_event?(%Event{entity: :comment} = event, socket) do
+    well_formed_comment_event?(event) and
+      match?(
+        %Project{id: id} when id == event.project_id,
+        socket.assigns.workspace.selected_project
+      ) and
+      match?(%Task{id: id} when id == event.task_id, socket.assigns.editing.selected_task) and
+      refresh_requires_capture?(socket)
+  end
+
+  defp capture_event?(_, _), do: false
+
+  # Read authority without classifying local dirtiness or changing any workflow.
+  # Unrelated acknowledgements must not freeze the user's current selection.
+  defp refresh_requires_capture?(socket) do
+    state = socket.assigns.description
+    workspace = socket.assigns.workspace
+
+    cond do
+      is_nil(state.editor_id) ->
+        false
+
+      not location_survives?(workspace) ->
+        true
+
+      match?({:edit, _, _}, state.context) ->
+        task = socket.assigns.editing.selected_task
+        persisted = Tasks.get_task_for_project(workspace.selected_project, task.id)
+
+        is_nil(persisted) or
+          persisted.description != socket.assigns.editing.autosave.baseline.description or
+          persisted.list_id != task.list_id
+
+      true ->
+        false
+    end
+  end
+
+  defp location_survives?(%{selected_project: %Project{} = project, selected_list: selected}) do
+    not is_nil(Projects.get_project(project.id)) and
+      (is_nil(selected) or not is_nil(Lists.get_list_for_project(project, selected.id)))
+  end
+
+  defp location_survives?(_), do: false
+
+  def continue_info({type, _payload} = message, socket)
+      when type in [:leaf_changed, :leaf_flushed, :leaf_mode_changed] do
+    Description.handle_info(message, socket)
+  end
+
+  def continue_info({:autosave_task_field, _task_id, _field, _revision} = message, socket),
+    do:
+      if(
+        Description.pending?(socket) or Recovery.blocked?(socket) or
+          socket.assigns.workspace.location_not_found?,
         do: {:noreply, socket},
         else: Editing.handle_autosave_info(message, socket)
       )
 
-  def handle_info(%Event{entity: entity} = event, socket) when entity in [:project, :list] do
+  def continue_info(%Event{entity: entity} = event, socket) when entity in [:project, :list] do
     valid? = well_formed_workspace_event?(event)
 
     socket =
@@ -67,7 +196,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     {:noreply, socket}
   end
 
-  def handle_info(%Event{entity: :relationship} = event, socket) do
+  def continue_info(%Event{entity: :relationship} = event, socket) do
     socket =
       if well_formed_relationship_event?(event) and
            relationship_targets_open_detail?(event, socket),
@@ -77,7 +206,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     {:noreply, socket}
   end
 
-  def handle_info(
+  def continue_info(
         %Event{entity: :task} = event,
         %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket
       ) do
@@ -91,9 +220,9 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     {:noreply, socket}
   end
 
-  def handle_info(%Event{entity: :task}, socket), do: {:noreply, socket}
+  def continue_info(%Event{entity: :task}, socket), do: {:noreply, socket}
 
-  def handle_info(%Event{entity: :comment} = event, socket) do
+  def continue_info(%Event{entity: :comment} = event, socket) do
     socket =
       if well_formed_comment_event?(event),
         do: reconcile_comment_event(socket, event),
@@ -102,7 +231,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     {:noreply, socket}
   end
 
-  def handle_info(%Event{}, socket), do: {:noreply, socket}
+  def continue_info(%Event{}, socket), do: {:noreply, socket}
 
   defp reconcile_comment_event(
          %{

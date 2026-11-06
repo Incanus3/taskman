@@ -19,6 +19,8 @@
 
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
 import "phoenix_html"
+import "../../deps/leaf/priv/static/assets/leaf.js"
+import DescriptionEditor, {descriptionLeafHook} from "./description_editor"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -34,7 +36,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, ...projectLiveHooks, ...taskDetailHooks, DateTimePicker, SelectPicker},
+  hooks: {...colocatedHooks, ...projectLiveHooks, ...taskDetailHooks, DateTimePicker, SelectPicker, DescriptionEditor, Leaf: descriptionLeafHook(window.LeafHooks.Leaf)},
 })
 
 // Show progress bar on live navigation and form submits

@@ -51,6 +51,7 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :task_path, :any, required: true
   attr :browse_path, :any, default: nil
   attr :task_move, Move, required: true
+  attr :description_editor, :map, required: true
   attr :recovery?, :boolean, default: false
   attr :comments, :any, default: nil
   attr :comment_stream, :any, default: []
@@ -266,6 +267,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             </div>
             <Form.form
               form={@task_autosave.form}
+              description_editor={@description_editor}
               status_values={@status_values}
               reveal_states_event={@reveal_states_event}
               mode={:edit}

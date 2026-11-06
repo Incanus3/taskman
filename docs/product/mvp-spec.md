@@ -59,6 +59,15 @@ Task priority is required and exactly one of **None**, **Low**, **Medium**, **Hi
 Description, local due date-time, and checklist are optional. Neither checklist progress, due date,
 nor external agent work automatically changes Task state.
 
+Task descriptions store Markdown strings and use the shared hybrid editor with a formatting toolbar
+and optional source mode in creation and detail. Existing Tasks autosave without a separate Edit
+or Save step. Capturing current browser text protects immediate creation, in-app departure and recovery;
+failed capture retains input and offers retry. Recovery renders sanitized Markdown read-only and
+keeps Copy available. Current accepted limitations include table/strikethrough rendering,
+strikethrough escaping, raw audio/video source loss and first-line fenced-code indentation loss.
+Full-document exits can discard unsent description input; see the [description contract](domain.md#task-description)
+and [exact limits](../specs/2026-11-06-task-description-markdown-design.md#published-leaf-does-not-enable-tables-or-strikethrough).
+
 ## 4. Work organization and navigation
 
 - The browser tab title is `Taskman · <Project name>` for the selected Project and `Taskman`

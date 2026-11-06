@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -38,23 +39,21 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
 
     view
-    |> form("#task-form", task: %{title: "Mine", description: "Persisted description"})
+    |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view
-    |> form("#task-form", task: %{title: "Mine", description: "Mine too"})
-    |> render_change(%{"_target" => ["task", "description"]})
+    change_description(view, "Mine too")
 
     old_title_revision = view_assigns(view).editing.autosave.revisions["title"]
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
     assert {:ok, moved} = Tasks.move_task(project, task, destination)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-form #task-title[value='Mine']")
-    assert has_element?(view, "#task-form #task-description", "Mine too")
+    assert view_assigns(view).editing.autosave.form[:description].value == "Mine too"
     assert has_element?(view, "#task-title-save-status[data-state='saving']", "Saving…")
     assert has_element?(view, "#task-description-save-status[data-state='saving']", "Saving…")
     refute has_element?(view, "#task-recovery")
@@ -67,7 +66,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     assert fresh_description_revision > max(old_title_revision, old_description_revision)
 
     send(view.pid, {:autosave_task_field, task.id, "title", old_title_revision})
-    render(view)
+    render_captured(view)
 
     assert Tasks.get_task_for_project(project, task.id).title == "Persisted"
     assert has_element?(view, "#task-form #task-title[value='Mine']")
@@ -97,18 +96,16 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
 
     view
-    |> form("#task-form", task: %{title: "", description: "Old"})
+    |> form("#task-form", task: %{title: ""})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view
-    |> form("#task-form", task: %{title: "", description: "Mine"})
-    |> render_change(%{"_target" => ["task", "description"]})
+    change_description(view, "Mine")
 
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
     assert {:ok, _moved} = Tasks.move_task(project, task, destination)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     fresh_description_revision = view_assigns(view).editing.autosave.revisions["description"]
     assert fresh_description_revision > old_description_revision
@@ -142,19 +139,17 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/#{task.id}")
 
     view
-    |> form("#task-form", task: %{title: "Mine", description: "Old"})
+    |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view
-    |> form("#task-form", task: %{title: "Mine", description: "Mine too"})
-    |> render_change(%{"_target" => ["task", "description"]})
+    change_description(view, "Mine too")
 
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
     assert {:ok, _moved} = Tasks.move_task(project, latest, destination)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     fresh_description_revision = view_assigns(view).editing.autosave.revisions["description"]
     assert fresh_description_revision > old_description_revision
@@ -204,7 +199,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       path = if include_children?, do: path <> "?include_children=true", else: path
       {:ok, view, _} = live(conn, path)
 
-      view |> element("#task-status-filter-button") |> render_click()
+      view |> element("#task-status-filter-button") |> render_captured_click()
 
       view
       |> form("#task-status-filter-form", status_filter: %{statuses: ["done"]})
@@ -228,7 +223,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       assert Enum.empty?(LazyHTML.query(document, "#task-recovery"))
 
       assert {:noreply, after_stale} =
-               Reconciliation.handle_info(
+               reconcile_captured(
                  {:autosave_task_field, task.id, "title", old_revision},
                  continued
                )
@@ -289,7 +284,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       old_revision = view_assigns(view).editing.autosave.revisions["title"]
 
       assert {:noreply, after_stale} =
-               Reconciliation.handle_info(
+               reconcile_captured(
                  {:autosave_task_field, task.id, "title", old_revision},
                  restored
                )
@@ -316,7 +311,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     Taskman.Repo.delete!(lost)
 
     assert {:noreply, pending} =
-             Reconciliation.handle_info(list_event(project.id, lost.id), live_socket(view))
+             reconcile_captured(list_event(project.id, lost.id), live_socket(view))
 
     assert {:ok, _moved_again} = Tasks.move_task(project, moved, second)
 
@@ -355,14 +350,14 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert has_element?(view, "#task-recovery-title", "This task is no longer available")
     refute has_element?(view, "#task-recovery-resume")
@@ -381,14 +376,14 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert has_element?(view, "#task-recovery #task-title[value='Mine']")
     assert view_assigns(view).recovery.snapshot.task_move.query == "Destination"
@@ -400,7 +395,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       |> Ecto.put_meta(state: :built)
       |> Taskman.Repo.insert!()
 
-    render_hook(view, "resume_task_recovery", %{
+    render_captured_hook(view, "resume_task_recovery", %{
       "recovery_id" => Integer.to_string(view_assigns(view).recovery.snapshot.id)
     })
 
@@ -428,7 +423,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     Taskman.Repo.delete!(lost)
 
     assert {:noreply, socket} =
-             Reconciliation.handle_info(list_event(project.id, lost.id), live_socket(view))
+             reconcile_captured(list_event(project.id, lost.id), live_socket(view))
 
     pending_socket = socket
 
@@ -480,7 +475,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     Taskman.Repo.delete!(lost)
 
     assert {:noreply, pending_socket} =
-             Reconciliation.handle_info(list_event(project.id, lost.id), live_socket(view))
+             reconcile_captured(list_event(project.id, lost.id), live_socket(view))
 
     index_socket =
       pending_socket
@@ -568,7 +563,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     assert Enum.empty?(LazyHTML.query(document, "#task-recovery"))
 
     assert {:noreply, after_stale} =
-             Reconciliation.handle_info(
+             reconcile_captured(
                {:autosave_task_field, restored_task.id, "title", old_revision},
                restored
              )
@@ -613,7 +608,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     assert Enum.empty?(LazyHTML.query(document, "#task-recovery"))
 
     assert {:noreply, after_stale} =
-             Reconciliation.handle_info(
+             reconcile_captured(
                {:autosave_task_field, task.id, "title", old_revision},
                restored
              )
@@ -659,10 +654,10 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     captured = view_assigns(view).recovery
 
-    render_hook(view, "resume_task_recovery", %{"recovery_id" => "2"})
+    render_captured_hook(view, "resume_task_recovery", %{"recovery_id" => "2"})
 
     assert view_assigns(view).recovery == captured
     assert has_element?(view, "#task-recovery #task-title[value='Mine']")
@@ -683,15 +678,15 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     assert {:ok, _moved} = Tasks.move_task(project, task, actual)
     Taskman.Repo.delete!(destination)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{actual.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-form #task-title[value='Mine']")
@@ -726,7 +721,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     assert {:ok, _moved} = Tasks.move_task(project, latest, actual)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     assert has_element?(view, "#task-title[value='Mine']")
     assert has_element?(view, "#task-title-conflict", "Latest")
     assert view_assigns(view).editing.autosave.save_state == :conflicted
@@ -745,20 +740,20 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
     assert {:ok, _moved} = Tasks.move_task(project, latest, actual)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{actual.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-title-conflict", "Latest")
     assert has_element?(view, "#move-task-search-#{task.id}[value='Destination']")
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == actual.id
     assert has_element?(view, "#task-title-conflict", "Latest")
@@ -769,8 +764,8 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
              "Save the Task before moving it."
            )
 
-    view |> element("#use-latest-title") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#use-latest-title") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     moved = Tasks.get_task_for_project(project, task.id)
     assert moved.title == "Latest"
@@ -803,7 +798,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     assert {:ok, _moved} = Tasks.move_task(project, latest_task, actual)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     restored = view_assigns(view).task_parent_picker
     assert restored.parent_conflicted?
     assert restored.selected_parent.id == mine.id
@@ -852,4 +847,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       %{state | socket: Phoenix.Component.assign(socket, key, value)}
     end)
   end
+
+  defp reconcile_captured(message, socket),
+    do: Reconciliation.handle_info(message, socket) |> complete_socket_capture()
 end

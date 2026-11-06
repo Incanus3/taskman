@@ -179,7 +179,38 @@ Selected/checked and keyboard-focus indicators remain independent of the text co
 
 - A new Task requires a non-empty title and defaults to **Pending**. A user may explicitly select
   another lifecycle state during creation.
-- Rich-text description, due date, and checklist are optional when creating a Task. Priority defaults to **None**.
+- Markdown description, due date, and checklist are optional when creating a Task. Priority defaults to **None**.
+
+## Task description
+
+A Task description is a non-null Markdown string; clearing it stores `""`. API and CLI values use
+that same string. Existing descriptions are interpreted as Markdown without rewriting stored text
+on open, focus or departure. Actual edits may normalize Markdown spelling while preserving meaning
+and formatting, subject to the temporary limitations below.
+
+Creation and detail share an always-editable hybrid editor, formatting toolbar and source mode.
+Creation persists only on **Create task**; existing Tasks use field-specific autosave. Capture of
+current browser input precedes creation, in-app Task departure and missing-location recovery. A failed
+capture retains the draft and blocks the transition until retry. Recovery initializes sanitized
+Markdown read-only, with selection and the existing Copy actions available.
+
+The editor starts around ten lines high and supports native vertical resizing. Double-clicking
+the resize corner fits its content, with the starting height as the minimum. Source and hybrid
+views retain their own sizes; typing and ordinary server updates preserve a manually chosen height.
+
+Current editor limitations are accepted temporarily with corrections planned:
+
+- Table and strikethrough Markdown can render literally.
+- Editing another paragraph can escape strikethrough markers into literal tildes.
+- Editing another paragraph can remove existing raw HTML audio/video references.
+- An unrelated edit can remove leading indentation from the first line of fenced code.
+- Typing opening code fences in hybrid mode escapes them; use the Code block toolbar action or source mode.
+
+Untouched descriptions are not rewritten. These exact defects do not authorize other destructive
+source conversions. In-app navigation is captured; leaving or reloading the whole document can
+discard unsent description text, and the existing comment unload warning is best-effort. See the
+[Markdown description design](../specs/2026-11-06-task-description-markdown-design.md)
+for exact reproductions, follow-up requirements and replacement-history behavior.
 
 ## Priority
 

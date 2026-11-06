@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -38,42 +39,45 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_project_count(view, 1)
     assert_header(view, 2, 3)
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#select-list-#{selected.id}[aria-describedby='list-task-count-#{selected.id}-description']"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#list-task-count-#{selected.id}-description",
              "2 tasks match the current filters"
            )
 
-    assert has_element?(view, "#location-task-count-description", "3 eligible tasks")
+    assert has_captured_element?(view, "#location-task-count-description", "3 eligible tasks")
 
-    view |> element("#include-child-lists") |> render_click()
+    view |> element("#include-child-lists") |> render_captured_click()
     assert_project_count(view, 5)
     assert_count(view, sibling, 2)
     assert_header(view, 2, 3)
 
-    view |> element("#task-status-filter-button") |> render_click()
+    view |> element("#task-status-filter-button") |> render_captured_click()
 
     view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["in_review"]})
-    |> render_change()
+    |> render_captured_change()
 
     assert_project_count(view, 3)
     assert_count(view, sibling, 1)
     assert_count(view, selected, 1)
     assert_header(view, 1, 3)
 
-    view |> element("#toggle-list-#{sibling.id}") |> render_click()
+    view |> element("#toggle-list-#{sibling.id}") |> render_captured_click()
     assert_count(view, child, 1)
-    view |> element("#sort-task-title") |> render_click()
+    view |> element("#sort-task-title") |> render_captured_click()
     assert_count(view, sibling, 1)
     assert_header(view, 1, 3)
 
-    view |> form("#task-status-filter-form", status_filter: %{statuses: [""]}) |> render_change()
+    view
+    |> form("#task-status-filter-form", status_filter: %{statuses: [""]})
+    |> render_captured_change()
+
     assert_project_count(view, 0)
     assert_count(view, selected, 0)
     assert_header(view, 0, 3)
@@ -104,8 +108,8 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     for {first, second} <- [{apple, zebra}, {zebra, apple}] do
-      view |> element("#sort-task-title") |> render_click()
-      assert has_element?(view, "#tasks > #tasks-#{first.id} ~ #tasks-#{second.id}")
+      view |> element("#sort-task-title") |> render_captured_click()
+      assert has_captured_element?(view, "#tasks > #tasks-#{first.id} ~ #tasks-#{second.id}")
       assert_header(view, 2, 2)
       assert_count(view, list, 1)
       assert_project_count(view, 2)
@@ -130,20 +134,20 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_project_count(view, 2)
     assert_header(view, 2, 2)
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#project-tasks-link[aria-describedby='project-tasks-count-description']"
            )
 
-    render_patch(view, ~p"/projects/#{second.id}")
+    render_captured_patch(view, ~p"/projects/#{second.id}")
     assert_project_count(view, 0)
     assert_header(view, 0, 0)
-    render_patch(view, ~p"/projects/#{second.id}/lists/#{empty.id}")
+    render_captured_patch(view, ~p"/projects/#{second.id}/lists/#{empty.id}")
     assert_header(view, 0, 0)
-    render_patch(view, ~p"/projects/#{second.id}/lists/999999999")
+    render_captured_patch(view, ~p"/projects/#{second.id}/lists/999999999")
     assert_project_count(view, 0)
-    refute has_element?(view, "#location-task-count")
-    render_patch(view, ~p"/projects/999999999")
+    refute has_captured_element?(view, "#location-task-count")
+    render_captured_patch(view, ~p"/projects/999999999")
     assert view_assigns(view).listing.task_counts == %{}
   end
 
@@ -156,15 +160,15 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
 
     {:ok, fresh, _} = live(conn, ~p"/projects/#{project.id}")
     assert_header(fresh, 1, 1)
-    render_hook(fresh, "hydrate_task_table_preferences", %{"statuses" => ["done"]})
+    render_captured_hook(fresh, "hydrate_task_table_preferences", %{"statuses" => ["done"]})
     assert_header(fresh, 1, 2)
 
     {:ok, empty, _} = live(conn, ~p"/projects/#{project.id}")
-    render_hook(empty, "hydrate_task_table_preferences", %{"statuses" => []})
+    render_captured_hook(empty, "hydrate_task_table_preferences", %{"statuses" => []})
     assert_header(empty, 0, 1)
 
     {:ok, explicit, _} = live(conn, ~p"/projects/#{project.id}?statuses=pending")
-    render_hook(explicit, "hydrate_task_table_preferences", %{"statuses" => ["done"]})
+    render_captured_hook(explicit, "hydrate_task_table_preferences", %{"statuses" => ["done"]})
     assert_header(explicit, 1, 1)
   end
 
@@ -180,21 +184,21 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
 
     view
     |> form("#task-form", task: %{title: "New counted task", status: "pending"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert_count(view, selected, 1)
     assert_header(view, 1, 1)
 
     {:ok, [%{task: task}]} = Tasks.list_tasks_for_location(project, selected)
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{selected.id}/tasks/#{task.id}")
-    view |> form("#task-form", task: %{title: ""}) |> render_submit()
-    assert has_element?(view, "#task-modal")
+    render_captured_patch(view, ~p"/projects/#{project.id}/lists/#{selected.id}/tasks/#{task.id}")
+    view |> form("#task-form", task: %{title: ""}) |> render_captured_submit()
+    assert has_captured_element?(view, "#task-modal")
     assert_count(view, selected, 1)
     assert_header(view, 1, 1)
 
     view
     |> form("#task-form", task: %{title: "New counted task", status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert Tasks.get_task_for_project(project, task.id).status == :in_review
     assert_count(view, selected, 0)
@@ -221,10 +225,10 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
 
     view
     |> form("#task-form", task: %{status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
-    assert has_element?(view, "#task-status-save-status[data-state='failed']")
-    assert has_element?(view, "#task-status option[selected][value='in_review']")
+    assert has_captured_element?(view, "#task-status-save-status[data-state='failed']")
+    assert has_captured_element?(view, "#task-status option[selected][value='in_review']")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
     assert_count(view, selected, 1)
     assert_header(view, 1, 1)
@@ -246,12 +250,12 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
 
     view
     |> form("#task-form", task: %{status: "not_planned"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
-    assert has_element?(view, "#task-status-save-status[data-state='failed']")
-    assert has_element?(view, "#task-status option[selected][value='not_planned']")
-    view |> element("#task-status-filter-button") |> render_click()
-    refute has_element?(view, "#task-status-filter-option-not_planned")
+    assert has_captured_element?(view, "#task-status-save-status[data-state='failed']")
+    assert has_captured_element?(view, "#task-status option[selected][value='not_planned']")
+    view |> element("#task-status-filter-button") |> render_captured_click()
+    refute has_captured_element?(view, "#task-status-filter-option-not_planned")
     assert Tasks.get_task_for_project(project, task.id).status == :pending
   end
 
@@ -259,8 +263,12 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     project = project_fixture(%{})
     task_fixture(project, %{status: :pending})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}?statuses=pending")
-    view |> element("#add-root-list-#{project.id}") |> render_click()
-    view |> form("#list-create-form-root", list: %{name: "Empty counted List"}) |> render_submit()
+    view |> element("#add-root-list-#{project.id}") |> render_captured_click()
+
+    view
+    |> form("#list-create-form-root", list: %{name: "Empty counted List"})
+    |> render_captured_submit()
+
     [created] = Taskman.Lists.list_lists_for_project(project)
     assert_count(view, created, 0)
     assert_project_count(view, 1)
@@ -281,16 +289,16 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_count(view, source, 1)
     assert_count(view, destination, 0)
     assert_header(view, 1, 1)
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination_child.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination_child.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
     assert_count(view, source, 0)
     assert_count(view, destination, 1)
     assert_project_count(view, 1)
     assert_header(view, 1, 1)
-    view |> element("#toggle-list-#{source.id}") |> render_click()
-    view |> element("#toggle-list-#{destination.id}") |> render_click()
+    view |> element("#toggle-list-#{source.id}") |> render_captured_click()
+    view |> element("#toggle-list-#{destination.id}") |> render_captured_click()
     assert_count(view, source_child, 0)
     assert_count(view, destination_child, 1)
   end
@@ -328,7 +336,7 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     notify_task(view, project, pending)
     assert_count(view, sibling, 0)
     assert_project_count(view, 0)
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{sibling.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}/lists/#{sibling.id}")
     assert_count(view, sibling, 0)
     assert_header(view, 0, 0)
   end
@@ -348,7 +356,7 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
 
     view
     |> form("#task-form", task: %{title: "Recoverable count draft"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(selected)
 
@@ -363,8 +371,8 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     _ = :sys.get_state(view.pid)
     assert_project_count(view, 2)
     assert_count(view, sibling, 1)
-    refute has_element?(view, "#location-task-count")
-    assert has_element?(view, "#task-title[value='Recoverable count draft']")
+    refute has_captured_element?(view, "#location-task-count")
+    assert has_captured_element?(view, "#task-title[value='Recoverable count draft']")
   end
 
   defp drain_sort_queries do
@@ -391,13 +399,20 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
   end
 
   defp assert_count(view, list, value),
-    do: assert(has_element?(view, "#list-task-count-#{list.id}-value", Integer.to_string(value)))
+    do:
+      assert(
+        has_captured_element?(view, "#list-task-count-#{list.id}-value", Integer.to_string(value))
+      )
 
   defp assert_project_count(view, value),
-    do: assert(has_element?(view, "#project-tasks-count-value", Integer.to_string(value)))
+    do:
+      assert(has_captured_element?(view, "#project-tasks-count-value", Integer.to_string(value)))
 
   defp assert_header(view, visible, eligible),
-    do: assert(has_element?(view, "#location-task-count-value", "#{visible} / #{eligible}"))
+    do:
+      assert(
+        has_captured_element?(view, "#location-task-count-value", "#{visible} / #{eligible}")
+      )
 
   defp view_assigns(view), do: :sys.get_state(view.pid).socket.assigns
 end

@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
@@ -33,13 +34,13 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   end
 
   test "hierarchy choices apply immediately and independently, with projected disclosures", c do
-    c.view |> element("#task-status-filter-button") |> render_click()
+    c.view |> element("#task-status-filter-button") |> render_captured_click()
 
     c.view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["done"]})
-    |> render_change()
+    |> render_captured_change()
 
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     assert has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
     filter(c.view, ["pending"])
 
@@ -55,7 +56,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
     assert has_element?(c.view, "#task-status-filter-option-done[checked]")
     refute has_element?(c.view, "#task-status-filter-option-pending[checked]")
 
-    c.view |> element("#task-hierarchy-disclosure-#{c.branch.id}") |> render_click()
+    c.view |> element("#task-hierarchy-disclosure-#{c.branch.id}") |> render_captured_click()
     assert has_element?(c.view, "#task-hierarchy-node-#{c.matching.id}")
     filter(c.view, ["done"])
     assert has_element?(c.view, "#task-hierarchy-node-#{c.branch.id}")
@@ -66,10 +67,10 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   end
 
   test "navigation and live refresh retain choices, while close and reopen reset them", c do
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     filter(c.view, ["pending"])
-    c.view |> element("#task-hierarchy-disclosure-#{c.branch.id}") |> render_click()
-    c.view |> element("#task-hierarchy-link-#{c.matching.id}") |> render_click()
+    c.view |> element("#task-hierarchy-disclosure-#{c.branch.id}") |> render_captured_click()
+    c.view |> element("#task-hierarchy-link-#{c.matching.id}") |> render_captured_click()
     assert_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{c.matching.id}")
     refute has_element?(c.view, "#task-hierarchy-node-#{c.selected.id}")
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
@@ -81,21 +82,21 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
 
     other = task_fixture(c.project, %{})
     other_done = task_fixture(c.project, %{status: :done}, parent: other)
-    render_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{other.id}")
+    render_captured_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{other.id}")
     refute has_element?(c.view, "#task-hierarchy-node-#{other_done.id}")
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
 
-    c.view |> element("#task-modal-close") |> render_click()
+    c.view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(c.view, ~p"/projects/#{c.project.id}")
-    c.view |> element("#open-task-#{other.id}") |> render_click()
+    c.view |> element("#open-task-#{other.id}") |> render_captured_click()
     assert_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{other.id}")
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     assert has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
     assert has_element?(c.view, "#task-hierarchy-node-#{other_done.id}")
   end
 
   test "live parentage changes recompute eligible ancestry without resetting choices", c do
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     filter(c.view, ["pending"])
     {:ok, _} = Tasks.update_task(c.project, c.matching, %{}, parent: c.unrelated)
 
@@ -107,7 +108,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
            )
 
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
-    c.view |> element("#task-hierarchy-disclosure-#{c.unrelated.id}") |> render_click()
+    c.view |> element("#task-hierarchy-disclosure-#{c.unrelated.id}") |> render_captured_click()
 
     assert has_element?(
              c.view,
@@ -116,7 +117,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   end
 
   test "unchecking every status leaves only the inclusive selected path", c do
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     filter(c.view, [""])
 
     assert has_element?(
@@ -129,7 +130,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   end
 
   test "all supported states start checked while options follow the refreshed complete tree", c do
-    c.view |> element("#task-hierarchy-status-filter-button") |> render_click()
+    c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
     filter(c.view, ["pending"])
     {:ok, _} = Tasks.update_task(c.project, c.unrelated, %{status: :not_planned})
@@ -147,6 +148,6 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   defp filter(view, statuses) do
     view
     |> form("#task-hierarchy-status-filter-form", hierarchy_status_filter: %{statuses: statuses})
-    |> render_change()
+    |> render_captured_change()
   end
 end

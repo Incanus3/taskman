@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
@@ -49,21 +50,28 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     second = task_fixture(project)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{first.id}")
 
-    view |> form("#task-comment-form", comment: %{text: "Unposted note"}) |> render_change()
-    view |> element("#task-sessions-tab") |> render_click()
+    view
+    |> form("#task-comment-form", comment: %{text: "Unposted note"})
+    |> render_captured_change()
+
+    view |> element("#task-sessions-tab") |> render_captured_click()
     assert has_element?(view, "#task-sessions-tab[aria-selected='true']")
     assert has_element?(view, "#task-activity[hidden][inert]")
 
-    render_patch(view, "/projects/#{project.id}/tasks/#{first.id}?include_children=false")
+    render_captured_patch(
+      view,
+      "/projects/#{project.id}/tasks/#{first.id}?include_children=false"
+    )
+
     assert has_element?(view, "#task-sessions-tab[aria-selected='true']")
     assert has_element?(view, "#task-comment-text", "Unposted note")
 
-    render_patch(view, ~p"/projects/#{project.id}/tasks/#{second.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}/tasks/#{second.id}")
     assert has_element?(view, "#task-comment-departure")
     assert has_element?(view, "#task-sessions-tab[aria-selected='true']")
     assert has_element?(view, "#task-comment-text", "Unposted note")
 
-    view |> element("#task-comment-departure-discard") |> render_click()
+    view |> element("#task-comment-departure-discard") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{second.id}")
     assert has_element?(view, "#task-activity-tab[aria-selected='true']")
     refute has_element?(view, "#task-comment-text", "Unposted note")
@@ -79,7 +87,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
 
     view
     |> form("#task-comment-form", comment: %{text: "  First <b>line</b>\nSecond line  "})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert {:ok, [comment]} = Tasks.list_comments(project, task)
     assert comment.text == "First <b>line</b>\nSecond line"
@@ -102,15 +110,18 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     task = task_fixture(project, %{status: :done})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> form("#task-comment-form", comment: %{text: "   "}) |> render_change()
+    view |> form("#task-comment-form", comment: %{text: "   "}) |> render_captured_change()
     assert has_element?(view, "#task-comment-form [data-role=field-error]")
 
-    view |> form("#task-comment-form", comment: %{text: "   "}) |> render_submit()
+    view |> form("#task-comment-form", comment: %{text: "   "}) |> render_captured_submit()
     assert view_assigns(view).comments.draft == "   "
     assert has_element?(view, "#task-comment-form [data-role=field-error]")
     assert {:ok, []} = Tasks.list_comments(project, task)
 
-    view |> form("#task-comment-form", comment: %{text: "Done can discuss"}) |> render_submit()
+    view
+    |> form("#task-comment-form", comment: %{text: "Done can discuss"})
+    |> render_captured_submit()
+
     assert {:ok, [_]} = Tasks.list_comments(project, task)
   end
 
@@ -144,7 +155,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
 
     view
     |> form("#task-comment-form", comment: %{text: "Keep this draft"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert has_element?(
              view,
@@ -170,10 +181,13 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
 
     view
     |> form("#task-form", task: %{title: "Pending Task title"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> form("#task-comment-form", comment: %{text: "Keep this draft"}) |> render_change()
-    view |> element("#task-sessions-tab") |> render_click()
+    view
+    |> form("#task-comment-form", comment: %{text: "Keep this draft"})
+    |> render_captured_change()
+
+    view |> element("#task-sessions-tab") |> render_captured_click()
     editing_before = view_assigns(view).editing
 
     {:ok, first} =
@@ -224,7 +238,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     project = project_fixture(%{})
     task = task_fixture(project)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
-    view |> form("#task-comment-form", comment: %{text: "Just once"}) |> render_submit()
+    view |> form("#task-comment-form", comment: %{text: "Just once"}) |> render_captured_submit()
     assert {:ok, [comment]} = Tasks.list_comments(project, task)
 
     :ok =
@@ -259,6 +273,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     })
 
     sync_view(view)
+    render_captured(view)
     assert view_assigns(view).editing.not_found?
     assert view_assigns(view).comments.task_id == nil
   end

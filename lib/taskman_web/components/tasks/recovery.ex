@@ -27,6 +27,12 @@ defmodule TaskmanWeb.Tasks.Recovery do
         <Detail.detail
           task={@view.editing.selected_task}
           task_autosave={@view.editing.autosave}
+          description_editor={
+            %{
+              editor_id: "task-description-recovery-#{@view.id}",
+              initial_value: @view.editing.autosave.form[:description].value || ""
+            }
+          }
           parent_picker={@view.parent_picker}
           cancel="#"
           task_hierarchy={@view.editing.hierarchy}

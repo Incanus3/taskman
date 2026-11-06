@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
@@ -23,12 +24,12 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
       view
       |> form("#task-form", task: %{status: "done"})
-      |> render_change(%{"_target" => ["task", "status"]})
+      |> render_captured_change(%{"_target" => ["task", "status"]})
 
       assert has_element?(view, "#task-done-warning")
       assert has_element?(view, "#task-done-blocker-#{blocker.id}")
       assert Tasks.get_task_for_project(project, task.id).status == :pending
-      view |> element("#confirm-task-done") |> render_click()
+      view |> element("#confirm-task-done") |> render_captured_click()
       assert Tasks.get_task_for_project(project, task.id).status == :done
     end
   end
@@ -42,23 +43,23 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert Tasks.get_task_for_project(project, task.id).status == :in_progress
     assert has_element?(view, "#task-status option[value='done'][selected]")
     assert has_element?(view, "#task-done-warning", "Review release")
     assert has_element?(view, "#task-done-warning", "urgent")
 
-    view |> element("#keep-current-task-status") |> render_click()
+    view |> element("#keep-current-task-status") |> render_captured_click()
     refute has_element?(view, "#task-done-warning")
     assert has_element?(view, "#task-status option[value='in_progress'][selected]")
     assert Tasks.get_task_for_project(project, task.id).status == :in_progress
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
-    view |> element("#confirm-task-done") |> render_click()
+    view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :done
     refute has_element?(view, "#task-done-warning")
   end
@@ -75,12 +76,12 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-blocker-#{first.id}")
     assert has_element?(view, "#task-done-blocker-#{second.id}")
     assert {:ok, _} = Tasks.update_task(project, second, %{status: :done})
-    view |> element("#confirm-task-done") |> render_click()
+    view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :done
 
     done_task = Tasks.get_task_for_project(project, task.id)
@@ -90,11 +91,11 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     third = task_fixture(project, %{title: "Third review"})
     assert {:ok, _} = Tasks.add_block(project, third, task)
-    view |> element("#confirm-task-done") |> render_click()
+    view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :pending
     assert has_element?(view, "#task-done-blocker-#{third.id}")
   end
@@ -109,27 +110,27 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     view
     |> form("#task-form", task: %{priority: "high"})
-    |> render_change(%{"_target" => ["task", "priority"]})
+    |> render_captured_change(%{"_target" => ["task", "priority"]})
 
     assert Tasks.get_task_for_project(project, task.id).priority == :high
     assert has_element?(view, "#task-done-warning")
 
     view
     |> form("#task-form", task: %{status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     refute has_element?(view, "#task-done-warning")
     assert Tasks.get_task_for_project(project, task.id).status == :in_review
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     assert Tasks.get_task_for_project(project, task.id).status == :in_review
   end
@@ -143,21 +144,21 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-warning")
     assert {:ok, _} = Tasks.update_task(project, task, %{status: :in_review})
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-status-conflict")
 
-    view |> element("#confirm-task-done") |> render_click()
+    view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :in_review
     assert has_element?(view, "#task-status-conflict")
 
-    view |> element("#keep-mine-status") |> render_click()
+    view |> element("#keep-mine-status") |> render_captured_click()
     refute has_element?(view, "#task-status-conflict")
     assert has_element?(view, "#task-done-warning")
-    view |> element("#confirm-task-done") |> render_click()
+    view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :done
   end
 
@@ -170,14 +171,14 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-warning")
     assert {:ok, latest} = Tasks.update_task(project, task, %{status: :in_review})
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-status-conflict")
 
-    view |> element("#use-latest-status") |> render_click()
+    view |> element("#use-latest-status") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).lock_version == latest.lock_version
     assert has_element?(view, "#task-status option[value='in_review'][selected]")
@@ -196,7 +197,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-warning")
     assert Tasks.get_task_for_project(project, task.id).status == :in_progress
@@ -205,7 +206,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert Tasks.get_task_for_project(project, task.id).status == :done
     assert has_element?(view, "#task-status option[value='done'][selected]")

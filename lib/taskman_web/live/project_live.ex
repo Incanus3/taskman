@@ -21,6 +21,7 @@ defmodule TaskmanWeb.ProjectLive do
 
   alias TaskmanWeb.ProjectLive.Tasks.{
     Editing,
+    Description,
     CommentDeparture,
     Comments,
     Messages,
@@ -81,6 +82,7 @@ defmodule TaskmanWeb.ProjectLive do
       |> assign(:route_key, nil)
       |> assign(:route_filter_params, %{})
       |> assign(:creation, CreationState.empty())
+      |> assign(:description, %Description.State{})
       |> assign(:task_parent_picker, ParentPicker.empty())
       |> assign(:editing, Editing.State.empty())
       |> assign(:comments, Comments.State.empty())
@@ -99,6 +101,32 @@ defmodule TaskmanWeb.ProjectLive do
   @impl true
   def handle_params(params, uri, socket) do
     destination = route_key(uri)
+    state = socket.assigns.description
+
+    cond do
+      state.route_ready == destination ->
+        socket = assign(socket, :description, %{state | route_ready: nil})
+        continue_params(params, uri, socket)
+
+      not is_nil(state.pending_capture) and match?({:edit, _, _}, state.context) and
+          destination == socket.assigns.route_key ->
+        {:noreply, assign(socket, :live_action, :show_task)}
+
+      destination == socket.assigns.route_key or is_nil(state.editor_id) or
+        match?({:new, _}, state.context) or
+          RecoveryWorkflow.State.active?(socket.assigns.recovery) ->
+        continue_params(params, uri, socket)
+
+      true ->
+        case Description.capture(socket, {:route, params, uri}) do
+          {:ready, socket} -> continue_params(params, uri, socket)
+          {:pending, socket} -> {:noreply, assign(socket, :live_action, :show_task)}
+        end
+    end
+  end
+
+  defp continue_params(params, uri, socket) do
+    destination = route_key(uri)
     departure = socket.assigns.comment_departure
 
     cond do
@@ -106,7 +134,11 @@ defmodule TaskmanWeb.ProjectLive do
         {:noreply, apply_route(params, assign_route_metadata(socket, params, uri))}
 
       departure.confirming? && destination != departure.origin ->
-        {:noreply, push_patch(socket, to: departure.origin, replace: true)}
+        {:noreply,
+         socket |> retain_comment_detail() |> push_patch(to: departure.origin, replace: true)}
+
+      departure.confirming? ->
+        {:noreply, retain_comment_detail(socket)}
 
       true ->
         case CommentDeparture.request(
@@ -120,6 +152,7 @@ defmodule TaskmanWeb.ProjectLive do
             {:noreply,
              socket
              |> assign(:comment_departure, departure)
+             |> retain_comment_detail()
              |> push_patch(to: departure.origin, replace: true)}
 
           {:pending, _departure} ->
@@ -137,6 +170,12 @@ defmodule TaskmanWeb.ProjectLive do
             end
         end
     end
+  end
+
+  defp retain_comment_detail(socket) do
+    socket
+    |> assign(:live_action, :show_task)
+    |> Editing.restart_captured_saves()
   end
 
   defp selected_task(%{
@@ -335,94 +374,60 @@ defmodule TaskmanWeb.ProjectLive do
      |> TaskTablePreferences.changed()}
   end
 
-  def handle_event("request_task_departure", %{"destination" => destination} = params, socket) do
-    draft = Map.get(params, "draft", socket.assigns.comments.draft)
-    socket = if is_binary(draft), do: Comments.set_draft(socket, draft), else: socket
+  def handle_event(
+        "capture_task_departure_comment",
+        %{"editor_id" => id, "ref" => ref, "draft" => draft},
+        socket
+      ) do
+    handle_info({:description_comment_captured, %{editor_id: id, ref: ref, draft: draft}}, socket)
+  end
 
-    case CommentDeparture.request(
-           socket.assigns.comment_departure,
-           selected_task(socket),
-           destination,
-           draft,
-           socket.assigns.route_key
-         ) do
-      {:confirm, departure} ->
-        {:noreply, assign(socket, :comment_departure, departure)}
+  def handle_event("capture_task_departure_comment", _params, socket), do: {:noreply, socket}
 
-      {:continue, departure} ->
-        socket = assign(socket, :comment_departure, departure)
+  def handle_event("retry_description_capture", _params, socket) do
+    {:pending, socket} = Description.retry(socket)
+    {:noreply, socket}
+  end
 
-        case Editing.flush(socket, discard_done?: true) do
-          {:ok, socket} -> {:noreply, navigate_departure(socket, destination)}
-          {:error, socket} -> {:noreply, socket}
+  def handle_event(
+        "request_task_departure",
+        _params,
+        %{assigns: %{comment_departure: %CommentDeparture{confirming?: true}}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event(event, params, socket)
+      when event in [
+             "request_task_departure",
+             "discard_task_comment_departure",
+             "submit_task_comment_departure",
+             "save_task"
+           ] do
+    if event == "save_task" and creation_workflow_blocked?(socket) do
+      {:noreply, socket}
+    else
+      {socket, params} =
+        if event == "request_task_departure" do
+          {draft, params} = Map.pop(params, "draft")
+          socket = if is_binary(draft), do: Comments.set_draft(socket, draft), else: socket
+          {socket, params}
+        else
+          {socket, params}
         end
 
-      {:pending, _departure} ->
-        {:noreply, socket}
+      purpose =
+        if event == "save_task", do: {:submit, params}, else: {:departure, {event, params}}
+
+      case Description.capture(socket, purpose) do
+        {:ready, socket} -> continue_event(event, params, socket)
+        {:pending, socket} -> {:noreply, socket}
+      end
     end
   end
 
   def handle_event("cancel_task_comment_departure", _params, socket) do
     {:noreply,
      assign(socket, :comment_departure, CommentDeparture.cancel(socket.assigns.comment_departure))}
-  end
-
-  def handle_event("discard_task_comment_departure", _params, socket) do
-    case socket.assigns.comment_departure.destination do
-      nil ->
-        {:noreply, socket}
-
-      destination ->
-        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
-          {:ok, socket} ->
-            {:noreply,
-             socket
-             |> Comments.discard_draft()
-             |> assign(:comment_departure, CommentDeparture.empty())
-             |> navigate_departure(destination)}
-
-          {:error, socket} ->
-            {:noreply,
-             assign(socket, :comment_departure, %{
-               socket.assigns.comment_departure
-               | error: "Save the Task fields before leaving."
-             })}
-        end
-    end
-  end
-
-  def handle_event("submit_task_comment_departure", _params, socket) do
-    case socket.assigns.comment_departure do
-      %CommentDeparture{destination: nil} ->
-        {:noreply, socket}
-
-      %CommentDeparture{submitting?: true} ->
-        {:noreply, socket}
-
-      %CommentDeparture{destination: destination} = departure ->
-        socket = assign(socket, :comment_departure, %{departure | submitting?: true})
-
-        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
-          {:ok, socket} ->
-            case Comments.post(socket, socket.assigns.comments.draft) do
-              {:ok, socket} ->
-                {:noreply,
-                 socket
-                 |> assign(:comment_departure, CommentDeparture.empty())
-                 |> navigate_departure(destination)}
-
-              {:error, socket} ->
-                {:noreply, departure_post_failed(socket, departure)}
-            end
-
-          {:error, socket} ->
-            {:noreply,
-             assign(socket, :comment_departure, %{
-               departure
-               | error: "Save the Task fields before leaving."
-             })}
-        end
-    end
   end
 
   @impl true
@@ -501,7 +506,188 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   @impl true
-  def handle_info(message, socket), do: Reconciliation.handle_info(message, socket)
+  def handle_info({:description_capture_timeout, ref} = message, socket) do
+    {:noreply, socket} = Description.handle_info(message, socket)
+
+    case socket.assigns.description.pending_capture do
+      %{ref: ^ref, timed_out?: true, purpose: {:route, params, uri}} = pending ->
+        parsed = URI.parse(uri)
+
+        destination =
+          URI.to_string(%URI{path: parsed.path, query: parsed.query, fragment: parsed.fragment})
+
+        purpose = {:departure, {"request_task_departure", %{"destination" => destination}}}
+
+        description = %{
+          socket.assigns.description
+          | pending_capture: %{pending | purpose: purpose}
+        }
+
+        {:noreply,
+         socket
+         |> assign(:description, description)
+         |> Editing.restore_failed_route(params)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(message, socket) do
+    case Reconciliation.handle_info(message, socket) do
+      {:captured, socket, purpose, markdown, dirty?} ->
+        continue_capture(socket, purpose, markdown, dirty?)
+
+      result ->
+        result
+    end
+  end
+
+  defp continue_event("request_task_departure", %{"destination" => destination}, socket) do
+    draft = socket.assigns.comments.draft
+
+    case CommentDeparture.request(
+           socket.assigns.comment_departure,
+           selected_task(socket),
+           destination,
+           draft,
+           socket.assigns.route_key
+         ) do
+      {:confirm, departure} ->
+        {:noreply, assign(socket, :comment_departure, departure)}
+
+      {:continue, departure} ->
+        socket = assign(socket, :comment_departure, departure)
+
+        case Editing.flush(socket, discard_done?: true) do
+          {:ok, socket} -> {:noreply, navigate_departure(socket, destination)}
+          {:error, socket} -> {:noreply, socket}
+        end
+
+      {:pending, _departure} ->
+        {:noreply, socket}
+    end
+  end
+
+  defp continue_event("discard_task_comment_departure", _params, socket) do
+    case socket.assigns.comment_departure.destination do
+      nil ->
+        {:noreply, socket}
+
+      destination ->
+        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
+          {:ok, socket} ->
+            {:noreply,
+             socket
+             |> Comments.discard_draft()
+             |> assign(:comment_departure, CommentDeparture.empty())
+             |> navigate_departure(destination)}
+
+          {:error, socket} ->
+            {:noreply,
+             assign(socket, :comment_departure, %{
+               socket.assigns.comment_departure
+               | error: "Save the Task fields before leaving."
+             })}
+        end
+    end
+  end
+
+  defp continue_event("submit_task_comment_departure", _params, socket) do
+    case socket.assigns.comment_departure do
+      %CommentDeparture{destination: nil} ->
+        {:noreply, socket}
+
+      %CommentDeparture{submitting?: true} ->
+        {:noreply, socket}
+
+      %CommentDeparture{destination: destination} = departure ->
+        socket = assign(socket, :comment_departure, %{departure | submitting?: true})
+
+        case Editing.flush(socket, allow_invalid?: false, discard_done?: true) do
+          {:ok, socket} ->
+            case Comments.post(socket, socket.assigns.comments.draft) do
+              {:ok, socket} ->
+                {:noreply,
+                 socket
+                 |> assign(:comment_departure, CommentDeparture.empty())
+                 |> navigate_departure(destination)}
+
+              {:error, socket} ->
+                {:noreply, departure_post_failed(socket, departure)}
+            end
+
+          {:error, socket} ->
+            {:noreply,
+             assign(socket, :comment_departure, %{
+               departure
+               | error: "Save the Task fields before leaving."
+             })}
+        end
+    end
+  end
+
+  defp continue_event("save_task", params, socket),
+    do: Creation.handle_event("save_task", params, socket)
+
+  defp continue_capture(
+         %{assigns: %{description: %{refresh_event: event}}} = socket,
+         purpose,
+         markdown,
+         dirty?
+       )
+       when not is_nil(event) do
+    context = socket.assigns.description.context
+    socket = assign(socket, :description, %{socket.assigns.description | refresh_event: nil})
+    {:noreply, socket} = Reconciliation.continue_captured(event, socket)
+
+    if socket.assigns.description.context != context or not is_nil(socket.redirected) or
+         RecoveryWorkflow.State.active?(socket.assigns.recovery) do
+      {:noreply, socket}
+    else
+      continue_capture(socket, purpose, markdown, dirty?)
+    end
+  end
+
+  defp continue_capture(socket, {:submit, params}, markdown, dirty?) do
+    markdown = if dirty?, do: markdown, else: socket.assigns.description.initial_value
+
+    params =
+      Map.update(
+        params,
+        "task",
+        %{"description" => markdown},
+        &Map.put(&1, "description", markdown)
+      )
+
+    continue_event("save_task", params, socket)
+  end
+
+  defp continue_capture(socket, {:departure, {event, params}}, _markdown, _dirty?) do
+    {:noreply, socket} = continue_event(event, params, socket)
+
+    socket =
+      if is_nil(socket.redirected), do: Editing.restart_captured_saves(socket), else: socket
+
+    {:noreply, socket}
+  end
+
+  defp continue_capture(socket, {:route, params, uri}, _markdown, _dirty?) do
+    action =
+      cond do
+        params["task_id"] -> :show_task
+        String.ends_with?(URI.parse(uri).path, "/tasks/new") -> :new_task
+        params["project_id"] -> :show
+        true -> :index
+      end
+
+    continue_params(params, uri, assign(socket, :live_action, action))
+  end
+
+  defp continue_capture(socket, {:reconcile, event}, _markdown, _dirty?) do
+    {:noreply, socket} = Reconciliation.continue_captured(event, socket)
+    {:noreply, Editing.restart_captured_saves(socket)}
+  end
 
   defp departure_post_failed(socket, departure) do
     socket
@@ -510,7 +696,10 @@ defmodule TaskmanWeb.ProjectLive do
   end
 
   defp navigate_departure(socket, destination) do
-    socket = push_event(socket, "comment_departure_committed", %{})
+    socket =
+      socket
+      |> assign(:description, %{socket.assigns.description | route_ready: destination})
+      |> push_event("comment_departure_committed", %{})
 
     if String.starts_with?(destination, "/projects") or destination == "/" do
       push_patch(socket, to: destination)

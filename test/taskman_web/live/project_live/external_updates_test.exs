@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -43,8 +44,8 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
              json_response(project_response, 201)
 
     sync_view(view)
-    view |> element("#project-selector-toggle") |> render_click()
-    assert has_element?(view, "#select-project-#{project_id}", "Controller Project")
+    view |> element("#project-selector-toggle") |> render_captured_click()
+    assert has_captured_element?(view, "#select-project-#{project_id}", "Controller Project")
     refute_patched(view, ~p"/")
 
     project_path = ~p"/projects/#{project_id}"
@@ -68,7 +69,7 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
            } = json_response(list_response, 201)
 
     sync_view(view)
-    assert has_element?(view, "#list-#{list_id}", "Controller List")
+    assert has_captured_element?(view, "#list-#{list_id}", "Controller List")
     refute_patched(view, project_path)
 
     rename_response =
@@ -88,7 +89,7 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
            } = json_response(rename_response, 200)
 
     sync_view(view)
-    assert has_element?(view, "#list-#{list_id}", "Renamed by controller")
+    assert has_captured_element?(view, "#list-#{list_id}", "Renamed by controller")
     refute_patched(view, project_path)
   end
 
@@ -128,7 +129,7 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
     assert location_list_id == planning.id
 
     sync_view(view)
-    assert has_element?(view, "#task-#{task_id}", "Created by controller")
+    assert has_captured_element?(view, "#task-#{task_id}", "Created by controller")
     refute_patched(view, list_path)
 
     detail_path = ~p"/projects/#{project.id}/lists/#{planning.id}/tasks/#{task_id}"
@@ -152,8 +153,8 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
            } = json_response(update_response, 200)
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-title[value='Updated by controller']")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-title[value='Updated by controller']")
     refute_patched(detail, detail_path)
 
     parent_response =
@@ -174,10 +175,10 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
     assert parent_id == parent.id
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-parent-trigger", "Controller parent")
-    assert has_element?(detail, "#task-hierarchy-node-#{parent.id}")
-    assert has_element?(detail, "#task-hierarchy-link-#{task_id}[aria-current='true']")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-parent-trigger", "Controller parent")
+    assert has_captured_element?(detail, "#task-hierarchy-node-#{parent.id}")
+    assert has_captured_element?(detail, "#task-hierarchy-link-#{task_id}[aria-current='true']")
     refute_patched(detail, detail_path)
 
     move_response =
@@ -201,10 +202,10 @@ defmodule TaskmanWeb.ProjectLive.ExternalUpdatesTest do
     assert location_list_id == archive.id
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-title[value='Updated by controller']")
-    assert has_element?(detail, "#task-hierarchy-node-#{parent.id}")
-    refute has_element?(detail, "#task-#{task_id}")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-title[value='Updated by controller']")
+    assert has_captured_element?(detail, "#task-hierarchy-node-#{parent.id}")
+    refute has_captured_element?(detail, "#task-#{task_id}")
     refute_patched(detail, detail_path)
   end
 

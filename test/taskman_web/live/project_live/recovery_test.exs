@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -32,31 +33,31 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Unsaved"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    assert has_element?(view, "#task-recovery #task-title[value='Unsaved']")
-    assert has_element?(view, "#task-recovery-title", "This task is no longer available")
+    assert has_captured_element?(view, "#task-recovery #task-title[value='Unsaved']")
+    assert has_captured_element?(view, "#task-recovery-title", "This task is no longer available")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery-explanation",
              "Copy your unsaved input or discard it. This recovery state is temporary. Reloading, reconnecting, or leaving Taskman may lose it."
            )
 
-    assert has_element?(view, "#task-recovery-copy", "Copy input")
-    assert has_element?(view, "#task-recovery-discard", "Discard input")
-    refute has_element?(view, "#task-recovery-resume")
-    refute has_element?(view, "#task-recovery-source")
-    refute has_element?(view, "#task-recovery h2:not(#task-recovery-title)")
-    refute has_element?(view, "#task-recovery h3")
-    refute has_element?(view, "#task-recovery [id$='-save-status']")
-    refute has_element?(view, "#task-recovery-destination")
-    refute has_element?(view, "#task-recovery-form")
+    assert has_captured_element?(view, "#task-recovery-copy", "Copy input")
+    assert has_captured_element?(view, "#task-recovery-discard", "Discard input")
+    refute has_captured_element?(view, "#task-recovery-resume")
+    refute has_captured_element?(view, "#task-recovery-source")
+    refute has_captured_element?(view, "#task-recovery h2:not(#task-recovery-title)")
+    refute has_captured_element?(view, "#task-recovery h3")
+    refute has_captured_element?(view, "#task-recovery [id$='-save-status']")
+    refute has_captured_element?(view, "#task-recovery-destination")
+    refute has_captured_element?(view, "#task-recovery-form")
   end
 
   test "a name refresh observes List loss before a queued save can discard retained input", %{
@@ -70,7 +71,7 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Retained release draft 73911"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     revision = Map.fetch!(view_assigns(view).editing.autosave.revisions, "title")
     Taskman.Repo.delete!(task)
@@ -84,40 +85,49 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
       fields: [:name]
     })
 
+    render_captured(view)
     captured = view_assigns(view).recovery
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery #task-title[readonly][value='Retained release draft 73911']"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery[data-copy-value*='Task title: Retained release draft 73911']"
            )
 
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-input")
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-mobile-trigger")
+    assert has_captured_element?(view, "#global-task-search[inert] #global-task-search-input")
+
+    assert has_captured_element?(
+             view,
+             "#global-task-search[inert] #global-task-search-mobile-trigger"
+           )
 
     send(view.pid, {:autosave_task_field, task.id, "title", revision})
     assert view_assigns(view).recovery == captured
     send(view.pid, list_event(project.id, lost.id))
     assert view_assigns(view).recovery == captured
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery #task-title[readonly][value='Retained release draft 73911']"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery[data-copy-value*='Task title: Retained release draft 73911']"
            )
 
-    view |> element("#task-recovery-discard") |> render_click()
+    view |> element("#task-recovery-discard") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
-    refute has_element?(view, "#task-recovery")
-    assert has_element?(view, "#global-task-search:not([inert]) #global-task-search-input")
+    refute has_captured_element?(view, "#task-recovery")
+
+    assert has_captured_element?(
+             view,
+             "#global-task-search:not([inert]) #global-task-search-input"
+           )
   end
 
   test "a name refresh retains ordinary missing-Task handling while its List survives", %{
@@ -133,7 +143,7 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Retained release draft 73911"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
 
@@ -146,8 +156,8 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
     })
 
     _ = view_assigns(view)
-    assert has_element?(view, "#task-not-found")
-    refute has_element?(view, "#task-recovery")
+    assert has_captured_element?(view, "#task-not-found")
+    refute has_captured_element?(view, "#task-recovery")
     assert Taskman.Lists.get_list_for_project(project, task_list.id).id == task_list.id
   end
 
@@ -159,19 +169,19 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Unsaved"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    assert has_element?(view, "#workspace-content[inert]")
-    assert has_element?(view, "#project-selector[inert]")
-    assert has_element?(view, "#new-project-button")
-    render_click(view, "open_project_new", %{})
-    refute has_element?(view, "#project-modal")
-    refute has_element?(view, "#task-modal[inert]")
+    assert has_captured_element?(view, "#workspace-content[inert]")
+    assert has_captured_element?(view, "#project-selector[inert]")
+    assert has_captured_element?(view, "#new-project-button")
+    render_captured_click(view, "open_project_new", %{})
+    refute has_captured_element?(view, "#project-modal")
+    refute has_captured_element?(view, "#task-modal[inert]")
   end
 
   test "a stale move event stays inert after an inactive List backdrop disappears", %{conn: conn} do
@@ -183,11 +193,11 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    render_hook(view, "open_move_task", %{"task-id" => Integer.to_string(task.id)})
+    render_captured_hook(view, "open_move_task", %{"task-id" => Integer.to_string(task.id)})
 
-    refute has_element?(view, "#move-task-#{task.id}")
+    refute has_captured_element?(view, "#move-task-#{task.id}")
   end
 
   test "detail recovery retains copy and focus then discards to the Project root", %{conn: conn} do
@@ -198,24 +208,24 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Unsaved detail"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    assert has_element?(view, "#task-recovery[data-copy-value*='Unsaved detail']")
+    assert has_captured_element?(view, "#task-recovery[data-copy-value*='Unsaved detail']")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-modal[phx-mounted*='focus'] #task-modal-content[tabindex='-1']"
            )
 
-    view |> element("#task-recovery-discard") |> render_click()
+    view |> element("#task-recovery-discard") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
-    refute has_element?(view, "#task-recovery")
+    refute has_captured_element?(view, "#task-recovery")
   end
 
   test "stale detail events cannot alter a captured recovery snapshot", %{conn: conn} do
@@ -226,12 +236,13 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
 
     view
     |> form("#task-form", task: %{title: "Unsaved detail"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
+    render_captured(view)
     captured = view_assigns(view).recovery
 
     for {event, params} <- [
@@ -240,12 +251,12 @@ defmodule TaskmanWeb.ProjectLive.RecoveryTest do
           {"select_task_parent", %{"parent-id" => "1"}},
           {"open_move_task", %{"task-id" => Integer.to_string(task.id)}}
         ] do
-      render_hook(view, event, params)
+      render_captured_hook(view, event, params)
       assert view_assigns(view).recovery == captured
     end
 
     assert Tasks.get_task_for_project(project, task.id) == nil
-    assert has_element?(view, "#task-recovery #task-title[value='Unsaved detail']")
+    assert has_captured_element?(view, "#task-recovery #task-title[value='Unsaved detail']")
   end
 
   defp list_event(project_id, list_id) do

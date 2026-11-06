@@ -13,6 +13,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   alias TaskmanWeb.ProjectLive.Tasks.{
     Autosave,
     Creation,
+    Description,
     Hierarchy,
     Listing,
     Move,
@@ -127,6 +128,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
           :editing,
           State.open(editing, task, autosave, hierarchy, related_tasks)
         )
+        |> Description.open({:edit, project.id, task.id})
 
       _not_found ->
         task_not_found_modal_state(socket)
@@ -189,6 +191,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
               socket
               |> assign(:editing, editing)
               |> assign(:task_parent_picker, picker)
+              |> Description.open({:edit, project.id, task.id})
 
             case Autosave.restart(socket.assigns.editing.autosave, project, task) do
               {:ok, autosave, task, schedules} ->
@@ -216,7 +219,27 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   @doc "Clears detail data while retaining the autosave timer sequence."
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def clear(socket), do: assign(socket, :editing, State.clear(socket.assigns.editing))
+  def clear(socket) do
+    socket = assign(socket, :editing, State.clear(socket.assigns.editing))
+
+    case socket.assigns.description.context do
+      {:edit, _, _} -> Description.clear(socket)
+      _ -> socket
+    end
+  end
+
+  def change_description(socket, markdown) do
+    result =
+      Autosave.change(
+        socket.assigns.editing.autosave,
+        socket.assigns.workspace.selected_project,
+        socket.assigns.editing.selected_task,
+        %{"description" => markdown},
+        "description"
+      )
+
+    apply_task_autosave_result(socket, result)
+  end
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
@@ -442,7 +465,18 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
       resolution ->
         result = Autosave.resolve_conflict(autosave, project, task, field, resolution)
-        {:noreply, apply_task_autosave_result(socket, result)}
+        socket = apply_task_autosave_result(socket, result)
+
+        socket =
+          if field == "description" and resolution == :use_latest,
+            do:
+              Description.replace(
+                socket,
+                socket.assigns.editing.autosave.form[:description].value || ""
+              ),
+            else: socket
+
+        {:noreply, socket}
     end
   end
 
@@ -509,6 +543,33 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def sync_persisted_task(socket, %Task{} = task) do
     sync_autosave(socket, Autosave.reconcile(socket.assigns.editing.autosave, task), task)
   end
+
+  @doc "Restarts captured drafts through the existing autosave schedule under current authority."
+  def restart_captured_saves(
+        %{
+          assigns: %{
+            workspace: %{selected_project: %Project{} = project},
+            editing: %{selected_task: %Task{} = task}
+          }
+        } = socket
+      ) do
+    case Autosave.restart(socket.assigns.editing.autosave, project, task) do
+      {:ok, autosave, task, schedules} ->
+        socket =
+          if task == socket.assigns.editing.selected_task,
+            do: update_state(socket, &State.put_autosave(&1, autosave)),
+            else: sync_autosave(socket, autosave, task)
+
+        Enum.reduce(schedules, socket, fn {delay, message}, socket ->
+          execute_task_autosave_schedule(socket, delay, message)
+        end)
+
+      {:not_found, autosave} ->
+        apply_task_autosave_result(socket, {:not_found, autosave})
+    end
+  end
+
+  def restart_captured_saves(socket), do: socket
 
   @doc "Reloads a successfully moved selected Task and marks its flushed detail as saved."
   @spec refresh_after_move(Phoenix.LiveView.Socket.t(), pos_integer()) ::
@@ -749,6 +810,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
           socket
           |> update_state(&%{&1 | selected_task: persisted_task})
           |> update_state(&State.put_autosave(&1, Autosave.reconcile(autosave, persisted_task)))
+
+        socket =
+          if autosave.form[:description].value !=
+               socket.assigns.editing.autosave.form[:description].value,
+             do:
+               Description.replace(
+                 socket,
+                 socket.assigns.editing.autosave.form[:description].value || ""
+               ),
+             else: socket
 
         {socket, {:task_reconciled, persisted_task}}
 

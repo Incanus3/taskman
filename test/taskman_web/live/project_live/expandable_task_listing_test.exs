@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -50,10 +51,10 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     end
 
     assert has_element?(view, "#task-#{c.id} .sr-only", "Subtask depth: 2.")
-    view |> element("#move-task-row-button-#{b.id}") |> render_click()
+    view |> element("#move-task-row-button-#{b.id}") |> render_captured_click()
     assert has_element?(view, "#tasks-#{b.id} [data-move-task-popover]")
-    render_click(view, "cancel_move_task")
-    view |> element("#open-task-#{c.id}") |> render_click()
+    render_captured_click(view, "cancel_move_task")
+    view |> element("#open-task-#{c.id}") |> render_captured_click()
     assert assigns(view).editing.selected_task.id == c.id
   end
 
@@ -61,13 +62,13 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
     {:ok, view, _} = live(conn, listing_path(project, selected))
     toggle(view, a)
-    view |> element("#open-task-#{b.id}") |> render_click()
+    view |> element("#open-task-#{b.id}") |> render_captured_click()
     assert has_element?(view, "#task-modal-content")
     assert row_ids(view) == [a.id, b.id, c.id]
-    render_patch(view, listing_path(project, selected))
+    render_captured_patch(view, listing_path(project, selected))
     assert row_ids(view) == [a.id, b.id, c.id]
-    render_patch(view, "/projects/#{project.id}")
-    render_patch(view, listing_path(project, selected))
+    render_captured_patch(view, "/projects/#{project.id}")
+    render_captured_patch(view, listing_path(project, selected))
     assert row_ids(view) == [a.id]
     assert has_element?(view, "#toggle-task-subtasks-#{a.id}[aria-expanded='false']")
   end
@@ -102,12 +103,12 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     assert row_ids(view) == [a.id, b.id, c.id]
     assert has_element?(view, "#task-location-cell-#{a.id}", "Child")
     assert has_element?(view, "#task-location-cell-#{b.id}", "Selected")
-    view |> element("#include-child-lists") |> render_click()
+    view |> element("#include-child-lists") |> render_captured_click()
     assert row_ids(view) == [b.id, c.id]
     assert_depths(view, [{b, 0}, {c, 1}])
     assert has_element?(view, "#toggle-task-subtasks-#{b.id}[aria-expanded='true']")
     refute has_element?(view, "#task-location-cell-#{b.id}")
-    view |> element("#include-child-lists") |> render_click()
+    view |> element("#include-child-lists") |> render_captured_click()
     assert row_ids(view) == [a.id, b.id, c.id]
     assert_depths(view, [{a, 0}, {b, 1}, {c, 2}])
     assert has_element?(view, "#toggle-task-subtasks-#{a.id}[aria-expanded='true']")
@@ -131,14 +132,14 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     filter(view, ["pending"])
     assert row_ids(view) == [a.id, b.id, c.id]
     assert has_element?(view, "#toggle-task-subtasks-#{a.id}[aria-expanded='true']")
-    render_patch(view, "/projects/#{other_project.id}")
-    render_patch(view, listing_path(project, selected))
+    render_captured_patch(view, "/projects/#{other_project.id}")
+    render_captured_patch(view, listing_path(project, selected))
     assert row_ids(view) == [a.id]
     assert assigns(view).listing.expanded_task_ids == MapSet.new()
     toggle(view, a)
-    render_patch(view, "/projects/#{project.id}/lists/999999999")
+    render_captured_patch(view, "/projects/#{project.id}/lists/999999999")
     assert assigns(view).listing.expanded_task_ids == MapSet.new()
-    render_patch(view, listing_path(project, selected))
+    render_captured_patch(view, listing_path(project, selected))
     assert row_ids(view) == [a.id]
     toggle(view, a)
     assert row_ids(view) == [a.id, b.id, c.id]
@@ -171,12 +172,12 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     extra = task_fixture(project, child_list, %{})
     {:ok, view, _} = live(conn, listing_path(project, selected))
     toggle(view, a)
-    view |> element("#include-child-lists") |> render_click()
+    view |> element("#include-child-lists") |> render_captured_click()
     assert row_ids(view) == [a.id, b.id, c.id, extra.id]
-    view |> element("#include-child-lists") |> render_click()
+    view |> element("#include-child-lists") |> render_captured_click()
     assert row_ids(view) == [a.id, b.id, c.id]
 
-    render_hook(view, "hydrate_task_table_preferences", %{
+    render_captured_hook(view, "hydrate_task_table_preferences", %{
       "include_children" => true,
       "statuses" => ["done"]
     })
@@ -191,7 +192,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{selected.id}")
     toggle(view, a)
 
-    render_hook(view, "hydrate_task_table_preferences", %{
+    render_captured_hook(view, "hydrate_task_table_preferences", %{
       "include_children" => false,
       "statuses" => ["pending", "done"]
     })
@@ -220,7 +221,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
           foreign.id,
           999_999_999
         ] do
-      render_click(view, "toggle_task_subtasks", %{"task-id" => to_string(target)})
+      render_captured_click(view, "toggle_task_subtasks", %{"task-id" => to_string(target)})
       assert row_ids(view) == [a.id, b.id, c.id]
       assert has_element?(view, "#toggle-task-subtasks-#{a.id}[aria-expanded='true']")
     end
@@ -230,7 +231,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     Taskman.Repo.delete!(a)
     notify(view, project, a)
     assert row_ids(view) == []
-    render_click(view, "toggle_task_subtasks", %{"task-id" => to_string(a.id)})
+    render_captured_click(view, "toggle_task_subtasks", %{"task-id" => to_string(a.id)})
     assert row_ids(view) == []
     assert assigns(view).listing.expanded_task_ids == MapSet.new([a.id, b.id])
   end
@@ -255,7 +256,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
     toggle(view, a)
-    view |> element("#sort-task-title") |> render_click()
+    view |> element("#sort-task-title") |> render_captured_click()
     assert has_element?(view, "#toggle-task-subtasks-#{a.id}[aria-expanded='true']")
     toggle(view, a)
     assert row_ids(view) == [a.id]
@@ -306,11 +307,11 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
     {:ok, view, _} = live(conn, listing_path(project, selected))
     toggle(view, a)
-    view |> element("#open-task-#{b.id}") |> render_click()
+    view |> element("#open-task-#{b.id}") |> render_captured_click()
     assert_patch(view, "/projects/#{project.id}/lists/#{selected.id}/tasks/#{b.id}")
     assert assigns(view).editing.selected_task.id == b.id
-    render_patch(view, listing_path(project, selected))
-    view |> element("#add-subtask-#{b.id}") |> render_click()
+    render_captured_patch(view, listing_path(project, selected))
+    view |> element("#add-subtask-#{b.id}") |> render_captured_click()
 
     assert_patch(
       view,
@@ -319,7 +320,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
 
     assert has_element?(view, "#task-form")
     assert has_element?(view, "#task-parent-trigger", "B")
-    render_patch(view, listing_path(project, selected))
+    render_captured_patch(view, listing_path(project, selected))
     assert row_ids(view) == [a.id, b.id, c.id]
   end
 
@@ -337,7 +338,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     do: "/projects/#{project.id}/lists/#{selected.id}?statuses=#{statuses}"
 
   defp toggle(view, task),
-    do: view |> element("#toggle-task-subtasks-#{task.id}") |> render_click()
+    do: view |> element("#toggle-task-subtasks-#{task.id}") |> render_captured_click()
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
 
@@ -357,7 +358,9 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
       end)
 
   defp filter(view, statuses) do
-    render_click(view, "filter_task_statuses", %{"status_filter" => %{"statuses" => statuses}})
+    render_captured_click(view, "filter_task_statuses", %{
+      "status_filter" => %{"statuses" => statuses}
+    })
   end
 
   defp notify(view, project, task, operation \\ :updated) do

@@ -19,6 +19,8 @@
       id="task-comment-departure-guard"
       phx-hook="TaskmanWeb.ProjectLive.CommentDeparture"
       data-task-id={@editing.selected_task && @editing.selected_task.id}
+      data-description-editor-id={@description.editor_id}
+      data-description-capture-pending={to_string(not is_nil(@description.pending_capture))}
       data-pending={to_string(@comment_departure.confirming?)}
       data-retained-destination={
         to_string(not is_nil(@comment_departure.destination) && !@comment_departure.confirming?)
@@ -520,6 +522,7 @@
         ) %>
       <Form.form
         form={@creation.form}
+        description_editor={@description}
         status_values={status_options.values}
         reveal_states_event={if(status_options.hidden?, do: "reveal_task_creation_states")}
         mode={:new}
@@ -609,6 +612,7 @@
         comment_stream={@streams.comments}
         project={@workspace.selected_project}
         task_autosave={@editing.autosave}
+        description_editor={@description}
         status_values={status_options.values}
         reveal_states_event={if(status_options.hidden?, do: "reveal_task_edit_states")}
         related_tasks={@editing.related_tasks}

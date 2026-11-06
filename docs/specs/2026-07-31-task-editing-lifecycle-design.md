@@ -17,6 +17,10 @@
 > fallback and description lifetimes. Human-controlled lifecycle and autosave contracts remain
 > authoritative.
 
+> **Superseded description control:** The plain-text description input guidance below is replaced
+> by the [shared Markdown editor design](2026-11-06-task-description-markdown-design.md).
+> Creation, lifecycle, field persistence and other controls retain their existing contracts.
+
 ## Goal
 
 Finish Task editing and explicit human-controlled lifecycle behavior in the existing list-first

@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -22,36 +23,41 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     project = project_fixture(%{})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
     open_filter(view)
-    refute has_element?(view, "#task-status-filter-option-in_analysis")
+    refute has_captured_element?(view, "#task-status-filter-option-in_analysis")
     task = task_fixture(project, %{status: :in_analysis})
-    assert has_element?(view, "#open-task-#{task.id}")
-    assert has_element?(view, "#task-status-filter-option-in_analysis[checked]")
+    assert has_captured_element?(view, "#open-task-#{task.id}")
+    assert has_captured_element?(view, "#task-status-filter-option-in_analysis[checked]")
 
     {:ok, explicit, _} =
       live(conn, ~p"/projects/#{project.id}?statuses=icebox,pending,in_progress,in_review")
 
     open_filter(explicit)
-    assert has_element?(explicit, "#task-status-filter-option-in_analysis")
-    refute has_element?(explicit, "#task-status-filter-option-in_analysis[checked]")
-    refute has_element?(explicit, "#open-task-#{task.id}")
+    assert has_captured_element?(explicit, "#task-status-filter-option-in_analysis")
+    refute has_captured_element?(explicit, "#task-status-filter-option-in_analysis[checked]")
+    refute has_captured_element?(explicit, "#open-task-#{task.id}")
   end
 
   test "creation reveal offers both additional states and persists analysis", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
-    render_click(view, "reveal_task_creation_states", %{})
 
-    assert has_element?(
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_creation_states']"
+           )
+
+    render_captured_click(view, "reveal_task_creation_states", %{})
+
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='in_analysis'][data-visible-values*='not_planned'][data-action='null']"
            )
 
-    assert has_element?(view, "#task-status option[selected][value='pending']")
+    assert has_captured_element?(view, "#task-status option[selected][value='pending']")
 
     view
     |> form("#task-form", task: %{title: "Investigate", status: "in_analysis"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert [%{status: :in_analysis}] = Tasks.list_tasks_for_project(project)
   end
@@ -64,13 +70,23 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
     open_filter(view)
     refute offered?(view)
-    render_patch(view, ~p"/projects/#{project.id}?include_children=true")
+    render_captured_patch(view, ~p"/projects/#{project.id}?include_children=true")
     open_filter(view)
     assert offered?(view)
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=false")
+
+    render_captured_patch(
+      view,
+      ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=false"
+    )
+
     open_filter(view)
     refute offered?(view)
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=true")
+
+    render_captured_patch(
+      view,
+      ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=true"
+    )
+
     open_filter(view)
     assert offered?(view)
   end
@@ -82,8 +98,8 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
     open_filter(view)
     assert offered?(view)
-    refute has_element?(view, "#task-status-filter-option-not_planned[checked]")
-    refute has_element?(view, "#open-task-#{task.id}")
+    refute has_captured_element?(view, "#task-status-filter-option-not_planned[checked]")
+    refute has_captured_element?(view, "#open-task-#{task.id}")
     {:ok, _} = Tasks.update_task(project, task, %{status: :pending})
     assert offered?(view)
     {:ok, reloaded, _} = live(conn, ~p"/projects/#{project.id}")
@@ -96,17 +112,17 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     other = project_fixture(%{})
     task_fixture(project, %{status: :not_planned})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}?statuses=not_planned")
-    render_patch(view, ~p"/projects/#{other.id}")
+    render_captured_patch(view, ~p"/projects/#{other.id}")
     open_filter(view)
     refute offered?(view)
 
     view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["pending"]})
-    |> render_change()
+    |> render_captured_change()
 
-    render_patch(view, ~p"/projects/#{project.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}")
     open_filter(view)
-    assert has_element?(view, "#task-status-filter-option-not_planned[checked]")
+    assert has_captured_element?(view, "#task-status-filter-option-not_planned[checked]")
   end
 
   test "local persisted observation and external snapshots merge without reads or version ordering" do
@@ -184,17 +200,21 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     view
     |> form("#task-form", task: %{title: "Observed create", status: "not_planned"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert_patch(view, ~p"/projects/#{project.id}")
     open_filter(view)
     assert offered?(view)
     task = task_fixture(project, destination, %{status: :pending})
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}")
+
+    render_captured_patch(
+      view,
+      ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}"
+    )
 
     view
     |> form("#task-form", task: %{status: "not_planned"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     open_filter(view)
     assert offered?(view)
@@ -202,13 +222,18 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     # A local move is self-excluded from notifications, so its destination must be observed directly.
     second = list_fixture(project)
-    view |> element("#task-modal-close") |> render_click()
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{destination.id}?statuses=not_planned")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{second.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{second.id}")
+    view |> element("#task-modal-close") |> render_captured_click()
+
+    render_captured_patch(
+      view,
+      ~p"/projects/#{project.id}/lists/#{destination.id}?statuses=not_planned"
+    )
+
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{second.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
+    render_captured_patch(view, ~p"/projects/#{project.id}/lists/#{second.id}")
     open_filter(view)
     assert offered?(view)
   end
@@ -219,14 +244,14 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     project = project_fixture(%{})
     other = project_fixture(%{})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
-    render_patch(view, ~p"/projects/#{other.id}")
+    render_captured_patch(view, ~p"/projects/#{other.id}")
     task = task_fixture(project, %{status: :not_planned})
-    render_patch(view, ~p"/projects/#{project.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}")
     open_filter(view)
     assert offered?(view)
     {:ok, _} = Tasks.update_task(project, task, %{status: :pending})
-    render_patch(view, ~p"/projects/#{other.id}")
-    render_patch(view, ~p"/projects/#{project.id}")
+    render_captured_patch(view, ~p"/projects/#{other.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}")
     open_filter(view)
     assert offered?(view)
   end
@@ -242,12 +267,12 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     descendant = task_fixture(project, %{}, parent: branch)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-node-#{root.id} #task-hierarchy-node-#{selected.id}"
            )
 
-    assert has_element?(view, "#task-location-list-#{task_list.id}")
+    assert has_captured_element?(view, "#task-location-list-#{task_list.id}")
 
     handler = "rendered-filter-#{System.unique_integer([:positive])}"
     parent = self()
@@ -265,25 +290,25 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    view |> element("#task-hierarchy-status-filter-button") |> render_click()
-    assert has_element?(view, "#task-hierarchy-status-filter-form")
+    view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
+    assert has_captured_element?(view, "#task-hierarchy-status-filter-form")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-node-#{root.id} #task-hierarchy-node-#{selected.id}"
            )
 
-    assert has_element?(view, "#task-location-list-#{task_list.id}")
-    render_click(view, "close_hierarchy_status_filter")
-    refute has_element?(view, "#task-hierarchy-status-filter-form")
-    assert has_element?(view, "#task-hierarchy-node-#{selected.id}")
-    view |> element("#task-hierarchy-disclosure-#{branch.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-node-#{descendant.id}")
+    assert has_captured_element?(view, "#task-location-list-#{task_list.id}")
+    render_captured_click(view, "close_hierarchy_status_filter")
+    refute has_captured_element?(view, "#task-hierarchy-status-filter-form")
+    assert has_captured_element?(view, "#task-hierarchy-node-#{selected.id}")
+    view |> element("#task-hierarchy-disclosure-#{branch.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#task-hierarchy-node-#{descendant.id}")
     refute_received {:filter_query, _}
 
-    view |> element("#task-hierarchy-link-#{branch.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-link-#{branch.id}[aria-current='true']")
-    refute has_element?(view, "#task-location-list-#{task_list.id}")
+    view |> element("#task-hierarchy-link-#{branch.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#task-hierarchy-link-#{branch.id}[aria-current='true']")
+    refute has_captured_element?(view, "#task-location-list-#{task_list.id}")
   end
 
   test "filter handlers and option calculation perform no persistence reads" do
@@ -338,23 +363,23 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
   } do
     project = project_fixture(%{})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}?statuses=pending")
-    assert has_element?(view, "#workspace-content[data-project-id='#{project.id}']")
+    assert has_captured_element?(view, "#workspace-content[data-project-id='#{project.id}']")
     # Exclude publication to model missed delivery; a reconnect must still discover current state.
     Taskman.Repo.insert!(
       Ecto.Changeset.change(%Task{project_id: project.id}, title: "Missed", status: :not_planned)
     )
 
-    render_hook(view, "resnapshot_task_locations", %{"project_id" => "invalid"})
+    render_captured_hook(view, "resnapshot_task_locations", %{"project_id" => "invalid"})
 
-    render_hook(view, "resnapshot_task_locations", %{
+    render_captured_hook(view, "resnapshot_task_locations", %{
       "project_id" => Integer.to_string(project.id + 1)
     })
 
-    render_hook(view, "resnapshot_task_locations", %{})
+    render_captured_hook(view, "resnapshot_task_locations", %{})
     open_filter(view)
     refute offered?(view)
 
-    render_hook(view, "resnapshot_task_locations", %{
+    render_captured_hook(view, "resnapshot_task_locations", %{
       "project_id" => Integer.to_string(project.id)
     })
 
@@ -397,21 +422,21 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     view
     |> form("#task-form", task: %{title: "Keep this draft", status: "not_planned"})
-    |> render_change()
+    |> render_captured_change()
 
     # Preference changes clean the browser query; reconnection identity remains server-owned.
     open_filter(view)
 
     view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["pending"]})
-    |> render_change()
+    |> render_captured_change()
 
-    render_hook(view, "resnapshot_task_locations", %{
+    render_captured_hook(view, "resnapshot_task_locations", %{
       "project_id" => Integer.to_string(project.id)
     })
 
-    assert has_element?(view, "#task-title[value='Keep this draft']")
-    assert has_element?(view, "#task-status option[selected][value='not_planned']")
+    assert has_captured_element?(view, "#task-title[value='Keep this draft']")
+    assert has_captured_element?(view, "#task-status option[selected][value='not_planned']")
     refute offered?(view)
   end
 
@@ -421,37 +446,46 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     root = task_fixture(project)
     child = task_fixture(project, %{}, parent: root)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_edit_states']")
-    assert has_element?(view, "#task-status option[value='not_planned']")
+
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_edit_states']"
+           )
+
+    assert has_captured_element?(view, "#task-status option[value='not_planned']")
     before = :sys.get_state(view.pid).socket.assigns.editing.autosave
-    assert_no_queries(view, fn -> render_click(view, "reveal_task_edit_states", %{}) end)
+    assert_no_queries(view, fn -> render_captured_click(view, "reveal_task_edit_states", %{}) end)
     assert :sys.get_state(view.pid).socket.assigns.editing.autosave == before
     assert Tasks.get_task_for_project(project, root.id).lock_version == root.lock_version
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
            )
 
     view
     |> form("#task-form", task: %{priority: "high"})
-    |> render_change(%{"_target" => ["task", "priority"]})
+    |> render_captured_change(%{"_target" => ["task", "priority"]})
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
            )
 
-    view |> element("#task-hierarchy-link-#{child.id}") |> render_click()
+    view |> element("#task-hierarchy-link-#{child.id}") |> render_captured_click()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
            )
 
-    view |> element("#task-modal-close") |> render_click()
-    render_patch(view, ~p"/projects/#{project.id}/tasks/#{root.id}")
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_edit_states']")
+    view |> element("#task-modal-close") |> render_captured_click()
+    render_captured_patch(view, ~p"/projects/#{project.id}/tasks/#{root.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_edit_states']"
+           )
   end
 
   test "creation scope uses owning List and retains drafts and reveal through validation", %{
@@ -462,13 +496,17 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     empty = list_fixture(project)
     task_fixture(project, observed, %{status: :not_planned})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{empty.id}/tasks/new")
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
+
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_creation_states']"
+           )
 
     view
     |> form("#task-form", task: %{title: "Draft"}, location: "list:#{observed.id}")
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
@@ -478,44 +516,60 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
       task: %{title: "Draft", status: "not_planned"},
       location: "list:#{empty.id}"
     )
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
 
-    view |> form("#task-form", task: %{title: "Draft", status: "pending"}) |> render_change()
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
-    before = :sys.get_state(view.pid).socket.assigns.creation.form
-    assert_no_queries(view, fn -> render_click(view, "reveal_task_creation_states", %{}) end)
-    assert :sys.get_state(view.pid).socket.assigns.creation.form == before
-    view |> form("#task-form", task: %{title: "", status: "pending"}) |> render_change()
+    view
+    |> form("#task-form", task: %{title: "Draft", status: "pending"})
+    |> render_captured_change()
 
-    assert has_element?(
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_creation_states']"
+           )
+
+    before = :sys.get_state(view.pid).socket.assigns.creation.form
+
+    assert_no_queries(view, fn ->
+      render_captured_click(view, "reveal_task_creation_states", %{})
+    end)
+
+    assert :sys.get_state(view.pid).socket.assigns.creation.form == before
+    view |> form("#task-form", task: %{title: "", status: "pending"}) |> render_captured_change()
+
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
            )
 
     view
     |> form("#task-form", task: %{title: "Draft"}, location: "list:#{observed.id}")
-    |> render_change()
+    |> render_captured_change()
 
     view
     |> form("#task-form", task: %{title: "Draft"}, location: "list:#{empty.id}")
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action='null']"
            )
 
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}")
-    render_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}/tasks/new")
-    assert has_element?(view, "#task-status-picker[data-action*='reveal_task_creation_states']")
-    render_patch(view, ~p"/projects/#{project.id}/tasks/new")
+    render_captured_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}/lists/#{empty.id}/tasks/new")
 
-    assert has_element?(
+    assert has_captured_element?(
+             view,
+             "#task-status-picker[data-action*='reveal_task_creation_states']"
+           )
+
+    render_captured_patch(view, ~p"/projects/#{project.id}/tasks/new")
+
+    assert has_captured_element?(
              view,
              "#task-status-picker[data-visible-values*='not_planned'][data-action*='reveal_task_creation_states']"
            )
@@ -529,7 +583,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
 
     view
     |> form("#task-form", task: %{title: ""})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
@@ -542,7 +596,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
       fields: [:name]
     })
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery #task-status[disabled] option[selected][value='pending']"
            )
@@ -550,8 +604,8 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     before = :sys.get_state(view.pid).socket.assigns
 
     assert_no_queries(view, fn ->
-      render_click(view, "reveal_task_edit_states", %{})
-      render_click(view, "reveal_task_creation_states", %{})
+      render_captured_click(view, "reveal_task_edit_states", %{})
+      render_captured_click(view, "reveal_task_creation_states", %{})
     end)
 
     after_reveal = :sys.get_state(view.pid).socket.assigns
@@ -559,7 +613,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     assert after_reveal.creation == before.creation
     assert after_reveal.recovery == before.recovery
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-recovery #task-status[disabled] option[selected][value='pending']"
            )
@@ -600,6 +654,8 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
   defp available(socket, id),
     do: Locations.available(socket.assigns.workspace.locations, id, nil, :direct)
 
-  defp open_filter(view), do: view |> element("#task-status-filter-button") |> render_click()
-  defp offered?(view), do: has_element?(view, "#task-status-filter-option-not_planned")
+  defp open_filter(view),
+    do: view |> element("#task-status-filter-button") |> render_captured_click()
+
+  defp offered?(view), do: has_captured_element?(view, "#task-status-filter-option-not_planned")
 end

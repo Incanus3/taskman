@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -25,20 +26,20 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     _foreign_task = task_fixture(foreign, foreign_list, %{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
-    refute has_element?(view, "#list-#{foreign_list.id}")
+    assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    refute has_captured_element?(view, "#list-#{foreign_list.id}")
 
     assert {:ok, task} =
              externally(fn -> Tasks.create_task(project, source, %{title: "Visible icon"}) end)
 
     sync_view(view)
-    assert has_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
+    assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
 
     assert {:ok, _moved} = externally(fn -> Tasks.move_task(project, task, destination) end)
     sync_view(view)
-    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
-    assert has_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
-    refute has_element?(view, "#list-#{foreign_list.id}")
+    assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    assert has_captured_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
+    refute has_captured_element?(view, "#list-#{foreign_list.id}")
   end
 
   test "creating a Task locally updates its List icon", %{conn: conn} do
@@ -47,9 +48,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     _child = list_fixture(project, root)
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{root.id}/tasks/new")
 
-    assert has_element?(view, "#toggle-list-#{root.id} .hero-folder")
-    view |> form("#task-form", task: %{title: "New direct Task"}) |> render_submit()
-    assert has_element?(view, "#toggle-list-#{root.id} .hero-queue-list")
+    assert has_captured_element?(view, "#toggle-list-#{root.id} .hero-folder")
+    view |> form("#task-form", task: %{title: "New direct Task"}) |> render_captured_submit()
+    assert has_captured_element?(view, "#toggle-list-#{root.id} .hero-queue-list")
   end
 
   test "moving a Task locally refreshes source and destination icons", %{conn: conn} do
@@ -61,15 +62,15 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     task = task_fixture(project, source, %{title: "Move me"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    assert has_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
-    assert has_element?(view, "#toggle-list-#{destination.id} .hero-folder")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
+    assert has_captured_element?(view, "#toggle-list-#{destination.id} .hero-folder")
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
-    assert has_element?(view, "#toggle-list-#{source.id} .hero-folder")
-    assert has_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
+    assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-folder")
+    assert has_captured_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
   end
 
   test "maintains one live Project task-topic subscription across selection transitions", %{
@@ -86,11 +87,11 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert subscription_count(view, topic_a) == 0
     assert subscription_count(view, topic_b) == 0
 
-    render_patch(view, ~p"/projects/#{project_a.id}")
+    render_captured_patch(view, ~p"/projects/#{project_a.id}")
     assert subscription_count(view, topic_a) == 1
     assert subscription_count(view, topic_b) == 0
 
-    render_patch(view, ~p"/projects/#{project_a.id}?include_children=true")
+    render_captured_patch(view, ~p"/projects/#{project_a.id}?include_children=true")
     assert subscription_count(view, topic_a) == 1
 
     {{:ok, updated_a}, event_a} =
@@ -110,9 +111,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert task_a_id == task_a.id
 
     sync_view(view)
-    assert has_element?(view, "#task-#{updated_a.id}", "Project A after")
+    assert has_captured_element?(view, "#task-#{updated_a.id}", "Project A after")
 
-    render_patch(view, ~p"/projects/#{project_b.id}")
+    render_captured_patch(view, ~p"/projects/#{project_b.id}")
     assert subscription_count(view, topic_a) == 0
     assert subscription_count(view, topic_b) == 1
 
@@ -140,9 +141,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert task_b_id == task_b.id
 
     sync_view(view)
-    assert has_element?(view, "#task-#{updated_b.id}", "Project B after")
+    assert has_captured_element?(view, "#task-#{updated_b.id}", "Project B after")
 
-    render_patch(view, ~p"/")
+    render_captured_patch(view, ~p"/")
     assert subscription_count(view, topic_a) == 0
     assert subscription_count(view, topic_b) == 0
 
@@ -165,7 +166,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     send(view.pid, task_event(task_a, :updated, [:title]))
     sync_view(view)
     assert view_assigns(view).workspace.selected_project.id == project_b.id
-    assert has_element?(view, "#task-#{task_b.id}")
+    assert has_captured_element?(view, "#task-#{task_b.id}")
 
     send(view.pid, %Event{
       entity: :task,
@@ -177,7 +178,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     sync_view(view)
     assert view_assigns(view).workspace.selected_project.id == project_b.id
-    assert has_element?(view, "#task-#{task_b.id}")
+    assert has_captured_element?(view, "#task-#{task_b.id}")
   end
 
   test "rebuilds the selected descendant Task projection from canonical persistence", %{
@@ -198,34 +199,34 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
         ~p"/projects/#{project.id}/lists/#{planning.id}?include_children=true&statuses=pending,done"
       )
 
-    assert has_element?(view, "#task-#{pending.id}")
-    assert has_element?(view, "#task-#{done.id}")
-    refute has_element?(view, "#task-#{hidden.id}")
+    assert has_captured_element?(view, "#task-#{pending.id}")
+    assert has_captured_element?(view, "#task-#{done.id}")
+    refute has_captured_element?(view, "#task-#{hidden.id}")
 
-    view |> element("#task-status-filter-button") |> render_click()
+    view |> element("#task-status-filter-button") |> render_captured_click()
 
     view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["done"]})
-    |> render_change()
+    |> render_captured_change()
 
-    refute has_element?(view, "#task-#{pending.id}")
-    assert has_element?(view, "#task-#{done.id}")
-    assert has_element?(view, "#tasks > #tasks-#{done.id}")
+    refute has_captured_element?(view, "#task-#{pending.id}")
+    assert has_captured_element?(view, "#task-#{done.id}")
+    assert has_captured_element?(view, "#tasks > #tasks-#{done.id}")
 
     assert {:ok, visible_after_status} =
              externally(fn -> Tasks.update_task(project, pending, %{status: :done}) end)
 
     sync_view(view)
-    assert has_element?(view, "#task-#{visible_after_status.id}")
+    assert has_captured_element?(view, "#task-#{visible_after_status.id}")
 
     assert {:ok, visible_hidden} =
              externally(fn -> Tasks.update_task(project, hidden, %{status: :done}) end)
 
     sync_view(view)
-    assert has_element?(view, "#task-#{visible_hidden.id}")
+    assert has_captured_element?(view, "#task-#{visible_hidden.id}")
 
-    view |> element("#sort-task-priority") |> render_click()
-    assert has_element?(view, "#task-priority-header[aria-sort='descending']")
+    view |> element("#sort-task-priority") |> render_captured_click()
+    assert has_captured_element?(view, "#task-priority-header[aria-sort='descending']")
 
     assert {:ok, promoted} =
              externally(fn ->
@@ -233,15 +234,15 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
              end)
 
     sync_view(view)
-    assert has_element?(view, "#tasks > #tasks-#{promoted.id} + #tasks-#{done.id}")
+    assert has_captured_element?(view, "#tasks > #tasks-#{promoted.id} + #tasks-#{done.id}")
 
     assert {:ok, moved_in} = externally(fn -> Tasks.move_task(project, source, launch) end)
     sync_view(view)
-    assert has_element?(view, "#task-#{moved_in.id}")
+    assert has_captured_element?(view, "#task-#{moved_in.id}")
 
     assert {:ok, _moved_out} = externally(fn -> Tasks.move_task(project, promoted, archive) end)
     sync_view(view)
-    refute has_element?(view, "#task-#{promoted.id}")
+    refute has_captured_element?(view, "#task-#{promoted.id}")
 
     assert {:ok, _filtered_out} =
              externally(fn -> Tasks.update_task(project, done, %{status: :will_not_do}) end)
@@ -255,7 +256,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
              end)
 
     sync_view(view)
-    assert has_element?(view, "#tasks-empty", "No tasks match the selected statuses")
+    assert has_captured_element?(view, "#tasks-empty", "No tasks match the selected statuses")
   end
 
   test "reconciles an open Task detail and hierarchy without navigating", %{conn: conn} do
@@ -271,17 +272,22 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     task_path = ~p"/projects/#{project.id}/tasks/#{task.id}"
     {:ok, view, _html} = live(conn, task_path)
 
+    original_editor_id = view_assigns(view).description.editor_id
+
     assert {:ok, external_description} =
              externally(fn -> Tasks.update_task(project, task, %{description: "External"}) end)
 
     sync_view(view)
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-description", "External")
+    assert has_captured_element?(view, "#task-modal")
+    assert view_assigns(view).editing.autosave.form[:description].value == "External"
+
+    assert view_assigns(view).description.editor_id != original_editor_id
+    assert view_assigns(view).description.initial_value == "External"
     refute_patched(view, task_path)
 
     view
-    |> form("#task-form", task: %{title: "Mine", description: external_description.description})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> form("#task-form", task: %{title: "Mine"})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert {:ok, external_parent} =
              externally(fn ->
@@ -289,11 +295,16 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
              end)
 
     sync_view(view)
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-title[value='Mine']")
-    assert has_element?(view, "#task-parent-trigger", "Second parent")
-    assert has_element?(view, "#task-hierarchy-node-#{second_parent.id}")
-    assert has_element?(view, "#task-hierarchy-link-#{external_parent.id}[aria-current='true']")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-title[value='Mine']")
+    assert has_captured_element?(view, "#task-parent-trigger", "Second parent")
+    assert has_captured_element?(view, "#task-hierarchy-node-#{second_parent.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-link-#{external_parent.id}[aria-current='true']"
+           )
+
     refute_patched(view, task_path)
   end
 
@@ -311,9 +322,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, _moved} = externally(fn -> Tasks.move_task(project, selected, nil) end)
     sync_view(detail)
 
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-title[value='Selected']")
-    refute has_element?(detail, "#task-#{selected.id}")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-title[value='Selected']")
+    refute has_captured_element?(detail, "#task-#{selected.id}")
     refute_patched(detail, detail_path)
 
     create_path =
@@ -323,24 +334,28 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     create
     |> form("#task-form", task: %{title: "Draft"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     created = externally(fn -> Tasks.create_task(project, planning, %{title: "External"}) end)
     assert {:ok, external_task} = created
     sync_view(create)
 
-    assert has_element?(create, "#task-modal")
-    assert has_element?(create, "#task-title[value='Draft']")
-    assert has_element?(create, "#task-parent-trigger", "Parent")
+    assert has_captured_element?(create, "#task-modal")
+    assert has_captured_element?(create, "#task-title[value='Draft']")
+    assert has_captured_element?(create, "#task-parent-trigger", "Parent")
 
-    assert has_element?(
+    assert has_captured_element?(
              create,
              "#task-location option[value='list:#{planning.id}'][selected]",
              "List Planning"
            )
 
-    assert has_element?(create, "#task-title[phx-hook='TaskmanWeb.Tasks.Form.TaskTitleFocus']")
-    assert has_element?(create, "#task-#{external_task.id}")
+    assert has_captured_element?(
+             create,
+             "#task-title[phx-hook='TaskmanWeb.Tasks.Form.TaskTitleFocus']"
+           )
+
+    assert has_captured_element?(create, "#task-#{external_task.id}")
     refute_patched(create, create_path)
   end
 
@@ -351,23 +366,26 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert {:ok, _updated} =
              externally(fn -> Tasks.update_task(project, task, %{title: "Changed elsewhere"}) end)
 
     sync_view(view)
-    assert has_element?(view, "#move-task-#{task.id}")
+    assert has_captured_element?(view, "#move-task-#{task.id}")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#move-task-search-#{task.id}[value='Planning'][aria-expanded='true']"
            )
 
-    assert has_element?(view, "#move-task-option-list-#{planning.id}[aria-selected='true']")
+    assert has_captured_element?(
+             view,
+             "#move-task-option-list-#{planning.id}[aria-selected='true']"
+           )
   end
 
   test "refreshes the open hierarchy while retaining an expanded non-required branch", %{
@@ -381,8 +399,12 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']"
+           )
 
     assert {:ok, created} =
              externally(fn ->
@@ -390,8 +412,13 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
              end)
 
     sync_view(view)
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{created.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']"
+           )
+
+    assert has_captured_element?(view, "#task-hierarchy-node-#{created.id}")
 
     assert {:ok, updated} =
              externally(fn ->
@@ -403,26 +430,30 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     sync_view(view)
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-link-#{selected.id}[aria-current='true']",
              "Revised selected Task"
            )
 
-    assert has_element?(view, "#task-hierarchy-status-#{selected.id}", "In Review")
+    assert has_captured_element?(view, "#task-hierarchy-status-#{selected.id}", "In Review")
 
     for {task, priority, label} <- [{updated, :urgent, "Urgent"}, {sibling, :high, "High"}] do
-      assert has_element?(view, "#task-hierarchy-priority-#{task.id}", "None")
+      assert has_captured_element?(view, "#task-hierarchy-priority-#{task.id}", "None")
 
       assert {:ok, _} =
                externally(fn -> Tasks.update_task(project, task, %{priority: priority}) end)
 
       sync_view(view)
-      assert has_element?(view, "#task-hierarchy-priority-#{task.id}", label)
+      assert has_captured_element?(view, "#task-hierarchy-priority-#{task.id}", label)
     end
 
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{created.id}")
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']"
+           )
+
+    assert has_captured_element?(view, "#task-hierarchy-node-#{created.id}")
   end
 
   test "duplicate and out-of-order Task events converge on the current persisted Task", %{
@@ -443,8 +474,8 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     sync_view(view)
 
     assert latest.title == "Latest"
-    assert has_element?(view, "#task-#{task.id}", "Latest")
-    refute has_element?(view, "#task-#{task.id}", "First")
+    assert has_captured_element?(view, "#task-#{task.id}", "Latest")
+    refute has_captured_element?(view, "#task-#{task.id}", "First")
   end
 
   defp externally(fun) do

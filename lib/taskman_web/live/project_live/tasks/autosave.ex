@@ -63,6 +63,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
   def field_state(%__MODULE__{}, _field), do: nil
 
+  @doc "Records browser input without persistence or scheduling, retaining the server baseline."
+  def capture_description(%__MODULE__{} = autosave, %Task{} = task, markdown) do
+    autosave
+    |> Map.update!(:draft, &Map.put(&1, "description", markdown))
+    |> Map.update!(:dirty_fields, &MapSet.put(&1, "description"))
+    |> Map.update!(:revisions, &Map.delete(&1, "description"))
+    |> put_field_state("description", :not_saved)
+    |> put_form(autosave.baseline || task)
+  end
+
   @doc "Reconciles captured input against fresh persistence without scheduling or saving it."
   @spec resume(t(), Task.t()) :: t()
   def resume(%__MODULE__{} = autosave, %Task{} = persisted_task) do

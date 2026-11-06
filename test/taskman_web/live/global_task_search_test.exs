@@ -2,6 +2,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -18,45 +19,53 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
   } do
     {:ok, view, _html} = live(conn, ~p"/account/settings")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search-desktop #global-task-search-input[role='combobox'][aria-label='Search Tasks']"
            )
 
-    assert has_element?(view, "#global-task-search-mobile-trigger[aria-label='Search Tasks']")
+    assert has_captured_element?(
+             view,
+             "#global-task-search-mobile-trigger[aria-label='Search Tasks']"
+           )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#account-settings-link[aria-label='Account settings'][title='Account settings'] .hero-cog-6-tooth"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#account-sign-out-link[aria-label='Sign out'][title='Sign out'] .hero-arrow-right-start-on-rectangle"
            )
 
     view |> element("#global-task-search-input") |> render_focus()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search-prompt[role='status']",
              "Search Tasks by ID or title"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search-loading[role='status'][class*='group-[.phx-change-loading]:block']",
              "Searching Tasks"
            )
 
-    refute has_element?(view, "#global-task-search-results[role='listbox']")
-    assert has_element?(view, "#global-task-search-input[aria-expanded='false']")
-    refute has_element?(view, "#global-task-search-input[aria-controls]")
+    refute has_captured_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_captured_element?(view, "#global-task-search-input[aria-expanded='false']")
+    refute has_captured_element?(view, "#global-task-search-input[aria-controls]")
 
-    view |> element("#global-task-search-mobile-trigger") |> render_click()
-    assert has_element?(view, "#global-task-search-mobile-panel #global-task-search-mobile-input")
-    view |> element("#global-task-search-mobile-close") |> render_click()
-    refute has_element?(view, "#global-task-search-mobile-panel")
+    view |> element("#global-task-search-mobile-trigger") |> render_captured_click()
+
+    assert has_captured_element?(
+             view,
+             "#global-task-search-mobile-panel #global-task-search-mobile-input"
+           )
+
+    view |> element("#global-task-search-mobile-close") |> render_captured_click()
+    refute has_captured_element?(view, "#global-task-search-mobile-panel")
   end
 
   test "results show status, priority, and owning location; changing query replaces them", %{
@@ -68,28 +77,28 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     {:ok, view, _html} = live(conn, ~p"/account/settings")
 
     search(view, "Publish")
-    assert has_element?(view, "#global-task-search-results[role='listbox']")
-    refute has_element?(view, "[aria-live] #global-task-search-results")
+    assert has_captured_element?(view, "#global-task-search-results[role='listbox']")
+    refute has_captured_element?(view, "[aria-live] #global-task-search-results")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search-input[aria-expanded='true'][aria-controls='global-task-search-results']"
            )
 
-    assert has_element?(view, "#global-task-search-option-#{task.id}", "Publish release")
-    assert has_element?(view, "#global-task-search-option-#{task.id}", "Alpha / Launch")
-    assert has_element?(view, "#global-task-search-option-#{task.id}", "Urgent")
-    assert has_element?(view, "#global-task-search-option-#{task.id}", "Pending")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}", "Publish release")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}", "Alpha / Launch")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}", "Urgent")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}", "Pending")
 
     search(view, "unmatched query")
-    assert has_element?(view, "#global-task-search-no-match", "No Tasks found")
-    refute has_element?(view, "#global-task-search-results[role='listbox']")
-    assert has_element?(view, "#global-task-search-input[aria-expanded='false']")
-    refute has_element?(view, "#global-task-search-option-#{task.id}")
+    assert has_captured_element?(view, "#global-task-search-no-match", "No Tasks found")
+    refute has_captured_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_captured_element?(view, "#global-task-search-input[aria-expanded='false']")
+    refute has_captured_element?(view, "#global-task-search-option-#{task.id}")
 
     search(view, "  ")
-    assert has_element?(view, "#global-task-search-prompt")
-    refute has_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_captured_element?(view, "#global-task-search-prompt")
+    refute has_captured_element?(view, "#global-task-search-results[role='listbox']")
   end
 
   test "the navbar uses the same whitespace-term matching as the Tasks context", %{conn: conn} do
@@ -98,7 +107,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     {:ok, view, _html} = live(conn, ~p"/account/settings")
 
     search(view, String.duplicate(" ", 201) <> Integer.to_string(task.id))
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
   end
 
   test "arrow selection and Enter navigate without changing the Task", %{conn: conn} do
@@ -109,7 +118,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     search(view, "Keyboard jump")
     view |> element("#global-task-search-input") |> render_keydown(%{"key" => "ArrowDown"})
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search-input[aria-activedescendant='global-task-search-option-#{task.id}']"
            )
@@ -124,20 +133,24 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     task = task_fixture(project, %{title: "Escape jump"})
     {:ok, view, _html} = live(conn, ~p"/account/settings")
 
-    view |> element("#global-task-search-mobile-trigger") |> render_click()
+    view |> element("#global-task-search-mobile-trigger") |> render_captured_click()
 
     view
     |> form("#global-task-search-mobile-form", %{"search" => %{"query" => "Escape jump"}})
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(view, "#global-task-search-mobile-option-#{task.id}")
+    assert has_captured_element?(view, "#global-task-search-mobile-option-#{task.id}")
     view |> element("#global-task-search-mobile-input") |> render_keydown(%{"key" => "Escape"})
-    refute has_element?(view, "#global-task-search-mobile-panel")
-    assert has_element?(view, "#global-task-search-mobile-trigger[aria-expanded='false']")
+    refute has_captured_element?(view, "#global-task-search-mobile-panel")
 
-    view |> element("#global-task-search-mobile-trigger") |> render_click()
-    assert has_element?(view, "#global-task-search-mobile-prompt")
-    refute has_element?(view, "#global-task-search-mobile-option-#{task.id}")
+    assert has_captured_element?(
+             view,
+             "#global-task-search-mobile-trigger[aria-expanded='false']"
+           )
+
+    view |> element("#global-task-search-mobile-trigger") |> render_captured_click()
+    assert has_captured_element?(view, "#global-task-search-mobile-prompt")
+    refute has_captured_element?(view, "#global-task-search-mobile-option-#{task.id}")
   end
 
   @tag :capture_log
@@ -153,15 +166,26 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
 
     search(view, "Retry jump")
 
-    assert has_element?(view, "#global-task-search-error[role='alert']", "Task search failed")
-    refute has_element?(view, "#global-task-search-results[role='listbox']")
-    assert has_element?(view, "#account-settings")
+    assert has_captured_element?(
+             view,
+             "#global-task-search-error[role='alert']",
+             "Task search failed"
+           )
 
-    view |> element("#global-task-search-error button", "Retry") |> render_click()
-    assert has_element?(view, "#global-task-search-input[value='Retry jump']")
-    assert has_element?(view, "#global-task-search-error[role='alert']", "Task search failed")
-    refute has_element?(view, "#global-task-search-results[role='listbox']")
-    assert has_element?(view, "#account-settings")
+    refute has_captured_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_captured_element?(view, "#account-settings")
+
+    view |> element("#global-task-search-error button", "Retry") |> render_captured_click()
+    assert has_captured_element?(view, "#global-task-search-input[value='Retry jump']")
+
+    assert has_captured_element?(
+             view,
+             "#global-task-search-error[role='alert']",
+             "Task search failed"
+           )
+
+    refute has_captured_element?(view, "#global-task-search-results[role='listbox']")
+    assert has_captured_element?(view, "#account-settings")
     refute_patched(view)
     refute_redirected(view)
 
@@ -170,8 +194,8 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
       search_tasks: &Tasks.search_tasks/1
     )
 
-    view |> element("#global-task-search-error button", "Retry") |> render_click()
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    view |> element("#global-task-search-error button", "Retry") |> render_captured_click()
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
   end
 
   @tag :capture_log
@@ -191,9 +215,9 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
 
     view |> element("#global-task-search-input") |> render_keydown(%{"key" => "ArrowDown"})
     view |> element("#global-task-search-input") |> render_keydown(%{"key" => "Enter"})
-    assert has_element?(view, "#global-task-search-error[role='alert']")
-    refute has_element?(view, "#global-task-search-input[aria-activedescendant]")
-    assert has_element?(view, "#account-settings")
+    assert has_captured_element?(view, "#global-task-search-error[role='alert']")
+    refute has_captured_element?(view, "#global-task-search-input[aria-activedescendant]")
+    assert has_captured_element?(view, "#account-settings")
     assert Tasks.get_task_for_project(project, task.id).lock_version == task.lock_version
 
     Phoenix.LiveView.send_update(view.pid, GlobalTaskSearch,
@@ -201,8 +225,8 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
       search_tasks: &Tasks.search_tasks/1
     )
 
-    view |> element("#global-task-search-error button", "Retry") |> render_click()
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    view |> element("#global-task-search-error button", "Retry") |> render_captured_click()
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
   end
 
   @tag :capture_log
@@ -222,9 +246,9 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
 
     view |> element("#global-task-search-input") |> render_keydown(%{"key" => "ArrowDown"})
     view |> element("#global-task-search-input") |> render_keydown(%{"key" => "Enter"})
-    assert has_element?(view, "#global-task-search-error[role='alert']")
-    refute has_element?(view, "#global-task-search-input[aria-activedescendant]")
-    assert has_element?(view, "#account-settings")
+    assert has_captured_element?(view, "#global-task-search-error[role='alert']")
+    refute has_captured_element?(view, "#global-task-search-input[aria-activedescendant]")
+    assert has_captured_element?(view, "#account-settings")
     assert Tasks.get_task_for_project(project, task.id).lock_version == task.lock_version
 
     Phoenix.LiveView.send_update(view.pid, GlobalTaskSearch,
@@ -232,8 +256,8 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
       get_project: &Taskman.Projects.get_project/1
     )
 
-    view |> element("#global-task-search-error button", "Retry") |> render_click()
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    view |> element("#global-task-search-error button", "Retry") |> render_captured_click()
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
   end
 
   test "pointer selection retains a visible same Project List backdrop", %{conn: conn} do
@@ -249,7 +273,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
       )
 
     search(view, "Nested jump")
-    view |> element("#global-task-search-option-#{task.id}") |> render_click()
+    view |> element("#global-task-search-option-#{task.id}") |> render_captured_click()
     assert_redirect(view, ~p"/projects/#{project.id}/lists/#{parent.id}/tasks/#{task.id}")
   end
 
@@ -265,12 +289,12 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{selected.id}")
 
     search(view, "Own location")
-    view |> element("#global-task-search-option-#{own_task.id}") |> render_click()
+    view |> element("#global-task-search-option-#{own_task.id}") |> render_captured_click()
     assert_redirect(view, ~p"/projects/#{project.id}/lists/#{owner.id}/tasks/#{own_task.id}")
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{selected.id}")
     search(view, "Other root")
-    view |> element("#global-task-search-option-#{other_task.id}") |> render_click()
+    view |> element("#global-task-search-option-#{other_task.id}") |> render_captured_click()
     assert_redirect(view, ~p"/projects/#{other_project.id}/tasks/#{other_task.id}")
   end
 
@@ -283,7 +307,7 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
 
     search(view, "Moving jump")
     assert {:ok, _} = Tasks.move_task(project, task, destination)
-    view |> element("#global-task-search-option-#{task.id}") |> render_click()
+    view |> element("#global-task-search-option-#{task.id}") |> render_captured_click()
     assert_redirect(view, ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}")
   end
 
@@ -294,12 +318,12 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
 
     search(view, "Deleted jump")
     Repo.delete!(task)
-    view |> element("#global-task-search-option-#{task.id}") |> render_click()
+    view |> element("#global-task-search-option-#{task.id}") |> render_captured_click()
     path = ~p"/projects/#{project.id}/tasks/#{task.id}"
     assert_redirect(view, path)
 
     {:ok, destination, _html} = live(conn, path)
-    assert has_element?(destination, "#task-not-found")
+    assert has_captured_element?(destination, "#task-not-found")
   end
 
   test "Task detail keeps navbar search mounted and inert until the modal closes", %{conn: conn} do
@@ -307,14 +331,23 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     task = task_fixture(project, %{title: "Detail task"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-input")
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-mobile-trigger")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#global-task-search[inert] #global-task-search-input")
 
-    view |> element("#task-modal-close") |> render_click()
-    assert has_element?(view, "#global-task-search:not([inert]) #global-task-search-input")
+    assert has_captured_element?(
+             view,
+             "#global-task-search[inert] #global-task-search-mobile-trigger"
+           )
+
+    view |> element("#task-modal-close") |> render_captured_click()
+
+    assert has_captured_element?(
+             view,
+             "#global-task-search:not([inert]) #global-task-search-input"
+           )
+
     search(view, "Detail task")
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
   end
 
   test "Task creation availability preserves the mounted search query and results", %{conn: conn} do
@@ -323,40 +356,43 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
     search(view, "Retained query")
-    render_patch(view, ~p"/projects/#{project.id}/tasks/new")
+    render_captured_patch(view, ~p"/projects/#{project.id}/tasks/new")
 
-    assert has_element?(view, "#task-modal #task-form")
+    assert has_captured_element?(view, "#task-modal #task-form")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search[inert] #global-task-search-input[value='Retained query']"
            )
 
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-option-#{task.id}")
+    assert has_captured_element?(
+             view,
+             "#global-task-search[inert] #global-task-search-option-#{task.id}"
+           )
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#global-task-search:not([inert]) #global-task-search-input[value='Retained query']"
            )
 
-    assert has_element?(view, "#global-task-search-option-#{task.id}")
+    assert has_captured_element?(view, "#global-task-search-option-#{task.id}")
     search(view, "another query")
-    assert has_element?(view, "#global-task-search-no-match")
+    assert has_captured_element?(view, "#global-task-search-no-match")
   end
 
   test "a missing Task keeps the mounted navbar search inert", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/999999999")
 
-    assert has_element?(view, "#task-not-found")
-    assert has_element?(view, "#global-task-search[inert] #global-task-search-input")
+    assert has_captured_element?(view, "#task-not-found")
+    assert has_captured_element?(view, "#global-task-search[inert] #global-task-search-input")
   end
 
   defp search(view, query) do
     view
     |> form("#global-task-search-form", %{"search" => %{"query" => query}})
-    |> render_change()
+    |> render_captured_change()
   end
 end
