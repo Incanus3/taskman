@@ -76,10 +76,10 @@ behavior.
 
 ### Elixir and Erlang versions
 
-Non-CI development and release builds target Elixir `1.20.4` with Erlang/OTP `29.0.6`.
+Development and release builds target Elixir `1.20.5` with Erlang/OTP `29.1.2`.
 Local developers may use mise to manage that pair; the release builder installs checksum-pinned
 HexPM Ubuntu binaries directly and does not use mise or alter workstation settings.
-Alpine CI uses Elixir `1.20.4` / OTP `29.1.2`, including the
+Alpine CI uses the same pair, including the
 [upstream signal-stack correction](../specs/2026-08-10-alpine-elixir-ci-design.md).
 Verify release-only runtime behavior separately against the pinned release pair.
 

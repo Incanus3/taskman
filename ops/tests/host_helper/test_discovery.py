@@ -63,9 +63,9 @@ def _release(*, migrations: tuple[dict[str, str], ...] = ()) -> ReleaseRecord:
         {
             "schema_version": 3, "application": "taskman", "application_version": "0.2.0",
             "source_revision": REVISION, "release_id": RELEASE_ID, "built_at": "2026-09-05T12:00:00Z",
-            "target_os": "ubuntu26.04", "architecture": "amd64", "otp_version": "29.0.6",
-            "elixir_version": "1.20.4", "node_version": "22.22.1", "hex_version": "2.5.1",
-            "rebar3_version": "3.24.0", "builder_base_tag": BUILDER_BASE_TAG,
+            "target_os": "ubuntu26.04", "architecture": "amd64", "otp_version": "29.1.2",
+            "elixir_version": "1.20.5", "node_version": "22.22.1", "hex_version": "2.6.0",
+            "rebar3_version": "3.28.0", "builder_base_tag": BUILDER_BASE_TAG,
             "builder_base_digest": BUILDER_BASE_DIGEST, "migrations": list(migrations), "top_level": "taskman",
             "artifact_sha256": ARTIFACT_SHA256, "source_dirty": False,
         }

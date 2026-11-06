@@ -48,6 +48,9 @@ defmodule Taskman.MixProject do
       {:ash_postgres, "~> 2.13"},
       {:ash_phoenix, "~> 2.3"},
       {:ash_authentication, "~> 4.14"},
+      # AshAuthentication 4.x constrains Assent below the Apple callback security fix.
+      # Taskman uses password authentication; keep its unused OAuth dependency patched.
+      {:assent, "~> 0.3.2", override: true},
       {:ash_authentication_phoenix, "~> 2.17"},
       {:ash_admin, "~> 1.3"},
       # AshAdmin's bundled JavaScript lacks the hooks required by Cinder 0.18.

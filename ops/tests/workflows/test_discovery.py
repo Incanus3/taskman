@@ -14,7 +14,7 @@ from taskman_ops.workflows.releases import list_releases
 
 
 RELEASE_ID = (
-    "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+    "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + "b" * 64
 )
 BACKUP_ID = "backup-cccccccccccccccccccccccccccccccc"
 
@@ -51,11 +51,11 @@ def _release() -> dict[str, object]:
             "built_at": "2026-09-14T12:00:00Z",
             "target_os": "ubuntu26.04",
             "architecture": "amd64",
-            "otp_version": "29.0.6",
-            "elixir_version": "1.20.4",
+            "otp_version": "29.1.2",
+            "elixir_version": "1.20.5",
             "node_version": "22.22.1",
-            "hex_version": "2.5.1",
-            "rebar3_version": "3.24.0",
+            "hex_version": "2.6.0",
+            "rebar3_version": "3.28.0",
             "builder_base_tag": BUILDER_BASE_TAG,
             "builder_base_digest": BUILDER_BASE_DIGEST,
             "migrations": [],

@@ -35,7 +35,7 @@ from taskman_ops.workflows.helper import (
 
 
 CORRELATION = "op-0123456789abcdef0123456789abcdef"
-RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.0.6-" + "b" * 64
+RELEASE = "0.2.0-aaaaaaaaaaaa-ubuntu26.04-amd64-otp29.1.2-" + "b" * 64
 SELECTION = "selection-" + "c" * 64 + ".json"
 
 

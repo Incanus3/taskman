@@ -39,11 +39,11 @@ def write_release_tree(destination: Path, *, source_revision: str = REVISION) ->
                 "source_revision": source_revision,
                 "target_os": "ubuntu26.04",
                 "architecture": "amd64",
-                "otp_version": "29.0.6",
-                "elixir_version": "1.20.4",
+                "otp_version": "29.1.2",
+                "elixir_version": "1.20.5",
                 "node_version": "22.22.1",
-                "hex_version": "2.5.1",
-                "rebar3_version": "3.24.0",
+                "hex_version": "2.6.0",
+                "rebar3_version": "3.28.0",
             }
         ),
         encoding="utf-8",
@@ -210,8 +210,8 @@ def test_build_passes_the_exact_clean_revision_to_an_amd64_buildkit_invocation(t
     assert artifact.manifest.release_id == build_release_id(
         "0.2.0", REVISION, artifact_sha256=artifact.sha256, source_dirty=False
     )
-    assert artifact.manifest.hex_version == "2.5.1"
-    assert artifact.manifest.rebar3_version == "3.24.0"
+    assert artifact.manifest.hex_version == "2.6.0"
+    assert artifact.manifest.rebar3_version == "3.28.0"
     assert artifact.manifest.builder_base_tag == BUILDER_BASE_TAG
     assert artifact.manifest.builder_base_digest == BUILDER_BASE_DIGEST
     assert artifact.archive.name == f"taskman-{artifact.manifest.release_id}.tar.gz"
@@ -227,12 +227,12 @@ def test_builder_containerfile_pins_hex_and_rebar_without_live_latest_resolution
         Path(__file__).resolve().parents[1] / "builder" / "Containerfile"
     ).read_text(encoding="utf-8")
 
-    assert "ARG HEX_VERSION=2.5.1" in source
-    assert "ARG REBAR3_VERSION=3.24.0" in source
+    assert "ARG HEX_VERSION=2.6.0" in source
+    assert "ARG REBAR3_VERSION=3.28.0" in source
     assert (
         "ARG REBAR3_SHA512="
-        "158473850233093e6a1417e9779919cb6768402ea967db510d926bc5e74361377"
-        "e9176014e827c622098e0dbf96b505677addc4bd4817ce2b9b4f4bc8121768b"
+        "55e276f526985dd2279e01247031c0d75715df77c0e9c3317b0564acfc3e1b2b"
+        "e4716edbc37762df943487e8f9c2c99e8db6db82107b4b033dfffd16b45e187b"
     ) in source
     assert 'mix local.hex "$HEX_VERSION" --force' in source
     assert 'rebar3-$REBAR3_VERSION-otp-27' in source
@@ -289,8 +289,8 @@ def test_builder_containerfile_pins_the_readable_ubuntu_base_tag_and_digest() ->
     ).read_text(encoding="utf-8")
 
     assert (
-        "FROM ubuntu:resolute-20260811.1@sha256:"
-        "2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS build"
+        "FROM ubuntu:resolute-20261024.1@sha256:"
+        "6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS build"
     ) in source
 
 
