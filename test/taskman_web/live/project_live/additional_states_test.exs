@@ -191,7 +191,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     assert offered?(view)
   end
 
-  test "rendered hierarchy filter opening uses prepared projection and selected List path", %{
+  test "rendered hierarchy filter opening uses loaded hierarchy and selected List path", %{
     conn: conn
   } do
     project = project_fixture(%{})
@@ -208,18 +208,6 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
            )
 
     assert has_element?(view, "#task-location-list-#{task_list.id}")
-
-    :sys.replace_state(view.pid, fn state ->
-      hierarchy = state.socket.assigns.editing.hierarchy
-
-      source = %{
-        hierarchy.hierarchy
-        | root: %{hierarchy.hierarchy.root | children: :unavailable_tree}
-      }
-
-      editing = %{state.socket.assigns.editing | hierarchy: %{hierarchy | hierarchy: source}}
-      put_in(state.socket.assigns.editing, editing)
-    end)
 
     handler = "rendered-filter-#{System.unique_integer([:positive])}"
     parent = self()
