@@ -8,6 +8,7 @@ defmodule TaskmanWeb.Endpoint do
     store: :cookie,
     key: "_taskman_key",
     signing_salt: "bjo8ge2+",
+    max_age: 30 * 24 * 60 * 60,
     secure: Application.compile_env(:taskman, :secure_cookies, false),
     http_only: true,
     same_site: "Lax"
