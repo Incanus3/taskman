@@ -190,9 +190,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
     %{state | active_option_id: retain_active_option(state)}
   end
 
-  @spec resolve_conflict(t(), Project.t(), :use_latest | :keep_mine) ::
+  @spec resolve_conflict(t(), Project.t(), :use_latest | :keep_mine, keyword()) ::
           {:ok, t(), Task.t()} | {:conflict, t(), Task.t()} | {:error, t(), term()}
-  def resolve_conflict(%__MODULE__{} = state, %Project{} = project, resolution)
+  def resolve_conflict(state, project, resolution, opts \\ [])
+
+  def resolve_conflict(%__MODULE__{} = state, %Project{} = project, resolution, opts)
       when resolution in [:use_latest, :keep_mine] do
     if parent_conflict?(state) do
       case resolution do
@@ -209,14 +211,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
           {:ok, resolved, state.current_task}
 
         :keep_mine ->
-          retry_parent_conflict(state, project)
+          retry_parent_conflict(state, project, opts)
       end
     else
       {:error, state, :no_conflict}
     end
   end
 
-  def resolve_conflict(%__MODULE__{} = state, _project, _resolution),
+  def resolve_conflict(%__MODULE__{} = state, _project, _resolution, _opts),
     do: {:error, state, :invalid_resolution}
 
   @spec active_option_id(t()) :: String.t() | nil
@@ -244,15 +246,16 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
 
   def keydown(%__MODULE__{}, _key), do: :ignore
 
-  @spec save_edit(t(), Project.t(), Task.t()) ::
+  @spec save_edit(t(), Project.t(), Task.t(), keyword()) ::
           {:ok, t(), Task.t()}
           | {:error, t(), :not_found | Ecto.Changeset.t() | term()}
   def save_edit(
         %__MODULE__{selected_parent: selected_parent} = state,
         %Project{} = project,
-        %Task{} = task
+        %Task{} = task,
+        opts \\ []
       ) do
-    case Tasks.update_task(project, task, %{}, parent: selected_parent) do
+    case Tasks.update_task(project, task, %{}, Keyword.put(opts, :parent, selected_parent)) do
       {:ok, %Task{} = updated_task} ->
         refreshed_parent = task_parent(project, updated_task)
 
@@ -270,6 +273,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
         }
 
         {:ok, refreshed_state, updated_task}
+
+      {:error, :authentication_required} ->
+        {:error, reject_draft(state, "Sign in again to save this parent."),
+         :authentication_required}
 
       {:error, :not_found} ->
         {:error, reject_draft(state, Messages.parent_unavailable()), :not_found}
@@ -409,8 +416,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
     end)
   end
 
-  defp retry_parent_conflict(%__MODULE__{} = state, %Project{} = project) do
-    case Tasks.update_task(project, state.current_task, %{}, parent: state.selected_parent) do
+  defp retry_parent_conflict(%__MODULE__{} = state, %Project{} = project, opts) do
+    case Tasks.update_task(
+           project,
+           state.current_task,
+           %{},
+           Keyword.put(opts, :parent, state.selected_parent)
+         ) do
       {:ok, %Task{} = updated_task} ->
         refreshed_parent = task_parent(project, updated_task)
 
@@ -430,6 +442,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPicker do
 
       {:error, %Conflict{task: current_task}} ->
         {:conflict, put_parent_conflict(state, project, current_task), current_task}
+
+      {:error, :authentication_required} ->
+        {:error, reject_draft(state, "Sign in again to save this parent."),
+         :authentication_required}
 
       {:error, :not_found} ->
         {:error, reject_draft(state, Messages.parent_unavailable()), :not_found}

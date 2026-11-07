@@ -78,6 +78,64 @@ defmodule TaskmanWeb.API.Representation do
     }
   end
 
+  @spec activity(map()) :: map()
+  def activity(%{kind: :comment} = entry) do
+    %{
+      id: entry.id,
+      kind: "comment",
+      occurred_at: DateTime.to_iso8601(entry.occurred_at),
+      comment: comment(entry.comment)
+    }
+  end
+
+  def activity(%{kind: :change, change: change} = entry) do
+    %{
+      id: entry.id,
+      kind: "change",
+      occurred_at: DateTime.to_iso8601(entry.occurred_at),
+      change: %{
+        type: change.type,
+        task_id: change.task_id,
+        field: change.field,
+        actor: %{user_id: change.actor.user_id, login: change.actor.login},
+        before: activity_value(change.before),
+        after: activity_value(change.after),
+        context: activity_context(change.context),
+        first_changed_at: DateTime.to_iso8601(change.first_changed_at),
+        last_changed_at: DateTime.to_iso8601(change.last_changed_at)
+      }
+    }
+  end
+
+  defp activity_context(context) do
+    [:task, :blocking_task, :blocked_task]
+    |> Enum.filter(&Map.has_key?(context, &1))
+    |> Map.new(&{&1, activity_reference(Map.fetch!(context, &1))})
+  end
+
+  defp activity_reference(reference) do
+    %{
+      id: reference.id,
+      project_id: reference.project_id,
+      project_name: reference.project_name,
+      title: reference.title
+    }
+  end
+
+  defp activity_value(%{id: _} = reference), do: activity_reference(reference)
+
+  defp activity_value(%{list_id: _} = location) do
+    %{
+      project_id: location.project_id,
+      project_name: location.project_name,
+      list_id: location.list_id,
+      path: location.path
+    }
+  end
+
+  defp activity_value(value) when is_nil(value) or is_binary(value) or is_boolean(value),
+    do: value
+
   defp task_with_path(task, path) do
     %{
       id: task.id,

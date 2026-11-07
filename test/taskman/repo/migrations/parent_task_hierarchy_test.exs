@@ -24,7 +24,12 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
     parent = task_fixture(project, %{})
     foreign = task_fixture(other_project, %{})
 
-    assert {:ok, child} = Tasks.update_task(project, task, %{}, parent: parent)
+    assert {:ok, child} =
+             Tasks.update_task(project, task, %{},
+               parent: parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert child.parent_task_id == parent.id
 
     foreign_changeset =

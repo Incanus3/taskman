@@ -113,9 +113,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='28.10.']"))
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        title: "Patched title"
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          title: "Patched title"
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-title[value='Patched title']"))
     assert js(c.session, "return document.querySelector('#task-due-at').value") == "28.10."
@@ -178,7 +181,11 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     assert js(c.session, "return document.activeElement.id") == "task-due-at-trigger"
 
     # Pre-1970 dates and retained seconds must not be normalized by an unchanged Apply.
-    {:ok, _} = Tasks.update_task(c.project, c.selected, %{due_at: ~N[1960-05-06 09:30:42]})
+    {:ok, _} =
+      Tasks.update_task(c.project, c.selected, %{due_at: ~N[1960-05-06 09:30:42]},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='1960-05-06T09:30:42']"))
     Browser.click(c.session, Query.css("#task-due-at-trigger"))
     Browser.click(c.session, Query.css("#task-due-at-apply:not([disabled])"))
@@ -235,7 +242,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
   # Browser patches must preserve both private popup drafts and focused manual edits.
   test "due picker follows authoritative updates and stays reachable in the top layer", c do
     visit(c, c.selected)
-    {:ok, _} = Tasks.update_task(c.project, c.selected, %{due_at: ~N[2030-05-06 09:30:00]})
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.selected, %{due_at: ~N[2030-05-06 09:30:00]},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2030-05-06T09:30']"))
     Browser.click(c.session, Query.css("#task-due-at-trigger"))
 
@@ -245,9 +257,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     )
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        title: "Unrelated patch"
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          title: "Unrelated patch"
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-title[value='Unrelated patch']"))
 
@@ -257,9 +272,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
            )
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        due_at: ~N[2031-06-07 10:20:00]
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          due_at: ~N[2031-06-07 10:20:00]
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
     Browser.find(c.session, Query.css("#task-due-at-picker-notice", text: "Reopen"))
@@ -275,9 +293,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     )
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        title: "Native typing patch"
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          title: "Native typing patch"
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-title[value='Native typing patch']"))
 
@@ -388,9 +409,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.click(c.session, Query.css("#task-due-at-cancel"))
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        due_at: ~N[0999-05-06 09:30:00]
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          due_at: ~N[0999-05-06 09:30:00]
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='0999-05-06T09:30']"))
     Browser.find(c.session, Query.css("#task-due-at-trigger[hidden]", visible: :any))
@@ -436,7 +460,11 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.find(c.session, Query.css("#task-status-trigger"))
 
     # Opening a server-selected last option must reveal the whole active row immediately.
-    {:ok, _} = Tasks.update_task(c.project, c.selected, %{status: :will_not_do})
+    {:ok, _} =
+      Tasks.update_task(c.project, c.selected, %{status: :will_not_do},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     Browser.find(c.session, Query.css("#task-status-trigger", text: "Will Not Do"))
     Browser.click(c.session, Query.css("#task-status-trigger"))
 
@@ -452,9 +480,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.send_keys(c.session, [:escape])
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        status: :pending
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          status: :pending
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-status-trigger", text: "Pending"))
 
@@ -480,9 +511,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     assert js(c.session, "return window.__pickerChanges") == 1
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.selected.id), %{
-        status: :in_review
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.selected.id),
+        %{
+          status: :in_review
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     Browser.find(c.session, Query.css("#task-status-picker[data-value='in_review']"))
     Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
@@ -529,7 +563,11 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
              "return getComputedStyle(document.querySelector('#task-status')).display === 'none' || document.querySelector('#task-status').getClientRects().length === 0"
            )
 
-    {:ok, _} = Tasks.add_block(c.project, c.root, c.selected)
+    {:ok, _} =
+      Tasks.add_block(c.project, c.root, c.selected,
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     Browser.click(c.session, Query.css("#task-status-trigger"))
     Browser.send_keys(c.session, ["d", :enter])
     Browser.find(c.session, Query.css("#task-done-warning"))
@@ -761,9 +799,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
                "task-hierarchy-status-filter-option-will_not_do"
 
       {:ok, _} =
-        Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.third.id), %{
-          title: "Fresh title #{width}"
-        })
+        Tasks.update_task(
+          c.project,
+          Tasks.get_task_for_project(c.project, c.third.id),
+          %{
+            title: "Fresh title #{width}"
+          }, actor: Taskman.AccountsFixtures.user_fixture())
 
       Browser.find(
         c.session,
@@ -939,7 +980,12 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
     wait(c.session, &(!&1["editorInert"] && &1["focus"] == "task-hierarchy-toggle"))
     js(c.session, "document.querySelector('#task-title').focus()")
-    {:ok, _} = Tasks.update_task(c.project, c.third, %{status: :in_review})
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.third, %{status: :in_review},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     wait(c.session, &(&1["statuses"]["#{c.third.id}"] == "In Review"))
     assert state(c.session)["focus"] == "task-title"
   end
@@ -962,10 +1008,13 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     before_patch = state(c.session)["scrollTop"]
 
     {:ok, _} =
-      Tasks.update_task(c.project, c.second, %{
-        title: "Updated wrapping ancestor " <> String.duplicate("work ", 20),
-        status: :done
-      })
+      Tasks.update_task(
+        c.project,
+        c.second,
+        %{
+          title: "Updated wrapping ancestor " <> String.duplicate("work ", 20),
+          status: :done
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     wait(c.session, &(&1["statuses"]["#{c.second.id}"] == "Done"))
     assert abs(state(c.session)["scrollTop"] - before_patch) <= 2
@@ -989,7 +1038,8 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
     {:ok, _} =
       Tasks.update_task(c.project, c.selected, %{title: "Reparented selected work"},
-        parent: c.optional
+        parent: c.optional,
+        actor: Taskman.AccountsFixtures.user_fixture()
       )
 
     Browser.find(

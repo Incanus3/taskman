@@ -90,6 +90,23 @@ defmodule Taskman.CLI.Presentation.CompletionsTest do
     assert "--include-comments" in fish_query(fish_path, "taskman tasks show --")
   end
 
+  @tag :tmp_dir
+  test "shells discover activity list and optional comments", %{tmp_dir: tmp_dir} do
+    bash = Path.join(tmp_dir, "taskman.bash")
+    fish = Path.join(tmp_dir, "taskman.fish")
+    File.write!(bash, Completions.bash())
+    File.write!(fish, Completions.fish())
+    assert "activity" in bash_query(bash, ~w(taskman tasks) ++ [""])
+    assert "activity" in fish_query(fish, "taskman tasks ")
+    assert "list" in bash_query(bash, ~w(taskman tasks activity) ++ [""])
+    assert "list" in fish_query(fish, "taskman tasks activity ")
+
+    for flag <- ["--project", "--include-comments"] do
+      assert flag in bash_query(bash, ~w(taskman tasks activity list) ++ ["--"])
+      assert flag in fish_query(fish, "taskman tasks activity list --")
+    end
+  end
+
   test "Fish command predicates use the registry path resolver" do
     fish = Completions.fish()
 

@@ -6,7 +6,8 @@ alias Taskman.Lists.TaskList
 alias Taskman.Projects
 alias Taskman.Projects.Project
 alias Taskman.Repo
-alias Taskman.Tasks
+alias Taskman.Tasks.Mutations
+alias Taskman.Tasks.Writes
 alias Taskman.Tasks.Task
 
 if Application.get_env(:taskman, :seed_development_users, Mix.env() == :dev) do
@@ -32,8 +33,10 @@ if Application.get_env(:taskman, :seed_development_users, Mix.env() == :dev) do
   seed_user.("user@taskman.dev", false)
 end
 
-{:ok, %{projects: project_count, lists: list_count, tasks: task_count}} =
-  Repo.transaction(fn ->
+demo_actor = Repo.get_by(User, email: "admin@taskman.dev")
+
+result =
+  Writes.run(demo_actor, fn actor ->
     Repo.delete_all(Task)
     Repo.delete_all(TaskList)
     Repo.delete_all(Project)
@@ -99,19 +102,21 @@ end
 
           parent = Map.get(tasks_by_status, parent_status)
 
-          {:ok, task} =
-            Tasks.create_task(
-              project,
-              location,
-              %{
-                title: "#{priority_label} priority · #{status_label}",
-                description:
-                  "Seeded example covering the #{priority} priority and #{status} status.",
-                status: status,
-                priority: priority
-              },
-              parent: parent
-            )
+          {:ok, {task, _fields}, _affected} =
+            Writes.task(actor, fn ->
+              Mutations.create(
+                project,
+                %Task{project_id: project.id, list_id: location.id},
+                %{
+                  title: "#{priority_label} priority · #{status_label}",
+                  description:
+                    "Seeded example covering the #{priority} priority and #{status} status.",
+                  status: status,
+                  priority: priority
+                },
+                parent: parent
+              )
+            end)
 
           Map.put(tasks_by_status, status, task)
         end)
@@ -119,7 +124,16 @@ end
         count + length(task_specs)
       end)
 
-    %{projects: 3, lists: map_size(locations) + 2, tasks: task_count}
+    {:ok, %{projects: 3, lists: map_size(locations) + 2, tasks: task_count}, []}
   end)
+
+%{projects: project_count, lists: list_count, tasks: task_count} =
+  case result do
+    {:ok, {counts, _affected}} ->
+      counts
+
+    {:error, :authentication_required} ->
+      raise "Demo seeding requires the eligible demo administrator account admin@taskman.dev"
+  end
 
 IO.puts("Seeded #{project_count} Projects with #{list_count} lists and #{task_count} tasks.")

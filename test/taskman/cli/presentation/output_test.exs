@@ -5,6 +5,87 @@ defmodule Taskman.CLI.Presentation.OutputTest do
 
   alias Taskman.CLI.Presentation.Output
 
+  test "activity renders typed changes and relationship perspectives with local times" do
+    alias Taskman.CLI.Fixtures
+    base = Fixtures.activity_entry()
+    ref = base["change"]["context"]["task"]
+    parent = %{ref | "id" => 41, "title" => "Parent"}
+    target = %{ref | "id" => 99, "title" => "Dependency", "project_name" => "Other"}
+    location = %{"project_id" => 7, "project_name" => "Demo", "list_id" => nil, "path" => []}
+
+    cases = [
+      {Fixtures.activity_entry(%{"type" => "task_created", "field" => nil}), 42, "Task created"},
+      {base, 42, "Priority changed from low to high"},
+      {Fixtures.activity_entry(%{"field" => "title", "before" => "Old", "after" => "New"}), 42,
+       "Title changed from Old to New"},
+      {Fixtures.activity_entry(%{"field" => "status", "before" => "pending", "after" => "done"}),
+       42, "Status changed from pending to done"},
+      {Fixtures.activity_entry(%{
+         "field" => "due_at",
+         "before" => nil,
+         "after" => "2026-11-08T12:00:00"
+       }), 42, "Due date changed from None to 2026-11-08T12:00:00"},
+      {Fixtures.activity_entry(%{
+         "field" => "list_id",
+         "before" => location,
+         "after" => %{location | "list_id" => 4, "path" => ["Planning"]}
+       }), 42, "List changed from Demo (Project level) to Demo / Planning"},
+      {Fixtures.activity_entry(%{
+         "field" => "parent_task_id",
+         "before" => nil,
+         "after" => parent
+       }), 42, "Parent changed from None to #41 Parent (Demo)"},
+      {Fixtures.activity_entry(%{
+         "field" => "parent_task_id",
+         "before" => nil,
+         "after" => parent
+       }), 41, "Child added: #42 Review (Demo)"},
+      {Fixtures.activity_entry(%{
+         "field" => "parent_task_id",
+         "before" => parent,
+         "after" => nil
+       }), 41, "Child removed: #42 Review (Demo)"}
+    ]
+
+    for {entry, task_id, expected} <- cases do
+      output = Output.success({:tasks, :activity_list, task_id}, [entry], false)
+      assert output =~ expected
+      assert output =~ "event-1  person@example.invalid"
+
+      local =
+        :calendar.universal_time_to_local_time({{2026, 11, 7}, {12, 0, 30}})
+        |> NaiveDateTime.from_erl!()
+        |> NaiveDateTime.to_string()
+
+      assert output =~ local
+    end
+
+    for present? <- [true, false], task_id <- [42, 99] do
+      entry =
+        Fixtures.activity_entry(%{
+          "type" => "block_changed",
+          "field" => nil,
+          "before" => not present?,
+          "after" => present?,
+          "context" => %{"task" => ref, "blocking_task" => ref, "blocked_task" => target}
+        })
+
+      output = Output.success({:tasks, :activity_list, task_id}, [entry], false)
+      assert output =~ if(present?, do: "added:", else: "removed:")
+      assert output =~ if(task_id == 42, do: "Blocks", else: "Blocked by")
+      assert output =~ if(task_id == 42, do: "#99 Dependency (Other)", else: "#42 Review (Demo)")
+    end
+
+    assert Output.success({:tasks, :activity_list, 42}, [], false) == "No activity yet.\n"
+    comment = Fixtures.activity_comment()
+
+    assert Output.success({:tasks, :activity_list, 42}, [comment], false) ==
+             Output.success({:tasks, :comments_list}, [comment["comment"]], false)
+
+    assert Jason.decode!(Output.success({:tasks, :activity_list, 42}, [base, comment], true)) ==
+             %{"data" => [base, comment]}
+  end
+
   test "JSON success output is one API data envelope and a trailing newline" do
     data = [project_response_fixture(%{"id" => 1, "name" => "One"})]
 

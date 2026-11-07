@@ -17,7 +17,9 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     grandchild = task_fixture(project, %{title: "B grandchild"}, parent: child)
 
     assert {:error, {:unresolved_blockers, summaries}} =
-             Tasks.update_task(project, root, %{title: "Changed", status: :done})
+             Tasks.update_task(project, root, %{title: "Changed", status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert Enum.map(summaries, & &1.id) == [child.id, grandchild.id]
     assert Tasks.get_task_for_project(project, root.id).title == root.title
@@ -30,7 +32,11 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     child = task_fixture(project, %{status: :done}, parent: root)
     grandchild = task_fixture(project, %{}, parent: child)
 
-    assert {:ok, %{status: :done}} = Tasks.update_task(project, root, %{status: :done})
+    assert {:ok, %{status: :done}} =
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert Tasks.get_task_for_project(project, grandchild.id).status == :pending
   end
 
@@ -43,10 +49,16 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
 
       if Status.resolves_blocker?(unquote(status)) do
         assert Hierarchy.unresolved_descendant_ids(root) == []
-        assert {:ok, %{status: :done}} = Tasks.update_task(project, root, %{status: :done})
+
+        assert {:ok, %{status: :done}} =
+                 Tasks.update_task(project, root, %{status: :done},
+                   actor: Taskman.AccountsFixtures.user_fixture()
+                 )
       else
         assert {:error, {:unresolved_blockers, summaries}} =
-                 Tasks.update_task(project, root, %{status: :done})
+                 Tasks.update_task(project, root, %{status: :done},
+                   actor: Taskman.AccountsFixtures.user_fixture()
+                 )
 
         assert Enum.map(summaries, & &1.id) == [child.id, grandchild.id]
       end
@@ -60,7 +72,9 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     grandchild = task_fixture(project, %{title: "B", status: :will_not_do}, parent: child)
 
     assert {:error, {:unresolved_blockers, summaries}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert Enum.map(summaries, & &1.id) == [child.id, grandchild.id]
   end
@@ -81,7 +95,9 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     _foreign = task_fixture(other_project)
 
     assert {:error, {:unresolved_blockers, summaries}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert Enum.map(summaries, & &1.id) == [child.id, sibling.id, grandchild.id]
 
@@ -102,18 +118,31 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     hidden_blocker = task_fixture(project, %{title: "beta"}, parent: boundary)
     dual = task_fixture(project, %{title: "Alpha"}, parent: root)
     foreign_blocker = task_fixture(other_project)
-    assert {:ok, _} = Tasks.add_block(project, hidden_blocker, root)
-    assert {:ok, _} = Tasks.add_block(project, dual, root)
-    assert {:ok, _} = Tasks.add_block(other_project, foreign_blocker, root)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, hidden_blocker, root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, _} =
+             Tasks.add_block(project, dual, root, actor: Taskman.AccountsFixtures.user_fixture())
+
+    assert {:ok, _} =
+             Tasks.add_block(other_project, foreign_blocker, root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, summaries}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert Enum.map(summaries, & &1.id) == [foreign_blocker.id, dual.id, hidden_blocker.id]
 
     assert {:ok, %{status: :done}} =
              Tasks.update_task(project, root, %{status: :done},
-               done_confirmation: {:ids, [foreign_blocker.id, dual.id, hidden_blocker.id]}
+               done_confirmation: {:ids, [foreign_blocker.id, dual.id, hidden_blocker.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
   end
 
@@ -123,7 +152,11 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     child = task_fixture(project, %{title: "A child"}, parent: root)
     blocker = task_fixture(project, %{title: "B blocker"})
     parent = task_fixture(project)
-    assert {:ok, _} = Tasks.add_block(project, blocker, root)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     attrs = %{
       title: "Changed",
@@ -136,7 +169,8 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     assert {:error, {:unresolved_blockers, summaries}} =
              Tasks.update_task(project, root, attrs,
                parent: parent,
-               done_confirmation: {:ids, [blocker.id]}
+               done_confirmation: {:ids, [blocker.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert Enum.map(summaries, & &1.id) == [child.id, blocker.id]
@@ -145,7 +179,8 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     assert {:ok, updated} =
              Tasks.update_task(project, root, attrs,
                parent: parent,
-               done_confirmation: {:ids, [child.id, blocker.id]}
+               done_confirmation: {:ids, [child.id, blocker.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     for {field, value} <- attrs, do: assert(Map.fetch!(updated, field) == value)
@@ -157,10 +192,17 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     root = task_fixture(project)
     child = task_fixture(project, %{}, parent: root)
     blocker = task_fixture(project)
-    assert {:ok, _} = Tasks.add_block(project, blocker, root)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, %{status: :done}} =
-             Tasks.update_task(project, root, %{status: :done}, done_confirmation: :force)
+             Tasks.update_task(project, root, %{status: :done},
+               done_confirmation: :force,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert Tasks.get_task_for_project(project, child.id) == child
     assert Tasks.get_task_for_project(project, blocker.id) == blocker
@@ -175,16 +217,31 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
       sibling = task_fixture(project, %{title: "B"}, parent: root)
 
       assert {:error, {:unresolved_blockers, summaries}} =
-               Tasks.update_task(project, root, %{status: :done})
+               Tasks.update_task(project, root, %{status: :done},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
 
       confirmed = Enum.map(summaries, & &1.id)
       assert confirmed == [child.id, sibling.id]
-      assert {:ok, _} = Tasks.update_task(project, child, %{status: :done})
-      if emptied?, do: assert({:ok, _} = Tasks.update_task(project, sibling, %{status: :done}))
+
+      assert {:ok, _} =
+               Tasks.update_task(project, child, %{status: :done},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
+      if emptied?,
+        do:
+          assert(
+            {:ok, _} =
+              Tasks.update_task(project, sibling, %{status: :done},
+                actor: Taskman.AccountsFixtures.user_fixture()
+              )
+          )
 
       assert {:ok, %{status: :done}} =
                Tasks.update_task(project, root, %{status: :done},
-                 done_confirmation: {:ids, confirmed}
+                 done_confirmation: {:ids, confirmed},
+                 actor: Taskman.AccountsFixtures.user_fixture()
                )
     end
   end
@@ -197,14 +254,21 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     grandchild = task_fixture(project, %{title: "C"}, parent: boundary)
 
     assert {:error, {:unresolved_blockers, [%{id: known_id}]}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert known_id == known.id
-    assert {:ok, _} = Tasks.update_task(project, boundary, %{status: :pending})
+
+    assert {:ok, _} =
+             Tasks.update_task(project, boundary, %{status: :pending},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, summaries}} =
              Tasks.update_task(project, root, %{status: :done},
-               done_confirmation: {:ids, [known.id]}
+               done_confirmation: {:ids, [known.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert Enum.map(summaries, & &1.id) == [known.id, boundary.id, grandchild.id]
@@ -216,13 +280,16 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     known = task_fixture(project, %{title: "A"}, parent: root)
 
     assert {:error, {:unresolved_blockers, [_]}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     added = task_fixture(project, %{title: "B"}, parent: root)
 
     assert {:error, {:unresolved_blockers, summaries}} =
              Tasks.update_task(project, root, %{status: :done},
-               done_confirmation: {:ids, [known.id]}
+               done_confirmation: {:ids, [known.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert Enum.map(summaries, & &1.id) == [known.id, added.id]
@@ -237,13 +304,20 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     grandchild = task_fixture(project, %{title: "C"}, parent: subtree)
 
     assert {:error, {:unresolved_blockers, [_]}} =
-             Tasks.update_task(project, root, %{status: :done})
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
-    assert {:ok, _} = Tasks.update_task(project, subtree, %{}, parent: root)
+    assert {:ok, _} =
+             Tasks.update_task(project, subtree, %{},
+               parent: root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, summaries}} =
              Tasks.update_task(project, root, %{status: :done},
-               done_confirmation: {:ids, [known.id]}
+               done_confirmation: {:ids, [known.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert Enum.map(summaries, & &1.id) == [known.id, subtree.id, grandchild.id]
@@ -254,12 +328,27 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     root = task_fixture(project, %{status: :done})
     _child = task_fixture(project, %{}, parent: root)
     subtree = task_fixture(project)
-    assert {:ok, _} = Tasks.update_task(project, subtree, %{}, parent: root)
+
+    assert {:ok, _} =
+             Tasks.update_task(project, subtree, %{},
+               parent: root,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert Tasks.get_task_for_project(project, root.id) == root
 
-    assert {:ok, same} = Tasks.update_task(project, root, %{status: :done})
+    assert {:ok, same} =
+             Tasks.update_task(project, root, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert same.lock_version == root.lock_version
-    assert {:ok, edited} = Tasks.update_task(project, same, %{title: "Changed", status: :done})
+
+    assert {:ok, edited} =
+             Tasks.update_task(project, same, %{title: "Changed", status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert edited.status == :done
   end
 
@@ -271,17 +360,24 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
     for confirmation <- [{:ids, [child.id]}, :force] do
       assert {:error, changeset} =
                Tasks.update_task(project, root, %{title: "", status: :done},
-                 done_confirmation: confirmation
+                 done_confirmation: confirmation,
+                 actor: Taskman.AccountsFixtures.user_fixture()
                )
 
       assert %{title: [_]} = errors_on(changeset)
     end
 
-    assert {:ok, _} = Tasks.update_task(project, root, %{status: :in_review})
+    assert {:ok, _} =
+             Tasks.update_task(project, root, %{status: :in_review},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     for confirmation <- [{:ids, [child.id]}, :force] do
       assert {:error, %Conflict{fields: [:status]}} =
-               Tasks.update_task(project, root, %{status: :done}, done_confirmation: confirmation)
+               Tasks.update_task(project, root, %{status: :done},
+                 done_confirmation: confirmation,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
     end
 
     assert Tasks.get_task_for_project(project, root.id).status == :in_review
@@ -312,7 +408,11 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
         assert length(helper_queries) == 1
 
         {result, warning_queries} =
-          capture_queries(fn -> Tasks.update_task(project, root, %{status: :done}) end)
+          capture_queries(fn ->
+            Tasks.update_task(project, root, %{status: :done},
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end)
 
         assert {:error, {:unresolved_blockers, summaries}} = result
         assert Enum.sort(Enum.map(summaries, & &1.id)) == Enum.sort(expected_ids)

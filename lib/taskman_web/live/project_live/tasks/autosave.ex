@@ -7,7 +7,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   @editable_fields ~w(title description status priority due_at)
   @debounced_fields ~w(title description)
 
-  defstruct form: nil,
+  defstruct actor: nil,
+            form: nil,
             baseline: nil,
             draft: %{},
             dirty_fields: MapSet.new(),
@@ -23,6 +24,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
   @type save_state :: :idle | :saving | :saved | :not_saved | :failed | :conflicted
 
   @type t :: %__MODULE__{
+          actor: term(),
           form: Phoenix.HTML.Form.t() | nil,
           baseline: Task.t() | nil,
           draft: map(),
@@ -30,7 +32,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
           revisions: %{optional(String.t()) => non_neg_integer()},
           conflicts: %{optional(String.t()) => term()},
           field_states: %{optional(String.t()) => field_state()},
-          done_warning: [map()] | nil,
+          done_warning: [Taskman.Tasks.BlockingPersistence.summary()] | nil,
           sequence: non_neg_integer(),
           save_failed?: boolean(),
           saved?: boolean(),
@@ -39,13 +41,29 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
   @type field_state :: :saving | :saved | :not_saved | :failed
 
+  @typedoc "Raw browser values; the Task changeset validates each requested editable field."
+  @type field_params :: %{optional(String.t()) => term()}
+
+  @type scheduled_message ::
+          {:autosave_task_field, pos_integer(), String.t(), pos_integer()}
+  @type schedule :: {non_neg_integer(), scheduled_message()}
+  @type save_result ::
+          {:ok, t(), Task.t()} | {:conflict, t(), Task.t()} | {:not_found, t()}
+  @type ignored_result :: {:ignored, t(), Task.t()}
+  @type scheduled_result :: {:schedule, t(), Task.t(), non_neg_integer(), scheduled_message()}
+  @type change_result :: save_result() | ignored_result() | scheduled_result()
+  @type flush_result :: {:ok, t(), Task.t()} | {:error, t(), Task.t()} | {:not_found, t()}
+  @type confirmation_result :: save_result() | ignored_result() | {:error, t(), Task.t()}
+  @type restart_result :: {:ok, t(), Task.t(), [schedule()]} | {:not_found, t()}
+
   def empty, do: %__MODULE__{}
 
-  def load(%__MODULE__{sequence: sequence}, %Task{} = task, opts) do
+  def load(%__MODULE__{sequence: sequence, actor: actor}, %Task{} = task, opts) do
     saved? = Keyword.fetch!(opts, :saved?)
 
     %__MODULE__{
       sequence: sequence,
+      actor: Keyword.get(opts, :actor, actor),
       form: task |> Tasks.change_task() |> Phoenix.Component.to_form(),
       baseline: task,
       saved?: saved?,
@@ -90,9 +108,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     end)
   end
 
-  @doc "Restarts eligible reconciled saves under fresh Task authority."
-  @spec restart(t(), Project.t(), Task.t()) ::
-          {:ok, t(), Task.t(), [{non_neg_integer(), tuple()}]} | {:not_found, t()}
+  @doc """
+  Restarts eligible reconciled saves under fresh Task authority.
+
+  The caller schedules the returned messages. An `:ok` result may retain invalid,
+  conflicted, warned, or failed fields; inspect the returned autosave state.
+  """
+  @spec restart(t(), Project.t(), Task.t()) :: restart_result()
   def restart(%__MODULE__{} = autosave, %Project{} = project, %Task{} = task) do
     autosave.dirty_fields
     |> MapSet.to_list()
@@ -194,6 +216,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
   def conflict_value(%__MODULE__{}, _field), do: nil
 
+  @doc """
+  Records an editable field and either schedules or attempts its save.
+
+  An `:ok` result can retain an invalid, conflicted, warned, or failed draft and
+  does not guarantee persistence. Unsupported fields return `:ignored` without
+  inspecting the project or params.
+  """
+  @spec change(t(), Project.t(), Task.t(), field_params(), String.t()) :: change_result()
   def change(
         %__MODULE__{} = autosave,
         %Project{} = project,
@@ -236,6 +266,20 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     {:ignored, autosave, task}
   end
 
+  @doc """
+  Attempts a save only for the current Task and field revision.
+
+  Stale messages return `:ignored`; `:ok` can still retain a warned or failed
+  draft, as reported by the returned autosave state.
+  """
+  @spec handle_scheduled_save(
+          t(),
+          Project.t(),
+          Task.t(),
+          pos_integer(),
+          String.t(),
+          non_neg_integer() | nil
+        ) :: save_result() | ignored_result()
   def handle_scheduled_save(
         %__MODULE__{} = autosave,
         %Project{} = project,
@@ -252,6 +296,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     end
   end
 
+  @doc """
+  Attempts to persist all dirty fields, returning `:ok` only once none remain.
+
+  A later conflict, failure, or missing Task does not undo earlier field saves.
+  Error results carry the resulting state and latest Task where available.
+  """
+  @spec flush(t(), Project.t(), Task.t()) :: flush_result()
   def flush(%__MODULE__{} = autosave, %Project{} = project, %Task{} = task) do
     if autosave.conflicts != %{} do
       {:error, refresh_save_state(autosave), task}
@@ -316,7 +367,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     |> put_form(task)
   end
 
-  @doc "Confirms exactly the blocker IDs displayed in the current warning."
+  @doc """
+  Confirms exactly the blocker IDs displayed in the current warning.
+
+  `:ok` may return a refreshed warning rather than a persisted Done status.
+  Without a warning, the request is ignored without inspecting the project.
+  """
+  @spec confirm_done(t(), Project.t(), Task.t()) :: confirmation_result()
   def confirm_done(
         %__MODULE__{conflicts: conflicts, done_warning: summaries} = autosave,
         %Project{} = project,
@@ -328,7 +385,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     else
       ids = summaries |> Enum.map(& &1.id) |> Enum.sort()
 
-      case Tasks.update_task(project, task, %{status: :done}, done_confirmation: {:ids, ids}) do
+      case Tasks.update_task(project, task, %{status: :done},
+             done_confirmation: {:ids, ids},
+             actor: autosave.actor
+           ) do
         {:ok, updated_task} ->
           {:ok, clear_field(autosave, "status", updated_task), updated_task}
 
@@ -340,6 +400,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
         {:error, :not_found} ->
           {:not_found, clear(autosave)}
+
+        {:error, :authentication_required} ->
+          {:error,
+           autosave
+           |> Map.put(:actor, nil)
+           |> put_field_state("status", :failed)
+           |> refresh_save_state(), task}
 
         {:error, %Ecto.Changeset{}} ->
           {:error, autosave |> put_field_state("status", :failed) |> refresh_save_state(), task}
@@ -387,7 +454,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     value = Map.get(autosave.draft, field)
 
     if valid_field?(autosave, task, field) do
-      case Tasks.update_task(project, task, %{editable_field_atom(field) => value}) do
+      case Tasks.update_task(project, task, %{editable_field_atom(field) => value},
+             actor: autosave.actor
+           ) do
         {:ok, updated_task} ->
           autosave =
             autosave
@@ -400,6 +469,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
         {:error, {:unresolved_blockers, summaries}} ->
           {:ok, warn_done(autosave, summaries), task}
+
+        {:error, :authentication_required} ->
+          {:ok,
+           autosave
+           |> Map.put(:actor, nil)
+           |> put_field_state(field, :failed)
+           |> refresh_save_state(), task}
 
         {:error, %Ecto.Changeset{}} ->
           autosave =
@@ -451,7 +527,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
     canonical_task = autosave.baseline || task
     value = Map.get(autosave.draft, field)
 
-    case Tasks.update_task(project, canonical_task, %{editable_field_atom(field) => value}) do
+    case Tasks.update_task(project, canonical_task, %{editable_field_atom(field) => value},
+           actor: autosave.actor
+         ) do
       {:ok, updated_task} ->
         {:ok, clear_field(autosave, field, updated_task), updated_task}
 
@@ -463,6 +541,13 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
          autosave
          |> Map.update!(:conflicts, &Map.delete(&1, field))
          |> warn_done(summaries), task}
+
+      {:error, :authentication_required} ->
+        {:error,
+         autosave
+         |> Map.put(:actor, nil)
+         |> put_field_state(field, :failed)
+         |> refresh_save_state(), canonical_task}
 
       {:error, %Ecto.Changeset{}} ->
         autosave =

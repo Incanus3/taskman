@@ -14,6 +14,19 @@ defmodule Taskman.Repo.SeedsTest do
   @statuses [:icebox, :pending, :in_progress, :in_review, :done, :will_not_do]
   @priorities [:none, :low, :medium, :high, :urgent]
 
+  setup do
+    previous = Application.get_env(:taskman, :seed_development_users)
+    Application.put_env(:taskman, :seed_development_users, true)
+
+    on_exit(fn ->
+      if is_nil(previous),
+        do: Application.delete_env(:taskman, :seed_development_users),
+        else: Application.put_env(:taskman, :seed_development_users, previous)
+    end)
+
+    :ok
+  end
+
   test "development seeds create usable administrator and standard accounts" do
     Application.put_env(:taskman, :seed_development_users, true)
     on_exit(fn -> Application.delete_env(:taskman, :seed_development_users) end)
@@ -108,6 +121,53 @@ defmodule Taskman.Repo.SeedsTest do
     assert Repo.aggregate(Project, :count) == 3
     assert Repo.aggregate(Task, :count) == 30
     assert dataset_signature() == first_seed
+  end
+
+  test "demo creation history is attributed once per Task and reruns replace it" do
+    run_seeds()
+    actor = Repo.get_by!(User, email: "admin@taskman.dev")
+    events = Repo.all(Taskman.Tasks.Activity.Event)
+    assert length(events) == 30
+    assert Enum.all?(events, &(&1.kind == "task_created" and &1.actor_user_id == actor.id))
+    run_seeds()
+    assert Repo.aggregate(Taskman.Tasks.Activity.Event, :count) == 30
+  end
+
+  test "an absent or ineligible explicit demo actor fails before resetting data" do
+    Application.put_env(:taskman, :seed_development_users, false)
+    {:ok, existing} = Projects.create_project(%{name: "Preserved"})
+
+    assert_raise RuntimeError, ~r/eligible demo administrator/, fn ->
+      Code.eval_file("priv/repo/seeds.exs")
+    end
+
+    assert Repo.get!(Project, existing.id).name == "Preserved"
+
+    Taskman.AccountsFixtures.user_fixture(%{
+      email: "admin@taskman.dev",
+      status: :disabled,
+      admin?: true
+    })
+
+    assert_raise RuntimeError, ~r/eligible demo administrator/, fn ->
+      Code.eval_file("priv/repo/seeds.exs")
+    end
+
+    assert Repo.get!(Project, existing.id).name == "Preserved"
+  end
+
+  test "activity insertion failure rolls back the entire demo data replacement" do
+    {:ok, existing} = Projects.create_project(%{name: "Preserved"})
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "ALTER TABLE task_activity_events ADD CONSTRAINT reject_demo_activity CHECK (kind IS DISTINCT FROM 'task_created')"
+    )
+
+    assert_raise Ecto.ConstraintError, fn -> Code.eval_file("priv/repo/seeds.exs") end
+    assert Repo.get!(Project, existing.id).name == "Preserved"
+    assert Repo.aggregate(Task, :count) == 0
+    assert Repo.aggregate(Taskman.Tasks.Activity.Event, :count) == 0
   end
 
   defp run_seeds do

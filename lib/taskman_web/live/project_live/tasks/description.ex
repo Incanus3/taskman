@@ -5,6 +5,48 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
   alias TaskmanWeb.ProjectLive.Recovery
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Comments, Creation, Editing}
 
+  @type context :: {:new, pos_integer()} | {:edit, pos_integer(), pos_integer()}
+  @type params :: %{optional(String.t()) => term()}
+  @type capture_purpose ::
+          {:submit, params()}
+          | {:departure, {String.t(), params()}}
+          | {:route, params(), String.t()}
+          | {:reconcile, Taskman.ChangeNotifications.Event.t()}
+  @type capture_metadata :: %{markdown: String.t(), dirty: boolean()}
+  @type pending_capture :: %{
+          ref: String.t(),
+          purpose: capture_purpose(),
+          metadata: capture_metadata() | nil,
+          reply: String.t() | nil,
+          timed_out?: boolean(),
+          comment_received?: boolean()
+        }
+
+  @typedoc "Messages handled by the description capture protocol; other messages are ignored."
+  @type message ::
+          {:description_comment_captured,
+           %{editor_id: String.t(), ref: String.t(), draft: String.t()}}
+          | {:description_capture_timeout, String.t()}
+          | {:leaf_flushed,
+             %{
+               :editor_id => String.t(),
+               :ref => String.t(),
+               :markdown => String.t(),
+               optional(:html) => String.t()
+             }}
+          | {:leaf_changed,
+             %{
+               :editor_id => String.t(),
+               :markdown => String.t(),
+               :dirty => boolean(),
+               optional(:html) => String.t()
+             }}
+  @type capture_result ::
+          {:ready, Phoenix.LiveView.Socket.t()} | {:pending, Phoenix.LiveView.Socket.t()}
+  @type completion_result ::
+          {:noreply, Phoenix.LiveView.Socket.t()}
+          | {:captured, Phoenix.LiveView.Socket.t(), capture_purpose(), String.t(), boolean()}
+
   defmodule State do
     defstruct generation: 0,
               context: nil,
@@ -14,6 +56,17 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
               pending_capture: nil,
               route_ready: nil,
               refresh_event: nil
+
+    @type t :: %__MODULE__{
+            generation: non_neg_integer(),
+            context: TaskmanWeb.ProjectLive.Tasks.Description.context() | nil,
+            editor_id: String.t() | nil,
+            initial_value: String.t(),
+            edited?: boolean(),
+            pending_capture: TaskmanWeb.ProjectLive.Tasks.Description.pending_capture() | nil,
+            route_ready: String.t() | nil,
+            refresh_event: Taskman.ChangeNotifications.Event.t() | nil
+          }
   end
 
   def open(socket, context) do
@@ -58,6 +111,15 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
 
   def pending?(socket), do: not is_nil(socket.assigns.description.pending_capture)
 
+  @doc """
+  Requests a browser snapshot before continuing the given purpose.
+
+  Requires ProjectLive's description, creation, editing, recovery, workspace and
+  route assigns. `:ready` means no capture is required; `:pending` retains or
+  starts a capture. An existing reconciliation capture can adopt a submit,
+  departure or route purpose while retaining its refresh event.
+  """
+  @spec capture(Phoenix.LiveView.Socket.t(), capture_purpose()) :: capture_result()
   def capture(socket, purpose) do
     state = socket.assigns.description
 
@@ -144,6 +206,15 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Description do
     end
   end
 
+  @doc """
+  Handles `message/0` protocol messages and ignores unrelated or stale messages.
+
+  Requires the same ProjectLive workflow assigns as `capture/2`. Completion
+  requires matching snapshot text and metadata, plus a captured comment draft
+  for edit departures and routes. The `:captured` result returns the retained
+  purpose, Markdown and effective dirty flag for the caller to continue.
+  """
+  @spec handle_info(term(), Phoenix.LiveView.Socket.t()) :: completion_result()
   def handle_info(
         {:description_comment_captured, %{editor_id: id, ref: ref, draft: draft}},
         socket

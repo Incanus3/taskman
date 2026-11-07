@@ -39,7 +39,8 @@ defmodule TaskmanWeb.API.TaskBlockingController do
          {:ok, project} <- fetch_project(project_id),
          {:ok, blocker} <- fetch_scoped_task(project, task_id),
          {:ok, target} <- fetch_target(target_id),
-         {:ok, edge} <- apply_mutation(operation, project, blocker, target) do
+         {:ok, edge} <-
+           apply_mutation(operation, project, blocker, target, conn.assigns.current_user) do
       conn
       |> put_status(if(operation == :create, do: :created, else: :ok))
       |> json(%{data: Representation.blocking_edge(edge)})
@@ -48,11 +49,11 @@ defmodule TaskmanWeb.API.TaskBlockingController do
 
   defp mutate(_conn, _params, _operation), do: {:error, :invalid_request}
 
-  defp apply_mutation(:create, project, blocker, target),
-    do: Tasks.add_block(project, blocker, target)
+  defp apply_mutation(:create, project, blocker, target, actor),
+    do: Tasks.add_block(project, blocker, target, actor: actor)
 
-  defp apply_mutation(:delete, project, blocker, target),
-    do: Tasks.remove_block(project, blocker, target)
+  defp apply_mutation(:delete, project, blocker, target, actor),
+    do: Tasks.remove_block(project, blocker, target, actor: actor)
 
   defp no_query(%Plug.Conn{query_params: query}) when map_size(query) == 0, do: :ok
   defp no_query(_conn), do: {:error, :invalid_request}

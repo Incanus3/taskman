@@ -8,7 +8,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Comments, Move, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Activity, Autosave, Comments, Move, ParentPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
   alias TaskmanWeb.Tasks.Detail
 
@@ -218,7 +218,28 @@ defmodule TaskmanWeb.Tasks.DetailTest do
     assert inactive_panel?(document, "activity")
   end
 
-  defp comment_tabs(tab) do
+  test "mixed Activity uses feed state for empty status and scroll revision" do
+    time = ~U[2026-11-07 10:00:00Z]
+
+    entry = %{
+      id: "event-12",
+      kind: :change,
+      occurred_at: time,
+      change: %{type: "task_created", actor: %{login: "actor@example.com"}}
+    }
+
+    document =
+      comment_tabs(:activity,
+        activity: %Activity.State{task_id: 41, empty?: false, revision: 7},
+        activity_stream: [{"task-event-12", entry}]
+      )
+
+    assert LazyHTML.text(LazyHTML.query(document, "#task-event-12")) =~ "Task created"
+    assert Enum.count(LazyHTML.query(document, "#task-detail-discussion[data-revision='7']")) == 1
+    assert Enum.empty?(LazyHTML.query(document, "#task-activity-empty"))
+  end
+
+  defp comment_tabs(tab, opts \\ []) do
     task = task(41)
 
     render_component(&Detail.detail/1, %{
@@ -236,7 +257,9 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       task_path: fn item -> "/projects/7/tasks/#{item.id}" end,
       browse_path: fn _ -> "/projects/7" end,
       task_move: Move.empty(),
-      comments: %{Comments.State.empty() | tab: tab}
+      comments: %{Comments.State.empty() | tab: tab},
+      activity: Keyword.get(opts, :activity, Activity.State.empty()),
+      activity_stream: Keyword.get(opts, :activity_stream, [])
     })
     |> LazyHTML.from_fragment()
   end

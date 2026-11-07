@@ -11,6 +11,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   alias TaskmanWeb.ProjectLive.Paths
 
   alias TaskmanWeb.ProjectLive.Tasks.{
+    Activity,
     Autosave,
     Creation,
     Description,
@@ -121,7 +122,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
       {{:ok, hierarchy}, {:ok, related_tasks}} ->
         editing = initialize_hierarchy_sort(socket.assigns.editing, socket.assigns.listing.sort)
-        autosave = route_autosave(editing, task)
+
+        autosave =
+          route_autosave(editing, task)
+          |> Map.put(:actor, socket.assigns.current_user || socket.assigns.current_scope)
 
         assign(
           socket,
@@ -183,7 +187,17 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
           {{:ok, hierarchy}, {:ok, related_tasks}} ->
             sequence = max(captured_autosave.sequence, socket.assigns.editing.autosave.sequence)
-            autosave = Autosave.resume(%{captured_autosave | sequence: sequence}, task)
+
+            autosave =
+              Autosave.resume(
+                %{
+                  captured_autosave
+                  | sequence: sequence,
+                    actor: socket.assigns.current_user || socket.assigns.current_scope
+                },
+                task
+              )
+
             editing = State.open(captured, task, autosave, hierarchy, related_tasks)
             picker = ParentPicker.reconcile(captured_picker, project, task)
 
@@ -193,7 +207,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
               |> assign(:task_parent_picker, picker)
               |> Description.open({:edit, project.id, task.id})
 
-            case Autosave.restart(socket.assigns.editing.autosave, project, task) do
+            case Autosave.restart(
+                   %{
+                     socket.assigns.editing.autosave
+                     | actor: socket.assigns.current_user || socket.assigns.current_scope
+                   },
+                   project,
+                   task
+                 ) do
               {:ok, autosave, task, schedules} ->
                 socket = sync_autosave(socket, autosave, task)
 
@@ -553,7 +574,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
           }
         } = socket
       ) do
-    case Autosave.restart(socket.assigns.editing.autosave, project, task) do
+    case Autosave.restart(
+           %{
+             socket.assigns.editing.autosave
+             | actor: socket.assigns.current_user || socket.assigns.current_scope
+           },
+           project,
+           task
+         ) do
       {:ok, autosave, task, schedules} ->
         socket =
           if task == socket.assigns.editing.selected_task,
@@ -588,6 +616,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
                   autosave: %{autosave | field_states: editing.autosave.field_states}
               }
             end)
+            |> Activity.refresh_selected()
 
           nil ->
             socket
@@ -625,6 +654,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
         socket
         |> update_state(&%{&1 | selected_task: task})
         |> Listing.refresh()
+        |> Activity.refresh_selected()
       else
         socket
       end
@@ -841,16 +871,28 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
          %Project{} <- blocker_project do
       result =
         case action do
-          :add -> Tasks.add_block(blocker_project, blocker, blocked)
-          :remove -> Tasks.remove_block(blocker_project, blocker, blocked)
+          :add ->
+            Tasks.add_block(blocker_project, blocker, blocked,
+              actor: socket.assigns.current_user || socket.assigns.current_scope
+            )
+
+          :remove ->
+            Tasks.remove_block(blocker_project, blocker, blocked,
+              actor: socket.assigns.current_user || socket.assigns.current_scope
+            )
         end
 
       case result do
+        {:error, :authentication_required} ->
+          {:noreply,
+           Phoenix.LiveView.put_flash(socket, :error, "Sign in again to save this relationship.")}
+
         {:ok, _edge} ->
           socket =
             socket
             |> update_state(&%{&1 | related_picker: RelatedTasksPicker.empty()})
             |> reload_related_tasks()
+            |> Activity.refresh_selected()
 
           {:noreply, socket}
 

@@ -75,7 +75,11 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
     refute has_element?(c.view, "#task-hierarchy-node-#{c.selected.id}")
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
 
-    {:ok, _} = Tasks.update_task(c.project, c.unrelated, %{status: :pending})
+    {:ok, _} =
+      Tasks.update_task(c.project, c.unrelated, %{status: :pending},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     assert has_element?(c.view, "#task-hierarchy-node-#{c.unrelated.id}")
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
     assert has_element?(c.view, "#task-hierarchy-expanded-marker-#{c.branch.id}")
@@ -98,7 +102,12 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
   test "live parentage changes recompute eligible ancestry without resetting choices", c do
     c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     filter(c.view, ["pending"])
-    {:ok, _} = Tasks.update_task(c.project, c.matching, %{}, parent: c.unrelated)
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.matching, %{},
+        parent: c.unrelated,
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     refute has_element?(c.view, "#task-hierarchy-node-#{c.branch.id}")
 
@@ -133,14 +142,22 @@ defmodule TaskmanWeb.ProjectLive.HierarchyStatusFilterTest do
     c.view |> element("#task-hierarchy-status-filter-button") |> render_captured_click()
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
     filter(c.view, ["pending"])
-    {:ok, _} = Tasks.update_task(c.project, c.unrelated, %{status: :not_planned})
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.unrelated, %{status: :not_planned},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     assert has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned[checked]")
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-done[checked]")
 
     {:ok, _} =
-      Tasks.update_task(c.project, Tasks.get_task_for_project(c.project, c.unrelated.id), %{
-        status: :pending
-      })
+      Tasks.update_task(
+        c.project,
+        Tasks.get_task_for_project(c.project, c.unrelated.id),
+        %{
+          status: :pending
+        }, actor: Taskman.AccountsFixtures.user_fixture())
 
     refute has_element?(c.view, "#task-hierarchy-status-filter-option-not_planned")
   end

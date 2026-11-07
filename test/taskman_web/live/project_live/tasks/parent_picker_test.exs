@@ -270,7 +270,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.select_draft(project, replacement.id)
 
-    assert {:ok, saved, updated} = ParentPicker.save_edit(state, project, task)
+    assert {:ok, saved, updated} =
+             ParentPicker.save_edit(state, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert updated.parent_task_id == replacement.id
     assert saved.selected_parent == replacement
     assert saved.current_task.parent_task_id == replacement.id
@@ -290,7 +294,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.select_draft(project, rejected_parent.id)
 
     assert {:error, failed, %Ecto.Changeset{}} =
-             ParentPicker.save_edit(state, project, task)
+             ParentPicker.save_edit(state, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     persisted = Tasks.get_task_for_project(project, task.id)
 
@@ -319,7 +325,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
 
     Taskman.Repo.delete!(rejected_parent)
 
-    assert {:error, failed, :not_found} = ParentPicker.save_edit(state, project, task)
+    assert {:error, failed, :not_found} =
+             ParentPicker.save_edit(state, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert failed.error == "That parent Task is no longer available."
     assert failed.selected_parent.id == rejected_parent.id
     refute failed.options_open?
@@ -336,7 +346,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.search(project, "Second")
 
-    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: second_parent)
+    assert {:ok, latest} =
+             Tasks.update_task(project, task, %{},
+               parent: second_parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     reconciled = ParentPicker.reconcile(picker, project, latest)
 
     assert reconciled.current_task == latest
@@ -380,16 +395,25 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.select_draft(project, mine.id)
 
-    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
+    assert {:ok, latest} =
+             Tasks.update_task(project, task, %{},
+               parent: latest_parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
-    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
+    assert {:conflict, conflicted, ^latest} =
+             ParentPicker.save_edit(picker, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert conflicted.current_task == latest
     assert conflicted.selected_parent == mine
     assert conflicted.conflict_parent == latest_parent
 
     assert {:ok, used_latest, ^latest} =
-             ParentPicker.resolve_conflict(conflicted, project, :use_latest)
+             ParentPicker.resolve_conflict(conflicted, project, :use_latest,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert used_latest.selected_parent == latest_parent
     assert used_latest.conflict_parent == nil
@@ -408,11 +432,21 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.select_draft(project, mine.id)
 
-    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
-    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
+    assert {:ok, latest} =
+             Tasks.update_task(project, task, %{},
+               parent: latest_parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:conflict, conflicted, ^latest} =
+             ParentPicker.save_edit(picker, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, resolved, saved} =
-             ParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+             ParentPicker.resolve_conflict(conflicted, project, :keep_mine,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert saved.parent_task_id == mine.id
     assert resolved.current_task == saved
@@ -435,13 +469,27 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentPickerTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.select_draft(project, mine.id)
 
-    assert {:ok, latest} = Tasks.update_task(project, task, %{}, parent: latest_parent)
-    assert {:conflict, conflicted, ^latest} = ParentPicker.save_edit(picker, project, task)
+    assert {:ok, latest} =
+             Tasks.update_task(project, task, %{},
+               parent: latest_parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
-    assert {:ok, raced} = Tasks.update_task(project, latest, %{}, parent: later_parent)
+    assert {:conflict, conflicted, ^latest} =
+             ParentPicker.save_edit(picker, project, task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, raced} =
+             Tasks.update_task(project, latest, %{},
+               parent: later_parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:conflict, still_conflicted, ^raced} =
-             ParentPicker.resolve_conflict(conflicted, project, :keep_mine)
+             ParentPicker.resolve_conflict(conflicted, project, :keep_mine,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert still_conflicted.current_task == raced
     assert still_conflicted.selected_parent == mine

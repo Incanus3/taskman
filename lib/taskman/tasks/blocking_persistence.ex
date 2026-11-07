@@ -10,6 +10,20 @@ defmodule Taskman.Tasks.BlockingPersistence do
   alias Taskman.Tasks.Task
   alias Taskman.Projects.Project
 
+  @type summary :: %{
+          id: pos_integer(),
+          project_id: pos_integer(),
+          project_name: String.t(),
+          title: String.t(),
+          status: atom(),
+          priority: atom(),
+          location: %{
+            kind: String.t(),
+            list_id: pos_integer() | nil,
+            path: [String.t()]
+          }
+        }
+
   @spec outgoing(pos_integer()) :: [BlockingLink.t()]
   def outgoing(task_id) do
     BlockingLink
@@ -70,6 +84,7 @@ defmodule Taskman.Tasks.BlockingPersistence do
     reachable?
   end
 
+  @spec summaries([pos_integer()]) :: %{optional(pos_integer()) => summary()}
   def summaries(task_ids) do
     task_ids = Enum.uniq(task_ids)
 

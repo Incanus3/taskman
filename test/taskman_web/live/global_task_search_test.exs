@@ -306,7 +306,12 @@ defmodule TaskmanWeb.GlobalTaskSearchTest do
     {:ok, view, _html} = live(conn, ~p"/account/settings")
 
     search(view, "Moving jump")
-    assert {:ok, _} = Tasks.move_task(project, task, destination)
+
+    assert {:ok, _} =
+             Tasks.move_task(project, task, destination,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     view |> element("#global-task-search-option-#{task.id}") |> render_captured_click()
     assert_redirect(view, ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}")
   end

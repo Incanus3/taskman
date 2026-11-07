@@ -274,7 +274,12 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
     socket = Workspace.assign_location(socket, other_project, nil, false, false, false, [])
     assert_receive :location_list_query
     assert_receive :availability_query
-    {:ok, _} = Taskman.Tasks.update_task(project, task, %{status: :not_planned})
+
+    {:ok, _} =
+      Taskman.Tasks.update_task(project, task, %{status: :not_planned},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     socket = Workspace.assign_location(socket, project, parent, false, false, false, [])
     assert_receive :location_list_query
     assert_receive :availability_query

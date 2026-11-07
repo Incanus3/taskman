@@ -40,7 +40,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionResizeBrowserTest do
 
       title = "Updated #{mode} title"
       current = Tasks.get_task_for_project(c.project, c.task.id)
-      {:ok, _} = Tasks.update_task(c.project, current, %{title: title})
+
+      {:ok, _} =
+        Tasks.update_task(c.project, current, %{title: title},
+          actor: Taskman.AccountsFixtures.user_fixture()
+        )
+
       Browser.find(c.session, Query.css("#task-title[value='#{title}']"))
       assert metrics(c.session, selector)["height"] == resized
 

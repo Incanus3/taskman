@@ -114,7 +114,12 @@ defmodule Taskman.Lists.NavigationTest do
 
     assert icons.()[source.id] == "hero-queue-list"
     assert icons.()[destination.id] == "hero-folder"
-    assert {:ok, _moved} = Tasks.move_task(project, task, destination)
+
+    assert {:ok, _moved} =
+             Tasks.move_task(project, task, destination,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert icons.()[source.id] == "hero-folder"
     assert icons.()[destination.id] == "hero-queue-list"
   end

@@ -69,6 +69,24 @@ for traversal, atomic confirmation and query-efficiency constraints.
 - The Task detail hierarchy displays only parent-child. Its Related Tasks table displays Blocks /
   Blocked by. Cross-Project entries identify their other Project.
 
+## Relationship Activity
+
+Actual parent and directed blocking changes record one canonical event, attributed to the
+account performing the mutation. The mutation and its event/Task associations commit together.
+Parent changes appear on the child, original parent and final parent, omitting nulls; the child
+shows a parent transition while parents show the child added or removed. Blocking changes appear
+on both endpoints, including across Projects, as Blocks or Blocked by according to direction.
+Creating a Task with an initial parent records creation only on the new Task.
+
+Consolidation uses the child ID plus parent field, or the ordered blocker/blocked pair, independently
+of which interface initiated the change. Same-account edits within a sliding 60 seconds merge:
+A → B → C shows the event only on the child, A and C; B's entry disappears. Returning to A
+removes the event everywhere. Blocking add/remove cancellation likewise removes both appearances.
+Historical endpoint titles and Project labels are retained; later linked Task name/status changes
+do not create new entries or rewrite those snapshots. A List move records history on the moved
+Task only. List reparenting and Project/List renames do not create Task ownership events.
+See the [Activity contract](mvp-spec.md#task-comments-and-activity) for consolidation and attribution.
+
 ## Deletion rules
 
 Deleting a Task always removes its incident Blocks / Blocked by records. Parent-child

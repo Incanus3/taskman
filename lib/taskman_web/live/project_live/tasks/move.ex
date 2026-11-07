@@ -179,30 +179,35 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
     end
   end
 
-  @spec submit(t(), Project.t()) ::
+  @spec submit(t(), Project.t(), keyword()) ::
           {:ok, t(), Task.t()}
           | {:error, t(),
-             :task_not_found | :destination_not_found | :unchanged_location | :move_failed}
+             :task_not_found
+             | :destination_not_found
+             | :unchanged_location
+             | :move_failed
+             | :authentication_required}
   def submit(
         %__MODULE__{active_task: %{task_id: task_id}} = state,
-        %Project{} = project
+        %Project{} = project,
+        opts \\ []
       ) do
     case Tasks.get_task_for_project(project, task_id) do
       nil ->
         {:error, put_error(state, Messages.task_unavailable()), :task_not_found}
 
       %Task{} = task ->
-        submit_persisted_task(state, project, task)
+        submit_persisted_task(state, project, task, opts)
     end
   end
 
-  defp submit_persisted_task(state, project, task) do
+  defp submit_persisted_task(state, project, task, opts) do
     case resolve_destination(project, state.destination) do
       {:error, :destination_not_found} ->
         {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
 
       {:ok, destination} ->
-        case Tasks.move_task(project, task, destination) do
+        case Tasks.move_task(project, task, destination, opts) do
           {:ok, moved_task} ->
             {:ok, clear(state), moved_task}
 
@@ -218,6 +223,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
 
           {:error, :not_found} ->
             {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
+
+          {:error, :authentication_required} ->
+            {:error, put_error(state, "Sign in again to move this Task."),
+             :authentication_required}
 
           {:error, _reason} ->
             {:error, put_error(state, "Couldn’t move this Task. Please try again."), :move_failed}

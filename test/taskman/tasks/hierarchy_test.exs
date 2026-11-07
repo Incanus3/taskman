@@ -42,7 +42,9 @@ defmodule Taskman.Tasks.HierarchyTest do
     exact = task_fixture(project, %{title: "A title"})
 
     {:ok, title_match} =
-      Tasks.update_task(project, title_match, %{title: "Task #{exact.id} follow-up"})
+      Tasks.update_task(project, title_match, %{title: "Task #{exact.id} follow-up"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     assert [%TaskWithLocation{task: ^exact}, %TaskWithLocation{task: ^title_match}] =
              Tasks.search_parent_candidates(project, nil, Integer.to_string(exact.id))

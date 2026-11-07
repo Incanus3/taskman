@@ -24,7 +24,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
                now: now
              )
 
-    {:ok, conn: put_api_key(conn, plaintext)}
+    {:ok, conn: put_api_key(conn, plaintext), user: user}
   end
 
   alias Taskman.Repo
@@ -32,6 +32,46 @@ defmodule TaskmanWeb.API.TaskControllerTest do
   alias Taskman.Tasks.Task
   alias Taskman.Tasks
   alias TaskmanWeb.API.FallbackController
+
+  test "create, update and move attribute history to the API key owner", %{conn: conn, user: user} do
+    project = project_fixture(%{})
+    list = list_fixture(project)
+    forged_actor = user_fixture()
+
+    created =
+      post(conn, "/api/v1/projects/#{project.id}/tasks", %{
+        "task" => %{
+          "title" => "Created",
+          "actor_user_id" => forged_actor.id,
+          "first_changed_at" => "2000-01-01T00:00:00Z"
+        }
+      })
+
+    assert %{"data" => %{"id" => task_id}} = json_response(created, 201)
+
+    updated =
+      patch(conn, "/api/v1/projects/#{project.id}/tasks/#{task_id}", %{
+        "task" => %{"title" => "Updated"}
+      })
+
+    assert json_response(updated, 200)["data"]["title"] == "Updated"
+
+    moved =
+      post(conn, "/api/v1/projects/#{project.id}/tasks/#{task_id}/move", %{
+        "destination" => %{"list_id" => list.id}
+      })
+
+    assert json_response(moved, 200)["data"]["list_id"] == list.id
+    task = Tasks.get_task(task_id)
+    assert {:ok, entries} = Tasks.list_activity(project, task)
+    assert length(entries) == 3
+    assert Enum.all?(entries, &(&1.change.actor.user_id == user.id))
+
+    assert Enum.all?(
+             entries,
+             &(DateTime.compare(&1.change.first_changed_at, ~U[2000-01-01 00:00:00Z]) == :gt)
+           )
+  end
 
   test "GET tasks lists direct Project Tasks with a project location", %{conn: conn} do
     project = project_fixture(%{})
@@ -558,10 +598,17 @@ defmodule TaskmanWeb.API.TaskControllerTest do
       project = project_fixture(%{})
 
       assert {:ok, blocker} =
-               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+               Tasks.create_task(project, nil, %{title: "Closed blocker", status: unquote(state)},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
 
       blocked = task_fixture(project)
-      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, blocker, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
       path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
 
       assert %{
@@ -596,7 +643,11 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     blocked = task_fixture(project, %{title: "Publish"})
     blocker = task_fixture(blocker_project, blocker_list, %{title: "Approve", priority: :high})
     child = task_fixture(project, %{title: "Finish site"}, parent: blocked)
-    assert {:ok, _} = Tasks.add_block(blocker_project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(blocker_project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
 
@@ -678,18 +729,27 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     [equal, diminished, empty] = targets
 
     for target <- targets, blocker <- [first, second] do
-      assert {:ok, _} = Tasks.add_block(project, blocker, target)
+      assert {:ok, _} =
+               Tasks.add_block(project, blocker, target,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
     end
 
     for {target, before} <- [
           {equal, fn -> :ok end},
           {diminished,
            fn ->
-             assert {:ok, _} = Tasks.update_task(project, first, %{status: :done})
+             assert {:ok, _} =
+                      Tasks.update_task(project, first, %{status: :done},
+                        actor: Taskman.AccountsFixtures.user_fixture()
+                      )
            end},
           {empty,
            fn ->
-             assert {:ok, _} = Tasks.remove_block(project, second, empty)
+             assert {:ok, _} =
+                      Tasks.remove_block(project, second, empty,
+                        actor: Taskman.AccountsFixtures.user_fixture()
+                      )
            end}
         ] do
       before.()
@@ -713,7 +773,12 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     first = task_fixture(project, %{title: "First"})
     blocked = task_fixture(project, %{title: "Target"})
     descendant = task_fixture(project, %{title: "New"}, parent: blocked)
-    assert {:ok, _} = Tasks.add_block(project, first, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, first, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
 
     assert %{"error" => %{"code" => "unresolved_blockers", "blockers" => blockers}} =
@@ -741,8 +806,16 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     first = task_fixture(project, %{title: "First"})
     second = task_fixture(project, %{title: "Second"})
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, first, blocked)
-    assert {:ok, _} = Tasks.add_block(project, second, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, first, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, _} =
+             Tasks.add_block(project, second, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert %{"data" => %{"status" => "done", "title" => "After"}} =
              conn

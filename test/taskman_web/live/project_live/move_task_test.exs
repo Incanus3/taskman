@@ -133,16 +133,32 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-row-button-#{nested.id}") |> render_captured_click()
     view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
     view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
-    assert {:ok, nested} = Tasks.move_task(project, nested, actual)
+
+    assert {:ok, nested} =
+             Tasks.move_task(project, nested, actual,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     notify_nested_move(view, nested)
     assert_projected_move_rows(view, root, nested, sibling)
     assert has_element?(view, "#tasks-#{nested.id} #move-task-#{nested.id}")
     refute_patched(view)
-    assert {:ok, nested} = Tasks.update_task(project, nested, %{status: :will_not_do})
+
+    assert {:ok, nested} =
+             Tasks.update_task(project, nested, %{status: :will_not_do},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     notify_nested_move(view, nested)
     assert has_element?(view, "#tasks-#{nested.id} #move-task-#{nested.id}")
     refute_patched(view)
-    assert {:ok, nested} = Tasks.update_task(project, nested, %{}, parent: nil)
+
+    assert {:ok, nested} =
+             Tasks.update_task(project, nested, %{},
+               parent: nil,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     notify_nested_move(view, nested)
     assert_patch(view, "/projects/#{project.id}/lists/#{actual.id}/tasks/#{nested.id}")
     assert has_element?(view, "#task-modal #move-task-#{nested.id}")
@@ -273,7 +289,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
-    assert {:ok, _moved} = Tasks.move_task(project, task, planning)
+
+    assert {:ok, _moved} =
+             Tasks.move_task(project, task, planning,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
@@ -287,7 +307,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
            )
 
     persisted_task = Tasks.get_task_for_project(project, task.id)
-    assert {:ok, _moved} = Tasks.move_task(project, persisted_task, inbox)
+
+    assert {:ok, _moved} =
+             Tasks.move_task(project, persisted_task, inbox,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
@@ -699,7 +723,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert {:ok, _moved} =
-             Task.async(fn -> Tasks.move_task(project, task, planning) end)
+             Task.async(fn ->
+               Tasks.move_task(project, task, planning,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
              |> Task.await()
 
     _ = :sys.get_state(view.pid)
@@ -732,7 +760,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
-    assert {:ok, _moved} = Tasks.move_task(project, task, planning)
+
+    assert {:ok, _moved} =
+             Tasks.move_task(project, task, planning,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     view
     |> element("#move-task-search-#{task.id}")
@@ -761,7 +793,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert {:ok, _moved} =
-             Task.async(fn -> Tasks.move_task(project, task, planning) end)
+             Task.async(fn ->
+               Tasks.move_task(project, task, planning,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
              |> Task.await()
 
     _ = :sys.get_state(view.pid)

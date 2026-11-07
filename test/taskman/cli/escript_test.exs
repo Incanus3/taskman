@@ -44,7 +44,8 @@ defmodule Taskman.CLI.EscriptTest do
     %{cwd: cwd, env: env, root: root, xdg: xdg}
   end
 
-  test "built executable manages named hosts and effective context without a backend", fixture do
+  @tag timeout: 120_000
+  test "built executable manages hosts offline and reads activity through the API", fixture do
     {stdout, status} =
       System.cmd(@binary, ["config", "hosts", "list", "--json"],
         cd: fixture.cwd,
@@ -122,6 +123,34 @@ defmodule Taskman.CLI.EscriptTest do
 
     {error, 2} = command(fixture, ~w(config hosts show personal --json), stderr_to_stdout: true)
     assert %{"error" => %{"code" => "invalid_invocation"}} = Jason.decode!(error)
+
+    server =
+      start_supervised!(
+        {Bandit, plug: {__MODULE__, self()}, port: 0, ip: {127, 0, 0, 1}, startup_log: false}
+      )
+
+    assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
+
+    Fixtures.write_hosts!(fixture.xdg, %{
+      format: :v2,
+      default_host: "personal",
+      hosts: %{
+        "personal" => %{
+          api_url: "http://127.0.0.1:#{port}",
+          api_key: Fixtures.resolved_context().api_key
+        }
+      }
+    })
+
+    assert data(fixture, ~w(tasks activity list --project 7 42)) == [Fixtures.activity_entry()]
+    assert_receive {:activity_request, "", [authorization]}
+    assert authorization == "Bearer " <> Fixtures.resolved_context().api_key
+
+    assert {mixed, 0} =
+             command(fixture, ~w(tasks activity list --project 7 42 --include-comments))
+
+    assert mixed =~ ~r/Priority changed from low to high.*Research agent.*Review notes/s
+    assert_receive {:activity_request, "include_comments=true", [_authorization]}
   end
 
   test "built executable inspects and unbinds a dangling clone reference offline", fixture do
@@ -173,6 +202,30 @@ defmodule Taskman.CLI.EscriptTest do
                "personal" => %{"api_url" => "https://new.example.invalid"}
              }
            }
+  end
+
+  def init(test_pid), do: test_pid
+
+  def call(conn, test_pid) do
+    if conn.method == "GET" and conn.request_path == "/api/v1/projects/7/tasks/42/activity" do
+      send(
+        test_pid,
+        {:activity_request, conn.query_string, Plug.Conn.get_req_header(conn, "authorization")}
+      )
+
+      entries =
+        [Fixtures.activity_entry()] ++
+          if(conn.query_string == "include_comments=true",
+            do: [Fixtures.activity_comment()],
+            else: []
+          )
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(%{data: entries}))
+    else
+      Plug.Conn.send_resp(conn, 404, "unexpected request")
+    end
   end
 
   defp command(fixture, args, options \\ []),
