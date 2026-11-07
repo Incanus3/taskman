@@ -186,6 +186,16 @@ reserved layout space rather than floating it over Activity/Sessions or editor c
 The header remains reachable while content scrolls, including narrow-panel and short-height
 states. Discussion tabs stay inside their own region below the header.
 
+The normal existing-Task dialog is at most 1200 px tall, including its header. Preserve the
+viewport limit and outer margins: 16 px per side below 640 px viewport width and 24 px per side
+at larger widths. The cap matches the form with the default description-editor height and no
+related Tasks; additional comments scroll within their panel instead of enlarging the dialog
+beyond that limit. This is a maximum, not a fixed height for shorter content. Creation and
+recovery keep their existing height behavior. The
+[dialog browser regression](../../test/taskman_web/live/project_live/task_detail_browser_test.exs)
+checks hierarchy navigation between short and long discussions at 1465 × 1700, internal comment
+scrolling, and control reachability and viewport margins at 1465 × 900 and 320 × 720.
+
 Move the control, not its cancellation semantics: use the existing deferred modal dismissal
 path and `request_task_departure`. Keep Go back, Submit comment and close, and Close and discard
 draft; a failed submission retains the draft and error feedback. Preserve validation, autosave

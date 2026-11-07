@@ -305,6 +305,16 @@ string `"true"`; Taskman's wrapper supplies an explicit string and normalizes it
 the shipped public `mounted` and `updated` hook callbacks. The adapter preserves the remaining
 callbacks and uses no private Leaf methods or dependency patch.
 
+Paragraph menus may extend below the text area so every action remains reachable. The body
+wrapper permits overlay overflow; the hybrid and source scroll surfaces retain rounded content
+clipping. When the editor is narrower than the menu's normal width plus horizontal offset,
+the menu aligns with the editor's left edge to avoid adding a horizontal scrollbar. This keeps
+Leaf's existing menu handlers and desktop placement without a separate popup implementation.
+The description boundary stops the paragraph handle's click from reaching LiveView's window
+click-away handler: Leaf stops its mousedown, and LiveView navigation intercepts the preceding
+Task-link click before clearing its outside-modal origin. Leaf still opens the menu on mouseup;
+ordinary backdrop clicks retain their existing departure behavior.
+
 ## Manual resizing uses Leaf's supported fixed-height mode
 
 The editor starts at `212px`, approximately ten plain-text lines at the current hybrid typography
@@ -430,14 +440,19 @@ Browser acceptance must cover:
 ### Chromium acceptance and limits
 
 The completed integration passed `mix precommit` (1,529 tests, 3 existing executable skips and
-81 separate browser exclusions). The sizing regression gate passed 20 browser cases across the
-editor, resize, capture and replacement suites; the preceding hook refactor passed 34 cases
-covering departure, editor/capture, comments and table behavior. Scoped independent reviews
-approved the hook refactor and manual-resize correction. The
+87 separate browser exclusions). The editor regression gate passed 26 browser cases across the
+editor, paragraph-menu, resize, capture and replacement suites; the preceding hook refactor passed
+34 cases covering departure, editor/capture, comments and table behavior. Scoped independent reviews
+approved the hook refactor, manual-resize correction and paragraph-menu corrections. The
 [native resize test](../../test/taskman_web/live/project_live/description_resize_browser_test.exs)
 uses actual WebDriver pointer drag and double-click actions in both hybrid and source views,
 checks roughly ten initial lines, and retains the chosen size through typing and a server patch.
-Both native grips were visible in inspected synthetic screenshots. This is Chromium evidence;
+Both native grips were visible in inspected synthetic screenshots. The
+[paragraph menu tests](../../test/taskman_web/live/project_live/description_block_menu_browser_test.exs)
+enter through Task-list links, open the six-dot control with real pointer actions, hit-test Duplicate
+and Delete beyond the short editor's bottom edge, verify exact saved Markdown, and reject horizontal
+panel overflow at both measured viewport widths. Existing and new Task menus remain open after
+pointer release, while genuine backdrop clicks still dismiss their modals. This is Chromium evidence;
 other engines and real network reconnect behavior remain unverified.
 
 Application checks on 2026-11-06 passed in headless Chromium and ChromeDriver `156.0.8078.79`

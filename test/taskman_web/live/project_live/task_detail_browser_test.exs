@@ -12,7 +12,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
   setup do
     email = "detail-browser-#{Ecto.UUID.generate()}@example.com"
-    {:ok, _} = Accounts.bootstrap_admin(email, "browser-test-password")
+    {:ok, user} = Accounts.bootstrap_admin(email, "browser-test-password")
     project = project_fixture(%{})
     list = list_fixture(project)
     root = task_fixture(project, list, %{title: "Connected work breakdown"})
@@ -78,6 +78,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
 
     %{
       session: session,
+      user: user,
       base: base,
       project: project,
       list: list,
@@ -623,6 +624,62 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     end
   end
 
+  # Long discussions must scroll inside the capped dialog instead of moving its header on navigation.
+  test "task dialog bounds long comments while hierarchy navigation preserves reachable controls",
+       c do
+    parent = task_fixture(c.project, c.list, %{title: "Discussion navigation"})
+    selected = task_fixture(c.project, %{title: "Short discussion"}, parent: parent)
+    other = task_fixture(c.project, %{title: "Long discussion"}, parent: parent)
+
+    {:ok, _} =
+      Tasks.create_comment(c.project, other, c.user, %{
+        text: String.duplicate("A longer discussion line.\n", 160)
+      })
+
+    resize(c.session, 1465, 1700)
+    visit(c, selected)
+    short = dialog_geometry(c.session)
+    assert short["viewport"] == [1465, 1700]
+
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{other.id}"))
+    Browser.find(c.session, Query.css("#task-hierarchy-link-#{other.id}[aria-current='true']"))
+    long = dialog_geometry(c.session)
+    assert long["height"] <= 1200, "dialog geometry: #{inspect(long)}, short: #{inspect(short)}"
+    assert short["height"] <= 1200
+    assert long["height"] <= short["height"] + 4
+    assert long["threadRange"] > 0
+    assert long["threadMoved"]
+    assert long["closeHit"]
+    assert long["composerHit"]
+    assert long["fieldsReachable"]
+
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{selected.id}"))
+    Browser.find(c.session, Query.css("#task-hierarchy-link-#{selected.id}[aria-current='true']"))
+    assert_in_delta dialog_geometry(c.session)["height"], short["height"], 1
+
+    Browser.click(c.session, Query.css("#task-hierarchy-link-#{other.id}"))
+    Browser.find(c.session, Query.css("#task-hierarchy-link-#{other.id}[aria-current='true']"))
+
+    for {width, height, gap} <- [{1465, 900, 48}, {320, 720, 32}] do
+      resize(c.session, width, height)
+
+      if width < 1024 do
+        Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
+        wait(c.session, &(!&1["editorInert"]))
+      end
+
+      measured = dialog_geometry(c.session)
+      assert measured["viewport"] == [width, height]
+      assert measured["height"] <= height - gap + 1
+      assert measured["top"] >= gap / 2 - 1
+      assert measured["bottom"] <= height - gap / 2 + 1
+      assert measured["pageWidth"] <= width + 1
+      assert measured["closeHit"]
+      assert measured["fieldsReachable"]
+      assert measured["composerHit"]
+    end
+  end
+
   # Catches squeezed text, page overflow, obscured controls and incorrect responsive composition.
   test "hierarchy and discussion remain reachable across viewport boundaries", c do
     visit(c, c.selected)
@@ -1049,6 +1106,32 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     assert state(c.session)["editorInert"]
     Browser.click(c.session, Query.css("#task-hierarchy-toggle"))
     wait(c.session, &(!&1["expanded"] && !&1["editorInert"]))
+  end
+
+  defp dialog_geometry(session) do
+    js(session, ~S"""
+    document.getAnimations().forEach(a => a.finish());
+    const q = s => document.querySelector(s);
+    const hit = e => {
+      const r = e.getBoundingClientRect();
+      return e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    };
+    const dialog = q('#task-modal-content').getBoundingClientRect();
+    const thread = q('#task-comment-thread');
+    thread.scrollTop = 0;
+    thread.scrollTop = 100;
+    const fieldsReachable = ['#task-title', '#task-due-at'].every(selector => {
+      const e = q(selector);
+      e.scrollIntoView({block: 'nearest'});
+      return hit(e);
+    });
+    const composer = q('#task-comment-text');
+    composer.scrollIntoView({block: 'nearest'});
+    return {viewport: [innerWidth, innerHeight], height: dialog.height,
+      top: dialog.top, bottom: dialog.bottom, pageWidth: document.documentElement.scrollWidth,
+      threadRange: thread.scrollHeight - thread.clientHeight, threadMoved: thread.scrollTop > 0,
+      closeHit: hit(q('#task-modal-close')), composerHit: hit(composer), fieldsReachable};
+    """)
   end
 
   defp resize(session, width, height) do

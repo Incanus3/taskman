@@ -24,6 +24,12 @@ export default {
     this.isolate = event => {
       if (event.target.closest('[phx-hook="Leaf"]')) event.stopPropagation()
     }
+    // Leaf stops handle mousedown, leaving LiveView's outside click origin stale.
+    // Its mouseup already opens the menu; keep the later click inside the editor.
+    this.isolateBlockHandleClick = event => {
+      const handle = event.target.closest("[data-drag-handle]")
+      if (handle && this.el.contains(handle)) event.stopPropagation()
+    }
     this.preventImageFile = event => {
       const transfer = event.clipboardData || event.dataTransfer
       const image = Array.from(transfer?.items || []).some(item => item.kind === "file" && item.type.startsWith("image/")) ||
@@ -35,6 +41,7 @@ export default {
     }
     this.el.addEventListener("input", this.isolate)
     this.el.addEventListener("change", this.isolate)
+    this.el.addEventListener("click", this.isolateBlockHandleClick)
     this.el.addEventListener("paste", this.preventImageFile, true)
     this.el.addEventListener("drop", this.preventImageFile, true)
     this.labelSurfaces()
@@ -54,6 +61,7 @@ export default {
   destroyed() {
     this.el.removeEventListener("input", this.isolate)
     this.el.removeEventListener("change", this.isolate)
+    this.el.removeEventListener("click", this.isolateBlockHandleClick)
     this.el.removeEventListener("paste", this.preventImageFile, true)
     this.el.removeEventListener("drop", this.preventImageFile, true)
   },

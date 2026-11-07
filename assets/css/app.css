@@ -152,6 +152,10 @@
   transition: grid-template-columns 160ms ease;
 }
 
+#task-modal-content:has(> #task-dialog-header) {
+  max-height: min(1200px, calc(100dvh - 2rem));
+}
+
 /* The fixed header and shrinking body share the modal's viewport height budget. */
 #task-modal-content:has(> #task-dialog-header) > #task-detail-layout {
   flex: 1 1 auto;
@@ -512,6 +516,10 @@
 }
 
 @media (min-width: 40rem) {
+  #task-modal-content:has(> #task-dialog-header) {
+    max-height: min(1200px, calc(100dvh - 3rem));
+  }
+
   #task-detail-layout {
     max-height: min(1000px, calc(100dvh - 3rem));
   }
@@ -868,8 +876,20 @@
   border: 0;
   border-radius: 0 0 calc(0.75rem - 1px) calc(0.75rem - 1px) !important;
   background-color: var(--color-slate-950);
+  overflow: visible;
 }
-/* Toolbar menus must escape the panel; the editor body owns content clipping. */
+/* Menus escape the body; each scrollable surface owns its rounded content clipping. */
+.task-description-leaf :is([data-editor-visual], textarea) {
+  border-radius: 0 0 calc(0.75rem - 1px) calc(0.75rem - 1px);
+}
+/* Keep the block menu inside narrow editors without adding a horizontal scrollbar. */
+@container leaf-editor (width < 200px) {
+  .task-description-leaf .leaf-block-menu {
+    left: 0 !important;
+    min-width: min(160px, 100%) !important;
+    max-width: 100%;
+  }
+}
 .task-description-leaf [data-mobile-toolbar] {
   flex-wrap: wrap;
 }
