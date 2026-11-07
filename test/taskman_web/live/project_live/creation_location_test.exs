@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -20,15 +21,27 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     other = list_fixture(project, nil, %{name: "Other"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-    assert has_element?(view, "#task-form #task-location")
-    assert has_element?(view, "#task-location option[value='project']", "Project #{project.name}")
-    assert has_element?(view, "#task-location option[value='list:#{current.id}'][selected]")
+    assert has_captured_element?(view, "#task-form #task-location")
+
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='project']",
+             "Project #{project.name}"
+           )
+
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='list:#{current.id}'][selected]"
+           )
 
     view
     |> form("#task-form", location: "list:#{other.id}", task: %{title: "Elsewhere"})
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(view, "#task-location option[value='list:#{other.id}'][selected]")
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='list:#{other.id}'][selected]"
+           )
   end
 
   test "Project-root and Add-subtask defaults keep location and parent independent", %{conn: conn} do
@@ -38,7 +51,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     parent = task_fixture(project, task_list, %{title: "Parent"})
 
     {:ok, root_view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")
-    assert has_element?(root_view, "#task-location option[value='project'][selected]")
+    assert has_captured_element?(root_view, "#task-location option[value='project'][selected]")
 
     {:ok, view, _} =
       live(
@@ -46,20 +59,31 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
         ~p"/projects/#{project.id}/lists/#{task_list.id}/tasks/new?parent_task_id=#{parent.id}"
       )
 
-    assert has_element?(view, "#task-location option[value='list:#{task_list.id}'][selected]")
-    assert has_element?(view, "#task-parent-trigger", "Parent")
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='list:#{task_list.id}'][selected]"
+           )
+
+    assert has_captured_element?(view, "#task-parent-trigger", "Parent")
 
     view
     |> form("#task-form", location: "list:#{other.id}", task: %{title: "Child"})
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(view, "#task-location option[value='list:#{other.id}'][selected]")
-    assert has_element?(view, "#task-parent-trigger", "Parent")
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='list:#{other.id}'][selected]"
+           )
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-clear") |> render_click()
+    assert has_captured_element?(view, "#task-parent-trigger", "Parent")
 
-    assert has_element?(view, "#task-location option[value='list:#{other.id}'][selected]")
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-clear") |> render_captured_click()
+
+    assert has_captured_element?(
+             view,
+             "#task-location option[value='list:#{other.id}'][selected]"
+           )
   end
 
   test "List loss keeps creation editable and requires another location", %{conn: conn} do
@@ -68,48 +92,51 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     destination = list_fixture(project, nil, %{name: "Destination"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/new")
 
+    change_description(view, "Still editable")
+
     view
     |> form("#task-form",
       location: "list:#{lost.id}",
       task: %{
-        title: "Keep this",
-        description: "Still editable"
+        title: "Keep this"
       }
     )
-    |> render_change()
+    |> render_captured_change(%{"task" => %{"description" => "Still editable"}})
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    assert has_element?(view, "#task-form #task-title[value='Keep this']")
-    assert has_element?(view, "#task-description", "Still editable")
+    assert has_captured_element?(view, "#task-form #task-title[value='Keep this']")
+    assert view_assigns(view).creation.form[:description].value == "Still editable"
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-location option[value='list:#{lost.id}'][disabled]",
              "List Lost"
            )
 
-    assert has_element?(view, "#task-location[aria-invalid='true']")
-    assert has_element?(view, "#task-location-error", "This List is no longer available")
-    assert has_element?(view, "#create-task[disabled]")
-    refute has_element?(view, "#task-recovery")
+    assert has_captured_element?(view, "#task-location[aria-invalid='true']")
+    assert has_captured_element?(view, "#task-location-error", "This List is no longer available")
+    assert has_captured_element?(view, "#create-task[disabled]")
+    refute has_captured_element?(view, "#task-recovery")
+
+    change_description(view, "Edited after loss")
+    assert view_assigns(view).creation.form[:description].value == "Edited after loss"
 
     view
     |> form("#task-form",
       location: "list:#{destination.id}",
       task: %{
-        title: "Keep this",
-        description: "Edited after loss"
+        title: "Keep this"
       }
     )
-    |> render_change()
+    |> render_captured_change(%{"task" => %{"description" => "Edited after loss"}})
 
-    refute has_element?(view, "#task-location-error")
-    assert has_element?(view, "#create-task:not([disabled])")
+    refute has_captured_element?(view, "#task-location-error")
+    assert has_captured_element?(view, "#create-task:not([disabled])")
   end
 
   test "repeated List loss preserves an ordinary draft with its selected parent", %{conn: conn} do
@@ -124,21 +151,23 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
         ~p"/projects/#{project.id}/lists/#{lost.id}/tasks/new?parent_task_id=#{parent.id}"
       )
 
+    change_description(view, "Still selected")
+
     view
-    |> form("#task-form", task: %{title: "Keep this", description: "Still selected"})
-    |> render_change()
+    |> form("#task-form", task: %{title: "Keep this"})
+    |> render_captured_change(%{"task" => %{"description" => "Still selected"}})
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    assert has_element?(view, "#task-form #task-title[value='Keep this']")
-    assert has_element?(view, "#task-description", "Still selected")
-    assert has_element?(view, "#task-parent-trigger", "Parent")
+    assert has_captured_element?(view, "#task-form #task-title[value='Keep this']")
+    assert view_assigns(view).creation.form[:description].value == "Still selected"
+    assert has_captured_element?(view, "#task-parent-trigger", "Parent")
     assert view_assigns(view).task_parent_picker.selected_parent.id == parent.id
-    refute has_element?(view, "#task-recovery")
+    refute has_captured_element?(view, "#task-recovery")
   end
 
   test "invalid submitted locations retain the ordinary form without creating a Task", %{
@@ -149,14 +178,14 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     foreign = list_fixture(project_fixture(%{}))
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-    render_hook(view, "save_task", %{
+    render_captured_hook(view, "save_task", %{
       "location" => "list:#{foreign.id}",
       "task" => %{"title" => "Keep this"}
     })
 
-    assert has_element?(view, "#task-form #task-title[value='Keep this']")
-    assert has_element?(view, "#task-location[aria-invalid='true']")
-    assert has_element?(view, "#task-location-error", "This List is no longer available")
+    assert has_captured_element?(view, "#task-form #task-title[value='Keep this']")
+    assert has_captured_element?(view, "#task-location[aria-invalid='true']")
+    assert has_captured_element?(view, "#task-location-error", "This List is no longer available")
     assert Taskman.Tasks.list_tasks_for_location(project, current) == {:ok, []}
   end
 
@@ -167,13 +196,13 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     for location <- ["list:0", "list:01", "list:not-an-id", "unknown"] do
       {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-      render_hook(view, "save_task", %{
+      render_captured_hook(view, "save_task", %{
         "location" => location,
         "task" => %{"title" => "Keep this"}
       })
 
-      assert has_element?(view, "#task-form #task-title[value='Keep this']")
-      assert has_element?(view, "#task-location[aria-invalid='true']")
+      assert has_captured_element?(view, "#task-form #task-title[value='Keep this']")
+      assert has_captured_element?(view, "#task-location[aria-invalid='true']")
       assert Tasks.list_tasks_for_project(project) == []
     end
   end
@@ -188,16 +217,16 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     view
     |> form("#task-form", location: "list:#{destination.id}", task: %{title: "Keep this"})
-    |> render_change()
+    |> render_captured_change()
 
     Taskman.Repo.delete!(destination)
 
     view
     |> form("#task-form", location: "list:#{destination.id}", task: %{title: "Keep this"})
-    |> render_submit()
+    |> render_captured_submit()
 
-    assert has_element?(view, "#task-form #task-title[value='Keep this']")
-    assert has_element?(view, "#task-location[aria-invalid='true']")
+    assert has_captured_element?(view, "#task-form #task-title[value='Keep this']")
+    assert has_captured_element?(view, "#task-location[aria-invalid='true']")
     assert Tasks.list_tasks_for_project(project) == []
   end
 
@@ -211,7 +240,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     {:ok, direct_view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-    render_hook(direct_view, "save_task", %{
+    render_captured_hook(direct_view, "save_task", %{
       "location" => "list:#{current.id}",
       "task" => %{"title" => "Direct"}
     })
@@ -221,7 +250,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     {:ok, descendants_view, _} =
       live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new?include_children=true")
 
-    render_hook(descendants_view, "save_task", %{
+    render_captured_hook(descendants_view, "save_task", %{
       "location" => "list:#{grandchild.id}",
       "task" => %{"title" => "Grandchild visible"}
     })
@@ -233,7 +262,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     {:ok, narrow_view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-    render_hook(narrow_view, "save_task", %{
+    render_captured_hook(narrow_view, "save_task", %{
       "location" => "list:#{grandchild.id}",
       "task" => %{"title" => "Grandchild hidden"}
     })
@@ -246,13 +275,13 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     destination = list_fixture(project, nil, %{name: "Destination"})
     {:ok, root_view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    root_view |> element("#task-status-filter-button") |> render_click()
+    root_view |> element("#task-status-filter-button") |> render_captured_click()
 
     root_view
     |> form("#task-status-filter-form", status_filter: %{statuses: ["done"]})
-    |> render_change()
+    |> render_captured_change()
 
-    render_hook(root_view, "save_task", %{
+    render_captured_hook(root_view, "save_task", %{
       "location" => "project",
       "task" => %{"title" => "Root task", "status" => "pending"}
     })
@@ -261,7 +290,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     {:ok, hidden_list_view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    render_hook(hidden_list_view, "save_task", %{
+    render_captured_hook(hidden_list_view, "save_task", %{
       "location" => "list:#{destination.id}",
       "task" => %{"title" => "List task"}
     })
@@ -271,7 +300,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     {:ok, visible_list_view, _} =
       live(conn, ~p"/projects/#{project.id}/tasks/new?include_children=true")
 
-    render_hook(visible_list_view, "save_task", %{
+    render_captured_hook(visible_list_view, "save_task", %{
       "location" => "list:#{destination.id}",
       "task" => %{"title" => "Visible list task"}
     })
@@ -287,7 +316,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     {:ok, unrelated_view, _} =
       live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new?include_children=true")
 
-    render_hook(unrelated_view, "save_task", %{
+    render_captured_hook(unrelated_view, "save_task", %{
       "location" => "list:#{unrelated.id}",
       "task" => %{"title" => "Elsewhere"}
     })
@@ -304,7 +333,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     send(missing_view.pid, list_event(project.id, lost.id))
     render(missing_view)
 
-    render_hook(missing_view, "save_task", %{
+    render_captured_hook(missing_view, "save_task", %{
       "location" => "list:#{unrelated.id}",
       "task" => %{"title" => "After loss"}
     })
@@ -318,7 +347,7 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
     task = task_fixture(project, current, %{title: "Background Task"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{current.id}/tasks/new")
 
-    render_hook(view, "open_move_task", %{"task-id" => Integer.to_string(task.id)})
+    render_captured_hook(view, "open_move_task", %{"task-id" => Integer.to_string(task.id)})
 
     refute view_assigns(view).task_move.active_task
   end
@@ -330,8 +359,8 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
-    view |> element("#cancel-task") |> render_click()
+    render_captured(view)
+    view |> element("#cancel-task") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
   end
@@ -343,9 +372,9 @@ defmodule TaskmanWeb.ProjectLive.CreationLocationTest do
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
   end

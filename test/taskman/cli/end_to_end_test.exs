@@ -4,6 +4,7 @@ defmodule Taskman.CLI.EndToEndTest do
   @moduletag :tmp_dir
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
@@ -294,8 +295,14 @@ defmodule Taskman.CLI.EndToEndTest do
              Jason.decode!(project_create.stdout)
 
     sync_view(project_view)
-    project_view |> element("#project-selector-toggle") |> render_click()
-    assert has_element?(project_view, "#select-project-#{created_project_id}", "CLI Project")
+    project_view |> element("#project-selector-toggle") |> render_captured_click()
+
+    assert has_captured_element?(
+             project_view,
+             "#select-project-#{created_project_id}",
+             "CLI Project"
+           )
+
     refute_patched(project_view, project_path)
 
     list_create =
@@ -329,7 +336,7 @@ defmodule Taskman.CLI.EndToEndTest do
     assert project_id == project.id
 
     sync_view(project_view)
-    assert has_element?(project_view, "#list-#{list_id}", "CLI List")
+    assert has_captured_element?(project_view, "#list-#{list_id}", "CLI List")
     refute_patched(project_view, project_path)
 
     list_rename =
@@ -355,7 +362,7 @@ defmodule Taskman.CLI.EndToEndTest do
              Jason.decode!(list_rename.stdout)
 
     sync_view(project_view)
-    assert has_element?(project_view, "#list-#{list_id}", "CLI Renamed List")
+    assert has_captured_element?(project_view, "#list-#{list_id}", "CLI Renamed List")
     refute_patched(project_view, project_path)
 
     list_path = ~p"/projects/#{project.id}/lists/#{list_id}"
@@ -393,7 +400,7 @@ defmodule Taskman.CLI.EndToEndTest do
            } = Jason.decode!(task_create.stdout)
 
     sync_view(list_view)
-    assert has_element?(list_view, "#task-#{task_id}", "CLI Task")
+    assert has_captured_element?(list_view, "#task-#{task_id}", "CLI Task")
     refute_patched(list_view, list_path)
 
     detail_path = ~p"/projects/#{project.id}/lists/#{list_id}/tasks/#{task_id}"
@@ -422,8 +429,8 @@ defmodule Taskman.CLI.EndToEndTest do
              Jason.decode!(task_update.stdout)
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-title[value='CLI Updated Task']")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-title[value='CLI Updated Task']")
     refute_patched(detail, detail_path)
 
     parent_change =
@@ -451,10 +458,10 @@ defmodule Taskman.CLI.EndToEndTest do
     assert parent_id == parent.id
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-parent-trigger", "CLI parent")
-    assert has_element?(detail, "#task-hierarchy-node-#{parent.id}")
-    assert has_element?(detail, "#task-hierarchy-link-#{task_id}[aria-current='true']")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-parent-trigger", "CLI parent")
+    assert has_captured_element?(detail, "#task-hierarchy-node-#{parent.id}")
+    assert has_captured_element?(detail, "#task-hierarchy-link-#{task_id}[aria-current='true']")
     refute_patched(detail, detail_path)
 
     task_move =
@@ -486,10 +493,10 @@ defmodule Taskman.CLI.EndToEndTest do
            } = Jason.decode!(task_move.stdout)
 
     sync_view(detail)
-    assert has_element?(detail, "#task-modal")
-    assert has_element?(detail, "#task-title[value='CLI Updated Task']")
-    assert has_element?(detail, "#task-hierarchy-node-#{parent.id}")
-    refute has_element?(detail, "#task-#{task_id}")
+    assert has_captured_element?(detail, "#task-modal")
+    assert has_captured_element?(detail, "#task-title[value='CLI Updated Task']")
+    assert has_captured_element?(detail, "#task-hierarchy-node-#{parent.id}")
+    refute has_captured_element?(detail, "#task-#{task_id}")
     refute_patched(detail, detail_path)
   end
 

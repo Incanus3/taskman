@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
   use TaskmanWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -16,9 +17,9 @@ defmodule TaskmanWeb.ProjectLiveTest do
   test "root renders the list-first empty state", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
-    assert has_element?(view, "#project-sidebar")
-    assert has_element?(view, "#new-project-button")
-    assert has_element?(view, "#main-panel[data-state='no-selection']")
+    assert has_captured_element?(view, "#project-sidebar")
+    assert has_captured_element?(view, "#new-project-button")
+    assert has_captured_element?(view, "#main-panel[data-state='no-selection']")
   end
 
   test "remembered Project restores only after preferences hydrate", %{conn: conn} do
@@ -26,31 +27,31 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/")
     params = %{"project_id" => Integer.to_string(project.id)}
 
-    render_hook(view, "restore_remembered_project", params)
+    render_captured_hook(view, "restore_remembered_project", params)
     refute_patched(view, ~p"/projects/#{project.id}")
-    assert has_element?(view, "#main-panel[data-state='no-selection']")
+    assert has_captured_element?(view, "#main-panel[data-state='no-selection']")
 
-    render_hook(view, "hydrate_task_table_preferences", %{
+    render_captured_hook(view, "hydrate_task_table_preferences", %{
       "include_children" => true,
       "statuses" => ["pending"]
     })
 
-    render_hook(view, "restore_remembered_project", params)
+    render_captured_hook(view, "restore_remembered_project", params)
     assert_patch(view, ~p"/projects/#{project.id}")
-    assert has_element?(view, "#main-panel[data-state='selected']")
+    assert has_captured_element?(view, "#main-panel[data-state='selected']")
     assert view_assigns(view).workspace.include_children?
     assert view_assigns(view).listing.visible_statuses == [:pending]
 
-    render_hook(view, "restore_remembered_project", params)
+    render_captured_hook(view, "restore_remembered_project", params)
     refute_patched(view, ~p"/projects/#{project.id}")
   end
 
   test "malformed and stale remembered IDs leave root unselected", %{conn: conn} do
     for id <- ["", "0", "01", "-1", "1oops", "not-a-project", 1, "999999999"] do
       {:ok, view, _html} = live(conn, ~p"/")
-      render_hook(view, "hydrate_task_table_preferences", %{})
-      render_hook(view, "restore_remembered_project", %{"project_id" => id})
-      assert has_element?(view, "#main-panel[data-state='no-selection']")
+      render_captured_hook(view, "hydrate_task_table_preferences", %{})
+      render_captured_hook(view, "restore_remembered_project", %{"project_id" => id})
+      assert has_captured_element?(view, "#main-panel[data-state='no-selection']")
       refute_patched(view, "/projects/999999999")
     end
   end
@@ -58,11 +59,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
   test "a stale restore attempt does not accept a later duplicate", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/")
-    render_hook(view, "hydrate_task_table_preferences", %{})
+    render_captured_hook(view, "hydrate_task_table_preferences", %{})
 
-    render_hook(view, "restore_remembered_project", %{"project_id" => "999999999"})
-    render_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
-    assert has_element?(view, "#main-panel[data-state='no-selection']")
+    render_captured_hook(view, "restore_remembered_project", %{"project_id" => "999999999"})
+    render_captured_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
+    assert has_captured_element?(view, "#main-panel[data-state='no-selection']")
     refute_patched(view, ~p"/projects/#{project.id}")
   end
 
@@ -72,10 +73,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     for path <- [~p"/projects/#{explicit.id}", ~p"/projects/#{explicit.id}/lists/999999999"] do
       {:ok, view, _html} = live(conn, path)
-      render_hook(view, "hydrate_task_table_preferences", %{})
-      render_hook(view, "restore_remembered_project", %{"project_id" => "#{remembered.id}"})
+      render_captured_hook(view, "hydrate_task_table_preferences", %{})
 
-      assert has_element?(view, "#project-memory[data-project-id='#{explicit.id}']")
+      render_captured_hook(view, "restore_remembered_project", %{
+        "project_id" => "#{remembered.id}"
+      })
+
+      assert has_captured_element?(view, "#project-memory[data-project-id='#{explicit.id}']")
       refute_patched(view, ~p"/projects/#{remembered.id}")
     end
   end
@@ -89,13 +93,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
         ] do
       {:ok, view, _html} = live(conn, path)
 
-      render_hook(view, "hydrate_task_table_preferences", %{
+      render_captured_hook(view, "hydrate_task_table_preferences", %{
         "route_key" => path,
         "include_children" => true,
         "statuses" => ["done"]
       })
 
-      render_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
+      render_captured_hook(view, "restore_remembered_project", %{"project_id" => "#{project.id}"})
       assert_patch(view, ~p"/projects/#{project.id}")
       assert view_assigns(view).workspace.include_children? == expected_include
       assert view_assigns(view).listing.visible_statuses == expected_statuses
@@ -105,32 +109,32 @@ defmodule TaskmanWeb.ProjectLiveTest do
   test "creates a Project and selects it in the URL", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
-    view |> element("#new-project-button") |> render_click()
+    view |> element("#new-project-button") |> render_captured_click()
 
     view
     |> form("#project-form", project: %{name: "Taskman"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert [project] = Taskman.Projects.list_projects()
     assert project.name == "Taskman"
     assert_patch(view, ~p"/projects/#{project.id}")
-    assert has_element?(view, "#project-selector-name", "Taskman")
-    assert has_element?(view, "#add-root-list-#{project.id}")
-    assert has_element?(view, "#tasks")
+    assert has_captured_element?(view, "#project-selector-name", "Taskman")
+    assert has_captured_element?(view, "#add-root-list-#{project.id}")
+    assert has_captured_element?(view, "#tasks")
   end
 
   test "unparseable Project ID keeps the sidebar usable", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, "/projects/not-an-id")
 
-    assert has_element?(view, "#project-sidebar")
-    assert has_element?(view, "#project-not-found")
-    refute has_element?(view, "#add-task")
+    assert has_captured_element?(view, "#project-sidebar")
+    assert has_captured_element?(view, "#project-not-found")
+    refute has_captured_element?(view, "#add-task")
 
-    view |> element("#project-selector-toggle") |> render_click()
-    view |> element("#select-project-#{project.id}") |> render_click()
+    view |> element("#project-selector-toggle") |> render_captured_click()
+    view |> element("#select-project-#{project.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
-    assert has_element?(view, "#tasks")
+    assert has_captured_element?(view, "#tasks")
   end
 
   test "selected Project shows only its direct Tasks", %{conn: conn} do
@@ -141,8 +145,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{selected.id}")
 
-    assert has_element?(view, "#task-#{selected_task.id}")
-    refute has_element?(view, "#task-#{other_task.id}")
+    assert has_captured_element?(view, "#task-#{selected_task.id}")
+    refute has_captured_element?(view, "#task-#{other_task.id}")
   end
 
   test "Project patch navigation resets Task rows by their generated stream IDs", %{conn: conn} do
@@ -153,17 +157,17 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project_a.id}")
 
-    assert has_element?(view, "#tasks > #tasks-#{task_a.id}")
-    refute has_element?(view, "#tasks > #tasks-#{task_b.id}")
+    assert has_captured_element?(view, "#tasks > #tasks-#{task_a.id}")
+    refute has_captured_element?(view, "#tasks > #tasks-#{task_b.id}")
 
-    view |> element("#project-selector-toggle") |> render_click()
-    view |> element("#select-project-#{project_b.id}") |> render_click()
+    view |> element("#project-selector-toggle") |> render_captured_click()
+    view |> element("#select-project-#{project_b.id}") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project_b.id}")
-    refute has_element?(view, "#tasks > #tasks-#{task_a.id}")
-    refute has_element?(view, "#task-#{task_a.id}")
-    assert has_element?(view, "#tasks > #tasks-#{task_b.id}")
-    assert has_element?(view, "#task-#{task_b.id}")
+    refute has_captured_element?(view, "#tasks > #tasks-#{task_a.id}")
+    refute has_captured_element?(view, "#task-#{task_a.id}")
+    assert has_captured_element?(view, "#tasks > #tasks-#{task_b.id}")
+    assert has_captured_element?(view, "#task-#{task_b.id}")
   end
 
   test "opens the canonical Task modal from the row and preserves the list", %{conn: conn} do
@@ -172,22 +176,22 @@ defmodule TaskmanWeb.ProjectLiveTest do
     sibling = task_fixture(project, %{title: "Sibling"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#open-task-#{task.id}") |> render_click()
+    view |> element("#open-task-#{task.id}") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-modal-close[aria-label='Close dialog']")
-    assert has_element?(view, "#task-form")
-    assert has_element?(view, "#task-title[value='Editable']")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-modal-close[aria-label='Close dialog']")
+    assert has_captured_element?(view, "#task-form")
+    assert has_captured_element?(view, "#task-title[value='Editable']")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-title[phx-hook='TaskmanWeb.Tasks.Form.TaskTitleFocus']"
            )
 
-    assert has_element?(view, "#task-description")
-    assert has_element?(view, "#task-#{sibling.id}")
-    refute has_element?(view, "#close-task")
+    assert has_captured_element?(view, "#task-description")
+    assert has_captured_element?(view, "#task-#{sibling.id}")
+    refute has_captured_element?(view, "#close-task")
   end
 
   test "direct canonical Task URL renders the same modal", %{conn: conn} do
@@ -196,9 +200,9 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-form")
-    assert has_element?(view, "#task-#{task.id}")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-form")
+    assert has_captured_element?(view, "#task-#{task.id}")
   end
 
   test "editing initializes the parent picker from the persisted parent", %{conn: conn} do
@@ -208,14 +212,14 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    assert has_element?(view, "#task-parent-picker")
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
-    refute has_element?(view, "#task-parent-clear")
+    assert has_captured_element?(view, "#task-parent-picker")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_captured_element?(view, "#task-parent-clear")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
 
-    assert has_element?(view, "#task-parent-results #task-parent-clear[role='option']")
+    assert has_captured_element?(view, "#task-parent-results #task-parent-clear[role='option']")
   end
 
   test "selecting an edit parent persists it immediately", %{conn: conn} do
@@ -225,17 +229,17 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
-    refute has_element?(view, "#task-parent-search")
-    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_click()
-    assert has_element?(view, "#tasks > #tasks-#{task.id}")
-    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{parent.id}")
-    assert has_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_captured_element?(view, "#task-parent-search")
+    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#tasks > #tasks-#{task.id}")
+    assert has_captured_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
+    assert has_captured_element?(view, "#task-hierarchy-node-#{parent.id}")
+    assert has_captured_element?(view, "#task-hierarchy-link-#{task.id}[aria-current='true']")
   end
 
   test "parent options close from the toggle and close event without changing the draft", %{
@@ -247,19 +251,19 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    assert has_element?(view, "#task-parent-results")
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    assert has_captured_element?(view, "#task-parent-results")
 
-    view |> element("button[aria-label='Close parent Task options']") |> render_click()
-    refute has_element?(view, "#task-parent-results")
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    view |> element("button[aria-label='Close parent Task options']") |> render_captured_click()
+    refute has_captured_element?(view, "#task-parent-results")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    assert has_element?(view, "#task-parent-results")
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    assert has_captured_element?(view, "#task-parent-results")
 
-    render_click(view, "close_task_parent_options", %{})
-    refute has_element?(view, "#task-parent-results")
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
+    render_captured_click(view, "close_task_parent_options", %{})
+    refute has_captured_element?(view, "#task-parent-results")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
   end
 
@@ -271,15 +275,15 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
 
     view
     |> element("#task-parent-search")
-    |> render_change(%{"_target" => ["parent_query"], "parent_query" => "Road"})
+    |> render_captured_change(%{"_target" => ["parent_query"], "parent_query" => "Road"})
 
-    assert has_element?(view, "#task-parent-search[value='Road']")
-    assert has_element?(view, "#task-parent-option-#{matching_parent.id}")
-    refute has_element?(view, "#task-parent-option-#{other_parent.id}")
+    assert has_captured_element?(view, "#task-parent-search[value='Road']")
+    assert has_captured_element?(view, "#task-parent-option-#{matching_parent.id}")
+    refute has_captured_element?(view, "#task-parent-option-#{other_parent.id}")
   end
 
   test "keyboard parent selection stays in the picker instead of submitting the task form", %{
@@ -291,27 +295,30 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
 
-    assert has_element?(view, "#task-parent-search[aria-activedescendant='task-parent-clear']")
+    assert has_captured_element?(
+             view,
+             "#task-parent-search[aria-activedescendant='task-parent-clear']"
+           )
 
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-parent-search[aria-activedescendant='task-parent-option-#{parent.id}']"
            )
 
-    assert has_element?(view, "#task-parent-option-#{parent.id}[data-active='true']")
+    assert has_captured_element?(view, "#task-parent-option-#{parent.id}[data-active='true']")
 
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
-    refute has_element?(view, "#task-parent-search")
-    refute has_element?(view, "#task-parent-results")
-    refute has_element?(view, "#new-project-error")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
+    refute has_captured_element?(view, "#task-parent-search")
+    refute has_captured_element?(view, "#task-parent-results")
+    refute has_captured_element?(view, "#new-project-error")
   end
 
   test "keyboard clearing synchronizes the visible parent query", %{
@@ -323,13 +330,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "ArrowDown"})
     view |> element("#task-parent-search") |> render_keydown(%{"key" => "Enter"})
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "No parent")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-trigger", "No parent")
   end
 
   test "replacing an edit parent persists it immediately", %{conn: conn} do
@@ -340,21 +347,21 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
 
     view
     |> element("#task-parent-search")
-    |> render_change(%{
+    |> render_captured_change(%{
       "_target" => ["parent_query"],
       "parent_query" => "Second parent"
     })
 
-    view |> element("#task-parent-option-#{second_parent.id}") |> render_click()
+    view |> element("#task-parent-option-#{second_parent.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == second_parent.id
-    assert has_element?(view, "#task-parent-trigger", "Second parent")
-    view |> element("#toggle-task-subtasks-#{second_parent.id}") |> render_click()
-    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+    assert has_captured_element?(view, "#task-parent-trigger", "Second parent")
+    view |> element("#toggle-task-subtasks-#{second_parent.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
   test "ignores malformed parent search payloads without closing the picker", %{conn: conn} do
@@ -363,11 +370,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    render_hook(view, "search_task_parents", %{"key" => "a"})
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    render_captured_hook(view, "search_task_parents", %{"key" => "a"})
 
-    assert has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-results")
+    assert has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-results")
   end
 
   test "selecting an already selected edit parent is idempotent", %{conn: conn} do
@@ -377,13 +384,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
-    assert has_element?(view, "#task-parent-trigger", "Roadmap")
-    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_click()
-    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+    assert has_captured_element?(view, "#task-parent-trigger", "Roadmap")
+    view |> element("#toggle-task-subtasks-#{parent.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
   test "clearing an edit parent persists a root Task immediately", %{conn: conn} do
@@ -393,13 +400,13 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-clear") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-clear") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "No parent")
-    assert has_element?(view, "#tasks > #tasks-#{task.id}")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-trigger", "No parent")
+    assert has_captured_element?(view, "#tasks > #tasks-#{task.id}")
   end
 
   test "an open parent search drops a candidate that becomes invalid elsewhere", %{
@@ -412,24 +419,29 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
 
     view
     |> element("#task-parent-search")
-    |> render_change(%{
+    |> render_captured_change(%{
       "_target" => ["parent_query"],
       "parent_query" => "Rejected parent"
     })
 
-    assert has_element?(view, "#task-parent-option-#{rejected_parent.id}")
+    assert has_captured_element?(view, "#task-parent-option-#{rejected_parent.id}")
 
     assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
 
     _ = :sys.get_state(view.pid)
 
-    assert has_element?(view, "#task-parent-search[value='Rejected parent']")
-    refute has_element?(view, "#task-parent-option-#{rejected_parent.id}")
-    assert has_element?(view, "#task-parent-option-#{original_parent.id}[aria-selected='true']")
+    assert has_captured_element?(view, "#task-parent-search[value='Rejected parent']")
+    refute has_captured_element?(view, "#task-parent-option-#{rejected_parent.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-parent-option-#{original_parent.id}[aria-selected='true']"
+           )
+
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == original_parent.id
   end
 
@@ -442,11 +454,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, task_path)
 
-    view |> element("#task-parent-trigger") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
 
     view
     |> element("#task-parent-search")
-    |> render_change(%{
+    |> render_captured_change(%{
       "_target" => ["parent_query"],
       "parent_query" => "Rejected parent"
     })
@@ -457,19 +469,23 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     _ = :sys.get_state(view.pid)
 
-    refute has_element?(view, "#task-parent-option-#{rejected_parent.id}")
-    assert has_element?(view, "#task-parent-option-#{original_parent.id}[aria-selected='true']")
+    refute has_captured_element?(view, "#task-parent-option-#{rejected_parent.id}")
 
-    view |> element("#task-modal-close") |> render_click()
+    assert has_captured_element?(
+             view,
+             "#task-parent-option-#{original_parent.id}[aria-selected='true']"
+           )
+
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
-    view |> element("#toggle-task-subtasks-#{original_parent.id}") |> render_click()
-    view |> element("#open-task-#{task.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{original_parent.id}") |> render_captured_click()
+    view |> element("#open-task-#{task.id}") |> render_captured_click()
     assert_patch(view, task_path)
 
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "Original parent")
-    refute has_element?(view, "#task-parent-results")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-trigger", "Original parent")
+    refute has_captured_element?(view, "#task-parent-results")
   end
 
   test "found Task renders truthful detail regions without unavailable operations", %{conn: conn} do
@@ -478,46 +494,46 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#taskman-workspace[phx-hook='TaskmanWeb.ProjectLive.TaskDetailLayout']"
            )
 
-    assert has_element?(view, "#task-modal-content[data-size='wide']")
-    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='false']")
+    assert has_captured_element?(view, "#task-modal-content[data-size='wide']")
+    assert has_captured_element?(view, "#task-detail-layout[data-has-hierarchy='false']")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-toggle[aria-controls='task-hierarchy'][aria-expanded='false'][aria-label='Expand task hierarchy']"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-navigation > ul > li #task-hierarchy-link-#{task.id}[aria-current='true']",
              "Write launch checklist"
            )
 
-    assert has_element?(view, "#task-hierarchy-empty", "No parent or child Tasks")
+    assert has_captured_element?(view, "#task-hierarchy-empty", "No parent or child Tasks")
 
-    refute has_element?(
+    refute has_captured_element?(
              view,
              "#task-hierarchy-disclosure-#{task.id}, #task-hierarchy-expanded-marker-#{task.id}"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-activity-empty",
              "No comments yet."
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-sessions-empty",
              "No Agent Sessions are associated with this Task."
            )
 
-    refute has_element?(view, "#task-sessions button")
-    refute has_element?(view, "#task-detail-layout [data-session-row]")
+    refute has_captured_element?(view, "#task-sessions button")
+    refute has_captured_element?(view, "#task-detail-layout [data-session-row]")
   end
 
   test "shows the selected Task hierarchy context with only required branches expanded", %{
@@ -532,54 +548,58 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    assert has_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
+    assert has_captured_element?(view, "#task-detail-layout[data-has-hierarchy='true']")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "nav#task-hierarchy-navigation[aria-labelledby='task-hierarchy-title']"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-scroll #task-hierarchy-navigation > ul > li#task-hierarchy-node-#{root.id}"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-hierarchy-node-#{root.id} > ul > li#task-hierarchy-node-#{selected.id}"
            )
 
-    assert has_element?(view, "#task-hierarchy-link-#{selected.id}[aria-current='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{direct_child.id}")
-    assert has_element?(view, "#task-hierarchy-node-#{sibling.id}")
-    refute has_element?(view, "#task-hierarchy-node-#{collapsed_child.id}")
-    refute has_element?(view, "#task-hierarchy-disclosure-#{root.id}")
-    refute has_element?(view, "#task-hierarchy-disclosure-#{selected.id}")
-    assert has_element?(view, "#task-hierarchy-expanded-marker-#{root.id}[aria-hidden='true']")
+    assert has_captured_element?(view, "#task-hierarchy-link-#{selected.id}[aria-current='true']")
+    assert has_captured_element?(view, "#task-hierarchy-node-#{direct_child.id}")
+    assert has_captured_element?(view, "#task-hierarchy-node-#{sibling.id}")
+    refute has_captured_element?(view, "#task-hierarchy-node-#{collapsed_child.id}")
+    refute has_captured_element?(view, "#task-hierarchy-disclosure-#{root.id}")
+    refute has_captured_element?(view, "#task-hierarchy-disclosure-#{selected.id}")
 
-    assert has_element?(
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-expanded-marker-#{root.id}[aria-hidden='true']"
+           )
+
+    assert has_captured_element?(
              view,
              "#task-hierarchy-expanded-marker-#{selected.id}[aria-hidden='true']"
            )
 
-    refute has_element?(
+    refute has_captured_element?(
              view,
              "#task-hierarchy-expanded-marker-#{root.id}[tabindex], #task-hierarchy-expanded-marker-#{root.id}[phx-click], #task-hierarchy-expanded-marker-#{root.id}[role]"
            )
 
-    refute has_element?(
+    refute has_captured_element?(
              view,
              "#task-hierarchy-disclosure-#{direct_child.id}, #task-hierarchy-expanded-marker-#{direct_child.id}"
            )
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "button#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false'][aria-controls='task-hierarchy-group-#{sibling.id}'][aria-label='Toggle Sibling']"
            )
 
-    assert has_element?(view, "ul#task-hierarchy-group-#{sibling.id}[hidden]")
+    assert has_captured_element?(view, "ul#task-hierarchy-group-#{sibling.id}[hidden]")
 
-    refute has_element?(
+    refute has_captured_element?(
              view,
              "#task-hierarchy [role='tree'], #task-hierarchy [role='treeitem'], #task-hierarchy [role='group'], #task-hierarchy [aria-level]"
            )
@@ -604,22 +624,26 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
 
     for {task, label} <- tasks do
-      assert has_element?(view, "#task-hierarchy-link-#{task.id}", task.title)
+      assert has_captured_element?(view, "#task-hierarchy-link-#{task.id}", task.title)
 
-      assert has_element?(
+      assert has_captured_element?(
                view,
                "#task-hierarchy-metadata-#{task.id} > span:first-child",
                "##{task.id}"
              )
 
-      assert has_element?(
+      assert has_captured_element?(
                view,
                "#task-hierarchy-metadata-#{task.id} > span:first-child + #task-hierarchy-status-#{task.id}",
                label
              )
 
-      assert has_element?(view, "#task-hierarchy-status-#{task.id} > [aria-hidden='true']")
-      refute has_element?(view, "#task-hierarchy-status-#{task.id}[aria-hidden]")
+      assert has_captured_element?(
+               view,
+               "#task-hierarchy-status-#{task.id} > [aria-hidden='true']"
+             )
+
+      refute has_captured_element?(view, "#task-hierarchy-status-#{task.id}[aria-hidden]")
     end
   end
 
@@ -642,7 +666,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{root.id}")
 
     for {task, label} <- [{root, "None"} | tasks] do
-      assert has_element?(
+      assert has_captured_element?(
                view,
                "#task-hierarchy-metadata-#{task.id} > #task-hierarchy-status-#{task.id} + #task-hierarchy-priority-#{task.id}",
                label
@@ -659,13 +683,23 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
-    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']"
+           )
+
+    assert has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']"
+           )
+
+    refute has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
   end
 
   test "hierarchy links preserve branch expansion within the connected tree", %{conn: conn} do
@@ -678,13 +712,22 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    view |> element("#task-hierarchy-link-#{direct_child.id}") |> render_click()
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
+    view |> element("#task-hierarchy-link-#{direct_child.id}") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{direct_child.id}")
-    assert has_element?(view, "#task-hierarchy-link-#{direct_child.id}[aria-current='true']")
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']")
-    assert has_element?(view, "#task-hierarchy-node-#{sibling_child.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-link-#{direct_child.id}[aria-current='true']"
+           )
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='true']"
+           )
+
+    assert has_captured_element?(view, "#task-hierarchy-node-#{sibling_child.id}")
   end
 
   test "closing the Task modal clears hierarchy branch expansion", %{conn: conn} do
@@ -697,17 +740,22 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, task_path)
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#open-task-#{selected.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#open-task-#{selected.id}") |> render_captured_click()
     assert_patch(view, task_path)
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
-    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']"
+           )
+
+    refute has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
   end
 
   test "loading another connected tree resets hierarchy branch expansion", %{conn: conn} do
@@ -721,18 +769,23 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{selected.id}")
 
-    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_click()
-    assert has_element?(view, "#task-hierarchy-node-#{child.id}")
+    view |> element("#task-hierarchy-disclosure-#{sibling.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
 
-    view |> element("#toggle-task-subtasks-#{other_root.id}") |> render_click()
-    view |> element("#open-task-#{other_selected.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{other_root.id}") |> render_captured_click()
+    view |> element("#open-task-#{other_selected.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{other_selected.id}")
 
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#open-task-#{selected.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#open-task-#{selected.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{selected.id}")
-    assert has_element?(view, "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']")
-    refute has_element?(view, "#task-hierarchy-node-#{child.id}")
+
+    assert has_captured_element?(
+             view,
+             "#task-hierarchy-disclosure-#{sibling.id}[aria-expanded='false']"
+           )
+
+    refute has_captured_element?(view, "#task-hierarchy-node-#{child.id}")
   end
 
   test "hierarchy navigation preserves List and descendant-inclusion context", %{conn: conn} do
@@ -748,23 +801,23 @@ defmodule TaskmanWeb.ProjectLiveTest do
         ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{selected.id}?include_children=true"
       )
 
-    refute has_element?(view, "#task-#{root.id}")
-    assert has_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
-    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
-    assert has_element?(view, "#task-location-task-label", "Task ##{selected.id}")
+    refute has_captured_element?(view, "#task-#{root.id}")
+    assert has_captured_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
+    assert has_captured_element?(view, "#include-child-lists[aria-pressed='true']")
+    assert has_captured_element?(view, "#task-location-task-label", "Task ##{selected.id}")
 
-    view |> element("#task-hierarchy-link-#{root.id}") |> render_click()
+    view |> element("#task-hierarchy-link-#{root.id}") |> render_captured_click()
 
     assert_patch(
       view,
       ~p"/projects/#{project.id}/lists/#{current_list.id}/tasks/#{root.id}"
     )
 
-    assert has_element?(view, "#task-hierarchy-link-#{root.id}[aria-current='true']")
-    assert has_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
-    assert has_element?(view, "#include-child-lists[aria-pressed='true']")
-    assert has_element?(view, "#task-location-task-label", "Task ##{root.id}")
-    refute has_element?(view, "#task-#{root.id}")
+    assert has_captured_element?(view, "#task-hierarchy-link-#{root.id}[aria-current='true']")
+    assert has_captured_element?(view, "#select-list-#{current_list.id}[aria-current='page']")
+    assert has_captured_element?(view, "#include-child-lists[aria-pressed='true']")
+    assert has_captured_element?(view, "#task-location-task-label", "Task ##{root.id}")
+    refute has_captured_element?(view, "#task-#{root.id}")
   end
 
   test "invalid Task URLs preserve the selected Project list in a modal not-found state", %{
@@ -777,15 +830,20 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     for task_id <- ["not-an-id", "999999999", Integer.to_string(other.id)] do
       {:ok, view, _html} = live(conn, "/projects/#{project.id}/tasks/#{task_id}")
-      assert has_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
-      assert has_element?(view, "#task-modal-title")
-      assert has_element?(view, "#task-not-found")
-      assert has_element?(view, "#close-task-not-found")
-      assert has_element?(view, "#task-#{visible.id}")
-      refute has_element?(view, "#task-form")
-      refute has_element?(view, "#task-detail-layout")
-      assert has_element?(view, "#task-modal-content[data-size='default']")
-      refute has_element?(view, "#task-#{other.id}")
+
+      assert has_captured_element?(
+               view,
+               "#task-modal-content[aria-labelledby='task-modal-title']"
+             )
+
+      assert has_captured_element?(view, "#task-modal-title")
+      assert has_captured_element?(view, "#task-not-found")
+      assert has_captured_element?(view, "#close-task-not-found")
+      assert has_captured_element?(view, "#task-#{visible.id}")
+      refute has_captured_element?(view, "#task-form")
+      refute has_captured_element?(view, "#task-detail-layout")
+      assert has_captured_element?(view, "#task-modal-content[data-size='default']")
+      refute has_captured_element?(view, "#task-#{other.id}")
     end
   end
 
@@ -820,12 +878,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     assert_receive :task_removed_between_detail_and_hierarchy_lookup
-    assert has_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
-    assert has_element?(view, "#task-not-found")
-    assert has_element?(view, "#task-#{visible.id}")
-    refute has_element?(view, "#task-form")
-    refute has_element?(view, "#task-detail-layout")
-    assert has_element?(view, "#task-modal-content[data-size='default']")
+    assert has_captured_element?(view, "#task-modal-content[aria-labelledby='task-modal-title']")
+    assert has_captured_element?(view, "#task-not-found")
+    assert has_captured_element?(view, "#task-#{visible.id}")
+    refute has_captured_element?(view, "#task-form")
+    refute has_captured_element?(view, "#task-detail-layout")
+    assert has_captured_element?(view, "#task-modal-content[data-size='default']")
   end
 
   test "autosaves the targeted Task field and refreshes the streamed row", %{conn: conn} do
@@ -835,19 +893,19 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     view
     |> form("#task-form", task: %{title: "After"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     _ = :sys.get_state(view.pid)
 
     assert Tasks.get_task_for_project(project, task.id).title == "After"
-    assert has_element?(view, "#task-#{task.id}", "After")
+    assert has_captured_element?(view, "#task-#{task.id}", "After")
 
     view
     |> form("#task-form", task: %{status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert Tasks.get_task_for_project(project, task.id).status == :in_review
-    assert has_element?(view, "#task-status-#{task.id}", "In Review")
+    assert has_captured_element?(view, "#task-status-#{task.id}", "In Review")
   end
 
   test "immediately persists priority and refreshes the streamed row", %{conn: conn} do
@@ -857,11 +915,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     view
     |> form("#task-form", task: %{priority: "urgent"})
-    |> render_change(%{"_target" => ["task", "priority"]})
+    |> render_captured_change(%{"_target" => ["task", "priority"]})
 
     assert Tasks.get_task_for_project(project, task.id).priority == :urgent
-    assert has_element?(view, "#task-priority-#{task.id}", "Urgent")
-    assert has_element?(view, "#task-priority option[selected][value='urgent']")
+    assert has_captured_element?(view, "#task-priority-#{task.id}", "Urgent")
+    assert has_captured_element?(view, "#task-priority option[selected][value='urgent']")
   end
 
   test "immediately persists and clears the due date-time", %{conn: conn} do
@@ -871,17 +929,17 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     view
     |> form("#task-form", task: %{due_at: "2026-08-03T16:00"})
-    |> render_change(%{"_target" => ["task", "due_at"]})
+    |> render_captured_change(%{"_target" => ["task", "due_at"]})
 
     assert Tasks.get_task_for_project(project, task.id).due_at == ~N[2026-08-03 16:00:00]
-    assert has_element?(view, "#task-due-at[value='03.08.2026 16:00']")
+    assert has_captured_element?(view, "#task-due-at[value='03.08.2026 16:00']")
 
     view
     |> form("#task-form", task: %{due_at: ""})
-    |> render_change(%{"_target" => ["task", "due_at"]})
+    |> render_captured_change(%{"_target" => ["task", "due_at"]})
 
     assert Tasks.get_task_for_project(project, task.id).due_at == nil
-    assert has_element?(view, "#task-due-at[value='']")
+    assert has_captured_element?(view, "#task-due-at[value='']")
   end
 
   test "an invalid draft does not block another field from saving", %{conn: conn} do
@@ -891,19 +949,19 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     view
     |> form("#task-form", task: %{title: ""})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert has_captured_element?(view, "#task-form [data-role='field-error']")
     assert Tasks.get_task_for_project(project, task.id).title == "Valid"
 
     view
     |> form("#task-form", task: %{status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     updated = Tasks.get_task_for_project(project, task.id)
     assert updated.title == "Valid"
     assert updated.status == :in_review
-    assert has_element?(view, "#task-title-save-status[data-state='not_saved']")
+    assert has_captured_element?(view, "#task-title-save-status[data-state='not_saved']")
   end
 
   test "populated Task list renders column headers before its Task stream", %{conn: conn} do
@@ -912,20 +970,24 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    assert has_element?(view, "#task-table-header + #tasks")
-    assert has_element?(view, "#task-actions-header", "Actions")
+    assert has_captured_element?(view, "#task-table-header + #tasks")
+    assert has_captured_element?(view, "#task-actions-header", "Actions")
   end
 
   test "blank Project name renders an inline name error", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
-    view |> element("#new-project-button") |> render_click()
+    view |> element("#new-project-button") |> render_captured_click()
 
     view
     |> form("#project-form", project: %{name: ""})
-    |> render_submit()
+    |> render_captured_submit()
 
-    assert has_element?(view, "#project-form [data-role='field-error']", "can't be blank")
+    assert has_captured_element?(
+             view,
+             "#project-form [data-role='field-error']",
+             "can't be blank"
+           )
   end
 
   test "opens and cancels the new Task modal over the selected list", %{conn: conn} do
@@ -933,31 +995,31 @@ defmodule TaskmanWeb.ProjectLiveTest do
     task = task_fixture(project, %{title: "Existing"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#add-task") |> render_click()
+    view |> element("#add-task") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/new")
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-#{task.id}")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-#{task.id}")
 
-    view |> element("#cancel-task") |> render_click()
+    view |> element("#cancel-task") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
-    refute has_element?(view, "#task-modal")
+    refute has_captured_element?(view, "#task-modal")
   end
 
   test "normal New Task starts without a parent at the browsed Project location", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    assert has_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-modal")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-location option[value='project'][selected]",
              "Project #{project.name}"
            )
 
-    assert has_element?(view, "#task-parent-picker")
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-parent-trigger", "No parent")
+    assert has_captured_element?(view, "#task-parent-picker")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-parent-trigger", "No parent")
   end
 
   test "a Project-wide selected parent persists without changing the browsed location", %{
@@ -968,15 +1030,15 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, planning, %{title: "Plan release"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    assert has_element?(view, "#task-parent-option-#{parent.id}")
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    assert has_captured_element?(view, "#task-parent-option-#{parent.id}")
 
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
-    assert has_element?(view, "#task-parent-trigger", "Plan release")
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
+    assert has_captured_element?(view, "#task-parent-trigger", "Plan release")
 
     view
     |> form("#task-form", task: %{title: "Project-root child"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert_patch(view, ~p"/projects/#{project.id}")
 
@@ -985,7 +1047,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert created.parent_task_id == parent.id
     assert created.list_id == nil
-    assert has_element?(view, "#task-#{created.id}")
+    assert has_captured_element?(view, "#task-#{created.id}")
   end
 
   test "stale or foreign preselected parent query values stay recoverable without identity leakage",
@@ -1003,17 +1065,22 @@ defmodule TaskmanWeb.ProjectLiveTest do
           "/projects/#{project.id}/tasks/new?parent_task_id=#{parent_task_id}"
         )
 
-      assert has_element?(view, "#task-modal")
-      assert has_element?(view, "#task-form")
+      assert has_captured_element?(view, "#task-modal")
+      assert has_captured_element?(view, "#task-form")
 
-      assert has_element?(
+      assert has_captured_element?(
                view,
                "#task-parent-trigger[aria-invalid='true'][aria-describedby='task-parent-error']"
              )
 
-      assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
-      assert has_element?(view, "#task-parent-trigger", "No parent")
-      refute has_element?(view, "#task-parent-option-#{foreign_parent.id}")
+      assert has_captured_element?(
+               view,
+               "#task-parent-error",
+               "That parent Task is no longer available."
+             )
+
+      assert has_captured_element?(view, "#task-parent-trigger", "No parent")
+      refute has_captured_element?(view, "#task-parent-option-#{foreign_parent.id}")
     end
   end
 
@@ -1028,12 +1095,17 @@ defmodule TaskmanWeb.ProjectLiveTest do
         "/projects/#{project.id}/tasks/new?parent_task_id=#{foreign_parent.id}"
       )
 
-    assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
-    assert has_element?(view, "#task-parent-trigger", "No parent")
+    assert has_captured_element?(
+             view,
+             "#task-parent-error",
+             "That parent Task is no longer available."
+           )
+
+    assert has_captured_element?(view, "#task-parent-trigger", "No parent")
 
     view
     |> form("#task-form", task: %{title: "Recovered root Task"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert_patch(view, ~p"/projects/#{project.id}")
 
@@ -1042,7 +1114,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert created.parent_task_id == nil
     assert created.list_id == nil
-    assert has_element?(view, "#task-#{created.id}")
+    assert has_captured_element?(view, "#task-#{created.id}")
   end
 
   test "a stale selected parent keeps its draft and reports a recoverable error on creation", %{
@@ -1052,20 +1124,26 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, %{title: "Removed parent"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
 
     Taskman.Repo.delete!(parent)
 
     view
     |> form("#task-form", task: %{title: "Child with stale parent"})
-    |> render_submit()
+    |> render_captured_submit()
 
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#task-parent-trigger", "Removed parent")
-    assert has_element?(view, "#task-parent-trigger[aria-invalid='true']")
-    assert has_element?(view, "#task-parent-error", "That parent Task is no longer available.")
-    refute has_element?(view, "#task-parent-results")
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-parent-trigger", "Removed parent")
+    assert has_captured_element?(view, "#task-parent-trigger[aria-invalid='true']")
+
+    assert has_captured_element?(
+             view,
+             "#task-parent-error",
+             "That parent Task is no longer available."
+           )
+
+    refute has_captured_element?(view, "#task-parent-results")
 
     refute Enum.any?(
              Tasks.list_tasks_for_project(project),
@@ -1085,16 +1163,18 @@ defmodule TaskmanWeb.ProjectLiveTest do
       due_at: "2026-08-04T09:30"
     }
 
+    change_description(view, task_params.description)
+
     view
-    |> form("#task-form", task: task_params)
-    |> render_change()
+    |> form("#task-form", task: Map.delete(task_params, :description))
+    |> render_captured_change(%{"task" => %{"description" => task_params.description}})
 
     assert Tasks.list_tasks_for_project(project) == []
 
-    view |> element("#cancel-task") |> render_click()
+    view |> element("#cancel-task") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
-    refute has_element?(view, "#task-modal")
+    refute has_captured_element?(view, "#task-modal")
     assert Tasks.list_tasks_for_project(project) == []
   end
 
@@ -1102,12 +1182,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
     project = project_fixture(%{})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    assert has_element?(view, "#task-title")
-    assert has_element?(view, "#task-description")
-    assert has_element?(view, "#task-status option[selected][value='pending']")
-    assert has_element?(view, "#task-priority option[selected][value='none']")
-    assert has_element?(view, "#task-due-at[value='']")
-    assert has_element?(view, "#create-task[disabled]")
+    assert has_captured_element?(view, "#task-title")
+    assert has_captured_element?(view, "#task-description")
+    assert has_captured_element?(view, "#task-status option[selected][value='pending']")
+    assert has_captured_element?(view, "#task-priority option[selected][value='none']")
+    assert has_captured_element?(view, "#task-due-at[value='']")
+    assert has_captured_element?(view, "#create-task[disabled]")
 
     valid_params = %{
       title: "Ready to create",
@@ -1117,18 +1197,20 @@ defmodule TaskmanWeb.ProjectLiveTest do
       due_at: ""
     }
 
-    view
-    |> form("#task-form", task: valid_params)
-    |> render_change()
+    change_description(view, valid_params.description)
 
-    refute has_element?(view, "#create-task[disabled]")
+    view
+    |> form("#task-form", task: Map.delete(valid_params, :description))
+    |> render_captured_change(%{"task" => %{"description" => valid_params.description}})
+
+    refute has_captured_element?(view, "#create-task[disabled]")
 
     view
     |> form("#task-form", task: Map.put(valid_params, :title, ""))
-    |> render_change()
+    |> render_captured_change()
 
-    assert has_element?(view, "#create-task[disabled]")
-    assert has_element?(view, "#task-form [data-role='field-error']")
+    assert has_captured_element?(view, "#create-task[disabled]")
+    assert has_captured_element?(view, "#task-form [data-role='field-error']")
   end
 
   test "creates every Task field explicitly and closes the modal", %{conn: conn} do
@@ -1143,18 +1225,22 @@ defmodule TaskmanWeb.ProjectLiveTest do
       due_at: "2026-08-03T16:00"
     }
 
-    view
-    |> form("#task-form", task: task_params)
-    |> render_change()
-
-    refute has_element?(view, "#create-task[disabled]")
+    change_description(view, task_params.description)
 
     view
-    |> form("#task-form", task: task_params)
-    |> render_submit()
+    |> form("#task-form", task: Map.delete(task_params, :description))
+    |> render_captured_change(%{"task" => %{"description" => task_params.description}})
+
+    refute has_captured_element?(view, "#create-task[disabled]")
+
+    change_description(view, task_params.description)
+
+    view
+    |> form("#task-form", task: Map.delete(task_params, :description))
+    |> render_captured_submit(%{"task" => %{"description" => task_params.description}})
 
     assert_patch(view, ~p"/projects/#{project.id}")
-    refute has_element?(view, "#task-modal")
+    refute has_captured_element?(view, "#task-modal")
 
     [task] = Tasks.list_tasks_for_project(project)
     assert task.title == "Ship complete creation"
@@ -1162,10 +1248,10 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert task.status == :in_progress
     assert task.priority == :urgent
     assert task.due_at == ~N[2026-08-03 16:00:00]
-    assert has_element?(view, "#task-#{task.id}")
-    assert has_element?(view, "#task-status-#{task.id}", "In Progress")
-    assert has_element?(view, "#task-priority-#{task.id}", "Urgent")
-    assert has_element?(view, "#tasks-empty.hidden.only\\:block")
+    assert has_captured_element?(view, "#task-#{task.id}")
+    assert has_captured_element?(view, "#task-status-#{task.id}", "In Progress")
+    assert has_captured_element?(view, "#task-priority-#{task.id}", "Urgent")
+    assert has_captured_element?(view, "#tasks-empty.hidden.only\\:block")
   end
 
   test "direct invalid submission preserves the complete draft", %{conn: conn} do
@@ -1180,17 +1266,19 @@ defmodule TaskmanWeb.ProjectLiveTest do
       due_at: "2026-08-04T09:30"
     }
 
-    view
-    |> form("#task-form", task: invalid_params)
-    |> render_submit()
+    change_description(view, invalid_params.description)
 
-    assert has_element?(view, "#task-modal")
-    assert has_element?(view, "#create-task[disabled]")
-    assert has_element?(view, "#task-form [data-role='field-error']")
-    assert has_element?(view, "#task-description", "Keep this draft")
-    assert has_element?(view, "#task-status option[selected][value='in_review']")
-    assert has_element?(view, "#task-priority option[selected][value='high']")
-    assert has_element?(view, "#task-due-at[value='04.08.2026 09:30']")
+    view
+    |> form("#task-form", task: Map.delete(invalid_params, :description))
+    |> render_captured_submit(%{"task" => %{"description" => invalid_params.description}})
+
+    assert has_captured_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#create-task[disabled]")
+    assert has_captured_element?(view, "#task-form [data-role='field-error']")
+    assert view_assigns(view).creation.form[:description].value == "Keep this draft"
+    assert has_captured_element?(view, "#task-status option[selected][value='in_review']")
+    assert has_captured_element?(view, "#task-priority option[selected][value='high']")
+    assert has_captured_element?(view, "#task-due-at[value='04.08.2026 09:30']")
     assert Tasks.list_tasks_for_project(project) == []
   end
 
@@ -1202,25 +1290,27 @@ defmodule TaskmanWeb.ProjectLiveTest do
     parent = task_fixture(project, planning, %{title: "Parent in Planning"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/new")
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
+
+    change_description(view, "Preserve this draft")
 
     view
-    |> form("#task-form", task: %{title: "", description: "Preserve this draft"})
-    |> render_submit()
+    |> form("#task-form", task: %{title: ""})
+    |> render_captured_submit(%{"task" => %{"description" => "Preserve this draft"}})
 
-    assert has_element?(view, "#task-modal")
+    assert has_captured_element?(view, "#task-modal")
 
-    assert has_element?(
+    assert has_captured_element?(
              view,
              "#task-location option[value='project'][selected]",
              "Project #{project.name}"
            )
 
-    assert has_element?(view, "#task-parent-trigger", "Parent in Planning")
-    refute has_element?(view, "#task-parent-search")
-    assert has_element?(view, "#task-form [data-role='field-error']")
-    assert has_element?(view, "#task-description", "Preserve this draft")
+    assert has_captured_element?(view, "#task-parent-trigger", "Parent in Planning")
+    refute has_captured_element?(view, "#task-parent-search")
+    assert has_captured_element?(view, "#task-form [data-role='field-error']")
+    assert view_assigns(view).creation.form[:description].value == "Preserve this draft"
     assert Tasks.list_tasks_for_project(project) == [parent]
   end
 

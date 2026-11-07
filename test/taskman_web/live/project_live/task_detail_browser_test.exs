@@ -972,9 +972,8 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     wait(c.session, &(!&1["expanded"] && &1["panelWidth"] == 48))
     Browser.fill_in(c.session, Query.css("#task-title"), with: "Retained recovery title")
 
-    Browser.fill_in(c.session, Query.css("#task-description"),
-      with: "Retained recovery description"
-    )
+    Browser.click(c.session, Query.css("#task-description [contenteditable='true']"))
+    Browser.send_keys(c.session, ["Retained recovery description"])
 
     Browser.find(c.session, Query.css("#task-title-save-status[data-state='saving']"))
     Browser.find(c.session, Query.css("#task-description-save-status[data-state='saving']"))
@@ -984,9 +983,15 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     Taskman.Repo.delete!(lost)
     :ok = Taskman.ChangeNotifications.publish_list(lost, :updated, [:name])
     Browser.find(c.session, Query.css("#task-recovery #task-title[readonly]"))
-    Browser.find(c.session, Query.css("#task-recovery #task-description[readonly]"))
+
+    Browser.find(
+      c.session,
+      Query.css("#task-recovery #task-description [contenteditable='false']")
+    )
+
     Browser.find(c.session, Query.css("#task-recovery #task-status[disabled]"))
     Browser.find(c.session, Query.css("#task-recovery #task-priority[disabled]"))
+    js(c.session, "document.querySelector('#task-due-at').scrollIntoView({block:'center'})")
     Browser.find(c.session, Query.css("#task-recovery #task-due-at[readonly]"))
 
     assert js(
@@ -999,8 +1004,7 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
     refute js(c.session, "return document.querySelector('#task-detail-content').inert")
 
     for {id, value} <- [
-          {"task-title", "Retained recovery title"},
-          {"task-description", "Retained recovery description"}
+          {"task-title", "Retained recovery title"}
         ] do
       Browser.click(c.session, Query.css("##{id}"))
       Browser.send_keys(c.session, [:control, "a", :null])
@@ -1011,6 +1015,16 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
                [id]
              ) == %{"focus" => id, "selected" => value, "readonly" => true}
     end
+
+    assert js(c.session, """
+           const editor = document.querySelector('#task-description [data-editor-visual]');
+           const range = document.createRange();
+           range.selectNodeContents(editor);
+           const selection = getSelection();
+           selection.removeAllRanges();
+           selection.addRange(range);
+           return {selected:selection.toString().trim(), readonly:editor.contentEditable === 'false'};
+           """) == %{"selected" => "Retained recovery description", "readonly" => true}
 
     js(
       c.session,

@@ -57,6 +57,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       render_component(&Detail.detail/1, %{
         task: task,
         project: project,
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         task_autosave: Autosave.load(Autosave.empty(), task, saved?: true),
         parent_picker: ParentPicker.empty(),
         cancel: "/projects/7/lists/12",
@@ -108,6 +109,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       render_component(&Detail.detail/1, %{
         task: task,
         project: project,
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         task_autosave: Autosave.load(Autosave.empty(), task, saved?: true),
         parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
@@ -146,6 +148,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
       render_component(&Detail.detail/1, %{
         task: task,
         project: %Project{id: 7, name: "Atlas"},
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         task_autosave: task_autosave,
         parent_picker: ParentPicker.empty(),
         cancel: "/projects/7",
@@ -221,6 +224,7 @@ defmodule TaskmanWeb.Tasks.DetailTest do
     render_component(&Detail.detail/1, %{
       task: task,
       project: %Project{id: 7, name: "Atlas"},
+      description_editor: %{editor_id: "description-editor", initial_value: ""},
       task_autosave: Autosave.load(Autosave.empty(), task, saved?: true),
       parent_picker: ParentPicker.empty(),
       cancel: "/projects/7",

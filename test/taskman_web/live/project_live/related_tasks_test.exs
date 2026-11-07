@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -66,10 +67,10 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
              "#related-blocks-link-#{foreign.id}[href='/projects/#{other.id}/tasks/#{foreign.id}']"
            )
 
-    view |> element("#related-blocks-link-#{local.id}") |> render_click()
+    view |> element("#related-blocks-link-#{local.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{local.id}")
-    render_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
-    view |> element("#related-blocks-link-#{foreign.id}") |> render_click()
+    render_captured_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
+    view |> element("#related-blocks-link-#{foreign.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{other.id}/tasks/#{foreign.id}")
   end
 

@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -38,7 +39,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "After"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert_receive {:trace, pid, :send, {:autosave_task_field, task_id, "title", 1}, pid}
     assert pid == view.pid
@@ -59,7 +60,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "After"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     _ = :sys.get_state(view.pid)
 
@@ -75,11 +76,11 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "First"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     view
     |> form("#task-form", task: %{title: "Final"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
@@ -88,7 +89,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "Final"
@@ -105,20 +106,20 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-warning")
 
     view
     |> form("#task-form", task: %{title: "Saved on close"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
     assert {:ok, _} = Tasks.update_task(project, blocker, %{status: :done})
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-done-warning")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}")
     saved = Tasks.get_task_for_project(project, task.id)
@@ -137,20 +138,20 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-done-warning")
 
     view
     |> form("#task-form", task: %{title: "Saved on departure"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
     assert {:ok, _} = Tasks.remove_block(project, blocker, task)
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-done-warning")
 
-    render_patch(view, ~p"/projects/#{project.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}")
 
     refute has_element?(view, "#task-modal")
     saved = Tasks.get_task_for_project(project, task.id)
@@ -167,18 +168,18 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     view
     |> form("#task-form", task: %{title: "Mine"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert {:ok, _} = Tasks.update_task(project, task, %{title: "Latest"})
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-title-conflict")
     assert has_element?(view, "#task-done-warning")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title-conflict")
@@ -199,13 +200,13 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{status: "done"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     view
     |> form("#task-form", task: %{title: "Submitted draft"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> form("#task-form") |> render_submit()
+    view |> form("#task-form") |> render_captured_submit()
 
     assert has_element?(view, "#task-done-warning")
     assert has_element?(view, "#task-status option[value='done'][selected]")
@@ -224,13 +225,13 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "Submitted draft"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
     view
     |> form("#task-form", task: %{title: "Submitted draft"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-form[phx-submit='submit_task_edit']")
@@ -251,17 +252,15 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     task = task_fixture(project, %{title: "Before", description: "Old description"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view
-    |> form("#task-form", task: %{title: "Before", description: "New description"})
-    |> render_change(%{"_target" => ["task", "description"]})
+    change_description(view, "New description")
 
     view
-    |> form("#task-form", task: %{title: "", description: "New description"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> form("#task-form", task: %{title: ""})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     view
-    |> form("#task-form", task: %{title: "", description: "New description"})
-    |> render_submit()
+    |> form("#task-form", task: %{title: ""})
+    |> render_captured_submit()
 
     updated = Tasks.get_task_for_project(project, task.id)
     assert updated.title == "Before"
@@ -279,18 +278,18 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "Dirty title"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
-    view |> element("#task-parent-trigger") |> render_click()
-    view |> element("#task-parent-option-#{parent.id}") |> render_click()
+    view |> element("#task-parent-trigger") |> render_captured_click()
+    view |> element("#task-parent-option-#{parent.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == parent.id
     assert has_element?(view, "#task-title[value='Dirty title']")
     assert has_element?(view, "#task-title-save-status[data-state='saving']")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     updated = Tasks.get_task_for_project(project, task.id)
     assert updated.title == "Dirty title"
@@ -304,18 +303,18 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "First lifecycle"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "First lifecycle"
 
-    view |> element("#open-task-#{task.id}") |> render_click()
+    view |> element("#open-task-#{task.id}") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     view
     |> form("#task-form", task: %{title: "Second lifecycle"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     send(view.pid, {:autosave_task_field, task.id, "title", 1})
     _ = :sys.get_state(view.pid)
@@ -336,11 +335,11 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "First flushed"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, first.id).title == "First persisted"
 
-    render_patch(view, second_path)
+    render_captured_patch(view, second_path)
 
     assert Tasks.get_task_for_project(project, first.id).title == "First flushed"
     assert has_element?(view, "#task-title[value='Second persisted']")
@@ -359,15 +358,13 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     task = task_fixture(project, %{title: "Before", description: "Old description"})
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
-    view
-    |> form("#task-form", task: %{title: "Before", description: "New description"})
-    |> render_change(%{"_target" => ["task", "description"]})
+    change_description(view, "New description")
 
     view
-    |> form("#task-form", task: %{title: "", description: "New description"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> form("#task-form", task: %{title: ""})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}")
 
     updated = Tasks.get_task_for_project(project, task.id)
@@ -391,11 +388,11 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "Valid alongside failure", status: "pending"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     view
     |> form("#task-form", task: %{title: "Valid alongside failure", status: "in_review"})
-    |> render_change(%{"_target" => ["task", "status"]})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
 
     assert has_element?(view, "#task-status-save-status[data-state='failed']")
     assert has_element?(view, "#task-status option[selected][value='in_review']")
@@ -403,7 +400,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "Valid alongside failure", status: "in_review"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-status-save-status[data-state='failed']")
@@ -413,11 +410,11 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert updated.title == "Valid alongside failure"
     assert updated.status == :pending
 
-    render_patch(view, ~p"/projects/#{project.id}")
+    render_captured_patch(view, ~p"/projects/#{project.id}")
     assert_patch(view, ~p"/projects/#{project.id}")
     assert_patch(view, task_path)
 
-    render_patch(view, task_path)
+    render_captured_patch(view, task_path)
     assert_patch(view, task_path)
     refute_patched(view, task_path)
     assert has_element?(view, "#task-modal")
@@ -489,9 +486,9 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "After"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{list.id}")
     assert Tasks.get_task_for_project(project, task.id).title == "After"
@@ -507,14 +504,14 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: ""})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert has_element?(view, "#task-form [data-role='field-error']")
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
     assert has_element?(view, "#task-form [data-role='field-error']")
@@ -530,12 +527,12 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "After"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     moved_task = Tasks.get_task_for_project(project, task.id)
     assert moved_task.title == "After"
@@ -553,7 +550,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
 
     view
     |> form("#task-form", task: %{title: "Mine"})
-    |> render_change(%{"_target" => ["task", "title"]})
+    |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert {:ok, latest} = Tasks.update_task(project, task, %{title: "Latest"})
 
@@ -568,7 +565,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert has_element?(view, "#use-latest-title")
     assert has_element?(view, "#keep-mine-title")
 
-    view |> element("#use-latest-title") |> render_click()
+    view |> element("#use-latest-title") |> render_captured_click()
 
     assert has_element?(view, "#task-modal")
     assert has_element?(view, "#task-title[value='Latest']")

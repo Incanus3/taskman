@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -23,13 +24,13 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, source, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{source.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     Taskman.Repo.delete!(destination)
     send(view.pid, list_event(project.id, destination.id))
-    render(view)
+    render_captured(view)
 
     assert has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#move-task-search-#{task.id}[value='Destination']")
@@ -53,12 +54,12 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, source, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{source.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     Taskman.Repo.delete!(destination)
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert view_assigns(view).task_move.error ==
              "That destination is no longer available. Choose another destination."
@@ -85,13 +86,13 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, source, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{source.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     assert {:ok, moved} = Tasks.move_task(project, task, actual)
 
     send(view.pid, task_event(moved))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{actual.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-modal #move-task-#{task.id}")
@@ -99,11 +100,11 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     assert Tasks.get_task_for_project(project, task.id).list_id == actual.id
     refute has_element?(view, "#move-task-current-location-#{task.id}")
 
-    view |> element("#cancel-move-task-#{task.id}") |> render_click()
+    view |> element("#cancel-move-task-#{task.id}") |> render_captured_click()
     assert has_element?(view, "#task-modal #task-form")
     refute has_element?(view, "#move-task-#{task.id}")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{actual.id}")
   end
 
@@ -115,9 +116,9 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, source, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{source.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     refute has_element?(view, "#move-task-current-location-#{task.id}")
 
     task
@@ -126,7 +127,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
 
     Taskman.Repo.delete!(source)
     send(view.pid, list_event(project.id, source.id))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{destination.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-modal #move-task-#{task.id}")
@@ -152,9 +153,9 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, lost, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
     task
     |> Ecto.Changeset.change(%{list_id: nil})
@@ -162,7 +163,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-modal #move-task-#{task.id}")
@@ -180,11 +181,11 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     {:ok, view, _} =
       live(conn, ~p"/projects/#{project.id}/lists/#{parent.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_keyup(%{"value" => "Second"})
     assert {:ok, moved} = Tasks.move_task(project, task, second)
     send(view.pid, task_event(moved))
-    render(view)
+    render_captured(view)
 
     refute_patched(
       view,
@@ -202,7 +203,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     assert has_element?(view, "#project-tasks-count-value", "1")
     assert has_element?(view, "#location-task-count-value", "1 / 1")
     Taskman.Repo.delete!(task)
@@ -224,7 +225,7 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task_list = list_fixture(project)
     task = task_fixture(project, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     Taskman.Repo.delete!(task)
     query_ref = track_location_count_queries(view)
 
@@ -243,11 +244,11 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     Taskman.Repo.delete!(task)
     query_ref = track_location_count_queries(view)
 
-    view |> element("#cancel-move-task-#{task.id}") |> render_click()
+    view |> element("#cancel-move-task-#{task.id}") |> render_captured_click()
 
     refute has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#flash-error", "This Task is no longer available.")
@@ -263,12 +264,12 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     task = task_fixture(project, lost, %{title: "Move me"})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/lists/#{lost.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
     query_ref = track_location_count_queries(view)
     send(view.pid, list_event(project.id, lost.id))
-    render(view)
+    render_captured(view)
 
     assert_patch(view, ~p"/projects/#{project.id}")
     refute has_element?(view, "#move-task-#{task.id}")

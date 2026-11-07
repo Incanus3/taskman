@@ -203,6 +203,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
         :creation,
         TaskmanWeb.ProjectLive.Tasks.Creation.State.empty()
       )
+      |> Phoenix.Component.assign(:description, %TaskmanWeb.ProjectLive.Tasks.Description.State{})
 
     socket = TaskmanWeb.ProjectLive.Tasks.Creation.apply_route(socket, %{})
 
@@ -235,6 +236,7 @@ defmodule TaskmanWeb.ProjectLive.WorkspaceTest do
       socket
       |> Workspace.ensure_locations(project)
       |> Phoenix.Component.assign(:creation, TaskmanWeb.ProjectLive.Tasks.Creation.State.empty())
+      |> Phoenix.Component.assign(:description, %TaskmanWeb.ProjectLive.Tasks.Description.State{})
 
     child = list_fixture(project, task_list)
     parent_task = task_fixture(project, child, %{})

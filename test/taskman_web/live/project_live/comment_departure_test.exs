@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -23,19 +24,24 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     {:ok, view, _} = live(conn, path)
 
     view |> form("#task-comment-form", comment: %{text: "  "}) |> render_change()
-    view |> element("#task-dialog-header #task-modal-close") |> render_click()
+    view |> element("#task-dialog-header #task-modal-close") |> render_captured_click()
     refute has_element?(view, "#task-comment-departure")
     assert_patch(view, "/projects/#{project.id}")
 
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: " Unposted "}) |> render_change()
-    view |> render_hook("request_task_departure", %{"destination" => destination})
+    view |> render_captured_hook("request_task_departure", %{"destination" => destination})
     assert has_element?(view, "#task-comment-departure[role='dialog']")
     assert has_element?(view, "#task-comment-departure-go-back")
     assert has_element?(view, "#task-comment-departure-submit")
     assert has_element?(view, "#task-comment-departure-discard")
     assert view_assigns(view).comment_departure.destination == destination
-    view |> render_hook("request_task_departure", %{"destination" => "/projects/#{project.id}"})
+
+    view
+    |> render_captured_hook("request_task_departure", %{
+      "destination" => "/projects/#{project.id}"
+    })
+
     assert view_assigns(view).comment_departure.destination == destination
     assert view_assigns(view).comments.draft == " Unposted "
   end
@@ -50,17 +56,17 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: "Keep me"}) |> render_change()
 
-    render_patch(view, path <> "?include_children=false")
+    render_captured_patch(view, path <> "?include_children=false")
     refute has_element?(view, "#task-comment-departure")
     assert has_element?(view, "#task-comment-text", "Keep me")
 
     task_list = list_fixture(project)
-    render_patch(view, "/projects/#{project.id}/lists/#{task_list.id}/tasks/#{task.id}")
+    render_captured_patch(view, "/projects/#{project.id}/lists/#{task_list.id}/tasks/#{task.id}")
     refute has_element?(view, "#task-comment-departure")
     assert has_element?(view, "#task-comment-text", "Keep me")
-    render_patch(view, path <> "?include_children=false")
+    render_captured_patch(view, path <> "?include_children=false")
 
-    render_patch(view, "/projects/#{project.id}/tasks/#{other.id}?include_children=true")
+    render_captured_patch(view, "/projects/#{project.id}/tasks/#{other.id}?include_children=true")
     assert has_element?(view, "#task-comment-departure")
 
     assert view_assigns(view).comment_departure.destination ==
@@ -79,7 +85,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     {:ok, view, _} = live(conn, path)
 
     view |> form("#task-comment-form", comment: %{text: "Keep this draft"}) |> render_change()
-    render_patch(view, destination)
+    render_captured_patch(view, destination)
 
     assert has_element?(view, "#task-comment-departure")
     assert view_assigns(view).comment_departure.destination == destination
@@ -104,7 +110,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
 
     Taskman.Repo.delete!(stale_list)
 
-    render_patch(view, destination)
+    render_captured_patch(view, destination)
 
     assert has_element?(view, "#task-comment-departure")
     assert view_assigns(view).comment_departure.destination == destination
@@ -121,20 +127,20 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     destination = "/projects/#{project.id}"
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: "Hold"}) |> render_change()
-    view |> element("#task-dialog-header #task-modal-close") |> render_click()
-    view |> element("#task-comment-departure-go-back") |> render_click()
+    view |> element("#task-dialog-header #task-modal-close") |> render_captured_click()
+    view |> element("#task-comment-departure-go-back") |> render_captured_click()
     refute has_element?(view, "#task-comment-departure")
     assert has_element?(view, "#task-comment-text", "Hold")
 
-    view |> element("#task-dialog-header #task-modal-close") |> render_click()
-    view |> element("#task-comment-departure-discard") |> render_click()
+    view |> element("#task-dialog-header #task-modal-close") |> render_captured_click()
+    view |> element("#task-comment-departure-discard") |> render_captured_click()
     assert_patch(view, destination)
     assert {:ok, []} = Tasks.list_comments(project, task)
 
     {:ok, view, _} = live(conn, path)
     view |> form("#task-comment-form", comment: %{text: "Post once"}) |> render_change()
-    view |> element("#task-dialog-header #task-modal-close") |> render_click()
-    view |> element("#task-comment-departure-submit") |> render_click()
+    view |> element("#task-dialog-header #task-modal-close") |> render_captured_click()
+    view |> element("#task-comment-departure-submit") |> render_captured_click()
     assert_patch(view, destination)
     assert {:ok, [comment]} = Tasks.list_comments(project, task)
     assert comment.text == "Post once"
@@ -154,14 +160,14 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     |> form("#task-form", task: %{title: ""})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    view |> render_hook("request_task_departure", %{"destination" => destination})
-    view |> element("#task-comment-departure-submit") |> render_click()
+    view |> render_captured_hook("request_task_departure", %{"destination" => destination})
+    view |> element("#task-comment-departure-submit") |> render_captured_click()
     assert has_element?(view, "#task-comment-departure-error", "Save the Task fields")
     assert view_assigns(view).comment_departure.destination == destination
     assert view_assigns(view).comments.draft == "Keep comment"
     assert {:ok, []} = Tasks.list_comments(project, task)
 
-    view |> element("#task-comment-departure-discard") |> render_click()
+    view |> element("#task-comment-departure-discard") |> render_captured_click()
     assert view_assigns(view).comment_departure.destination == destination
     assert view_assigns(view).comments.draft == "Keep comment"
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
@@ -173,11 +179,11 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     destination = "/projects/#{project.id}?include_children=false"
     {:ok, view, _} = live(conn, "/projects/#{project.id}/tasks/#{task.id}")
     view |> form("#task-comment-form", comment: %{text: "Keep comment"}) |> render_change()
-    view |> element("#task-sessions-tab") |> render_click()
-    view |> render_hook("request_task_departure", %{"destination" => destination})
+    view |> element("#task-sessions-tab") |> render_captured_click()
+    view |> render_captured_hook("request_task_departure", %{"destination" => destination})
     Taskman.Repo.delete!(task)
 
-    view |> element("#task-comment-departure-submit") |> render_click()
+    view |> element("#task-comment-departure-submit") |> render_captured_click()
     assert has_element?(view, "#task-activity-tab[aria-selected='true']")
     assert has_element?(view, "#task-comment-error", "no longer available")
     refute has_element?(view, "#task-comment-departure")
@@ -186,7 +192,7 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     assert view_assigns(view).comment_departure.destination == destination
 
     view
-    |> render_hook("request_task_departure", %{
+    |> render_captured_hook("request_task_departure", %{
       "destination" => "/projects/#{project.id}?statuses=done"
     })
 
@@ -208,21 +214,23 @@ defmodule TaskmanWeb.ProjectLive.CommentDepartureTest do
     |> form("#task-comment-form", comment: %{text: String.duplicate("a", 10_001)})
     |> render_change()
 
-    view |> render_hook("request_task_departure", %{"destination" => retained_destination})
-    view |> element("#task-comment-departure-submit") |> render_click()
+    view
+    |> render_captured_hook("request_task_departure", %{"destination" => retained_destination})
+
+    view |> element("#task-comment-departure-submit") |> render_captured_click()
     refute has_element?(view, "#task-comment-departure")
     assert view_assigns(view).comment_departure.destination == retained_destination
 
     view
     |> form("#task-comment-form", comment: %{text: "Recovered ordinary post"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert {:ok, [comment]} = Tasks.list_comments(project, task)
     assert comment.text == "Recovered ordinary post"
     assert view_assigns(view).comment_departure.destination == nil
 
     view |> form("#task-comment-form", comment: %{text: "A new draft"}) |> render_change()
-    view |> render_hook("request_task_departure", %{"destination" => next_destination})
+    view |> render_captured_hook("request_task_departure", %{"destination" => next_destination})
     assert has_element?(view, "#task-comment-departure")
     assert view_assigns(view).comment_departure.destination == next_destination
   end

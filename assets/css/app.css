@@ -6,6 +6,7 @@
 @source "../css";
 @source "../js";
 @source "../../lib/taskman_web";
+@source "../../deps/leaf/lib";
 /* Project choices and derived List icons use dynamic class names. */
 @source inline("hero-{check-circle,folder,folder-open,briefcase,code-bracket,rocket-launch,beaker,light-bulb,wrench-screwdriver,queue-list}");
 /* Required for Tailwind to automatically pick up changes in colocated CSS files in dev */
@@ -832,4 +833,85 @@
   background-color: rgb(30 41 59);
   outline: 2px solid rgb(129 140 248 / 0.5);
   outline-offset: -2px;
+}
+
+/* Leaf uses the same semantic palette as the surrounding Task editor. */
+.task-description-leaf {
+  --color-base-100: var(--color-slate-950);
+  --color-base-200: var(--color-slate-900);
+  --color-base-300: var(--color-slate-700);
+  --color-base-content: var(--color-slate-100);
+  --color-primary: var(--color-indigo-400);
+  min-width: 0;
+  border: 1px solid var(--color-slate-700);
+  border-radius: 0.75rem;
+}
+/* Taskman owns save feedback; omit Leaf's counts and reading-time bar. */
+.task-description-leaf div:has(> [data-editor-footer]) {
+  display: none;
+}
+/* Keep toolbar separators flush with the panel edges. */
+.task-description-leaf [data-visual-toolbar] {
+  padding-block: 0;
+  margin-bottom: 0;
+  min-height: 2.25rem;
+  border-bottom: 1px solid var(--color-slate-700);
+  border-radius: 0.75rem 0.75rem 0 0;
+}
+.task-description-leaf [data-visual-toolbar] .divider-horizontal {
+  height: auto;
+  margin-block: 0;
+  align-self: stretch;
+}
+/* Use the outer editor border; override Leaf's inline body corner radius. */
+.task-description-leaf [data-leaf-body-wrapper] {
+  border: 0;
+  border-radius: 0 0 calc(0.75rem - 1px) calc(0.75rem - 1px) !important;
+  background-color: var(--color-slate-950);
+}
+/* Toolbar menus must escape the panel; the editor body owns content clipping. */
+.task-description-leaf [data-mobile-toolbar] {
+  flex-wrap: wrap;
+}
+.task-description-leaf :is(button, select, textarea):focus-visible {
+  outline: 2px solid var(--color-indigo-400);
+  outline-offset: -2px;
+}
+.task-description-leaf [data-editor-visual]:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-indigo-400);
+}
+.task-description-leaf [data-editor-visual] {
+  overflow-wrap: anywhere;
+}
+.task-description-leaf [data-editor-visual] :is(pre, table) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Theme the overflow corner and grip together; scrollbar-color overrides WebKit part styling. */
+@supports selector(::-webkit-scrollbar) {
+  .task-description-leaf :is([data-editor-visual], textarea) {
+    scrollbar-color: auto;
+  }
+  .task-description-leaf :is([data-editor-visual], textarea)::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+    background: var(--color-slate-950);
+  }
+  .task-description-leaf :is([data-editor-visual], textarea)::-webkit-scrollbar-thumb {
+    background: var(--color-slate-600);
+    border: 3px solid var(--color-slate-950);
+    border-radius: 999px;
+  }
+  .task-description-leaf :is([data-editor-visual], textarea)::-webkit-scrollbar-corner,
+  .task-description-leaf :is([data-editor-visual], textarea)::-webkit-resizer {
+    background-color: var(--color-slate-950);
+    border: 0;
+  }
+  .task-description-leaf :is([data-editor-visual], textarea)::-webkit-resizer {
+    background-image: linear-gradient(135deg, transparent 50%, var(--color-slate-500) 50% 60%, transparent 60%);
+    background-size: 8px 8px;
+    background-position: right 2px bottom 2px;
+    background-repeat: no-repeat;
+  }
 }

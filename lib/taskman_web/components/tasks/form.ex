@@ -25,6 +25,7 @@ defmodule TaskmanWeb.Tasks.Form do
   attr :field_states, :map, default: %{}
   attr :status_values, :list, default: nil
   attr :reveal_states_event, :string, default: nil
+  attr :description_editor, :map, required: true
   attr :recovery?, :boolean, default: false
 
   def form(assigns) do
@@ -60,6 +61,7 @@ defmodule TaskmanWeb.Tasks.Form do
   attr :field_states, :map, default: %{}
   attr :status_values, :list, default: nil
   attr :reveal_states_event, :string, default: nil
+  attr :description_editor, :map, required: true
   attr :recovery?, :boolean, default: false
 
   defp fields(assigns) do
@@ -162,19 +164,18 @@ defmodule TaskmanWeb.Tasks.Form do
     <div class="mt-4 space-y-4">
       <.lifecycle_field
         field="description"
-        states={@field_states}
+        states={description_capture_states(@field_states, @description_editor)}
         conflicts={@conflicts}
         recovery?={@recovery?}
       >
-        <.input
+        <TaskmanWeb.DescriptionEditor.editor
           field={@form[:description]}
           id="task-description"
-          type="textarea"
-          label="Description"
-          rows="6"
-          readonly={@recovery?}
-          class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/15"
-          error_class="border-rose-400 focus:border-rose-400 focus:ring-rose-400/15"
+          editor_id={@description_editor.editor_id}
+          initial_value={@description_editor.initial_value}
+          readonly?={@recovery?}
+          capture={Map.get(@description_editor, :pending_capture)}
+          save_state={Map.get(@field_states, "description", :idle)}
         />
       </.lifecycle_field>
       <.conflict_notice
@@ -426,4 +427,12 @@ defmodule TaskmanWeb.Tasks.Form do
        }}
     end)
   end
+
+  defp description_capture_states(states, %{pending_capture: %{timed_out?: true}}),
+    do: Map.put(states, "description", :not_saved)
+
+  defp description_capture_states(states, %{pending_capture: pending}) when not is_nil(pending),
+    do: Map.put(states, "description", :saving)
+
+  defp description_capture_states(states, _), do: states
 end

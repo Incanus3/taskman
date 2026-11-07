@@ -9,7 +9,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
   alias TaskmanWeb.ProjectLive.{Paths, Workspace}
-  alias TaskmanWeb.ProjectLive.Tasks.{Listing, LocationScope, Messages, ParentPicker}
+  alias TaskmanWeb.ProjectLive.Tasks.{Description, Listing, LocationScope, Messages, ParentPicker}
 
   @events ["validate_task", "save_task", "reveal_task_creation_states"]
 
@@ -140,6 +140,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     socket
     |> assign(:creation, creation)
     |> assign(:task_parent_picker, parent_picker)
+    |> Description.open({:new, project.id})
   end
 
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
@@ -186,6 +187,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     end
   end
 
+  def change_description(socket, markdown) do
+    task_params = Map.put(socket.assigns.creation.form.params || %{}, "description", markdown)
+    {:noreply, socket} = handle_event("validate_task", %{"task" => task_params}, socket)
+    socket
+  end
+
   @spec refresh_locations(Phoenix.LiveView.Socket.t(), [TaskList.t()]) ::
           Phoenix.LiveView.Socket.t()
   def refresh_locations(socket, task_lists) do
@@ -215,7 +222,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   end
 
   @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
-  def clear(socket), do: assign(socket, :creation, State.clear(socket.assigns.creation))
+  def clear(socket) do
+    socket = assign(socket, :creation, State.clear(socket.assigns.creation))
+
+    case socket.assigns.description.context do
+      {:new, _} -> Description.clear(socket)
+      _ -> socket
+    end
+  end
 
   defp create_task(socket, project, destination, task_params, location) do
     case Tasks.create_task(project, destination, task_params,

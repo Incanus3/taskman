@@ -2,6 +2,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
   use TaskmanWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import TaskmanWeb.DescriptionEditorHelpers
   import Taskman.AccountsFixtures
   import Taskman.ListsFixtures
   import Taskman.ProjectsFixtures
@@ -19,19 +20,19 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     destination = list_fixture(project, %{name: "Destination"})
     {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_captured_click()
     assert_projected_move_rows(view, root, nested, sibling)
-    view |> element("#move-task-search-#{nested.id}") |> render_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
     assert_projected_move_rows(view, root, nested, sibling)
     view |> element("#move-task-search-#{nested.id}") |> render_keyup(%{"value" => "Dest"})
     assert_projected_move_rows(view, root, nested, sibling)
-    render_click(view, "close_move_destinations")
+    render_captured_click(view, "close_move_destinations")
     assert_projected_move_rows(view, root, nested, sibling)
-    view |> element("#move-task-search-#{nested.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     Repo.delete!(destination)
-    view |> element("#move-task-submit-#{nested.id}") |> render_click()
+    view |> element("#move-task-submit-#{nested.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -55,17 +56,19 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     {:ok, view, _} =
       live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending,in_review")
 
-    view |> element("#toggle-task-subtasks-#{a.id}") |> render_click()
-    view |> element("#move-task-row-button-#{c.id}") |> render_click()
-    view |> element("#move-task-search-#{c.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{a.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{c.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{c.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     draft = :sys.get_state(view.pid).socket.assigns.task_move
 
     for {statuses, expected, depth} <- [
           {["pending"], [b.id, c.id], 1},
           {["pending", "in_review"], [a.id, b.id, c.id], 2}
         ] do
-      render_click(view, "filter_task_statuses", %{"status_filter" => %{"statuses" => statuses}})
+      render_captured_click(view, "filter_task_statuses", %{
+        "status_filter" => %{"statuses" => statuses}
+      })
 
       ids =
         view
@@ -95,19 +98,21 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
           "/projects/#{project.id}/lists/#{source.id}?statuses=pending&include_children=true"
         )
 
-      view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+      view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
       moving = if action == :include, do: included, else: nested
-      view |> element("#move-task-row-button-#{moving.id}") |> render_click()
+      view |> element("#move-task-row-button-#{moving.id}") |> render_captured_click()
 
       case action do
         :collapse ->
-          view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
+          view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
 
         :filter ->
-          render_click(view, "filter_task_statuses", %{"status_filter" => %{"statuses" => []}})
+          render_captured_click(view, "filter_task_statuses", %{
+            "status_filter" => %{"statuses" => []}
+          })
 
         :include ->
-          view |> element("#include-child-lists") |> render_click()
+          view |> element("#include-child-lists") |> render_captured_click()
       end
 
       refute has_element?(view, "#move-task-#{moving.id}")
@@ -124,10 +129,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     actual = list_fixture(project, %{name: "Actual"})
     destination = list_fixture(project, %{name: "Destination"})
     {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
-    view |> element("#move-task-search-#{nested.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     assert {:ok, nested} = Tasks.move_task(project, nested, actual)
     notify_nested_move(view, nested)
     assert_projected_move_rows(view, root, nested, sibling)
@@ -149,12 +154,12 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     %{project: project, source: source, root: root, nested: nested} = nested_move_fixture()
     destination = list_fixture(project, %{name: "Destination"})
     {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
-    view |> element("#move-task-search-#{nested.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     nested |> Ecto.Changeset.change(parent_task_id: nil) |> Repo.update!()
-    render_click(view, "close_move_destinations")
+    render_captured_click(view, "close_move_destinations")
     assert_patch(view, "/projects/#{project.id}/tasks/#{nested.id}")
     assert has_element?(view, "#task-modal #move-task-#{nested.id}")
     assert has_element?(view, "#move-task-search-#{nested.id}[value='Destination']")
@@ -164,11 +169,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     %{project: project, source: source, root: root, nested: nested} = nested_move_fixture()
     destination = list_fixture(project, %{name: "Destination"})
     {:ok, view, _} = live(conn, "/projects/#{project.id}/lists/#{source.id}?statuses=pending")
-    view |> element("#toggle-task-subtasks-#{root.id}") |> render_click()
-    view |> element("#move-task-row-button-#{nested.id}") |> render_click()
-    view |> element("#move-task-search-#{nested.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
-    view |> element("#move-task-submit-#{nested.id}") |> render_click()
+    view |> element("#toggle-task-subtasks-#{root.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{nested.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{nested.id}") |> render_captured_click()
     assert_patch(view, "/projects/#{project.id}/lists/#{destination.id}")
     assert Tasks.get_task_for_project(project, nested.id).list_id == destination.id
     refute has_element?(view, "#move-task-#{nested.id}")
@@ -183,7 +188,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
 
     view
     |> element("#move-task-search-#{task.id}")
@@ -208,17 +213,17 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
 
     assert has_element?(view, "#move-task-search-#{task.id}[aria-expanded='false']")
     refute has_element?(view, "#move-task-options-#{task.id}")
 
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert has_element?(view, "#move-task-search-#{task.id}[aria-expanded='true']")
     assert has_element?(view, "#move-task-option-list-#{planning.id}")
 
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -237,7 +242,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_keyup(%{"value" => "Plan"})
 
     assert has_element?(
@@ -245,13 +250,13 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
              "#move-task-destination-picker-#{task.id}[phx-click-away='close_move_destinations']"
            )
 
-    render_click(view, "close_move_destinations")
+    render_captured_click(view, "close_move_destinations")
 
     assert has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#move-task-search-#{task.id}[aria-expanded='false'][value='Plan']")
     refute has_element?(view, "#move-task-options-#{task.id}")
 
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     assert has_element?(view, "#move-task-options-#{task.id}")
   end
 
@@ -266,11 +271,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     assert {:ok, _moved} = Tasks.move_task(project, task, planning)
 
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert has_element?(view, "#move-task-submit-#{task.id}[disabled]")
@@ -284,7 +289,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     persisted_task = Tasks.get_task_for_project(project, task.id)
     assert {:ok, _moved} = Tasks.move_task(project, persisted_task, inbox)
 
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -312,8 +317,8 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     task = task_fixture(project, %{title: "Move me"})
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -350,10 +355,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     {:ok, view, _html} =
       live(conn, ~p"/projects/#{project.id}/lists/#{inbox.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}")
@@ -371,10 +376,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, path)
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{child.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{child.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == child.id
     refute_patched(view, ~p"/projects/#{project.id}/lists/#{child.id}?include_children=true")
@@ -398,15 +403,15 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     view
     |> form("#task-form", task: %{priority: "urgent"})
-    |> render_change(%{"_target" => ["task", "priority"]})
+    |> render_captured_change(%{"_target" => ["task", "priority"]})
 
     assert Tasks.get_task_for_project(project, task.id).priority == :urgent
     assert has_element?(view, "#task-priority-save-status[data-state='saved']", "Saved")
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}/tasks/#{task.id}")
@@ -420,7 +425,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     assert has_element?(view, "#task-priority option[selected][value='urgent']")
     assert has_element?(view, "#task-priority-save-status[data-state='saved']", "Saved")
 
-    view |> element("#task-modal-close") |> render_click()
+    view |> element("#task-modal-close") |> render_captured_click()
     assert_patch(view, ~p"/projects/#{project.id}/lists/#{planning.id}")
   end
 
@@ -435,10 +440,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, path)
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{child.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{child.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == child.id
 
@@ -459,7 +464,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, task_path)
 
-    view |> element("#move-task-detail-button-#{task.id}") |> render_click()
+    view |> element("#move-task-detail-button-#{task.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -509,10 +514,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
              "#task-location-cell-#{task.id}[aria-label='Location: Work / Inbox']"
            )
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == planning.id
     assert has_element?(view, "#tasks-#{task.id}")
@@ -531,9 +536,9 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-project-#{project.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-project-#{project.id}") |> render_captured_click()
 
     view
     |> element("#move-task-search-#{task.id}")
@@ -544,11 +549,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
              "#move-task-option-list-#{child.id}[aria-label='Planning / Launch']"
            )
 
-    view |> element("#rename-list-#{root.id}") |> render_click()
+    view |> element("#rename-list-#{root.id}") |> render_captured_click()
 
     view
     |> form("#list-rename-form-#{root.id}", list: %{name: "Roadmap"})
-    |> render_submit()
+    |> render_captured_submit()
 
     assert has_element?(view, "#move-task-#{task.id}")
 
@@ -570,14 +575,14 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{first.id}") |> render_click()
+    view |> element("#move-task-row-button-#{first.id}") |> render_captured_click()
     assert has_element?(view, "#move-task-#{first.id}")
 
-    view |> element("#move-task-row-button-#{second.id}") |> render_click()
+    view |> element("#move-task-row-button-#{second.id}") |> render_captured_click()
     refute has_element?(view, "#move-task-#{first.id}")
     assert has_element?(view, "#move-task-#{second.id}")
 
-    view |> element("#cancel-move-task-#{second.id}") |> render_click()
+    view |> element("#cancel-move-task-#{second.id}") |> render_captured_click()
 
     refute has_element?(view, "#move-task-#{second.id}")
   end
@@ -590,26 +595,29 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
 
     view
     |> element("#move-task-search-#{task.id}")
     |> render_keyup(%{"value" => "Project"})
 
-    render_click(view, "select_move_destination", %{"destination" => "list:#{foreign_list.id}"})
-    render_click(view, "submit_move_task")
+    render_captured_click(view, "select_move_destination", %{
+      "destination" => "list:#{foreign_list.id}"
+    })
+
+    render_captured_click(view, "submit_move_task")
 
     assert has_element?(view, "#move-task-error-#{task.id}[role='alert']")
 
-    view |> element("#cancel-move-task-#{task.id}") |> render_click()
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#cancel-move-task-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
 
     assert has_element?(view, "#move-task-search-#{task.id}[value='']")
     refute has_element?(view, "#move-task-error-#{task.id}")
     assert has_element?(view, "#move-task-search-#{task.id}[aria-expanded='false']")
     refute has_element?(view, "#move-task-options-#{task.id}")
 
-    view |> element("#move-task-search-#{task.id}") |> render_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert has_element?(
              view,
@@ -626,12 +634,12 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     Repo.delete!(task)
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     refute has_element?(view, "#move-task-#{task.id}")
     assert has_element?(view, "#flash-error", "This Task is no longer available.")
@@ -644,12 +652,12 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{destination.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
     Repo.delete!(destination)
 
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
     assert has_element?(view, "#tasks-#{task.id}")
@@ -670,7 +678,7 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
              "#task-actions-#{task.id} #move-task-row-button-#{task.id}.pointer-events-auto"
            )
 
-    view |> element("#open-task-#{task.id}") |> render_click()
+    view |> element("#open-task-#{task.id}") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{project.id}/tasks/#{task.id}")
     assert has_element?(view, "#task-modal")
@@ -686,9 +694,9 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert {:ok, _moved} =
              Task.async(fn -> Tasks.move_task(project, task, planning) end)
@@ -721,9 +729,9 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
     assert {:ok, _moved} = Tasks.move_task(project, task, planning)
 
     view
@@ -748,9 +756,9 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}?include_children=true")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     assert {:ok, _moved} =
              Task.async(fn -> Tasks.move_task(project, task, planning) end)
@@ -773,10 +781,13 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
     task = task_fixture(project, %{title: "Move me"})
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
 
-    render_click(view, "select_move_destination", %{"destination" => "list:#{foreign_list.id}"})
-    render_click(view, "submit_move_task")
+    render_captured_click(view, "select_move_destination", %{
+      "destination" => "list:#{foreign_list.id}"
+    })
+
+    render_captured_click(view, "submit_move_task")
 
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
     assert has_element?(view, "#move-task-#{task.id}")
@@ -790,10 +801,10 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}/lists/#{inbox.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-project-#{project.id}") |> render_click()
-    view |> element("#move-task-submit-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-project-#{project.id}") |> render_captured_click()
+    view |> element("#move-task-submit-#{task.id}") |> render_captured_click()
 
     assert Tasks.get_task_for_project(project, task.id).list_id == nil
     assert_patch(view, ~p"/projects/#{project.id}")
@@ -808,9 +819,9 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
-    view |> element("#move-task-search-#{task.id}") |> render_click()
-    view |> element("#move-task-option-list-#{planning.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-search-#{task.id}") |> render_captured_click()
+    view |> element("#move-task-option-list-#{planning.id}") |> render_captured_click()
 
     view
     |> element("#move-task-search-#{task.id}")
@@ -828,11 +839,11 @@ defmodule TaskmanWeb.ProjectLive.MoveTaskTest do
 
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
-    view |> element("#move-task-row-button-#{task.id}") |> render_click()
+    view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     assert has_element?(view, "#move-task-#{task.id}")
 
-    view |> element("#project-selector-toggle") |> render_click()
-    view |> element("#select-project-#{destination_project.id}") |> render_click()
+    view |> element("#project-selector-toggle") |> render_captured_click()
+    view |> element("#select-project-#{destination_project.id}") |> render_captured_click()
 
     assert_patch(view, ~p"/projects/#{destination_project.id}")
     assert has_element?(view, "#project-selector-name", destination_project.name)

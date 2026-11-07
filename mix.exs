@@ -65,6 +65,7 @@ defmodule Taskman.MixProject do
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
+      {:leaf, "0.10.1"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:wallaby, "~> 0.31.0", only: :test, runtime: false},
       {:phoenix_live_dashboard, "~> 0.9.1"},

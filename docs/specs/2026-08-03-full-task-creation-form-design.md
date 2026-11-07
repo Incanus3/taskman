@@ -3,6 +3,10 @@
 **Date:** 2026-08-03  
 **Status:** Approved design
 
+> **Superseded description control:** The plain-text description input guidance below is replaced
+> by the [shared Markdown editor design](2026-11-06-task-description-markdown-design.md).
+> Creation, lifecycle, field persistence and other controls retain their existing contracts.
+
 ## Goal
 
 Let a user provide all currently editable Task details while creating a Task, while preserving an

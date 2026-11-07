@@ -14,6 +14,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
     for mode <- [:new, :edit], value <- [nil, ~N[1960-05-06 09:30:42], ~N[0999-05-06 09:30:00]] do
       document =
         render_component(&Form.form/1, %{
+          description_editor: %{editor_id: "description-editor", initial_value: ""},
           form: %Task{id: 41, due_at: value} |> Tasks.change_task() |> to_form(),
           mode: mode,
           change: "autosave_task",
@@ -58,6 +59,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
   test "recovery retains the readable day-first due field" do
     document =
       render_component(&Form.form/1, %{
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         form: %Task{id: 41, due_at: ~N[2030-05-06 09:30:00]} |> Tasks.change_task() |> to_form(),
         mode: :edit,
         change: "autosave_task",
@@ -76,6 +78,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
     for mode <- [:new, :edit] do
       document =
         render_component(&Form.form/1, %{
+          description_editor: %{editor_id: "description-editor", initial_value: ""},
           form: %Task{status: :in_review, priority: :high} |> Tasks.change_task() |> to_form(),
           mode: mode,
           change: "autosave_task",
@@ -129,6 +132,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
 
     document =
       render_component(&Form.form/1, %{
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         form: task |> Tasks.change_task() |> to_form(),
         mode: :edit,
         change: "autosave_task",
@@ -179,6 +183,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
 
     document =
       render_component(&Form.form/1, %{
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         form: task |> Tasks.change_task() |> to_form(),
         mode: :edit,
         change: "autosave_task",
@@ -230,6 +235,7 @@ defmodule TaskmanWeb.Tasks.FormTest do
 
     document =
       render_component(&Form.form/1, %{
+        description_editor: %{editor_id: "description-editor", initial_value: ""},
         form: task |> Tasks.change_task() |> to_form(),
         mode: :edit,
         change: "autosave_task",
