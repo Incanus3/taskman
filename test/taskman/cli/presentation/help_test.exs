@@ -102,6 +102,8 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     assert help =~ "--confirm-unresolved-blockers ID,ID"
     assert help =~ "--force-done-with-unresolved-blockers"
     assert help =~ "Done request"
+    assert help =~ "blocker and descendant IDs"
+    assert help =~ "blocker and descendant warning"
   end
 
   test "Task comment help discovers commands and opt-in fields" do

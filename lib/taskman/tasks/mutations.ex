@@ -480,14 +480,14 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
-  defp allow_done_transition(%Task{id: task_id, status: status}, %{status: :done}, opts)
+  defp allow_done_transition(%Task{status: status} = current, %{status: :done}, opts)
        when status != :done do
     case Keyword.get(opts, :done_confirmation) do
       :force ->
         :ok
 
       confirmation ->
-        summaries = unresolved_blocker_summaries(task_id)
+        summaries = unresolved_blocker_summaries(current)
         current_ids = MapSet.new(summaries, & &1.id)
 
         confirmed_ids =
@@ -506,11 +506,13 @@ defmodule Taskman.Tasks.Mutations do
 
   defp allow_done_transition(_current, _intended, _opts), do: :ok
 
-  defp unresolved_blocker_summaries(task_id) do
-    ids =
+  defp unresolved_blocker_summaries(%Task{id: task_id} = task) do
+    blocker_ids =
       task_id
       |> BlockingPersistence.incoming()
       |> Enum.map(& &1.blocking_task_id)
+
+    ids = Enum.uniq(blocker_ids ++ Hierarchy.unresolved_descendant_ids(task))
 
     if ids == [] do
       []

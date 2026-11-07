@@ -492,7 +492,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Autosave do
 
   defp warn_done(autosave, summaries) do
     autosave
-    |> Map.put(:done_warning, Enum.sort_by(summaries, & &1.id))
+    |> Map.put(:done_warning, summaries)
     |> put_field_state("status", :not_saved)
     |> refresh_save_state()
   end

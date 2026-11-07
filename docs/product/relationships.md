@@ -27,24 +27,39 @@ the MVP does not require their storage, UI, API, CLI, or deletion handling.
 Task relationships never automatically alter Task state.
 
 - Every lifecycle transition remains available to a human.
-- An unconfirmed move to **Done** with one or more unresolved direct blockers warns and leaves
-  status unchanged. The move requires explicit confirmation.
-- API and CLI may express that confirmation as a case-specific, one-request force override without
-  listing blocker IDs. When specific blocker IDs are confirmed, the Done write may proceed if the
-  current unresolved direct blocker set is unchanged, smaller, or empty. A newly unresolved
-  blocker absent from the confirmed IDs requires a fresh warning.
-- A direct blocker is resolved for that warning only when its Task is **Done**. **Not Planned** and
-  **Will Not Do** are closed for counting but remain unresolved blockers. No relationship state is
-  changed automatically.
+- An unconfirmed move from a non-Done state to **Done** warns about one combined set of unresolved
+  direct blockers and descendants. The entire update remains unpersisted until explicitly confirmed.
+- Descendant traversal starts at immediate children within the Task's Project and crosses Lists,
+  collapsed branches and display filters. Each non-resolving descendant is included, then traversal
+  continues through its children. A resolving descendant and its entire subtree are excluded.
+  Direct Blocks prerequisites are checked independently, even below a resolving descendant.
+- Only **Done** currently resolves blockers. **Not Planned** and **Will Not Do** are closed for
+  counting but remain non-resolving, so descendant traversal continues through them. Current
+  classification governs each attempt: reopening a resolving descendant exposes its branch again.
+- The combined set is deduplicated by Task ID and ordered by case-insensitive Project name, title
+  and ID. Confirming a Task ID acknowledges either relationship reason.
+- API and CLI may confirm known combined IDs on the first request or use a case-specific,
+  one-request force override covering both sources. ID confirmation remains valid if the combined
+  set is unchanged, smaller or empty; a newly observed unconfirmed ID requires a fresh warning.
+- Children never create implicit Blocks records. New children, reparenting and relationship edits
+  do not automatically reopen Tasks or otherwise change their lifecycle state.
 - A Task that remains Done needs no new warning for an unchanged status or an ordinary field edit.
   Explicit status requests retain optimistic conflict checks: a stale Done request cannot silently
   succeed after another user reopens the Task. A warning or conflict rejects all fields in the
   same update.
 
-The API returns HTTP 409 with `error.code = "unresolved_blockers"` and message
-“Review unresolved direct blockers before marking Done”; its current summaries include
-Not Planned and Will Not Do blockers. Existing ID-based or one-request force confirmation remains
-the only override. See the [only-Done and confirmation contract](../specs/2026-11-01-additional-task-states-design.md#closed-work-can-still-block-other-tasks).
+The API returns HTTP 409 with `error.code = "unresolved_blockers"`, message
+“Review unresolved blockers and descendants before marking Done”, and the existing linked Task
+summaries in `error.blockers`. The existing mutually exclusive confirmation fields remain
+`confirmation.unresolved_blocker_ids` and `confirmation.force_done_with_unresolved_blockers = true`.
+Malformed confirmation remains HTTP 400 `invalid_request`. CLI warnings retain exit 3 and the
+`--confirm-unresolved-blockers ID,ID` / `--force-done-with-unresolved-blockers` options.
+
+The browser presents one “Review unresolved blockers and descendants” warning with Keep current
+status / Mark Done anyway actions. Leaving discards the warned Done draft while ordinary pending
+edits follow existing autosave rules; resolving descendants cannot make departure implicit consent.
+See the [descendant Done warning design](../specs/2026-11-07-descendant-done-warning-design.md)
+for traversal, atomic confirmation and query-efficiency constraints.
 
 ## Creation and display rules
 

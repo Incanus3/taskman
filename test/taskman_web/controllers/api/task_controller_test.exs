@@ -567,7 +567,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
       assert %{
                "error" => %{
                  "code" => "unresolved_blockers",
-                 "message" => "Review unresolved direct blockers before marking Done",
+                 "message" => "Review unresolved blockers and descendants before marking Done",
                  "blockers" => [summary]
                }
              } =
@@ -587,7 +587,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     end
   end
 
-  test "PATCH Done warns with direct unresolved blocker summaries and changes no fields", %{
+  test "PATCH Done reviews blockers and descendants atomically before ID confirmation", %{
     conn: conn
   } do
     project = project_fixture(%{name: "Website"})
@@ -595,6 +595,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     blocker_list = list_fixture(blocker_project, %{name: "Review"})
     blocked = task_fixture(project, %{title: "Publish"})
     blocker = task_fixture(blocker_project, blocker_list, %{title: "Approve", priority: :high})
+    child = task_fixture(project, %{title: "Finish site"}, parent: blocked)
     assert {:ok, _} = Tasks.add_block(blocker_project, blocker, blocked)
 
     path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
@@ -602,8 +603,8 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     assert %{
              "error" => %{
                "code" => "unresolved_blockers",
-               "message" => "Review unresolved direct blockers before marking Done",
-               "blockers" => [summary]
+               "message" => "Review unresolved blockers and descendants before marking Done",
+               "blockers" => [summary, descendant]
              }
            } =
              conn
@@ -624,6 +625,32 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              }
            }
 
+    assert descendant == %{
+             "id" => child.id,
+             "project_id" => project.id,
+             "project_name" => "Website",
+             "title" => "Finish site",
+             "status" => "pending",
+             "priority" => "none",
+             "location" => %{"kind" => "project", "list_id" => nil, "path" => []}
+           }
+
+    assert %{
+             "error" => %{
+               "code" => "unresolved_blockers",
+               "message" => "Review unresolved blockers and descendants before marking Done",
+               "blockers" => refreshed
+             }
+           } =
+             conn
+             |> patch(path, %{
+               "task" => %{"status" => "done", "title" => "Changed"},
+               "confirmation" => %{"unresolved_blocker_ids" => [blocker.id]}
+             })
+             |> json_response(409)
+
+    assert Enum.map(refreshed, & &1["id"]) == [blocker.id, child.id]
+
     persisted = Tasks.get_task_for_project(project, blocked.id)
     assert persisted.title == "Publish"
     assert persisted.status == :pending
@@ -632,7 +659,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              conn
              |> patch(path, %{
                "task" => %{"status" => "done", "title" => "Changed"},
-               "confirmation" => %{"unresolved_blocker_ids" => [blocker.id]}
+               "confirmation" => %{"unresolved_blocker_ids" => [blocker.id, child.id]}
              })
              |> json_response(200)
   end
@@ -679,15 +706,14 @@ defmodule TaskmanWeb.API.TaskControllerTest do
     end
   end
 
-  test "PATCH refreshes warning when a new blocker appears and accepts one-request force", %{
+  test "PATCH refreshes warning for an unconfirmed descendant and accepts one-request force", %{
     conn: conn
   } do
     project = project_fixture(%{})
     first = task_fixture(project, %{title: "First"})
-    new_blocker = task_fixture(project, %{title: "New"})
     blocked = task_fixture(project, %{title: "Target"})
+    descendant = task_fixture(project, %{title: "New"}, parent: blocked)
     assert {:ok, _} = Tasks.add_block(project, first, blocked)
-    assert {:ok, _} = Tasks.add_block(project, new_blocker, blocked)
     path = "/api/v1/projects/#{project.id}/tasks/#{blocked.id}"
 
     assert %{"error" => %{"code" => "unresolved_blockers", "blockers" => blockers}} =
@@ -698,7 +724,7 @@ defmodule TaskmanWeb.API.TaskControllerTest do
              })
              |> json_response(409)
 
-    assert Enum.map(blockers, & &1["id"]) == [first.id, new_blocker.id]
+    assert Enum.map(blockers, & &1["id"]) == [first.id, descendant.id]
     assert Tasks.get_task_for_project(project, blocked.id).priority == :none
 
     assert %{"data" => %{"status" => "done", "priority" => "urgent"}} =

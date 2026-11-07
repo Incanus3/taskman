@@ -129,9 +129,13 @@ authorization enforcement or automatic transitions. In Progress is not an atomic
 - **Blocks / Blocked by** may span Projects. It is directed, has at most one edge per ordered Task
   pair, rejects self-links and all cycles, and counts as resolved for the **Done** warning only when
   the blocking Task is **Done**. Not Planned and Will Not Do remain unresolved. Moving a Task with
-  unresolved blockers to **Done** requires warning confirmation.
+  unresolved direct blockers or eligible unfinished descendants to **Done** requires one combined
+  warning confirmation; see the [descendant Done warning design](../specs/2026-11-07-descendant-done-warning-design.md).
 - Parent-child is an acyclic, same-Project work-breakdown relationship: one parent may have many
   children, while a child has at most one parent. It does not change a Task's List ownership or status.
+  The Done warning visits non-resolving descendants across Lists, stopping before each resolving
+  descendant and its subtree. Only Done currently resolves; Not Planned and Will Not Do do not.
+  Direct blockers are checked independently, including those below a resolving descendant.
 - Parent-child and Blocks may coexist between the same Tasks. A child may block its parent, but
   a parent may never block its own child.
 

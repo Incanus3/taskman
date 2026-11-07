@@ -285,7 +285,7 @@ defmodule TaskmanWeb.Tasks.Detail do
               role="alert"
               class="mt-5 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-50"
             >
-              <h3 class="font-semibold">Review unresolved direct blockers</h3>
+              <h3 class="font-semibold">Review unresolved blockers and descendants</h3>
               <p class="mt-1 text-amber-100/80">This Task still has work blocking it.</p>
               <ul class="mt-3 space-y-2">
                 <li

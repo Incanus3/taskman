@@ -13,6 +13,7 @@
 
 ## Specifications
 
+- [Descendant Done warning (implemented and operator accepted)](specs/2026-11-07-descendant-done-warning-design.md)
 - [Markdown Task descriptions with Leaf (implemented and operator accepted; deferred Leaf fixes tracked)](specs/2026-11-06-task-description-markdown-design.md)
 - [Additional Task states, In Analysis and Not Planned (implemented and operator accepted; local verification limits recorded)](specs/2026-11-01-additional-task-states-design.md)
 - [Upload staging outside deployment records (implemented and operator accepted; native evidence remains limited to the earlier relocation)](specs/2026-10-30-upload-staging-design.md)

@@ -230,17 +230,23 @@ Inspect both endpoint Projects and verify the named edge after mutation. `blocki
 marking either Task Done. Assigned agents may explicitly move nonterminal work to In Progress or
 In Review; terminal transitions and unresolved-blocker overrides require operator decisions.
 
-Moving a Task to Done can return `unresolved_blockers` on stderr with current direct blocker IDs,
-statuses, priorities, Projects, and locations. The Task remains unchanged. A person may confirm the
-IDs already reviewed on the first request or retry after that warning:
+Moving a Task to Done can return `unresolved_blockers` on stderr (exit 3) with one combined set
+of unresolved direct blockers and descendants, including IDs, statuses, priorities, Projects and
+locations. Descendant traversal crosses Lists and ignores display filters; a resolving descendant
+(currently only Done) and its entire subtree are excluded. Direct blockers are checked independently,
+including blockers below a resolving descendant. Not Planned and Will Not Do do not resolve blockers.
+The whole Task update remains unchanged until confirmed. A person may confirm the combined IDs
+already reviewed on the first request or retry after that warning:
 
 ```text
 taskman tasks update --project 9 42 --status done --confirm-unresolved-blockers 12,15
 ```
 
-If a new unresolved blocker appears, review the refreshed warning and obtain human authorization
-for that decision before retrying. The case-specific force override is available only for a Done
-request and requires explicit human authorization to override the unresolved-blocker warning:
+Confirmation remains valid if the combined set is unchanged or shrinks. If a new unconfirmed
+blocker or descendant appears, review the refreshed warning and obtain human authorization before
+retrying; direct-blocker IDs alone do not acknowledge uncovered descendants. The case-specific force
+override is available only for a Done request and requires explicit human authorization to override
+both direct-blocker and descendant warnings for that one request:
 
 ```text
 taskman tasks update --project 9 42 --status done --force-done-with-unresolved-blockers

@@ -375,14 +375,14 @@ defmodule Taskman.CLI.Registry do
             "--confirm-unresolved-blockers",
             :positive_integer_csv,
             "ID,ID",
-            "Confirm the listed unresolved direct blocker IDs for this Done request. Repeated IDs are accepted and deduplicated by the API."
+            "Confirm the listed unresolved blocker and descendant IDs for this Done request. Repeated IDs are accepted and deduplicated by the API."
           ),
           option(
             :force_done_with_unresolved_blockers,
             "--force-done-with-unresolved-blockers",
             :boolean,
             nil,
-            "Explicitly override the unresolved-blocker warning for this Done request."
+            "Explicitly override the unresolved blocker and descendant warning for this Done request."
           )
         ],
         constraints: [

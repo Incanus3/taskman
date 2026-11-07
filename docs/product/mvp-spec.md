@@ -317,15 +317,20 @@ MVP requirement of the initial CLI slice.
 | **parent-child** | Same-Project, acyclic work breakdown; a parent has many children and a child has at most one parent. |
 
 Parent-child and Blocks may coexist for the same pair. A child may block its parent, but a parent may
-never block its child. Relationships do not automatically transition Tasks. An unconfirmed move to
-Done with an unresolved direct blocker warns and leaves status unchanged. A person may confirm the
-move after reviewing that warning. API and CLI also accept confirmed blocker IDs on the first
-request when the person already knows them, or a case-specific, one-request force confirmation
-without listing blocker IDs. A blocker is resolved for the warning only when it is Done.
-Not Planned and Will Not Do remain unresolved.
-The warning identifies each unresolved direct blocker with its status and priority.
-Confirmation remains valid when the blocker set is unchanged or only shrinks; a newly unresolved
-blocker that was not confirmed requires a fresh warning.
+never block its child. Relationships do not automatically transition Tasks. An unconfirmed move
+from a non-Done state to Done reviews one combined set of unresolved direct blockers and descendants,
+leaving the entire update unchanged. Descendant traversal crosses Lists and ignores display filters;
+each resolving descendant and its subtree are excluded. Only Done currently resolves blockers.
+Not Planned and Will Not Do remain unresolved, and traversal continues through them. Direct blockers
+are checked independently, including below a resolving descendant.
+
+The warning deduplicates Task IDs and identifies each Task with status, priority, Project and location.
+A person may explicitly confirm the move. API and CLI accept known combined IDs on the first request
+or a case-specific, one-request force confirmation covering both blockers and descendants. Confirmation
+remains valid when the set is unchanged or shrinks; a new unconfirmed ID requires a fresh warning.
+No children are implicitly linked as blockers and no Task is automatically reopened.
+See the [descendant Done warning design](../specs/2026-11-07-descendant-done-warning-design.md)
+and [lifecycle contract](relationships.md#lifecycle-behavior).
 
 Symmetric Relates to links are deferred beyond the MVP. They are not required in MVP storage,
 browser, API, CLI, skill, or deletion behavior. See the

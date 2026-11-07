@@ -6,6 +6,7 @@ defmodule Taskman.Tasks.Hierarchy do
   alias Taskman.Repo
   alias Taskman.Tasks.HierarchyNode
   alias Taskman.Tasks.Search
+  alias Taskman.Tasks.Status
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.TaskWithLocation
 
@@ -16,6 +17,32 @@ defmodule Taskman.Tasks.Hierarchy do
           selected_task_id: pos_integer(),
           root: HierarchyNode.t()
         }
+
+  @spec unresolved_descendant_ids(Task.t()) :: [pos_integer()]
+  def unresolved_descendant_ids(%Task{id: task_id, project_id: project_id}) do
+    statuses = Enum.reject(Status.values(), &Status.resolves_blocker?/1)
+
+    seed =
+      from task in Task,
+        where: task.parent_task_id == ^task_id and task.project_id == ^project_id,
+        where: task.status in ^statuses,
+        select: %{id: task.id}
+
+    recursive_member =
+      from task in Task,
+        join: descendant in "unresolved_descendants",
+        on: task.parent_task_id == field(descendant, :id),
+        where: task.project_id == ^project_id and task.status in ^statuses,
+        select: %{id: task.id}
+
+    descendants = union_all(seed, ^recursive_member)
+
+    "unresolved_descendants"
+    |> recursive_ctes(true)
+    |> with_cte("unresolved_descendants", as: ^descendants)
+    |> select([descendant], field(descendant, :id))
+    |> Repo.all()
+  end
 
   @spec validate_parent(Task.t(), Task.t() | nil, Project.t()) :: :ok | {:error, :cycle}
   def validate_parent(%Task{}, nil, %Project{}), do: :ok

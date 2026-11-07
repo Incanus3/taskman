@@ -95,27 +95,26 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Final"
   end
 
-  test "closing detail discards warned Done after the last blocker resolves and saves text", %{
+  test "closing detail discards warned Done after the last descendant resolves and saves text", %{
     conn: conn
   } do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before", status: :in_progress})
-    blocker = task_fixture(project, %{})
-    assert {:ok, _} = Tasks.add_block(project, blocker, task)
+    child = task_fixture(project, %{}, parent: task)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     view
     |> form("#task-form", task: %{status: "done"})
     |> render_captured_change(%{"_target" => ["task", "status"]})
 
-    assert has_element?(view, "#task-done-warning")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{child.id}")
 
     view
     |> form("#task-form", task: %{title: "Saved on close"})
     |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
-    assert {:ok, _} = Tasks.update_task(project, blocker, %{status: :done})
+    assert {:ok, _} = Tasks.update_task(project, child, %{status: :done})
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-done-warning")
 
@@ -125,6 +124,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     saved = Tasks.get_task_for_project(project, task.id)
     assert saved.title == "Saved on close"
     assert saved.status == :in_progress
+    assert Tasks.get_task_for_project(project, child.id).status == :done
   end
 
   test "route departure discards warned Done after the last blocker is removed and saves text", %{

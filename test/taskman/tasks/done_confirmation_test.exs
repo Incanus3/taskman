@@ -358,6 +358,57 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     end)
   end
 
+  test "a queued confirmed Done write sees a reopened descendant boundary" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      project = project_fixture(%{})
+      root = task_fixture(project, %{title: "Before"})
+      known = task_fixture(project, %{title: "A"}, parent: root)
+      boundary = task_fixture(project, %{title: "B", status: :done}, parent: root)
+      grandchild = task_fixture(project, %{title: "C"}, parent: boundary)
+      cleanup_project(project)
+
+      result =
+        queued_done_write(
+          fn ->
+            Tasks.update_task(project, root, %{title: "After", status: :done},
+              done_confirmation: {:ids, [known.id]}
+            )
+          end,
+          fn -> assert {:ok, _} = Tasks.update_task(project, boundary, %{status: :pending}) end
+        )
+
+      assert {:error, {:unresolved_blockers, summaries}} = result
+      assert Enum.map(summaries, & &1.id) == [known.id, boundary.id, grandchild.id]
+      assert Enum.map(summaries, & &1.status) == [:pending, :pending, :pending]
+      assert Repo.get!(Task, root.id) == root
+    end)
+  end
+
+  test "a queued confirmed Done write sees a reparented unfinished subtree" do
+    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+      project = project_fixture(%{})
+      root = task_fixture(project, %{title: "Before"})
+      known = task_fixture(project, %{title: "A"}, parent: root)
+      subtree = task_fixture(project, %{title: "B"})
+      grandchild = task_fixture(project, %{title: "C"}, parent: subtree)
+      cleanup_project(project)
+
+      result =
+        queued_done_write(
+          fn ->
+            Tasks.update_task(project, root, %{title: "After", status: :done},
+              done_confirmation: {:ids, [known.id]}
+            )
+          end,
+          fn -> assert {:ok, _} = Tasks.update_task(project, subtree, %{}, parent: root) end
+        )
+
+      assert {:error, {:unresolved_blockers, summaries}} = result
+      assert Enum.map(summaries, & &1.id) == [known.id, subtree.id, grandchild.id]
+      assert Repo.get!(Task, root.id) == root
+    end)
+  end
+
   defp queued_done_write(operation, before_release) do
     {first_key, second_key} = @graph_lock_key
     Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1, $2)", [first_key, second_key])
