@@ -34,10 +34,15 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     end
   end
 
-  test "Done selection keeps its draft until explicit confirmation or cancellation", %{conn: conn} do
+  test "Done reviews blockers and descendants until explicit confirmation or cancellation", %{
+    conn: conn
+  } do
     project = project_fixture(%{})
     task = task_fixture(project, %{status: :in_progress})
     blocker = task_fixture(project, %{title: "Review release", priority: :urgent})
+    child = task_fixture(project, %{title: "A child"}, parent: task)
+    boundary = task_fixture(project, %{status: :done}, parent: task)
+    hidden = task_fixture(project, %{}, parent: boundary)
     assert {:ok, _} = Tasks.add_block(project, blocker, task)
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -47,6 +52,24 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     assert Tasks.get_task_for_project(project, task.id).status == :in_progress
     assert has_element?(view, "#task-status option[value='done'][selected]")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{blocker.id}")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{child.id}")
+
+    assert has_element?(
+             view,
+             "#task-done-warning h3",
+             "Review unresolved blockers and descendants"
+           )
+
+    assert has_element?(view, "#task-done-warning li:nth-child(1)#task-done-blocker-#{child.id}")
+
+    assert has_element?(
+             view,
+             "#task-done-warning li:nth-child(2)#task-done-blocker-#{blocker.id}"
+           )
+
+    refute has_element?(view, "#task-done-warning #task-done-blocker-#{boundary.id}")
+    refute has_element?(view, "#task-done-warning #task-done-blocker-#{hidden.id}")
     assert has_element?(view, "#task-done-warning", "Review release")
     assert has_element?(view, "#task-done-warning", "urgent")
 
@@ -62,6 +85,9 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :done
     refute has_element?(view, "#task-done-warning")
+    assert Tasks.get_task_for_project(project, child.id).status == :pending
+    assert Tasks.get_task_for_project(project, boundary.id).status == :done
+    assert Tasks.get_task_for_project(project, hidden.id).status == :pending
   end
 
   test "a smaller blocker set confirms while a newly unconfirmed blocker refreshes the warning",
@@ -98,6 +124,43 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :pending
     assert has_element?(view, "#task-done-blocker-#{third.id}")
+  end
+
+  test "newly exposed descendants refresh the warning and require another confirmation", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{status: :in_progress})
+    child = task_fixture(project, %{title: "A child"}, parent: task)
+    boundary = task_fixture(project, %{title: "B boundary", status: :done}, parent: task)
+    grandchild = task_fixture(project, %{title: "C grandchild"}, parent: boundary)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    view
+    |> form("#task-form", task: %{status: "done"})
+    |> render_captured_change(%{"_target" => ["task", "status"]})
+
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{child.id}")
+    refute has_element?(view, "#task-done-warning #task-done-blocker-#{boundary.id}")
+    refute has_element?(view, "#task-done-warning #task-done-blocker-#{grandchild.id}")
+
+    assert {:ok, _} = Tasks.update_task(project, boundary, %{status: :pending})
+    _ = :sys.get_state(view.pid)
+    view |> element("#confirm-task-done") |> render_captured_click()
+
+    assert Tasks.get_task_for_project(project, task.id).status == :in_progress
+    assert has_element?(view, "#task-status option[value='done'][selected]")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{child.id}")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{boundary.id}")
+    assert has_element?(view, "#task-done-warning #task-done-blocker-#{grandchild.id}")
+
+    view |> element("#confirm-task-done") |> render_captured_click()
+
+    assert Tasks.get_task_for_project(project, task.id).status == :done
+    refute has_element?(view, "#task-done-warning")
+    assert Tasks.get_task_for_project(project, child.id).status == :pending
+    assert Tasks.get_task_for_project(project, boundary.id).status == :pending
+    assert Tasks.get_task_for_project(project, grandchild.id).status == :pending
   end
 
   test "another status and closing detail discard pending Done while ordinary fields still save",

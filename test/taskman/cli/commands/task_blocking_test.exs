@@ -204,15 +204,23 @@ defmodule Taskman.CLI.Commands.TaskBlockingTest do
     assert result.stderr == ""
   end
 
-  test "new blocker warning after confirmation is refreshed and preserves JSON error" do
-    new_blocker = %{@blocker | id: 17, title: "Review legal"}
+  test "unconfirmed descendant refreshes the combined warning and preserves JSON summaries" do
+    descendant = %{
+      id: 15,
+      project_id: 9,
+      project_name: "Website",
+      title: "Finish landing page",
+      status: "pending",
+      priority: "medium",
+      location: %{kind: "project", list_id: nil, path: []}
+    }
 
     Req.Test.expect(TaskBlockingCommands, fn conn ->
       assert Jason.decode!(Req.Test.raw_body(conn))["confirmation"] == %{
                "unresolved_blocker_ids" => [12]
              }
 
-      conn |> Plug.Conn.put_status(409) |> Req.Test.json(warning([@blocker, new_blocker]))
+      conn |> Plug.Conn.put_status(409) |> Req.Test.json(warning([@blocker, descendant]))
     end)
 
     result =
@@ -235,7 +243,11 @@ defmodule Taskman.CLI.Commands.TaskBlockingTest do
     assert %{"error" => %{"code" => "unresolved_blockers", "blockers" => blockers}} =
              Jason.decode!(result.stderr)
 
-    assert Enum.map(blockers, & &1["id"]) == [12, 17]
+    assert Enum.map(blockers, & &1["id"]) == [12, 15]
+    assert blockers == Jason.decode!(Jason.encode!([@blocker, descendant]))
+
+    assert Jason.decode!(result.stderr)["error"]["message"] ==
+             "Review unresolved blockers and descendants before marking Done"
   end
 
   test "force Done sends one case-specific override and uses ordinary success output" do
@@ -319,7 +331,7 @@ defmodule Taskman.CLI.Commands.TaskBlockingTest do
     do: %{
       error: %{
         code: "unresolved_blockers",
-        message: "Review unresolved direct blockers before marking Done",
+        message: "Review unresolved blockers and descendants before marking Done",
         blockers: blockers
       }
     }

@@ -27,7 +27,7 @@ defmodule TaskmanWeb.API.FallbackController do
     |> json(%{
       error: %{
         code: "unresolved_blockers",
-        message: "Review unresolved direct blockers before marking Done",
+        message: "Review unresolved blockers and descendants before marking Done",
         blockers: Enum.map(blockers, &Representation.linked_task/1)
       }
     })
