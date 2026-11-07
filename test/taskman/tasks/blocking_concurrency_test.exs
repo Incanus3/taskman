@@ -10,6 +10,18 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
   @graph_lock_key {724_150, 1}
 
+  setup do
+    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      end)
+    end)
+
+    :ok
+  end
+
   test "opposite link adds serialize and cannot form a two-Task cycle" do
     Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
@@ -19,8 +31,16 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
       [forward, reverse] =
         run_behind_graph_gate([
-          fn -> Tasks.add_block(project, first, second) end,
-          fn -> Tasks.add_block(project, second, first) end
+          fn ->
+            Tasks.add_block(project, first, second,
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end,
+          fn ->
+            Tasks.add_block(project, second, first,
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end
         ])
 
       assert Enum.count([forward, reverse], &match?({:ok, _}, &1)) == 1
@@ -40,8 +60,17 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
       [link_result, parent_result] =
         run_behind_graph_gate([
-          fn -> Tasks.add_block(project, parent, child) end,
-          fn -> Tasks.update_task(project, child, %{title: "After"}, parent: parent) end
+          fn ->
+            Tasks.add_block(project, parent, child,
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end,
+          fn ->
+            Tasks.update_task(project, child, %{title: "After"},
+              parent: parent,
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end
         ])
 
       assert Enum.count([link_result, parent_result], &match?({:ok, _}, &1)) == 1
@@ -66,7 +95,12 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
       project = project_fixture(%{})
       source = task_fixture(project)
       target = task_fixture(project)
-      assert {:ok, _} = Tasks.add_block(project, source, target)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, source, target,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
       cleanup_project(project)
 
       test_pid = self()

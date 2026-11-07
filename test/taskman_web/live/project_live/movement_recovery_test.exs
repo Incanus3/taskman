@@ -89,7 +89,11 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
     view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
-    assert {:ok, moved} = Tasks.move_task(project, task, actual)
+
+    assert {:ok, moved} =
+             Tasks.move_task(project, task, actual,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     send(view.pid, task_event(moved))
     render_captured(view)
@@ -183,7 +187,12 @@ defmodule TaskmanWeb.ProjectLive.MovementRecoveryTest do
 
     view |> element("#move-task-row-button-#{task.id}") |> render_captured_click()
     view |> element("#move-task-search-#{task.id}") |> render_keyup(%{"value" => "Second"})
-    assert {:ok, moved} = Tasks.move_task(project, task, second)
+
+    assert {:ok, moved} =
+             Tasks.move_task(project, task, second,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     send(view.pid, task_event(moved))
     render_captured(view)
 

@@ -11,8 +11,30 @@ defmodule TaskmanWeb.ProjectLive.Tasks.CommentDeparture do
             submitting?: false,
             error: nil
 
+  @typedoc "A local navigation path, including any query or fragment."
+  @type destination :: String.t()
+  @type task_reference :: {Project.t(), pos_integer()} | nil
+  @type t :: %__MODULE__{
+          destination: destination() | nil,
+          origin: destination() | nil,
+          confirming?: boolean(),
+          submitting?: boolean(),
+          error: String.t() | nil
+        }
+  @type request_result :: {:continue, t()} | {:confirm, t()} | {:pending, t()}
+
   def empty, do: %__MODULE__{}
 
+  @doc """
+  Decides whether navigation can continue or needs comment-draft confirmation.
+
+  The Task reference may be unavailable, and the origin may be unset. A pending
+  confirmation retains its destination; nonlocal paths and unsupported inputs
+  return `:pending`. The permissive fallback preserves even a non-state input
+  unchanged, outside the supported workflow contract below.
+  """
+  @spec request(t(), task_reference(), String.t(), String.t(), destination() | nil) ::
+          request_result()
   def request(
         %__MODULE__{destination: destination, confirming?: true} = state,
         _task,

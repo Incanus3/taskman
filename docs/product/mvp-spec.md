@@ -19,8 +19,8 @@ deferred to a separate accepted design.
 - A Project is a machine-independent logical work container identified by its ID and name, with
   editable description, icon, and color. It has no directory.
 - Authentication is an application-wide access gate. Projects, Lists, and Tasks are not owned or
-  filtered by user, and the MVP has no collaboration permissions or Task-edit attribution. Explicit
-  Task comments record the authenticated posting account as described below.
+  filtered by user, and the MVP has no collaboration permissions. Task comments and generated
+  changes record the authenticated account as described below.
 - Browser sign-in uses a persistent cookie that survives browser restarts for up to 30 days.
   Authentication tokens expire 30 days after issuance; browser activity does not extend them.
 - Taskman can run as an OTP release behind an HTTPS reverse proxy on a dedicated server.
@@ -224,7 +224,7 @@ and [exact limits](../specs/2026-11-06-task-description-markdown-design.md#publi
   contained horizontal scrolling when needed to preserve approximately 180 px of title space.
   Navigation reveals an offscreen selected row without resetting a useful reading position on
   routine updates. Project/List backdrop and active filters survive hierarchy navigation.
-- Discussion has Activity and Sessions tabs. Activity shows the Task's comments and a composer;
+- Discussion has Activity and Sessions tabs. Activity shows Task changes, comments and a composer;
   Sessions shows a truthful empty state. Agent Session behavior awaits a separate accepted design.
   This tabbed presentation supersedes the earlier stacked Activity and Sessions sections.
 - The hierarchy contains only parent-child work breakdown. A Related Tasks table contains Blocks /
@@ -255,12 +255,31 @@ and [exact limits](../specs/2026-11-06-task-description-markdown-design.md#publi
   these. `updated_at` therefore reflects the most recent direct Task change or successful comment,
   while `lock_version` remains specific to editable Task fields. Comments are discussion, not Task
   edit attribution, lifecycle approval, generated Task-change history, or user ownership.
-- Activity contains the ordered thread, a labelled multiline composer, and a truthful `No comments
-  yet` empty state. Posting is explicit. The composer keeps its draft during ordinary Task updates
-  and tab switches. Leaving Task detail with a nonempty unposted draft offers Go back, Submit
-  comment and close, or Close and discard draft; full-page exits use the browser's best-effort
+- Activity combines comments and persisted Task changes in one oldest-first timeline. Comments
+  use creation time; changes use their latest change time. Exact ties put comments first, then
+  order by numeric ID. Entries show local time, account and readable content. The composer and
+  truthful `No activity yet` empty state share the panel. Posting is explicit. The composer keeps
+  its draft during ordinary Task updates and tab switches. Leaving Task detail with a nonempty
+  unposted draft offers Go back, Submit comment and close, or Close and discard draft; full-page
+  exits use the browser's best-effort
   unload warning. Sessions shares the same panel and remains an empty state until Agent Session
   behavior is designed.
+- Creation records one Task-created entry with creator and time; initial values and an initial
+  parent do not create separate entries. Subsequent title, status, priority, due date, owning List,
+  parent and blocking changes record authenticated attribution atomically with the mutation.
+  Description/checklist edits and derived changes are excluded. History begins with this feature;
+  existing Tasks have no reconstructed earlier history. Direct SQL changes are outside this history.
+- History is mutable and consolidated, not a detailed audit trail. The latest surviving entry for
+  a field or directed blocking pair merges when the same account edits from its current final value
+  within 60 seconds inclusive of its last change. The entry retains its original value and first
+  time, advances its final value and last time, and can move later in the thread. Returning to the
+  original value removes it. Another account's surviving change prevents merging past it; fully
+  undone changes disappear and may expose an older eligible entry. No intermediate history survives.
+- Changes show the account's current login, or `Deleted user` after account deletion, without email
+  snapshots or caller-chosen actors. Historical Task titles, Project names and List paths remain
+  captured labels. Relationship changes appear on affected Tasks according to the
+  [relationship Activity rules](relationships.md#relationship-activity). Consolidation preserves
+  composer drafts and selected tabs while refreshing ordering and removals.
 
 ## 5. Programmatic access and CLI
 
@@ -283,6 +302,16 @@ meaningful UI operation. Every API request requires an expiring, revocable API k
 active user. The CLI supports a protected XDG configuration file and environment overrides for the
 server URL and key.
 
+Task activity is read through `GET /api/v1/projects/:project_id/tasks/:task_id/activity` and
+`taskman tasks activity list [--project PROJECT_ID] TASK_ID [--include-comments]`. Both return
+events only by default; `include_comments=true` / `--include-comments` opts into the mixed timeline.
+The API accepts only literal `true` or `false`; invalid or unknown query options return HTTP 400
+`invalid_request`, and a missing or scoped-out Task returns HTTP 404 `not_found`. JSON retains the
+`data` envelope, namespaced entry IDs, structured before/after values and UTC event timestamps;
+due dates retain their naive local encoding. This is a read-only query. Existing comment endpoints,
+`tasks comments` and `tasks show --include-comments` retain their comment-only behavior. The CLI
+validates successful responses before rendering and reports malformed contracts with exit 5.
+
 Starting the backend through a future `taskman serve` command is a planned extension point, not an
 MVP requirement of the initial CLI slice.
 
@@ -303,7 +332,8 @@ MVP requirement of the initial CLI slice.
   see the same Project, List, and Task data.
 - Account deletion permanently removes authentication data but leaves the shared Project, List,
   Task, and Task-comment workspace unchanged because those records are not user-owned. It nulls the
-  deleted account link on retained comments, which then show `Deleted user` as their login.
+  deleted account link on retained comments and Task changes, which then show `Deleted user`
+  as their login.
 - Password is the initial browser strategy. The Accounts boundary permits later magic-link and
   OAuth/OIDC strategies without changing domain ownership.
 - Production uses an OTP release under systemd, a loopback Phoenix endpoint behind an HTTPS reverse
@@ -358,9 +388,8 @@ shows a detailed impact warning and requires a second explicit confirmation.
 ## 10. Explicit MVP exclusions
 
 - Product implementation and deployment; this document specifies the product only.
-- Per-user domain ownership, synchronization, collaboration permissions, Task-edit attribution,
-  generated Task-change Activity, and other multi-user workflows beyond authenticated access and
-  the posting-account identity recorded on explicit comments.
+- Per-user domain ownership, synchronization, collaboration permissions, and multi-user workflows
+  beyond authenticated access, comment authorship and Task-change attribution.
 - Public self-registration and authentication strategies beyond the initial password flow.
 - Managed hosting, automated deployment, and container orchestration.
 - Desktop packaging and managed Workspace creation, selection, reuse, or lifecycle.

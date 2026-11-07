@@ -76,7 +76,12 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
   test "status filters preserve promoted branches and returning ancestors", %{conn: conn} do
     %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
     child = task_fixture(project, selected, %{title: "D"}, parent: c)
-    {:ok, a} = Tasks.update_task(project, a, %{status: :in_review})
+
+    {:ok, a} =
+      Tasks.update_task(project, a, %{status: :in_review},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     {:ok, view, _} = live(conn, listing_path(project, selected, "in_review,pending"))
     toggle(view, a)
     filter(view, ["pending"])
@@ -281,14 +286,25 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     d = task_fixture(project, %{title: "D"}, parent: b)
     notify(view, project, d, :created)
     assert row_ids(view) == [a.id, b.id, c.id, d.id]
-    {:ok, d} = Tasks.update_task(project, d, %{title: "Changed", status: :done})
+
+    {:ok, d} =
+      Tasks.update_task(project, d, %{title: "Changed", status: :done},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     notify(view, project, d)
     assert has_element?(view, "#task-#{d.id}", "Changed")
     assert has_element?(view, "#task-status-#{d.id}", "Done")
-    {:ok, d} = Tasks.move_task(project, d, other)
+    {:ok, d} = Tasks.move_task(project, d, other, actor: Taskman.AccountsFixtures.user_fixture())
     notify(view, project, d, :moved)
     assert row_ids(view) == [a.id, b.id, c.id, d.id]
-    {:ok, d} = Tasks.update_task(project, d, %{}, parent: a)
+
+    {:ok, d} =
+      Tasks.update_task(project, d, %{},
+        parent: a,
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     notify(view, project, d)
     assert_depths(view, [{d, 1}])
     assert row_ids(view) == [a.id, b.id, c.id, d.id]

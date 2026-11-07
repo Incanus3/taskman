@@ -106,6 +106,15 @@ defmodule Taskman.CLI.Presentation.HelpTest do
     assert help =~ "blocker and descendant warning"
   end
 
+  test "activity help explains events-only defaults and optional mixed history" do
+    assert Help.render(~w(tasks)) =~ "tasks activity list"
+    help = Help.render(~w(tasks activity list))
+    assert help =~ "events only by default"
+    assert help =~ "[--project PROJECT_ID] TASK_ID [--include-comments]"
+    assert help =~ "consolidated entries may move or disappear"
+    assert help =~ "bound Project"
+  end
+
   test "Task comment help discovers commands and opt-in fields" do
     assert Help.render(~w(tasks)) =~ "tasks comments list"
     assert Help.render(~w(tasks comments)) =~ "tasks comments add"

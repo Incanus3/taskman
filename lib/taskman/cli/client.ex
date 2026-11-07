@@ -24,7 +24,13 @@ defmodule Taskman.CLI.Client do
           | :task_blocking
           | :task_blocking_edge
           | {:collection | :member,
-             :project | :list | :task | :comment | :task_with_comments | :task_search_summary}
+             :project
+             | :list
+             | :task
+             | :comment
+             | :task_with_comments
+             | :task_search_summary
+             | :activity_entry}
 
   @doc "Make one API request and classify transport and response-contract failures."
   @spec request(atom(), String.t(), request_options(), runtime_options(), success_shape()) ::
@@ -243,7 +249,146 @@ defmodule Taskman.CLI.Client do
       utc_iso_datetime?(comment["created_at"])
   end
 
+  defp valid_resource?(entry, :activity_entry) when is_map(entry) do
+    case entry do
+      %{"kind" => "comment", "comment" => comment} ->
+        exact_keys?(entry, ~w(id kind occurred_at comment)) and
+          valid_resource?(comment, :comment) and
+          entry["id"] == "comment-#{comment["id"]}" and
+          same_utc_time?(entry["occurred_at"], comment["created_at"])
+
+      %{"kind" => "change", "change" => change} ->
+        exact_keys?(entry, ~w(id kind occurred_at change)) and
+          is_binary(entry["id"]) and Regex.match?(~r/^event-[1-9][0-9]*$/, entry["id"]) and
+          valid_activity_change?(change) and
+          same_utc_time?(entry["occurred_at"], change["last_changed_at"])
+
+      _ ->
+        false
+    end
+  end
+
   defp valid_resource?(_resource, _type), do: false
+
+  defp valid_activity_change?(change) when is_map(change) do
+    exact_keys?(
+      change,
+      ~w(type task_id field actor before after context first_changed_at last_changed_at)
+    ) and
+      positive_integer?(change["task_id"]) and valid_activity_actor?(change["actor"]) and
+      ordered_utc_times?(change["first_changed_at"], change["last_changed_at"]) and
+      valid_activity_context?(change["context"], change["type"], change["task_id"]) and
+      valid_activity_values?(change)
+  end
+
+  defp valid_activity_change?(_), do: false
+
+  defp valid_activity_actor?(%{"user_id" => nil, "login" => "Deleted user"} = actor),
+    do: exact_keys?(actor, ~w(user_id login))
+
+  defp valid_activity_actor?(%{"user_id" => id, "login" => login} = actor) do
+    exact_keys?(actor, ~w(user_id login)) and is_binary(id) and byte_size(id) == 36 and
+      match?({:ok, _}, Ecto.UUID.cast(id)) and is_binary(login) and login != "" and
+      login != "Deleted user"
+  end
+
+  defp valid_activity_actor?(_), do: false
+
+  defp valid_activity_reference?(reference) when is_map(reference) do
+    exact_keys?(reference, ~w(id project_id project_name title)) and
+      positive_integer?(reference["id"]) and positive_integer?(reference["project_id"]) and
+      is_binary(reference["project_name"]) and is_binary(reference["title"])
+  end
+
+  defp valid_activity_reference?(_), do: false
+
+  defp valid_activity_context?(context, type, task_id) when is_map(context) do
+    keys = if type == "block_changed", do: ~w(task blocking_task blocked_task), else: ~w(task)
+
+    exact_keys?(context, keys) and Enum.all?(Map.values(context), &valid_activity_reference?/1) and
+      context["task"]["id"] == task_id and
+      (type != "block_changed" or
+         (context["blocking_task"] == context["task"] and
+            context["blocked_task"]["id"] != task_id))
+  end
+
+  defp valid_activity_context?(_, _, _), do: false
+
+  defp valid_activity_values?(%{"type" => "task_created"} = change) do
+    is_nil(change["field"]) and is_nil(change["before"]) and is_nil(change["after"]) and
+      same_utc_time?(change["first_changed_at"], change["last_changed_at"])
+  end
+
+  defp valid_activity_values?(%{"type" => "block_changed"} = change) do
+    is_nil(change["field"]) and is_boolean(change["before"]) and is_boolean(change["after"]) and
+      change["before"] != change["after"]
+  end
+
+  defp valid_activity_values?(%{"type" => "field_changed"} = change) do
+    field = change["field"]
+
+    valid_activity_field_value?(field, change["before"]) and
+      valid_activity_field_value?(field, change["after"]) and
+      activity_values_differ?(field, change["before"], change["after"])
+  end
+
+  defp valid_activity_values?(_), do: false
+
+  defp valid_activity_field_value?("title", value), do: is_binary(value)
+  defp valid_activity_field_value?("status", value), do: value in Registry.statuses()
+  defp valid_activity_field_value?("priority", value), do: value in Registry.priorities()
+  defp valid_activity_field_value?("due_at", nil), do: true
+
+  defp valid_activity_field_value?("due_at", value) when is_binary(value),
+    do:
+      Regex.match?(~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/, value) and
+        valid_due_at?(value)
+
+  defp valid_activity_field_value?("parent_task_id", nil), do: true
+  defp valid_activity_field_value?("parent_task_id", value), do: valid_activity_reference?(value)
+
+  defp valid_activity_field_value?("list_id", location) when is_map(location) do
+    exact_keys?(location, ~w(project_id project_name list_id path)) and
+      positive_integer?(location["project_id"]) and is_binary(location["project_name"]) and
+      optional_positive_integer?(location["list_id"]) and string_list?(location["path"]) and
+      if(is_nil(location["list_id"]), do: location["path"] == [], else: location["path"] != [])
+  end
+
+  defp valid_activity_field_value?(_, _), do: false
+
+  defp activity_values_differ?("due_at", before, after_value)
+       when is_binary(before) and is_binary(after_value) do
+    NaiveDateTime.compare(
+      NaiveDateTime.from_iso8601!(before),
+      NaiveDateTime.from_iso8601!(after_value)
+    ) != :eq
+  end
+
+  defp activity_values_differ?(_field, before, after_value),
+    do: activity_identity(before) != activity_identity(after_value)
+
+  defp activity_identity(%{"id" => id}), do: {:task, id}
+
+  defp activity_identity(%{"project_id" => project_id, "list_id" => id}),
+    do: {:location, project_id, id}
+
+  defp activity_identity(value), do: value
+
+  defp same_utc_time?(left, right) do
+    utc_iso_datetime?(left) and utc_iso_datetime?(right) and
+      DateTime.compare(
+        DateTime.from_iso8601(left) |> elem(1),
+        DateTime.from_iso8601(right) |> elem(1)
+      ) == :eq
+  end
+
+  defp ordered_utc_times?(first, last) do
+    utc_iso_datetime?(first) and utc_iso_datetime?(last) and
+      DateTime.compare(
+        DateTime.from_iso8601(first) |> elem(1),
+        DateTime.from_iso8601(last) |> elem(1)
+      ) != :gt
+  end
 
   defp valid_comment_author?(author) when is_map(author) do
     Map.keys(author) |> Enum.sort() == ~w(display_name login) and

@@ -10,7 +10,11 @@ defmodule Taskman.Tasks.CreationTest do
   test "create_task/2 assigns ownership and product defaults" do
     project = project_fixture(%{})
 
-    assert {:ok, task} = Tasks.create_task(project, %{title: "First task"})
+    assert {:ok, task} =
+             Tasks.create_task(project, nil, %{title: "First task"},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert task.project_id == project.id
     assert task.title == "First task"
     assert task.description == ""
@@ -23,7 +27,10 @@ defmodule Taskman.Tasks.CreationTest do
     parent = task_fixture(project, %{title: "Parent"})
 
     assert {:ok, child} =
-             Tasks.create_task(project, nil, %{title: "Child"}, parent: parent)
+             Tasks.create_task(project, nil, %{title: "Child"},
+               parent: parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert child.parent_task_id == parent.id
   end
@@ -33,10 +40,13 @@ defmodule Taskman.Tasks.CreationTest do
     list = list_fixture(project, nil, %{name: "Planning"})
 
     assert {:ok, task} =
-             Tasks.create_task(project, nil, %{
-               title: "Direct task",
-               list_id: list.id
-             })
+             Tasks.create_task(
+               project,
+               nil,
+               %{
+                 title: "Direct task",
+                 list_id: list.id
+               }, actor: Taskman.AccountsFixtures.user_fixture())
 
     assert task.project_id == project.id
     assert task.list_id == nil
@@ -49,11 +59,14 @@ defmodule Taskman.Tasks.CreationTest do
     other_list = list_fixture(other_project, nil, %{name: "Other"})
 
     assert {:ok, task} =
-             Tasks.create_task(project, list, %{
-               title: "List task",
-               project_id: other_project.id,
-               list_id: other_list.id
-             })
+             Tasks.create_task(
+               project,
+               list,
+               %{
+                 title: "List task",
+                 project_id: other_project.id,
+                 list_id: other_list.id
+               }, actor: Taskman.AccountsFixtures.user_fixture())
 
     assert task.project_id == project.id
     assert task.list_id == list.id
@@ -63,14 +76,19 @@ defmodule Taskman.Tasks.CreationTest do
     project = project_fixture(%{})
     foreign_list = list_fixture(project_fixture(%{}), nil, %{name: "Foreign"})
 
-    assert {:error, :not_found} = Tasks.create_task(project, foreign_list, %{title: "No leak"})
+    assert {:error, :not_found} =
+             Tasks.create_task(project, foreign_list, %{title: "No leak"},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
   end
 
   test "create_task/2 persists an explicitly empty description as an empty string" do
     project = project_fixture(%{})
 
     assert {:ok, task} =
-             Tasks.create_task(project, %{title: "Empty description", description: ""})
+             Tasks.create_task(project, nil, %{title: "Empty description", description: ""},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert task.description == ""
   end
@@ -128,11 +146,20 @@ defmodule Taskman.Tasks.CreationTest do
     project = project_fixture(%{})
     other_project = project_fixture(%{})
 
-    assert {:error, changeset} = Tasks.create_task(project, %{title: ""})
+    assert {:error, changeset} =
+             Tasks.create_task(project, nil, %{title: ""},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert %{title: [_]} = errors_on(changeset)
 
     assert {:ok, task} =
-             Tasks.create_task(project, %{title: "Owned safely", project_id: other_project.id})
+             Tasks.create_task(
+               project,
+               nil,
+               %{title: "Owned safely", project_id: other_project.id},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert task.project_id == project.id
   end
@@ -143,7 +170,9 @@ defmodule Taskman.Tasks.CreationTest do
     task = task_fixture(project, %{title: "Owned"})
 
     assert {:ok, updated} =
-             Tasks.update_task(project, task, %{title: "Still owned", list_id: list.id})
+             Tasks.update_task(project, task, %{title: "Still owned", list_id: list.id},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert updated.list_id == nil
 

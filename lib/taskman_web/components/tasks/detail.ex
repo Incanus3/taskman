@@ -3,10 +3,10 @@ defmodule TaskmanWeb.Tasks.Detail do
 
   alias Taskman.Projects.Project
   alias Taskman.Tasks.{Comment, Hierarchy, HierarchyNode, Task}
-  alias TaskmanWeb.ProjectLive.Tasks.Comments
+  alias TaskmanWeb.ProjectLive.Tasks.{Activity, Comments}
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Move, ParentPicker, RelatedTasksPicker}
   alias TaskmanWeb.ProjectLive.Tasks.Hierarchy, as: TaskHierarchy
-  alias TaskmanWeb.Tasks.{Form, MovePopover, Priority, RelatedTasks, Status, Table}
+  alias TaskmanWeb.Tasks.{ActivityEntry, Form, MovePopover, Priority, RelatedTasks, Status, Table}
 
   attr :task, Task, required: true
   attr :close_id, :string, required: true
@@ -54,7 +54,8 @@ defmodule TaskmanWeb.Tasks.Detail do
   attr :description_editor, :map, required: true
   attr :recovery?, :boolean, default: false
   attr :comments, :any, default: nil
-  attr :comment_stream, :any, default: []
+  attr :activity, :any, default: nil
+  attr :activity_stream, :any, default: []
   attr :related_tasks, :map, default: %{blocks: [], blocked_by: []}
   attr :related_picker, RelatedTasksPicker, default: nil
   attr :related_task_path, :any, default: nil
@@ -68,6 +69,7 @@ defmodule TaskmanWeb.Tasks.Detail do
     assigns =
       assigns
       |> assign(:comments, %{comments | form: form})
+      |> assign(:activity, assigns.activity || Activity.State.empty())
       |> assign(:related_picker, assigns.related_picker || RelatedTasksPicker.empty())
       |> assign(:hierarchy_root, TaskHierarchy.visible_root(assigns.task_hierarchy))
       |> assign(
@@ -327,7 +329,7 @@ defmodule TaskmanWeb.Tasks.Detail do
             aria-label="Task activity and sessions"
             phx-hook="TaskmanWeb.ProjectLive.CommentThreadScroll"
             data-task-id={@task.id}
-            data-revision={@comments.revision}
+            data-revision={@activity.revision}
             class="task-detail-discussion border-t border-slate-700 bg-slate-950/35 p-6 xl:border-l xl:border-t-0"
           >
             <div
@@ -383,40 +385,23 @@ defmodule TaskmanWeb.Tasks.Detail do
               class="task-detail-tab-panel task-detail-activity"
             >
               <p
-                :if={@comments.empty?}
+                :if={@activity.empty?}
                 id="task-activity-empty"
                 class="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400"
               >
-                No comments yet.
+                No activity yet
               </p>
               <div
                 id="task-comment-thread"
                 phx-update="stream"
                 class="task-comment-thread"
               >
-                <article
-                  :for={{id, comment} <- @comment_stream}
+                <ActivityEntry.entry
+                  :for={{id, entry} <- @activity_stream}
                   id={id}
-                  class="rounded-xl border border-slate-700/70 bg-slate-900/65 p-4"
-                >
-                  <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                    <strong class="min-w-0 break-words text-sm font-semibold text-slate-100">
-                      {comment_author(comment)}
-                    </strong>
-                    <time
-                      id={"#{id}-time"}
-                      datetime={DateTime.to_iso8601(comment.created_at)}
-                      phx-hook=".CommentLocalTime"
-                      class="text-xs text-slate-400"
-                    >
-                      {DateTime.to_iso8601(comment.created_at)}
-                    </time>
-                  </div>
-                  <p
-                    phx-no-format
-                    class="task-comment-text mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-200"
-                  >{comment.text}</p>
-                </article>
+                  entry={entry}
+                  task_id={@task.id}
+                />
               </div>
               <.form
                 for={@comments.form}
@@ -504,18 +489,6 @@ defmodule TaskmanWeb.Tasks.Detail do
         },
         destroyed() {
           this.el.removeEventListener("keydown", this.onKeydown)
-        }
-      }
-    </script>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".CommentLocalTime">
-      export default {
-        mounted() {
-          const value = new Date(this.el.dateTime)
-          if (!Number.isNaN(value.valueOf())) {
-            this.el.textContent = new Intl.DateTimeFormat(undefined, {
-              dateStyle: "medium", timeStyle: "short"
-            }).format(value)
-          }
         }
       }
     </script>
@@ -725,12 +698,6 @@ defmodule TaskmanWeb.Tasks.Detail do
     </li>
     """
   end
-
-  defp comment_author(%Comment{author_name: nil, author_login: login}),
-    do: login || "Deleted user"
-
-  defp comment_author(%Comment{author_name: name, author_login: login}),
-    do: "#{name} (#{login || "Deleted user"})"
 
   defp hierarchy_content?(%TaskHierarchy{
          hierarchy: %Hierarchy{

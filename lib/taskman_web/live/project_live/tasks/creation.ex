@@ -233,7 +233,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
 
   defp create_task(socket, project, destination, task_params, location) do
     case Tasks.create_task(project, destination, task_params,
-           parent: ParentPicker.selected_parent(socket.assigns.task_parent_picker)
+           parent: ParentPicker.selected_parent(socket.assigns.task_parent_picker),
+           actor: socket.assigns.current_user || socket.assigns.current_scope
          ) do
       {:ok, task} ->
         socket = socket |> Workspace.observe_task(task) |> Listing.refresh()
@@ -259,6 +260,9 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
              Messages.parent_unavailable()
            )
          )}
+
+      {:error, :authentication_required} ->
+        {:noreply, Phoenix.LiveView.put_flash(socket, :error, "Sign in again to save this Task.")}
 
       {:error, changeset} ->
         {:noreply,

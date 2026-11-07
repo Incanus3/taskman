@@ -43,7 +43,11 @@ defmodule TaskmanWeb.API.TaskController do
     with {:ok, project} <- fetch_project(project_id),
          {:ok, location} <- resolve_location(project, list_id),
          {:ok, parent} <- resolve_parent(project, parent_task_id),
-         {:ok, task} <- Tasks.create_task(project, location, task_attrs, parent: parent) do
+         {:ok, task} <-
+           Tasks.create_task(project, location, task_attrs,
+             parent: parent,
+             actor: conn.assigns.current_user
+           ) do
       conn
       |> put_status(:created)
       |> json(%{data: task_data(project, task)})
@@ -112,7 +116,7 @@ defmodule TaskmanWeb.API.TaskController do
              project,
              task,
              task_attrs_without_parent,
-             parent_opts ++ confirmation_opts
+             [actor: conn.assigns.current_user] ++ parent_opts ++ confirmation_opts
            ) do
       json(conn, %{data: task_data(project, updated)})
     end
@@ -133,7 +137,8 @@ defmodule TaskmanWeb.API.TaskController do
          {:ok, project} <- fetch_project(project_id),
          {:ok, task} <- fetch_task(project, task_id),
          {:ok, location} <- resolve_location(project, list_id),
-         {:ok, moved} <- Tasks.move_task(project, task, location) do
+         {:ok, moved} <-
+           Tasks.move_task(project, task, location, actor: conn.assigns.current_user) do
       json(conn, %{data: task_data(project, moved)})
     end
   end

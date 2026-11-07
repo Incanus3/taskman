@@ -2,10 +2,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
   @moduledoc false
 
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [stream: 4, stream_insert: 3]
 
   alias Taskman.Tasks
   alias Taskman.Tasks.Comment
+  alias TaskmanWeb.ProjectLive.Tasks.Activity
 
   @events ~w(select_task_detail_tab validate_task_comment post_task_comment)
 
@@ -19,9 +19,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
               form: nil,
               draft: "",
               posting?: false,
-              error: nil,
-              empty?: true,
-              revision: 0
+              error: nil
 
     def empty, do: %__MODULE__{}
   end
@@ -29,7 +27,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
   def clear(socket) do
     socket
     |> assign(:comments, State.empty())
-    |> stream(:comments, [], reset: true)
+    |> Activity.clear()
   end
 
   def discard_draft(socket) do
@@ -48,41 +46,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
     assign(socket, :comments, %{state | draft: text})
   end
 
-  def load(socket, project, task) do
+  def load(socket, _project, task) do
     if socket.assigns.comments.task_id == task.id do
       socket
     else
-      case Tasks.list_comments(project, task) do
-        {:ok, comments} ->
-          state = %State{
-            task_id: task.id,
-            form: comment_form(%Comment{}, %{}),
-            empty?: comments == []
-          }
-
-          socket
-          |> assign(:comments, state)
-          |> stream(:comments, comments, reset: true)
-
-        {:error, :not_found} ->
-          clear(socket)
-      end
-    end
-  end
-
-  def reconcile(socket, project, task) do
-    case Tasks.list_comments(project, task) do
-      {:ok, comments} ->
-        state = socket.assigns.comments
-
-        socket
-        |> assign(:comments, %{state | empty?: comments == [], revision: state.revision + 1})
-        |> stream(:comments, comments, reset: true)
-
-      {:error, :not_found} ->
-        socket
-        |> TaskmanWeb.ProjectLive.Tasks.Editing.apply_route(project, nil)
-        |> clear()
+      socket
+      |> assign(:comments, %State{task_id: task.id, form: comment_form(%Comment{}, %{})})
     end
   end
 
@@ -144,21 +113,19 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
         actor = socket.assigns.current_user || socket.assigns.current_scope
 
         case Tasks.create_comment(project, task, actor, %{text: text}) do
-          {:ok, comment} ->
+          {:ok, _comment} ->
             next = %{
               state
               | posting?: false,
                 draft: "",
                 form: comment_form(%Comment{}, %{}),
-                empty?: false,
-                revision: state.revision + 1,
                 error: nil
             }
 
             {:ok,
              posting_socket
              |> assign(:comments, next)
-             |> stream_insert(:comments, comment)
+             |> Activity.reconcile(project, task)
              |> refresh_timestamp(project, task)}
 
           {:error, %Ecto.Changeset{} = changeset} ->

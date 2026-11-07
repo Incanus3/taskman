@@ -10,16 +10,38 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
   @graph_lock_key {724_150, 1}
 
+  setup do
+    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      end)
+    end)
+
+    :ok
+  end
+
   test "Done warns for unresolved direct blockers and rolls back a mixed update" do
     project = project_fixture(%{})
     blocker = task_fixture(project, %{title: "Needs review", priority: :urgent})
     indirect = task_fixture(project, %{title: "Indirect"})
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, indirect, blocker)
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, indirect, blocker,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, [summary]}} =
-             Tasks.update_task(project, blocked, %{title: "After", status: :done})
+             Tasks.update_task(project, blocked, %{title: "After", status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert summary.id == blocker.id
     assert summary.title == "Needs review"
@@ -36,10 +58,22 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     done_blocker = task_fixture(project, %{status: :done})
     indirect = task_fixture(project)
     blocked = task_fixture(project)
-    assert {:ok, _} = Tasks.add_block(project, indirect, done_blocker)
-    assert {:ok, _} = Tasks.add_block(project, done_blocker, blocked)
 
-    assert {:ok, updated} = Tasks.update_task(project, blocked, %{status: :done})
+    assert {:ok, _} =
+             Tasks.add_block(project, indirect, done_blocker,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, _} =
+             Tasks.add_block(project, done_blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, updated} =
+             Tasks.update_task(project, blocked, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert updated.status == :done
     assert Tasks.get_task_for_project(project, indirect.id).status == :pending
   end
@@ -49,13 +83,21 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       project = project_fixture(%{})
 
       assert {:ok, blocker} =
-               Tasks.create_task(project, %{title: "Closed blocker", status: unquote(state)})
+               Tasks.create_task(project, nil, %{title: "Closed blocker", status: unquote(state)},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
 
       blocked = task_fixture(project)
-      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, blocker, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
 
       assert {:error, {:unresolved_blockers, [summary]}} =
-               Tasks.update_task(project, blocked, %{status: :done})
+               Tasks.update_task(project, blocked, %{status: :done},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
 
       assert summary.id == blocker.id
       assert summary.status == unquote(state)
@@ -63,7 +105,8 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
       assert {:ok, %{status: :done}} =
                Tasks.update_task(project, blocked, %{status: :done},
-                 done_confirmation: {:ids, [blocker.id]}
+                 done_confirmation: {:ids, [blocker.id]},
+                 actor: Taskman.AccountsFixtures.user_fixture()
                )
     end
   end
@@ -72,11 +115,24 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{status: :done})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
 
-    assert {:ok, same} = Tasks.update_task(project, blocked, %{status: :done})
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, same} =
+             Tasks.update_task(project, blocked, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert same.lock_version == blocked.lock_version
-    assert {:ok, edited} = Tasks.update_task(project, same, %{title: "Edited"})
+
+    assert {:ok, edited} =
+             Tasks.update_task(project, same, %{title: "Edited"},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert edited.status == :done
   end
 
@@ -84,12 +140,26 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{status: :done})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert Tasks.get_task_for_project(project, blocked.id).status == :done
 
-    assert {:ok, reopened} = Tasks.update_task(project, blocked, %{status: :in_progress})
+    assert {:ok, reopened} =
+             Tasks.update_task(project, blocked, %{status: :in_progress},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert reopened.status == :in_progress
-    assert {:ok, _} = Tasks.update_task(project, blocker, %{status: :done})
+
+    assert {:ok, _} =
+             Tasks.update_task(project, blocker, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     assert Tasks.get_task_for_project(project, blocked.id).status == :in_progress
   end
 
@@ -97,11 +167,16 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project)
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, updated} =
              Tasks.update_task(project, blocked, %{title: "Done now", status: :done},
-               done_confirmation: {:ids, [blocker.id]}
+               done_confirmation: {:ids, [blocker.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert updated.title == "Done now"
@@ -116,23 +191,34 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     empty = task_fixture(project)
 
     for blocked <- [diminished, empty], blocker <- [first, second] do
-      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+      assert {:ok, _} =
+               Tasks.add_block(project, blocker, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
     end
 
-    assert {:ok, _} = Tasks.update_task(project, first, %{status: :done})
+    assert {:ok, _} =
+             Tasks.update_task(project, first, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, updated} =
              Tasks.update_task(project, diminished, %{status: :done},
-               done_confirmation: {:ids, [first.id, second.id]}
+               done_confirmation: {:ids, [first.id, second.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert updated.status == :done
 
-    assert {:ok, _} = Tasks.update_task(project, second, %{status: :done})
+    assert {:ok, _} =
+             Tasks.update_task(project, second, %{status: :done},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, updated} =
              Tasks.update_task(project, empty, %{status: :done},
-               done_confirmation: {:ids, [first.id, second.id]}
+               done_confirmation: {:ids, [first.id, second.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert updated.status == :done
@@ -143,12 +229,21 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     first = task_fixture(project, %{title: "A"})
     second = task_fixture(project, %{title: "B"})
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, first, blocked)
-    assert {:ok, _} = Tasks.add_block(project, second, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, first, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
+    assert {:ok, _} =
+             Tasks.add_block(project, second, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, summaries}} =
              Tasks.update_task(project, blocked, %{title: "After", status: :done},
-               done_confirmation: {:ids, [first.id]}
+               done_confirmation: {:ids, [first.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert Enum.map(summaries, & &1.id) == [first.id, second.id]
@@ -160,10 +255,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project)
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, updated} =
-             Tasks.update_task(project, blocked, %{status: :done}, done_confirmation: :force)
+             Tasks.update_task(project, blocked, %{status: :done},
+               done_confirmation: :force,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert updated.status == :done
     assert Tasks.get_task_for_project(project, blocker.id).status == :pending
@@ -173,14 +275,24 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{status: :pending})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     {first_baseline, stale_baseline} = loaded_task_baselines(project, blocked)
-    assert {:ok, _} = Tasks.update_task(project, first_baseline, %{status: :in_review})
+
+    assert {:ok, _} =
+             Tasks.update_task(project, first_baseline, %{status: :in_review},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     for confirmation <- [{:ids, [blocker.id]}, :force] do
       assert {:error, %Conflict{fields: [:status]}} =
                Tasks.update_task(project, stale_baseline, %{status: :done},
-                 done_confirmation: confirmation
+                 done_confirmation: confirmation,
+                 actor: Taskman.AccountsFixtures.user_fixture()
                )
     end
 
@@ -191,12 +303,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     project = project_fixture(%{})
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     for confirmation <- [{:ids, [blocker.id]}, :force] do
       assert {:error, changeset} =
                Tasks.update_task(project, blocked, %{title: "", status: :done},
-                 done_confirmation: confirmation
+                 done_confirmation: confirmation,
+                 actor: Taskman.AccountsFixtures.user_fixture()
                )
 
       assert %{title: [_]} = errors_on(changeset)
@@ -211,10 +328,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     parent = task_fixture(project)
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:error, {:unresolved_blockers, [_summary]}} =
-             Tasks.update_task(project, blocked, %{title: "After", status: :done}, parent: parent)
+             Tasks.update_task(project, blocked, %{title: "After", status: :done},
+               parent: parent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     persisted = Tasks.get_task_for_project(project, blocked.id)
     assert persisted.parent_task_id == nil
@@ -227,12 +351,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
     parent = task_fixture(project)
     blocker = task_fixture(project)
     blocked = task_fixture(project, %{title: "Before"})
-    assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, blocker, blocked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     assert {:ok, updated} =
              Tasks.update_task(project, blocked, %{title: "After", status: :done},
                parent: parent,
-               done_confirmation: {:ids, [blocker.id]}
+               done_confirmation: {:ids, [blocker.id]},
+               actor: Taskman.AccountsFixtures.user_fixture()
              )
 
     assert updated.title == "After"
@@ -249,8 +378,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
       result =
         queued_done_write(
-          fn -> Tasks.update_task(project, blocked, %{title: "After", status: :done}) end,
-          fn -> assert {:ok, _} = Tasks.add_block(project, blocker, blocked) end
+          fn ->
+            Tasks.update_task(project, blocked, %{title: "After", status: :done},
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
+          end,
+          fn ->
+            assert {:ok, _} =
+                     Tasks.add_block(project, blocker, blocked,
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:error, {:unresolved_blockers, [%{id: blocker_id}]}} = result
@@ -266,17 +404,28 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       first = task_fixture(project, %{title: "A"})
       second = task_fixture(project, %{title: "B"})
       blocked = task_fixture(project, %{title: "Before"})
-      assert {:ok, _} = Tasks.add_block(project, first, blocked)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, first, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
       cleanup_project(project)
 
       result =
         queued_done_write(
           fn ->
             Tasks.update_task(project, blocked, %{title: "After", status: :done},
-              done_confirmation: {:ids, [first.id]}
+              done_confirmation: {:ids, [first.id]},
+              actor: Taskman.AccountsFixtures.user_fixture()
             )
           end,
-          fn -> assert {:ok, _} = Tasks.add_block(project, second, blocked) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.add_block(project, second, blocked,
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:error, {:unresolved_blockers, summaries}} = result
@@ -292,18 +441,33 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       first = task_fixture(project, %{title: "A"})
       second = task_fixture(project, %{title: "B", status: :done})
       blocked = task_fixture(project, %{title: "Before"})
-      assert {:ok, _} = Tasks.add_block(project, first, blocked)
-      assert {:ok, _} = Tasks.add_block(project, second, blocked)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, first, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
+      assert {:ok, _} =
+               Tasks.add_block(project, second, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
       cleanup_project(project)
 
       result =
         queued_done_write(
           fn ->
             Tasks.update_task(project, blocked, %{title: "After", status: :done},
-              done_confirmation: {:ids, [first.id]}
+              done_confirmation: {:ids, [first.id]},
+              actor: Taskman.AccountsFixtures.user_fixture()
             )
           end,
-          fn -> assert {:ok, _} = Tasks.update_task(project, second, %{status: :pending}) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.update_task(project, second, %{status: :pending},
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:error, {:unresolved_blockers, summaries}} = result
@@ -319,17 +483,28 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       project = project_fixture(%{})
       blocker = task_fixture(project)
       blocked = task_fixture(project)
-      assert {:ok, _} = Tasks.add_block(project, blocker, blocked)
+
+      assert {:ok, _} =
+               Tasks.add_block(project, blocker, blocked,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+
       cleanup_project(project)
 
       result =
         queued_done_write(
           fn ->
             Tasks.update_task(project, blocked, %{status: :done},
-              done_confirmation: {:ids, [blocker.id]}
+              done_confirmation: {:ids, [blocker.id]},
+              actor: Taskman.AccountsFixtures.user_fixture()
             )
           end,
-          fn -> assert {:ok, _} = Tasks.update_task(project, blocker, %{status: :done}) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.update_task(project, blocker, %{status: :done},
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:ok, %{status: :done}} = result
@@ -347,9 +522,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       result =
         queued_done_write(
           fn ->
-            Tasks.update_task(project, blocked, %{status: :done}, done_confirmation: :force)
+            Tasks.update_task(project, blocked, %{status: :done},
+              done_confirmation: :force,
+              actor: Taskman.AccountsFixtures.user_fixture()
+            )
           end,
-          fn -> assert {:ok, _} = Tasks.add_block(project, blocker, blocked) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.add_block(project, blocker, blocked,
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:ok, %{status: :done}} = result
@@ -371,10 +554,16 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
         queued_done_write(
           fn ->
             Tasks.update_task(project, root, %{title: "After", status: :done},
-              done_confirmation: {:ids, [known.id]}
+              done_confirmation: {:ids, [known.id]},
+              actor: Taskman.AccountsFixtures.user_fixture()
             )
           end,
-          fn -> assert {:ok, _} = Tasks.update_task(project, boundary, %{status: :pending}) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.update_task(project, boundary, %{status: :pending},
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:error, {:unresolved_blockers, summaries}} = result
@@ -397,10 +586,17 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
         queued_done_write(
           fn ->
             Tasks.update_task(project, root, %{title: "After", status: :done},
-              done_confirmation: {:ids, [known.id]}
+              done_confirmation: {:ids, [known.id]},
+              actor: Taskman.AccountsFixtures.user_fixture()
             )
           end,
-          fn -> assert {:ok, _} = Tasks.update_task(project, subtree, %{}, parent: root) end
+          fn ->
+            assert {:ok, _} =
+                     Tasks.update_task(project, subtree, %{},
+                       parent: root,
+                       actor: Taskman.AccountsFixtures.user_fixture()
+                     )
+          end
         )
 
       assert {:error, {:unresolved_blockers, summaries}} = result

@@ -51,6 +51,7 @@ defmodule Taskman.CLI.Execution.ParserTest do
              ~w(tasks blocking show),
              ~w(tasks blocks add),
              ~w(tasks blocks remove),
+             ~w(tasks activity list),
              ~w(tasks comments list),
              ~w(tasks comments add),
              ~w(tasks hierarchy),

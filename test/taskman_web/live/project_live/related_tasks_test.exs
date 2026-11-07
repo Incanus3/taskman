@@ -21,8 +21,14 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     task = task_fixture(project, %{title: "Publish site"})
     blocker = task_fixture(other, list, %{title: "Approve copy", priority: :high})
     dependent = task_fixture(project, %{title: "Notify readers", status: :in_progress})
-    assert {:ok, _} = Tasks.add_block(other, blocker, task)
-    assert {:ok, _} = Tasks.add_block(project, task, dependent)
+
+    assert {:ok, _} =
+             Tasks.add_block(other, blocker, task, actor: Taskman.AccountsFixtures.user_fixture())
+
+    assert {:ok, _} =
+             Tasks.add_block(project, task, dependent,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -53,8 +59,15 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
 
     assert has_element?(view, "#related-blocked-by-empty")
     assert has_element?(view, "#related-blocks-empty")
-    assert {:ok, _} = Tasks.add_block(project, task, local)
-    assert {:ok, _} = Tasks.add_block(project, task, foreign)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, task, local, actor: Taskman.AccountsFixtures.user_fixture())
+
+    assert {:ok, _} =
+             Tasks.add_block(project, task, foreign,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     _ = :sys.get_state(view.pid)
 
     assert has_element?(
@@ -103,6 +116,10 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     view |> element("#related-candidate-#{candidate.id}") |> render_click()
     assert {:ok, %{blocked_by: [%{id: id}]}} = Tasks.list_blocking(project, task)
     assert id == candidate.id
+    {:ok, entries} = Tasks.list_activity(project, task)
+    entry = Enum.find(entries, &(&1.change.type == "block_changed"))
+    assert has_element?(view, "#task-#{entry.id}", "Blocked by added")
+    assert has_element?(view, "#task-#{entry.id}", candidate.title)
 
     view |> element("#related-add-blocks") |> render_click()
 
@@ -129,11 +146,19 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     task = task_fixture(project, %{})
     linked = task_fixture(project, %{})
     stale = task_fixture(project, %{})
-    assert {:ok, _} = Tasks.add_block(project, task, linked)
+
+    assert {:ok, _} =
+             Tasks.add_block(project, task, linked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     view |> element("#related-remove-blocks-#{linked.id}") |> render_click()
     assert {:ok, %{blocks: []}} = Tasks.list_blocking(project, task)
+    {:ok, entries} = Tasks.list_activity(project, task)
+    entry = Enum.find(entries, &(&1.change.type == "block_changed" && &1.change.after == false))
+    assert has_element?(view, "#task-#{entry.id}", "Blocks removed")
 
     view |> element("#related-add-blocks") |> render_click()
     assert has_element?(view, "#related-candidate-#{stale.id}")

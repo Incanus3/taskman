@@ -174,7 +174,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorBrowserTest do
 
   test "untouched noncanonical Markdown remains byte identical after focus and Close", c do
     source = "# Notes\n\n-   item\n"
-    {:ok, original} = Tasks.update_task(c.project, c.task, %{description: source})
+
+    {:ok, original} =
+      Tasks.update_task(c.project, c.task, %{description: source},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     visit(c, original)
     Browser.click(c.session, Query.css("[data-editor-visual]"))
     depart(c.session, "document.querySelector('#task-modal-close').click()")
@@ -206,7 +211,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorBrowserTest do
     Browser.send_keys(c.session, [:end, "!"])
     before_patch = caret(c.session)
     Application.put_env(:taskman, :task_autosave_delay_ms, 0)
-    {:ok, _} = Tasks.update_task(c.project, c.task, %{title: "Unrelated title"})
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.task, %{title: "Unrelated title"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     Browser.find(c.session, Query.css("#task-title[value='Unrelated title']"))
     assert editor_id(c.session) == id
     assert caret(c.session) == before_patch
@@ -267,7 +277,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorBrowserTest do
   test "table and strikethrough rendering stay literal and only strikethrough source escaping is accepted",
        c do
     source = "~~removed~~\n\n| A | B |\n| --- | --- |\n| one | two |\n\nOther"
-    {:ok, task} = Tasks.update_task(c.project, c.task, %{description: source})
+
+    {:ok, task} =
+      Tasks.update_task(c.project, c.task, %{description: source},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     visit(c, task)
     Browser.find(c.session, Query.css("[data-editor-visual]", text: "~~removed~~"))
 

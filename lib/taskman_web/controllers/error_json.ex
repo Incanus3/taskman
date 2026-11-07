@@ -9,7 +9,9 @@ defmodule TaskmanWeb.ErrorJSON do
     %{error: %{code: "internal_error", message: "Internal Server Error"}}
   end
 
-  def render("400.json", %{reason: %Plug.Parsers.ParseError{}}) do
+  def render("400.json", %{reason: reason})
+      when is_struct(reason, Plug.Parsers.ParseError) or
+             is_struct(reason, Plug.Conn.InvalidQueryError) do
     %{error: %{code: "invalid_request", message: "Invalid request"}}
   end
 

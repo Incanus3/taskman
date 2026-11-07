@@ -13,7 +13,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.EditingTest do
     project = project_fixture(%{})
     task = task_fixture(project)
     {:ok, hierarchy} = Tasks.get_task_hierarchy(project, task)
-    autosave = Autosave.load(%{Autosave.empty() | sequence: 7}, task, saved?: false)
+
+    autosave =
+      Autosave.load(%{Autosave.empty() | sequence: 7}, task,
+        saved?: false,
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     state = State.open(State.empty(), task, autosave, hierarchy)
     assert state.selected_task == task

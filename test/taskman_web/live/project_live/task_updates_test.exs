@@ -30,12 +30,22 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     refute has_captured_element?(view, "#list-#{foreign_list.id}")
 
     assert {:ok, task} =
-             externally(fn -> Tasks.create_task(project, source, %{title: "Visible icon"}) end)
+             externally(fn ->
+               Tasks.create_task(project, source, %{title: "Visible icon"},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     sync_view(view)
     assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-queue-list")
 
-    assert {:ok, _moved} = externally(fn -> Tasks.move_task(project, task, destination) end)
+    assert {:ok, _moved} =
+             externally(fn ->
+               Tasks.move_task(project, task, destination,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
+
     sync_view(view)
     assert has_captured_element?(view, "#toggle-list-#{source.id} .hero-folder")
     assert has_captured_element?(view, "#toggle-list-#{destination.id} .hero-queue-list")
@@ -96,7 +106,11 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     {{:ok, updated_a}, event_a} =
       assert_single_task_event_delivery(view, fn ->
-        externally(fn -> Tasks.update_task(project_a, task_a, %{title: "Project A after"}) end)
+        externally(fn ->
+          Tasks.update_task(project_a, task_a, %{title: "Project A after"},
+            actor: Taskman.AccountsFixtures.user_fixture()
+          )
+        end)
       end)
 
     assert %Event{
@@ -120,13 +134,19 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, _updated_a} =
              refute_task_event_delivery(view, fn ->
                externally(fn ->
-                 Tasks.update_task(project_a, updated_a, %{title: "Project A ignored"})
+                 Tasks.update_task(project_a, updated_a, %{title: "Project A ignored"},
+                   actor: Taskman.AccountsFixtures.user_fixture()
+                 )
                end)
              end)
 
     {{:ok, updated_b}, event_b} =
       assert_single_task_event_delivery(view, fn ->
-        externally(fn -> Tasks.update_task(project_b, task_b, %{title: "Project B after"}) end)
+        externally(fn ->
+          Tasks.update_task(project_b, task_b, %{title: "Project B after"},
+            actor: Taskman.AccountsFixtures.user_fixture()
+          )
+        end)
       end)
 
     assert %Event{
@@ -150,7 +170,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, _updated_b} =
              refute_task_event_delivery(view, fn ->
                externally(fn ->
-                 Tasks.update_task(project_b, updated_b, %{title: "Project B ignored"})
+                 Tasks.update_task(project_b, updated_b, %{title: "Project B ignored"},
+                   actor: Taskman.AccountsFixtures.user_fixture()
+                 )
                end)
              end)
   end
@@ -214,13 +236,21 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert has_captured_element?(view, "#tasks > #tasks-#{done.id}")
 
     assert {:ok, visible_after_status} =
-             externally(fn -> Tasks.update_task(project, pending, %{status: :done}) end)
+             externally(fn ->
+               Tasks.update_task(project, pending, %{status: :done},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     sync_view(view)
     assert has_captured_element?(view, "#task-#{visible_after_status.id}")
 
     assert {:ok, visible_hidden} =
-             externally(fn -> Tasks.update_task(project, hidden, %{status: :done}) end)
+             externally(fn ->
+               Tasks.update_task(project, hidden, %{status: :done},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     sync_view(view)
     assert has_captured_element?(view, "#task-#{visible_hidden.id}")
@@ -230,29 +260,53 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, promoted} =
              externally(fn ->
-               Tasks.update_task(project, visible_after_status, %{priority: :urgent})
+               Tasks.update_task(project, visible_after_status, %{priority: :urgent},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
              end)
 
     sync_view(view)
     assert has_captured_element?(view, "#tasks > #tasks-#{promoted.id} + #tasks-#{done.id}")
 
-    assert {:ok, moved_in} = externally(fn -> Tasks.move_task(project, source, launch) end)
+    assert {:ok, moved_in} =
+             externally(fn ->
+               Tasks.move_task(project, source, launch,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
+
     sync_view(view)
     assert has_captured_element?(view, "#task-#{moved_in.id}")
 
-    assert {:ok, _moved_out} = externally(fn -> Tasks.move_task(project, promoted, archive) end)
+    assert {:ok, _moved_out} =
+             externally(fn ->
+               Tasks.move_task(project, promoted, archive,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
+
     sync_view(view)
     refute has_captured_element?(view, "#task-#{promoted.id}")
 
     assert {:ok, _filtered_out} =
-             externally(fn -> Tasks.update_task(project, done, %{status: :will_not_do}) end)
+             externally(fn ->
+               Tasks.update_task(project, done, %{status: :will_not_do},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     assert {:ok, _moved_in_filtered_out} =
-             externally(fn -> Tasks.update_task(project, moved_in, %{status: :will_not_do}) end)
+             externally(fn ->
+               Tasks.update_task(project, moved_in, %{status: :will_not_do},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     assert {:ok, _hidden_filtered_out} =
              externally(fn ->
-               Tasks.update_task(project, visible_hidden, %{status: :will_not_do})
+               Tasks.update_task(project, visible_hidden, %{status: :will_not_do},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
              end)
 
     sync_view(view)
@@ -275,7 +329,11 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     original_editor_id = view_assigns(view).description.editor_id
 
     assert {:ok, external_description} =
-             externally(fn -> Tasks.update_task(project, task, %{description: "External"}) end)
+             externally(fn ->
+               Tasks.update_task(project, task, %{description: "External"},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     sync_view(view)
     assert has_captured_element?(view, "#task-modal")
@@ -291,7 +349,10 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, external_parent} =
              externally(fn ->
-               Tasks.update_task(project, external_description, %{}, parent: second_parent)
+               Tasks.update_task(project, external_description, %{},
+                 parent: second_parent,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
              end)
 
     sync_view(view)
@@ -319,7 +380,13 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     {:ok, detail, _html} = live(conn, detail_path)
 
-    assert {:ok, _moved} = externally(fn -> Tasks.move_task(project, selected, nil) end)
+    assert {:ok, _moved} =
+             externally(fn ->
+               Tasks.move_task(project, selected, nil,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
+
     sync_view(detail)
 
     assert has_captured_element?(detail, "#task-modal")
@@ -336,7 +403,13 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     |> form("#task-form", task: %{title: "Draft"})
     |> render_captured_change(%{"_target" => ["task", "title"]})
 
-    created = externally(fn -> Tasks.create_task(project, planning, %{title: "External"}) end)
+    created =
+      externally(fn ->
+        Tasks.create_task(project, planning, %{title: "External"},
+          actor: Taskman.AccountsFixtures.user_fixture()
+        )
+      end)
+
     assert {:ok, external_task} = created
     sync_view(create)
 
@@ -372,7 +445,11 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
 
     assert {:ok, _updated} =
-             externally(fn -> Tasks.update_task(project, task, %{title: "Changed elsewhere"}) end)
+             externally(fn ->
+               Tasks.update_task(project, task, %{title: "Changed elsewhere"},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     sync_view(view)
     assert has_captured_element?(view, "#move-task-#{task.id}")
@@ -408,7 +485,10 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, created} =
              externally(fn ->
-               Tasks.create_task(project, nil, %{title: "Created child"}, parent: sibling)
+               Tasks.create_task(project, nil, %{title: "Created child"},
+                 parent: sibling,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
              end)
 
     sync_view(view)
@@ -422,10 +502,13 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, updated} =
              externally(fn ->
-               Tasks.update_task(project, selected, %{
-                 title: "Revised selected Task",
-                 status: :in_review
-               })
+               Tasks.update_task(
+                 project,
+                 selected,
+                 %{
+                   title: "Revised selected Task",
+                   status: :in_review
+                 }, actor: Taskman.AccountsFixtures.user_fixture())
              end)
 
     sync_view(view)
@@ -442,7 +525,11 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
       assert has_captured_element?(view, "#task-hierarchy-priority-#{task.id}", "None")
 
       assert {:ok, _} =
-               externally(fn -> Tasks.update_task(project, task, %{priority: priority}) end)
+               externally(fn ->
+                 Tasks.update_task(project, task, %{priority: priority},
+                   actor: Taskman.AccountsFixtures.user_fixture()
+                 )
+               end)
 
       sync_view(view)
       assert has_captured_element?(view, "#task-hierarchy-priority-#{task.id}", label)
@@ -464,10 +551,18 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
 
     assert {:ok, first} =
-             externally(fn -> Tasks.update_task(project, task, %{title: "First"}) end)
+             externally(fn ->
+               Tasks.update_task(project, task, %{title: "First"},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     assert {:ok, latest} =
-             externally(fn -> Tasks.update_task(project, first, %{title: "Latest"}) end)
+             externally(fn ->
+               Tasks.update_task(project, first, %{title: "Latest"},
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
 
     send(view.pid, task_event(first, :updated, [:title]))
     send(view.pid, task_event(first, :updated, [:title]))
@@ -511,8 +606,10 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     try do
       result = fun.()
-      assert_receive {:trace, ^view_pid, :receive, %Event{} = event}
+      assert_receive {:trace, ^view_pid, :receive, %Event{entity: :task} = event}
+      assert_receive {:trace, ^view_pid, :receive, %Event{entity: :activity} = activity}
       refute_receive {:trace, ^view_pid, :receive, ^event}, 50
+      refute_receive {:trace, ^view_pid, :receive, ^activity}, 50
       {result, event}
     after
       :erlang.trace(view_pid, false, [:receive])

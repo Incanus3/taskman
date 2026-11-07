@@ -127,7 +127,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     project: project,
     task: task
   } do
-    autosave = Autosave.load(Autosave.empty(), task, saved?: false)
+    autosave =
+      Autosave.load(Autosave.empty(), task,
+        saved?: false,
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     captured = Autosave.capture_description(autosave, task, "Final character!")
     assert captured.draft["description"] == "Final character!"
     assert captured.baseline.description == task.description
@@ -211,7 +216,11 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     project: project,
     task: task
   } do
-    {:ok, _} = Tasks.update_task(project, task, %{description: "External"})
+    {:ok, _} =
+      Tasks.update_task(project, task, %{description: "External"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     render(view)
     pending = state(view).description.pending_capture
     assert pending
@@ -268,7 +277,10 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     change(view, "A", true)
     revision = state(view).editing.autosave.revisions["description"]
-    {:ok, _} = Tasks.move_task(project, task, actual)
+
+    {:ok, _} =
+      Tasks.move_task(project, task, actual, actor: Taskman.AccountsFixtures.user_fixture())
+
     Taskman.Repo.delete!(lost)
 
     send(view.pid, %Taskman.ChangeNotifications.Event{
@@ -343,7 +355,10 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     })
 
     pending = state(view).description.pending_capture
-    {:ok, _} = Tasks.move_task(project, task, actual)
+
+    {:ok, _} =
+      Tasks.move_task(project, task, actual, actor: Taskman.AccountsFixtures.user_fixture())
+
     Taskman.Repo.delete!(lost)
 
     send(view.pid, %Taskman.ChangeNotifications.Event{
@@ -447,7 +462,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     send(view.pid, {:autosave_task_field, task.id, "description", revision})
     render(view)
     saved = Tasks.get_task_for_project(project, task.id)
-    {:ok, _} = Tasks.update_task(project, saved, %{description: "External B"})
+
+    {:ok, _} =
+      Tasks.update_task(project, saved, %{description: "External B"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     render(view)
     pending = state(view).description.pending_capture
     assert pending
@@ -585,7 +605,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     })
 
     pending = state(view).description.pending_capture
-    {:ok, _} = Tasks.update_task(project, task, %{description: "New canonical"})
+
+    {:ok, _} =
+      Tasks.update_task(project, task, %{description: "New canonical"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     render(view)
     reply(view, pending.ref, "Original", false)
     assert_patch(view, ~p"/projects/#{project.id}")
@@ -798,6 +823,33 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     assert fresh.ref != original.ref
     reply(view, fresh.ref, "Retained description!", true)
     assert has_element?(view, "#task-comment-departure")
+  end
+
+  test "activity-only refresh captures final editor text before reconciling a canonical description",
+       %{
+         view: view,
+         project: project,
+         task: task
+       } do
+    Taskman.Repo.update!(Ecto.Changeset.change(task, description: "External description"))
+
+    send(view.pid, %Taskman.ChangeNotifications.Event{
+      entity: :activity,
+      operation: :invalidated,
+      project_id: project.id,
+      entity_id: task.id,
+      task_ids: [task.id],
+      fields: []
+    })
+
+    render(view)
+    pending = state(view).description.pending_capture
+    assert pending
+    reply(view, pending.ref, "Final browser description!", true)
+    assert has_element?(view, "#task-description-conflict")
+    assert state(view).editing.autosave.form[:description].value == "Final browser description!"
+    assert Tasks.get_task_for_project(project, task.id).description == "External description"
+    assert has_element?(view, "#task-comment-form")
   end
 
   defp state(view), do: :sys.get_state(view.pid).socket.assigns

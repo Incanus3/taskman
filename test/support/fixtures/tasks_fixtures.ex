@@ -10,16 +10,13 @@ defmodule Taskman.TasksFixtures do
   end
 
   def task_fixture(project, location, attrs) do
-    unique = System.unique_integer([:positive])
-    attrs = Map.merge(%{title: "Task #{unique}"}, Map.new(attrs))
-
-    {:ok, task} = Tasks.create_task(project, location, attrs)
-    task
+    task_fixture(project, location, attrs, [])
   end
 
   def task_fixture(project, location, attrs, opts) when is_list(opts) do
     unique = System.unique_integer([:positive])
     attrs = Map.merge(%{title: "Task #{unique}"}, Map.new(attrs))
+    opts = Keyword.put_new_lazy(opts, :actor, &Taskman.AccountsFixtures.user_fixture/0)
 
     {:ok, task} = Tasks.create_task(project, location, attrs, opts)
     task

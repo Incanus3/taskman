@@ -281,6 +281,8 @@ taskman tasks blocking show --project 9 42
 taskman tasks blocks add --project 7 12 --target 42
 taskman tasks blocks remove --project 7 12 --target 42
 taskman tasks show --project 7 42 --include-comments
+taskman tasks activity list --project 7 42 --json
+taskman tasks activity list --project 7 42 --include-comments --json
 taskman tasks comments list --project 7 42 --json
 taskman tasks comments add --project 7 42 --text Review-notes --author-name Research-agent --json
 taskman tasks create --project 7 --title Prepare --status pending
@@ -313,6 +315,15 @@ Read the relevant group or leaf help for the complete option set. Before changin
 inspect it with `show` or `list`, then make one explicit, ID-based mutation and verify the result.
 Use `tasks update --parent` to set a parent and `tasks update --no-parent` to clear it. Use
 `tasks hierarchy` to inspect the connected hierarchy before or after a parent mutation.
+
+Activity queries return events only by default; `--include-comments` includes comments in the
+same timeline. This is mutable consolidated history: same-account edits to the same field or
+relationship within a sliding minute merge, move to the latest change time, and disappear if
+fully undone. It is not a complete audit trail. Creation, title, status, priority, due date,
+List, parent and blocking changes are recorded; description edits are excluded. Events identify
+the authenticated account, with no custom author override. JSON retains typed before/after values,
+historical reference labels, UTC event times and naive local due dates. Existing comments commands
+and `tasks show --include-comments` still return their ordinary comment representations.
 
 Read the Task and its thread before adding a comment. An explicit Task assignment authorizes
 relevant evidence comments; otherwise obtain an operator request. Inspect the returned comment

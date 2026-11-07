@@ -15,9 +15,14 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     {:ok, conn: log_in_user(conn, user), user: user}
   end
 
-  test "Activity opens with an explicit empty thread and accessible tabs", %{conn: conn} do
+  test "Tasks without recorded history open with an explicit empty Activity and accessible tabs",
+       %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project)
+
+    Taskman.Repo.get_by!(Taskman.Tasks.Activity.Event, task_id: task.id, kind: "task_created")
+    |> Taskman.Repo.delete!()
+
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
     assert has_element?(view, "#task-detail-tabs[role='tablist']")
@@ -37,7 +42,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
              "#task-activity[role='tabpanel'][aria-labelledby='task-activity-tab']"
            )
 
-    assert has_element?(view, "#task-activity-empty", "No comments yet.")
+    assert has_element?(view, "#task-activity-empty", "No activity yet")
     assert has_element?(view, "#task-comment-form[phx-submit='post_task_comment']")
     assert has_element?(view, "#task-comment-text[aria-label='Comment']")
     assert has_element?(view, "#task-comment-post[type='submit'][phx-disable-with]")
@@ -139,7 +144,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     assert view
            |> render()
            |> LazyHTML.from_fragment()
-           |> LazyHTML.query("#task-comment-thread article")
+           |> LazyHTML.query("#task-comment-thread article[id^='task-comment-']")
            |> LazyHTML.attribute("id") == [
              "task-comment-#{first.id}",
              "task-comment-#{second.id}"
@@ -282,7 +287,7 @@ defmodule TaskmanWeb.ProjectLive.CommentsTest do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#task-comment-thread article")
+    |> LazyHTML.query("#task-comment-thread article[id^='task-comment-']")
     |> LazyHTML.attribute("id")
   end
 

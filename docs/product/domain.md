@@ -111,9 +111,20 @@ authorization enforcement or automatic transitions. In Progress is not an atomic
 - Account deletion nulls the comment's posting-account link but retains its text, creation time,
   and custom name. Its login then appears as `Deleted user`, with no email snapshot. Changing an
   account email changes the login shown on its earlier comments.
-- **Activity**: the Task-detail tab that currently contains the comment thread and composer.
-  The Sessions tab shares its panel and remains a truthful empty state. This presentation replaces
-  the earlier stacked Activity and Sessions sections. Task changes do not generate Activity entries.
+- **Task change**: a structured, authenticated history entry for creation or an actual title,
+  status, priority, due date, List, parent or directed blocking transition. Description edits are
+  excluded. Mutation and history commit together. Its actor is the authenticated account, resolved
+  to the current login or `Deleted user`; reference titles and location labels are historical snapshots.
+- **Consolidated history**: mutable surviving changes, rather than a complete audit trail. Same-account
+  edits to the same field or directed blocking pair within a sliding 60 seconds merge, retaining the
+  original value and first time but replacing the final value and latest time. A full undo removes
+  the entry. Creation never consolidates. Another account's surviving entry prevents merging past it;
+  a fully undone intervention can expose an older eligible entry. No intermediate history is retained.
+- **Activity**: the Task-detail tab combining changes and the comment thread with a composer.
+  It orders oldest first by comment creation or latest change time, comments before changes on a
+  tie, then numeric ID. Consolidation can reorder or remove entries. The Sessions tab shares its
+  panel and remains a truthful empty state. API/CLI activity queries default to events only and
+  optionally include comments. See the [Activity contract](mvp-spec.md#task-comments-and-activity).
 - A successful comment advances its Task's `updated_at` to at least the comment time, without
   changing `lock_version`, Task fields, or status. A failed post leaves the Task unchanged. Thus
   `updated_at` records the latest direct Task mutation or successful comment; it is not proof of

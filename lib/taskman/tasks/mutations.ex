@@ -11,6 +11,35 @@ defmodule Taskman.Tasks.Mutations do
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.Status
 
+  @type attrs :: %{optional(atom() | String.t()) => term()}
+  @type field ::
+          :description
+          | :due_at
+          | :list_id
+          | :parent_task_id
+          | :priority
+          | :project_id
+          | :status
+          | :title
+  @type changed_fields :: [field()]
+  @type done_confirmation :: nil | :force | {:ids, Enumerable.t()}
+  @type create_options :: [actor: term(), parent: term()]
+  @type update_options :: [
+          actor: term(),
+          parent: term(),
+          done_confirmation: done_confirmation()
+        ]
+  @type create_error :: Ecto.Changeset.t() | :not_found
+  @type update_error ::
+          create_error() | Conflict.t() | {:unresolved_blockers, [BlockingPersistence.summary()]}
+  @type move_error :: create_error() | Conflict.t() | :unchanged_location
+  @type result(previous, error) ::
+          {:ok, Task.t(), changed_fields(), previous} | {:error, error}
+  @type create_result :: result(nil, create_error())
+  @type update_result :: result(Task.t(), update_error())
+  @type move_result :: result(Task.t(), move_error())
+  @type result :: create_result() | update_result() | move_result()
+
   @creation_fields [
     :description,
     :due_at,
@@ -33,17 +62,32 @@ defmodule Taskman.Tasks.Mutations do
     :title
   ]
 
+  @doc """
+  Returns the inserted Task, creation fields, and a nil previous Task.
+
+  Attributes use atom or string keys. Presence of `:parent` opts into parent validation;
+  nil means no parent and an invalid or foreign parent returns `:not_found`.
+  """
+  @spec create(Project.t(), Task.t(), attrs(), create_options()) :: create_result()
   def create(project, task, attrs, opts) do
     if Keyword.has_key?(opts, :parent) do
       create_with_parent(project, task, attrs, Keyword.get(opts, :parent))
     else
       case Repo.insert(Task.changeset(task, attrs)) do
-        {:ok, persisted} -> {:ok, persisted, @creation_fields}
+        {:ok, persisted} -> {:ok, persisted, @creation_fields, nil}
         error -> error
       end
     end
   end
 
+  @doc """
+  Returns the saved Task, changed fields, and the actual previous persisted Task.
+
+  A stale retry may use a newer previous Task; a no-op returns the current Task twice
+  with no changed fields. `:parent` also permits nil to detach. A transition to done
+  accepts `:force` or `{:ids, ids}` confirmation and otherwise may return blocker summaries.
+  """
+  @spec update(Project.t(), Task.t(), attrs(), update_options()) :: update_result()
   def update(project, task, attrs, opts) do
     changeset = Task.changeset(task, attrs)
 
@@ -66,6 +110,8 @@ defmodule Taskman.Tasks.Mutations do
     end
   end
 
+  @doc "Returns a location mutation, or `:unchanged_location` when already at the destination."
+  @spec move(Project.t(), Task.t(), term()) :: move_result()
   def move(project, task, destination_id) do
     case destination(project, destination_id) do
       :ok -> move_with_destination(project, task, destination_id)
@@ -95,7 +141,7 @@ defmodule Taskman.Tasks.Mutations do
              {:error, :cycle} -> Repo.rollback(cycle_changeset(task, attrs))
            end
          end) do
-      {:ok, persisted} -> {:ok, persisted, @creation_fields}
+      {:ok, persisted} -> {:ok, persisted, @creation_fields, nil}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -136,7 +182,7 @@ defmodule Taskman.Tasks.Mutations do
 
   defp update_ordinary_once(project, baseline, intended, fields, persist_opts, preconditions) do
     case persist_update(Task.changeset(baseline, intended), persist_opts) do
-      {:ok, persisted} -> {:ok, persisted, fields}
+      {:ok, persisted} -> {:ok, persisted, fields, baseline}
       {:error, changeset} -> {:error, changeset}
       :stale -> retry_ordinary(project, baseline, preconditions, persist_opts)
     end
@@ -153,11 +199,11 @@ defmodule Taskman.Tasks.Mutations do
             {:error, %Conflict{task: current, fields: conflicts}}
 
           {[], remaining} when map_size(remaining) == 0 ->
-            {:ok, current, []}
+            {:ok, current, [], current}
 
           {[], remaining} ->
             case persist_update(Task.changeset(current, remaining), persist_opts) do
-              {:ok, persisted} -> {:ok, persisted, ordered_fields(Map.keys(remaining))}
+              {:ok, persisted} -> {:ok, persisted, ordered_fields(Map.keys(remaining)), current}
               {:error, changeset} -> {:error, changeset}
               :stale -> second_stale_conflict(project, current, Map.keys(remaining))
             end
@@ -250,7 +296,7 @@ defmodule Taskman.Tasks.Mutations do
         case allow_done_transition(current, changeset.changes, opts) do
           :ok ->
             case persist_update(changeset) do
-              {:ok, persisted} -> {:ok, persisted, fields}
+              {:ok, persisted} -> {:ok, persisted, fields, baseline}
               {:error, changeset} -> Repo.rollback(changeset)
               :stale -> :stale
             end
@@ -275,7 +321,7 @@ defmodule Taskman.Tasks.Mutations do
         Repo.rollback(%Conflict{task: current, fields: conflicts})
 
       {[], remaining} when map_size(remaining) == 0 ->
-        {:ok, current, []}
+        {:ok, current, [], current}
 
       {[], remaining} ->
         changeset = parent_changeset(current, remaining)
@@ -284,7 +330,7 @@ defmodule Taskman.Tasks.Mutations do
         case allow_done_transition(current, changeset.changes, opts) do
           :ok ->
             case persist_update(changeset) do
-              {:ok, persisted} -> {:ok, persisted, fields}
+              {:ok, persisted} -> {:ok, persisted, fields, current}
               {:error, changeset} -> Repo.rollback(changeset)
               :stale -> :stale
             end
@@ -312,7 +358,7 @@ defmodule Taskman.Tasks.Mutations do
       intended = %{list_id: destination_id}
 
       case persist_update(location_changeset(baseline, destination_id)) do
-        {:ok, persisted} -> {:ok, persisted, [:list_id]}
+        {:ok, persisted} -> {:ok, persisted, [:list_id], baseline}
         {:error, changeset} -> {:error, changeset}
         :stale -> retry_move(project, baseline, intended, destination_id)
       end
@@ -331,7 +377,7 @@ defmodule Taskman.Tasks.Mutations do
 
         {[], _remaining} ->
           case persist_update(location_changeset(current, destination_id)) do
-            {:ok, persisted} -> {:ok, persisted, [:list_id]}
+            {:ok, persisted} -> {:ok, persisted, [:list_id], current}
             {:error, changeset} -> {:error, changeset}
             :stale -> second_stale_conflict(project, current, [:list_id])
           end
@@ -356,7 +402,7 @@ defmodule Taskman.Tasks.Mutations do
         Repo.rollback(%Conflict{task: current, fields: conflicts})
 
       {[], _remaining} ->
-        {:ok, current, []}
+        {:ok, current, [], current}
     end
   end
 
@@ -370,7 +416,7 @@ defmodule Taskman.Tasks.Mutations do
     try do
       case Repo.update(
              Ecto.Changeset.optimistic_lock(changeset, :lock_version),
-             Keyword.merge([returning: [:updated_at]], opts)
+             Keyword.merge([returning: [:updated_at], mode: :savepoint], opts)
            ) do
         {:ok, task} -> {:ok, task}
         {:error, changeset} -> {:error, changeset}
@@ -398,7 +444,7 @@ defmodule Taskman.Tasks.Mutations do
             {:error, %Conflict{task: current, fields: conflicts}}
 
           {[], _remaining} ->
-            {:ok, current, []}
+            {:ok, current, [], current}
         end
     end
   end

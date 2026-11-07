@@ -71,7 +71,11 @@ defmodule TaskmanWeb.ProjectLive.TaskDueFormatTest do
     |> form("#task-form", task: %{due_at: "28.10."})
     |> render_captured_change(%{"_target" => ["task", "due_at"]})
 
-    {:ok, _} = Tasks.update_task(project, task, %{due_at: ~N[2028-02-29 09:30:00]})
+    {:ok, _} =
+      Tasks.update_task(project, task, %{due_at: ~N[2028-02-29 09:30:00]},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     assert has_captured_element?(view, "#task-due_at-conflict", "29.02.2028 09:30")
     assert has_captured_element?(view, "#task-due-at[value='28.10.']")
     view |> element("#use-latest-due_at") |> render_captured_click()

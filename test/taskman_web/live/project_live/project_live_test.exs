@@ -430,7 +430,11 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_captured_element?(view, "#task-parent-option-#{rejected_parent.id}")
 
-    assert {:ok, _} = Tasks.update_task(project, rejected_parent, %{}, parent: task)
+    assert {:ok, _} =
+             Tasks.update_task(project, rejected_parent, %{},
+               parent: task,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     _ = :sys.get_state(view.pid)
 
@@ -464,7 +468,12 @@ defmodule TaskmanWeb.ProjectLiveTest do
     })
 
     assert {:ok, _} =
-             Task.async(fn -> Tasks.update_task(project, rejected_parent, %{}, parent: task) end)
+             Task.async(fn ->
+               Tasks.update_task(project, rejected_parent, %{},
+                 parent: task,
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
+             end)
              |> Task.await()
 
     _ = :sys.get_state(view.pid)
@@ -520,11 +529,8 @@ defmodule TaskmanWeb.ProjectLiveTest do
              "#task-hierarchy-disclosure-#{task.id}, #task-hierarchy-expanded-marker-#{task.id}"
            )
 
-    assert has_captured_element?(
-             view,
-             "#task-activity-empty",
-             "No comments yet."
-           )
+    assert {:ok, [creation]} = Tasks.list_activity(project, task)
+    assert has_captured_element?(view, "#task-#{creation.id}", "Task created")
 
     assert has_captured_element?(
              view,

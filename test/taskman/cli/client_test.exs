@@ -126,6 +126,178 @@ defmodule Taskman.CLI.ClientTest do
     end
   end
 
+  test "activity contract accepts each typed transition and deleted actors" do
+    alias Taskman.CLI.Fixtures
+    reference = Fixtures.activity_entry()["change"]["context"]["task"]
+    parent = %{reference | "id" => 41, "title" => "Parent"}
+    target = %{reference | "id" => 99, "project_id" => 8}
+    location = %{"project_id" => 7, "project_name" => "Demo", "list_id" => nil, "path" => []}
+
+    entries = [
+      Fixtures.activity_entry(%{
+        "type" => "task_created",
+        "field" => nil,
+        "before" => nil,
+        "after" => nil,
+        "first_changed_at" => "2026-11-07T12:00:30Z"
+      }),
+      Fixtures.activity_entry(%{"field" => "title", "before" => "Old", "after" => "New"}),
+      Fixtures.activity_entry(%{
+        "field" => "status",
+        "before" => "pending",
+        "after" => "in_progress"
+      }),
+      Fixtures.activity_entry(),
+      Fixtures.activity_entry(%{
+        "field" => "due_at",
+        "before" => nil,
+        "after" => "2026-11-08T13:00:00"
+      }),
+      Fixtures.activity_entry(%{"field" => "parent_task_id", "before" => nil, "after" => parent}),
+      Fixtures.activity_entry(%{
+        "field" => "list_id",
+        "before" => location,
+        "after" => %{location | "list_id" => 4, "path" => ["Planning"]}
+      }),
+      Fixtures.activity_entry(%{
+        "type" => "block_changed",
+        "field" => nil,
+        "before" => false,
+        "after" => true,
+        "context" => %{
+          "task" => reference,
+          "blocking_task" => reference,
+          "blocked_task" => target
+        }
+      }),
+      Fixtures.activity_entry(%{"actor" => %{"user_id" => nil, "login" => "Deleted user"}}),
+      Fixtures.activity_comment()
+    ]
+
+    for entry <- entries do
+      assert {:ok, [^entry]} = activity_response(entry)
+    end
+  end
+
+  test "malformed activity members return contract errors without unsafe rendering values" do
+    alias Taskman.CLI.Fixtures
+    base = Fixtures.activity_entry()
+    comment = Fixtures.activity_comment()
+
+    invalid = [
+      nil,
+      "garbage",
+      %{},
+      Map.delete(base, "occurred_at"),
+      %{base | "id" => "event-0"},
+      %{base | "kind" => "unknown"},
+      %{base | "change" => nil},
+      %{base | "occurred_at" => "2026-11-07T12:00:31Z"},
+      Fixtures.activity_entry(%{"type" => "unknown"}),
+      Fixtures.activity_entry(%{"field" => "description"}),
+      Fixtures.activity_entry(%{"field" => "title", "after" => %{}}),
+      Fixtures.activity_entry(%{"field" => "status", "after" => "invalid"}),
+      Fixtures.activity_entry(%{"field" => "priority", "before" => nil}),
+      Fixtures.activity_entry(%{
+        "field" => "due_at",
+        "before" => nil,
+        "after" => "2026-02-30T13:00:00"
+      }),
+      Fixtures.activity_entry(%{
+        "field" => "due_at",
+        "before" => nil,
+        "after" => "2026-11-08T13:00:00Z"
+      }),
+      Fixtures.activity_entry(%{"field" => "parent_task_id", "before" => nil, "after" => 12}),
+      Fixtures.activity_entry(%{"field" => "list_id", "before" => nil, "after" => %{}}),
+      Fixtures.activity_entry(%{"actor" => nil}),
+      Fixtures.activity_entry(%{
+        "actor" => %{"user_id" => nil, "login" => "person@example.invalid"}
+      }),
+      Fixtures.activity_entry(%{
+        "actor" => %{"user_id" => "bad", "login" => "person@example.invalid"}
+      }),
+      Fixtures.activity_entry(%{
+        "actor" => %{"user_id" => "warehouse worker", "login" => "person@example.invalid"}
+      }),
+      Fixtures.activity_entry(%{"first_changed_at" => "bad"}),
+      Fixtures.activity_entry(%{"first_changed_at" => "2026-11-07T12:01:00Z"}),
+      Fixtures.activity_entry(%{"last_changed_at" => "2026-11-07T13:00:30+01:00"}),
+      Fixtures.activity_entry(%{"context" => %{}}),
+      Fixtures.activity_entry(%{"context" => %{"task" => nil}}),
+      Fixtures.activity_entry(%{"task_id" => 99}),
+      Fixtures.activity_entry(%{
+        "type" => "task_created",
+        "field" => nil,
+        "before" => nil,
+        "after" => nil
+      }),
+      Fixtures.activity_entry(%{
+        "type" => "block_changed",
+        "field" => nil,
+        "before" => false,
+        "after" => true
+      }),
+      %{comment | "id" => "comment-99"},
+      %{comment | "comment" => %{comment["comment"] | "created_at" => "invalid"}}
+    ]
+
+    for entry <- invalid do
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} = activity_response(entry),
+             "accepted malformed activity: #{inspect(entry)}"
+    end
+  end
+
+  test "due-date activity rejects equivalent encodings while retaining actual transitions" do
+    alias Taskman.CLI.Fixtures
+
+    for {before, after_value} <- [
+          {nil, "2026-11-08T13:00:00"},
+          {"2026-11-08T13:00:00.000000", nil},
+          {"2026-11-08T13:00:00", "2026-11-08T13:00:00.000001"},
+          {"2026-11-08T13:00:00.000000", "2026-11-09T13:00:00"}
+        ] do
+      entry =
+        Fixtures.activity_entry(%{
+          "field" => "due_at",
+          "before" => before,
+          "after" => after_value
+        })
+
+      assert {:ok, [^entry]} = activity_response(entry)
+    end
+
+    for {before, after_value} <- [
+          {"2026-11-08T13:00:00", "2026-11-08T13:00:00.000000"},
+          {"2026-11-08T13:00:00.000000", "2026-11-08T13:00:00"},
+          {"2026-11-08T13:00:00.1", "2026-11-08T13:00:00.100000"}
+        ] do
+      entry =
+        Fixtures.activity_entry(%{
+          "field" => "due_at",
+          "before" => before,
+          "after" => after_value
+        })
+
+      assert {:error, 5, %{"error" => %{"code" => "invalid_response"}}} = activity_response(entry)
+    end
+  end
+
+  defp activity_response(entry) do
+    Req.Test.expect(TaskmanCLIClient, fn conn -> Req.Test.json(conn, %{data: [entry]}) end)
+
+    Client.request(
+      :get,
+      "/activity",
+      [],
+      [
+        resolved_context: Taskman.CLI.Fixtures.resolved_context(),
+        req_options: [plug: {Req.Test, TaskmanCLIClient}]
+      ],
+      {:collection, :activity_entry}
+    )
+  end
+
   test "returns the data from a successful JSON envelope" do
     Req.Test.expect(TaskmanCLIClient, fn conn ->
       assert conn.method == "GET"

@@ -18,7 +18,7 @@ defmodule Taskman.ChangeNotifications.Event do
   ]
 
   @type t :: %__MODULE__{
-          entity: :project | :list | :task | :comment | :relationship,
+          entity: :project | :list | :task | :comment | :relationship | :activity,
           operation: :created | :updated | :moved | :invalidated,
           project_id: pos_integer(),
           task_id: pos_integer() | nil,

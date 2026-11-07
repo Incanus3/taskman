@@ -46,7 +46,12 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
   test "fresh browser filters include analysis while explicit saved arrays preserve exclusion",
        c do
     s = c.session
-    {:ok, _} = Tasks.update_task(c.project, c.task, %{status: :in_analysis})
+
+    {:ok, _} =
+      Tasks.update_task(c.project, c.task, %{status: :in_analysis},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     url = c.base <> "/projects/#{c.project.id}"
     js(s, "localStorage.removeItem('taskman.task-table.visible-statuses')")
     Browser.visit(s, url)
@@ -327,7 +332,10 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
       "Work that is ready to be started."
     )
 
-    {:ok, _} = Tasks.update_task(c.project, c.task, %{status: :in_progress})
+    {:ok, _} =
+      Tasks.update_task(c.project, c.task, %{status: :in_progress},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     wait(
       s,

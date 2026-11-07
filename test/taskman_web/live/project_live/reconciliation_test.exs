@@ -22,7 +22,11 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     picker = socket.assigns.task_parent_picker
 
     Taskman.Repo.delete!(task)
-    {:ok, _candidate} = Tasks.update_task(project, candidate, %{title: "Candidate after"})
+
+    {:ok, _candidate} =
+      Tasks.update_task(project, candidate, %{title: "Candidate after"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     {:noreply, reconciled} = reconcile_captured(task_event(project, candidate), socket)
 
@@ -40,8 +44,16 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     {:noreply, socket} =
       ProjectLive.handle_event("search_task_parents", %{"parent_query" => "Candidate"}, socket)
 
-    {:ok, candidate} = Tasks.update_task(project, candidate, %{title: "Candidate after"})
-    {:ok, persisted_task} = Tasks.update_task(project, task, %{description: "Updated detail"})
+    {:ok, candidate} =
+      Tasks.update_task(project, candidate, %{title: "Candidate after"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
+    {:ok, persisted_task} =
+      Tasks.update_task(project, task, %{description: "Updated detail"},
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
+
     event = task_event(project, task)
 
     handler_id = {__MODULE__, make_ref()}
@@ -86,13 +98,20 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     foreign_project = project_fixture(%{name: "Foreign"})
     selected = task_fixture(local_project)
     foreign = task_fixture(foreign_project, %{title: "Before"})
-    assert {:ok, _edge} = Tasks.add_block(local_project, selected, foreign)
+
+    assert {:ok, _edge} =
+             Tasks.add_block(local_project, selected, foreign,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     socket = open_detail(local_project, selected)
     assert [%{id: foreign_id, title: "Before"}] = socket.assigns.editing.related_tasks.blocks
     assert foreign_id == foreign.id
 
-    assert {:ok, _updated} = Tasks.update_task(foreign_project, foreign, %{title: "After"})
+    assert {:ok, _updated} =
+             Tasks.update_task(foreign_project, foreign, %{title: "After"},
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     event = relationship_event(local_project.id, [selected.id])
     {:noreply, refreshed} = reconcile_captured(event, socket)
@@ -110,11 +129,19 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     selected = task_fixture(project)
     linked = task_fixture(project)
     other = task_fixture(project)
-    assert {:ok, _edge} = Tasks.add_block(project, selected, linked)
+
+    assert {:ok, _edge} =
+             Tasks.add_block(project, selected, linked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     socket = open_detail(project, selected)
     assert [_] = socket.assigns.editing.related_tasks.blocks
 
-    assert {:ok, _edge} = Tasks.remove_block(project, selected, linked)
+    assert {:ok, _edge} =
+             Tasks.remove_block(project, selected, linked,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     {:noreply, unchanged} =
       reconcile_captured(relationship_event(project.id, [other.id]), socket)
@@ -134,7 +161,12 @@ defmodule TaskmanWeb.ProjectLive.ReconciliationTest do
     child_list = list_fixture(foreign_project, parent_list, %{name: "Child"})
     selected = task_fixture(local_project)
     foreign = task_fixture(foreign_project, child_list, %{title: "Linked"})
-    assert {:ok, _edge} = Tasks.add_block(local_project, selected, foreign)
+
+    assert {:ok, _edge} =
+             Tasks.add_block(local_project, selected, foreign,
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
+
     socket = open_detail(local_project, selected)
 
     assert [%{project_name: "Before Project", location: %{path: ["Before Parent", "Child"]}}] =

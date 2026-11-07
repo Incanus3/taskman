@@ -269,6 +269,28 @@ defmodule Taskman.CLI.Registry do
         examples: ["taskman tasks blocks remove --project 7 12 --target 42"]
       },
       %Command{
+        path: ~w(tasks activity list),
+        summary: "Read consolidated Task changes, events only by default.",
+        usage: "taskman tasks activity list [--project PROJECT_ID] TASK_ID [--include-comments]",
+        handler: {:tasks, :activity_list},
+        context_role: :project_required,
+        arguments: [argument(:task_id, "TASK_ID", :positive_integer, "Task ID.")],
+        options: [
+          option(:project, "--project", :positive_integer, "PROJECT_ID", "Owning Project ID."),
+          option(
+            :include_comments,
+            "--include-comments",
+            :boolean,
+            nil,
+            "Include comments in timeline order; consolidated entries may move or disappear."
+          )
+        ],
+        examples: [
+          "taskman tasks activity list --project 7 42 --json",
+          "taskman tasks activity list --project 7 42 --include-comments"
+        ]
+      },
+      %Command{
         path: ~w(tasks comments list),
         summary: "Read a Task's ordered comment thread.",
         usage: "taskman tasks comments list [--project PROJECT_ID] TASK_ID",

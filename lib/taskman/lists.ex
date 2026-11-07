@@ -8,6 +8,8 @@ defmodule Taskman.Lists do
   alias Taskman.Repo
 
   @type selected_location :: nil | {:project, pos_integer()} | {:list, pos_integer()}
+  @type attributes :: %{optional(atom()) => term()} | %{optional(String.t()) => term()}
+  @type write_result :: {:ok, TaskList.t()} | {:error, Ecto.Changeset.t() | :not_found}
 
   def list_lists_for_project(%Project{id: project_id}) do
     TaskList
@@ -48,6 +50,13 @@ defmodule Taskman.Lists do
 
   def get_list_for_project(%Project{}, _id), do: nil
 
+  @doc """
+  Creates a List under the given parent, or at the Project root when the parent is nil.
+
+  Attributes may use atom or string keys; only `name` is cast. A parent from another
+  Project returns `{:error, :not_found}`; validation failures return a changeset.
+  """
+  @spec create_list(Project.t(), TaskList.t() | nil, attributes()) :: write_result()
   def create_list(%Project{id: project_id}, nil, attrs) do
     changeset = TaskList.changeset(%TaskList{project_id: project_id}, attrs)
     changed_fields = Map.keys(changeset.changes)
@@ -93,6 +102,13 @@ defmodule Taskman.Lists do
     TaskList.changeset(task_list, attrs)
   end
 
+  @doc """
+  Renames a List using atom-keyed or string-keyed name attributes.
+
+  Returns `{:error, :not_found}` for a List from another Project, or a changeset for
+  validation failures.
+  """
+  @spec rename_list(Project.t(), TaskList.t(), attributes()) :: write_result()
   def rename_list(
         %Project{id: project_id},
         %TaskList{project_id: project_id} = task_list,
@@ -116,6 +132,13 @@ defmodule Taskman.Lists do
 
   def rename_list(%Project{}, %TaskList{}, _attrs), do: {:error, :not_found}
 
+  @doc """
+  Returns List structs in root-to-selected order from the supplied collection.
+
+  A nil or absent selected List returns an empty path. Missing ancestors leave the
+  known suffix of the path.
+  """
+  @spec path_for([TaskList.t()], TaskList.t() | nil) :: [TaskList.t()]
   def path_for(lists, nil) when is_list(lists), do: []
 
   def path_for(lists, %TaskList{} = task_list) when is_list(lists) do

@@ -11,6 +11,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   alias TaskmanWeb.ProjectLive.Recovery
 
   alias TaskmanWeb.ProjectLive.Tasks.{
+    Activity,
     Comments,
     Creation,
     Description,
@@ -106,6 +107,11 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       match?(%Task{id: id} when id == event.task_id, socket.assigns.editing.selected_task) and
       refresh_requires_capture?(socket)
   end
+
+  defp capture_event?(%Event{entity: :activity} = event, socket),
+    do:
+      well_formed_activity_event?(event) and relationship_targets_open_detail?(event, socket) and
+        (Description.pending?(socket) or refresh_requires_capture?(socket))
 
   defp capture_event?(_, _), do: false
 
@@ -231,6 +237,15 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
     {:noreply, socket}
   end
 
+  def continue_info(%Event{entity: :activity} = event, socket) do
+    socket =
+      if well_formed_activity_event?(event) and relationship_targets_open_detail?(event, socket),
+        do: Activity.refresh_selected(socket),
+        else: socket
+
+    {:noreply, socket}
+  end
+
   def continue_info(%Event{}, socket), do: {:noreply, socket}
 
   defp reconcile_comment_event(
@@ -247,7 +262,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
       %Task{} = task ->
         socket
         |> Comments.sync_timestamp(task)
-        |> Comments.reconcile(project, task)
+        |> Activity.reconcile(project, task)
 
       nil ->
         socket
@@ -290,7 +305,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   end
 
   defp refresh_related_tasks(socket) do
-    refreshed = Editing.reload_related_tasks(socket)
+    refreshed = socket |> Editing.reload_related_tasks() |> Activity.refresh_selected()
 
     case {socket.assigns.editing.selected_task, refreshed.assigns.editing} do
       {%Task{}, %{selected_task: nil, not_found?: true}} ->
@@ -349,7 +364,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   end
 
   defp sync_parent_selection({socket, {:task_reconciled, persisted_task}}) do
-    ParentSelection.sync(socket, persisted_task)
+    socket |> ParentSelection.sync(persisted_task) |> Activity.refresh_selected()
   end
 
   defp sync_parent_selection({socket, :unchanged}), do: socket
@@ -384,6 +399,9 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
        do: true
 
   defp well_formed_comment_event?(_event), do: false
+
+  defp well_formed_activity_event?(%Event{entity: :activity} = event),
+    do: well_formed_relationship_event?(event) and is_nil(event.task_id)
 
   defp well_formed_relationship_event?(%Event{
          operation: :invalidated,

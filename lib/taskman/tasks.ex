@@ -7,6 +7,8 @@ defmodule Taskman.Tasks do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
+  alias Taskman.Tasks.Writes
+  alias Taskman.Tasks.Activity
   alias Taskman.Tasks.AvailabilityPersistence
   alias Taskman.Tasks.Hierarchy
   alias Taskman.Tasks.Blocking
@@ -21,6 +23,10 @@ defmodule Taskman.Tasks do
   alias Taskman.Tasks.Task
   alias Taskman.Tasks.Status
   alias Taskman.Tasks.TaskWithLocation
+
+  @type write_result(error) ::
+          {:ok, Task.t()} | {:error, error | Ecto.Changeset.t() | :authentication_required}
+  @type move_options :: [actor: term()]
 
   def list_tasks_for_project(%Project{id: project_id}) do
     Task
@@ -85,13 +91,24 @@ defmodule Taskman.Tasks do
   @spec list_blocking(Project.t(), Task.t()) :: {:ok, map()} | {:error, :not_found}
   def list_blocking(project, selected_task), do: Blocking.list(project, selected_task)
 
-  @spec add_block(Project.t(), Task.t(), Task.t()) :: {:ok, map()} | {:error, term()}
-  def add_block(blocker_project, blocker, blocked),
-    do: Blocking.add(blocker_project, blocker, blocked) |> publish_block_result()
+  @spec add_block(Project.t(), Task.t(), Task.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def add_block(blocker_project, blocker, blocked, opts \\ []),
+    do:
+      write_block(Keyword.get(opts, :actor), false, true, fn ->
+        Blocking.add(blocker_project, blocker, blocked)
+      end)
 
-  @spec remove_block(Project.t(), Task.t(), Task.t()) :: {:ok, map()} | {:error, term()}
-  def remove_block(blocker_project, blocker, blocked),
-    do: Blocking.remove(blocker_project, blocker, blocked) |> publish_block_result()
+  @spec remove_block(Project.t(), Task.t(), Task.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def remove_block(blocker_project, blocker, blocked, opts \\ []),
+    do:
+      write_block(Keyword.get(opts, :actor), true, false, fn ->
+        Blocking.remove(blocker_project, blocker, blocked)
+      end)
+
+  @spec list_activity(Project.t(), Task.t()) :: Activity.list_result()
+  @spec list_activity(Project.t(), Task.t(), Activity.list_options()) :: Activity.list_result()
+  def list_activity(project, task, opts \\ []), do: Activity.list(project, task, opts)
 
   @spec list_comments(Project.t(), Task.t()) ::
           {:ok, [Comment.t()]} | {:error, :not_found}
@@ -147,23 +164,34 @@ defmodule Taskman.Tasks do
     Hierarchy.get_task_hierarchy(project, task)
   end
 
+  @doc "Delegates root creation without an actor and returns `:authentication_required`."
+  @spec create_task(Project.t()) :: {:error, :authentication_required}
+  @spec create_task(Project.t(), Mutations.attrs()) :: {:error, :authentication_required}
   def create_task(%Project{id: project_id}, attrs \\ %{}) do
     create_task(%Project{id: project_id}, nil, attrs)
   end
 
+  @spec create_task(Project.t(), term(), Mutations.attrs()) ::
+          {:error, :authentication_required | :not_found}
   def create_task(%Project{} = project, location, attrs) do
     create_task(project, location, attrs, [])
   end
 
+  @doc """
+  Creates in the root (nil) or an owned List; invalid locations return `:not_found`.
+  `:actor` identifies the writer; `:parent` opts into parent validation, with nil meaning no parent.
+  """
+  @spec create_task(Project.t(), term(), Mutations.attrs(), Mutations.create_options()) ::
+          write_result(Mutations.create_error())
   def create_task(
         %Project{id: project_id} = project,
         nil,
         attrs,
         opts
       ) do
-    project
-    |> Mutations.create(%Task{project_id: project_id}, attrs, opts)
-    |> publish_task_result(:created)
+    write_task(Keyword.get(opts, :actor), :created, fn ->
+      Mutations.create(project, %Task{project_id: project_id}, attrs, opts)
+    end)
   end
 
   def create_task(
@@ -172,9 +200,9 @@ defmodule Taskman.Tasks do
         attrs,
         opts
       ) do
-    project
-    |> Mutations.create(%Task{project_id: project_id, list_id: list_id}, attrs, opts)
-    |> publish_task_result(:created)
+    write_task(Keyword.get(opts, :actor), :created, fn ->
+      Mutations.create(project, %Task{project_id: project_id, list_id: list_id}, attrs, opts)
+    end)
   end
 
   def create_task(%Project{}, %TaskList{}, _attrs, _opts), do: {:error, :not_found}
@@ -233,29 +261,37 @@ defmodule Taskman.Tasks do
   def list_tasks_for_location(%Project{}, %TaskList{}, _opts), do: {:error, :not_found}
   def list_tasks_for_location(%Project{}, _location, _opts), do: {:error, :not_found}
 
-  def move_task(project, task, destination)
+  @doc """
+  Moves to the Project root (nil) or an owned List, using the eligible `:actor`.
+  Invalid or foreign destinations return `:not_found`; the current location returns `:unchanged_location`.
+  """
+  @spec move_task(Project.t(), Task.t(), term()) ::
+          {:error, :authentication_required | :not_found}
+  @spec move_task(Project.t(), Task.t(), term(), move_options()) ::
+          write_result(Mutations.move_error())
+  def move_task(project, task, destination, opts \\ [])
 
   def move_task(
         %Project{id: project_id} = project,
         %Task{project_id: project_id} = task,
-        nil
+        nil,
+        opts
       ) do
-    project
-    |> Mutations.move(task, nil)
-    |> publish_task_result(:moved)
+    write_task(Keyword.get(opts, :actor), :moved, fn -> Mutations.move(project, task, nil) end)
   end
 
   def move_task(
         %Project{id: project_id} = project,
         %Task{project_id: project_id} = task,
-        %TaskList{project_id: project_id, id: destination_id}
+        %TaskList{project_id: project_id, id: destination_id},
+        opts
       ) do
-    project
-    |> Mutations.move(task, destination_id)
-    |> publish_task_result(:moved)
+    write_task(Keyword.get(opts, :actor), :moved, fn ->
+      Mutations.move(project, task, destination_id)
+    end)
   end
 
-  def move_task(%Project{}, %Task{}, _destination), do: {:error, :not_found}
+  def move_task(%Project{}, %Task{}, _destination, _opts), do: {:error, :not_found}
 
   defp list_tasks_for_direct_project(project_id, opts) do
     Task
@@ -425,6 +461,8 @@ defmodule Taskman.Tasks do
     Task.changeset(task, attrs)
   end
 
+  @spec update_task(Project.t(), Task.t(), Mutations.attrs()) ::
+          {:error, :authentication_required | :not_found}
   def update_task(
         %Project{id: project_id} = project,
         %Task{project_id: project_id} = task,
@@ -435,18 +473,68 @@ defmodule Taskman.Tasks do
 
   def update_task(%Project{}, %Task{}, _attrs), do: {:error, :not_found}
 
+  @doc """
+  Updates using an eligible `:actor`, with optional `:parent` and `:done_confirmation`.
+  Nil `:parent` detaches. Done confirmation accepts `:force` or `{:ids, ids}`;
+  otherwise unresolved blockers are returned as summaries. Stale writes may return a Conflict.
+  """
+  @spec update_task(Project.t(), Task.t(), Mutations.attrs(), Mutations.update_options()) ::
+          write_result(Mutations.update_error())
   def update_task(
         %Project{id: project_id} = project,
         %Task{project_id: project_id} = task,
         attrs,
         opts
       ) do
-    project
-    |> Mutations.update(task, attrs, opts)
-    |> publish_task_result(:updated)
+    write_task(Keyword.get(opts, :actor), :updated, fn ->
+      Mutations.update(project, task, attrs, opts)
+    end)
   end
 
   def update_task(%Project{}, %Task{}, _attrs, _opts), do: {:error, :not_found}
+
+  defp write_task(actor, operation, mutation) do
+    result = Writes.run(actor, &Writes.task(&1, mutation))
+
+    case result do
+      {:ok, {{task, fields}, affected}} ->
+        publish_activity(affected)
+        publish_task_result({:ok, task, fields}, operation)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp write_block(actor, before_value, after_value, mutation) do
+    result =
+      Writes.run(actor, fn persisted_actor ->
+        # Blocking's transaction joins this owned transaction, so its graph lock remains
+        # held through canonical recording and event/Task association replacement.
+        with {:ok, edge} <- mutation.(),
+             {:ok, affected} <-
+               Activity.record_block(persisted_actor, edge, before_value, after_value) do
+          {:ok, edge, affected}
+        end
+      end)
+
+    case result do
+      {:ok, {edge, affected}} ->
+        publish_activity(affected)
+        publish_block_result({:ok, edge})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp publish_activity(pairs) do
+    pairs
+    |> Enum.group_by(fn {project_id, _} -> project_id end, fn {_, task_id} -> task_id end)
+    |> Enum.each(fn {project_id, task_ids} ->
+      _ = ChangeNotifications.publish_activity(project_id, task_ids)
+    end)
+  end
 
   defp publish_task_result({:ok, task, fields}, operation) do
     if fields != [] do
@@ -461,8 +549,6 @@ defmodule Taskman.Tasks do
 
     {:ok, task}
   end
-
-  defp publish_task_result(result, _operation), do: result
 
   defp publish_block_result({:ok, %{blocking_task: source, blocked_task: target}} = result) do
     [{source.project_id, source.id}, {target.project_id, target.id}]

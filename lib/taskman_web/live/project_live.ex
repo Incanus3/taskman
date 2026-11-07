@@ -23,6 +23,7 @@ defmodule TaskmanWeb.ProjectLive do
     Editing,
     Description,
     CommentDeparture,
+    Activity,
     Comments,
     Messages,
     Move,
@@ -65,7 +66,7 @@ defmodule TaskmanWeb.ProjectLive do
       )
 
     socket =
-      stream_configure(socket, :comments, dom_id: fn comment -> "task-comment-#{comment.id}" end)
+      stream_configure(socket, :activity, dom_id: fn entry -> "task-#{entry.id}" end)
 
     socket =
       stream_configure(socket, :navigation_nodes,
@@ -86,12 +87,13 @@ defmodule TaskmanWeb.ProjectLive do
       |> assign(:task_parent_picker, ParentPicker.empty())
       |> assign(:editing, Editing.State.empty())
       |> assign(:comments, Comments.State.empty())
+      |> assign(:activity, Activity.State.empty())
       |> assign(:comment_departure, CommentDeparture.empty())
       |> assign(:task_move, Move.empty())
       |> assign(:recovery, RecoveryWorkflow.State.empty())
       |> stream(:projects, projects)
       |> stream(:tasks, [])
-      |> stream(:comments, [])
+      |> stream(:activity, [])
       |> stream(:navigation_nodes, [])
       |> Workspace.refresh()
 
@@ -283,6 +285,7 @@ defmodule TaskmanWeb.ProjectLive do
       socket
       |> ParentSelection.open_edit(project, task)
       |> Comments.load(project, task)
+      |> Activity.load(project, task)
     end
   end
 

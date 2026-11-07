@@ -51,6 +51,9 @@ defmodule Taskman.CLI.Presentation.Output do
       :task_search ->
         readable_task_search(rows)
 
+      {:activity, task_id} ->
+        readable_activity(rows, task_id)
+
       :comments ->
         readable_comments(rows)
 
@@ -144,6 +147,64 @@ defmodule Taskman.CLI.Presentation.Output do
     "#{prefix}Task #{value(blocker, :id)} blocks Task #{value(blocked, :id)} (#{value(blocked, :project_name)}).\n"
   end
 
+  defp readable_activity([], _task_id), do: "No activity yet.\n"
+
+  defp readable_activity(rows, task_id) do
+    rows
+    |> Enum.map(fn
+      %{"kind" => "comment", "comment" => comment} ->
+        readable_comment(comment)
+
+      %{"kind" => "change", "change" => change} = entry ->
+        "#{entry["id"]}  #{change["actor"]["login"]}  #{local_timestamp(entry["occurred_at"])}\n" <>
+          activity_transition(change, task_id || change["task_id"]) <> "\n"
+    end)
+    |> Enum.intersperse("\n")
+    |> IO.iodata_to_binary()
+  end
+
+  defp activity_transition(%{"type" => "task_created"}, _task_id), do: "Task created"
+
+  defp activity_transition(%{"type" => "block_changed"} = change, task_id) do
+    source? = change["context"]["blocking_task"]["id"] == task_id
+    target = change["context"][if(source?, do: "blocked_task", else: "blocking_task")]
+    label = if source?, do: "Blocks", else: "Blocked by"
+    "#{label} #{if(change["after"], do: "added", else: "removed")}: #{activity_value(target)}"
+  end
+
+  defp activity_transition(%{"field" => "parent_task_id", "task_id" => owner} = change, task_id)
+       when owner != task_id do
+    action = if change["after"] && change["after"]["id"] == task_id, do: "added", else: "removed"
+    "Child #{action}: #{activity_value(change["context"]["task"])}"
+  end
+
+  defp activity_transition(change, _task_id) do
+    label =
+      case change["field"] do
+        "title" -> "Title"
+        "status" -> "Status"
+        "priority" -> "Priority"
+        "due_at" -> "Due date"
+        "list_id" -> "List"
+        "parent_task_id" -> "Parent"
+      end
+
+    "#{label} changed from #{activity_value(change["before"])} to #{activity_value(change["after"])}"
+  end
+
+  defp activity_value(nil), do: "None"
+
+  defp activity_value(%{"id" => id, "title" => title, "project_name" => project}),
+    do: "##{id} #{title} (#{project})"
+
+  defp activity_value(%{"project_name" => project, "path" => []}),
+    do: "#{project} (Project level)"
+
+  defp activity_value(%{"project_name" => project, "path" => path}),
+    do: Enum.join([project | path], " / ")
+
+  defp activity_value(value), do: value
+
   defp readable_comments([]), do: "No comments yet.\n"
 
   defp readable_comments(rows) do
@@ -158,15 +219,6 @@ defmodule Taskman.CLI.Presentation.Output do
     login = fetch_value(author, :login)
     display_name = fetch_value(author, :display_name)
     name = if is_nil(display_name), do: login, else: "#{display_name} (#{login})"
-    {:ok, utc_time, 0} = comment |> fetch_value(:created_at) |> DateTime.from_iso8601()
-
-    local_erl =
-      utc_time
-      |> DateTime.to_naive()
-      |> NaiveDateTime.to_erl()
-      |> :calendar.universal_time_to_local_time()
-
-    local_time = NaiveDateTime.from_erl!(local_erl, utc_time.microsecond)
 
     [
       "#",
@@ -174,12 +226,24 @@ defmodule Taskman.CLI.Presentation.Output do
       "  ",
       name,
       "  ",
-      NaiveDateTime.to_string(local_time),
+      local_timestamp(fetch_value(comment, :created_at)),
       "\n",
       value(comment, :text),
       "\n"
     ]
     |> IO.iodata_to_binary()
+  end
+
+  defp local_timestamp(timestamp) do
+    {:ok, utc_time, 0} = DateTime.from_iso8601(timestamp)
+
+    local_erl =
+      utc_time
+      |> DateTime.to_naive()
+      |> NaiveDateTime.to_erl()
+      |> :calendar.universal_time_to_local_time()
+
+    local_erl |> NaiveDateTime.from_erl!(utc_time.microsecond) |> NaiveDateTime.to_string()
   end
 
   defp readable_task_with_comments(task) do
@@ -330,6 +394,11 @@ defmodule Taskman.CLI.Presentation.Output do
   end
 
   defp resource(_command), do: nil
+
+  defp collection_kind(%Taskman.CLI.Registry.Command{handler: {:tasks, :activity_list}}),
+    do: {:activity, nil}
+
+  defp collection_kind({:tasks, :activity_list, task_id}), do: {:activity, task_id}
 
   defp collection_kind(%Taskman.CLI.Registry.Command{handler: {:tasks, :search}}),
     do: :task_search

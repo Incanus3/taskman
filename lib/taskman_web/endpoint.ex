@@ -40,10 +40,6 @@ defmodule TaskmanWeb.Endpoint do
     plug Phoenix.Ecto.CheckRepoStatus, otp_app: :taskman
   end
 
-  plug Phoenix.LiveDashboard.RequestLogger,
-    param_key: "request_logger",
-    cookie_key: "request_logger"
-
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
   plug TaskmanWeb.Plugs.TrustedProxy
@@ -52,9 +48,13 @@ defmodule TaskmanWeb.Endpoint do
     plug Plug.SSL, hsts: true
   end
 
-  # Authenticate API paths before parsers and content negotiation can reject
+  # Authenticate API paths before query decoding, parsers and content negotiation can reject
   # malformed or unsupported requests with a different response envelope.
   plug TaskmanWeb.Plugs.ApiAuthentication
+
+  plug Phoenix.LiveDashboard.RequestLogger,
+    param_key: "request_logger",
+    cookie_key: "request_logger"
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

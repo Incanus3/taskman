@@ -94,6 +94,24 @@ defmodule Taskman.CLI.Commands.Tasks do
           :task_blocking_edge
         )
 
+      :activity_list ->
+        task_id = Map.fetch!(invocation.arguments, :task_id)
+
+        request_options =
+          if Map.get(invocation.options, :include_comments, false),
+            do: [params: [include_comments: true]],
+            else: []
+
+        request(
+          invocation,
+          :get,
+          "/api/v1/projects/#{project_id}/tasks/#{task_id}/activity",
+          request_options,
+          runtime_options,
+          json?,
+          {:collection, :activity_entry}
+        )
+
       :comments_list ->
         task_id = Map.fetch!(invocation.arguments, :task_id)
 
@@ -292,8 +310,13 @@ defmodule Taskman.CLI.Commands.Tasks do
          json?,
          success_shape \\ {:member, :task}
        ) do
+    presentation =
+      if invocation.command.handler == {:tasks, :activity_list},
+        do: {:tasks, :activity_list, Map.fetch!(invocation.arguments, :task_id)},
+        else: invocation.command
+
     Client.request(method, path, request_options, runtime_options, success_shape)
-    |> Result.from_response(invocation.command, json?)
+    |> Result.from_response(presentation, json?)
   end
 
   defp internal_error(json?) do

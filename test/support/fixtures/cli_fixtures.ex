@@ -3,6 +3,47 @@ defmodule Taskman.CLI.Fixtures do
 
   alias Taskman.CLI.Config.Document
 
+  def activity_entry(overrides \\ %{}) do
+    reference = %{"id" => 42, "project_id" => 7, "project_name" => "Demo", "title" => "Review"}
+
+    change = %{
+      "type" => "field_changed",
+      "task_id" => 42,
+      "field" => "priority",
+      "actor" => %{
+        "user_id" => "00000000-0000-4000-8000-000000000001",
+        "login" => "person@example.invalid"
+      },
+      "before" => "low",
+      "after" => "high",
+      "context" => %{"task" => reference},
+      "first_changed_at" => "2026-11-07T12:00:00Z",
+      "last_changed_at" => "2026-11-07T12:00:30Z"
+    }
+
+    %{
+      "id" => "event-1",
+      "kind" => "change",
+      "occurred_at" => "2026-11-07T12:00:30Z",
+      "change" => Map.merge(change, overrides)
+    }
+  end
+
+  def activity_comment do
+    %{
+      "id" => "comment-2",
+      "kind" => "comment",
+      "occurred_at" => "2026-11-07T12:00:40Z",
+      "comment" => %{
+        "id" => 2,
+        "task_id" => 42,
+        "text" => "Review notes",
+        "author" => %{"display_name" => "Research agent", "login" => "person@example.invalid"},
+        "created_at" => "2026-11-07T12:00:40Z"
+      }
+    }
+  end
+
   def resolved_context(overrides \\ %{}) do
     struct(
       Taskman.CLI.Context,
