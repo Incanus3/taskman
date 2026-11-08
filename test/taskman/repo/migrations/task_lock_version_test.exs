@@ -13,10 +13,7 @@ defmodule Taskman.Repo.Migrations.TaskLockVersionTest do
 
     assert Map.get(task, :lock_version) == 1
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, task, %{title: "Updated"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, %{title: "Updated"})
 
     assert updated.lock_version == 2
   end

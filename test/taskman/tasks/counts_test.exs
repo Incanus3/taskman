@@ -82,9 +82,7 @@ defmodule Taskman.Tasks.CountsTest do
     task_fixture(project, list, %{status: :pending})
 
     assert {:ok, _} =
-             Tasks.create_task(project, list, %{title: "Reconsider later", status: :not_planned},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             create_task(project, list, %{title: "Reconsider later", status: :not_planned})
 
     assert Tasks.count_tasks_by_location(project, [:pending], false)[list.id] == %{
              visible: 1,

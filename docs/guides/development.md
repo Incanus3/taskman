@@ -263,6 +263,10 @@ Every implementation slice should have a clear user-visible or technical outcome
 meaningful verification gate: focused tests, formatting, a build, a smoke test, or another direct
 inspection appropriate to the change.
 
+Use `Taskman.TasksFixtures` write helpers when actor identity is incidental to a test. Tests
+of production authorization, activity attribution or consolidation should use explicit actors
+and call the production write API directly.
+
 ExUnit's default `:tmp_dir` may be beneath the checkout. CLI tests using real Git discovery must
 use private temporary roots outside the checkout with per-test cleanup, or an explicit
 `GIT_CEILING_DIRECTORIES` around the fixture. Prove the intended non-Git or disposable-repository

@@ -66,10 +66,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionReplacementBrowserTest do
     Browser.find(c.session, Query.css("#task-description-save-status[data-state='saving']"))
     assert Tasks.get_task_for_project(c.project, c.task.id).description == "Original"
 
-    {:ok, _external} =
-      Tasks.update_task(c.project, c.task, %{description: "Latest"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _external} = update_task(c.project, c.task, %{description: "Latest"})
 
     Browser.find(c.session, Query.css("#use-latest-description"))
     Browser.click(c.session, Query.css("#use-latest-description"))
@@ -86,13 +83,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionReplacementBrowserTest do
     replaced_id = editor_id(c.session)
 
     {:ok, _updated} =
-      Tasks.update_task(
+      update_task(
         c.project,
         Tasks.get_task_for_project(c.project, c.task.id),
         %{
           title: "Unrelated update"
-        },
-        actor: Taskman.AccountsFixtures.user_fixture()
+        }
       )
 
     Browser.find(c.session, Query.css("#task-title[value='Unrelated update']"))
@@ -108,13 +104,12 @@ defmodule TaskmanWeb.ProjectLive.DescriptionReplacementBrowserTest do
 
     # A clean incoming canonical update uses the same fresh-history boundary.
     {:ok, _updated} =
-      Tasks.update_task(
+      update_task(
         c.project,
         Tasks.get_task_for_project(c.project, c.task.id),
         %{
           description: "Clean replacement"
-        },
-        actor: Taskman.AccountsFixtures.user_fixture()
+        }
       )
 
     Browser.find(c.session, Query.css("[data-editor-visual]", text: "Clean replacement"))

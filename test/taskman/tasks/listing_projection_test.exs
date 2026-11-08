@@ -198,11 +198,7 @@ defmodule Taskman.Tasks.ListingProjectionTest do
     assert initial.expanded_task_ids == MapSet.new([a.id])
     task_fixture(project, %{}, parent: b)
 
-    {:ok, y} =
-      Tasks.update_task(project, y, %{},
-        parent: a,
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, y} = update_task(project, y, %{}, parent: a)
 
     Enum.reduce(1..3, initial.expanded_task_ids, fn _, memory ->
       assert {:ok, projection} =

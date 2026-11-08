@@ -68,10 +68,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchySortTest do
     c.view |> element("#task-hierarchy-link-#{c.first.id}") |> render_captured_click()
     assert_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{c.first.id}")
 
-    {:ok, _} =
-      Tasks.update_task(c.project, c.second, %{title: "Updated"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(c.project, c.second, %{title: "Updated"})
 
     assert_before(c.view, c.root, c.first, c.second)
 
@@ -180,8 +177,7 @@ defmodule TaskmanWeb.ProjectLive.HierarchySortTest do
   test "a warned Done draft updates the hierarchy only after confirmation", c do
     blocker = task_fixture(c.project, %{title: "Unresolved blocker"})
 
-    {:ok, _} =
-      Tasks.add_block(c.project, blocker, c.first, actor: Taskman.AccountsFixtures.user_fixture())
+    {:ok, _} = add_block(c.project, blocker, c.first)
 
     render_captured_patch(c.view, ~p"/projects/#{c.project.id}/tasks/#{c.first.id}")
 

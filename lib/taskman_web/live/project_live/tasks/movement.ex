@@ -138,9 +138,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
          |> reinsert_active_move_row()}
 
       {:ok, socket} ->
-        case Move.submit(socket.assigns.task_move, project,
-               actor: socket.assigns.current_user || socket.assigns.current_scope
-             ) do
+        case Move.submit(socket.assigns.task_move, project, actor: socket.assigns.current_user) do
           {:ok, task_move, moved_task} ->
             socket =
               socket

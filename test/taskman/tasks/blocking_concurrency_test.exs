@@ -34,16 +34,8 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
       [forward, reverse] =
         run_behind_graph_gate([
-          fn ->
-            Tasks.add_block(project, first, second,
-              actor: Taskman.AccountsFixtures.user_fixture()
-            )
-          end,
-          fn ->
-            Tasks.add_block(project, second, first,
-              actor: Taskman.AccountsFixtures.user_fixture()
-            )
-          end
+          fn -> add_block(project, first, second) end,
+          fn -> add_block(project, second, first) end
         ])
 
       assert Enum.count([forward, reverse], &match?({:ok, _}, &1)) == 1
@@ -63,17 +55,8 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
       [link_result, parent_result] =
         run_behind_graph_gate([
-          fn ->
-            Tasks.add_block(project, parent, child,
-              actor: Taskman.AccountsFixtures.user_fixture()
-            )
-          end,
-          fn ->
-            Tasks.update_task(project, child, %{title: "After"},
-              parent: parent,
-              actor: Taskman.AccountsFixtures.user_fixture()
-            )
-          end
+          fn -> add_block(project, parent, child) end,
+          fn -> update_task(project, child, %{title: "After"}, parent: parent) end
         ])
 
       assert Enum.count([link_result, parent_result], &match?({:ok, _}, &1)) == 1
@@ -99,10 +82,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
       source = task_fixture(project)
       target = task_fixture(project)
 
-      assert {:ok, _} =
-               Tasks.add_block(project, source, target,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, _} = add_block(project, source, target)
 
       cleanup_project(project)
 

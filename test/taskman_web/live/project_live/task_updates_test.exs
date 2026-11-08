@@ -9,7 +9,6 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
   import Taskman.TasksFixtures
 
   alias Taskman.ChangeNotifications.Event
-  alias Taskman.Tasks
 
   setup %{conn: conn} do
     {:ok, conn: log_in_user(conn, user_fixture())}
@@ -31,9 +30,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, task} =
              externally(fn ->
-               Tasks.create_task(project, source, %{title: "Visible icon"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               create_task(project, source, %{title: "Visible icon"})
              end)
 
     sync_view(view)
@@ -41,9 +38,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, _moved} =
              externally(fn ->
-               Tasks.move_task(project, task, destination,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               move_task(project, task, destination)
              end)
 
     sync_view(view)
@@ -107,9 +102,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     {{:ok, updated_a}, event_a} =
       assert_single_task_event_delivery(view, fn ->
         externally(fn ->
-          Tasks.update_task(project_a, task_a, %{title: "Project A after"},
-            actor: Taskman.AccountsFixtures.user_fixture()
-          )
+          update_task(project_a, task_a, %{title: "Project A after"})
         end)
       end)
 
@@ -134,18 +127,14 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, _updated_a} =
              refute_task_event_delivery(view, fn ->
                externally(fn ->
-                 Tasks.update_task(project_a, updated_a, %{title: "Project A ignored"},
-                   actor: Taskman.AccountsFixtures.user_fixture()
-                 )
+                 update_task(project_a, updated_a, %{title: "Project A ignored"})
                end)
              end)
 
     {{:ok, updated_b}, event_b} =
       assert_single_task_event_delivery(view, fn ->
         externally(fn ->
-          Tasks.update_task(project_b, task_b, %{title: "Project B after"},
-            actor: Taskman.AccountsFixtures.user_fixture()
-          )
+          update_task(project_b, task_b, %{title: "Project B after"})
         end)
       end)
 
@@ -170,9 +159,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
     assert {:ok, _updated_b} =
              refute_task_event_delivery(view, fn ->
                externally(fn ->
-                 Tasks.update_task(project_b, updated_b, %{title: "Project B ignored"},
-                   actor: Taskman.AccountsFixtures.user_fixture()
-                 )
+                 update_task(project_b, updated_b, %{title: "Project B ignored"})
                end)
              end)
   end
@@ -237,9 +224,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, visible_after_status} =
              externally(fn ->
-               Tasks.update_task(project, pending, %{status: :done},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, pending, %{status: :done})
              end)
 
     sync_view(view)
@@ -247,9 +232,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, visible_hidden} =
              externally(fn ->
-               Tasks.update_task(project, hidden, %{status: :done},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, hidden, %{status: :done})
              end)
 
     sync_view(view)
@@ -260,9 +243,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, promoted} =
              externally(fn ->
-               Tasks.update_task(project, visible_after_status, %{priority: :urgent},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, visible_after_status, %{priority: :urgent})
              end)
 
     sync_view(view)
@@ -270,9 +251,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, moved_in} =
              externally(fn ->
-               Tasks.move_task(project, source, launch,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               move_task(project, source, launch)
              end)
 
     sync_view(view)
@@ -280,9 +259,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, _moved_out} =
              externally(fn ->
-               Tasks.move_task(project, promoted, archive,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               move_task(project, promoted, archive)
              end)
 
     sync_view(view)
@@ -290,23 +267,17 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, _filtered_out} =
              externally(fn ->
-               Tasks.update_task(project, done, %{status: :will_not_do},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, done, %{status: :will_not_do})
              end)
 
     assert {:ok, _moved_in_filtered_out} =
              externally(fn ->
-               Tasks.update_task(project, moved_in, %{status: :will_not_do},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, moved_in, %{status: :will_not_do})
              end)
 
     assert {:ok, _hidden_filtered_out} =
              externally(fn ->
-               Tasks.update_task(project, visible_hidden, %{status: :will_not_do},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, visible_hidden, %{status: :will_not_do})
              end)
 
     sync_view(view)
@@ -330,9 +301,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, external_description} =
              externally(fn ->
-               Tasks.update_task(project, task, %{description: "External"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, task, %{description: "External"})
              end)
 
     sync_view(view)
@@ -349,10 +318,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, external_parent} =
              externally(fn ->
-               Tasks.update_task(project, external_description, %{},
-                 parent: second_parent,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, external_description, %{}, parent: second_parent)
              end)
 
     sync_view(view)
@@ -382,9 +348,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, _moved} =
              externally(fn ->
-               Tasks.move_task(project, selected, nil,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               move_task(project, selected, nil)
              end)
 
     sync_view(detail)
@@ -405,9 +369,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     created =
       externally(fn ->
-        Tasks.create_task(project, planning, %{title: "External"},
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        create_task(project, planning, %{title: "External"})
       end)
 
     assert {:ok, external_task} = created
@@ -446,9 +408,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, _updated} =
              externally(fn ->
-               Tasks.update_task(project, task, %{title: "Changed elsewhere"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, task, %{title: "Changed elsewhere"})
              end)
 
     sync_view(view)
@@ -485,10 +445,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, created} =
              externally(fn ->
-               Tasks.create_task(project, nil, %{title: "Created child"},
-                 parent: sibling,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               create_task(project, nil, %{title: "Created child"}, parent: sibling)
              end)
 
     sync_view(view)
@@ -502,14 +459,13 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, updated} =
              externally(fn ->
-               Tasks.update_task(
+               update_task(
                  project,
                  selected,
                  %{
                    title: "Revised selected Task",
                    status: :in_review
-                 },
-                 actor: Taskman.AccountsFixtures.user_fixture()
+                 }
                )
              end)
 
@@ -528,9 +484,7 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
       assert {:ok, _} =
                externally(fn ->
-                 Tasks.update_task(project, task, %{priority: priority},
-                   actor: Taskman.AccountsFixtures.user_fixture()
-                 )
+                 update_task(project, task, %{priority: priority})
                end)
 
       sync_view(view)
@@ -554,16 +508,12 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
 
     assert {:ok, first} =
              externally(fn ->
-               Tasks.update_task(project, task, %{title: "First"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, task, %{title: "First"})
              end)
 
     assert {:ok, latest} =
              externally(fn ->
-               Tasks.update_task(project, first, %{title: "Latest"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, first, %{title: "Latest"})
              end)
 
     send(view.pid, task_event(first, :updated, [:title]))

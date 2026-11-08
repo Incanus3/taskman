@@ -128,7 +128,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
         autosave =
           route_autosave(editing, task)
-          |> Map.put(:actor, socket.assigns.current_user || socket.assigns.current_scope)
+          |> Map.put(:actor, socket.assigns.current_user)
 
         assign(
           socket,
@@ -196,7 +196,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
                 %{
                   captured_autosave
                   | sequence: sequence,
-                    actor: socket.assigns.current_user || socket.assigns.current_scope
+                    actor: socket.assigns.current_user
                 },
                 task
               )
@@ -562,7 +562,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     case Autosave.restart(
            %{
              socket.assigns.editing.autosave
-             | actor: socket.assigns.current_user || socket.assigns.current_scope
+             | actor: socket.assigns.current_user
            },
            project,
            task
@@ -833,13 +833,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
       result =
         case action do
           :add ->
-            Tasks.add_block(blocker_project, blocker, blocked,
-              actor: socket.assigns.current_user || socket.assigns.current_scope
-            )
+            Tasks.add_block(blocker_project, blocker, blocked, actor: socket.assigns.current_user)
 
           :remove ->
             Tasks.remove_block(blocker_project, blocker, blocked,
-              actor: socket.assigns.current_user || socket.assigns.current_scope
+              actor: socket.assigns.current_user
             )
         end
 
@@ -915,7 +913,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     case Autosave.restart(
            %{
              socket.assigns.editing.autosave
-             | actor: socket.assigns.current_user || socket.assigns.current_scope
+             | actor: socket.assigns.current_user
            },
            project,
            task

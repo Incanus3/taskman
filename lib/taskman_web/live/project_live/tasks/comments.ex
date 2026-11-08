@@ -135,7 +135,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
 
   defp post_comment(socket, state, project, task, text) do
     posting_socket = assign(socket, :comments, %{state | posting?: true, draft: text})
-    actor = socket.assigns.current_user || socket.assigns.current_scope
+    actor = socket.assigns.current_user
 
     case Tasks.create_comment(project, task, actor, %{text: text}) do
       {:ok, _comment} ->
