@@ -430,11 +430,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert has_captured_element?(view, "#task-parent-option-#{rejected_parent.id}")
 
-    assert {:ok, _} =
-             Tasks.update_task(project, rejected_parent, %{},
-               parent: task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, rejected_parent, %{}, parent: task)
 
     _ = :sys.get_state(view.pid)
 
@@ -469,10 +465,7 @@ defmodule TaskmanWeb.ProjectLiveTest do
 
     assert {:ok, _} =
              Task.async(fn ->
-               Tasks.update_task(project, rejected_parent, %{},
-                 parent: task,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, rejected_parent, %{}, parent: task)
              end)
              |> Task.await()
 

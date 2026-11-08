@@ -1,6 +1,8 @@
 defmodule Taskman.Accounts.User.AccountDeletionTest do
   use Taskman.DataCase, async: false
 
+  import Taskman.TasksFixtures, only: [create_task: 3]
+
   alias AshAuthentication.Jwt
   alias Taskman.{Accounts, Lists, Projects, Repo, Tasks}
   alias Taskman.Accounts.{ApiKey, Token, User}
@@ -43,11 +45,7 @@ defmodule Taskman.Accounts.User.AccountDeletionTest do
              Projects.create_project(%{name: "Shared workspace survives account deletion"})
 
     assert {:ok, task_list} = Lists.create_list(project, nil, %{name: "Shared list"})
-
-    assert {:ok, task} =
-             Tasks.create_task(project, task_list, %{title: "Shared task"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, task} = create_task(project, task_list, %{title: "Shared task"})
 
     assert :ok = Accounts.delete_user(administrator, user)
 

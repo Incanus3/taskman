@@ -117,7 +117,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
 
       resolution ->
         case ParentPicker.resolve_conflict(picker, project, resolution,
-               actor: socket.assigns.current_user || socket.assigns.current_scope
+               actor: socket.assigns.current_user
              ) do
           {:ok, picker, task} -> {:noreply, sync_persisted_picker(socket, picker, task)}
           {:conflict, picker, task} -> {:noreply, sync_persisted_picker(socket, picker, task)}
@@ -206,9 +206,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   defp update_picker(socket, _save?, _transition), do: socket
 
   defp save_picker(socket, project, task, picker) do
-    case ParentPicker.save_edit(picker, project, task,
-           actor: socket.assigns.current_user || socket.assigns.current_scope
-         ) do
+    case ParentPicker.save_edit(picker, project, task, actor: socket.assigns.current_user) do
       {:ok, picker, updated_task} ->
         socket
         |> sync_persisted_picker(picker, updated_task)

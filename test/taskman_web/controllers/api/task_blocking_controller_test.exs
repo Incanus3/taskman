@@ -6,7 +6,7 @@ defmodule TaskmanWeb.API.TaskBlockingControllerTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.{Accounts, Tasks}
+  alias Taskman.Accounts
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -30,15 +30,8 @@ defmodule TaskmanWeb.API.TaskBlockingControllerTest do
     incoming = task_fixture(source_project, list, %{title: "Approve", priority: :high})
     outgoing = task_fixture(target_project, %{title: "Publish", priority: :urgent})
 
-    assert {:ok, _} =
-             Tasks.add_block(source_project, incoming, selected,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, _} =
-             Tasks.add_block(source_project, selected, outgoing,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(source_project, incoming, selected)
+    assert {:ok, _} = add_block(source_project, selected, outgoing)
 
     assert %{"data" => %{"blocks" => [blocks], "blocked_by" => [blocked_by]}} =
              conn |> get(blocking_path(source_project, selected)) |> json_response(200)
@@ -164,10 +157,7 @@ defmodule TaskmanWeb.API.TaskBlockingControllerTest do
     second = task_fixture(project)
     child = task_fixture(project, %{}, parent: first)
 
-    assert {:ok, _} =
-             Tasks.add_block(project, first, second,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, first, second)
 
     for {blocker, target, message} <- [
           {first, second, "already blocks this Task"},

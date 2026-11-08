@@ -30,15 +30,8 @@ defmodule Taskman.Tasks.ConflictsTest do
     task = task_fixture(project, %{title: "Before", status: :pending})
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
-    assert {:ok, titled} =
-             Tasks.update_task(project, first_baseline, %{title: "Changed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, merged} =
-             Tasks.update_task(project, second_baseline, %{status: :done},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, titled} = update_task(project, first_baseline, %{title: "Changed"})
+    assert {:ok, merged} = update_task(project, second_baseline, %{status: :done})
 
     assert merged.title == "Changed"
     assert merged.status == :done
@@ -52,10 +45,7 @@ defmodule Taskman.Tasks.ConflictsTest do
 
     assert {:ok, comment} = Tasks.create_comment(project, task, actor, %{text: "Review"})
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, task, %{title: "After"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, %{title: "After"})
 
     persisted = Tasks.get_task_for_project(project, task.id)
 
@@ -183,9 +173,7 @@ defmodule Taskman.Tasks.ConflictsTest do
             )
 
           try do
-            Tasks.update_task(project, task, %{title: "Edit first"},
-              actor: Taskman.AccountsFixtures.user_fixture()
-            )
+            update_task(project, task, %{title: "Edit first"})
           after
             :telemetry.detach(handler_id)
           end
@@ -228,9 +216,7 @@ defmodule Taskman.Tasks.ConflictsTest do
 
       second_edit_pid =
         db_worker(supervisor, test_pid, fn ->
-          Tasks.update_task(project, second_baseline, %{title: "Edit second"},
-            actor: Taskman.AccountsFixtures.user_fixture()
-          )
+          update_task(project, second_baseline, %{title: "Edit second"})
         end)
 
       assert_blocked(second_edit_pid)
@@ -293,14 +279,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
     assert {:ok, persisted} =
-             Tasks.update_task(project, first_baseline, %{title: "First writer"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{title: "First writer"})
 
     assert {:error, %{__struct__: Conflict, task: current, fields: [:title]}} =
-             Tasks.update_task(project, second_baseline, %{title: "Second writer"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, second_baseline, %{title: "Second writer"})
 
     assert current == persisted
     assert Tasks.get_task_for_project(project, task.id).title == "First writer"
@@ -311,15 +293,8 @@ defmodule Taskman.Tasks.ConflictsTest do
     task = task_fixture(project, %{title: "Before"})
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
-    assert {:ok, persisted} =
-             Tasks.update_task(project, first_baseline, %{title: "Changed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, current} =
-             Tasks.update_task(project, second_baseline, %{title: "Changed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, persisted} = update_task(project, first_baseline, %{title: "Changed"})
+    assert {:ok, current} = update_task(project, second_baseline, %{title: "Changed"})
 
     assert current == persisted
     assert current.lock_version == persisted.lock_version
@@ -331,14 +306,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, stale_baseline} = loaded_task_baselines(project, task)
 
     assert {:ok, reopened} =
-             Tasks.update_task(project, first_baseline, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{status: :pending})
 
     assert {:error, %Conflict{task: current, fields: [:status]}} =
-             Tasks.update_task(project, stale_baseline, %{"status" => "done"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, stale_baseline, %{"status" => "done"})
 
     assert current == reopened
     assert Tasks.get_task_for_project(project, task.id).status == :pending
@@ -350,14 +321,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, stale_baseline} = loaded_task_baselines(project, task)
 
     assert {:ok, _} =
-             Tasks.update_task(project, first_baseline, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{status: :pending})
 
     assert {:error, %Conflict{fields: [:status]}} =
-             Tasks.update_task(project, stale_baseline, %{title: "After", status: :done},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, stale_baseline, %{title: "After", status: :done})
 
     current = Tasks.get_task_for_project(project, task.id)
     assert current.title == "Before"
@@ -371,15 +338,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, stale_baseline} = loaded_task_baselines(project, child)
 
     assert {:ok, _} =
-             Tasks.update_task(project, first_baseline, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{status: :pending})
 
     assert {:error, %Conflict{fields: [:status]}} =
-             Tasks.update_task(project, stale_baseline, %{status: :done},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, stale_baseline, %{status: :done}, parent: parent)
 
     current = Tasks.get_task_for_project(project, child.id)
     assert current.parent_task_id == nil
@@ -392,19 +354,16 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
     assert {:ok, _persisted} =
-             Tasks.update_task(project, first_baseline, %{title: "First writer"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{title: "First writer"})
 
     assert {:error, %{__struct__: Conflict, fields: [:title]}} =
-             Tasks.update_task(
+             update_task(
                project,
                second_baseline,
                %{
                  title: "Second writer",
                  status: :done
-               },
-               actor: Taskman.AccountsFixtures.user_fixture()
+               }
              )
 
     current = Tasks.get_task_for_project(project, task.id)
@@ -418,16 +377,8 @@ defmodule Taskman.Tasks.ConflictsTest do
     child = task_fixture(project, %{title: "Child", status: :pending})
     {first_baseline, second_baseline} = loaded_task_baselines(project, child)
 
-    assert {:ok, titled} =
-             Tasks.update_task(project, first_baseline, %{title: "Changed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, merged} =
-             Tasks.update_task(project, second_baseline, %{status: :done},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, titled} = update_task(project, first_baseline, %{title: "Changed"})
+    assert {:ok, merged} = update_task(project, second_baseline, %{status: :done}, parent: parent)
 
     assert merged.title == "Changed"
     assert merged.status == :done
@@ -443,16 +394,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, second_baseline} = loaded_task_baselines(project, child)
 
     assert {:ok, _persisted} =
-             Tasks.update_task(project, first_baseline, %{},
-               parent: first_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{}, parent: first_parent)
 
     assert {:error, %{__struct__: Conflict, fields: [:parent_task_id]}} =
-             Tasks.update_task(project, second_baseline, %{},
-               parent: second_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, second_baseline, %{}, parent: second_parent)
 
     assert Tasks.get_task_for_project(project, child.id).parent_task_id == first_parent.id
   end
@@ -465,16 +410,10 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, second_baseline} = loaded_task_baselines(project, child)
 
     assert {:ok, persisted} =
-             Tasks.update_task(project, first_baseline, %{},
-               parent: concurrent_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, first_baseline, %{}, parent: concurrent_parent)
 
     assert {:error, %{__struct__: Conflict, task: current, fields: [:parent_task_id]}} =
-             Tasks.update_task(project, second_baseline, %{},
-               parent: original_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, second_baseline, %{}, parent: original_parent)
 
     assert current == persisted
     assert current.parent_task_id == concurrent_parent.id
@@ -484,10 +423,7 @@ defmodule Taskman.Tasks.ConflictsTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Before"})
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, task, %{title: ""},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, task, %{title: ""})
 
     assert changeset.action == :update
     assert changeset.repo == Repo
@@ -498,11 +434,7 @@ defmodule Taskman.Tasks.ConflictsTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Child"})
 
-    assert {:error, :not_found} =
-             Tasks.update_task(project, task, %{},
-               parent: :not_a_task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = update_task(project, task, %{}, parent: :not_a_task)
   end
 
   test "stale moves retry when the concurrent write is disjoint from list_id" do
@@ -511,15 +443,8 @@ defmodule Taskman.Tasks.ConflictsTest do
     task = task_fixture(project, %{title: "Before"})
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
-    assert {:ok, titled} =
-             Tasks.update_task(project, first_baseline, %{title: "Changed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, moved} =
-             Tasks.move_task(project, second_baseline, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, titled} = update_task(project, first_baseline, %{title: "Changed"})
+    assert {:ok, moved} = move_task(project, second_baseline, destination)
 
     assert moved.title == "Changed"
     assert moved.list_id == destination.id
@@ -534,19 +459,13 @@ defmodule Taskman.Tasks.ConflictsTest do
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
     assert {:ok, _moved} =
-             Tasks.move_task(project, first_baseline, first_destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             move_task(project, first_baseline, first_destination)
 
     assert {:error, %{__struct__: Conflict, fields: [:list_id]}} =
-             Tasks.move_task(project, second_baseline, second_destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             move_task(project, second_baseline, second_destination)
 
     assert {:error, :unchanged_location} =
-             Tasks.move_task(project, second_baseline, first_destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             move_task(project, second_baseline, first_destination)
 
     assert Tasks.get_task_for_project(project, task.id).list_id == first_destination.id
   end
@@ -566,10 +485,7 @@ defmodule Taskman.Tasks.ConflictsTest do
         end)
       end)
 
-      assert {:ok, _persisted} =
-               Tasks.update_task(project, first_baseline, %{title: "First writer"},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, _persisted} = update_task(project, first_baseline, %{title: "First writer"})
 
       test_pid = self()
       handler_id = {__MODULE__, make_ref()}
@@ -625,9 +541,7 @@ defmodule Taskman.Tasks.ConflictsTest do
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
       assert {:error, %{__struct__: Conflict, fields: [:status], task: current}} =
-               Tasks.update_task(project, second_baseline, %{status: :done},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               update_task(project, second_baseline, %{status: :done})
 
       assert current.title == "Second writer"
       assert current.status == :pending

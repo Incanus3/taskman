@@ -30,10 +30,7 @@ defmodule Taskman.Tasks.ParentageTest do
 
     {asserted_create, create_queries} =
       capture_queries(fn ->
-        Tasks.create_task(project, nil, %{title: "New child"},
-          parent: parent,
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        create_task(project, nil, %{title: "New child"}, parent: parent)
       end)
 
     assert {:ok, _created} = asserted_create
@@ -41,10 +38,7 @@ defmodule Taskman.Tasks.ParentageTest do
 
     {asserted_update, update_queries} =
       capture_queries(fn ->
-        Tasks.update_task(project, child, %{status: :done},
-          parent: parent,
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        update_task(project, child, %{status: :done}, parent: parent)
       end)
 
     assert {:ok, updated} = asserted_update
@@ -58,10 +52,7 @@ defmodule Taskman.Tasks.ParentageTest do
     parent = task_fixture(project, %{title: "Parent"})
     child = task_fixture(project, %{title: "Child"}, parent: parent)
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, child, %{title: "Renamed child"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, child, %{title: "Renamed child"})
 
     assert updated.parent_task_id == parent.id
   end
@@ -72,43 +63,23 @@ defmodule Taskman.Tasks.ParentageTest do
     second_parent = task_fixture(project, %{title: "Second parent"})
     child = task_fixture(project, %{title: "Child"})
 
-    assert {:ok, child} =
-             Tasks.update_task(project, child, %{},
-               parent: first_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, child, %{}, parent: first_parent)
 
     assert child.parent_task_id == first_parent.id
 
-    assert {:ok, child} =
-             Tasks.update_task(project, child, %{},
-               parent: first_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, child, %{}, parent: first_parent)
 
     assert child.parent_task_id == first_parent.id
 
-    assert {:ok, child} =
-             Tasks.update_task(project, child, %{},
-               parent: second_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, child, %{}, parent: second_parent)
 
     assert child.parent_task_id == second_parent.id
 
-    assert {:ok, child} =
-             Tasks.update_task(project, child, %{},
-               parent: nil,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, child, %{}, parent: nil)
 
     assert child.parent_task_id == nil
 
-    assert {:ok, child} =
-             Tasks.update_task(project, child, %{},
-               parent: nil,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, child, %{}, parent: nil)
 
     assert child.parent_task_id == nil
   end
@@ -120,16 +91,10 @@ defmodule Taskman.Tasks.ParentageTest do
     foreign_parent = task_fixture(other_project, %{title: "Foreign parent"})
 
     assert {:error, :not_found} =
-             Tasks.create_task(project, nil, %{title: "Rejected child"},
-               parent: foreign_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             create_task(project, nil, %{title: "Rejected child"}, parent: foreign_parent)
 
     assert {:error, :not_found} =
-             Tasks.update_task(project, child, %{title: "Rejected rename"},
-               parent: foreign_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, child, %{title: "Rejected rename"}, parent: foreign_parent)
 
     persisted_child = Tasks.get_task_for_project(project, child.id)
     assert persisted_child.title == "Child"
@@ -144,20 +109,13 @@ defmodule Taskman.Tasks.ParentageTest do
     Repo.delete!(parent)
 
     assert {:error, :not_found} =
-             Tasks.update_task(project, task, %{title: "Rejected rename"},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, task, %{title: "Rejected rename"}, parent: parent)
 
     assert Tasks.get_task_for_project(project, task.id).title == "Task"
 
     Repo.delete!(task)
 
-    assert {:error, :not_found} =
-             Tasks.update_task(project, task, %{},
-               parent: nil,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = update_task(project, task, %{}, parent: nil)
   end
 
   test "parentage changes do not change List ownership" do
@@ -167,11 +125,7 @@ defmodule Taskman.Tasks.ParentageTest do
     parent = task_fixture(project, parent_list, %{title: "Parent"})
     child = task_fixture(project, child_list, %{title: "Child"})
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, child, %{},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, child, %{}, parent: parent)
 
     assert updated.parent_task_id == parent.id
     assert updated.list_id == child_list.id
@@ -182,11 +136,7 @@ defmodule Taskman.Tasks.ParentageTest do
     parent = task_fixture(project, %{title: "Parent"})
     child = task_fixture(project, %{title: "Before"})
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, child, %{title: "After"},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, child, %{title: "After"}, parent: parent)
 
     assert updated.title == "After"
     assert updated.parent_task_id == parent.id
@@ -196,11 +146,7 @@ defmodule Taskman.Tasks.ParentageTest do
     project = project_fixture(%{})
     child = task_fixture(project, %{title: "Before"})
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, child, %{title: "After"},
-               parent: child,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, child, %{title: "After"}, parent: child)
 
     assert "would create a cycle" in errors_on(changeset).parent_task_id
 
@@ -214,16 +160,9 @@ defmodule Taskman.Tasks.ParentageTest do
     parent = task_fixture(project, %{title: "Parent"})
     child = task_fixture(project, %{title: "Before"})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, parent, child,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, parent, child)
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, child, %{title: "After"},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, child, %{title: "After"}, parent: parent)
 
     assert Enum.any?(errors_on(changeset).parent_task_id, &String.contains?(&1, "blocks"))
     persisted = Tasks.get_task_for_project(project, child.id)
@@ -235,11 +174,7 @@ defmodule Taskman.Tasks.ParentageTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Self"})
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, task, %{},
-               parent: task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, task, %{}, parent: task)
 
     assert "would create a cycle" in errors_on(changeset).parent_task_id
     assert Tasks.get_task_for_project(project, task.id).parent_task_id == nil
@@ -251,11 +186,7 @@ defmodule Taskman.Tasks.ParentageTest do
     middle = task_fixture(project, %{title: "Middle"}, parent: root)
     leaf = task_fixture(project, %{title: "Leaf"}, parent: middle)
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, root, %{},
-               parent: leaf,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, root, %{}, parent: leaf)
 
     assert "would create a cycle" in errors_on(changeset).parent_task_id
 
@@ -468,11 +399,7 @@ defmodule Taskman.Tasks.ParentageTest do
 
           receive do
             :start_parent_update ->
-              result =
-                Tasks.update_task(project, task, %{},
-                  parent: parent,
-                  actor: Taskman.AccountsFixtures.user_fixture()
-                )
+              result = update_task(project, task, %{}, parent: parent)
 
               send(test_pid, {:parent_update_finished, self(), result})
           end

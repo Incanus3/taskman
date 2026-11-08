@@ -22,13 +22,8 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     blocker = task_fixture(other, list, %{title: "Approve copy", priority: :high})
     dependent = task_fixture(project, %{title: "Notify readers", status: :in_progress})
 
-    assert {:ok, _} =
-             Tasks.add_block(other, blocker, task, actor: Taskman.AccountsFixtures.user_fixture())
-
-    assert {:ok, _} =
-             Tasks.add_block(project, task, dependent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(other, blocker, task)
+    assert {:ok, _} = add_block(project, task, dependent)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -60,13 +55,8 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     assert has_element?(view, "#related-blocked-by-empty")
     assert has_element?(view, "#related-blocks-empty")
 
-    assert {:ok, _} =
-             Tasks.add_block(project, task, local, actor: Taskman.AccountsFixtures.user_fixture())
-
-    assert {:ok, _} =
-             Tasks.add_block(project, task, foreign,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, task, local)
+    assert {:ok, _} = add_block(project, task, foreign)
 
     _ = :sys.get_state(view.pid)
 
@@ -147,10 +137,7 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     linked = task_fixture(project, %{})
     stale = task_fixture(project, %{})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, task, linked,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, task, linked)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 

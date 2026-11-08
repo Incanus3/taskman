@@ -77,10 +77,7 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     %{project: project, selected: selected, root: a, middle: b, leaf: c} = hierarchy()
     child = task_fixture(project, selected, %{title: "D"}, parent: c)
 
-    {:ok, a} =
-      Tasks.update_task(project, a, %{status: :in_review},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, a} = update_task(project, a, %{status: :in_review})
 
     {:ok, view, _} = live(conn, listing_path(project, selected, "in_review,pending"))
     toggle(view, a)
@@ -287,23 +284,16 @@ defmodule TaskmanWeb.ProjectLive.ExpandableTaskListingTest do
     notify(view, project, d, :created)
     assert row_ids(view) == [a.id, b.id, c.id, d.id]
 
-    {:ok, d} =
-      Tasks.update_task(project, d, %{title: "Changed", status: :done},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, d} = update_task(project, d, %{title: "Changed", status: :done})
 
     notify(view, project, d)
     assert has_element?(view, "#task-#{d.id}", "Changed")
     assert has_element?(view, "#task-status-#{d.id}", "Done")
-    {:ok, d} = Tasks.move_task(project, d, other, actor: Taskman.AccountsFixtures.user_fixture())
+    {:ok, d} = move_task(project, d, other)
     notify(view, project, d, :moved)
     assert row_ids(view) == [a.id, b.id, c.id, d.id]
 
-    {:ok, d} =
-      Tasks.update_task(project, d, %{},
-        parent: a,
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, d} = update_task(project, d, %{}, parent: a)
 
     notify(view, project, d)
     assert_depths(view, [{d, 1}])

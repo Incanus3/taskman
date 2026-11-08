@@ -217,10 +217,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     project: project,
     task: task
   } do
-    {:ok, _} =
-      Tasks.update_task(project, task, %{description: "External"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(project, task, %{description: "External"})
 
     render(view)
     pending = state(view).description.pending_capture
@@ -279,8 +276,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     change(view, "A", true)
     revision = state(view).editing.autosave.revisions["description"]
 
-    {:ok, _} =
-      Tasks.move_task(project, task, actual, actor: Taskman.AccountsFixtures.user_fixture())
+    {:ok, _} = move_task(project, task, actual)
 
     Taskman.Repo.delete!(lost)
 
@@ -357,8 +353,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     pending = state(view).description.pending_capture
 
-    {:ok, _} =
-      Tasks.move_task(project, task, actual, actor: Taskman.AccountsFixtures.user_fixture())
+    {:ok, _} = move_task(project, task, actual)
 
     Taskman.Repo.delete!(lost)
 
@@ -464,10 +459,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     render(view)
     saved = Tasks.get_task_for_project(project, task.id)
 
-    {:ok, _} =
-      Tasks.update_task(project, saved, %{description: "External B"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(project, saved, %{description: "External B"})
 
     render(view)
     pending = state(view).description.pending_capture
@@ -607,10 +599,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     pending = state(view).description.pending_capture
 
-    {:ok, _} =
-      Tasks.update_task(project, task, %{description: "New canonical"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(project, task, %{description: "New canonical"})
 
     render(view)
     reply(view, pending.ref, "Original", false)

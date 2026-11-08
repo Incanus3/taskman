@@ -17,14 +17,9 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
       task = task_fixture(project)
 
       assert {:ok, blocker} =
-               Tasks.create_task(project, nil, %{title: "Closed blocker", status: unquote(state)},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+               create_task(project, nil, %{title: "Closed blocker", status: unquote(state)})
 
-      assert {:ok, _} =
-               Tasks.add_block(project, blocker, task,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, _} = add_block(project, blocker, task)
 
       {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -50,10 +45,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     boundary = task_fixture(project, %{status: :done}, parent: task)
     hidden = task_fixture(project, %{}, parent: boundary)
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -108,13 +100,8 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     first = task_fixture(project, %{title: "First review"})
     second = task_fixture(project, %{title: "Second review"})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, first, task, actor: Taskman.AccountsFixtures.user_fixture())
-
-    assert {:ok, _} =
-             Tasks.add_block(project, second, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, first, task)
+    assert {:ok, _} = add_block(project, second, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -125,20 +112,14 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     assert has_element?(view, "#task-done-blocker-#{first.id}")
     assert has_element?(view, "#task-done-blocker-#{second.id}")
 
-    assert {:ok, _} =
-             Tasks.update_task(project, second, %{status: :done},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, second, %{status: :done})
 
     view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :done
 
     done_task = Tasks.get_task_for_project(project, task.id)
 
-    assert {:ok, _} =
-             Tasks.update_task(project, done_task, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, done_task, %{status: :pending})
 
     assert Tasks.get_task_for_project(project, task.id).status == :pending
     _ = :sys.get_state(view.pid)
@@ -149,8 +130,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     third = task_fixture(project, %{title: "Third review"})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, third, task, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, _} = add_block(project, third, task)
 
     view |> element("#confirm-task-done") |> render_captured_click()
     assert Tasks.get_task_for_project(project, task.id).status == :pending
@@ -175,10 +155,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     refute has_element?(view, "#task-done-warning #task-done-blocker-#{boundary.id}")
     refute has_element?(view, "#task-done-warning #task-done-blocker-#{grandchild.id}")
 
-    assert {:ok, _} =
-             Tasks.update_task(project, boundary, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, boundary, %{status: :pending})
 
     _ = :sys.get_state(view.pid)
     view |> element("#confirm-task-done") |> render_captured_click()
@@ -204,10 +181,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     task = task_fixture(project, %{status: :in_progress})
     blocker = task_fixture(project, %{})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -243,10 +217,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     task = task_fixture(project, %{status: :pending})
     blocker = task_fixture(project, %{})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -256,10 +227,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     assert has_element?(view, "#task-done-warning")
 
-    assert {:ok, _} =
-             Tasks.update_task(project, task, %{status: :in_review},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, task, %{status: :in_review})
 
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-status-conflict")
@@ -280,10 +248,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     task = task_fixture(project, %{status: :pending})
     blocker = task_fixture(project, %{})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -293,10 +258,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
 
     assert has_element?(view, "#task-done-warning")
 
-    assert {:ok, latest} =
-             Tasks.update_task(project, task, %{status: :in_review},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, latest} = update_task(project, task, %{status: :in_review})
 
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-status-conflict")
@@ -316,10 +278,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     task = task_fixture(project, %{status: :in_progress})
     blocker = task_fixture(project, %{})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -330,10 +289,7 @@ defmodule TaskmanWeb.ProjectLive.DoneWarningTest do
     assert has_element?(view, "#task-done-warning")
     assert Tasks.get_task_for_project(project, task.id).status == :in_progress
 
-    assert {:ok, _} =
-             Tasks.update_task(project, blocker, %{status: :done},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = update_task(project, blocker, %{status: :done})
 
     _ = :sys.get_state(view.pid)
 

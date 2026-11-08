@@ -23,10 +23,7 @@ defmodule Taskman.Tasks.QueriesTest do
     ]
 
     for status <- Enum.reverse(states) do
-      assert {:ok, task} =
-               Tasks.create_task(project, nil, %{title: "State #{status}", status: status},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, task} = create_task(project, nil, %{title: "State #{status}", status: status})
 
       assert Tasks.get_task_for_project(project, task.id).status == status
     end
@@ -38,10 +35,7 @@ defmodule Taskman.Tasks.QueriesTest do
       assert Enum.map(tasks, & &1.task.status) == expected
     end
 
-    assert {:error, changeset} =
-             Tasks.create_task(project, nil, %{title: "Invalid", status: "unknown"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = create_task(project, nil, %{title: "Invalid", status: "unknown"})
 
     assert %{status: ["is invalid"]} = errors_on(changeset)
   end
@@ -73,20 +67,9 @@ defmodule Taskman.Tasks.QueriesTest do
     project = project_fixture(%{})
     other_project = project_fixture(%{})
 
-    {:ok, first} =
-      Tasks.create_task(project, nil, %{title: "First"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
-
-    {:ok, second} =
-      Tasks.create_task(project, nil, %{title: "Second"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
-
-    {:ok, _other} =
-      Tasks.create_task(other_project, nil, %{title: "Other"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, first} = create_task(project, nil, %{title: "First"})
+    {:ok, second} = create_task(project, nil, %{title: "Second"})
+    {:ok, _other} = create_task(other_project, nil, %{title: "Other"})
 
     assert Tasks.list_tasks_for_project(project) == [first, second]
   end

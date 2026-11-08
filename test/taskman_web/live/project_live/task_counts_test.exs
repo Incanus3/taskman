@@ -322,20 +322,14 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
     assert_count(view, sibling, 1)
     assert_project_count(view, 1)
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, task, %{status: :in_review},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, %{status: :in_review})
 
     notify_task(view, project, updated)
     assert_count(view, sibling, 0)
     assert_project_count(view, 0)
     assert_header(view, 0, 0)
 
-    assert {:ok, pending} =
-             Tasks.update_task(project, updated, %{status: :pending},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, pending} = update_task(project, updated, %{status: :pending})
 
     notify_task(view, project, pending)
     assert_count(view, sibling, 1)

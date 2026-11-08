@@ -5,7 +5,6 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
   import Taskman.TasksFixtures
 
   alias Ecto.Adapters.SQL
-  alias Taskman.Tasks
   alias Taskman.Tasks.Task
 
   test "parent_task_id is nullable" do
@@ -25,11 +24,7 @@ defmodule Taskman.Repo.Migrations.ParentTaskHierarchyTest do
     parent = task_fixture(project, %{})
     foreign = task_fixture(other_project, %{})
 
-    assert {:ok, child} =
-             Tasks.update_task(project, task, %{},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, child} = update_task(project, task, %{}, parent: parent)
 
     assert child.parent_task_id == parent.id
 

@@ -15,10 +15,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     project = project_fixture(%{})
     topic = subscribe_task_events(project)
 
-    assert {:ok, task} =
-             Tasks.create_task(project, nil, %{title: "Published", status: :not_planned},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, task} = create_task(project, nil, %{title: "Published", status: :not_planned})
 
     refute_receive %Event{}, 50
 
@@ -54,9 +51,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     topic = subscribe_task_events(project)
 
     assert {:ok, updated} =
-             Tasks.update_task(project, task, %{description: "Changed", status: :not_planned},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, task, %{description: "Changed", status: :not_planned})
 
     assert_receive {:task_event, ^topic,
                     %Event{
@@ -79,10 +74,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     task = task_fixture(project, location, %{title: "Before", status: :not_planned})
     topic = subscribe_task_events(project)
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, task, %{title: "After"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, %{title: "After"})
 
     assert_receive {:task_event, ^topic,
                     %Event{
@@ -104,11 +96,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     child = task_fixture(project, %{title: "Before", status: :not_planned})
     topic = subscribe_task_events(project)
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, child, %{title: "After"},
-               parent: parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, child, %{title: "After"}, parent: parent)
 
     assert_receive {:task_event, ^topic,
                     %Event{
@@ -130,10 +118,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     task = task_fixture(project, %{title: "Move me", status: :not_planned})
     topic = subscribe_task_events(project)
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, task, destination)
 
     assert_receive {:task_event, ^topic,
                     %Event{
@@ -149,8 +134,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     assert lock_version == moved.lock_version
     assert destination_id == destination.id
 
-    assert {:ok, direct} =
-             Tasks.move_task(project, moved, nil, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, direct} = move_task(project, moved, nil)
 
     assert_receive {:task_event, ^topic,
                     %Event{operation: :moved, entity_id: id, status: :not_planned, list_id: nil}}
@@ -164,66 +148,41 @@ defmodule Taskman.Tasks.NotificationsTest do
     task = task_fixture(project, %{title: "Before"})
     topic = subscribe_task_events(project)
 
-    assert {:error, _changeset} =
-             Tasks.create_task(project, nil, %{title: "", status: :not_planned},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _changeset} = create_task(project, nil, %{title: "", status: :not_planned})
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
 
-    assert {:error, _changeset} =
-             Tasks.create_task(project, nil, %{title: ""},
-               parent: task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _changeset} = create_task(project, nil, %{title: ""}, parent: task)
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
 
-    assert {:error, _changeset} =
-             Tasks.update_task(project, task, %{title: ""},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _changeset} = update_task(project, task, %{title: ""})
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
 
-    assert {:error, _changeset} =
-             Tasks.update_task(project, task, %{},
-               parent: task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _changeset} = update_task(project, task, %{}, parent: task)
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
 
     {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, first_baseline, %{title: "First writer"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, first_baseline, %{title: "First writer"})
 
     assert_receive {:task_event, ^topic, %Event{entity: :task, entity_id: updated_id}}
     assert_receive {:task_event, ^topic, %Event{entity: :activity}}
     assert updated_id == updated.id
 
     assert {:error, %{__struct__: Conflict}} =
-             Tasks.update_task(project, second_baseline, %{title: "Second writer"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, second_baseline, %{title: "Second writer"})
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, updated, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, updated, destination)
 
     assert_receive {:task_event, ^topic, %Event{operation: :moved}}
     assert_receive {:task_event, ^topic, %Event{entity: :activity}}
 
-    assert {:error, :unchanged_location} =
-             Tasks.move_task(project, moved, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :unchanged_location} = move_task(project, moved, destination)
 
     refute_receive {:task_event, ^topic, %Event{}}, 50
   end
@@ -271,10 +230,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     first_topic = subscribe_task_events(first_project)
     second_topic = subscribe_task_events(second_project)
 
-    assert {:ok, _edge} =
-             Tasks.add_block(first_project, source, same_project_target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = add_block(first_project, source, same_project_target)
 
     assert_receive {:task_event, ^first_topic,
                     %Event{entity: :relationship, operation: :invalidated, task_ids: task_ids}}
@@ -283,10 +239,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     refute_receive {:task_event, ^first_topic, %Event{entity: :relationship}}, 50
     refute_receive {:task_event, ^second_topic, %Event{entity: :relationship}}, 50
 
-    assert {:ok, _edge} =
-             Tasks.remove_block(first_project, source, same_project_target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = remove_block(first_project, source, same_project_target)
 
     assert_receive {:task_event, ^first_topic,
                     %Event{entity: :relationship, operation: :invalidated, task_ids: task_ids}}
@@ -294,10 +247,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     assert task_ids == [source.id, same_project_target.id]
     refute_receive {:task_event, ^first_topic, %Event{entity: :relationship}}, 50
 
-    assert {:ok, _edge} =
-             Tasks.add_block(first_project, source, foreign_target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = add_block(first_project, source, foreign_target)
 
     assert_receive {:task_event, ^first_topic,
                     %Event{entity: :relationship, operation: :invalidated, task_ids: [source_id]}}
@@ -309,10 +259,7 @@ defmodule Taskman.Tasks.NotificationsTest do
 
     assert target_id == foreign_target.id
 
-    assert {:ok, _edge} =
-             Tasks.remove_block(first_project, source, foreign_target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = remove_block(first_project, source, foreign_target)
 
     assert_receive {:task_event, ^first_topic,
                     %Event{entity: :relationship, operation: :invalidated, task_ids: [source_id]}}
@@ -331,29 +278,17 @@ defmodule Taskman.Tasks.NotificationsTest do
     target = task_fixture(project)
     topic = subscribe_task_events(project)
 
-    assert {:error, _} =
-             Tasks.add_block(project, source, source,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _} = add_block(project, source, source)
 
     refute_receive {:task_event, ^topic, %Event{entity: :relationship}}, 50
 
-    assert {:ok, _edge} =
-             Tasks.add_block(project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = add_block(project, source, target)
 
     assert_receive {:task_event, ^topic, %Event{entity: :relationship}}
 
-    assert {:error, _} =
-             Tasks.add_block(project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, _} = add_block(project, source, target)
 
-    assert {:error, :not_found} =
-             Tasks.remove_block(project, target, source,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = remove_block(project, target, source)
 
     refute_receive {:task_event, ^topic, %Event{entity: :relationship}}, 50
   end
@@ -365,10 +300,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     source = task_fixture(source_project, %{title: "Source"})
     target = task_fixture(target_project)
 
-    assert {:ok, _edge} =
-             Tasks.add_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = add_block(source_project, source, target)
 
     source_topic = subscribe_task_events(source_project)
     target_topic = subscribe_task_events(target_project)
@@ -380,10 +312,7 @@ defmodule Taskman.Tasks.NotificationsTest do
         ] do
       source = Tasks.get_task_for_project(source_project, source.id)
 
-      assert {:ok, _updated} =
-               Tasks.update_task(source_project, source, attrs,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, _updated} = update_task(source_project, source, attrs)
 
       assert_receive {:task_event, ^source_topic, %Event{entity: :task}}
 
@@ -400,10 +329,7 @@ defmodule Taskman.Tasks.NotificationsTest do
 
     source = Tasks.get_task_for_project(source_project, source.id)
 
-    assert {:ok, _moved} =
-             Tasks.move_task(source_project, source, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(source_project, source, destination)
 
     assert_receive {:task_event, ^source_topic, %Event{entity: :task, operation: :moved}}
 
@@ -419,17 +345,11 @@ defmodule Taskman.Tasks.NotificationsTest do
     source = task_fixture(project)
     target = task_fixture(project)
 
-    assert {:ok, _edge} =
-             Tasks.add_block(project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _edge} = add_block(project, source, target)
 
     topic = subscribe_task_events(project)
 
-    assert {:ok, _updated} =
-             Tasks.update_task(project, target, %{title: "Renamed"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _updated} = update_task(project, target, %{title: "Renamed"})
 
     assert_receive {:task_event, ^topic, %Event{entity: :task, entity_id: target_id}}
     assert target_id == target.id

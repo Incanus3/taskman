@@ -103,10 +103,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     refute has_captured_element?(view, "#task-status-filter-option-not_planned[checked]")
     refute has_captured_element?(view, "#open-task-#{task.id}")
 
-    {:ok, _} =
-      Tasks.update_task(project, task, %{status: :pending},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(project, task, %{status: :pending})
 
     assert offered?(view)
     {:ok, reloaded, _} = live(conn, ~p"/projects/#{project.id}")
@@ -257,10 +254,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     open_filter(view)
     assert offered?(view)
 
-    {:ok, _} =
-      Tasks.update_task(project, task, %{status: :pending},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _} = update_task(project, task, %{status: :pending})
 
     render_captured_patch(view, ~p"/projects/#{other.id}")
     render_captured_patch(view, ~p"/projects/#{project.id}")

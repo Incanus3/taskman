@@ -36,9 +36,7 @@ defmodule Taskman.Tasks.BlockingTest do
     outgoing = task_fixture(alpha_project, %{title: "Outgoing"})
 
     assert {:ok, %{blocking_task: blocking, blocked_task: blocked}} =
-             Tasks.add_block(alpha_project, alpha, selected,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             add_block(alpha_project, alpha, selected)
 
     assert blocking == %{
              id: alpha.id,
@@ -52,15 +50,8 @@ defmodule Taskman.Tasks.BlockingTest do
 
     assert blocked.id == selected.id
 
-    assert {:ok, _} =
-             Tasks.add_block(zulu_project, zulu, selected,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, _} =
-             Tasks.add_block(selected_project, selected, outgoing,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(zulu_project, zulu, selected)
+    assert {:ok, _} = add_block(selected_project, selected, outgoing)
 
     assert {:ok, %{blocked_by: [first, second], blocks: [target]}} =
              Tasks.list_blocking(selected_project, selected)
@@ -79,13 +70,7 @@ defmodule Taskman.Tasks.BlockingTest do
     last = task_fixture(project, %{title: "Zulu"})
 
     for task <- [last, second, first],
-        do:
-          assert(
-            {:ok, _} =
-              Tasks.add_block(project, selected, task,
-                actor: Taskman.AccountsFixtures.user_fixture()
-              )
-          )
+        do: assert({:ok, _} = add_block(project, selected, task))
 
     assert {:ok, %{blocks: summaries, blocked_by: []}} = Tasks.list_blocking(project, selected)
     assert Enum.map(summaries, & &1.id) == [first.id, second.id, last.id]
@@ -97,15 +82,8 @@ defmodule Taskman.Tasks.BlockingTest do
     second = task_fixture(project)
     third = task_fixture(project)
 
-    assert {:ok, _} =
-             Tasks.add_block(project, first, second,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, _} =
-             Tasks.add_block(project, second, third,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, first, second)
+    assert {:ok, _} = add_block(project, second, third)
 
     for {source, target, expected} <- [
           {first, second, "already"},
@@ -113,10 +91,7 @@ defmodule Taskman.Tasks.BlockingTest do
           {second, first, "cycle"},
           {third, first, "cycle"}
         ] do
-      assert {:error, changeset} =
-               Tasks.add_block(project, source, target,
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:error, changeset} = add_block(project, source, target)
 
       assert Enum.any?(errors_on(changeset).target_task_id, &String.contains?(&1, expected))
     end
@@ -134,20 +109,9 @@ defmodule Taskman.Tasks.BlockingTest do
     second = task_fixture(second_project)
     third = task_fixture(third_project)
 
-    assert {:ok, _} =
-             Tasks.add_block(first_project, first, second,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, _} =
-             Tasks.add_block(second_project, second, third,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:error, changeset} =
-             Tasks.add_block(third_project, third, first,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(first_project, first, second)
+    assert {:ok, _} = add_block(second_project, second, third)
+    assert {:error, changeset} = add_block(third_project, third, first)
 
     assert Enum.any?(errors_on(changeset).target_task_id, &String.contains?(&1, "cycle"))
     assert BlockingPersistence.outgoing(third.id) == []
@@ -158,15 +122,8 @@ defmodule Taskman.Tasks.BlockingTest do
     parent = task_fixture(project, %{title: "Parent"})
     child = task_fixture(project, %{title: "Child"}, parent: parent)
 
-    assert {:ok, _} =
-             Tasks.add_block(project, child, parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:error, changeset} =
-             Tasks.add_block(project, parent, child,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, child, parent)
+    assert {:error, changeset} = add_block(project, parent, child)
 
     assert Enum.any?(errors_on(changeset).target_task_id, &String.contains?(&1, "parent"))
   end
@@ -178,25 +135,15 @@ defmodule Taskman.Tasks.BlockingTest do
     target = task_fixture(other_project)
     missing = %Task{id: 9_999_999, project_id: other_project.id}
 
-    assert {:error, :not_found} =
-             Tasks.add_block(other_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:error, :not_found} =
-             Tasks.add_block(source_project, source, missing,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = add_block(other_project, source, target)
+    assert {:error, :not_found} = add_block(source_project, source, missing)
 
     assert {:error, :not_found} = Tasks.list_blocking(other_project, source)
     assert BlockingPersistence.outgoing(source.id) == []
 
     Repo.delete!(target)
 
-    assert {:error, :not_found} =
-             Tasks.add_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = add_block(source_project, source, target)
   end
 
   test "removes only the exact cross-Project edge and refuses a missing edge" do
@@ -205,32 +152,16 @@ defmodule Taskman.Tasks.BlockingTest do
     source = task_fixture(source_project)
     target = task_fixture(target_project)
 
-    assert {:error, :not_found} =
-             Tasks.remove_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, _} =
-             Tasks.add_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = remove_block(source_project, source, target)
+    assert {:ok, _} = add_block(source_project, source, target)
 
     assert {:ok, %{blocking_task: %{id: source_id}, blocked_task: %{id: target_id}}} =
-             Tasks.remove_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             remove_block(source_project, source, target)
 
     assert {source_id, target_id} == {source.id, target.id}
 
-    assert {:error, :not_found} =
-             Tasks.remove_block(source_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:error, :not_found} =
-             Tasks.remove_block(target_project, source, target,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = remove_block(source_project, source, target)
+    assert {:error, :not_found} = remove_block(target_project, source, target)
 
     assert Repo.get(Task, source.id)
     assert Repo.get(Task, target.id)
@@ -241,10 +172,7 @@ defmodule Taskman.Tasks.BlockingTest do
     blocker = task_fixture(project, %{status: :pending})
     done_task = task_fixture(project, %{status: :done})
 
-    assert {:ok, _} =
-             Tasks.add_block(project, blocker, done_task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _} = add_block(project, blocker, done_task)
 
     assert Repo.get!(Task, done_task.id).status == :done
   end

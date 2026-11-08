@@ -156,10 +156,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
     task = task_fixture(project, %{title: "Move me"})
     state = Move.open(Move.empty(), project, task, :row)
 
-    assert {:ok, _moved} =
-             Taskman.Tasks.move_task(project, task, planning,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, task, planning)
 
     assert {:ok, refreshed, refreshed_task} = Move.refresh(state, project)
     assert refreshed_task.list_id == planning.id
@@ -178,10 +175,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.select_destination("list:#{planning.id}")
       |> Move.open_destinations()
 
-    assert {:ok, updated} =
-             Taskman.Tasks.update_task(project, task, %{title: "Updated elsewhere"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, %{title: "Updated elsewhere"})
 
     assert {:ok, refreshed, ^updated} = Move.refresh(state, project)
 
@@ -245,10 +239,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :detail)
       |> Move.select_destination("list:#{destination.id}")
 
-    assert {:ok, moved} =
-             Taskman.Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, task, destination)
 
     assert {:ok, restored} = Movement.restore_move(captured, project, moved, :detail)
 
@@ -278,8 +269,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :row)
       |> Move.select_destination("list:#{planning.id}")
 
-    assert {:ok, cleared, moved_task} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, cleared, moved_task} = submit_move(state, project)
 
     assert cleared == Move.empty()
     assert moved_task.list_id == planning.id
@@ -295,8 +285,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :detail)
       |> Move.select_destination("project")
 
-    assert {:ok, cleared, moved_task} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, cleared, moved_task} = submit_move(state, project)
 
     assert cleared == Move.empty()
     assert moved_task.list_id == nil
@@ -315,8 +304,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
     cached_row = state.active_task.task_with_location
     Taskman.Repo.delete!(task)
 
-    assert {:error, failed, :task_not_found} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :task_not_found} = submit_move(state, project)
 
     assert failed.active_task.task_with_location == cached_row
     assert failed.error == "This Task is no longer available."
@@ -333,8 +321,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :row)
       |> Move.select_destination("list:#{foreign_list.id}")
 
-    assert {:error, failed, :destination_not_found} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :destination_not_found} = submit_move(state, project)
 
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
@@ -349,8 +336,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :row)
       |> Move.select_destination("list:not-an-id")
 
-    assert {:error, failed, :destination_not_found} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :destination_not_found} = submit_move(state, project)
 
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
@@ -365,8 +351,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :row)
       |> Map.put(:destination, nil)
 
-    assert {:error, failed, :destination_not_found} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :destination_not_found} = submit_move(state, project)
 
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
@@ -384,8 +369,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
 
     Taskman.Repo.delete!(planning)
 
-    assert {:error, failed, :destination_not_found} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :destination_not_found} = submit_move(state, project)
 
     assert failed.error == "That destination is no longer available."
     assert Taskman.Tasks.get_task_for_project(project, task.id).list_id == nil
@@ -401,15 +385,15 @@ defmodule TaskmanWeb.ProjectLive.Tasks.MoveTest do
       |> Move.open(project, task, :row)
       |> Move.select_destination("list:#{planning.id}")
 
-    assert {:ok, _moved} =
-             Taskman.Tasks.move_task(project, task, planning,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, task, planning)
 
-    assert {:error, failed, :unchanged_location} =
-             Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, failed, :unchanged_location} = submit_move(state, project)
 
     assert Move.current_destination(failed) == "list:#{planning.id}"
     assert failed.error == "This Task is already in that location."
+  end
+
+  defp submit_move(state, project) do
+    Move.submit(state, project, actor: Taskman.AccountsFixtures.user_fixture())
   end
 end

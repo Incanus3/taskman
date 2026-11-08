@@ -46,10 +46,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     old_title_revision = view_assigns(view).editing.autosave.revisions["title"]
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, task, destination)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
@@ -107,10 +104,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
 
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, task, destination)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
@@ -155,15 +149,9 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
 
     old_description_revision = view_assigns(view).editing.autosave.revisions["description"]
 
-    assert {:ok, latest} =
-             Tasks.update_task(project, task, %{title: "Latest"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, latest} = update_task(project, task, %{title: "Latest"})
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, latest, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, latest, destination)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
@@ -325,18 +313,14 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, task, first, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, moved} = move_task(project, task, first)
 
     Taskman.Repo.delete!(lost)
 
     assert {:noreply, pending} =
              reconcile_captured(list_event(project.id, lost.id), live_socket(view))
 
-    assert {:ok, _moved_again} =
-             Tasks.move_task(project, moved, second,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved_again} = move_task(project, moved, second)
 
     old_params = %{
       "project_id" => "#{project.id}",
@@ -442,10 +426,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, task, destination)
 
     Taskman.Repo.delete!(lost)
 
@@ -454,8 +435,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
 
     pending_socket = socket
 
-    assert {:ok, _root_task} =
-             Tasks.move_task(project, moved, nil, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, _root_task} = move_task(project, moved, nil)
 
     Taskman.Repo.delete!(destination)
 
@@ -500,10 +480,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, task, destination)
 
     Taskman.Repo.delete!(lost)
 
@@ -661,8 +638,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    assert {:ok, _root_task} =
-             Tasks.move_task(project, task, nil, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:ok, _root_task} = move_task(project, task, nil)
 
     Taskman.Repo.delete!(lost)
     previous_workspace = view_assigns(view).workspace
@@ -717,10 +693,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, task, actual,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, task, actual)
 
     Taskman.Repo.delete!(destination)
     Taskman.Repo.delete!(lost)
@@ -756,15 +729,9 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     |> form("#task-form", task: %{title: "Mine"})
     |> render_change(%{"_target" => ["task", "title"]})
 
-    assert {:ok, latest} =
-             Tasks.update_task(project, task, %{title: "Latest"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, latest} = update_task(project, task, %{title: "Latest"})
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, latest, actual,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, latest, actual)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
@@ -791,15 +758,9 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
     view |> element("#move-task-search-#{task.id}") |> render_captured_click()
     view |> element("#move-task-option-list-#{destination.id}") |> render_captured_click()
 
-    assert {:ok, latest} =
-             Tasks.update_task(project, task, %{title: "Latest"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, latest} = update_task(project, task, %{title: "Latest"})
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, latest, actual,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, latest, actual)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))
@@ -843,11 +804,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
       |> ParentPicker.open_edit(project, task)
       |> ParentPicker.select_draft(project, mine.id)
 
-    assert {:ok, latest_task} =
-             Tasks.update_task(project, task, %{},
-               parent: latest_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, latest_task} = update_task(project, task, %{}, parent: latest_parent)
 
     assert {:conflict, conflicted_picker, ^latest_task} =
              ParentPicker.save_edit(picker, project, task,
@@ -856,10 +813,7 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
 
     replace_assign(view, :task_parent_picker, conflicted_picker)
 
-    assert {:ok, _moved} =
-             Tasks.move_task(project, latest_task, actual,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, _moved} = move_task(project, latest_task, actual)
 
     Taskman.Repo.delete!(lost)
     send(view.pid, list_event(project.id, lost.id))

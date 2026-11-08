@@ -16,9 +16,7 @@ defmodule Taskman.Tasks.MutationsTest do
 
       {result, queries} =
         capture_queries(fn ->
-          Tasks.update_task(project, task, %{status: status},
-            actor: Taskman.AccountsFixtures.user_fixture()
-          )
+          update_task(project, task, %{status: status})
         end)
 
       assert {:ok, updated} = result
@@ -42,9 +40,7 @@ defmodule Taskman.Tasks.MutationsTest do
 
     {create_result, create_queries} =
       capture_queries(fn ->
-        Tasks.create_task(project, nil, %{title: "No parent"},
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        create_task(project, nil, %{title: "No parent"})
       end)
 
     assert {:ok, _created} = create_result
@@ -52,7 +48,7 @@ defmodule Taskman.Tasks.MutationsTest do
 
     {update_result, update_queries} =
       capture_queries(fn ->
-        Tasks.update_task(
+        update_task(
           project,
           task,
           %{
@@ -61,8 +57,7 @@ defmodule Taskman.Tasks.MutationsTest do
             priority: :high,
             due_at: ~N[2026-10-01 12:00:00],
             status: :pending
-          },
-          actor: Taskman.AccountsFixtures.user_fixture()
+          }
         )
       end)
 
@@ -71,9 +66,7 @@ defmodule Taskman.Tasks.MutationsTest do
 
     {move_result, move_queries} =
       capture_queries(fn ->
-        Tasks.move_task(project, updated, destination,
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        move_task(project, updated, destination)
       end)
 
     assert {:ok, _moved} = move_result
@@ -86,9 +79,7 @@ defmodule Taskman.Tasks.MutationsTest do
 
     {result, queries} =
       capture_queries(fn ->
-        Tasks.update_task(project, task, %{status: :done},
-          actor: Taskman.AccountsFixtures.user_fixture()
-        )
+        update_task(project, task, %{status: :done})
       end)
 
     assert {:ok, current} = result
@@ -139,20 +130,12 @@ defmodule Taskman.Tasks.MutationsTest do
     destination = list_fixture(project, nil, %{name: "Planning"})
     task = task_fixture(project, %{title: "Move me"})
 
-    assert {:ok, moved} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, moved} = move_task(project, task, destination)
 
     assert moved.list_id == destination.id
 
-    assert {:error, :unchanged_location} =
-             Tasks.move_task(project, moved, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:ok, moved_direct} =
-             Tasks.move_task(project, moved, nil, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, :unchanged_location} = move_task(project, moved, destination)
+    assert {:ok, moved_direct} = move_task(project, moved, nil)
 
     assert moved_direct.list_id == nil
   end
@@ -165,27 +148,16 @@ defmodule Taskman.Tasks.MutationsTest do
     task = task_fixture(project, %{title: "Move me"})
     foreign_task = task_fixture(other_project, %{title: "Foreign task"})
 
-    assert {:error, :not_found} =
-             Tasks.move_task(project, task, foreign_destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
-
-    assert {:error, :not_found} =
-             Tasks.move_task(project, foreign_task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = move_task(project, task, foreign_destination)
+    assert {:error, :not_found} = move_task(project, foreign_task, destination)
 
     Repo.delete!(destination)
 
-    assert {:error, :not_found} =
-             Tasks.move_task(project, task, destination,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = move_task(project, task, destination)
 
     Repo.delete!(task)
 
-    assert {:error, :not_found} =
-             Tasks.move_task(project, task, nil, actor: Taskman.AccountsFixtures.user_fixture())
+    assert {:error, :not_found} = move_task(project, task, nil)
   end
 
   test "get_task_for_project/2 returns only a Task owned by the Project" do
@@ -215,10 +187,7 @@ defmodule Taskman.Tasks.MutationsTest do
       due_at: due_at
     }
 
-    assert {:ok, updated} =
-             Tasks.update_task(project, task, attrs,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:ok, updated} = update_task(project, task, attrs)
 
     assert updated.title == "After"
     assert updated.description == "Updated"
@@ -231,10 +200,7 @@ defmodule Taskman.Tasks.MutationsTest do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Original title"})
 
-    assert {:error, changeset} =
-             Tasks.update_task(project, task, %{title: ""},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, changeset} = update_task(project, task, %{title: ""})
 
     assert %{title: [_]} = errors_on(changeset)
     assert Tasks.get_task_for_project(project, task.id).title == "Original title"
@@ -246,22 +212,18 @@ defmodule Taskman.Tasks.MutationsTest do
     task = task_fixture(project, %{title: "Owned"})
 
     assert {:ok, updated} =
-             Tasks.update_task(
+             update_task(
                project,
                task,
                %{
                  title: "Still owned",
                  project_id: other_project.id
-               },
-               actor: Taskman.AccountsFixtures.user_fixture()
+               }
              )
 
     assert updated.project_id == project.id
 
-    assert {:error, :not_found} =
-             Tasks.update_task(other_project, task, %{title: "Leaked"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+    assert {:error, :not_found} = update_task(other_project, task, %{title: "Leaked"})
 
     assert Tasks.get_task_for_project(project, task.id).title == "Still owned"
   end
@@ -271,10 +233,7 @@ defmodule Taskman.Tasks.MutationsTest do
     task = task_fixture(project, %{title: "Lifecycle"})
 
     Enum.reduce(Task.statuses(), task, fn status, current ->
-      assert {:ok, updated} =
-               Tasks.update_task(project, current, %{status: status},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, updated} = update_task(project, current, %{status: status})
 
       assert updated.status == status
       updated
@@ -286,10 +245,7 @@ defmodule Taskman.Tasks.MutationsTest do
     task = task_fixture(project, %{title: "Priority"})
 
     Enum.reduce(Task.priorities(), task, fn priority, current ->
-      assert {:ok, updated} =
-               Tasks.update_task(project, current, %{priority: priority},
-                 actor: Taskman.AccountsFixtures.user_fixture()
-               )
+      assert {:ok, updated} = update_task(project, current, %{priority: priority})
 
       assert updated.priority == priority
       updated

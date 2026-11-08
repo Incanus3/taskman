@@ -118,9 +118,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
     assert {:ok, _} =
-             Tasks.update_task(project, child, %{status: :done},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, child, %{status: :done})
 
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-done-warning")
@@ -142,9 +140,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     blocker = task_fixture(project, %{})
 
     assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -161,9 +157,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     assert Tasks.get_task_for_project(project, task.id).title == "Before"
 
     assert {:ok, _} =
-             Tasks.remove_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             remove_block(project, blocker, task)
 
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-done-warning")
@@ -182,9 +176,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     blocker = task_fixture(project, %{})
 
     assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -197,9 +189,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert {:ok, _} =
-             Tasks.update_task(project, task, %{title: "Latest"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, task, %{title: "Latest"})
 
     _ = :sys.get_state(view.pid)
     assert has_element?(view, "#task-title-conflict")
@@ -223,9 +213,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     blocker = task_fixture(project, %{})
 
     assert {:ok, _} =
-             Tasks.add_block(project, blocker, task,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             add_block(project, blocker, task)
 
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
 
@@ -587,9 +575,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
     |> render_captured_change(%{"_target" => ["task", "title"]})
 
     assert {:ok, latest} =
-             Tasks.update_task(project, task, %{title: "Latest"},
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, task, %{title: "Latest"})
 
     send(view.pid, {:autosave_task_field, task.id, "title", 1})
     _ = :sys.get_state(view.pid)
@@ -625,10 +611,7 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
       |> ParentPicker.select_draft(project, mine.id)
 
     assert {:ok, latest} =
-             Tasks.update_task(project, task, %{},
-               parent: latest_parent,
-               actor: Taskman.AccountsFixtures.user_fixture()
-             )
+             update_task(project, task, %{}, parent: latest_parent)
 
     assert {:conflict, conflicted_picker, ^latest} =
              ParentPicker.save_edit(picker, project, task,

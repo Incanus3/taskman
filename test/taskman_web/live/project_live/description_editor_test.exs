@@ -166,10 +166,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorTest do
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
     change(view, "**Mine**")
 
-    {:ok, external} =
-      Tasks.update_task(project, task, %{description: "**Latest**"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, external} = update_task(project, task, %{description: "**Latest**"})
 
     render_captured(view)
     assert has_element?(view, "#task-description-conflict")
@@ -192,10 +189,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorTest do
     assert Tasks.get_task_for_project(project, task.id).description == "**Latest**"
     change(view, "**Keep me**")
 
-    {:ok, _external} =
-      Tasks.update_task(project, external, %{description: "Other"},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _external} = update_task(project, external, %{description: "Other"})
 
     render_captured(view)
     assert has_element?(view, "#task-description-conflict")
@@ -239,10 +233,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorTest do
     original_id = editor_id(view)
     source = "# Notes\n\n-   item\n"
 
-    {:ok, _external} =
-      Tasks.update_task(project, task, %{description: source},
-        actor: Taskman.AccountsFixtures.user_fixture()
-      )
+    {:ok, _external} = update_task(project, task, %{description: source})
 
     render_captured(view)
     assert editor_id(view) != original_id
