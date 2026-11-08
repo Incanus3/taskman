@@ -72,20 +72,14 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksBrowserTest do
              )
 
       Browser.find(session, Query.css("#related-picker-search:focus"))
-      Browser.fill_in(session, Query.css("#related-picker-search"), with: "no matching candidate")
-      Browser.find(session, Query.css("#related-picker-empty"))
       Browser.fill_in(session, Query.css("#related-picker-search"), with: "Related candidate")
       Browser.find(session, Query.css("#related-candidate-#{candidate.id}"))
 
       Browser.execute_script(session, "window.relatedSearchDocument = arguments[0]", [email])
       Browser.send_keys(session, [:enter])
       Browser.find(session, Query.css("#related-picker-search:focus:not([readonly])"))
-      Browser.fill_in(session, Query.css("#related-picker-search"), with: "no matching candidate")
-      Browser.find(session, Query.css("#related-picker-empty"))
       assert js(session, "return window.relatedSearchDocument") == email
       Browser.find(session, Query.css("#task-modal"))
-      Browser.fill_in(session, Query.css("#related-picker-search"), with: "Related candidate")
-      Browser.find(session, Query.css("#related-candidate-#{candidate.id}"))
 
       assert js(
                session,

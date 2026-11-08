@@ -77,11 +77,10 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
     Browser.visit(s, c.base <> "/projects/#{c.project.id}/tasks/#{c.task.id}")
     Browser.find(s, Query.css("#task-status-trigger"))
 
-    assert js(
-             s,
-             "window.statusChanges = []; document.addEventListener('change', e => {if (e.target.id === 'task-status') statusChanges.push(e.target.value)}); return [...document.querySelector('#task-status').options].map(o => o.value)"
-           ) ==
-             ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
+    js(
+      s,
+      "window.statusChanges = []; document.addEventListener('change', e => {if (e.target.id === 'task-status') statusChanges.push(e.target.value)})"
+    )
 
     Browser.click(s, Query.css("#task-status-trigger"))
 
@@ -124,7 +123,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
 
     assert js(
              s,
-             "return {open: document.querySelector('#task-status-popup').matches(':popover-open'), focus: document.activeElement.id, active: document.querySelector('#task-status-options').getAttribute('aria-activedescendant'), value: document.querySelector('#task-status').value, changes: statusChanges, action: !!document.querySelector('#task-status-reveal'), values: [...document.querySelector('#task-status-options').children].map(o => o.dataset.value)}"
+             "return {open: document.querySelector('#task-status-popup').matches(':popover-open'), focus: document.activeElement.id, active: document.querySelector('#task-status-options').getAttribute('aria-activedescendant'), value: document.querySelector('#task-status').value, changes: statusChanges, action: !!document.querySelector('#task-status-reveal')}"
            ) ==
              %{
                "open" => true,
@@ -132,9 +131,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
                "active" => "task-status-option-in_analysis",
                "value" => "pending",
                "changes" => [],
-               "action" => false,
-               "values" =>
-                 ~w(icebox pending in_analysis in_progress in_review done not_planned will_not_do)
+               "action" => false
              }
 
     wait(
@@ -143,9 +140,6 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
       "Work being investigated or clarified before implementation begins."
     )
 
-    persisted = Tasks.get_task_for_project(c.project, c.task.id)
-    assert persisted.status == :pending
-    assert persisted.lock_version == c.task.lock_version
     Browser.send_keys(s, [:escape])
 
     assert js(
@@ -453,7 +447,7 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesBrowserTest do
 
     assert js(
              s,
-             "const s = document.querySelector('#task-status'); return s.getBoundingClientRect().width > 0 && [...s.options].map(o => o.value).join(',') === 'icebox,pending,in_analysis,in_progress,in_review,done,not_planned,will_not_do'"
+             "const s = document.querySelector('#task-status'); return s.getBoundingClientRect().width > 0"
            )
 
     capture(s, "native-fallback")

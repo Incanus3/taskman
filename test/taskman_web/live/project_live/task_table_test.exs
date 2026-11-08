@@ -11,6 +11,21 @@ defmodule TaskmanWeb.ProjectLive.TaskTableTest do
     {:ok, conn: log_in_user(conn, user_fixture())}
   end
 
+  test "toolbar tooltip labels are wired to their rendered controls", %{conn: conn} do
+    project = project_fixture(%{})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}")
+
+    for {selector, attribute, label} <- [
+          {"#location-task-count", "data-tooltip", "Matching / eligible tasks"},
+          {"#include-child-lists", "data-tooltip", "Include tasks from child Lists"},
+          {"#task-status-filter-button", "data-tooltip", "Filter statuses"},
+          {"#add-task[data-tooltip='']", "aria-label", "Add task"},
+          {"#share-task-view[data-tooltip='']", "aria-label", "Share current view"}
+        ] do
+      assert has_element?(view, "#{selector}[data-tooltip][#{attribute}='#{label}']")
+    end
+  end
+
   test "Share is available only for a hydrated valid Project Task view", %{conn: conn} do
     project = project_fixture(%{})
     task_list = list_fixture(project)

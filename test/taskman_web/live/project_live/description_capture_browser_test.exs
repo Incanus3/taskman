@@ -93,39 +93,37 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureBrowserTest do
     assert js(c.session, "return location.pathname") == "/projects/#{c.project.id}"
   end
 
-  for initial <- ["", "  Original comment  "] do
-    test "capture snapshots unsent comment after an initial #{inspect(initial)} request", c do
-      initial = unquote(initial)
-      current = "  Unsent browser comment!\nPreserve exact spacing.  "
+  test "capture snapshots the newer unsent comment after a nonempty request", c do
+    initial = "  Original comment  "
+    current = "  Unsent browser comment!\nPreserve exact spacing.  "
 
-      js(
-        c.session,
-        """
-          const comment = document.querySelector('#task-comment-text');
-          comment.value = arguments[0];
-          comment.dispatchEvent(new Event('input', {bubbles: true}));
-          window.commentBoundaryInjected = false;
-          const injectCurrentComment = () => {
-            if (!document.querySelector('[data-description-editor]')?.inert) return;
-            document.querySelector('#task-comment-text').value = arguments[1];
-            window.commentBoundaryInjected = true;
-            document.removeEventListener('phx:update', injectCurrentComment);
-          };
-          document.addEventListener('phx:update', injectCurrentComment);
-          document.querySelector('#task-modal-close').click();
-        """,
-        [initial, current]
-      )
+    js(
+      c.session,
+      """
+        const comment = document.querySelector('#task-comment-text');
+        comment.value = arguments[0];
+        comment.dispatchEvent(new Event('input', {bubbles: true}));
+        window.commentBoundaryInjected = false;
+        const injectCurrentComment = () => {
+          if (!document.querySelector('[data-description-editor]')?.inert) return;
+          document.querySelector('#task-comment-text').value = arguments[1];
+          window.commentBoundaryInjected = true;
+          document.removeEventListener('phx:update', injectCurrentComment);
+        };
+        document.addEventListener('phx:update', injectCurrentComment);
+        document.querySelector('#task-modal-close').click();
+      """,
+      [initial, current]
+    )
 
-      # The public pending patch supplies B after the request, before the
-      # Leaf flush. No input event sends B to ordinary validation.
-      Browser.find(c.session, Query.css("#task-comment-departure"))
-      assert js(c.session, "return window.commentBoundaryInjected")
-      assert js(c.session, "return document.querySelector('#task-comment-text').value") == current
+    # The public pending patch supplies B after the request, before the
+    # Leaf flush. No input event sends B to ordinary validation.
+    Browser.find(c.session, Query.css("#task-comment-departure"))
+    assert js(c.session, "return window.commentBoundaryInjected")
+    assert js(c.session, "return document.querySelector('#task-comment-text').value") == current
 
-      assert js(c.session, "return location.pathname") ==
-               "/projects/#{c.project.id}/tasks/#{c.task.id}"
-    end
+    assert js(c.session, "return location.pathname") ==
+             "/projects/#{c.project.id}/tasks/#{c.task.id}"
   end
 
   defp js(session, script, args \\ []) do

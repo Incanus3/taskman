@@ -38,9 +38,7 @@ defmodule Taskman.CLI.Commands.ActivityTest do
     end
   end
 
-  test "activity inherits the repository Project", do: with_bound_project()
-
-  defp with_bound_project do
+  test "activity inherits the repository Project" do
     root = Path.join(System.tmp_dir!(), "activity-cli-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf!(root) end)
     repo = Fixtures.git_repo!(root, "clone")
