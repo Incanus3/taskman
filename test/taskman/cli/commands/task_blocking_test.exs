@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.Commands.TaskBlockingTest do
   use ExUnit.Case, async: true
 
+  alias Taskman.CLI.Fixtures
+
   @blocker %{
     id: 12,
     project_id: 7,
@@ -320,7 +322,7 @@ defmodule Taskman.CLI.Commands.TaskBlockingTest do
   end
 
   defp run(argv) do
-    Taskman.CLI.Fixtures.run_with_host(argv,
+    Fixtures.run_with_host(argv,
       req_options: [plug: {Req.Test, TaskBlockingCommands}]
     )
   end

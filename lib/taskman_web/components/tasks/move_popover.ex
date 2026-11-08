@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.Tasks.MovePopover do
+  @moduledoc "Renders Task move destinations and movement feedback."
+
   use TaskmanWeb, :html
 
   alias TaskmanWeb.ProjectLive.Tasks.Move

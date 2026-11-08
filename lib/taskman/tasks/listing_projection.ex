@@ -4,9 +4,7 @@ defmodule Taskman.Tasks.ListingProjection do
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Tasks
-  alias Taskman.Tasks.ListingRow
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Tasks.{ListingRow, Task, TaskWithLocation}
 
   defstruct rows: [],
             expandable_root_ids: MapSet.new(),
@@ -136,17 +134,11 @@ defmodule Taskman.Tasks.ListingProjection do
     parents = Map.new(ordered_project_tasks, &{&1.task.id, &1.task.parent_task_id})
 
     {roots, _memo} =
-      Enum.reduce(ordered_project_tasks, {[], %{}}, fn listed_task, {roots, memo} ->
-        if MapSet.member?(matching_ids, listed_task.task.id) do
-          {ancestor_matches?, memo} =
-            matching_ancestor?(listed_task.task.id, matching_ids, parents, memo)
-
-          roots = if ancestor_matches?, do: roots, else: [listed_task | roots]
-          {roots, memo}
-        else
-          {roots, memo}
-        end
-      end)
+      Enum.reduce(
+        ordered_project_tasks,
+        {[], %{}},
+        &accumulate_root(&1, &2, matching_ids, parents)
+      )
 
     Enum.reverse(roots)
   end
@@ -222,5 +214,17 @@ defmodule Taskman.Tasks.ListingProjection do
       end)
 
     pending
+  end
+
+  defp accumulate_root(listed_task, {roots, memo}, matching_ids, parents) do
+    if MapSet.member?(matching_ids, listed_task.task.id) do
+      {ancestor_matches?, memo} =
+        matching_ancestor?(listed_task.task.id, matching_ids, parents, memo)
+
+      roots = if ancestor_matches?, do: roots, else: [listed_task | roots]
+      {roots, memo}
+    else
+      {roots, memo}
+    end
   end
 end

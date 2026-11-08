@@ -6,9 +6,10 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
   import Phoenix.LiveViewTest
 
   alias AshAuthentication.Jwt
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Phoenix.Socket
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.{Token, User}
-  alias Taskman.Repo
 
   test "browser password reset revokes every existing browser session" do
     user = password_user()
@@ -43,8 +44,8 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
     assert Plug.Conn.get_session(response, :live_socket_id) == nil
     assert {:error, :invalid_token} = Token.valid_for_purpose?(first_token, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(second_token, "user")
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^first_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^second_socket, event: "disconnect"}
   end
 
   test "malformed browser password reset is audited without logging submitted secrets", %{
@@ -108,7 +109,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
     assert :ok = Token.valid_for_purpose?(replacement_token, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(acting_token, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(peer_token, "user")
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^peer_socket, event: "disconnect"}
     assert {:ok, %{id: user_id}} = Accounts.sign_in_with_api_key(%{api_key: plaintext})
     assert user_id == user.id
 
@@ -138,15 +139,15 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
 
     assert {:error, :invalid_token} = Token.valid_for_purpose?(replacement_token, "user")
     assert {:error, :invalid_token} = Token.valid_for_purpose?(recovery_peer_token, "user")
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^replacement_socket, event: "disconnect"}
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^recovery_peer_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^replacement_socket, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^recovery_peer_socket, event: "disconnect"}
     assert {:ok, %{id: user_id}} = Accounts.sign_in_with_api_key(%{api_key: plaintext})
     assert user_id == user.id
   end
 
   test "an old-password sign-in cannot store a browser session after an authenticated password change",
        %{conn: conn} do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       user = password_user()
 
       try do
@@ -192,7 +193,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
   test "an old-password sign-in cannot store a browser session after a recovery reset", %{
     conn: conn
   } do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       user = password_user()
 
       try do
@@ -259,13 +260,13 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
 
     task =
       Task.async(fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
         try do
           send(test_pid, {:independent_task_started, label, self(), database_backend_pid()})
           operation.()
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = SQL.Sandbox.checkin(Repo)
         end
       end)
 
@@ -280,7 +281,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
     trigger_name = "#{function_name}_trigger"
     gate_key = System.unique_integer([:positive])
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -298,7 +299,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -308,12 +309,12 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
     released? = :atomics.new(1, [])
 
     release_gate = fn ->
       if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end
 
@@ -321,8 +322,8 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
       fun.(release_gate)
     after
       release_gate.()
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -333,7 +334,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
 
   defp await_backend_lock(backend_pid, attempts_left) do
     assert %{rows: [[waiting]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                SELECT count(*)
@@ -352,7 +353,7 @@ defmodule TaskmanWeb.PasswordChangeSessionTest do
   end
 
   defp database_backend_pid do
-    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    assert %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend_pid
   end
 

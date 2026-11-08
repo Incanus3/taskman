@@ -1,11 +1,14 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
+  @moduledoc "Coordinates Task creation drafts, parent selection and destination validation."
+
   import Phoenix.Component, only: [assign: 3, to_form: 1]
   import Phoenix.LiveView, only: [push_patch: 2]
 
-  alias Taskman.Lists
+  alias Phoenix.HTML.Form
+  alias Phoenix.LiveView
+  alias Taskman.{Lists, Tasks}
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
   alias TaskmanWeb.ProjectLive.{Paths, Workspace}
@@ -14,6 +17,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   @events ["validate_task", "save_task", "reveal_task_creation_states"]
 
   defmodule State do
+    @moduledoc "Task creation form, parent selection and destination state."
+
     defstruct form: nil,
               enabled?: false,
               additional_states_revealed?: false,
@@ -23,7 +28,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
               location_error: nil
 
     @type t :: %__MODULE__{
-            form: Phoenix.HTML.Form.t() | nil,
+            form: Form.t() | nil,
             enabled?: boolean(),
             additional_states_revealed?: boolean(),
             location: String.t() | nil,
@@ -35,7 +40,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     @spec empty() :: t()
     def empty, do: %__MODULE__{}
 
-    @spec open(t(), Phoenix.HTML.Form.t(), String.t(), String.t(), [{String.t(), String.t()}]) ::
+    @spec open(t(), Form.t(), String.t(), String.t(), [{String.t(), String.t()}]) ::
             t()
     def open(%__MODULE__{} = state, form, location, location_label, location_options) do
       state
@@ -46,7 +51,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
       |> refresh_locations(location_options)
     end
 
-    @spec validate(t(), Phoenix.HTML.Form.t()) :: t()
+    @spec validate(t(), Form.t()) :: t()
     def validate(%__MODULE__{} = state, form), do: state |> Map.put(:form, form) |> with_enabled()
 
     @spec choose_location(t(), String.t(), [{String.t(), String.t()}]) :: t()
@@ -116,7 +121,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   @spec events() :: [String.t()]
   def events, do: @events
 
-  @spec apply_route(Phoenix.LiveView.Socket.t(), map()) :: Phoenix.LiveView.Socket.t()
+  @spec apply_route(LiveView.Socket.t(), map()) :: LiveView.Socket.t()
   def apply_route(socket, params) do
     project = socket.assigns.workspace.selected_project
     selected_list = socket.assigns.workspace.selected_list
@@ -143,8 +148,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     |> Description.open({:new, project.id})
   end
 
-  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_event(String.t(), map(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
   def handle_event("reveal_task_creation_states", _params, socket) do
     creation = %{socket.assigns.creation | additional_states_revealed?: true}
     {:noreply, assign(socket, :creation, creation)}
@@ -193,8 +198,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     socket
   end
 
-  @spec refresh_locations(Phoenix.LiveView.Socket.t(), [TaskList.t()]) ::
-          Phoenix.LiveView.Socket.t()
+  @spec refresh_locations(LiveView.Socket.t(), [TaskList.t()]) ::
+          LiveView.Socket.t()
   def refresh_locations(socket, task_lists) do
     project = socket.assigns.workspace.selected_project
 
@@ -221,7 +226,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
     Paths.browse_path(project, backdrop, workspace.include_children?)
   end
 
-  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec clear(LiveView.Socket.t()) :: LiveView.Socket.t()
   def clear(socket) do
     socket = assign(socket, :creation, State.clear(socket.assigns.creation))
 
@@ -339,6 +344,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   end
 
   defp location_key(nil), do: "project"
+
   defp location_key(%TaskList{id: id}), do: "list:#{id}"
 
   defp location_label(options, key) do
@@ -351,19 +357,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Creation do
   defp resolve_location(_project, "project"), do: {:ok, nil}
 
   defp resolve_location(project, "list:" <> id) do
-    case Integer.parse(id) do
-      {value, ""} when value > 0 ->
-        if Integer.to_string(value) == id do
-          case Lists.get_list_for_project(project, value) do
-            %TaskList{} = task_list -> {:ok, task_list}
-            nil -> :error
-          end
-        else
-          :error
-        end
-
-      _ ->
-        :error
+    with {value, ""} when value > 0 <- Integer.parse(id),
+         true <- Integer.to_string(value) == id,
+         %TaskList{} = task_list <- Lists.get_list_for_project(project, value) do
+      {:ok, task_list}
+    else
+      _ -> :error
     end
   end
 

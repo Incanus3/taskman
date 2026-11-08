@@ -1,4 +1,5 @@
 defmodule Mix.Tasks.Taskman.Accounts.CreateAdmin do
+  @moduledoc "Creates an initial administrator through validated terminal credential prompts."
   use Mix.Task
 
   alias Taskman.{Accounts, CredentialPrompts, LocalTerminal}

@@ -7,6 +7,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Phoenix.LiveView
   alias Taskman.Tasks
 
   setup %{conn: conn} do
@@ -270,7 +271,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorTest do
       pending_capture: %{ref: "old-capture"}
     }
 
-    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, description: state}}
+    socket = %LiveView.Socket{assigns: %{__changed__: %{}, description: state}}
     replaced = Description.replace(socket, "Latest").assigns.description
     assert replaced.editor_id != state.editor_id
     assert replaced.generation > state.generation

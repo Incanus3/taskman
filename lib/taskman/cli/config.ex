@@ -34,14 +34,7 @@ defmodule Taskman.CLI.Config do
   def add_host(name, api_url, options \\ []) do
     with :ok <- Document.validate_host_name(name),
          :ok <- Document.validate_url(api_url) do
-      mutate_hosts(options, fn document ->
-        if Map.has_key?(document.hosts, name) do
-          invocation_error("The named Taskman host is already registered")
-        else
-          {:ok,
-           %{document | hosts: Map.put(document.hosts, name, %{api_url: api_url, api_key: nil})}}
-        end
-      end)
+      mutate_hosts(options, &add_document_host(&1, name, api_url))
     end
   end
 
@@ -67,12 +60,7 @@ defmodule Taskman.CLI.Config do
   @spec remove_host(String.t(), keyword() | map()) :: :ok | local_error()
   def remove_host(name, options \\ []) do
     with :ok <- Document.validate_host_name(name) do
-      mutate_hosts(options, fn document ->
-        with {:ok, _host} <- fetch_host(document, name) do
-          default_host = if document.default_host == name, do: nil, else: document.default_host
-          {:ok, %{document | hosts: Map.delete(document.hosts, name), default_host: default_host}}
-        end
-      end)
+      mutate_hosts(options, &remove_document_host(&1, name))
     end
   end
 
@@ -80,11 +68,28 @@ defmodule Taskman.CLI.Config do
   @spec set_default_host(String.t(), keyword() | map()) :: :ok | local_error()
   def set_default_host(name, options \\ []) do
     with :ok <- Document.validate_host_name(name) do
-      mutate_hosts(options, fn document ->
-        with {:ok, _host} <- fetch_host(document, name) do
-          {:ok, %{document | default_host: name}}
-        end
-      end)
+      mutate_hosts(options, &select_document_default(&1, name))
+    end
+  end
+
+  defp add_document_host(document, name, api_url) do
+    if Map.has_key?(document.hosts, name) do
+      invocation_error("The named Taskman host is already registered")
+    else
+      {:ok, %{document | hosts: Map.put(document.hosts, name, %{api_url: api_url, api_key: nil})}}
+    end
+  end
+
+  defp remove_document_host(document, name) do
+    with {:ok, _host} <- fetch_host(document, name) do
+      default_host = if document.default_host == name, do: nil, else: document.default_host
+      {:ok, %{document | hosts: Map.delete(document.hosts, name), default_host: default_host}}
+    end
+  end
+
+  defp select_document_default(document, name) do
+    with {:ok, _host} <- fetch_host(document, name) do
+      {:ok, %{document | default_host: name}}
     end
   end
 
@@ -96,19 +101,23 @@ defmodule Taskman.CLI.Config do
          {:ok, _validated} <- mutation.(document),
          :ok <- ensure_directory(Path.dirname(config_path)) do
       with_config_lock(config_path, options, fn ->
-        with {:ok, current} <- load(options),
-             {:ok, updated} <- mutation.(current),
-             :ok <- before_write(config_path, options) do
-          write(Document.encode(updated), config_path, options)
-        else
-          {:error, code, _message} = result
-          when code in [:invalid_configuration, :invalid_invocation] ->
-            result
-
-          _other ->
-            error("The Taskman configuration file could not be prepared for writing")
-        end
+        mutate_locked_hosts(config_path, options, mutation)
       end)
+    end
+  end
+
+  defp mutate_locked_hosts(config_path, options, mutation) do
+    with {:ok, current} <- load(options),
+         {:ok, updated} <- mutation.(current),
+         :ok <- before_write(config_path, options) do
+      write(Document.encode(updated), config_path, options)
+    else
+      {:error, code, _message} = result
+      when code in [:invalid_configuration, :invalid_invocation] ->
+        result
+
+      _other ->
+        error("The Taskman configuration file could not be prepared for writing")
     end
   end
 
@@ -194,9 +203,8 @@ defmodule Taskman.CLI.Config do
   defp close_file(device), do: :file.close(device)
 
   defp write(config, config_path, options) do
-    with :ok <- ensure_directory(Path.dirname(config_path)),
-         :ok <- stage_and_replace(config, config_path, options) do
-      :ok
+    with :ok <- ensure_directory(Path.dirname(config_path)) do
+      stage_and_replace(config, config_path, options)
     end
   end
 
@@ -283,13 +291,11 @@ defmodule Taskman.CLI.Config do
 
     result =
       with {:ok, :ok} <-
-             File.open(stage, [:write, :exclusive, :binary], fn device ->
-               with :ok <- File.chmod(stage, 0o600),
-                    :ok <- IO.binwrite(device, contents),
-                    :ok <- :file.sync(device) do
-                 :ok
-               end
-             end),
+             File.open(
+               stage,
+               [:write, :exclusive, :binary],
+               &write_staged_file(&1, stage, contents)
+             ),
            :ok <- rename(stage, config_path, options) do
         case sync_directory(Path.dirname(config_path), options) do
           :ok ->
@@ -311,6 +317,13 @@ defmodule Taskman.CLI.Config do
       {:error, :invalid_configuration, _message} = result ->
         _ = File.rm(stage)
         result
+    end
+  end
+
+  defp write_staged_file(device, stage, contents) do
+    with :ok <- File.chmod(stage, 0o600),
+         :ok <- IO.binwrite(device, contents) do
+      :file.sync(device)
     end
   end
 

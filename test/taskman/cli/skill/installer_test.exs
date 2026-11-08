@@ -1,8 +1,7 @@
 defmodule Taskman.CLI.Skill.InstallerTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.CLI.Skill.{Bundle, Installer}
-  alias Taskman.CLI.Skill.FakeSkillFileSystem
+  alias Taskman.CLI.Skill.{Bundle, FakeSkillFileSystem, Installer}
 
   @tag :tmp_dir
   test "installs the bundled skill and leaves no temporary siblings", %{tmp_dir: root} do
@@ -315,6 +314,39 @@ defmodule Taskman.CLI.Skill.InstallerTest do
     assert File.read!(Path.join(target, "SKILL.md")) == Bundle.files()["SKILL.md"]
     assert File.read!(Path.join(target, ".taskman-managed.json")) =~ Bundle.cli_version()
     assert exact_backup_siblings(root) == []
+  end
+
+  @tag :tmp_dir
+  test "a missing target recovers its single complete installer backup", %{tmp_dir: root} do
+    assert {:ok, %{action: :installed, path: target}} = Installer.install(skills_root: root)
+    backup = Path.join(root, ".taskman-cli.backup-101")
+    skill = File.read!(Path.join(target, "SKILL.md"))
+    marker = File.read!(Path.join(target, ".taskman-managed.json"))
+    File.rename!(target, backup)
+
+    assert {:ok, %{action: :current, path: ^target}} = Installer.install(skills_root: root)
+    assert File.read!(Path.join(target, "SKILL.md")) == skill
+    assert File.read!(Path.join(target, ".taskman-managed.json")) == marker
+    assert temporary_siblings(root) == []
+  end
+
+  @tag :tmp_dir
+  test "failed recovery retries and preserves the complete backup", %{tmp_dir: root} do
+    assert {:ok, %{action: :installed, path: target}} = Installer.install(skills_root: root)
+    backup = Path.join(root, ".taskman-cli.backup-101")
+    skill = File.read!(Path.join(target, "SKILL.md"))
+    marker = File.read!(Path.join(target, ".taskman-managed.json"))
+    File.rename!(target, backup)
+    FakeSkillFileSystem.fail_rename_sequence!([:restore, :restore])
+
+    assert {:error, :skill_install_failed, message} =
+             Installer.install(skills_root: root, file_system: FakeSkillFileSystem)
+
+    assert message =~ "after retry: :injected_rename_failure"
+    assert message =~ "retry failed: :injected_rename_failure"
+    refute File.exists?(target)
+    assert File.read!(Path.join(backup, "SKILL.md")) == skill
+    assert File.read!(Path.join(backup, ".taskman-managed.json")) == marker
   end
 
   @tag :tmp_dir

@@ -1,28 +1,30 @@
 defmodule Taskman.Tasks do
+  @moduledoc "Task queries and application use cases."
+
   import Ecto.Query
 
-  alias Taskman.Accounts
-  alias Taskman.ChangeNotifications
-  alias Taskman.Lists
+  alias Taskman.{Accounts, ChangeNotifications, Lists, Repo}
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Repo
-  alias Taskman.Tasks.Writes
-  alias Taskman.Tasks.Activity
-  alias Taskman.Tasks.AvailabilityPersistence
-  alias Taskman.Tasks.Hierarchy
-  alias Taskman.Tasks.Blocking
-  alias Taskman.Tasks.BlockingLink
-  alias Taskman.Tasks.Comment
-  alias Taskman.Tasks.CommentPersistence
-  alias Taskman.Tasks.Comments
-  alias Taskman.Tasks.Counts
-  alias Taskman.Tasks.ListingProjection
-  alias Taskman.Tasks.Mutations
-  alias Taskman.Tasks.Search
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.Status
-  alias Taskman.Tasks.TaskWithLocation
+
+  alias Taskman.Tasks.{
+    Activity,
+    AvailabilityPersistence,
+    Blocking,
+    BlockingLink,
+    Comment,
+    CommentPersistence,
+    Comments,
+    Counts,
+    Hierarchy,
+    ListingProjection,
+    Mutations,
+    Search,
+    Status,
+    Task,
+    TaskWithLocation,
+    Writes
+  }
 
   @type write_result(error) ::
           {:ok, Task.t()} | {:error, error | Ecto.Changeset.t() | :authentication_required}

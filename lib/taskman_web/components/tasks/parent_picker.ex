@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.Tasks.ParentPicker do
+  @moduledoc "Renders Task parent selection and its available candidates."
+
   use TaskmanWeb, :html
 
   alias Taskman.Tasks.{Task, TaskWithLocation}
@@ -223,6 +225,7 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
   end
 
   defp show_no_parent?(%ParentPickerState{mode: :edit}), do: true
+
   defp show_no_parent?(%ParentPickerState{selected_parent: %Task{}}), do: true
   defp show_no_parent?(%ParentPickerState{}), do: false
 
@@ -241,13 +244,16 @@ defmodule TaskmanWeb.Tasks.ParentPicker do
   end
 
   defp location_label([]), do: "Project"
+
   defp location_label(path), do: Enum.map_join(path, " / ", & &1.name)
 
   defp parent_conflict?(%ParentPickerState{parent_conflicted?: true}), do: true
+
   defp parent_conflict?(%ParentPickerState{conflict_parent: %Task{}}), do: true
   defp parent_conflict?(%ParentPickerState{}), do: false
 
   defp parent_label(nil), do: "No parent"
+
   defp parent_label(%Task{title: title}) when is_binary(title), do: title
   defp parent_label(%Task{}), do: "No parent"
 end

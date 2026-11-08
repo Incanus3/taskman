@@ -8,6 +8,7 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
 
@@ -206,9 +207,9 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
   end
 
   test "failed status persistence leaves counts at the saved status", %{conn: conn} do
-    Ecto.Adapters.SQL.query!(Taskman.Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Taskman.Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Taskman.Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
     )
@@ -237,9 +238,9 @@ defmodule TaskmanWeb.ProjectLive.TaskCountsTest do
   test "rejected additional-state autosave retains its draft without observing availability", %{
     conn: conn
   } do
-    Ecto.Adapters.SQL.query!(Taskman.Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Taskman.Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Taskman.Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'not_planned')"
     )

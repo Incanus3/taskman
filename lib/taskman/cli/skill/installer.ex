@@ -115,24 +115,29 @@ defmodule Taskman.CLI.Skill.Installer do
         {:error, "Refusing unsafe symlink ownership marker at #{marker_path}"}
 
       {:ok, %File.Stat{type: :regular}} ->
-        case fs_read(file_system, marker_path) do
-          {:ok, contents} ->
-            case Jason.decode(contents) do
-              {:ok, marker} when is_map(marker) ->
-                if recognized_marker?(marker), do: {:ok, marker}, else: :unrecognized
-
-              _other ->
-                :unrecognized
-            end
-
-          {:error, _reason} ->
-            :unrecognized
-        end
+        read_marker_file(file_system, marker_path)
 
       {:ok, _stat} ->
         :unrecognized
 
       {:error, _reason} ->
+        :unrecognized
+    end
+  end
+
+  defp read_marker_file(file_system, marker_path) do
+    case fs_read(file_system, marker_path) do
+      {:ok, contents} -> decode_marker(contents)
+      {:error, _reason} -> :unrecognized
+    end
+  end
+
+  defp decode_marker(contents) do
+    case Jason.decode(contents) do
+      {:ok, marker} when is_map(marker) ->
+        if recognized_marker?(marker), do: {:ok, marker}, else: :unrecognized
+
+      _other ->
         :unrecognized
     end
   end
@@ -153,29 +158,33 @@ defmodule Taskman.CLI.Skill.Installer do
 
   defp bundle_matches?(file_system, target) do
     Enum.reduce_while(Bundle.files(), {:ok, true}, fn {relative_path, contents}, {:ok, _match?} ->
-      path = Path.join(target, relative_path)
-
-      case fs_lstat(file_system, path) do
-        {:ok, %File.Stat{type: :regular}} ->
-          case fs_read(file_system, path) do
-            {:ok, ^contents} -> {:cont, {:ok, true}}
-            {:ok, _other} -> {:halt, {:ok, false}}
-            {:error, _reason} -> {:halt, {:ok, false}}
-          end
-
-        {:ok, %File.Stat{type: :symlink}} ->
-          {:halt, {:error, "Refusing unsafe symlink bundled file at #{path}"}}
-
-        {:ok, _stat} ->
-          {:halt, {:ok, false}}
-
-        {:error, :enoent} ->
-          {:halt, {:ok, false}}
-
-        {:error, reason} ->
-          {:halt, {:error, "Could not inspect bundled file #{path}: #{inspect(reason)}"}}
-      end
+      match_bundle_file(file_system, target, relative_path, contents)
     end)
+  end
+
+  defp match_bundle_file(file_system, target, relative_path, contents) do
+    path = Path.join(target, relative_path)
+
+    case fs_lstat(file_system, path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        case fs_read(file_system, path) do
+          {:ok, ^contents} -> {:cont, {:ok, true}}
+          {:ok, _other} -> {:halt, {:ok, false}}
+          {:error, _reason} -> {:halt, {:ok, false}}
+        end
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:halt, {:error, "Refusing unsafe symlink bundled file at #{path}"}}
+
+      {:ok, _stat} ->
+        {:halt, {:ok, false}}
+
+      {:error, :enoent} ->
+        {:halt, {:ok, false}}
+
+      {:error, reason} ->
+        {:halt, {:error, "Could not inspect bundled file #{path}: #{inspect(reason)}"}}
+    end
   end
 
   defp complete_skill?(file_system, target) do
@@ -214,30 +223,35 @@ defmodule Taskman.CLI.Skill.Installer do
   end
 
   defp reconcile_missing_target(file_system, skills_root, target) do
-    with {:ok, %{stages: stages, backups: backups}} <-
-           owned_sibling_groups(file_system, skills_root) do
-      cond do
-        length(stages) > 1 ->
-          {:error,
-           "Refusing to recover missing skill target at #{target}: multiple installer staging siblings remain"}
+    case owned_sibling_groups(file_system, skills_root) do
+      {:ok, %{stages: stages, backups: backups}} ->
+        reconcile_recovery_paths(file_system, target, stages, backups)
 
-        length(backups) > 1 ->
-          {:error,
-           "Refusing to recover missing skill target at #{target}: multiple installer backups remain"}
+      {:error, message} ->
+        {:error, "Could not inspect recovery paths: #{message}"}
+    end
+  end
 
-        backups != [] and stages != [] ->
-          {:error,
-           "Refusing to recover missing skill target at #{target}: installer backup and staging siblings remain"}
+  defp reconcile_recovery_paths(file_system, target, stages, backups) do
+    cond do
+      length(stages) > 1 ->
+        {:error,
+         "Refusing to recover missing skill target at #{target}: multiple installer staging siblings remain"}
 
-        backups == [] ->
-          :install
+      length(backups) > 1 ->
+        {:error,
+         "Refusing to recover missing skill target at #{target}: multiple installer backups remain"}
 
-        true ->
-          [backup] = backups
-          recover_backup(file_system, backup, target)
-      end
-    else
-      {:error, message} -> {:error, "Could not inspect recovery paths: #{message}"}
+      backups != [] and stages != [] ->
+        {:error,
+         "Refusing to recover missing skill target at #{target}: installer backup and staging siblings remain"}
+
+      backups == [] ->
+        :install
+
+      true ->
+        [backup] = backups
+        recover_backup(file_system, backup, target)
     end
   end
 
@@ -245,26 +259,30 @@ defmodule Taskman.CLI.Skill.Installer do
     case target_state(file_system, backup) do
       {:ok, {:recognized, _marker}} ->
         if complete_skill?(file_system, backup) do
-          case restore_backup(file_system, backup, target) do
-            :ok ->
-              case target_state(file_system, target) do
-                {:ok, :missing} ->
-                  {:error, "Recovered backup #{backup}, but the skill target remains absent"}
-
-                state ->
-                  state
-              end
-
-            {:error, {first_reason, retry_reason}} ->
-              {:error,
-               "Could not recover previous skill from #{backup} after retry: #{inspect(first_reason)}; retry failed: #{inspect(retry_reason)}"}
-          end
+          recover_complete_backup(file_system, backup, target)
         else
           {:error, "Refusing to recover incomplete installer backup at #{backup}"}
         end
 
       _other ->
         {:error, "Refusing to recover unrecognized installer backup at #{backup}"}
+    end
+  end
+
+  defp recover_complete_backup(file_system, backup, target) do
+    case restore_backup(file_system, backup, target) do
+      :ok ->
+        case target_state(file_system, target) do
+          {:ok, :missing} ->
+            {:error, "Recovered backup #{backup}, but the skill target remains absent"}
+
+          state ->
+            state
+        end
+
+      {:error, {first_reason, retry_reason}} ->
+        {:error,
+         "Could not recover previous skill from #{backup} after retry: #{inspect(first_reason)}; retry failed: #{inspect(retry_reason)}"}
     end
   end
 
@@ -315,44 +333,48 @@ defmodule Taskman.CLI.Skill.Installer do
 
     case fs_write_exclusive(file_system, stage_path, contents) do
       :ok ->
-        case fs_lstat(file_system, stage_path) do
-          {:ok, %File.Stat{type: :regular}} ->
-            case fs_rename(file_system, stage_path, final_path) do
-              :ok ->
-                :ok
+        replace_staged_file(file_system, stage_path, final_path)
 
-              {:error, reason} ->
-                cleanup_staged_file(
-                  file_system,
-                  stage_path,
-                  "Could not atomically replace #{Path.basename(final_path)}: #{inspect(reason)}"
-                )
-            end
+      {:error, reason} ->
+        {:error, "Could not stage #{Path.basename(final_path)}: #{inspect(reason)}"}
+    end
+  end
 
-          {:ok, %File.Stat{type: :symlink}} ->
-            cleanup_staged_file(
-              file_system,
-              stage_path,
-              "Refusing unsafe symlink staging file at #{stage_path}"
-            )
-
-          {:ok, _stat} ->
-            cleanup_staged_file(
-              file_system,
-              stage_path,
-              "Could not safely stage #{Path.basename(final_path)}"
-            )
+  defp replace_staged_file(file_system, stage_path, final_path) do
+    case fs_lstat(file_system, stage_path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        case fs_rename(file_system, stage_path, final_path) do
+          :ok ->
+            :ok
 
           {:error, reason} ->
             cleanup_staged_file(
               file_system,
               stage_path,
-              "Could not inspect staged #{Path.basename(final_path)}: #{inspect(reason)}"
+              "Could not atomically replace #{Path.basename(final_path)}: #{inspect(reason)}"
             )
         end
 
+      {:ok, %File.Stat{type: :symlink}} ->
+        cleanup_staged_file(
+          file_system,
+          stage_path,
+          "Refusing unsafe symlink staging file at #{stage_path}"
+        )
+
+      {:ok, _stat} ->
+        cleanup_staged_file(
+          file_system,
+          stage_path,
+          "Could not safely stage #{Path.basename(final_path)}"
+        )
+
       {:error, reason} ->
-        {:error, "Could not stage #{Path.basename(final_path)}: #{inspect(reason)}"}
+        cleanup_staged_file(
+          file_system,
+          stage_path,
+          "Could not inspect staged #{Path.basename(final_path)}: #{inspect(reason)}"
+        )
     end
   end
 
@@ -390,9 +412,8 @@ defmodule Taskman.CLI.Skill.Installer do
 
   defp stage_skill(file_system, stage) do
     with :ok <- mkdir_exclusive(file_system, stage),
-         :ok <- write_files(file_system, stage, Bundle.files()),
-         :ok <- write_marker(file_system, stage) do
-      :ok
+         :ok <- write_files(file_system, stage, Bundle.files()) do
+      write_marker(file_system, stage)
     end
   end
 
@@ -439,18 +460,7 @@ defmodule Taskman.CLI.Skill.Installer do
   defp swap(file_system, skills_root, stage, backup, target, action) do
     case fs_rename(file_system, target, backup) do
       :ok ->
-        case fs_rename(file_system, stage, target) do
-          :ok ->
-            with :ok <- ensure_removed(file_system, backup),
-                 :ok <- ensure_removed(file_system, stage) do
-              finalize_success(file_system, skills_root, action, target)
-            else
-              {:error, message} -> failure(message)
-            end
-
-          {:error, swap_reason} ->
-            restore_after_failed_swap(file_system, stage, backup, target, swap_reason)
-        end
+        install_after_backup(file_system, skills_root, stage, backup, target, action)
 
       {:error, reason} ->
         failure_after_cleanup(
@@ -458,6 +468,21 @@ defmodule Taskman.CLI.Skill.Installer do
           stage,
           "Could not move existing skill at #{target} to backup: #{inspect(reason)}"
         )
+    end
+  end
+
+  defp install_after_backup(file_system, skills_root, stage, backup, target, action) do
+    case fs_rename(file_system, stage, target) do
+      :ok ->
+        with :ok <- ensure_removed(file_system, backup),
+             :ok <- ensure_removed(file_system, stage) do
+          finalize_success(file_system, skills_root, action, target)
+        else
+          {:error, message} -> failure(message)
+        end
+
+      {:error, swap_reason} ->
+        restore_after_failed_swap(file_system, stage, backup, target, swap_reason)
     end
   end
 
@@ -536,13 +561,11 @@ defmodule Taskman.CLI.Skill.Installer do
     case fs_list(file_system, skills_root) do
       {:ok, names} when is_list(names) ->
         groups =
-          Enum.reduce(names, %{stages: [], backups: []}, fn name, groups ->
-            case owned_sibling_kind(name) do
-              :stage -> Map.update!(groups, :stages, &[Path.join(skills_root, name) | &1])
-              :backup -> Map.update!(groups, :backups, &[Path.join(skills_root, name) | &1])
-              nil -> groups
-            end
-          end)
+          Enum.reduce(
+            names,
+            %{stages: [], backups: []},
+            &group_owned_sibling(&1, &2, skills_root)
+          )
 
         groups = %{stages: Enum.reverse(groups.stages), backups: Enum.reverse(groups.backups)}
 
@@ -556,6 +579,14 @@ defmodule Taskman.CLI.Skill.Installer do
 
       {:error, reason} ->
         {:error, "Could not inspect temporary paths under #{skills_root}: #{inspect(reason)}"}
+    end
+  end
+
+  defp group_owned_sibling(name, groups, skills_root) do
+    case owned_sibling_kind(name) do
+      :stage -> Map.update!(groups, :stages, &[Path.join(skills_root, name) | &1])
+      :backup -> Map.update!(groups, :backups, &[Path.join(skills_root, name) | &1])
+      nil -> groups
     end
   end
 
@@ -622,10 +653,7 @@ defmodule Taskman.CLI.Skill.Installer do
       {:ok, _stat} ->
         case fs_rm_rf(file_system, path) do
           :ok ->
-            case fs_lstat(file_system, path) do
-              {:error, :enoent} -> :ok
-              _other -> {:error, "temporary path remains at #{path}"}
-            end
+            verify_removed(file_system, path)
 
           {:error, reason} ->
             {:error, "Could not remove temporary path #{path}: #{inspect(reason)}"}
@@ -633,6 +661,13 @@ defmodule Taskman.CLI.Skill.Installer do
 
       {:error, reason} ->
         {:error, "Could not inspect temporary path #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp verify_removed(file_system, path) do
+    case fs_lstat(file_system, path) do
+      {:error, :enoent} -> :ok
+      _other -> {:error, "temporary path remains at #{path}"}
     end
   end
 

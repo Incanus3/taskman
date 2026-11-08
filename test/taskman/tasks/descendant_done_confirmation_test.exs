@@ -6,9 +6,7 @@ defmodule Taskman.Tasks.DescendantDoneConfirmationTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
-  alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.Hierarchy
-  alias Taskman.Tasks.Status
+  alias Taskman.Tasks.{Conflict, Hierarchy, Status}
 
   test "Done reviews unfinished descendants through non-resolving ancestors" do
     project = project_fixture(%{})

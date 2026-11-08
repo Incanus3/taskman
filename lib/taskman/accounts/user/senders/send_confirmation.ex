@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.User.Senders.SendConfirmation do
+  @moduledoc "Delivers account email confirmation tokens."
+
   use AshAuthentication.Sender
 
   alias Ash.Changeset

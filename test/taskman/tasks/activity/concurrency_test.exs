@@ -5,9 +5,11 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.ChangeNotifications
-  alias Taskman.ChangeNotifications.Event, as: Notification
-  alias Taskman.Tasks
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.{ChangeNotifications, Tasks}
+  alias Taskman.Projects.Project
   alias Taskman.Tasks.Activity.Event
 
   test "simultaneous first field events preserve both writes and the successful retry context" do
@@ -169,10 +171,10 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
       assert_receive {:write_held, _}, 5_000
       assert Tasks.get_task(task.id).title == "Before"
       assert events(task, "title") == []
-      refute_receive %Notification{entity: :activity}, 0
+      refute_receive %ChangeNotifications.Event{entity: :activity}, 0
       send(edit.pid, :release_write)
 
-      assert_receive %Notification{
+      assert_receive %ChangeNotifications.Event{
                        entity: :activity,
                        operation: :invalidated,
                        task_ids: ids,
@@ -203,21 +205,23 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
     assert {:ok, [%{change: %{type: "task_created"}}]} = Tasks.list_activity(project, task)
   end
 
+  defp cleanup_state(project, actor_ids) do
+    Sandbox.unboxed_run(Repo, fn ->
+      Repo.delete_all(from p in Project, where: p.id == ^project.id)
+      Repo.delete_all(from u in User, where: u.id in ^actor_ids)
+    end)
+  end
+
   defp with_state(fun) do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       first = user_fixture()
       second = user_fixture()
       task = task_fixture(project, %{title: "Before", priority: :low}, actor: first)
 
-      on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          Repo.delete_all(from p in Taskman.Projects.Project, where: p.id == ^project.id)
-          Repo.delete_all(from u in Taskman.Accounts.User, where: u.id in ^[first.id, second.id])
-        end)
-      end)
+      on_exit(fn -> cleanup_state(project, [first.id, second.id]) end)
 
-      fun.(project, task, first, second, start_supervised!(Elixir.Task.Supervisor))
+      fun.(project, task, first, second, start_supervised!(Task.Supervisor))
     end)
   end
 
@@ -229,7 +233,7 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
 
   defp delete_actor(actor),
     do:
-      Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
+      SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
         Ecto.UUID.dump!(actor.id)
       ])
 
@@ -237,16 +241,16 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
     test_pid = self()
 
     {:ok, pid} =
-      Elixir.Task.Supervisor.start_child(supervisor, fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      Task.Supervisor.start_child(supervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
         Process.put(:test_pid, test_pid)
 
         try do
-          %{rows: [[backend]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+          %{rows: [[backend]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
           send(test_pid, {:backend, self(), backend})
           send(test_pid, {:result, self(), fun.()})
         after
-          Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          Sandbox.checkin(Repo)
         end
       end)
 
@@ -287,7 +291,7 @@ defmodule Taskman.Tasks.Activity.ConcurrencyTest do
 
   defp wait_blocked(backend, deadline) do
     %{rows: [[blockers]]} =
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend])
+      SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend])
 
     cond do
       blockers != [] -> :ok

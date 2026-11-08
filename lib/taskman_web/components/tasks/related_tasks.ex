@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.Tasks.RelatedTasks do
+  @moduledoc "Renders Task blocking relationships and relationship selection controls."
+
   use TaskmanWeb, :html
 
   alias TaskmanWeb.ProjectLive.Tasks.RelatedTasksPicker
@@ -235,5 +237,6 @@ defmodule TaskmanWeb.Tasks.RelatedTasks do
   defp direction_key(direction), do: direction |> Atom.to_string() |> String.replace("_", "-")
 
   defp location_suffix(%{path: []}), do: " · Project root"
+
   defp location_suffix(%{path: path}), do: " · " <> Enum.join(path, " / ")
 end

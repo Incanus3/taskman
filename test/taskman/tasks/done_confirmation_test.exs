@@ -4,18 +4,21 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.Task
 
   @graph_lock_key {724_150, 1}
 
   setup do
-    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+    existing_user_ids = Repo.all(from u in User, select: u.id)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in User, where: u.id not in ^existing_user_ids)
       end)
     end)
 
@@ -370,7 +373,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
   end
 
   test "a queued Done write warns for a blocker added before it takes the graph lock" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       blocker = task_fixture(project)
       blocked = task_fixture(project, %{title: "Before"})
@@ -393,13 +396,13 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
       assert {:error, {:unresolved_blockers, [%{id: blocker_id}]}} = result
       assert blocker_id == blocker.id
-      assert Repo.get!(Task, blocked.id).title == "Before"
-      assert Repo.get!(Task, blocked.id).status == :pending
+      assert Repo.get!(Tasks.Task, blocked.id).title == "Before"
+      assert Repo.get!(Tasks.Task, blocked.id).status == :pending
     end)
   end
 
   test "a queued confirmed Done write rejects a newly added unconfirmed blocker" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       first = task_fixture(project, %{title: "A"})
       second = task_fixture(project, %{title: "B"})
@@ -430,13 +433,13 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
       assert {:error, {:unresolved_blockers, summaries}} = result
       assert Enum.map(summaries, & &1.id) == [first.id, second.id]
-      assert Repo.get!(Task, blocked.id).title == "Before"
-      assert Repo.get!(Task, blocked.id).status == :pending
+      assert Repo.get!(Tasks.Task, blocked.id).title == "Before"
+      assert Repo.get!(Tasks.Task, blocked.id).status == :pending
     end)
   end
 
   test "a queued confirmed Done write warns when a linked blocker becomes unresolved" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       first = task_fixture(project, %{title: "A"})
       second = task_fixture(project, %{title: "B", status: :done})
@@ -473,13 +476,13 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       assert {:error, {:unresolved_blockers, summaries}} = result
       assert Enum.map(summaries, & &1.id) == [first.id, second.id]
       assert Enum.map(summaries, & &1.status) == [:pending, :pending]
-      assert Repo.get!(Task, blocked.id).title == "Before"
-      assert Repo.get!(Task, blocked.id).status == :pending
+      assert Repo.get!(Tasks.Task, blocked.id).title == "Before"
+      assert Repo.get!(Tasks.Task, blocked.id).status == :pending
     end)
   end
 
   test "a queued confirmed Done write accepts a blocker resolved before it takes the lock" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       blocker = task_fixture(project)
       blocked = task_fixture(project)
@@ -508,12 +511,12 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
         )
 
       assert {:ok, %{status: :done}} = result
-      assert Repo.get!(Task, blocked.id).status == :done
+      assert Repo.get!(Tasks.Task, blocked.id).status == :done
     end)
   end
 
   test "a queued forced Done write permits a newly added blocker" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       blocker = task_fixture(project)
       blocked = task_fixture(project)
@@ -536,13 +539,13 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
         )
 
       assert {:ok, %{status: :done}} = result
-      assert Repo.get!(Task, blocked.id).status == :done
-      assert Repo.get!(Task, blocker.id).status == :pending
+      assert Repo.get!(Tasks.Task, blocked.id).status == :done
+      assert Repo.get!(Tasks.Task, blocker.id).status == :pending
     end)
   end
 
   test "a queued confirmed Done write sees a reopened descendant boundary" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       root = task_fixture(project, %{title: "Before"})
       known = task_fixture(project, %{title: "A"}, parent: root)
@@ -569,12 +572,12 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       assert {:error, {:unresolved_blockers, summaries}} = result
       assert Enum.map(summaries, & &1.id) == [known.id, boundary.id, grandchild.id]
       assert Enum.map(summaries, & &1.status) == [:pending, :pending, :pending]
-      assert Repo.get!(Task, root.id) == root
+      assert Repo.get!(Tasks.Task, root.id) == root
     end)
   end
 
   test "a queued confirmed Done write sees a reparented unfinished subtree" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       root = task_fixture(project, %{title: "Before"})
       known = task_fixture(project, %{title: "A"}, parent: root)
@@ -601,22 +604,22 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
       assert {:error, {:unresolved_blockers, summaries}} = result
       assert Enum.map(summaries, & &1.id) == [known.id, subtree.id, grandchild.id]
-      assert Repo.get!(Task, root.id) == root
+      assert Repo.get!(Tasks.Task, root.id) == root
     end)
   end
 
   defp queued_done_write(operation, before_release) do
     {first_key, second_key} = @graph_lock_key
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1, $2)", [first_key, second_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1, $2)", [first_key, second_key])
 
     try do
       owner_backend = database_backend_pid()
       test_pid = self()
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
 
       {:ok, worker} =
-        Elixir.Task.Supervisor.start_child(supervisor, fn ->
-          :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        Task.Supervisor.start_child(supervisor, fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
 
           try do
             send(test_pid, {:done_worker_ready, self(), database_backend_pid()})
@@ -625,7 +628,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
               :start_done_write -> send(test_pid, {:done_worker_result, self(), operation.()})
             end
           after
-            :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+            :ok = Sandbox.checkin(Repo)
           end
         end)
 
@@ -636,7 +639,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       before_release.()
 
       assert %{rows: [[true]]} =
-               Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [
+               SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [
                  first_key,
                  second_key
                ])
@@ -645,12 +648,12 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
       assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 5_000
       result
     after
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [first_key, second_key])
+      SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [first_key, second_key])
     end
   end
 
   defp database_backend_pid do
-    %{rows: [[backend]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    %{rows: [[backend]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend
   end
 
@@ -661,7 +664,7 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
 
   defp poll_blocked(worker_backend, owner_backend, deadline) do
     %{rows: [[blockers]]} =
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_blocking_pids($1::integer)", [worker_backend])
+      SQL.query!(Repo, "SELECT pg_blocking_pids($1::integer)", [worker_backend])
 
     cond do
       owner_backend in blockers ->
@@ -676,10 +679,12 @@ defmodule Taskman.Tasks.DoneConfirmationTest do
   end
 
   defp cleanup_project(project) do
-    on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        if persisted = Repo.get(Taskman.Projects.Project, project.id), do: Repo.delete!(persisted)
-      end)
+    on_exit(fn -> delete_project(project) end)
+  end
+
+  defp delete_project(project) do
+    Sandbox.unboxed_run(Repo, fn ->
+      if persisted = Repo.get(Project, project.id), do: Repo.delete!(persisted)
     end)
   end
 end

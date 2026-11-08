@@ -1,4 +1,5 @@
 defmodule Taskman.ProjectsFixtures do
+  @moduledoc "Creates Projects and their synthetic API representations for tests."
   def project_fixture(attrs) do
     unique = System.unique_integer([:positive])
 

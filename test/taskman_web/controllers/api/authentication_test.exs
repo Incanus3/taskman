@@ -5,8 +5,8 @@ defmodule TaskmanWeb.API.AuthenticationTest do
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
 
-  alias Taskman.Accounts
-  alias Taskman.Repo
+  alias Taskman.{Accounts, Repo}
+  alias TaskmanWeb.API
 
   @api_key_lifetime_seconds 365 * 86_400
 
@@ -297,7 +297,7 @@ defmodule TaskmanWeb.API.AuthenticationTest do
 
     assert expected ==
              conn
-             |> TaskmanWeb.API.FallbackController.call({:error, :forbidden})
+             |> API.FallbackController.call({:error, :forbidden})
              |> json_response(403)
   end
 end

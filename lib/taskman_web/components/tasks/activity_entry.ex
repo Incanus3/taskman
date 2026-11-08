@@ -2,6 +2,7 @@ defmodule TaskmanWeb.Tasks.ActivityEntry do
   @moduledoc false
   use TaskmanWeb, :html
 
+  alias Phoenix.LiveView.ColocatedHook
   alias Taskman.Tasks.Comment
   alias TaskmanWeb.Tasks.{Priority, Status}
 
@@ -64,7 +65,7 @@ defmodule TaskmanWeb.Tasks.ActivityEntry do
     >
       {DateTime.to_iso8601(@value)}
     </time>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".LocalTime">
+    <script :type={ColocatedHook} name=".LocalTime">
       export default {
         mounted() { this.formatTime() },
         updated() { this.formatTime() },

@@ -7,25 +7,28 @@ defmodule Taskman.CLI.Commands.Repo do
   def execute(action, %Invocation{} = invocation, runtime_options \\ []) do
     options = Map.new(runtime_options)
 
-    result =
-      case action do
-        :bind ->
-          bind(options)
-
-        action ->
-          with {:ok, common_dir} <- working_tree(options) do
-            case action do
-              :unbind ->
-                with :ok <- RepositoryBinding.unbind(common_dir, options),
-                     do: {:ok, %{unbound: true}, "Removed repository binding."}
-
-              :show ->
-                show(common_dir, options)
-            end
-          end
-      end
+    result = execute_action(action, options)
 
     Result.from_local(result, Map.get(invocation.globals, :json, false))
+  end
+
+  defp execute_action(:bind, options), do: bind(options)
+
+  defp execute_action(action, options) do
+    with {:ok, common_dir} <- working_tree(options) do
+      execute_repository_action(action, common_dir, options)
+    end
+  end
+
+  defp execute_repository_action(action, common_dir, options) do
+    case action do
+      :unbind ->
+        with :ok <- RepositoryBinding.unbind(common_dir, options),
+             do: {:ok, %{unbound: true}, "Removed repository binding."}
+
+      :show ->
+        show(common_dir, options)
+    end
   end
 
   defp bind(options) do

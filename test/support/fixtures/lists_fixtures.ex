@@ -1,4 +1,5 @@
 defmodule Taskman.ListsFixtures do
+  @moduledoc "Creates scoped List fixtures for context and API tests."
   alias Taskman.Lists
 
   def list_fixture(project), do: list_fixture(project, nil, %{})

@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.DateTimePicker do
+  @moduledoc "Renders date and time selection controls."
+
   use TaskmanWeb, :html
 
   alias TaskmanWeb.DateTimeInput

@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.SelectPicker do
+  @moduledoc "Renders selection controls with keyboard interaction."
+
   use TaskmanWeb, :html
 
   attr :field, Phoenix.HTML.FormField, required: true

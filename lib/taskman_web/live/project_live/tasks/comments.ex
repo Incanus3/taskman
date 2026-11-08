@@ -109,46 +109,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
         {:error, socket}
 
       true ->
-        posting_socket = assign(socket, :comments, %{state | posting?: true, draft: text})
-        actor = socket.assigns.current_user || socket.assigns.current_scope
-
-        case Tasks.create_comment(project, task, actor, %{text: text}) do
-          {:ok, _comment} ->
-            next = %{
-              state
-              | posting?: false,
-                draft: "",
-                form: comment_form(%Comment{}, %{}),
-                error: nil
-            }
-
-            {:ok,
-             posting_socket
-             |> assign(:comments, next)
-             |> Activity.reconcile(project, task)
-             |> refresh_timestamp(project, task)}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            next = %{
-              state
-              | posting?: false,
-                draft: text,
-                form: Phoenix.Component.to_form(%{changeset | action: :validate}, as: :comment),
-                error: "Check the comment text and try again."
-            }
-
-            {:error, assign(posting_socket, :comments, %{next | tab: :activity})}
-
-          {:error, reason} ->
-            next = %{
-              state
-              | posting?: false,
-                draft: text,
-                error: error_message(reason)
-            }
-
-            {:error, assign(posting_socket, :comments, %{next | tab: :activity})}
-        end
+        post_comment(socket, state, project, task, text)
     end
   end
 
@@ -169,5 +130,49 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Comments do
     do: "This Task is no longer available. Your comment was not posted."
 
   defp error_message(:authentication_required), do: "Sign in again to post your comment."
+
   defp error_message(_), do: "The comment could not be posted. Please try again."
+
+  defp post_comment(socket, state, project, task, text) do
+    posting_socket = assign(socket, :comments, %{state | posting?: true, draft: text})
+    actor = socket.assigns.current_user || socket.assigns.current_scope
+
+    case Tasks.create_comment(project, task, actor, %{text: text}) do
+      {:ok, _comment} ->
+        next = %{
+          state
+          | posting?: false,
+            draft: "",
+            form: comment_form(%Comment{}, %{}),
+            error: nil
+        }
+
+        {:ok,
+         posting_socket
+         |> assign(:comments, next)
+         |> Activity.reconcile(project, task)
+         |> refresh_timestamp(project, task)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        next = %{
+          state
+          | posting?: false,
+            draft: text,
+            form: Phoenix.Component.to_form(%{changeset | action: :validate}, as: :comment),
+            error: "Check the comment text and try again."
+        }
+
+        {:error, assign(posting_socket, :comments, %{next | tab: :activity})}
+
+      {:error, reason} ->
+        next = %{
+          state
+          | posting?: false,
+            draft: text,
+            error: error_message(reason)
+        }
+
+        {:error, assign(posting_socket, :comments, %{next | tab: :activity})}
+    end
+  end
 end

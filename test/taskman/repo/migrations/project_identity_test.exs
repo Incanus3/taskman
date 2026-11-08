@@ -1,6 +1,9 @@
 defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
   use Taskman.DataCase, async: false
 
+  alias Ecto.Adapters.SQL
+  alias Taskman.Repo.Migrations
+
   test "migration backfills existing Projects and reverses cleanly in an isolated schema" do
     schema = "project_identity_#{System.unique_integer([:positive])}"
 
@@ -11,14 +14,14 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
       )
 
     Code.require_file(migration_path)
-    migration = Taskman.Repo.Migrations.AddProjectIdentity
+    migration = Migrations.AddProjectIdentity
     options = [prefix: schema, migration_lock: false, log: false]
     version = 20_260_925_113_953
 
     try do
-      Ecto.Adapters.SQL.query!(Repo, ~s(CREATE SCHEMA "#{schema}"))
+      SQL.query!(Repo, ~s(CREATE SCHEMA "#{schema}"))
 
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         CREATE TABLE "#{schema}".projects (
@@ -30,7 +33,7 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
         """
       )
 
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         """
         INSERT INTO "#{schema}".projects (name, inserted_at, updated_at)
@@ -41,7 +44,7 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
       assert :ok = Ecto.Migrator.up(Repo, version, migration, options)
 
       assert %{rows: [["Before migration", "", "briefcase", "#6366F1"]]} =
-               Ecto.Adapters.SQL.query!(
+               SQL.query!(
                  Repo,
                  ~s(SELECT name, description, icon, color FROM "#{schema}".projects)
                )
@@ -49,10 +52,10 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
       assert :ok = Ecto.Migrator.down(Repo, version, migration, options)
 
       assert %{rows: [["Before migration"]]} =
-               Ecto.Adapters.SQL.query!(Repo, ~s(SELECT name FROM "#{schema}".projects))
+               SQL.query!(Repo, ~s(SELECT name FROM "#{schema}".projects))
 
       assert %{rows: []} =
-               Ecto.Adapters.SQL.query!(
+               SQL.query!(
                  Repo,
                  """
                  SELECT column_name FROM information_schema.columns
@@ -65,18 +68,18 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
       assert :ok = Ecto.Migrator.up(Repo, version, migration, options)
 
       assert %{rows: [["", "briefcase", "#6366F1"]]} =
-               Ecto.Adapters.SQL.query!(
+               SQL.query!(
                  Repo,
                  ~s(SELECT description, icon, color FROM "#{schema}".projects)
                )
     after
-      Ecto.Adapters.SQL.query!(Repo, ~s(DROP SCHEMA IF EXISTS "#{schema}" CASCADE))
+      SQL.query!(Repo, ~s(DROP SCHEMA IF EXISTS "#{schema}" CASCADE))
     end
   end
 
   test "Project identity columns have non-null database defaults" do
     assert %{rows: rows} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                SELECT column_name, is_nullable, column_default
@@ -97,7 +100,7 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
 
   test "database defaults initialize a Project inserted without identity fields" do
     assert %{rows: [[description, icon, color]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                INSERT INTO projects (name, inserted_at, updated_at)
@@ -115,7 +118,7 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
         assert_raise Postgrex.Error, fn ->
           Repo.transaction(
             fn ->
-              Ecto.Adapters.SQL.query!(
+              SQL.query!(
                 Repo,
                 """
                 INSERT INTO projects (name, #{field}, inserted_at, updated_at)
@@ -130,6 +133,6 @@ defmodule Taskman.Repo.Migrations.ProjectIdentityTest do
       assert error.postgres.code == :not_null_violation
     end
 
-    assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT 1")
+    assert %{rows: [[1]]} = SQL.query!(Repo, "SELECT 1")
   end
 end

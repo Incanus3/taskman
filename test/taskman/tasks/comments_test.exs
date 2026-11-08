@@ -5,11 +5,10 @@ defmodule Taskman.Tasks.CommentsTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Taskman.{Accounts, Tasks}
   alias Taskman.Accounts.User.Persistence, as: UserPersistence
-  alias Taskman.Tasks
-  alias Taskman.Tasks.Comment
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{Comment, Task}
 
   test "an empty Task thread is explicit and Project scoped" do
     project = project_fixture(%{})
@@ -63,7 +62,7 @@ defmodule Taskman.Tasks.CommentsTest do
     user = user_fixture()
     _comment_id = insert_comment(task.id, user.id, "Retained", nil, "Research agent")
 
-    Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(user.id)])
+    SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(user.id)])
 
     assert {:ok,
             [
@@ -116,7 +115,7 @@ defmodule Taskman.Tasks.CommentsTest do
     refute_receive :user_email_query
 
     agent = start_supervised!({Agent, fn -> :ready end})
-    :ok = Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), agent)
+    :ok = SQL.Sandbox.allow(Repo, self(), agent)
 
     assert Agent.get(agent, fn :ready -> Accounts.emails_by_user_id([first.id]) end) == %{
              first.id => to_string(first.email)
@@ -256,14 +255,14 @@ defmodule Taskman.Tasks.CommentsTest do
     assert {:error, :authentication_required} =
              Tasks.create_comment(project, task, disabled, %{text: "Disabled"})
 
-    Ecto.Adapters.SQL.query!(Repo, "UPDATE users SET status = 'disabled' WHERE id = $1", [
+    SQL.query!(Repo, "UPDATE users SET status = 'disabled' WHERE id = $1", [
       Ecto.UUID.dump!(stale_disabled.id)
     ])
 
     assert {:error, :authentication_required} =
              Tasks.create_comment(project, task, stale_disabled, %{text: "Stale actor"})
 
-    Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
+    SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [Ecto.UUID.dump!(actor.id)])
 
     assert {:error, :authentication_required} =
              Tasks.create_comment(project, task, actor, %{text: "Deleted"})
@@ -288,7 +287,7 @@ defmodule Taskman.Tasks.CommentsTest do
     at = at || DateTime.utc_now()
 
     %{rows: [[id]]} =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "INSERT INTO task_comments (task_id, actor_user_id, author_name, text, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id",
         [task_id, Ecto.UUID.dump!(actor_user_id), name, text, at]

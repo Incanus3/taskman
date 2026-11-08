@@ -4,6 +4,7 @@ defmodule Taskman.Repo.Migrations.TaskActivityTest do
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks.Activity
   alias Taskman.Tasks.Activity.{Event, EventTask}
 
@@ -60,7 +61,7 @@ defmodule Taskman.Repo.Migrations.TaskActivityTest do
         assert_raise Postgrex.Error, fn ->
           Repo.transaction(
             fn ->
-              Ecto.Adapters.SQL.query!(
+              SQL.query!(
                 Repo,
                 "INSERT INTO task_activity_events (id, task_id, grouping_key, kind, field, before_value, after_value, context, first_changed_at, last_changed_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::timestamp, $10::timestamp)",
                 [

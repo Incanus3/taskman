@@ -6,9 +6,10 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
   import Taskman.AccountsFixtures, only: [pending_user_fixture: 1, user_fixture: 1]
 
   alias AshAuthentication.Jwt
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Phoenix.Socket
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.{Administration, ApiKey, Token, User}
-  alias Taskman.Repo
 
   test "only active administrators can administer accounts" do
     administrator = admin_fixture("administrator@example.com")
@@ -68,11 +69,11 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
              Accounts.manage_email(administrator, administrator, "different@example.com", true)
 
     assert {:error, _reason} = Accounts.delete_user(administrator, administrator)
-    assert %{} = Repo.get(Taskman.Accounts.User, administrator.id)
+    assert %{} = Repo.get(User, administrator.id)
   end
 
   test "concurrent demote, disable, and self-delete attempts preserve the final active administrator" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       administrator =
         admin_fixture("final-administrator-#{System.unique_integer([:positive])}@example.com")
 
@@ -87,9 +88,9 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
         assert Enum.all?(results, &match?({:error, _reason}, &1))
 
         assert %{status: :active, admin?: true} =
-                 Repo.get(Taskman.Accounts.User, administrator.id)
+                 Repo.get(User, administrator.id)
       after
-        Repo.delete_all(from user in Taskman.Accounts.User, where: user.id == ^administrator.id)
+        Repo.delete_all(from user in User, where: user.id == ^administrator.id)
       end
     end)
   end
@@ -121,7 +122,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
   end
 
   test "administrator authority waits for a concurrent promotion before evaluating persisted state" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       user =
         user_fixture(
           email: "concurrent-promotion-#{System.unique_integer([:positive])}@example.com"
@@ -174,7 +175,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
   end
 
   test "two active administrators contending to remove each other preserve exactly one active administrator" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       for action <- [:demote, :disable, :delete] do
         first = admin_fixture("#{action}-first-#{System.unique_integer([:positive])}@example.com")
 
@@ -221,7 +222,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
   @tag :capture_log
   test "disabling serializes browser-session issuance with credential revocation" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       suffix = System.unique_integer([:positive])
       administrator = admin_fixture("session-race-administrator-#{suffix}@example.com")
       target = user_fixture(email: "session-race-target-#{suffix}@example.com")
@@ -279,13 +280,13 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
     assert {:ok, _disabled} = Accounts.disable_user(administrator, target)
 
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^first_topic, event: "disconnect"}
-    assert_receive %Phoenix.Socket.Broadcast{topic: ^second_topic, event: "disconnect"}
-    refute_receive %Phoenix.Socket.Broadcast{topic: ^setup_topic, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^first_topic, event: "disconnect"}
+    assert_receive %Socket.Broadcast{topic: ^second_topic, event: "disconnect"}
+    refute_receive %Socket.Broadcast{topic: ^setup_topic, event: "disconnect"}
   end
 
   test "disabling serializes API-key issuance with credential revocation" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    SQL.Sandbox.unboxed_run(Repo, fn ->
       suffix = System.unique_integer([:positive])
       administrator = admin_fixture("api-key-race-administrator-#{suffix}@example.com")
       target = user_fixture(email: "api-key-race-target-#{suffix}@example.com")
@@ -350,7 +351,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
         Task.async_stream(
           inputs,
           fn input ->
-            :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+            :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
             try do
               send(test_pid, {:admin_lifecycle_attempt_ready, self()})
@@ -359,7 +360,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
                 :run_attempt -> operation.(input)
               end
             after
-              :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+              :ok = SQL.Sandbox.checkin(Repo)
             end
           end,
           max_concurrency: length(inputs),
@@ -386,7 +387,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
         Task.async_stream(
           inputs,
           fn input ->
-            :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+            :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
             try do
               send(
@@ -398,7 +399,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
                 :run_attempt -> operation.(input)
               end
             after
-              :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+              :ok = SQL.Sandbox.checkin(Repo)
             end
           end,
           max_concurrency: length(inputs),
@@ -439,7 +440,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
     backend_ids = Enum.join(backend_pids, ",")
 
     assert %{rows: rows} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE pid IN (#{backend_ids})"
              )
@@ -459,9 +460,9 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
     function_name = "taskman_lifecycle_gate_#{suffix}"
     trigger_name = "#{function_name}_trigger"
     gate_key = System.unique_integer([:positive])
-    user_ids = users |> Enum.map(&"'#{&1.id}'::uuid") |> Enum.join(", ")
+    user_ids = Enum.map_join(users, ", ", &"'#{&1.id}'::uuid")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -484,7 +485,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -494,13 +495,13 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
 
     released? = :atomics.new(1, [])
 
     release_gate = fn ->
       if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end
 
@@ -508,8 +509,8 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       fun.(release_gate)
     after
       release_gate.()
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON users")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -529,7 +530,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
     test_pid = self()
 
     Task.async(fn ->
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
       try do
         send(test_pid, {:independent_task_started, kind, self(), database_backend_pid()})
@@ -537,7 +538,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
         send(test_pid, {:independent_task_completed, kind, result})
         result
       after
-        :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+        :ok = SQL.Sandbox.checkin(Repo)
       end
     end)
     |> then(fn task ->
@@ -552,7 +553,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
     locker =
       Task.async(fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        :ok = SQL.Sandbox.checkout(Repo, sandbox: false)
 
         try do
           Repo.transaction(fn ->
@@ -567,7 +568,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
             end
           end)
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = SQL.Sandbox.checkin(Repo)
         end
       end)
 
@@ -589,7 +590,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
     trigger_name = "#{function_name}_trigger"
     gate_key = System.unique_integer([:positive])
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE FUNCTION #{function_name}()
@@ -607,7 +608,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       """
       CREATE TRIGGER #{trigger_name}
@@ -617,13 +618,13 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       """
     )
 
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1)", [gate_key])
 
     released? = :atomics.new(1, [])
 
     release_gate = fn ->
       if :atomics.compare_exchange(released?, 1, 0, 1) == :ok do
-        Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
+        SQL.query!(Repo, "SELECT pg_advisory_unlock($1)", [gate_key])
       end
     end
 
@@ -631,8 +632,8 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
       fun.(release_gate)
     after
       release_gate.()
-      Ecto.Adapters.SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON api_keys")
-      Ecto.Adapters.SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
+      SQL.query!(Repo, "DROP TRIGGER IF EXISTS #{trigger_name} ON api_keys")
+      SQL.query!(Repo, "DROP FUNCTION IF EXISTS #{function_name}()")
     end
   end
 
@@ -643,7 +644,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
 
   defp await_backend_lock(backend_pid, attempts_left) do
     assert %{rows: [[waiting]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT count(*) FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'",
                [backend_pid]
@@ -658,7 +659,7 @@ defmodule Taskman.Accounts.User.AdminLifecycleTest do
   end
 
   defp database_backend_pid do
-    assert %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    assert %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend_pid
   end
 

@@ -2,12 +2,8 @@ defmodule Taskman.Accounts.User.AccountDeletionTest do
   use Taskman.DataCase, async: false
 
   alias AshAuthentication.Jwt
-  alias Taskman.Accounts
+  alias Taskman.{Accounts, Lists, Projects, Repo, Tasks}
   alias Taskman.Accounts.{ApiKey, Token, User}
-  alias Taskman.Lists
-  alias Taskman.Projects
-  alias Taskman.Repo
-  alias Taskman.Tasks
 
   test "self-deletion requires the current password" do
     {administrator, user} = administrator_and_user("self-delete")

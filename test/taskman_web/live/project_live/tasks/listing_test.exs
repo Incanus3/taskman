@@ -1,7 +1,7 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.ListingTest do
   use ExUnit.Case, async: true
 
-  alias Taskman.Tasks.{Task, TaskWithLocation, ListingProjection, ListingRow}
+  alias Taskman.Tasks.{ListingProjection, ListingRow, Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Tasks.Listing.State
 
   test "normalizes visible statuses and cycles sort directions" do

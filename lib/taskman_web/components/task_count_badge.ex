@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.TaskCountBadge do
+  @moduledoc "Renders Task counts for a selected location and status scope."
+
   use TaskmanWeb, :html
 
   @doc "Renders matching task counts, optionally with the broader eligible population."

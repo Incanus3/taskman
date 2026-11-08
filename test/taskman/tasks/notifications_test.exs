@@ -6,6 +6,7 @@ defmodule Taskman.Tasks.NotificationsTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
+  alias Taskman.Tasks.Conflict
   import Taskman.AccountsFixtures
   alias Taskman.ChangeNotifications
   alias Taskman.ChangeNotifications.Event
@@ -204,7 +205,7 @@ defmodule Taskman.Tasks.NotificationsTest do
     assert_receive {:task_event, ^topic, %Event{entity: :activity}}
     assert updated_id == updated.id
 
-    assert {:error, %{__struct__: Taskman.Tasks.Conflict}} =
+    assert {:error, %{__struct__: Conflict}} =
              Tasks.update_task(project, second_baseline, %{title: "Second writer"},
                actor: Taskman.AccountsFixtures.user_fixture()
              )

@@ -1,6 +1,12 @@
 defmodule TaskmanWeb.Router do
+  alias AshAuthentication.Phoenix, as: Authentication
+  alias Phoenix.LiveDashboard
+  alias Plug.Swoosh.MailboxPreview
+  alias Taskman.Accounts.User
+  alias TaskmanWeb.Plugs.ApiAuthentication
+
   use TaskmanWeb, :router
-  use AshAuthentication.Phoenix.Router
+  use Authentication.Router
 
   import AshAdmin.Router
   import TaskmanWeb.LiveUserAuth, only: [capture_return_path: 2]
@@ -18,7 +24,7 @@ defmodule TaskmanWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
-    plug TaskmanWeb.Plugs.ApiAuthentication
+    plug ApiAuthentication
   end
 
   scope "/", TaskmanWeb do
@@ -28,7 +34,7 @@ defmodule TaskmanWeb.Router do
                   auth_routes_prefix: "/auth",
                   overrides: [
                     TaskmanWeb.AuthOverrides,
-                    AshAuthentication.Phoenix.Overrides.Default
+                    Authentication.Overrides.Default
                   ]
 
     delete "/sign-out", AuthController, :sign_out
@@ -38,24 +44,24 @@ defmodule TaskmanWeb.Router do
     post "/auth/user/password/reset_request", AuthController, :request_password_reset
     post "/auth/user/setup", AuthController, :complete_setup
 
-    auth_routes AuthController, Taskman.Accounts.User
+    auth_routes AuthController, User
 
     reset_route path: "/reset-password",
                 auth_routes_prefix: "/auth",
-                overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+                overrides: [TaskmanWeb.AuthOverrides, Authentication.Overrides.Default]
 
-    confirm_route Taskman.Accounts.User, :setup,
+    confirm_route User, :setup,
       path: "/setup",
       auth_routes_prefix: "/auth",
       as: :setup,
       live_view: TaskmanWeb.SetupLive,
-      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+      overrides: [TaskmanWeb.AuthOverrides, Authentication.Overrides.Default]
 
-    confirm_route Taskman.Accounts.User, :email_change,
+    confirm_route User, :email_change,
       path: "/confirm-email",
       auth_routes_prefix: "/auth",
       as: :email_change,
-      overrides: [TaskmanWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
+      overrides: [TaskmanWeb.AuthOverrides, Authentication.Overrides.Default]
 
     get "/healthz", HealthController, :show
 
@@ -83,7 +89,7 @@ defmodule TaskmanWeb.Router do
     pipe_through :browser
 
     ash_admin "/admin",
-              AshAuthentication.Phoenix.LiveSession.opts(
+              Authentication.LiveSession.opts(
                 on_mount: [{TaskmanWeb.LiveUserAuth, :admin_required}]
               )
   end
@@ -133,13 +139,13 @@ defmodule TaskmanWeb.Router do
     # If your application does not have an admins-only section yet,
     # you can use Plug.BasicAuth to set up some basic authentication
     # as long as you are also using SSL (which you should anyway).
-    import Phoenix.LiveDashboard.Router
+    import LiveDashboard.Router
 
     scope "/dev" do
       pipe_through :browser
 
       live_dashboard "/dashboard", metrics: TaskmanWeb.Telemetry
-      forward "/mailbox", Plug.Swoosh.MailboxPreview
+      forward "/mailbox", MailboxPreview
     end
   end
 end

@@ -1,8 +1,9 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Move do
-  alias Taskman.Lists
+  @moduledoc "Tracks Task movement destinations and translates scoped move outcomes."
+
+  alias Taskman.{Lists, Tasks}
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
   alias Taskman.Tasks.{Task, TaskWithLocation}
   alias TaskmanWeb.ProjectLive.Tasks.Messages
 
@@ -207,30 +208,37 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
         {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
 
       {:ok, destination} ->
-        case Tasks.move_task(project, task, destination, opts) do
-          {:ok, moved_task} ->
-            {:ok, clear(state), moved_task}
+        move_to_destination(state, project, task, destination, opts)
+    end
+  end
 
-          {:error, :unchanged_location} ->
-            case refresh(state, project) do
-              {:ok, refreshed, _persisted_task} ->
-                {:error, put_error(refreshed, "This Task is already in that location."),
-                 :unchanged_location}
+  defp move_to_destination(state, project, task, destination, opts) do
+    case Tasks.move_task(project, task, destination, opts) do
+      {:ok, moved_task} ->
+        {:ok, clear(state), moved_task}
 
-              {:error, _cleared, :task_not_found} ->
-                {:error, put_error(state, Messages.task_unavailable()), :task_not_found}
-            end
+      {:error, :unchanged_location} ->
+        unchanged_location(state, project)
 
-          {:error, :not_found} ->
-            {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
+      {:error, :not_found} ->
+        {:error, put_error(state, Messages.destination_unavailable()), :destination_not_found}
 
-          {:error, :authentication_required} ->
-            {:error, put_error(state, "Sign in again to move this Task."),
-             :authentication_required}
+      {:error, :authentication_required} ->
+        {:error, put_error(state, "Sign in again to move this Task."), :authentication_required}
 
-          {:error, _reason} ->
-            {:error, put_error(state, "Couldn’t move this Task. Please try again."), :move_failed}
-        end
+      {:error, _reason} ->
+        {:error, put_error(state, "Couldn’t move this Task. Please try again."), :move_failed}
+    end
+  end
+
+  defp unchanged_location(state, project) do
+    case refresh(state, project) do
+      {:ok, refreshed, _persisted_task} ->
+        {:error, put_error(refreshed, "This Task is already in that location."),
+         :unchanged_location}
+
+      {:error, _cleared, :task_not_found} ->
+        {:error, put_error(state, Messages.task_unavailable()), :task_not_found}
     end
   end
 
@@ -247,6 +255,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Move do
     do: {:error, :destination_not_found}
 
   defp task_destination(%Task{list_id: nil}), do: "project"
+
   defp task_destination(%Task{list_id: list_id}), do: "list:#{list_id}"
 
   defp task_with_location(task_lists, task) do

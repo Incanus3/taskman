@@ -1,14 +1,15 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
+  @moduledoc "Coordinates Task movement interactions and reconciles their visible anchors."
+
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [push_patch: 2, put_flash: 3]
 
-  alias Taskman.Lists
+  alias Phoenix.LiveView
+  alias Taskman.{Lists, Tasks}
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.Workspace
+  alias TaskmanWeb.ProjectLive.{Paths, Workspace}
 
   alias TaskmanWeb.ProjectLive.Tasks.{
     Editing,
@@ -32,8 +33,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   @spec events() :: [String.t()]
   def events, do: @events
 
-  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_event(String.t(), map(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
   def handle_event("open_move_task", %{"task-id" => task_id}, socket) do
     case socket.assigns.workspace.selected_project do
       %Project{} = project ->
@@ -83,19 +84,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
     case {socket.assigns.workspace.selected_project, socket.assigns.task_move} do
       {%Project{} = project, %Move{} = task_move} ->
         if Move.active?(task_move) do
-          case Move.search(task_move, project, query) do
-            {:ok, task_move, _task} ->
-              {:noreply,
-               socket
-               |> assign(:task_move, task_move)
-               |> Listing.refresh()}
-
-            {:error, task_move, :task_not_found} ->
-              {:noreply,
-               socket
-               |> assign(:task_move, task_move)
-               |> Listing.refresh()}
-          end
+          search_move_destinations(socket, task_move, project, query)
         else
           {:noreply, socket}
         end
@@ -176,7 +165,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   def handle_event("submit_move_task", _params, socket), do: {:noreply, socket}
 
   @doc "Refreshes the move destination surface and visible Task rows. Returns the updated socket."
-  @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec refresh(LiveView.Socket.t()) :: LiveView.Socket.t()
   def refresh(
         %{
           assigns: %{
@@ -205,10 +194,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   def refresh(socket), do: socket
 
   @doc "Reconciles active movement against fresh Task, listing, and destination authority."
-  @spec reconcile(Phoenix.LiveView.Socket.t()) ::
-          {:anchored, Phoenix.LiveView.Socket.t()}
-          | {:relocate, Phoenix.LiveView.Socket.t(), Task.t()}
-          | {:missing, Phoenix.LiveView.Socket.t()}
+  @spec reconcile(LiveView.Socket.t()) ::
+          {:anchored, LiveView.Socket.t()}
+          | {:relocate, LiveView.Socket.t(), Task.t()}
+          | {:missing, LiveView.Socket.t()}
   def reconcile(
         %{
           assigns: %{
@@ -220,18 +209,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
     if Move.active?(task_move) do
       case Move.refresh(task_move, project) do
         {:ok, refreshed_move, task} ->
-          changed? = refreshed_move != task_move
-          socket = assign(socket, :task_move, refreshed_move)
-
-          if row_anchor_lost?(socket, refreshed_move, task) do
-            case restore_move(refreshed_move, project, task, :detail) do
-              {:ok, task_move} -> {:relocate, assign(socket, :task_move, task_move), task}
-              {:error, :task_not_found} -> {:missing, assign(socket, :task_move, Move.empty())}
-            end
-          else
-            socket = if changed?, do: reinsert_active_move_row(socket), else: socket
-            {:anchored, socket}
-          end
+          reconcile_refreshed_move(socket, project, task_move, refreshed_move, task)
 
         {:error, task_move, :task_not_found} ->
           {:missing, assign(socket, :task_move, task_move)}
@@ -245,11 +223,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
 
   @doc "Applies movement reconciliation; missing Tasks refresh the listing by default."
   @spec apply_reconciliation(
-          {:anchored, Phoenix.LiveView.Socket.t()}
-          | {:relocate, Phoenix.LiveView.Socket.t(), Task.t()}
-          | {:missing, Phoenix.LiveView.Socket.t()},
+          {:anchored, LiveView.Socket.t()}
+          | {:relocate, LiveView.Socket.t(), Task.t()}
+          | {:missing, LiveView.Socket.t()},
           keyword()
-        ) :: Phoenix.LiveView.Socket.t()
+        ) :: LiveView.Socket.t()
   def apply_reconciliation(result, opts \\ [])
 
   def apply_reconciliation({:anchored, socket}, _opts), do: socket
@@ -335,7 +313,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
   end
 
   @doc "Clears movement state for a modal transition. Returns the updated socket."
-  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec clear(LiveView.Socket.t()) :: LiveView.Socket.t()
   def clear(socket), do: assign(socket, :task_move, Move.clear(socket.assigns.task_move))
 
   defp row_anchor_lost?(
@@ -407,4 +385,29 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Movement do
        do: Listing.refresh_table(socket)
 
   defp reinsert_active_move_row(socket), do: socket
+
+  defp search_move_destinations(socket, task_move, project, query) do
+    case Move.search(task_move, project, query) do
+      {:ok, task_move, _task} ->
+        {:noreply, socket |> assign(:task_move, task_move) |> Listing.refresh()}
+
+      {:error, task_move, :task_not_found} ->
+        {:noreply, socket |> assign(:task_move, task_move) |> Listing.refresh()}
+    end
+  end
+
+  defp reconcile_refreshed_move(socket, project, task_move, refreshed_move, task) do
+    changed? = refreshed_move != task_move
+    socket = assign(socket, :task_move, refreshed_move)
+
+    if row_anchor_lost?(socket, refreshed_move, task) do
+      case restore_move(refreshed_move, project, task, :detail) do
+        {:ok, task_move} -> {:relocate, assign(socket, :task_move, task_move), task}
+        {:error, :task_not_found} -> {:missing, assign(socket, :task_move, Move.empty())}
+      end
+    else
+      socket = if changed?, do: reinsert_active_move_row(socket), else: socket
+      {:anchored, socket}
+    end
+  end
 end

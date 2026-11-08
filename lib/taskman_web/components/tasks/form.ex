@@ -1,13 +1,13 @@
 defmodule TaskmanWeb.Tasks.Form do
+  @moduledoc "Renders shared Task creation and editing fields."
+
   use TaskmanWeb, :html
 
   import Phoenix.Component, except: [form: 1]
 
+  alias TaskmanWeb.{DateTimeInput, DateTimePicker, SelectPicker}
   alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
   alias TaskmanWeb.Tasks.ParentPicker, as: ParentPickerComponent
-  alias TaskmanWeb.DateTimeInput
-  alias TaskmanWeb.DateTimePicker
-  alias TaskmanWeb.SelectPicker
   alias TaskmanWeb.Tasks.{Priority, Status, Table}
 
   attr :form, Phoenix.HTML.Form, required: true
@@ -323,13 +323,17 @@ defmodule TaskmanWeb.Tasks.Form do
   end
 
   defp field_status_message(:saving), do: "Saving…"
+
   defp field_status_message(:saved), do: "Saved"
   defp field_status_message(:not_saved), do: "Not saved"
+
   defp field_status_message(:failed), do: "Couldn’t save changes"
 
   defp field_status_color(:saving), do: "text-amber-300"
+
   defp field_status_color(:saved), do: "text-emerald-400"
   defp field_status_color(state) when state in [:not_saved, :failed], do: "text-rose-300"
+
   defp field_status_color(nil), do: "text-slate-400"
 
   attr :field, :string, required: true
@@ -386,8 +390,10 @@ defmodule TaskmanWeb.Tasks.Form do
     do: DateTimeInput.format(value)
 
   defp format_conflict_value(_field, nil), do: "(empty)"
+
   defp format_conflict_value(_field, ""), do: "(empty)"
   defp format_conflict_value(_field, value) when is_binary(value), do: value
+
   defp format_conflict_value(_field, value), do: to_string(value)
 
   defp option_label(options, value) do

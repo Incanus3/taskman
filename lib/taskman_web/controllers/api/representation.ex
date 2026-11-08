@@ -4,8 +4,9 @@ defmodule TaskmanWeb.API.Representation do
   """
 
   alias Taskman.Lists
-  alias Taskman.Tasks.Comment
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Lists.TaskList
+  alias Taskman.Projects.Project
+  alias Taskman.Tasks.{Comment, Task, TaskWithLocation}
 
   @spec linked_task(map()) :: map()
   def linked_task(summary) do
@@ -25,7 +26,7 @@ defmodule TaskmanWeb.API.Representation do
     %{blocking_task: linked_task(blocker), blocked_task: linked_task(blocked)}
   end
 
-  @spec project(Taskman.Projects.Project.t()) :: map()
+  @spec project(Project.t()) :: map()
   def project(project) do
     %{
       id: project.id,
@@ -36,7 +37,7 @@ defmodule TaskmanWeb.API.Representation do
     }
   end
 
-  @spec task_list(Taskman.Lists.TaskList.t(), [Taskman.Lists.TaskList.t()]) :: map()
+  @spec task_list(TaskList.t(), [TaskList.t()]) :: map()
   def task_list(task_list, project_lists) do
     %{
       id: task_list.id,
@@ -47,7 +48,7 @@ defmodule TaskmanWeb.API.Representation do
     }
   end
 
-  @spec task(Taskman.Tasks.Task.t(), [Taskman.Lists.TaskList.t()]) :: map()
+  @spec task(Task.t(), [TaskList.t()]) :: map()
   def task(task, project_lists) do
     path =
       case task.list_id do

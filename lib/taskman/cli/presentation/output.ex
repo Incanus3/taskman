@@ -1,4 +1,6 @@
 defmodule Taskman.CLI.Presentation.Output do
+  alias Taskman.CLI.Registry.Command
+
   @moduledoc "Render one CLI result as readable text or an API-compatible JSON envelope."
 
   @project_fields [
@@ -372,11 +374,11 @@ defmodule Taskman.CLI.Presentation.Output do
   defp resource({:tasks, action}) when action in [:comments_list, :comments_add], do: :comments
   defp resource({resource, _action}) when is_atom(resource), do: resource
   defp resource(:list), do: :projects
-  defp resource(%Taskman.CLI.Registry.Command{path: ["projects" | _rest]}), do: :projects
-  defp resource(%Taskman.CLI.Registry.Command{path: ["lists" | _rest]}), do: :lists
-  defp resource(%Taskman.CLI.Registry.Command{path: ["tasks", "comments" | _rest]}), do: :comments
-  defp resource(%Taskman.CLI.Registry.Command{path: ["tasks" | _rest]}), do: :tasks
-  defp resource(%Taskman.CLI.Registry.Command{path: [resource | _rest]}), do: resource
+  defp resource(%Command{path: ["projects" | _rest]}), do: :projects
+  defp resource(%Command{path: ["lists" | _rest]}), do: :lists
+  defp resource(%Command{path: ["tasks", "comments" | _rest]}), do: :comments
+  defp resource(%Command{path: ["tasks" | _rest]}), do: :tasks
+  defp resource(%Command{path: [resource | _rest]}), do: resource
   defp resource(["projects" | _rest]), do: :projects
   defp resource(["lists" | _rest]), do: :lists
   defp resource(["tasks" | _rest]), do: :tasks
@@ -395,12 +397,12 @@ defmodule Taskman.CLI.Presentation.Output do
 
   defp resource(_command), do: nil
 
-  defp collection_kind(%Taskman.CLI.Registry.Command{handler: {:tasks, :activity_list}}),
+  defp collection_kind(%Command{handler: {:tasks, :activity_list}}),
     do: {:activity, nil}
 
   defp collection_kind({:tasks, :activity_list, task_id}), do: {:activity, task_id}
 
-  defp collection_kind(%Taskman.CLI.Registry.Command{handler: {:tasks, :search}}),
+  defp collection_kind(%Command{handler: {:tasks, :search}}),
     do: :task_search
 
   defp collection_kind(command), do: resource(command)
@@ -408,17 +410,17 @@ defmodule Taskman.CLI.Presentation.Output do
   defp comments_command?({:tasks, action}) when action in [:comments_list, :comments_add],
     do: true
 
-  defp comments_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :comments_add}}),
+  defp comments_command?(%Command{handler: {:tasks, :comments_add}}),
     do: true
 
   defp comments_command?(_command), do: false
 
-  defp blocking_show_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :blocking_show}}),
+  defp blocking_show_command?(%Command{handler: {:tasks, :blocking_show}}),
     do: true
 
   defp blocking_show_command?(_command), do: false
 
-  defp blocks_mutation_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, action}})
+  defp blocks_mutation_command?(%Command{handler: {:tasks, action}})
        when action in [:blocks_add, :blocks_remove], do: true
 
   defp blocks_mutation_command?(_command), do: false
@@ -426,14 +428,14 @@ defmodule Taskman.CLI.Presentation.Output do
   defp task_show_with_comments?({:tasks, :show_with_comments}, data),
     do: has_value?(data, :comments)
 
-  defp task_show_with_comments?(%Taskman.CLI.Registry.Command{handler: {:tasks, :show}}, data),
+  defp task_show_with_comments?(%Command{handler: {:tasks, :show}}, data),
     do: has_value?(data, :comments)
 
   defp task_show_with_comments?(_command, _data), do: false
 
   defp hierarchy_command?({:tasks, :hierarchy}), do: true
 
-  defp hierarchy_command?(%Taskman.CLI.Registry.Command{handler: {:tasks, :hierarchy}}),
+  defp hierarchy_command?(%Command{handler: {:tasks, :hierarchy}}),
     do: true
 
   defp hierarchy_command?(["tasks", "hierarchy"]), do: true

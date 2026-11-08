@@ -3,12 +3,12 @@ defmodule Taskman.Repo.SeedsTest do
 
   import ExUnit.CaptureIO
 
-  alias Taskman.Accounts
+  alias Ecto.Adapters.SQL
+  alias Taskman.{Accounts, Projects, Repo}
   alias Taskman.Accounts.User
   alias Taskman.Lists.TaskList
-  alias Taskman.Projects
   alias Taskman.Projects.Project
-  alias Taskman.Repo
+  alias Taskman.Tasks.Activity.Event
   alias Taskman.Tasks.Task
 
   @statuses [:icebox, :pending, :in_progress, :in_review, :done, :will_not_do]
@@ -126,11 +126,11 @@ defmodule Taskman.Repo.SeedsTest do
   test "demo creation history is attributed once per Task and reruns replace it" do
     run_seeds()
     actor = Repo.get_by!(User, email: "admin@taskman.dev")
-    events = Repo.all(Taskman.Tasks.Activity.Event)
+    events = Repo.all(Event)
     assert length(events) == 30
     assert Enum.all?(events, &(&1.kind == "task_created" and &1.actor_user_id == actor.id))
     run_seeds()
-    assert Repo.aggregate(Taskman.Tasks.Activity.Event, :count) == 30
+    assert Repo.aggregate(Event, :count) == 30
   end
 
   test "an absent or ineligible explicit demo actor fails before resetting data" do
@@ -159,7 +159,7 @@ defmodule Taskman.Repo.SeedsTest do
   test "activity insertion failure rolls back the entire demo data replacement" do
     {:ok, existing} = Projects.create_project(%{name: "Preserved"})
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE task_activity_events ADD CONSTRAINT reject_demo_activity CHECK (kind IS DISTINCT FROM 'task_created')"
     )
@@ -167,7 +167,7 @@ defmodule Taskman.Repo.SeedsTest do
     assert_raise Ecto.ConstraintError, fn -> Code.eval_file("priv/repo/seeds.exs") end
     assert Repo.get!(Project, existing.id).name == "Preserved"
     assert Repo.aggregate(Task, :count) == 0
-    assert Repo.aggregate(Taskman.Tasks.Activity.Event, :count) == 0
+    assert Repo.aggregate(Event, :count) == 0
   end
 
   defp run_seeds do

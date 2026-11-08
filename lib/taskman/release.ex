@@ -22,12 +22,7 @@ defmodule Taskman.Release do
 
     with :ok <- load_app(app, options),
          {:ok, repos} <- configured_repos(app, options) do
-      Enum.reduce_while(repos, :ok, fn repo, :ok ->
-        case migrate_repo(repo, options) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, {:migration_failed, repo, reason}}}
-        end
-      end)
+      Enum.reduce_while(repos, :ok, &migrate_configured_repo(&1, &2, options))
     end
   end
 
@@ -133,4 +128,11 @@ defmodule Taskman.Release do
   end
 
   defp release_failure(message), do: raise(message)
+
+  defp migrate_configured_repo(repo, :ok, options) do
+    case migrate_repo(repo, options) do
+      :ok -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, {:migration_failed, repo, reason}}}
+    end
+  end
 end

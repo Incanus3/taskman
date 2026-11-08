@@ -1,16 +1,11 @@
 defmodule Taskman.Tasks.Activity do
   @moduledoc false
 
-  alias Taskman.Accounts
+  alias Taskman.{Accounts, Repo}
   alias Taskman.Accounts.User
   alias Taskman.Projects.Project
-  alias Taskman.Repo
-  alias Taskman.Tasks.BlockingPersistence
-  alias Taskman.Tasks.Comment
-  alias Taskman.Tasks.CommentPersistence
-  alias Taskman.Tasks.Mutations
-  alias Taskman.Tasks.Task
   alias Taskman.Tasks.Activity.{Consolidation, Event, Persistence}
+  alias Taskman.Tasks.{BlockingPersistence, Comment, CommentPersistence, Mutations, Task}
 
   @type affected_task :: {project_id :: pos_integer(), task_id :: pos_integer()}
   @type record_result :: {:ok, [affected_task()]} | {:error, Ecto.Changeset.t()}
@@ -171,36 +166,18 @@ defmodule Taskman.Tasks.Activity do
           "task:#{persisted_task.id}:created",
           "task_created",
           nil,
-          nil,
-          nil,
+          {nil, nil},
           context,
           now
         )
 
       persist(nil, attrs, [persisted_task.id], :insert)
     else
-      Enum.reduce_while(fields, {:ok, []}, fn field, {:ok, affected} ->
-        old = field_value(before_task, field, references)
-        new = field_value(persisted_task, field, references)
-
-        attrs =
-          base_attrs(
-            actor,
-            persisted_task.id,
-            "task:#{persisted_task.id}:#{field}",
-            "field_changed",
-            Atom.to_string(field),
-            old,
-            new,
-            context,
-            now
-          )
-
-        case transition(attrs) do
-          {:ok, affected_tasks} -> {:cont, {:ok, Enum.uniq(affected ++ affected_tasks)}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
+      Enum.reduce_while(
+        fields,
+        {:ok, []},
+        &record_field_change(&1, &2, actor, before_task, persisted_task, references, context, now)
+      )
     end
   end
 
@@ -222,8 +199,7 @@ defmodule Taskman.Tasks.Activity do
         "block:#{source["id"]}:#{target["id"]}",
         "block_changed",
         nil,
-        before_value,
-        after_value,
+        {before_value, after_value},
         context,
         DateTime.utc_now()
       )
@@ -295,7 +271,7 @@ defmodule Taskman.Tasks.Activity do
 
   defp event_task_ids(attrs), do: [attrs.task_id]
 
-  defp base_attrs(actor, task_id, key, kind, field, before_value, after_value, context, now) do
+  defp base_attrs(actor, task_id, key, kind, field, {before_value, after_value}, context, now) do
     %{
       task_id: task_id,
       actor_user_id: actor.id,
@@ -403,4 +379,35 @@ defmodule Taskman.Tasks.Activity do
 
   defp entry_numeric_id(%{id: "comment-" <> id}), do: String.to_integer(id)
   defp entry_numeric_id(%{id: "event-" <> id}), do: String.to_integer(id)
+
+  defp record_field_change(
+         field,
+         {:ok, affected},
+         actor,
+         before_task,
+         persisted_task,
+         references,
+         context,
+         now
+       ) do
+    old = field_value(before_task, field, references)
+    new = field_value(persisted_task, field, references)
+
+    attrs =
+      base_attrs(
+        actor,
+        persisted_task.id,
+        "task:#{persisted_task.id}:#{field}",
+        "field_changed",
+        Atom.to_string(field),
+        {old, new},
+        context,
+        now
+      )
+
+    case transition(attrs) do
+      {:ok, affected_tasks} -> {:cont, {:ok, Enum.uniq(affected ++ affected_tasks)}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
 end

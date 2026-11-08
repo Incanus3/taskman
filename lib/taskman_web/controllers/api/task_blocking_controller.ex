@@ -1,12 +1,10 @@
 defmodule TaskmanWeb.API.TaskBlockingController do
   use TaskmanWeb, :controller
 
-  action_fallback TaskmanWeb.API.FallbackController
+  alias Taskman.{Projects, Tasks}
+  alias TaskmanWeb.API.{FallbackController, Params, Representation}
 
-  alias Taskman.Projects
-  alias Taskman.Tasks
-  alias TaskmanWeb.API.Params
-  alias TaskmanWeb.API.Representation
+  action_fallback FallbackController
 
   def index(conn, %{"project_id" => project_id, "task_id" => task_id}) do
     conn = fetch_query_params(conn)

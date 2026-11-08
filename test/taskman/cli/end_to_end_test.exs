@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.EndToEndTest do
   use TaskmanWeb.ConnCase, async: false
 
+  alias Taskman.CLI.Fixtures
+
   @moduletag :tmp_dir
 
   import Phoenix.LiveViewTest
@@ -41,7 +43,7 @@ defmodule Taskman.CLI.EndToEndTest do
     api_url = "http://127.0.0.1:#{port}"
     write_config(config_root, api_url, api_key)
 
-    Taskman.CLI.Fixtures.write_hosts!(Path.join(config_root, "missing"), %{
+    Fixtures.write_hosts!(Path.join(config_root, "missing"), %{
       format: :v2,
       default_host: "personal",
       hosts: %{"personal" => %{api_url: api_url, api_key: nil}}
@@ -660,11 +662,11 @@ defmodule Taskman.CLI.EndToEndTest do
       Taskman.CLI.run(args,
         config_root: config_root,
         env: %{},
-        git_runner: &Taskman.CLI.Fixtures.outside_git/3
+        git_runner: &Fixtures.outside_git/3
       )
 
   defp write_config(config_root, api_url, api_key) do
-    Taskman.CLI.Fixtures.write_hosts!(config_root, %{
+    Fixtures.write_hosts!(config_root, %{
       format: :v2,
       default_host: "personal",
       hosts: %{"personal" => %{api_url: api_url, api_key: api_key}}

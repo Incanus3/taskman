@@ -1,14 +1,12 @@
 defmodule TaskmanWeb.ProjectLive.Reconciliation do
   @moduledoc "Coordinates validated external notifications across workspace workflows."
 
+  alias Phoenix.LiveView
   alias Taskman.ChangeNotifications.Event
+  alias Taskman.{Lists, Projects, Tasks}
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
-  alias Taskman.Lists
-  alias Taskman.Projects
   alias Taskman.Tasks.Task
-  alias TaskmanWeb.ProjectLive.Workspace
-  alias TaskmanWeb.ProjectLive.Recovery
+  alias TaskmanWeb.ProjectLive.{Recovery, Workspace}
 
   alias TaskmanWeb.ProjectLive.Tasks.{
     Activity,
@@ -22,9 +20,9 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   }
 
   @doc "Handles scheduled autosaves and validated workspace notifications."
-  @spec handle_info(term(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
-          | {:captured, Phoenix.LiveView.Socket.t(), tuple(), String.t(), boolean()}
+  @spec handle_info(term(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
+          | {:captured, LiveView.Socket.t(), tuple(), String.t(), boolean()}
   def handle_info({type, _} = message, socket)
       when type in [
              :leaf_changed,
@@ -167,27 +165,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
     socket =
       if valid? do
-        previous_workspace = socket.assigns.workspace
-
-        case Workspace.reconcile(socket, event) do
-          {socket, :unchanged} ->
-            socket
-
-          {socket, {:location_missing, task_lists}} ->
-            reconcile_location_loss(socket, previous_workspace, task_lists)
-
-          {socket, {:location_changed, task_lists}} ->
-            if Recovery.State.active?(socket.assigns.recovery) do
-              Listing.refresh(socket)
-            else
-              socket
-              |> Creation.refresh_locations(task_lists)
-              |> Listing.refresh()
-              |> reconcile_movement()
-              |> ParentSelection.refresh()
-              |> Editing.reload_hierarchy()
-            end
-        end
+        reconcile_workspace_event(socket, event)
       else
         socket
       end
@@ -281,16 +259,7 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
 
       case Movement.reconcile(socket) do
         {:anchored, socket} ->
-          socket =
-            socket
-            |> Editing.reconcile(event)
-            |> sync_parent_selection()
-
-          if task_hierarchy_affected?(event) do
-            Editing.reload_hierarchy(socket)
-          else
-            socket
-          end
+          reconcile_anchored_task(socket, event)
 
         movement_result ->
           Movement.apply_reconciliation(movement_result, refresh_listing?: false)
@@ -461,5 +430,39 @@ defmodule TaskmanWeb.ProjectLive.Reconciliation do
   defp task_hierarchy_affected?(%Event{operation: operation, fields: fields}) do
     operation in [:created, :moved] or
       Enum.any?(fields, &(&1 in [:title, :status, :priority, :parent_task_id, :list_id]))
+  end
+
+  defp reconcile_workspace_event(socket, event) do
+    previous_workspace = socket.assigns.workspace
+
+    case Workspace.reconcile(socket, event) do
+      {socket, :unchanged} ->
+        socket
+
+      {socket, {:location_missing, task_lists}} ->
+        reconcile_location_loss(socket, previous_workspace, task_lists)
+
+      {socket, {:location_changed, task_lists}} ->
+        reconcile_changed_location(socket, task_lists)
+    end
+  end
+
+  defp reconcile_changed_location(socket, task_lists) do
+    if Recovery.State.active?(socket.assigns.recovery) do
+      Listing.refresh(socket)
+    else
+      socket
+      |> Creation.refresh_locations(task_lists)
+      |> Listing.refresh()
+      |> reconcile_movement()
+      |> ParentSelection.refresh()
+      |> Editing.reload_hierarchy()
+    end
+  end
+
+  defp reconcile_anchored_task(socket, event) do
+    socket = socket |> Editing.reconcile(event) |> sync_parent_selection()
+
+    if task_hierarchy_affected?(event), do: Editing.reload_hierarchy(socket), else: socket
   end
 end

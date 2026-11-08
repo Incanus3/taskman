@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.DescriptionEditorHelpers do
+  alias Phoenix.LiveViewTest
+
   @moduledoc false
   import Phoenix.LiveViewTest
 
@@ -92,10 +94,10 @@ defmodule TaskmanWeb.DescriptionEditorHelpers do
     if is_binary(result) do
       view =
         case target do
-          %Phoenix.LiveViewTest.Element{proxy: {_, _, pid} = proxy} ->
-            {_, root} = Phoenix.LiveViewTest.ClientProxy.root_view(pid)
+          %LiveViewTest.Element{proxy: {_, _, pid} = proxy} ->
+            {_, root} = LiveViewTest.ClientProxy.root_view(pid)
 
-            %Phoenix.LiveViewTest.View{
+            %LiveViewTest.View{
               id: root.id,
               module: root.module,
               pid: root.pid,

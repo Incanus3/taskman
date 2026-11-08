@@ -1,6 +1,8 @@
 defmodule Taskman.CLI.EntrypointTest do
   use ExUnit.Case, async: true
 
+  alias Taskman.CLI.Fixtures
+
   setup {Req.Test, :verify_on_exit!}
 
   test "help is an offline successful result" do
@@ -60,7 +62,7 @@ defmodule Taskman.CLI.EntrypointTest do
        %{
          tmp_dir: tmp_dir
        } do
-    Taskman.CLI.Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
+    Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
       format: :v2,
       default_host: "personal",
       hosts: %{"personal" => %{api_url: "https://personal.example.invalid", api_key: nil}}
@@ -69,7 +71,7 @@ defmodule Taskman.CLI.EntrypointTest do
     result =
       Taskman.CLI.run(["projects", "list", "--json"],
         config_root: Path.join(tmp_dir, "xdg"),
-        git_runner: &Taskman.CLI.Fixtures.outside_git/3,
+        git_runner: &Fixtures.outside_git/3,
         env: %{}
       )
 
@@ -94,7 +96,7 @@ defmodule Taskman.CLI.EntrypointTest do
       Req.Test.json(conn, %{data: []})
     end)
 
-    Taskman.CLI.Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
+    Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
       format: :v2,
       default_host: "personal",
       hosts: %{"personal" => %{api_url: "https://personal.example.invalid", api_key: nil}}
@@ -103,7 +105,7 @@ defmodule Taskman.CLI.EntrypointTest do
     result =
       Taskman.CLI.run(["projects", "list", "--json"],
         config_root: Path.join(tmp_dir, "xdg"),
-        git_runner: &Taskman.CLI.Fixtures.outside_git/3,
+        git_runner: &Fixtures.outside_git/3,
         env: %{"TASKMAN_API_KEY" => credential, "TASKMAN_API_KEY_HOST" => "personal"},
         req_options: [plug: {Req.Test, TaskmanCLIRunner}]
       )
@@ -127,7 +129,7 @@ defmodule Taskman.CLI.EntrypointTest do
       Req.Test.json(conn, %{data: []})
     end)
 
-    Taskman.CLI.Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
+    Fixtures.write_hosts!(Path.join(tmp_dir, "xdg"), %{
       format: :v2,
       default_host: "personal",
       hosts: %{"personal" => %{api_url: "https://personal.example.invalid", api_key: nil}}
@@ -137,7 +139,7 @@ defmodule Taskman.CLI.EntrypointTest do
       Taskman.CLI.run(["projects", "list", "--json"],
         api_key: injected,
         config_root: Path.join(tmp_dir, "xdg"),
-        git_runner: &Taskman.CLI.Fixtures.outside_git/3,
+        git_runner: &Fixtures.outside_git/3,
         env: %{"TASKMAN_API_KEY" => resolved, "TASKMAN_API_KEY_HOST" => "personal"},
         req_options: [
           plug: {Req.Test, TaskmanCLIRunner},
@@ -157,7 +159,7 @@ defmodule Taskman.CLI.EntrypointTest do
 
   @tag :tmp_dir
   test "one invocation reuses its resolved context across requests", %{tmp_dir: tmp_dir} do
-    alias Taskman.CLI.{Config, Context, Client, Fixtures}
+    alias Taskman.CLI.{Client, Config, Context, Fixtures}
     alias Taskman.CLI.Execution.Parser
     root = Path.join(tmp_dir, "config")
     original = Fixtures.resolved_context()

@@ -5,6 +5,7 @@ defmodule Taskman.Tasks.GraphLock do
   Call within the write transaction, before locking a Project or reading graph state.
   """
 
+  alias Ecto.Adapters
   alias Taskman.Repo
 
   @task_graph_advisory_lock_key {724_150, 1}
@@ -17,7 +18,7 @@ defmodule Taskman.Tasks.GraphLock do
 
     {first_key, second_key} = @task_graph_advisory_lock_key
 
-    Ecto.Adapters.SQL.query!(
+    Adapters.SQL.query!(
       Repo,
       "SELECT pg_advisory_xact_lock($1, $2)",
       [first_key, second_key]

@@ -6,8 +6,7 @@ defmodule Taskman.Tasks.QueriesTest do
   import Taskman.TasksFixtures
 
   alias Taskman.Tasks
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.TaskWithLocation
+  alias Taskman.Tasks.{Hierarchy, Task, TaskWithLocation}
 
   test "all supported persisted states sort in canonical order in either direction" do
     project = project_fixture(%{})
@@ -104,7 +103,7 @@ defmodule Taskman.Tasks.QueriesTest do
              Tasks.search_parent_candidates(project, child, "root")
 
     assert {:ok,
-            %Taskman.Tasks.Hierarchy{
+            %Hierarchy{
               selected_task_id: ^child_id,
               root: %{task: %{id: ^root_id}}
             }} = Tasks.get_task_hierarchy(project, child)

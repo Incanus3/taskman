@@ -4,8 +4,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.StateOptionsTest do
   alias Taskman.Lists.TaskList
   alias Taskman.Tasks.Status
   alias TaskmanWeb.ProjectLive.Locations
-  alias TaskmanWeb.ProjectLive.TaskTablePreferences, as: Preferences
   alias TaskmanWeb.ProjectLive.Tasks.StateOptions
+  alias TaskmanWeb.ProjectLive.TaskTablePreferences, as: Preferences
 
   test "remembered absent state survives an empty checkbox submission" do
     assert StateOptions.merge_selection([:pending, :not_planned], [:pending], []) == [

@@ -1,4 +1,6 @@
 defmodule Taskman.ChangeNotifications do
+  @moduledoc "Project and Task change notifications over PubSub."
+
   alias Phoenix.PubSub
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Lists.TaskList
@@ -187,12 +189,10 @@ defmodule Taskman.ChangeNotifications do
   end
 
   defp pubsub_call(fun) do
-    try do
-      fun.()
-    rescue
-      exception -> {:error, exception}
-    catch
-      kind, reason -> {:error, {kind, reason}}
-    end
+    fun.()
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 end

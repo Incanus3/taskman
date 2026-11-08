@@ -8,6 +8,8 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Phoenix.LiveView
   alias Taskman.{Repo, Tasks}
   alias TaskmanWeb.ProjectLive
   alias TaskmanWeb.ProjectLive.Tasks.{Autosave, ParentPicker}
@@ -403,9 +405,9 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
   end
 
   test "keeps the Task modal and draft when route flushing cannot persist", %{conn: conn} do
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
+    SQL.query!(Repo, "ALTER TABLE tasks DROP CONSTRAINT tasks_status_check")
 
-    Ecto.Adapters.SQL.query!(
+    SQL.query!(
       Repo,
       "ALTER TABLE tasks ADD CONSTRAINT tasks_status_check CHECK (status <> 'in_review')"
     )
@@ -469,10 +471,10 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
                "title"
              )
 
-    socket = %Phoenix.LiveView.Socket{
+    socket = %LiveView.Socket{
       private: %{
         live_temp: %{},
-        lifecycle: Phoenix.LiveView.Lifecycle.build([])
+        lifecycle: LiveView.Lifecycle.build([])
       }
     }
 
@@ -633,10 +635,10 @@ defmodule TaskmanWeb.ProjectLive.AutosaveTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    socket = %Phoenix.LiveView.Socket{
+    socket = %LiveView.Socket{
       private: %{
         live_temp: %{},
-        lifecycle: Phoenix.LiveView.Lifecycle.build([])
+        lifecycle: LiveView.Lifecycle.build([])
       }
     }
 

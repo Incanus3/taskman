@@ -1,4 +1,7 @@
 defmodule TaskmanWeb.ErrorJSON do
+  alias Plug.Conn.InvalidQueryError
+  alias Plug.Parsers.ParseError
+
   @moduledoc """
   This module is invoked by your endpoint in case of errors on JSON requests.
 
@@ -10,8 +13,8 @@ defmodule TaskmanWeb.ErrorJSON do
   end
 
   def render("400.json", %{reason: reason})
-      when is_struct(reason, Plug.Parsers.ParseError) or
-             is_struct(reason, Plug.Conn.InvalidQueryError) do
+      when is_struct(reason, ParseError) or
+             is_struct(reason, InvalidQueryError) do
     %{error: %{code: "invalid_request", message: "Invalid request"}}
   end
 

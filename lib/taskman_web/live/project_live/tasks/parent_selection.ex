@@ -1,6 +1,9 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
+  @moduledoc "Coordinates parent selection for Task creation and editing."
+
   import Phoenix.Component, only: [assign: 3]
 
+  alias Phoenix.LiveView
   alias Taskman.Projects.Project
   alias Taskman.Tasks.Task
   alias TaskmanWeb.ProjectLive.Tasks.{Editing, Listing, ParentPicker}
@@ -19,8 +22,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   @spec events() :: [String.t()]
   def events, do: @events
 
-  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_event(String.t(), map(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
   def handle_event("open_task_parent_options", _params, socket) do
     {:noreply,
      update_picker(
@@ -126,8 +129,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   def handle_event("resolve_task_parent_conflict", _params, socket), do: {:noreply, socket}
 
   @doc "Initializes the picker for an open Task detail route."
-  @spec open_edit(Phoenix.LiveView.Socket.t(), Project.t(), Task.t()) ::
-          Phoenix.LiveView.Socket.t()
+  @spec open_edit(LiveView.Socket.t(), Project.t(), Task.t()) ::
+          LiveView.Socket.t()
   def open_edit(socket, %Project{} = project, %Task{} = task) do
     assign(
       socket,
@@ -137,7 +140,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   end
 
   @doc "Reconciles the open detail picker with the resulting persisted selected Task."
-  @spec sync(Phoenix.LiveView.Socket.t(), Task.t() | nil) :: Phoenix.LiveView.Socket.t()
+  @spec sync(LiveView.Socket.t(), Task.t() | nil) :: LiveView.Socket.t()
   def sync(
         %{
           assigns: %{
@@ -155,7 +158,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   def sync(socket, _task), do: socket
 
   @doc "Refreshes open parent candidates after the workspace location changes."
-  @spec refresh(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec refresh(LiveView.Socket.t()) :: LiveView.Socket.t()
   def refresh(
         %{
           assigns: %{
@@ -169,7 +172,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
 
   def refresh(socket), do: socket
 
-  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec clear(LiveView.Socket.t()) :: LiveView.Socket.t()
   def clear(socket), do: assign(socket, :task_parent_picker, ParentPicker.empty())
 
   defp update_picker(
@@ -230,6 +233,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.ParentSelection do
   end
 
   defp conflict_resolution("use_latest"), do: :use_latest
+
   defp conflict_resolution("keep_mine"), do: :keep_mine
   defp conflict_resolution(_resolution), do: nil
 end

@@ -4,8 +4,8 @@ defmodule Taskman.ReleaseTest do
   import ExUnit.CaptureIO
   import Ecto.Query
 
-  alias Taskman.{FakeTerminal, Release, Repo}
   alias Taskman.Accounts.User
+  alias Taskman.{FakeTerminal, Release, Repo}
 
   test "migrate loads the application and runs every configured repo" do
     assert_release_function(:migrate, 1)

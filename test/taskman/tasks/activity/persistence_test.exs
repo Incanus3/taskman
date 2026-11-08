@@ -5,9 +5,9 @@ defmodule Taskman.Tasks.Activity.PersistenceTest do
   import Taskman.ProjectsFixtures
   import Taskman.ListsFixtures
 
-  alias Taskman.Tasks.Activity
+  alias Taskman.Lists.TaskList
+  alias Taskman.Tasks.{Activity, Task}
   alias Taskman.Tasks.Activity.{Event, EventTask}
-  alias Taskman.Tasks.Task
 
   setup do
     project = project_fixture(%{name: "Work"})
@@ -169,7 +169,7 @@ defmodule Taskman.Tasks.Activity.PersistenceTest do
     assert event.before_value["value"]["list_id"] == nil
     assert event.after_value["value"]["path"] == ["Root", "Child"]
 
-    Repo.update_all(from(l in Taskman.Lists.TaskList, where: l.id == ^child.id),
+    Repo.update_all(from(l in TaskList, where: l.id == ^child.id),
       set: [name: "Renamed"]
     )
 

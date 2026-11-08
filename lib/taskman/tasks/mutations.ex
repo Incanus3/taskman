@@ -1,15 +1,12 @@
 defmodule Taskman.Tasks.Mutations do
+  @moduledoc "Task persistence with optimistic conflicts and graph invariants."
+
   import Ecto.Query
 
   alias Taskman.Lists.TaskList
   alias Taskman.Projects.Project
   alias Taskman.Repo
-  alias Taskman.Tasks.Conflict
-  alias Taskman.Tasks.BlockingPersistence
-  alias Taskman.Tasks.GraphLock
-  alias Taskman.Tasks.Hierarchy
-  alias Taskman.Tasks.Task
-  alias Taskman.Tasks.Status
+  alias Taskman.Tasks.{BlockingPersistence, Conflict, GraphLock, Hierarchy, Status, Task}
 
   @type attrs :: %{optional(atom() | String.t()) => term()}
   @type field ::
@@ -120,27 +117,7 @@ defmodule Taskman.Tasks.Mutations do
   end
 
   defp create_with_parent(project, task, attrs, parent) do
-    case Repo.transaction(fn ->
-           GraphLock.acquire!()
-
-           with %Project{} = locked_project <- lock_project(project),
-                {:ok, persisted_parent} <- reload_parent(locked_project, parent),
-                :ok <- Hierarchy.validate_parent(task, persisted_parent, locked_project) do
-             changeset =
-               task
-               |> Task.changeset(attrs)
-               |> Ecto.Changeset.put_change(:parent_task_id, parent_id(persisted_parent))
-
-             case Repo.insert(changeset) do
-               {:ok, persisted} -> persisted
-               {:error, error_changeset} -> Repo.rollback(error_changeset)
-             end
-           else
-             nil -> Repo.rollback(:not_found)
-             {:error, :not_found} -> Repo.rollback(:not_found)
-             {:error, :cycle} -> Repo.rollback(cycle_changeset(task, attrs))
-           end
-         end) do
+    case Repo.transaction(fn -> create_locked_child(project, task, attrs, parent) end) do
       {:ok, persisted} -> {:ok, persisted, @creation_fields, nil}
       {:error, reason} -> {:error, reason}
     end
@@ -162,20 +139,7 @@ defmodule Taskman.Tasks.Mutations do
 
   defp update_with_status(project, baseline, intended, opts) do
     {:ok, result} =
-      Repo.transaction(fn ->
-        GraphLock.acquire!()
-
-        case current_task(project, baseline) do
-          nil ->
-            {:error, :not_found}
-
-          %Task{} = current ->
-            with :ok <- check_stale_conflicts(baseline, current, intended),
-                 :ok <- allow_done_transition(current, intended, opts) do
-              update_ordinary(project, baseline, intended, mode: :savepoint)
-            end
-        end
-      end)
+      Repo.transaction(fn -> update_locked_status(project, baseline, intended, opts) end)
 
     result
   end
@@ -194,20 +158,12 @@ defmodule Taskman.Tasks.Mutations do
         {:error, :not_found}
 
       current ->
-        case classify_intended_fields(baseline, current, preconditions) do
-          {[_ | _] = conflicts, _remaining} ->
-            {:error, %Conflict{task: current, fields: conflicts}}
-
-          {[], remaining} when map_size(remaining) == 0 ->
-            {:ok, current, [], current}
-
-          {[], remaining} ->
-            case persist_update(Task.changeset(current, remaining), persist_opts) do
-              {:ok, persisted} -> {:ok, persisted, ordered_fields(Map.keys(remaining)), current}
-              {:error, changeset} -> {:error, changeset}
-              :stale -> second_stale_conflict(project, current, Map.keys(remaining))
-            end
-        end
+        retry_classified_update(
+          classify_intended_fields(baseline, current, preconditions),
+          project,
+          current,
+          persist_opts
+        )
     end
   end
 
@@ -223,13 +179,7 @@ defmodule Taskman.Tasks.Mutations do
   defp retry_parent_update(project, baseline, intended, parent, opts) do
     case parent_attempt(project, baseline, intended, parent, opts, :retry) do
       :stale ->
-        case current_task(project, baseline) do
-          nil ->
-            {:error, :not_found}
-
-          current ->
-            {:error, %Conflict{task: current, fields: ordered_fields(Map.keys(intended))}}
-        end
+        second_stale_conflict(project, baseline, Map.keys(intended))
 
       result ->
         result
@@ -238,35 +188,7 @@ defmodule Taskman.Tasks.Mutations do
 
   defp parent_attempt(project, baseline, intended, parent, opts, attempt) do
     case Repo.transaction(fn ->
-           GraphLock.acquire!()
-
-           with %Project{} = locked_project <- lock_project(project),
-                {:ok, current} <- current_task_for_attempt(locked_project, baseline, attempt),
-                {:ok, persisted_parent} <- reload_parent(locked_project, parent),
-                :ok <- Hierarchy.validate_parent(current, persisted_parent, locked_project),
-                :ok <- validate_parent_block(current, persisted_parent) do
-             parent_attempt_result(
-               locked_project,
-               baseline,
-               current,
-               intended,
-               persisted_parent,
-               opts,
-               attempt
-             )
-           else
-             nil ->
-               Repo.rollback(:not_found)
-
-             {:error, :not_found} ->
-               Repo.rollback(:not_found)
-
-             {:error, :cycle} ->
-               Repo.rollback(cycle_changeset(baseline, intended))
-
-             {:error, :parent_blocks_child} ->
-               Repo.rollback(parent_block_changeset(baseline, intended))
-           end
+           attempt_locked_parent(project, baseline, intended, parent, opts, attempt)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
@@ -295,11 +217,7 @@ defmodule Taskman.Tasks.Mutations do
       true ->
         case allow_done_transition(current, changeset.changes, opts) do
           :ok ->
-            case persist_update(changeset) do
-              {:ok, persisted} -> {:ok, persisted, fields, baseline}
-              {:error, changeset} -> Repo.rollback(changeset)
-              :stale -> :stale
-            end
+            persist_parent_update(changeset, fields, baseline)
 
           {:error, reason} ->
             Repo.rollback(reason)
@@ -329,11 +247,7 @@ defmodule Taskman.Tasks.Mutations do
 
         case allow_done_transition(current, changeset.changes, opts) do
           :ok ->
-            case persist_update(changeset) do
-              {:ok, persisted} -> {:ok, persisted, fields, current}
-              {:error, changeset} -> Repo.rollback(changeset)
-              :stale -> :stale
-            end
+            persist_parent_update(changeset, fields, current)
 
           {:error, reason} ->
             Repo.rollback(reason)
@@ -348,11 +262,7 @@ defmodule Taskman.Tasks.Mutations do
           {:error, :not_found}
 
         current ->
-          if task_value(current, :list_id) == destination_id do
-            {:error, :unchanged_location}
-          else
-            {:error, %Conflict{task: current, fields: [:list_id]}}
-          end
+          unchanged_location_result(current, destination_id)
       end
     else
       intended = %{list_id: destination_id}
@@ -376,11 +286,7 @@ defmodule Taskman.Tasks.Mutations do
           {:error, :unchanged_location}
 
         {[], _remaining} ->
-          case persist_update(location_changeset(current, destination_id)) do
-            {:ok, persisted} -> {:ok, persisted, [:list_id], current}
-            {:error, changeset} -> {:error, changeset}
-            :stale -> second_stale_conflict(project, current, [:list_id])
-          end
+          persist_retried_move(project, current, destination_id)
       end
     else
       nil -> {:error, :not_found}
@@ -413,17 +319,15 @@ defmodule Taskman.Tasks.Mutations do
   end
 
   defp persist_update(changeset, opts \\ []) do
-    try do
-      case Repo.update(
-             Ecto.Changeset.optimistic_lock(changeset, :lock_version),
-             Keyword.merge([returning: [:updated_at], mode: :savepoint], opts)
-           ) do
-        {:ok, task} -> {:ok, task}
-        {:error, changeset} -> {:error, changeset}
-      end
-    rescue
-      Ecto.StaleEntryError -> :stale
+    case Repo.update(
+           Ecto.Changeset.optimistic_lock(changeset, :lock_version),
+           Keyword.merge([returning: [:updated_at], mode: :savepoint], opts)
+         ) do
+      {:ok, task} -> {:ok, task}
+      {:error, changeset} -> {:error, changeset}
     end
+  rescue
+    Ecto.StaleEntryError -> :stale
   end
 
   defp second_stale_conflict(project, baseline, fields) do
@@ -567,13 +471,7 @@ defmodule Taskman.Tasks.Mutations do
 
       ids
       |> Enum.flat_map(fn id ->
-        case Map.fetch(summaries, id) do
-          {:ok, %{status: status} = summary} ->
-            if Status.resolves_blocker?(status), do: [], else: [summary]
-
-          _ ->
-            []
-        end
+        unresolved_summary(Map.fetch(summaries, id))
       end)
       |> Enum.sort_by(fn summary ->
         {String.downcase(summary.project_name), String.downcase(summary.title), summary.id}
@@ -623,4 +521,118 @@ defmodule Taskman.Tasks.Mutations do
       end
     end)
   end
+
+  defp create_locked_child(project, task, attrs, parent) do
+    GraphLock.acquire!()
+
+    with %Project{} = locked_project <- lock_project(project),
+         {:ok, persisted_parent} <- reload_parent(locked_project, parent),
+         :ok <- Hierarchy.validate_parent(task, persisted_parent, locked_project) do
+      changeset =
+        task
+        |> Task.changeset(attrs)
+        |> Ecto.Changeset.put_change(:parent_task_id, parent_id(persisted_parent))
+
+      case Repo.insert(changeset) do
+        {:ok, persisted} -> persisted
+        {:error, error_changeset} -> Repo.rollback(error_changeset)
+      end
+    else
+      nil -> Repo.rollback(:not_found)
+      {:error, :not_found} -> Repo.rollback(:not_found)
+      {:error, :cycle} -> Repo.rollback(cycle_changeset(task, attrs))
+    end
+  end
+
+  defp update_locked_status(project, baseline, intended, opts) do
+    GraphLock.acquire!()
+
+    case current_task(project, baseline) do
+      nil ->
+        {:error, :not_found}
+
+      %Task{} = current ->
+        with :ok <- check_stale_conflicts(baseline, current, intended),
+             :ok <- allow_done_transition(current, intended, opts) do
+          update_ordinary(project, baseline, intended, mode: :savepoint)
+        end
+    end
+  end
+
+  defp attempt_locked_parent(project, baseline, intended, parent, opts, attempt) do
+    GraphLock.acquire!()
+
+    with %Project{} = locked_project <- lock_project(project),
+         {:ok, current} <- current_task_for_attempt(locked_project, baseline, attempt),
+         {:ok, persisted_parent} <- reload_parent(locked_project, parent),
+         :ok <- Hierarchy.validate_parent(current, persisted_parent, locked_project),
+         :ok <- validate_parent_block(current, persisted_parent) do
+      parent_attempt_result(
+        locked_project,
+        baseline,
+        current,
+        intended,
+        persisted_parent,
+        opts,
+        attempt
+      )
+    else
+      nil ->
+        Repo.rollback(:not_found)
+
+      {:error, :not_found} ->
+        Repo.rollback(:not_found)
+
+      {:error, :cycle} ->
+        Repo.rollback(cycle_changeset(baseline, intended))
+
+      {:error, :parent_blocks_child} ->
+        Repo.rollback(parent_block_changeset(baseline, intended))
+    end
+  end
+
+  defp retry_classified_update({[_ | _] = conflicts, _remaining}, _project, current, _opts),
+    do: {:error, %Conflict{task: current, fields: conflicts}}
+
+  defp retry_classified_update({[], remaining}, _project, current, _opts)
+       when map_size(remaining) == 0,
+       do: {:ok, current, [], current}
+
+  defp retry_classified_update({[], remaining}, project, current, persist_opts) do
+    case persist_update(Task.changeset(current, remaining), persist_opts) do
+      {:ok, persisted} -> {:ok, persisted, ordered_fields(Map.keys(remaining)), current}
+      {:error, changeset} -> {:error, changeset}
+      :stale -> second_stale_conflict(project, current, Map.keys(remaining))
+    end
+  end
+
+  defp persist_parent_update(changeset, fields, previous) do
+    case persist_update(changeset) do
+      {:ok, persisted} -> {:ok, persisted, fields, previous}
+      {:error, changeset} -> Repo.rollback(changeset)
+      :stale -> :stale
+    end
+  end
+
+  defp unchanged_location_result(current, destination_id) do
+    if task_value(current, :list_id) == destination_id do
+      {:error, :unchanged_location}
+    else
+      {:error, %Conflict{task: current, fields: [:list_id]}}
+    end
+  end
+
+  defp persist_retried_move(project, current, destination_id) do
+    case persist_update(location_changeset(current, destination_id)) do
+      {:ok, persisted} -> {:ok, persisted, [:list_id], current}
+      {:error, changeset} -> {:error, changeset}
+      :stale -> second_stale_conflict(project, current, [:list_id])
+    end
+  end
+
+  defp unresolved_summary({:ok, %{status: status} = summary}) do
+    if Status.resolves_blocker?(status), do: [], else: [summary]
+  end
+
+  defp unresolved_summary(_result), do: []
 end

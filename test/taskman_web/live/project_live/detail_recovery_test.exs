@@ -8,12 +8,11 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
   alias TaskmanWeb.ProjectLive
-  alias TaskmanWeb.ProjectLive.Paths
-  alias TaskmanWeb.ProjectLive.Reconciliation
-  alias TaskmanWeb.ProjectLive.Recovery
+  alias TaskmanWeb.ProjectLive.{Paths, Reconciliation, Recovery}
   alias TaskmanWeb.ProjectLive.Tasks.ParentPicker
 
   setup %{conn: conn} do
@@ -928,12 +927,12 @@ defmodule TaskmanWeb.ProjectLive.DetailRecoveryTest do
   end
 
   defp delete_list_without_fk_check(task_list) do
-    Ecto.Adapters.SQL.query!(Taskman.Repo, "SET LOCAL session_replication_role = replica", [])
+    SQL.query!(Taskman.Repo, "SET LOCAL session_replication_role = replica", [])
 
     try do
       Taskman.Repo.delete!(task_list)
     after
-      Ecto.Adapters.SQL.query!(Taskman.Repo, "SET LOCAL session_replication_role = origin", [])
+      SQL.query!(Taskman.Repo, "SET LOCAL session_replication_role = origin", [])
     end
   end
 

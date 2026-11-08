@@ -118,7 +118,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           title: "Patched title"
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-title[value='Patched title']"))
     assert js(c.session, "return document.querySelector('#task-due-at').value") == "28.10."
@@ -262,7 +264,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           title: "Unrelated patch"
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-title[value='Unrelated patch']"))
 
@@ -277,7 +281,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           due_at: ~N[2031-06-07 10:20:00]
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-due-at-trigger[aria-expanded='false']"))
     Browser.find(c.session, Query.css("#task-due-at-picker-notice", text: "Reopen"))
@@ -298,7 +304,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           title: "Native typing patch"
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-title[value='Native typing patch']"))
 
@@ -414,7 +422,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           due_at: ~N[0999-05-06 09:30:00]
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='0999-05-06T09:30']"))
     Browser.find(c.session, Query.css("#task-due-at-trigger[hidden]", visible: :any))
@@ -485,7 +495,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           status: :pending
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-status-trigger", text: "Pending"))
 
@@ -516,7 +528,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         Tasks.get_task_for_project(c.project, c.selected.id),
         %{
           status: :in_review
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     Browser.find(c.session, Query.css("#task-status-picker[data-value='in_review']"))
     Browser.find(c.session, Query.css("#task-status-trigger", text: "In Review"))
@@ -804,7 +818,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
           Tasks.get_task_for_project(c.project, c.third.id),
           %{
             title: "Fresh title #{width}"
-          }, actor: Taskman.AccountsFixtures.user_fixture())
+          },
+          actor: Taskman.AccountsFixtures.user_fixture()
+        )
 
       Browser.find(
         c.session,
@@ -1014,7 +1030,9 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         %{
           title: "Updated wrapping ancestor " <> String.duplicate("work ", 20),
           status: :done
-        }, actor: Taskman.AccountsFixtures.user_fixture())
+        },
+        actor: Taskman.AccountsFixtures.user_fixture()
+      )
 
     wait(c.session, &(&1["statuses"]["#{c.second.id}"] == "Done"))
     assert abs(state(c.session)["scrollTop"] - before_patch) <= 2

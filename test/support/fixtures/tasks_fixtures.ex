@@ -1,4 +1,5 @@
 defmodule Taskman.TasksFixtures do
+  @moduledoc "Creates Task and relationship fixtures through the application write boundary."
   alias Taskman.Tasks
 
   def task_fixture(project, attrs \\ %{}) do

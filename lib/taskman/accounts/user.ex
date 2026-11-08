@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.User do
+  @moduledoc "Account identities, lifecycle actions, and authentication policies."
+
   use Ash.Resource,
     data_layer: AshPostgres.DataLayer,
     extensions: [AshAuthentication, AshAdmin.Resource, AshRateLimiter],

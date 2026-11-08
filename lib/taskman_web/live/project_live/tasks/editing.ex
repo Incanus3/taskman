@@ -1,14 +1,16 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
+  @moduledoc "Coordinates Task detail drafts, autosave and related detail workflows."
+
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [push_patch: 2]
 
-  alias Taskman.Projects
+  alias Phoenix.LiveView
+  alias Taskman.ChangeNotifications.Event
+  alias Taskman.{Projects, Tasks}
   alias Taskman.Projects.Project
-  alias Taskman.Tasks
   alias Taskman.Tasks.Task
   alias TaskmanWeb.DateTimeInput
-  alias TaskmanWeb.ProjectLive.Workspace
-  alias TaskmanWeb.ProjectLive.Paths
+  alias TaskmanWeb.ProjectLive.{Paths, Workspace}
 
   alias TaskmanWeb.ProjectLive.Tasks.{
     Activity,
@@ -25,9 +27,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   @events ~w(reveal_task_edit_states toggle_hierarchy_sort close_hierarchy_sort sort_hierarchy toggle_hierarchy_status_filter close_hierarchy_status_filter filter_hierarchy_statuses toggle_task_hierarchy_node autosave_task submit_task_edit resolve_task_conflict open_related_picker close_related_picker select_related_project search_related_tasks add_related_task remove_related_task keep_current_task_status confirm_task_done)
 
   defmodule State do
+    @moduledoc "Selected Task detail, autosave and related data state."
+
     alias Taskman.Tasks.Task
     alias TaskmanWeb.DateTimeInput
-    alias Taskman.Tasks.Hierarchy, as: TaskHierarchy
     alias TaskmanWeb.ProjectLive.Tasks.{Autosave, Hierarchy, RelatedTasksPicker}
 
     defstruct selected_task: nil,
@@ -53,8 +56,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     @spec empty() :: t()
     def empty, do: %__MODULE__{}
 
-    @spec open(t(), Task.t(), Autosave.t(), TaskHierarchy.t()) :: t()
-    @spec open(t(), Task.t(), Autosave.t(), TaskHierarchy.t(), map()) :: t()
+    @spec open(t(), Task.t(), Autosave.t(), Tasks.Hierarchy.t()) :: t()
+    @spec open(t(), Task.t(), Autosave.t(), Tasks.Hierarchy.t(), map()) :: t()
     def open(
           %__MODULE__{} = state,
           %Task{} = task,
@@ -116,8 +119,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def events, do: @events
 
   @doc "Loads detail for the scoped Task resolved by the route coordinator."
-  @spec apply_route(Phoenix.LiveView.Socket.t(), Project.t(), Task.t() | nil) ::
-          Phoenix.LiveView.Socket.t()
+  @spec apply_route(LiveView.Socket.t(), Project.t(), Task.t() | nil) ::
+          LiveView.Socket.t()
   def apply_route(socket, project, %Task{} = task) do
     case {Tasks.get_task_hierarchy(project, task), Tasks.list_blocking(project, task)} do
       {{:ok, hierarchy}, {:ok, related_tasks}} ->
@@ -172,10 +175,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     do: Autosave.load(current, task, saved?: false)
 
   @doc "Restores captured detail input against fresh scoped Task authority without writing."
-  @spec restore(Phoenix.LiveView.Socket.t(), State.t(), ParentPicker.t()) ::
-          {:ok, Phoenix.LiveView.Socket.t()}
-          | {:error, :task_not_found, Phoenix.LiveView.Socket.t()}
-          | {:error, Phoenix.LiveView.Socket.t()}
+  @spec restore(LiveView.Socket.t(), State.t(), ParentPicker.t()) ::
+          {:ok, LiveView.Socket.t()}
+          | {:error, :task_not_found, LiveView.Socket.t()}
+          | {:error, LiveView.Socket.t()}
   def restore(
         %{assigns: %{workspace: %{selected_project: %Project{} = project}}} = socket,
         %State{selected_task: %Task{id: task_id}, autosave: %Autosave{} = captured_autosave} =
@@ -207,25 +210,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
               |> assign(:task_parent_picker, picker)
               |> Description.open({:edit, project.id, task.id})
 
-            case Autosave.restart(
-                   %{
-                     socket.assigns.editing.autosave
-                     | actor: socket.assigns.current_user || socket.assigns.current_scope
-                   },
-                   project,
-                   task
-                 ) do
-              {:ok, autosave, task, schedules} ->
-                socket = sync_autosave(socket, autosave, task)
-
-                {:ok,
-                 Enum.reduce(schedules, socket, fn {delay_ms, message}, socket ->
-                   execute_task_autosave_schedule(socket, delay_ms, message)
-                 end)}
-
-              {:not_found, autosave} ->
-                {:error, apply_task_autosave_result(socket, {:not_found, autosave})}
-            end
+            restart_restored_autosave(socket, project, task)
 
           _not_found ->
             {:error, :task_not_found, socket}
@@ -239,7 +224,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def restore(socket, %State{}, %ParentPicker{}), do: {:error, socket}
 
   @doc "Clears detail data while retaining the autosave timer sequence."
-  @spec clear(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec clear(LiveView.Socket.t()) :: LiveView.Socket.t()
   def clear(socket) do
     socket = assign(socket, :editing, State.clear(socket.assigns.editing))
 
@@ -262,8 +247,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     apply_task_autosave_result(socket, result)
   end
 
-  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_event(String.t(), map(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
   def handle_event("reveal_task_edit_states", _params, socket) do
     {:noreply, update_state(socket, &%{&1 | additional_states_revealed?: true})}
   end
@@ -503,8 +488,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
 
   def handle_event("resolve_task_conflict", _params, socket), do: {:noreply, socket}
 
-  @spec handle_autosave_info(tuple(), Phoenix.LiveView.Socket.t()) ::
-          {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_autosave_info(tuple(), LiveView.Socket.t()) ::
+          {:noreply, LiveView.Socket.t()}
   def handle_autosave_info(
         {:autosave_task_field, task_id, field, revision},
         %{
@@ -560,7 +545,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   @doc "Synchronizes a persisted Task without discarding pending ordinary-field edits."
-  @spec sync_persisted_task(Phoenix.LiveView.Socket.t(), Task.t()) :: Phoenix.LiveView.Socket.t()
+  @spec sync_persisted_task(LiveView.Socket.t(), Task.t()) :: LiveView.Socket.t()
   def sync_persisted_task(socket, %Task{} = task) do
     sync_autosave(socket, Autosave.reconcile(socket.assigns.editing.autosave, task), task)
   end
@@ -600,22 +585,14 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def restart_captured_saves(socket), do: socket
 
   @doc "Reloads a successfully moved selected Task and marks its flushed detail as saved."
-  @spec refresh_after_move(Phoenix.LiveView.Socket.t(), pos_integer()) ::
-          Phoenix.LiveView.Socket.t()
+  @spec refresh_after_move(LiveView.Socket.t(), pos_integer()) ::
+          LiveView.Socket.t()
   def refresh_after_move(socket, task_id) do
     case socket.assigns.editing.selected_task do
       %Task{id: ^task_id} ->
         case Tasks.get_task_for_project(socket.assigns.workspace.selected_project, task_id) do
           %Task{} = task ->
-            update_state(socket, fn editing ->
-              autosave = Autosave.load(editing.autosave, task, saved?: true)
-
-              %{
-                editing
-                | selected_task: task,
-                  autosave: %{autosave | field_states: editing.autosave.field_states}
-              }
-            end)
+            update_state(socket, &put_moved_task(&1, task))
             |> Activity.refresh_selected()
 
           nil ->
@@ -628,24 +605,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   defp sync_autosave(socket, autosave, task) do
-    socket =
-      case socket.assigns.editing.selected_task do
-        %Task{status: status, list_id: list_id}
-        when status != task.status or list_id != task.list_id ->
-          Workspace.observe_task(socket, task)
-
-        _unchanged_persisted_location_or_status ->
-          socket
-      end
-
-    hierarchy_changed? =
-      case socket.assigns.editing.selected_task do
-        %Task{title: title, status: status, priority: priority} ->
-          {title, status, priority} != {task.title, task.status, task.priority}
-
-        _ ->
-          false
-      end
+    socket = observe_autosaved_task(socket, task)
+    hierarchy_changed? = hierarchy_changed?(socket.assigns.editing.selected_task, task)
 
     socket = update_state(socket, &State.put_autosave(&1, autosave))
 
@@ -696,10 +657,10 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   Ordinary navigation may leave behind invalid Task input as before. Comment departure actions
   require `allow_invalid?: false` so discarding a comment cannot silently discard Task input.
   "
-  @spec flush(Phoenix.LiveView.Socket.t()) ::
-          {:ok, Phoenix.LiveView.Socket.t()} | {:error, Phoenix.LiveView.Socket.t()}
-  @spec flush(Phoenix.LiveView.Socket.t(), keyword()) ::
-          {:ok, Phoenix.LiveView.Socket.t()} | {:error, Phoenix.LiveView.Socket.t()}
+  @spec flush(LiveView.Socket.t()) ::
+          {:ok, LiveView.Socket.t()} | {:error, LiveView.Socket.t()}
+  @spec flush(LiveView.Socket.t(), keyword()) ::
+          {:ok, LiveView.Socket.t()} | {:error, LiveView.Socket.t()}
   def flush(socket, opts \\ [])
 
   def flush(
@@ -742,7 +703,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def flush(socket, _opts), do: {:ok, socket}
 
   @doc "Restores the selected detail route when flushing blocked navigation."
-  @spec restore_failed_route(Phoenix.LiveView.Socket.t(), map()) :: Phoenix.LiveView.Socket.t()
+  @spec restore_failed_route(LiveView.Socket.t(), map()) :: LiveView.Socket.t()
   def restore_failed_route(
         %{
           assigns: %{
@@ -767,7 +728,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   @doc "Refreshes hierarchy for an open detail, preserving disclosure state."
-  @spec reload_hierarchy(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec reload_hierarchy(LiveView.Socket.t()) :: LiveView.Socket.t()
   def reload_hierarchy(
         %{
           assigns: %{
@@ -782,7 +743,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   def reload_hierarchy(socket), do: socket
 
   @doc "Refetches relationships for the selected detail from its scoped Project."
-  @spec reload_related_tasks(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  @spec reload_related_tasks(LiveView.Socket.t()) :: LiveView.Socket.t()
   def reload_related_tasks(
         %{
           assigns: %{
@@ -819,8 +780,8 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   Missing or inactive detail returns `:unchanged`; external picker synchronization belongs to
   the notification coordinator.
   """
-  @spec reconcile(Phoenix.LiveView.Socket.t(), Taskman.ChangeNotifications.Event.t()) ::
-          {Phoenix.LiveView.Socket.t(), :unchanged | {:task_reconciled, Task.t()}}
+  @spec reconcile(LiveView.Socket.t(), Event.t()) ::
+          {LiveView.Socket.t(), :unchanged | {:task_reconciled, Task.t()}}
   def reconcile(
         %{
           assigns: %{
@@ -924,9 +885,11 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
   end
 
   defp related_error_message(:not_found), do: "This relationship is no longer available."
+
   defp related_error_message(_), do: "Couldn’t change the relationship. Please try again."
 
   defp task_conflict_resolution("use_latest"), do: :use_latest
+
   defp task_conflict_resolution("keep_mine"), do: :keep_mine
   defp task_conflict_resolution(_resolution), do: nil
 
@@ -947,4 +910,52 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Editing do
     |> assign(:task_parent_picker, ParentPicker.empty())
     |> assign(:task_move, Move.clear(socket.assigns.task_move))
   end
+
+  defp restart_restored_autosave(socket, project, task) do
+    case Autosave.restart(
+           %{
+             socket.assigns.editing.autosave
+             | actor: socket.assigns.current_user || socket.assigns.current_scope
+           },
+           project,
+           task
+         ) do
+      {:ok, autosave, task, schedules} ->
+        socket = sync_autosave(socket, autosave, task)
+
+        {:ok,
+         Enum.reduce(schedules, socket, fn {delay_ms, message}, socket ->
+           execute_task_autosave_schedule(socket, delay_ms, message)
+         end)}
+
+      {:not_found, autosave} ->
+        {:error, apply_task_autosave_result(socket, {:not_found, autosave})}
+    end
+  end
+
+  defp put_moved_task(editing, task) do
+    autosave = Autosave.load(editing.autosave, task, saved?: true)
+
+    %{
+      editing
+      | selected_task: task,
+        autosave: %{autosave | field_states: editing.autosave.field_states}
+    }
+  end
+
+  defp observe_autosaved_task(socket, task) do
+    case socket.assigns.editing.selected_task do
+      %Task{status: status, list_id: list_id}
+      when status != task.status or list_id != task.list_id ->
+        Workspace.observe_task(socket, task)
+
+      _unchanged_persisted_location_or_status ->
+        socket
+    end
+  end
+
+  defp hierarchy_changed?(%Task{title: title, status: status, priority: priority}, task),
+    do: {title, status, priority} != {task.title, task.status, task.priority}
+
+  defp hierarchy_changed?(_selected, _task), do: false
 end

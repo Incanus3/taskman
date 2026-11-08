@@ -5,8 +5,8 @@ defmodule Taskman.Lists.NavigationTest do
   import Taskman.ListsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Lists
-  alias Taskman.Tasks
+  alias Taskman.{Lists, Tasks}
+  alias Taskman.Lists.TaskList
 
   test "direct Task presence is scoped to one Project and ignores status" do
     project = project_fixture(%{})
@@ -128,7 +128,7 @@ defmodule Taskman.Lists.NavigationTest do
     project = project_fixture(%{})
     root = list_fixture(project)
 
-    child = %Taskman.Lists.TaskList{
+    child = %TaskList{
       id: -1,
       project_id: project.id,
       parent_list_id: root.id,

@@ -1,4 +1,6 @@
 defmodule Taskman.Accounts.Emails do
+  @moduledoc "Account email messages and delivery through the configured mailer."
+
   import Swoosh.Email
 
   alias Taskman.Mailer

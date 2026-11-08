@@ -2,7 +2,6 @@ defmodule Taskman.CLI.Context do
   @moduledoc "The selected named host, Project scope and associated credential for one invocation."
 
   alias Taskman.CLI.{Config, RepositoryBinding}
-  alias Taskman.CLI.Config.Document
   alias Taskman.CLI.Execution.Invocation
 
   @type t :: %__MODULE__{
@@ -69,26 +68,38 @@ defmodule Taskman.CLI.Context do
     scoped? = role in [:project_required, :project_filter, :bind]
 
     cond do
-      host? and Document.validate_host_name(invocation.globals.host) != :ok ->
+      host? and Config.Document.validate_host_name(invocation.globals.host) != :ok ->
         invocation_error("Supply a valid lowercase host name with --host")
 
       scoped? and project? and
           not (is_integer(invocation.options.project) and invocation.options.project > 0) ->
         invocation_error("Supply a positive integer Project ID with --project")
 
-      role == :project_filter and project? and all_projects?(invocation) ->
-        invocation_error("--project and --all-projects cannot be used together")
-
-      role == :bind and not (host? and project?) ->
-        invocation_error("Repository binding requires both --host and --project")
-
-      role == :project_required and host? and not project? ->
-        invocation_error("Supply both --host and --project to select an explicit Project context")
-
       true ->
-        :ok
+        validate_explicit_scope(invocation, role, host?, project?)
     end
   end
+
+  defp validate_explicit_scope(invocation, :project_filter, _host?, project?) do
+    if project? and all_projects?(invocation),
+      do: invocation_error("--project and --all-projects cannot be used together"),
+      else: :ok
+  end
+
+  defp validate_explicit_scope(_invocation, :bind, host?, project?) do
+    if host? and project?,
+      do: :ok,
+      else: invocation_error("Repository binding requires both --host and --project")
+  end
+
+  defp validate_explicit_scope(_invocation, :project_required, host?, project?) do
+    if host? and not project?,
+      do:
+        invocation_error("Supply both --host and --project to select an explicit Project context"),
+      else: :ok
+  end
+
+  defp validate_explicit_scope(_invocation, _role, _host?, _project?), do: :ok
 
   defp reject_retired_url(env) do
     if present(env, "TASKMAN_API_URL") == nil,
@@ -103,21 +114,25 @@ defmodule Taskman.CLI.Context do
     if complete_domain_target?(invocation, role) do
       {:ok, :unbound, nil}
     else
-      case RepositoryBinding.discover(options) do
-        {:ok, :outside_work_tree} when role == :bind ->
-          invocation_error("Repository binding requires a Git working tree")
+      discover_repository_context(role, options)
+    end
+  end
 
-        {:ok, :outside_work_tree} ->
-          {:ok, :unbound, nil}
+  defp discover_repository_context(role, options) do
+    case RepositoryBinding.discover(options) do
+      {:ok, :outside_work_tree} when role == :bind ->
+        invocation_error("Repository binding requires a Git working tree")
 
-        {:ok, common_dir} ->
-          with {:ok, binding} <- RepositoryBinding.read(common_dir, options) do
-            {:ok, binding, common_dir}
-          end
+      {:ok, :outside_work_tree} ->
+        {:ok, :unbound, nil}
 
-        error ->
-          error
-      end
+      {:ok, common_dir} ->
+        with {:ok, binding} <- RepositoryBinding.read(common_dir, options) do
+          {:ok, binding, common_dir}
+        end
+
+      error ->
+        error
     end
   end
 
@@ -157,7 +172,7 @@ defmodule Taskman.CLI.Context do
         {:ok, binding.host, :repository}
 
       present(env, "TASKMAN_HOST") != nil ->
-        with :ok <- Document.validate_host_name(env["TASKMAN_HOST"]) do
+        with :ok <- Config.Document.validate_host_name(env["TASKMAN_HOST"]) do
           {:ok, env["TASKMAN_HOST"], :environment}
         end
 
@@ -169,17 +184,26 @@ defmodule Taskman.CLI.Context do
     end
   end
 
-  defp select_project(invocation, role, binding) do
+  defp select_project(_invocation, role, _binding) when role in [:host_only, :local],
+    do: {:ok, nil, :none}
+
+  defp select_project(invocation, :effective_inspection = role, binding) do
+    if Map.has_key?(invocation.globals, :host),
+      do: {:ok, nil, :none},
+      else: select_scoped_project(invocation, role, binding)
+  end
+
+  defp select_project(invocation, :project_filter = role, binding) do
+    if all_projects?(invocation),
+      do: {:ok, nil, :none},
+      else: select_scoped_project(invocation, role, binding)
+  end
+
+  defp select_project(invocation, role, binding),
+    do: select_scoped_project(invocation, role, binding)
+
+  defp select_scoped_project(invocation, role, binding) do
     cond do
-      role in [:host_only, :local] ->
-        {:ok, nil, :none}
-
-      role == :effective_inspection and Map.has_key?(invocation.globals, :host) ->
-        {:ok, nil, :none}
-
-      role == :project_filter and all_projects?(invocation) ->
-        {:ok, nil, :none}
-
       role in [:project_required, :project_filter, :bind] and
           Map.has_key?(invocation.options, :project) ->
         {:ok, invocation.options.project, :flag}
@@ -240,7 +264,8 @@ defmodule Taskman.CLI.Context do
       key == nil or key_host == nil ->
         configuration_error("Supply TASKMAN_API_KEY and TASKMAN_API_KEY_HOST together")
 
-      Document.validate_api_key(key) != :ok or Document.validate_host_name(key_host) != :ok ->
+      Config.Document.validate_api_key(key) != :ok or
+          Config.Document.validate_host_name(key_host) != :ok ->
         configuration_error(
           "The injected credential pair must contain a valid API key and host name"
         )

@@ -13,9 +13,7 @@ defmodule TaskmanWeb.AuthController do
 
   alias AshAuthentication.Jwt
   alias Taskman.Accounts
-  alias Taskman.Accounts.RateLimit
-  alias Taskman.Accounts.SecurityLog
-  alias Taskman.Accounts.Token
+  alias Taskman.Accounts.{RateLimit, SecurityLog, Token}
   alias TaskmanWeb.LiveUserAuth
 
   @doc false
@@ -288,25 +286,7 @@ defmodule TaskmanWeb.AuthController do
 
   defp replace_token_transaction(user, subject, acting_token) do
     case Ash.transact([Taskman.Accounts.Token], fn ->
-           with {:ok, acting_record, claims} <- Token.claim_browser_session(acting_token),
-                %{"jti" => acting_jti, "sub" => ^subject} <- claims,
-                true <- acting_record.subject == subject,
-                {:ok, peer_jtis} <-
-                  Token.revoke_for_subject_except_with_jtis(
-                    user,
-                    "user",
-                    acting_jti,
-                    disconnect?: false
-                  ),
-                {:ok, replacement, _claims} <-
-                  Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user),
-                :ok <- Token.revoke_jti(acting_jti, subject, disconnect?: false) do
-             {:ok, {replacement, peer_jtis}}
-           else
-             :error -> {:error, :session_replacement_failed}
-             false -> {:error, :invalid_session}
-             _ -> {:error, :invalid_session}
-           end
+           replace_claimed_token(user, subject, acting_token)
          end) do
       {:ok, {:ok, {replacement, peer_jtis}}} ->
         {:ok, {replacement, peer_jtis}}
@@ -385,6 +365,7 @@ defmodule TaskmanWeb.AuthController do
   defp log_authentication_result(_activity, _result, _user), do: :ok
 
   defp record_id(%{id: id}) when is_binary(id), do: id
+
   defp record_id(_user), do: nil
 
   defp rate_limited_response(conn, retry_after) do
@@ -392,5 +373,27 @@ defmodule TaskmanWeb.AuthController do
     |> put_resp_header("retry-after", Integer.to_string(max(1, retry_after)))
     |> put_resp_content_type("text/plain")
     |> send_resp(429, "Too many requests. Please try again later.")
+  end
+
+  defp replace_claimed_token(user, subject, acting_token) do
+    with {:ok, acting_record, claims} <- Token.claim_browser_session(acting_token),
+         %{"jti" => acting_jti, "sub" => ^subject} <- claims,
+         true <- acting_record.subject == subject,
+         {:ok, peer_jtis} <-
+           Token.revoke_for_subject_except_with_jtis(
+             user,
+             "user",
+             acting_jti,
+             disconnect?: false
+           ),
+         {:ok, replacement, _claims} <-
+           Jwt.token_for_user(user, %{"purpose" => "user"}, purpose: :user),
+         :ok <- Token.revoke_jti(acting_jti, subject, disconnect?: false) do
+      {:ok, {replacement, peer_jtis}}
+    else
+      :error -> {:error, :session_replacement_failed}
+      false -> {:error, :invalid_session}
+      _ -> {:error, :invalid_session}
+    end
   end
 end

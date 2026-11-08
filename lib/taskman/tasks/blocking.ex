@@ -3,30 +3,29 @@ defmodule Taskman.Tasks.Blocking do
 
   alias Taskman.Projects.Project
   alias Taskman.Repo
-  alias Taskman.Tasks.BlockingLink
-  alias Taskman.Tasks.BlockingPersistence
-  alias Taskman.Tasks.GraphLock
-  alias Taskman.Tasks.Task
+  alias Taskman.Tasks.{BlockingLink, BlockingPersistence, GraphLock, Task}
 
   @spec list(Project.t(), Task.t()) :: {:ok, map()} | {:error, :not_found}
   def list(%Project{} = project, %Task{} = selected_task) do
-    with %Task{} <- scoped_endpoint(project, selected_task) do
-      outgoing = BlockingPersistence.outgoing(selected_task.id)
-      incoming = BlockingPersistence.incoming(selected_task.id)
+    case scoped_endpoint(project, selected_task) do
+      %Task{} ->
+        outgoing = BlockingPersistence.outgoing(selected_task.id)
+        incoming = BlockingPersistence.incoming(selected_task.id)
 
-      ids =
-        Enum.map(outgoing, & &1.blocked_task_id) ++
-          Enum.map(incoming, & &1.blocking_task_id)
+        ids =
+          Enum.map(outgoing, & &1.blocked_task_id) ++
+            Enum.map(incoming, & &1.blocking_task_id)
 
-      summaries = BlockingPersistence.summaries(ids)
+        summaries = BlockingPersistence.summaries(ids)
 
-      {:ok,
-       %{
-         blocks: ordered_summaries(outgoing, :blocked_task_id, summaries),
-         blocked_by: ordered_summaries(incoming, :blocking_task_id, summaries)
-       }}
-    else
-      nil -> {:error, :not_found}
+        {:ok,
+         %{
+           blocks: ordered_summaries(outgoing, :blocked_task_id, summaries),
+           blocked_by: ordered_summaries(incoming, :blocking_task_id, summaries)
+         }}
+
+      nil ->
+        {:error, :not_found}
     end
   end
 

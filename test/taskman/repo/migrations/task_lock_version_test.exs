@@ -4,6 +4,7 @@ defmodule Taskman.Repo.Migrations.TaskLockVersionTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
   alias Taskman.Tasks
 
   test "new Tasks start at lock version one and successful updates increment it" do
@@ -22,7 +23,7 @@ defmodule Taskman.Repo.Migrations.TaskLockVersionTest do
 
   test "the database requires a lock version with a default of one" do
     assert %{rows: [["NO", "1"]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                """
                SELECT is_nullable, column_default

@@ -5,15 +5,20 @@ defmodule Taskman.Tasks.ConflictsTest do
   import Taskman.ListsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.Projects.Project
   alias Taskman.Tasks
+  alias Taskman.Tasks.Conflict
   import Taskman.AccountsFixtures
 
   setup do
-    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+    existing_user_ids = Repo.all(from u in User, select: u.id)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in User, where: u.id not in ^existing_user_ids)
       end)
     end)
 
@@ -60,15 +65,15 @@ defmodule Taskman.Tasks.ConflictsTest do
   end
 
   test "account deletion and comment insertion serialize in either order" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       task = task_fixture(project)
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
       test_pid = self()
 
       on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          case Repo.get(Taskman.Projects.Project, project.id) do
+        Sandbox.unboxed_run(Repo, fn ->
+          case Repo.get(Project, project.id) do
             nil -> :ok
             persisted -> Repo.delete!(persisted)
           end
@@ -80,7 +85,7 @@ defmodule Taskman.Tasks.ConflictsTest do
       deletion_pid =
         db_worker(supervisor, test_pid, fn ->
           Repo.transaction(fn ->
-            Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
+            SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
               Ecto.UUID.dump!(deletion_wins.id)
             ])
 
@@ -107,7 +112,7 @@ defmodule Taskman.Tasks.ConflictsTest do
       blocker_pid =
         db_worker(supervisor, test_pid, fn ->
           Repo.transaction(fn ->
-            Ecto.Adapters.SQL.query!(Repo, "SELECT id FROM tasks WHERE id = $1 FOR UPDATE", [
+            SQL.query!(Repo, "SELECT id FROM tasks WHERE id = $1 FOR UPDATE", [
               task.id
             ])
 
@@ -127,7 +132,7 @@ defmodule Taskman.Tasks.ConflictsTest do
 
       second_deletion_pid =
         db_worker(supervisor, test_pid, fn ->
-          Ecto.Adapters.SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
+          SQL.query!(Repo, "DELETE FROM users WHERE id = $1", [
             Ecto.UUID.dump!(insertion_wins.id)
           ])
         end)
@@ -143,16 +148,16 @@ defmodule Taskman.Tasks.ConflictsTest do
   end
 
   test "direct edits and comments preserve Task timestamps in either lock order" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       task = task_fixture(project, %{title: "Initial"})
       actor = user_fixture()
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
       test_pid = self()
 
       on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          case Repo.get(Taskman.Projects.Project, project.id) do
+        Sandbox.unboxed_run(Repo, fn ->
+          case Repo.get(Project, project.id) do
             nil -> :ok
             persisted -> Repo.delete!(persisted)
           end
@@ -205,7 +210,7 @@ defmodule Taskman.Tasks.ConflictsTest do
       table_blocker =
         db_worker(supervisor, test_pid, fn ->
           Repo.transaction(fn ->
-            Ecto.Adapters.SQL.query!(Repo, "LOCK TABLE task_comments IN ACCESS EXCLUSIVE MODE")
+            SQL.query!(Repo, "LOCK TABLE task_comments IN ACCESS EXCLUSIVE MODE")
             send(test_pid, :comment_table_held)
             receive do: (:release_comment_table -> :ok)
           end)
@@ -244,15 +249,15 @@ defmodule Taskman.Tasks.ConflictsTest do
 
   defp db_worker(supervisor, test_pid, fun) do
     {:ok, pid} =
-      Elixir.Task.Supervisor.start_child(supervisor, fn ->
-        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+      Task.Supervisor.start_child(supervisor, fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
 
         try do
-          %{rows: [[backend_pid]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+          %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
           send(test_pid, {:db_backend, self(), backend_pid})
           send(test_pid, {:db_result, self(), fun.()})
         after
-          :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+          :ok = Sandbox.checkin(Repo)
         end
       end)
 
@@ -268,7 +273,7 @@ defmodule Taskman.Tasks.ConflictsTest do
 
   defp wait_for_blocked_backend(backend_pid, deadline) do
     %{rows: [[blockers]]} =
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend_pid])
+      SQL.query!(Repo, "SELECT pg_blocking_pids($1)", [backend_pid])
 
     cond do
       blockers != [] ->
@@ -292,7 +297,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %{__struct__: Taskman.Tasks.Conflict, task: current, fields: [:title]}} =
+    assert {:error, %{__struct__: Conflict, task: current, fields: [:title]}} =
              Tasks.update_task(project, second_baseline, %{title: "Second writer"},
                actor: Taskman.AccountsFixtures.user_fixture()
              )
@@ -330,7 +335,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %Taskman.Tasks.Conflict{task: current, fields: [:status]}} =
+    assert {:error, %Conflict{task: current, fields: [:status]}} =
              Tasks.update_task(project, stale_baseline, %{"status" => "done"},
                actor: Taskman.AccountsFixtures.user_fixture()
              )
@@ -349,7 +354,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %Taskman.Tasks.Conflict{fields: [:status]}} =
+    assert {:error, %Conflict{fields: [:status]}} =
              Tasks.update_task(project, stale_baseline, %{title: "After", status: :done},
                actor: Taskman.AccountsFixtures.user_fixture()
              )
@@ -370,7 +375,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %Taskman.Tasks.Conflict{fields: [:status]}} =
+    assert {:error, %Conflict{fields: [:status]}} =
              Tasks.update_task(project, stale_baseline, %{status: :done},
                parent: parent,
                actor: Taskman.AccountsFixtures.user_fixture()
@@ -391,14 +396,16 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %{__struct__: Taskman.Tasks.Conflict, fields: [:title]}} =
+    assert {:error, %{__struct__: Conflict, fields: [:title]}} =
              Tasks.update_task(
                project,
                second_baseline,
                %{
                  title: "Second writer",
                  status: :done
-               }, actor: Taskman.AccountsFixtures.user_fixture())
+               },
+               actor: Taskman.AccountsFixtures.user_fixture()
+             )
 
     current = Tasks.get_task_for_project(project, task.id)
     assert current.title == "First writer"
@@ -441,7 +448,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %{__struct__: Taskman.Tasks.Conflict, fields: [:parent_task_id]}} =
+    assert {:error, %{__struct__: Conflict, fields: [:parent_task_id]}} =
              Tasks.update_task(project, second_baseline, %{},
                parent: second_parent,
                actor: Taskman.AccountsFixtures.user_fixture()
@@ -463,8 +470,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error,
-            %{__struct__: Taskman.Tasks.Conflict, task: current, fields: [:parent_task_id]}} =
+    assert {:error, %{__struct__: Conflict, task: current, fields: [:parent_task_id]}} =
              Tasks.update_task(project, second_baseline, %{},
                parent: original_parent,
                actor: Taskman.AccountsFixtures.user_fixture()
@@ -532,7 +538,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                actor: Taskman.AccountsFixtures.user_fixture()
              )
 
-    assert {:error, %{__struct__: Taskman.Tasks.Conflict, fields: [:list_id]}} =
+    assert {:error, %{__struct__: Conflict, fields: [:list_id]}} =
              Tasks.move_task(project, second_baseline, second_destination,
                actor: Taskman.AccountsFixtures.user_fixture()
              )
@@ -546,14 +552,14 @@ defmodule Taskman.Tasks.ConflictsTest do
   end
 
   test "a second stale race stops after one retry" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       task = task_fixture(project, %{title: "Before", status: :pending})
       {first_baseline, second_baseline} = loaded_task_baselines(project, task)
 
       on_exit(fn ->
-        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-          case Repo.get(Taskman.Projects.Project, project.id) do
+        Sandbox.unboxed_run(Repo, fn ->
+          case Repo.get(Project, project.id) do
             nil -> :ok
             persisted_project -> Repo.delete!(persisted_project)
           end
@@ -569,18 +575,18 @@ defmodule Taskman.Tasks.ConflictsTest do
       handler_id = {__MODULE__, make_ref()}
       trigger = make_ref()
       telemetry_guard = :atomics.new(1, [])
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
 
       {:ok, race_pid} =
-        Elixir.Task.Supervisor.start_child(supervisor, fn ->
-          :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        Task.Supervisor.start_child(supervisor, fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
 
           try do
             send(test_pid, {:second_race_ready, self()})
 
             receive do
               {:run_second_race, ^trigger} ->
-                Ecto.Adapters.SQL.query!(
+                SQL.query!(
                   Repo,
                   """
                   UPDATE tasks
@@ -593,7 +599,7 @@ defmodule Taskman.Tasks.ConflictsTest do
                 send(test_pid, {:second_race_finished, self()})
             end
           after
-            :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+            :ok = Sandbox.checkin(Repo)
           end
         end)
 
@@ -618,7 +624,7 @@ defmodule Taskman.Tasks.ConflictsTest do
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      assert {:error, %{__struct__: Taskman.Tasks.Conflict, fields: [:status], task: current}} =
+      assert {:error, %{__struct__: Conflict, fields: [:status], task: current}} =
                Tasks.update_task(project, second_baseline, %{status: :done},
                  actor: Taskman.AccountsFixtures.user_fixture()
                )

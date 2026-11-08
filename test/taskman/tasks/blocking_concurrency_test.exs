@@ -4,18 +4,21 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
+  alias Ecto.Adapters.SQL
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Taskman.Accounts.User
+  alias Taskman.Projects.Project
   alias Taskman.Tasks
   alias Taskman.Tasks.BlockingPersistence
-  alias Taskman.Tasks.Task
 
   @graph_lock_key {724_150, 1}
 
   setup do
-    existing_user_ids = Repo.all(from u in Taskman.Accounts.User, select: u.id)
+    existing_user_ids = Repo.all(from u in User, select: u.id)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        Repo.delete_all(from u in Taskman.Accounts.User, where: u.id not in ^existing_user_ids)
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from u in User, where: u.id not in ^existing_user_ids)
       end)
     end)
 
@@ -23,7 +26,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   end
 
   test "opposite link adds serialize and cannot form a two-Task cycle" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       first = task_fixture(project)
       second = task_fixture(project)
@@ -52,7 +55,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   end
 
   test "link addition and reparenting serialize without a forbidden parent-to-child edge" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       parent = task_fixture(project, %{title: "Parent"})
       child = task_fixture(project, %{title: "Before"})
@@ -76,7 +79,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
       assert Enum.count([link_result, parent_result], &match?({:ok, _}, &1)) == 1
       assert Enum.count([link_result, parent_result], &parent_direction_error?/1) == 1
 
-      persisted_child = Repo.get!(Task, child.id)
+      persisted_child = Repo.get!(Tasks.Task, child.id)
       link_exists? = BlockingPersistence.edge?(parent.id, child.id)
       refute link_exists? and persisted_child.parent_task_id == parent.id
 
@@ -91,7 +94,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   end
 
   test "relationship read skips an endpoint deleted after loading its edge" do
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+    Sandbox.unboxed_run(Repo, fn ->
       project = project_fixture(%{})
       source = task_fixture(project)
       target = task_fixture(project)
@@ -131,11 +134,11 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
           nil
         )
 
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
 
       {:ok, reader} =
-        Elixir.Task.Supervisor.start_child(supervisor, fn ->
-          :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+        Task.Supervisor.start_child(supervisor, fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
 
           try do
             send(
@@ -143,7 +146,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
               {:relationship_read_result, self(), Tasks.list_blocking(project, source)}
             )
           after
-            :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+            :ok = Sandbox.checkin(Repo)
           end
         end)
 
@@ -161,18 +164,18 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
   defp run_behind_graph_gate(operations) do
     {first_key, second_key} = @graph_lock_key
-    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_lock($1, $2)", [first_key, second_key])
+    SQL.query!(Repo, "SELECT pg_advisory_lock($1, $2)", [first_key, second_key])
 
     try do
       owner_backend = database_backend_pid()
-      supervisor = start_supervised!(Elixir.Task.Supervisor)
+      supervisor = start_supervised!(Task.Supervisor)
       test_pid = self()
 
       workers =
         Enum.map(operations, fn operation ->
           {:ok, pid} =
-            Elixir.Task.Supervisor.start_child(supervisor, fn ->
-              :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
+            Task.Supervisor.start_child(supervisor, fn ->
+              :ok = Sandbox.checkout(Repo, sandbox: false)
 
               try do
                 send(test_pid, {:graph_worker_ready, self(), database_backend_pid()})
@@ -182,7 +185,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
                     send(test_pid, {:graph_worker_result, self(), operation.()})
                 end
               after
-                :ok = Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+                :ok = Sandbox.checkin(Repo)
               end
             end)
 
@@ -202,7 +205,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
       end)
 
       assert %{rows: [[true]]} =
-               Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [
+               SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [
                  first_key,
                  second_key
                ])
@@ -213,7 +216,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
         result
       end)
     after
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [first_key, second_key])
+      SQL.query!(Repo, "SELECT pg_advisory_unlock($1, $2)", [first_key, second_key])
     end
   end
 
@@ -224,7 +227,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
 
   defp poll_blocked(backend, owner_backend, deadline) do
     %{rows: [[blockers]]} =
-      Ecto.Adapters.SQL.query!(Repo, "SELECT pg_blocking_pids($1::integer)", [backend])
+      SQL.query!(Repo, "SELECT pg_blocking_pids($1::integer)", [backend])
 
     cond do
       owner_backend in blockers ->
@@ -242,7 +245,7 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   end
 
   defp database_backend_pid do
-    %{rows: [[backend]]} = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()")
+    %{rows: [[backend]]} = SQL.query!(Repo, "SELECT pg_backend_pid()")
     backend
   end
 
@@ -266,10 +269,12 @@ defmodule Taskman.Tasks.BlockingConcurrencyTest do
   defp parent_direction_error?(_), do: false
 
   defp cleanup_project(project) do
-    on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
-        if persisted = Repo.get(Taskman.Projects.Project, project.id), do: Repo.delete!(persisted)
-      end)
+    on_exit(fn -> delete_project(project) end)
+  end
+
+  defp delete_project(project) do
+    Sandbox.unboxed_run(Repo, fn ->
+      if persisted = Repo.get(Project, project.id), do: Repo.delete!(persisted)
     end)
   end
 end

@@ -43,28 +43,10 @@ defmodule TaskmanWeb.ProjectLive.ListEditing do
   def save(%ListEdit{} = edit, params) do
     case {edit, ListEdit.target(edit)} do
       {%ListEdit{project: %Project{} = project}, {:ok, {:new, parent}, _task_list}} ->
-        case Lists.create_list(project, parent, params) do
-          {:ok, task_list} ->
-            {:created, task_list, parent}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:changed, ListEdit.put_error(edit, changeset)}
-
-          {:error, :not_found} ->
-            :unchanged
-        end
+        create_list(edit, project, parent, params)
 
       {%ListEdit{project: %Project{} = project}, {:ok, {:rename, current_list}, _task_list}} ->
-        case Lists.rename_list(project, current_list, params) do
-          {:ok, renamed_list} ->
-            {:renamed, renamed_list}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:changed, ListEdit.put_error(edit, changeset)}
-
-          {:error, :not_found} ->
-            :unchanged
-        end
+        rename_list(edit, project, current_list, params)
 
       _invalid_form ->
         :unchanged
@@ -72,6 +54,7 @@ defmodule TaskmanWeb.ProjectLive.ListEditing do
   end
 
   defp parent_id_param(params), do: Map.get(params, "parent-id", Map.get(params, "parent_id", ""))
+
   defp list_id_param(params), do: Map.get(params, "list-id", Map.get(params, "list_id"))
 
   defp action_project(selected_project, params) do
@@ -112,6 +95,22 @@ defmodule TaskmanWeb.ProjectLive.ListEditing do
     case Lists.get_list_for_project(project, parent_id) do
       %TaskList{} = parent -> {:ok, parent}
       nil -> :error
+    end
+  end
+
+  defp create_list(edit, project, parent, params) do
+    case Lists.create_list(project, parent, params) do
+      {:ok, task_list} -> {:created, task_list, parent}
+      {:error, %Ecto.Changeset{} = changeset} -> {:changed, ListEdit.put_error(edit, changeset)}
+      {:error, :not_found} -> :unchanged
+    end
+  end
+
+  defp rename_list(edit, project, current_list, params) do
+    case Lists.rename_list(project, current_list, params) do
+      {:ok, renamed_list} -> {:renamed, renamed_list}
+      {:error, %Ecto.Changeset{} = changeset} -> {:changed, ListEdit.put_error(edit, changeset)}
+      {:error, :not_found} -> :unchanged
     end
   end
 end

@@ -1,4 +1,6 @@
 defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
+  @moduledoc "Tracks Task hierarchy expansion, selection, sorting and status filters."
+
   alias Taskman.Tasks.{Hierarchy, HierarchyNode, Status, Task}
 
   alias TaskmanWeb.ProjectLive.Tasks.StateOptions
@@ -121,6 +123,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   end
 
   defp sort_value(task, :id), do: task.id
+
   defp sort_value(task, :title), do: String.downcase(task.title)
 
   defp sort_value(task, :status), do: Status.rank(task.status)
@@ -172,12 +175,7 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
   defp selected_path(%HierarchyNode{task: %{id: task_id}}, task_id), do: [task_id]
 
   defp selected_path(%HierarchyNode{task: task, children: children}, selected_task_id) do
-    case Enum.find_value(children, fn child ->
-           case selected_path(child, selected_task_id) do
-             [] -> nil
-             path -> path
-           end
-         end) do
+    case Enum.find_value(children, &selected_child_path(&1, selected_task_id)) do
       nil -> []
       path -> [task.id | path]
     end
@@ -191,5 +189,12 @@ defmodule TaskmanWeb.ProjectLive.Tasks.Hierarchy do
 
   defp selected_location_path(%HierarchyNode{children: children}, selected_task_id) do
     Enum.find_value(children, &selected_location_path(&1, selected_task_id))
+  end
+
+  defp selected_child_path(child, selected_task_id) do
+    case selected_path(child, selected_task_id) do
+      [] -> nil
+      path -> path
+    end
   end
 end

@@ -508,7 +508,9 @@ defmodule TaskmanWeb.ProjectLive.TaskUpdatesTest do
                  %{
                    title: "Revised selected Task",
                    status: :in_review
-                 }, actor: Taskman.AccountsFixtures.user_fixture())
+                 },
+                 actor: Taskman.AccountsFixtures.user_fixture()
+               )
              end)
 
     sync_view(view)

@@ -3,6 +3,7 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
 
   import ExUnit.CaptureIO
 
+  alias Mix.Tasks.Taskman.Accounts.CreateAdmin
   alias Taskman.{Accounts, FakeTerminal, Repo}
   alias Taskman.Accounts.User
 
@@ -29,7 +30,7 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
       [password, "different-password", password, password]
     )
 
-    output = capture_io(fn -> Mix.Tasks.Taskman.Accounts.CreateAdmin.run([]) end)
+    output = capture_io(fn -> CreateAdmin.run([]) end)
 
     assert output =~ "Administrator created."
     refute output =~ password
@@ -56,7 +57,7 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
     output =
       capture_io(fn ->
         assert_raise Mix.Error, ~r/Unable to create administrator/, fn ->
-          Mix.Tasks.Taskman.Accounts.CreateAdmin.run([])
+          CreateAdmin.run([])
         end
       end)
 
@@ -75,7 +76,7 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
     output =
       capture_io(fn ->
         assert_raise Mix.Error, ~r/Unable to create administrator/, fn ->
-          Mix.Tasks.Taskman.Accounts.CreateAdmin.run([])
+          CreateAdmin.run([])
         end
       end)
 
@@ -97,7 +98,7 @@ defmodule Mix.Tasks.Taskman.Accounts.CreateAdminTest do
     output =
       capture_io(fn ->
         assert_raise Mix.Error, ~r/Unable to create administrator/, fn ->
-          Mix.Tasks.Taskman.Accounts.CreateAdmin.run([])
+          CreateAdmin.run([])
         end
       end)
 

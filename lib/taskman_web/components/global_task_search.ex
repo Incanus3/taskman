@@ -1,10 +1,10 @@
 defmodule TaskmanWeb.GlobalTaskSearch do
+  @moduledoc "Searches workspace Tasks and resolves current locations before navigation."
+
   use TaskmanWeb, :live_component
   require Logger
 
-  alias Taskman.Lists
-  alias Taskman.Projects
-  alias Taskman.Tasks
+  alias Taskman.{Lists, Projects, Tasks}
   alias TaskmanWeb.ProjectLive.Paths
   alias TaskmanWeb.ProjectLive.Tasks.LocationScope
   alias TaskmanWeb.Tasks.Table
@@ -156,27 +156,7 @@ defmodule TaskmanWeb.GlobalTaskSearch do
           current = Enum.find(summaries, &(&1.id == id))
           location = current || displayed
 
-          with project when not is_nil(project) <-
-                 socket.assigns.get_project.(location.project_id),
-               task when not is_nil(task) <- Tasks.get_task_for_project(project, id) do
-            lists = Lists.list_lists_for_project(project)
-            actual = Lists.get_list_for_project(project, task.list_id)
-
-            selected =
-              case socket.assigns.workspace do
-                %{selected_project: %{id: project_id}} = workspace
-                when project_id == project.id ->
-                  LocationScope.backdrop(workspace, actual, lists)
-
-                _ ->
-                  actual
-              end
-
-            path = Paths.task_detail_path(project, selected, task, false)
-            {:noreply, socket |> reset() |> push_navigate(to: path)}
-          else
-            _ -> stale_result(socket, location, id)
-          end
+          navigate_result(socket, location, id)
 
         :error ->
           {:noreply, search_error(socket)}
@@ -497,5 +477,28 @@ defmodule TaskmanWeb.GlobalTaskSearch do
       }
     </script>
     """
+  end
+
+  defp result_backdrop(%{selected_project: %{id: project_id}} = workspace, project, actual, lists)
+       when project_id == project.id do
+    LocationScope.backdrop(workspace, actual, lists)
+  end
+
+  defp result_backdrop(_workspace, _project, actual, _lists), do: actual
+
+  defp navigate_result(socket, location, id) do
+    with project when not is_nil(project) <-
+           socket.assigns.get_project.(location.project_id),
+         task when not is_nil(task) <- Tasks.get_task_for_project(project, id) do
+      lists = Lists.list_lists_for_project(project)
+      actual = Lists.get_list_for_project(project, task.list_id)
+
+      selected = result_backdrop(socket.assigns.workspace, project, actual, lists)
+
+      path = Paths.task_detail_path(project, selected, task, false)
+      {:noreply, socket |> reset() |> push_navigate(to: path)}
+    else
+      _ -> stale_result(socket, location, id)
+    end
   end
 end

@@ -6,9 +6,7 @@ defmodule TaskmanWeb.API.TaskActivityControllerTest do
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
 
-  alias Taskman.Accounts
-  alias Taskman.Repo
-  alias Taskman.Tasks
+  alias Taskman.{Accounts, Repo, Tasks}
   alias Taskman.Tasks.Activity.Event
 
   setup %{conn: conn} do

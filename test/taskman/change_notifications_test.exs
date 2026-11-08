@@ -128,9 +128,10 @@ defmodule Taskman.ChangeNotificationsTest do
     end
 
     invalid_project = %Project{id: nil}
+    publish_project = Function.capture(ChangeNotifications, :publish_project, 3)
 
     assert_raise FunctionClauseError, fn ->
-      apply(ChangeNotifications, :publish_project, [invalid_project, :created, [:name]])
+      publish_project.(invalid_project, :created, [:name])
     end
   end
 

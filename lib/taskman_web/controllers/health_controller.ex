@@ -16,17 +16,15 @@ defmodule TaskmanWeb.HealthController do
   end
 
   defp guarded_health_check(health_module) do
-    try do
-      case health_module.check([]) do
-        :ready -> :ready
-        :unavailable -> :unavailable
-        _unexpected -> unavailable_with_log()
-      end
-    rescue
-      _exception -> unavailable_with_log()
-    catch
-      _kind, _reason -> unavailable_with_log()
+    case health_module.check([]) do
+      :ready -> :ready
+      :unavailable -> :unavailable
+      _unexpected -> unavailable_with_log()
     end
+  rescue
+    _exception -> unavailable_with_log()
+  catch
+    _kind, _reason -> unavailable_with_log()
   end
 
   defp unavailable_with_log do

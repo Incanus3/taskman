@@ -9,6 +9,8 @@ defmodule Taskman.Accounts.RateLimit do
 
   @behaviour AshRateLimiter.Backend
 
+  alias Taskman.Accounts.RateLimitBackend
+
   @request_ip_key {__MODULE__, :remote_ip}
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -21,18 +23,18 @@ defmodule Taskman.Accounts.RateLimit do
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts), do: Taskman.Accounts.RateLimitBackend.start_link(opts)
+  def start_link(opts), do: RateLimitBackend.start_link(opts)
 
   @impl AshRateLimiter.Backend
   @spec hit(String.t(), pos_integer(), pos_integer()) ::
           {:allow, pos_integer()} | {:deny, pos_integer()}
   def hit(key, period, limit),
-    do: Taskman.Accounts.RateLimitBackend.hit(namespaced_key(key), period, limit)
+    do: RateLimitBackend.hit(namespaced_key(key), period, limit)
 
   @doc false
   @spec expires_at(String.t(), pos_integer()) :: non_neg_integer()
   def expires_at(key, period),
-    do: Taskman.Accounts.RateLimitBackend.expires_at(namespaced_key(key), period)
+    do: RateLimitBackend.expires_at(namespaced_key(key), period)
 
   @type limited_action ::
           :sign_in
@@ -73,8 +75,7 @@ defmodule Taskman.Accounts.RateLimit do
     now = Keyword.get(opts, :now, System.system_time(:millisecond))
 
     if function_exported?(backend, :expires_at, 2) do
-      backend
-      |> apply(:expires_at, [key, period])
+      backend.expires_at(key, period)
       |> Kernel.-(now)
       |> seconds()
       |> min(seconds(period))

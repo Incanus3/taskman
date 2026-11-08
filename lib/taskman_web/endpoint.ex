@@ -1,4 +1,9 @@
 defmodule TaskmanWeb.Endpoint do
+  alias Phoenix.Ecto.CheckRepoStatus
+  alias Phoenix.LiveDashboard.RequestLogger
+  alias Phoenix.{LiveReloader, LiveView}
+  alias TaskmanWeb.Plugs.{ApiAuthentication, TrustedProxy}
+
   use Phoenix.Endpoint, otp_app: :taskman
 
   # The session will be stored in the cookie and signed,
@@ -14,7 +19,7 @@ defmodule TaskmanWeb.Endpoint do
     same_site: "Lax"
   ]
 
-  socket "/live", Phoenix.LiveView.Socket,
+  socket "/live", LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
@@ -34,15 +39,15 @@ defmodule TaskmanWeb.Endpoint do
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.
   if code_reloading? do
-    socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
+    socket "/phoenix/live_reload/socket", LiveReloader.Socket
     plug Phoenix.LiveReloader
     plug Phoenix.CodeReloader
-    plug Phoenix.Ecto.CheckRepoStatus, otp_app: :taskman
+    plug CheckRepoStatus, otp_app: :taskman
   end
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
-  plug TaskmanWeb.Plugs.TrustedProxy
+  plug TrustedProxy
 
   if Application.compile_env(:taskman, :force_ssl?, false) do
     plug Plug.SSL, hsts: true
@@ -50,9 +55,9 @@ defmodule TaskmanWeb.Endpoint do
 
   # Authenticate API paths before query decoding, parsers and content negotiation can reject
   # malformed or unsupported requests with a different response envelope.
-  plug TaskmanWeb.Plugs.ApiAuthentication
+  plug ApiAuthentication
 
-  plug Phoenix.LiveDashboard.RequestLogger,
+  plug RequestLogger,
     param_key: "request_logger",
     cookie_key: "request_logger"
 

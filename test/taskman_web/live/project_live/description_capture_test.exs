@@ -4,6 +4,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
   import Taskman.AccountsFixtures
   import Taskman.ProjectsFixtures
   import Taskman.TasksFixtures
+  alias Taskman.ChangeNotifications.Event
   alias Taskman.Tasks
   alias TaskmanWeb.ProjectLive.Tasks.Autosave
 
@@ -243,7 +244,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     saved = Tasks.get_task_for_project(project, task.id)
     change(view, "B", true)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :task,
       operation: :updated,
       project_id: project.id,
@@ -283,7 +284,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     Taskman.Repo.delete!(lost)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :list,
       operation: :updated,
       project_id: project.id,
@@ -361,7 +362,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     Taskman.Repo.delete!(lost)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :list,
       operation: :updated,
       project_id: project.id,
@@ -384,7 +385,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
   } do
     {:ok, root, _} = live(log_in_user(conn, user_fixture()), ~p"/")
 
-    send(root.pid, %Taskman.ChangeNotifications.Event{
+    send(root.pid, %Event{
       entity: :task,
       operation: :updated,
       project_id: project.id,
@@ -411,7 +412,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
 
     Taskman.Repo.delete!(lost)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :list,
       operation: :updated,
       project_id: project.id,
@@ -516,7 +517,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :list,
       operation: :updated,
       project_id: project.id,
@@ -574,7 +575,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
     Taskman.Repo.delete!(task)
     Taskman.Repo.delete!(lost)
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :relationship,
       operation: :invalidated,
       project_id: project.id,
@@ -833,7 +834,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionCaptureTest do
        } do
     Taskman.Repo.update!(Ecto.Changeset.change(task, description: "External description"))
 
-    send(view.pid, %Taskman.ChangeNotifications.Event{
+    send(view.pid, %Event{
       entity: :activity,
       operation: :invalidated,
       project_id: project.id,

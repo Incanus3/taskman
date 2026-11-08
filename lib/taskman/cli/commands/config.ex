@@ -44,14 +44,7 @@ defmodule Taskman.CLI.Commands.Config do
           set_key(name, runtime_options)
 
         :host_list ->
-          with {:ok, document} <- Config.load(runtime_options) do
-            hosts =
-              document.hosts
-              |> Enum.sort_by(&elem(&1, 0))
-              |> Enum.map(fn {name, host} -> descriptor(name, host, document.default_host) end)
-
-            {:ok, hosts, Enum.map_join(hosts, "\n", &host_text/1)}
-          end
+          list_hosts(runtime_options)
 
         :host_show ->
           with {:ok, document} <- Config.load(runtime_options),
@@ -61,23 +54,38 @@ defmodule Taskman.CLI.Commands.Config do
           end
 
         :show ->
-          context = Map.fetch!(runtime_options, :resolved_context)
-
-          data = %{
-            config_format: context.config_format,
-            default_host: context.default_host,
-            host: context.host,
-            api_url: context.api_url,
-            api_key_configured: context.api_key != nil,
-            project_id: context.project_id,
-            sources: context.sources
-          }
-
-          {:ok, data,
-           "Host: #{context.host || "none"}\nAPI URL: #{context.api_url || "none"}\nAPI key: #{key_text(data.api_key_configured)}\nProject: #{context.project_id || "none"}"}
+          show_effective(runtime_options)
       end
 
     Result.from_local(result, json?)
+  end
+
+  defp list_hosts(runtime_options) do
+    with {:ok, document} <- Config.load(runtime_options) do
+      hosts =
+        document.hosts
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(fn {name, host} -> descriptor(name, host, document.default_host) end)
+
+      {:ok, hosts, Enum.map_join(hosts, "\n", &host_text/1)}
+    end
+  end
+
+  defp show_effective(runtime_options) do
+    context = Map.fetch!(runtime_options, :resolved_context)
+
+    data = %{
+      config_format: context.config_format,
+      default_host: context.default_host,
+      host: context.host,
+      api_url: context.api_url,
+      api_key_configured: context.api_key != nil,
+      project_id: context.project_id,
+      sources: context.sources
+    }
+
+    {:ok, data,
+     "Host: #{context.host || "none"}\nAPI URL: #{context.api_url || "none"}\nAPI key: #{key_text(data.api_key_configured)}\nProject: #{context.project_id || "none"}"}
   end
 
   defp descriptor(name, host, default_host),

@@ -10,19 +10,23 @@ defmodule Taskman.Accounts.User.Changes.RequireActiveAdministrator do
     Ash.Changeset.before_action(changeset, fn changeset ->
       actor = get_in(changeset.context, [:private, :actor]) || context.actor
 
-      case actor do
-        %{accounts_bootstrap?: true} ->
-          changeset
-
-        actor ->
-          case Administration.lock_active_administrator(actor) do
-            {:ok, _persisted_actor} ->
-              changeset
-
-            :error ->
-              Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
-          end
-      end
+      authorize_actor(changeset, actor)
     end)
+  end
+
+  defp authorize_actor(changeset, actor) do
+    case actor do
+      %{accounts_bootstrap?: true} ->
+        changeset
+
+      actor ->
+        case Administration.lock_active_administrator(actor) do
+          {:ok, _persisted_actor} ->
+            changeset
+
+          :error ->
+            Ash.Changeset.add_error(changeset, field: :id, message: "is not permitted")
+        end
+    end
   end
 end
