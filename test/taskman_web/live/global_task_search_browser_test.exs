@@ -321,7 +321,7 @@ defmodule TaskmanWeb.GlobalTaskSearchBrowserTest do
     end
 
     @tag :capture_log
-    test "Escape dismisses #{surface} search from the real error retry control", %{
+    test "failed #{surface} Retry restores input focus and Escape dismisses from Retry", %{
       session: session
     } do
       # The connected Project LiveView already subscribes to workspace changes.
@@ -342,6 +342,16 @@ defmodule TaskmanWeb.GlobalTaskSearchBrowserTest do
       end
 
       Browser.fill_in(session, Query.css("##{prefix}-input"), with: "Toolbar search")
+      Browser.find(session, Query.css("##{prefix}-error[role='alert'] ##{prefix}-retry"))
+      Browser.send_keys(session, [:tab])
+      Browser.find(session, Query.css("##{prefix}-retry:focus"))
+
+      Browser.send_keys(session, [:enter])
+      Browser.find(session, Query.css("##{prefix}-input:focus"))
+
+      assert js(session, "return document.getElementById(arguments[0]).value", ["#{prefix}-input"]) ==
+               "Toolbar search"
+
       Browser.find(session, Query.css("##{prefix}-error[role='alert'] ##{prefix}-retry"))
       Browser.send_keys(session, [:tab])
       Browser.find(session, Query.css("##{prefix}-retry:focus"))
@@ -394,31 +404,6 @@ defmodule TaskmanWeb.GlobalTaskSearchBrowserTest do
       Browser.find(session, Query.css("##{prefix}-error[role='alert'] ##{prefix}-retry"))
       Browser.send_keys(session, [:tab])
       Browser.find(session, Query.css("##{prefix}-retry:focus"))
-
-      if unquote(activation) == :keyboard do
-        Browser.send_keys(session, [:enter])
-        Browser.find(session, Query.css("##{prefix}-input:focus"))
-
-        assert js(session, "return document.getElementById(arguments[0]).value", [
-                 "#{prefix}-input"
-               ]) ==
-                 "Toolbar search"
-
-        Browser.find(session, Query.css("##{prefix}-error[role='alert']"))
-        Browser.send_keys(session, [:escape])
-        assert Browser.has?(session, Query.css("##{prefix}-suggestions", count: 0))
-
-        if unquote(surface) == :mobile do
-          assert Browser.has?(session, Query.css("#global-task-search-mobile-panel", count: 0))
-          Browser.find(session, Query.css("#global-task-search-mobile-trigger:focus"))
-          Browser.click(session, Query.css("#global-task-search-mobile-trigger"))
-        end
-
-        Browser.fill_in(session, Query.css("##{prefix}-input"), with: "Toolbar search")
-        Browser.find(session, Query.css("##{prefix}-error[role='alert'] ##{prefix}-retry"))
-        Browser.send_keys(session, [:tab])
-        Browser.find(session, Query.css("##{prefix}-retry:focus"))
-      end
 
       Agent.update(availability, fn _ -> true end)
       Browser.find(session, Query.css("##{prefix}-retry:focus"))

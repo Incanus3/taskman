@@ -99,6 +99,13 @@ defmodule TaskmanWeb.ProjectLive.RelatedTasksTest do
     assert has_element?(view, "#related-candidate-#{candidate.id}", "Review")
 
     view
+    |> form("#related-picker-search-form", related_search: %{query: "no matching candidate"})
+    |> render_change()
+
+    assert has_element?(view, "#related-picker-empty")
+    refute has_element?(view, "[id^='related-candidate-']")
+
+    view
     |> form("#related-picker-search-form", related_search: %{query: "#{candidate.id} APPROVE"})
     |> render_change()
 

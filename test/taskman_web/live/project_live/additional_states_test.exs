@@ -39,6 +39,33 @@ defmodule TaskmanWeb.ProjectLive.AdditionalStatesTest do
     refute has_captured_element?(explicit, "#open-task-#{task.id}")
   end
 
+  test "native Task status select retains the complete vocabulary", %{conn: conn} do
+    project = project_fixture(%{})
+    task = task_fixture(project)
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    expected = [
+      {"icebox", "Icebox"},
+      {"pending", "Pending"},
+      {"in_analysis", "In Analysis"},
+      {"in_progress", "In Progress"},
+      {"in_review", "In Review"},
+      {"done", "Done"},
+      {"not_planned", "Not Planned"},
+      {"will_not_do", "Will Not Do"}
+    ]
+
+    assert view
+           |> render_captured()
+           |> LazyHTML.from_fragment()
+           |> LazyHTML.query("#task-status option")
+           |> Enum.count() == 8
+
+    for {value, label} <- expected do
+      assert has_captured_element?(view, "#task-status option[value='#{value}']", label)
+    end
+  end
+
   test "creation reveal offers both additional states and persists analysis", %{conn: conn} do
     project = project_fixture(%{})
     {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/new")

@@ -22,8 +22,13 @@ defmodule Taskman.Tasks.Activity.ConsolidationTest do
     after_60_seconds = DateTime.add(at_60_seconds, 1, :microsecond)
     assert Consolidation.action(candidate, actor.id, "medium", "high", at_60_seconds) == :update
 
-    assert Consolidation.action(candidate, actor.id, "medium", "high", after_60_seconds) ==
-             :insert
+    assert Consolidation.action(
+             candidate,
+             actor.id,
+             "medium",
+             "high",
+             after_60_seconds
+           ) == :insert
 
     assert Consolidation.action(candidate, actor.id, "medium", "low", at_60_seconds) == :delete
   end
@@ -33,8 +38,13 @@ defmodule Taskman.Tasks.Activity.ConsolidationTest do
   end
 
   test "deleted actors do not consolidate", %{candidate: candidate} do
-    assert Consolidation.action(%{candidate | actor_user_id: nil}, nil, "medium", "high", @now) ==
-             :insert
+    assert Consolidation.action(
+             %{candidate | actor_user_id: nil},
+             nil,
+             "medium",
+             "high",
+             @now
+           ) == :insert
   end
 
   test "value discontinuity does not consolidate", %{candidate: candidate} do
@@ -65,8 +75,7 @@ defmodule Taskman.Tasks.Activity.ConsolidationTest do
              %{"id" => 12, "title" => "Renamed"},
              nil,
              @now
-           ) ==
-             :delete
+           ) == :delete
   end
 
   test "continuous edits slide beyond one minute from the first change", %{candidate: candidate} do
@@ -80,8 +89,7 @@ defmodule Taskman.Tasks.Activity.ConsolidationTest do
              "high",
              "urgent",
              DateTime.add(@now, 105, :second)
-           ) ==
-             :update
+           ) == :update
   end
 
   test "cancelled other-user intervention exposes the original clock", %{candidate: a} do
@@ -95,14 +103,29 @@ defmodule Taskman.Tasks.Activity.ConsolidationTest do
 
     assert Consolidation.action(a, "other", "medium", "high", b.last_changed_at) == :insert
 
-    assert Consolidation.action(b, "other", "high", "medium", DateTime.add(@now, 20, :second)) ==
-             :delete
+    assert Consolidation.action(
+             b,
+             "other",
+             "high",
+             "medium",
+             DateTime.add(@now, 20, :second)
+           ) == :delete
 
-    assert Consolidation.action(a, "actor", "medium", "urgent", DateTime.add(@now, 30, :second)) ==
-             :update
+    assert Consolidation.action(
+             a,
+             "actor",
+             "medium",
+             "urgent",
+             DateTime.add(@now, 30, :second)
+           ) == :update
 
-    assert Consolidation.action(a, "actor", "medium", "urgent", DateTime.add(@now, 61, :second)) ==
-             :insert
+    assert Consolidation.action(
+             a,
+             "actor",
+             "medium",
+             "urgent",
+             DateTime.add(@now, 61, :second)
+           ) == :insert
   end
 
   test "no surviving candidate starts an event" do

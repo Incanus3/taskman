@@ -307,6 +307,15 @@ Append a test file or directory to run a focused subset. Choose the browser mode
 being verified and assert any required capabilities, such as `(hover: hover)`. Switching to
 headless mode must not weaken those assertions.
 
+Description editor keyboard tests also require `DISPLAY` to be unset, even when
+their Wallaby session explicitly uses headless Chromium. Desktop keyboard layouts
+can remap WebDriver's Ctrl+Z. Run those modules separately from suites that require
+a headed browser, for example:
+
+```sh
+env -u DISPLAY mix test.browser test/taskman_web/live/project_live/description_editor_browser_test.exs
+```
+
 If browser results reflect older JavaScript or styles after switching revisions, check for stale
 compressed assets from an earlier `assets.deploy` run. The test endpoint serves existing `.gz`
 files, while `assets.build` refreshes only the uncompressed bundles. Regenerate both before retrying:

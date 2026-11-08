@@ -941,6 +941,29 @@ defmodule TaskmanWeb.ProjectLiveTest do
     assert has_captured_element?(view, "#task-due-at[value='']")
   end
 
+  test "due date text accepts day-first dates and retains invalid and leap-date drafts", %{
+    conn: conn
+  } do
+    project = project_fixture(%{})
+    task = task_fixture(project, %{due_at: nil})
+    {:ok, view, _} = live(conn, ~p"/projects/#{project.id}/tasks/#{task.id}")
+
+    for {text, persisted, state} <- [
+          {"28.10.2026 17:45", ~N[2026-10-28 17:45:00], "saved"},
+          {"31.02.2026 17:45", ~N[2026-10-28 17:45:00], "not_saved"},
+          {"28.10.", ~N[2026-10-28 17:45:00], "not_saved"},
+          {"29.02.2028 09:30", ~N[2028-02-29 09:30:00], "saved"}
+        ] do
+      view
+      |> form("#task-form", task: %{due_at: text})
+      |> render_captured_change(%{"_target" => ["task", "due_at"]})
+
+      assert Tasks.get_task_for_project(project, task.id).due_at == persisted
+      assert has_captured_element?(view, "#task-due-at[value='#{text}']")
+      assert has_captured_element?(view, "#task-due-at-save-status[data-state='#{state}']")
+    end
+  end
+
   test "an invalid draft does not block another field from saving", %{conn: conn} do
     project = project_fixture(%{})
     task = task_fixture(project, %{title: "Valid", status: :pending})

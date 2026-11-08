@@ -102,13 +102,6 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
              "28.10.2026 17:45"
 
     Browser.find(c.session, Query.css("#task-due-at-trigger:not([hidden])"))
-    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "31.02.2026 17:45")
-    Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='not_saved']"))
-    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2026-10-28 17:45:00]
-
-    assert js(c.session, "return document.querySelector('#task-due-at').value") ==
-             "31.02.2026 17:45"
-
     Browser.fill_in(c.session, Query.css("#task-due-at"), with: "28.10.")
     Browser.find(c.session, Query.css("#task-due-at-picker[data-value='28.10.']"))
 
@@ -122,26 +115,27 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
       )
 
     Browser.find(c.session, Query.css("#task-title[value='Patched title']"))
+    Browser.find(c.session, Query.css("#task-due-at:focus"))
     assert js(c.session, "return document.querySelector('#task-due-at').value") == "28.10."
-    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "29.02.2028 09:30")
+    Browser.fill_in(c.session, Query.css("#task-due-at"), with: "28.10.2026 17:45")
     Browser.find(c.session, Query.css("#task-due-at-save-status[data-state='saved']"))
     Browser.click(c.session, Query.css("#task-due-at-trigger"))
     Browser.find(c.session, Query.css("#task-due-at-popup:popover-open"))
     Browser.click(c.session, Query.css("#task-due-at-cancel"))
 
     assert js(c.session, "return document.querySelector('#task-due-at').value") ==
-             "29.02.2028 09:30"
+             "28.10.2026 17:45"
 
     Browser.click(c.session, Query.css("#task-due-at-trigger"))
 
     js(
       c.session,
-      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='31';m.dispatchEvent(new Event('change',{bubbles:true}))"
+      "const m=document.querySelector('[data-vc-time-input=minute] input');m.value='46';m.dispatchEvent(new Event('change',{bubbles:true}))"
     )
 
     Browser.click(c.session, Query.css("#task-due-at-apply"))
-    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2028-02-29T09:31']"))
-    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2028-02-29 09:31:00]
+    Browser.find(c.session, Query.css("#task-due-at-picker[data-value='2026-10-28T17:46']"))
+    assert Tasks.get_task_for_project(c.project, c.selected.id).due_at == ~N[2026-10-28 17:46:00]
   end
 
   # Draft inputs must never reach the enclosing LiveView form before Apply.
@@ -1007,7 +1001,8 @@ defmodule TaskmanWeb.ProjectLive.TaskDetailBrowserTest do
         %{
           title: "Updated wrapping ancestor " <> String.duplicate("work ", 20),
           status: :done
-        }
+        },
+        done_confirmation: :force
       )
 
     wait(c.session, &(&1["statuses"]["#{c.second.id}"] == "Done"))

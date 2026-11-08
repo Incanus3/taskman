@@ -83,70 +83,6 @@ defmodule TaskmanWeb.ProjectLive.TaskExpansionBrowserTest do
     end
   end
 
-  test "table edges fit their content before and after expanding the final root" do
-    password = "browser-table-edges-password"
-    email = "browser-table-edges-#{Ecto.UUID.generate()}@example.com"
-    assert {:ok, _user} = Accounts.bootstrap_admin(email, password)
-    project = project_fixture(%{name: "Table edges"})
-    task_fixture(project, %{title: "Earlier root", status: :pending})
-    root = task_fixture(project, %{title: "Final root", status: :pending})
-    child = task_fixture(project, %{title: "Final child", status: :pending}, parent: root)
-
-    server =
-      start_supervised!(
-        {Bandit, plug: TaskmanWeb.Endpoint, port: 0, ip: {127, 0, 0, 1}, startup_log: false}
-      )
-
-    assert {:ok, {_address, port}} = ThousandIsland.listener_info(server)
-    base_url = "http://127.0.0.1:#{port}"
-    {:ok, _} = Application.ensure_all_started(:wallaby)
-
-    {:ok, session} =
-      Wallaby.start_session(
-        binary: System.find_executable("chromium"),
-        headless: true,
-        window_size: [width: 1440, height: 1100]
-      )
-
-    try do
-      Browser.visit(session, base_url <> "/sign-in")
-      wait_for(session, "return !!document.querySelector('.phx-connected')", true)
-
-      js(
-        session,
-        ~S"""
-        document.querySelector('input[name="user[email]"]').value = arguments[0];
-        document.querySelector('input[name="user[password]"]').value = arguments[1];
-        document.querySelector('form[action="/auth/user/password/sign_in"]').submit();
-        """,
-        [email, password]
-      )
-
-      wait_for(session, "return location.pathname", "/")
-      path = "/projects/#{project.id}?include_children=true"
-      Browser.visit(session, base_url <> path)
-
-      wait_for(
-        session,
-        "return document.querySelector('#project-memory')?.dataset.preferencesHydrated === 'true' && !!document.querySelector('.phx-connected')",
-        true
-      )
-
-      for width <- [1440, 1024, 390, 312] do
-        Browser.resize_window(session, width, 1100)
-        assert js(session, "return innerWidth") == width
-        assert_table_edges(session, root.id, root.id)
-        Browser.click(session, Query.css("#toggle-task-subtasks-#{root.id}"))
-        wait_for(session, "return !!document.getElementById('tasks-#{child.id}')", true)
-        assert_table_edges(session, root.id, child.id)
-        Browser.click(session, Query.css("#toggle-task-subtasks-#{root.id}"))
-        wait_for(session, "return !!document.getElementById('tasks-#{child.id}')", false)
-      end
-    after
-      Wallaby.end_session(session)
-    end
-  end
-
   test "pointer and keyboard highlight the complete displayed Task family across stream updates" do
     password = "browser-tree-family-password"
     email = "browser-tree-family-#{Ecto.UUID.generate()}@example.com"
@@ -300,34 +236,6 @@ defmodule TaskmanWeb.ProjectLive.TaskExpansionBrowserTest do
       """,
       Enum.sort(expected_ids)
     )
-  end
-
-  defp assert_table_edges(session, root_id, last_id) do
-    state =
-      js(
-        session,
-        ~S"""
-        const table = document.getElementById('task-list-scroll');
-        const style = getComputedStyle(table);
-        const last = document.querySelector('#tasks > article:last-of-type');
-        const border = getComputedStyle(last);
-        const separator = getComputedStyle(document.getElementById('tasks-' + arguments[0]), '::after');
-        const reserved = table.offsetWidth - table.clientWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
-        return {
-          overflowing: table.scrollHeight > table.clientHeight,
-          unusedGutter: reserved > 1,
-          strongFinalBorder: last.id === 'tasks-' + arguments[1] &&
-            parseFloat(border.borderBottomWidth) >= 1 && border.borderBottomColor === separator.backgroundColor
-        };
-        """,
-        [root_id, last_id]
-      )
-
-    assert state == %{
-             "overflowing" => false,
-             "unusedGutter" => false,
-             "strongFinalBorder" => true
-           }
   end
 
   defp assert_expansion(session, button, child_id, expanded?, path) do

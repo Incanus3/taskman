@@ -294,8 +294,11 @@ The completed implementation plan is retired. Successful retry baselines, transa
 invalidation of affected Task feeds, capture/replay and interface contracts remain specified above
 and covered by the focused tests. The workstream is complete and accepted.
 
-Local verification uses Elixir 1.20.4 / OTP 29. Final precommit passed 1,653 tests, with 3 executable
-skips and 88 browser exclusions; all 3 rebuilt executable tests then ran and passed. Focused CLI
+Local verification uses Elixir 1.20.4 / OTP 29. The final branch precommit passed 1,664 tests,
+with three existing executable skips and 85 browser exclusions; Credo reported no issues.
+All 59 affected browser cases passed in their intended modes. The
+[browser-test review](../research/2026-11-08-browser-test-ownership.md) owns their reduction
+and execution-mode evidence. The rebuilt executable gate passed all three tests. Focused CLI
 regressions and the full CLI suite passed. The executable exercised both activity query modes against a
 disposable synthetic backend. This establishes local behavior and binary parity, not live-backend
 acceptance or the pinned release runtime. Direct browser checks at measured widths of 1536, 1024

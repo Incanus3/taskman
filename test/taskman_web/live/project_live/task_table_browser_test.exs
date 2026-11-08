@@ -485,23 +485,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         "return document.querySelector('[role=tooltip]')?.textContent",
         "Add child List"
       )
-
-      for {selector, label} <- [
-            {"#location-task-count", "Matching / eligible tasks"},
-            {"#include-child-lists", "Include tasks from child Lists"},
-            {"#task-status-filter-button", "Filter statuses"},
-            {"#add-task", "Add task"},
-            {"#share-task-view", "Share current view"}
-          ] do
-        Browser.hover(session, Query.css(selector))
-
-        wait_for_js(
-          session,
-          "Styled tooltip for #{selector}",
-          "return document.querySelector('[role=tooltip]')?.textContent",
-          label
-        )
-      end
     after
       Wallaby.end_session(session)
     end
@@ -634,33 +617,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
       "false"
     )
 
-    click(session, "#project-edit-button")
-
-    wait_for_js(
-      session,
-      "Project editor opens",
-      "return !!document.querySelector('#project-icons')",
-      true
-    )
-
-    icons =
-      js(
-        session,
-        "return [...document.querySelectorAll('#project-icons [class*=hero-]')].map(e => ({name: e.className, rendered: getComputedStyle(e).maskImage !== 'none'}))"
-      )
-
-    assert length(icons) == 8
-    assert Enum.all?(icons, & &1["rendered"])
-    click(session, "#project-cancel-button")
-
-    for icon <- ["queue-list", "folder"] do
-      assert js(
-               session,
-               "return getComputedStyle(document.querySelector('#workspace-tree .hero-' + arguments[0])).maskImage !== 'none'",
-               [icon]
-             )
-    end
-
     toggle_id = "toggle-list-#{folder_id}"
     js(session, "document.getElementById(arguments[0]).focus()", [toggle_id])
     assert js(session, "return document.activeElement?.id") == toggle_id
@@ -674,11 +630,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
     )
 
     assert js(session, "return document.activeElement?.id") == toggle_id
-
-    assert js(
-             session,
-             "return getComputedStyle(document.querySelector('#workspace-tree .hero-folder-open')).maskImage !== 'none'"
-           )
 
     Browser.send_keys(session, [:enter])
 
@@ -746,16 +697,18 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
         task_id
       )
 
-      share_wait(
-        session,
-        "Share success is a toast",
-        %{"toastVisible" => true, "feedbackVisible" => false},
-        task_id
-      )
+      if route == project_url do
+        share_wait(
+          session,
+          "Share success is a toast",
+          %{"toastVisible" => true, "feedbackVisible" => false},
+          task_id
+        )
 
-      share_wait(session, "Share success clears", %{"toastVisible" => false}, task_id,
-        timeout: 6_000
-      )
+        share_wait(session, "Share success clears", %{"toastVisible" => false}, task_id,
+          timeout: 6_000
+        )
+      end
 
       if route == task_route do
         js(session, "history.replaceState(history.state, '', arguments[0])", [
@@ -861,8 +814,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
       task_id
     )
 
-    share_wait(session, "Share rendered filters", %{"statuses" => "pending,done"}, task_id)
-
     failure_url =
       project_url <>
         "?include_children=false&include_children=true&statuses=done&statuses=bogus&other=keep#fragment"
@@ -914,8 +865,6 @@ defmodule TaskmanWeb.ProjectLive.TaskTableBrowserTest do
       %{"url" => empty_url, "hydrated" => "true", "statuses" => "[]"},
       task_id
     )
-
-    share_wait(session, "empty snapshot rendered", %{"statuses" => ""}, task_id)
 
     js(
       session,

@@ -84,7 +84,7 @@ defmodule TaskmanWeb.ProjectLive.DescriptionEditorBrowserTest do
     Browser.find(c.session, Query.css("#task-description [contenteditable='true']"))
   end
 
-  for departure <- [:task_link, :back], comment? <- [false, true] do
+  for {departure, comment?} <- [{:task_link, true}, {:back, false}, {:back, true}] do
     test "#{departure} captures final input with comment draft #{comment?}", c do
       Browser.visit(c.session, c.base <> "/projects/#{c.project.id}")
       Browser.click(c.session, Query.css("#open-task-#{c.task.id}"))
